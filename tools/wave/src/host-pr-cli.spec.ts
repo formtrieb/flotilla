@@ -298,6 +298,7 @@ const ENV = { GITHUB_TOKEN: 'test-token' } as NodeJS.ProcessEnv;
 function fakeHttp(handlers: {
   get?: (url: string) => HttpResponse;
   post?: (url: string, body?: string) => HttpResponse;
+  patch?: (url: string, body?: string) => HttpResponse;
 }): { http: HttpProbe; requests: HttpRequest[] } {
   const requests: HttpRequest[] = [];
   const http: HttpProbe = {
@@ -305,6 +306,10 @@ function fakeHttp(handlers: {
       requests.push(req);
       if (req.method === 'GET') {
         return handlers.get?.(req.url) ?? { status: 200, json: [] };
+      }
+      if (req.method === 'PATCH') {
+        // The reuse-time update (FOR-58). Default 200 = the PATCH landed.
+        return handlers.patch?.(req.url, req.body) ?? { status: 200, json: {} };
       }
       return (
         handlers.post?.(req.url, req.body) ?? {
@@ -321,9 +326,9 @@ const EXISTING_PR = 'https://github.com/example-org/example-repo/pull/7';
 const NEW_PR = 'https://github.com/example-org/example-repo/pull/8';
 
 describe('host-pr create — find-before-create idempotency', () => {
-  it('an OPEN PR already on the branch is reused — no create POST, exit 0', async () => {
+  it('an OPEN PR already on the branch is reused (no create POST) and its body/title updated, exit 0', async () => {
     const { http, requests } = fakeHttp({
-      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR }] }),
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7 }] }),
       post: () => {
         throw new Error('createPr must NOT be called when an open PR exists');
       },
@@ -335,16 +340,24 @@ describe('host-pr create — find-before-create idempotency', () => {
     );
 
     expect(code).toBe(0);
-    expect(out()).toMatchObject({ ok: true, verb: 'create', host: 'github', outcome: 'reused', url: EXISTING_PR });
-    // Idempotent: exactly one request (the find query), zero writes.
-    expect(requests.map((r) => r.method)).toEqual(['GET']);
+    expect(out()).toMatchObject({
+      ok: true,
+      verb: 'create',
+      host: 'github',
+      outcome: 'reused',
+      updated: true,
+      url: EXISTING_PR,
+    });
+    // Idempotent: find then update, and NO create POST (never a duplicate).
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
   });
 
   it('a cap=1 re-dispatch onto an existing branch reuses the already-open PR (never a duplicate)', async () => {
     // The exact operational scenario FOR-28 exists for: a second Worker runs on
-    // the same branch. find-before-create returns the open PR — no second PR.
+    // the same branch. find-before-create returns the open PR — no second PR,
+    // and its body/title are re-written to the re-dispatch's values (FOR-58).
     const { http, requests } = fakeHttp({
-      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR }] }),
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7 }] }),
     });
     const code = await runHostPr(
       ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
@@ -352,8 +365,68 @@ describe('host-pr create — find-before-create idempotency', () => {
       { http, env: ENV },
     );
     expect(code).toBe(0);
-    expect(out()).toMatchObject({ outcome: 'reused', url: EXISTING_PR });
-    expect(requests.every((r) => r.method === 'GET')).toBe(true);
+    expect(out()).toMatchObject({ outcome: 'reused', updated: true, url: EXISTING_PR });
+    // Find + update, never a create POST.
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
+    expect(requests.some((r) => r.method === 'POST')).toBe(false);
+  });
+
+  it('the reuse PATCH carries the composed title/body verbatim — the terminator render lands on the open PR (FOR-58)', async () => {
+    // The exact FOR-58 scenario: the terminator composes verdict-render + close
+    // phrase; a Worker already opened the PR, so `create` hits the reused branch.
+    // The composed body must reach the LIVE PR via the update, not be discarded.
+    let patched: { url?: string; body?: string } = {};
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7 }] }),
+      patch: (url, body) => {
+        patched = { url, body };
+        return { status: 200, json: {} };
+      },
+    });
+    const composedBody = 'Summary line.\n\n## Reviewer verdict\napprove\n\nFixes EX-1';
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-1-x', '--title', 'Composed title', '--body', composedBody, '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'reused', updated: true });
+    // The PATCH is addressed to the numbered pull and carries both authored fields.
+    expect(patched.url).toBe('https://api.github.com/repos/example-org/example-repo/pulls/7');
+    expect(JSON.parse(patched.body ?? '{}')).toEqual({ title: 'Composed title', body: composedBody });
+  });
+
+  it('a declined reuse update still re-pins the PR (ok:true, outcome reused) but discloses updated:false — never aborts the wave', async () => {
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7 }] }),
+      patch: () => ({ status: 403, json: null }), // the host refuses the edit
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    // The reuse itself is still a success: the URL is re-pinned, no duplicate.
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'reused', updated: false, url: EXISTING_PR });
+  });
+
+  it('a reused PR whose find body carries no number re-pins the URL without a PATCH (updated:false, never a duplicate)', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR }] }), // no `number`
+      post: () => {
+        throw new Error('createPr must NOT be called when an open PR exists');
+      },
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'reused', updated: false, url: EXISTING_PR });
+    // No addressable number → no PATCH, and never a create POST.
+    expect(requests.map((r) => r.method)).toEqual(['GET']);
   });
 
   it('a missing PR is created — exit 0, outcome created, url returned', async () => {
@@ -518,8 +591,11 @@ describe('host-pr create — usage + credential guards', () => {
 // (Worker terminator: `create.url`; wave-close: `status`/`arm` url+number).
 
 describe('host-pr — aligned url/number field names (FOR-54), per verb', () => {
-  it('create (reused) carries the URL under BOTH `url` and `prUrl`; no number (documented omission)', async () => {
-    const { http } = fakeHttp({ get: () => ({ status: 200, json: [{ html_url: EXISTING_PR }] }) });
+  it('create (reused) carries the URL under BOTH `url` and `prUrl`; no number emitted even though the reuse knows it (documented omission)', async () => {
+    // The find body carries a `number` (needed to address the FOR-58 PATCH), yet
+    // the EMITTED create shape still omits it — the FOR-54 documented omission
+    // ("create carries no PR number") survives the number-carrying reuse.
+    const { http } = fakeHttp({ get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7 }] }) });
     await runHostPr(
       ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
       undefined,

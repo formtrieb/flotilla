@@ -15,6 +15,8 @@ import {
   detectHost,
   verifyAuth,
   findOpenPr,
+  findOpenPrRef,
+  updateOpenPr,
   createPr,
   decideArmAction,
   armPullRequest,
@@ -67,6 +69,8 @@ function fakeProbe(
 
 const isGet = (req: HttpRequest) => req.method === 'GET';
 const isPost = (req: HttpRequest) => req.method === 'POST';
+const isPatch = (req: HttpRequest) => req.method === 'PATCH';
+const isPut = (req: HttpRequest) => req.method === 'PUT';
 const urlHas = (frag: string) => (req: HttpRequest) => req.url.includes(frag);
 
 // ─── detectHost (pure, no seam) ──────────────────────────────────────────────
@@ -282,6 +286,152 @@ describe('findOpenPr', () => {
       { http },
     );
     expect(r).toBeNull();
+  });
+});
+
+// ─── findOpenPrRef (url + host-local number, for the reuse-time update) ───────
+
+describe('findOpenPrRef', () => {
+  it('surfaces the PR number alongside the URL on a GitHub hit', async () => {
+    const { http } = fakeProbe([
+      [isGet, { status: 200, json: [{ html_url: 'https://github.com/acme/w/pull/9', number: 9 }] }],
+    ]);
+    const r = await findOpenPrRef(
+      'github',
+      { auth: 'u:t' },
+      'feat/x',
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', number: 9 });
+  });
+
+  it('surfaces the PR number (Bitbucket `id`) alongside the html href', async () => {
+    const { http } = fakeProbe([
+      [
+        isGet,
+        {
+          status: 200,
+          json: { values: [{ id: 7, links: { html: { href: 'https://bitbucket.org/ws/repo/pull-requests/7' } } }] },
+        },
+      ],
+    ]);
+    const r = await findOpenPrRef(
+      'bitbucket',
+      { auth: 'u:p' },
+      'b',
+      { workspace: 'ws', repo: 'repo' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'https://bitbucket.org/ws/repo/pull-requests/7', number: 7 });
+  });
+
+  it('returns the URL with number ABSENT when the body carries no number (reuse still possible, no PATCH addressable)', async () => {
+    const { http } = fakeProbe([[isGet, { status: 200, json: [{ html_url: 'https://github.com/acme/w/pull/9' }] }]]);
+    const r = await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http });
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9' });
+    expect(r && 'number' in r).toBe(false);
+  });
+
+  it('returns null on a miss / non-200 query, exactly like findOpenPr', async () => {
+    const { http: miss } = fakeProbe([[isGet, { status: 200, json: [] }]]);
+    expect(await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http: miss })).toBeNull();
+    const { http: fail } = fakeProbe([[isGet, { status: 500, json: null }]]);
+    expect(await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http: fail })).toBeNull();
+  });
+});
+
+// ─── updateOpenPr (reuse-time body/title re-render — FOR-58) ──────────────────
+
+describe('updateOpenPr', () => {
+  const fields = { title: 'Composed title', body: 'summary\n\n## Reviewer verdict\n…\n\nFixes EX-1' };
+
+  it('PATCHes the GitHub PR to the passed title/body and reports updated:true through the SAME seam', async () => {
+    const { http, calls } = fakeProbe([[isPatch, { status: 200, json: { html_url: 'https://github.com/acme/w/pull/9' } }]]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      { url: 'https://github.com/acme/w/pull/9', number: 9 },
+      fields,
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', updated: true });
+    // One PATCH, addressed to the numbered pull, carrying title + body verbatim.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe('PATCH');
+    expect(calls[0].url).toBe('https://api.github.com/repos/acme/w/pulls/9');
+    expect(JSON.parse(calls[0].body ?? '{}')).toEqual({ title: fields.title, body: fields.body });
+  });
+
+  it('PUTs the Bitbucket PR (title + description) and reports updated:true', async () => {
+    const { http, calls } = fakeProbe([[isPut, { status: 200, json: {} }]]);
+    const r = await updateOpenPr(
+      'bitbucket',
+      { auth: 'u:p' },
+      { url: 'https://bitbucket.org/ws/repo/pull-requests/7', number: 7 },
+      fields,
+      { workspace: 'ws', repo: 'repo' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'https://bitbucket.org/ws/repo/pull-requests/7', updated: true });
+    expect(calls[0].method).toBe('PUT');
+    expect(calls[0].url).toBe('https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests/7');
+    expect(JSON.parse(calls[0].body ?? '{}')).toEqual({ title: fields.title, description: fields.body });
+  });
+
+  it('a ref with NO number is a no-op — re-pins the URL, updated:false, NO request', async () => {
+    const { http, calls } = fakeProbe([[isPatch, { status: 200, json: {} }]]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      { url: 'https://github.com/acme/w/pull/9' },
+      fields,
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', updated: false });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a host decline (non-200) re-pins the URL and discloses updated:false — never throws, never aborts the reuse', async () => {
+    const { http } = fakeProbe([[isPatch, { status: 403, json: null }]]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      { url: 'https://github.com/acme/w/pull/9', number: 9 },
+      fields,
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', updated: false });
+  });
+
+  it('a probe that rejects is swallowed into updated:false (a value, not a throw)', async () => {
+    const http: HttpProbe = { request: () => Promise.reject(new Error('network down')) };
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      { url: 'https://github.com/acme/w/pull/9', number: 9 },
+      fields,
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', updated: false });
+  });
+
+  it('an unknown host is a no-op — re-pins the URL, updated:false, no network', async () => {
+    const { http, calls } = fakeProbe([]);
+    const r = await updateOpenPr(
+      'unknown',
+      { auth: 'u:p' },
+      { url: 'x', number: 1 },
+      fields,
+      { workspace: '', repo: '' },
+      { http },
+    );
+    expect(r).toEqual({ url: 'x', updated: false });
+    expect(calls).toHaveLength(0);
   });
 });
 

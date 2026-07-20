@@ -204,7 +204,7 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 ## Termination
 1. Commit all work in one commit.
 2. \`git push origin wave/${issue.id}-${issue.slug}\` (never \`-u\`, never to default).
-3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused**, never duplicated. Compose a PR body whose last line is the store-kind close phrase, then run:
+3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused, never duplicated — and its title/body are re-written to the \`--title\`/\`--body\` you pass** (\`updated: true\` in the JSON discloses it), so the body you compose reliably lands on the live PR (last-writer-wins). Compose a PR body whose last line is the store-kind close phrase, then run:
    \`\`\`bash
    ${WAVE_CLI} host-pr create \\
      --branch wave/${issue.id}-${issue.slug} \\

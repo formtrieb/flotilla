@@ -15,12 +15,15 @@
  *   detect-host  → routes by host. `github` is the one shipped implementation;
  *                  `bitbucket` / `unknown` fail LOUD and typed for EVERY verb
  *                  (the Bitbucket pilot implements the seam and inherits them).
- *   create       → `findOpenPr` then `createPr` (host-pr.ts owns the
+ *   create       → `findOpenPrRef` then `createPr` (host-pr.ts owns the
  *                  find-before-create idempotency): an existing open PR for the
- *                  branch is REUSED, a missing one is created. Idempotent — a
- *                  cap=1 re-dispatch onto the same branch never opens a second
- *                  PR. This is the ADR-0019 cross-host Basic-auth seam
- *                  (`HttpProbe` + `Creds`), NOT the ADR-0023 `LandingHost` seam.
+ *                  branch is REUSED — and its title/body are re-written to the
+ *                  passed values via `updateOpenPr` (PATCH), so the terminator's
+ *                  composed render lands on a Worker-opened PR (`updated:true`
+ *                  discloses it) — a missing one is created. Idempotent — a cap=1
+ *                  re-dispatch onto the same branch never opens a second PR. This
+ *                  is the ADR-0019 cross-host Basic-auth seam (`HttpProbe` +
+ *                  `Creds`), NOT the ADR-0023 `LandingHost` seam.
  *   arm          → `armPullRequest`  (host-pr.ts owns the arm intent)
  *   merge        → `mergePullRequestNow`
  *   status       → `LandingHost.getPrStatus`
@@ -60,7 +63,8 @@ import {
   detectHost,
   armPullRequest,
   mergePullRequestNow,
-  findOpenPr,
+  findOpenPrRef,
+  updateOpenPr,
   createPr,
   preflightHost,
   alignedPrRef,
@@ -109,7 +113,8 @@ function usage(message: string): number {
       `         preflight: (no --branch — a repo-level probe)`,
       '',
       '  create    Open the PR for --branch idempotently (find-before-create): an existing OPEN PR on the',
-      '            branch is reused (no duplicate), a missing one is created. Requires --title and --body.',
+      '            branch is reused (no duplicate) and its title/body updated to --title/--body, a missing',
+      '            one is created. Requires --title and --body.',
       '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
       '            already clean → direct merge. Idempotent.',
       '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
@@ -238,9 +243,11 @@ export async function runHostPr(
 /**
  * The `create` verb — find-before-create, idempotently, over host-pr's
  * cross-host Basic-auth seam. An OPEN PR already on the branch is reused (exit 0,
- * `outcome: "reused"`); a missing one is created (exit 0, `outcome: "created"`);
- * a create failure returns the pre-fill fallback signal (exit 1,
- * `outcome: "create-failed"` with `fallbackPrefillUrl`).
+ * `outcome: "reused"`) AND its title/body are re-written to the passed values
+ * (`updated:true` when the PATCH landed) — the reuse re-pins the same PR and now
+ * also carries the terminator's composed render onto it; a missing one is
+ * created (exit 0, `outcome: "created"`); a create failure returns the pre-fill
+ * fallback signal (exit 1, `outcome: "create-failed"` with `fallbackPrefillUrl`).
  *
  * The GitHub token comes from the env (never printed); its absence fails loud
  * (exit 1), mirroring `createGitHubApiFromEnv`. The Basic-auth credential is
@@ -270,17 +277,26 @@ async function runCreate(
   try {
     // find-before-create: a re-run (or a cap=1 re-dispatch onto the same branch)
     // re-pins the already-open PR instead of opening a duplicate.
-    const existing = await findOpenPr(info.host, creds, branch, info, opts);
+    const existing = await findOpenPrRef(info.host, creds, branch, info, opts);
     if (existing !== null) {
+      // Update-on-reuse: re-write the open PR's title/body to the passed values
+      // through the same seam (PATCH), so the terminator's composed render (the
+      // authoritative final body) lands on a Worker-opened PR instead of being
+      // silently discarded. Best-effort — a declined update still re-pins the
+      // URL (`updated:false`), never a duplicate, never a wave-abort.
+      const update = await updateOpenPr(info.host, creds, existing, { title, body }, info, opts);
       printJson({
         ok: true,
         verb: 'create',
         host: info.host,
         branch,
         outcome: 'reused',
+        // Disclose whether the reuse re-wrote the live PR body/title (FOR-58).
+        updated: update.updated,
         // Aligned url/number field names across every verb (FOR-54): `url` +
-        // `prUrl`. `create` carries no PR number (documented omission).
-        ...alignedPrRef({ url: existing }),
+        // `prUrl`. `create` carries no PR number (documented omission) — even on
+        // reuse, where the number is known internally but deliberately not emitted.
+        ...alignedPrRef({ url: update.url }),
       });
       return 0;
     }
