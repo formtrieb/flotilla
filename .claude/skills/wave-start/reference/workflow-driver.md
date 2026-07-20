@@ -196,6 +196,7 @@ ${issue.issueSpec}
    \`\`\`
 5. SECRET-SAFE: never echo any environment variable's VALUE — not even with fallback syntax like \${VAR:-no}. Check availability value-free only: \`[ -n "$GITHUB_TOKEN" ] && echo set\`. Tool output must never contain a secret.
 6. MENTION DISCIPLINE: the PR title and body must not contain ANY bare tracker id except the single close phrase (\`${issue.closePhrase}\`, Termination step 3 below) — reference ADR numbers or doc slugs instead.
+7. WIRING DISCLOSURE (wave-shared Convention 9): if your slice introduces a new verb, subcommand, or exported interface, name the consuming call-site(s) that now invoke it in your report — or explicitly disclose under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) that the wiring lies outside your declared Files globs, so the Coordinator can grant a scope extension or plan the wiring before the review round.
 
 ## Verification gates (run the consumer's verify profile — from wave.config.json verify)
 Run the commands the VerifyGate selects for your changed files; report exact counts.
