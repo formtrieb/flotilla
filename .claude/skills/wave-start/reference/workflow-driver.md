@@ -176,6 +176,7 @@ ${issue.issueSpec}
    \`\`\`bash
    git diff --cached --name-only | xargs -I{} grep -l '^<<<<<<<\\|^>>>>>>>\\|^=======$' {} 2>/dev/null | head
    \`\`\`
+5. SECRET-SAFE: never echo any environment variable's VALUE — not even with fallback syntax like \${VAR:-no}. Check availability value-free only: \`[ -n "$GITHUB_TOKEN" ] && echo set\`. Tool output must never contain a secret.
 
 ## Verification gates (run the consumer's verify profile — from wave.config.json verify)
 Run the commands the VerifyGate selects for your changed files; report exact counts.
