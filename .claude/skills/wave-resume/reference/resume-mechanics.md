@@ -16,8 +16,9 @@ In-repo, `{{wave-cli}}` is `npx tsx tools/wave/src/cli.ts <verb>` — used here 
 |---|---|
 | `{{wave-cli}} spine read <spine-path>` | the WAL authority — read FIRST (raw spine markdown on stdout) |
 | `npx tsx tools/wave/src/resume-cli.ts --spine <p> --reports <d> --verdicts <d> [--repo-root <d>] [--marker <m>] [--force]` | `{ rows, fatals, cleanup }` JSON (separate entrypoint) |
-| `{{wave-cli}} issue-store read-closing <id>` | `ClosingState` — the 4th, skill-only done-reconcile input |
-| `{{wave-cli}} issue-store close <id> <prUrl>` | the done-reconcile: land a `merged` row `done` (idempotent no-op-or-reconcile; FOR-13 fallback on a no-integration `states.doneState` store). The existing `IssueStore.close()` verb — never re-implemented. |
+| `{{wave-cli}} issue-store read-closing <id>` | `ClosingState` — the 4th, skill-only done-reconcile input (tracker-attachment tier of the evidence hierarchy) |
+| `{{wave-cli}} host-pr status --branch <b>` | host-evidence tier (ADR-0023): `{ state: "open"\|"merged"\|"closed-unmerged"\|"none", url? }` — consulted when `read-closing` cannot see a merge on a no-integration workspace. No `--config` (talks to the code host, not the tracker). |
+| `{{wave-cli}} issue-store close <id> <prUrl>` | the done-reconcile: land a `merged` row `done` (idempotent no-op-or-reconcile; FOR-13 fallback on a no-integration `states.doneState` store, fired the moment the host supplies the merge evidence). The existing `IssueStore.close()` verb — never re-implemented. |
 | `{{wave-cli}} issue-store transition <id> <queued\|in-flight\|in-review>` | idempotent coarse re-projection |
 | `{{wave-cli}} issue-store flag <id> --kind <recoverable-stop\|terminal-failure> --question "<q>" --option "<o>" [--option "<o>"]` | flag a fatal / closed-unmerged → needs-attention |
 
@@ -81,7 +82,7 @@ In-repo, `{{wave-cli}}` is `npx tsx tools/wave/src/cli.ts <verb>` — used here 
 
 `read-closing` prints `{ "state": "open" | "merged" | "closed-unmerged", "prUrl"?: string }`:
 
-- `open` — PR still open / no PR yet → keep the `in-review` rung; no action. Exception: a no-integration `states.doneState` workspace never reports `merged` — once the merge is confirmed out-of-band, land it with `close` (FOR-13 fallback).
+- `open` — PR still open / no PR yet → keep the `in-review` rung; no action. Exception: a no-integration `states.doneState` workspace never reports `merged` — consult `host-pr status --branch <b>` (the evidence hierarchy, ADR-0023); on its `state: merged`, land it with `close` (FOR-13 fallback). No out-of-band human-confirmation step.
 - `merged` — the PR landed during the outage → **land it `done` via `issue-store close <id> <prUrl>`** (the done-reconcile). **Do not `transition`** (no `done` rung); `close` is idempotent and records the closing facts — on a native-integration tracker `read().status` also derives `done` from the merged PR's store-kind close phrase (`wave-shared` Convention 4). Carries `prUrl`.
 - `closed-unmerged` — PR closed without merging → **flag `recoverable-stop`** (not auto-`available`).
 
@@ -109,10 +110,17 @@ npx tsx tools/wave/src/resume-cli.ts \
 #   npx tsx tools/wave/src/resume-cli.ts --spine "$SPINE" --reports "$REPORTS" --verdicts "$VERDICTS" \
 #     --repo-root "$REPO" --force > result.json
 
-# 5. Done-reconcile each in-review row
-{{wave-cli}} issue-store read-closing "$ID"     # merged → close (below); closed-unmerged → flag; open → keep
+# 5. Done-reconcile each in-review row — evidence hierarchy (ADR-0023):
+#    tracker attachment (read-closing) > host PR state (host-pr status) > nothing
+{{wave-cli}} issue-store read-closing "$ID"     # merged → close (below); closed-unmerged → flag; open → host fallback
 # merged → land it done via the existing close verb (NOT `transition … done`):
 {{wave-cli}} issue-store close "$ID" "$PR_URL"   # $PR_URL is read-closing's prUrl; FOR-13 fallback when no integration
+# open on a no-integration states.doneState workspace → read-closing can't see the
+# merge; consult the host directly (no out-of-band human confirmation):
+{{wave-cli}} host-pr status --branch "$BRANCH"   # { state: open|merged|closed-unmerged|none, url? }
+#   host state=merged → the SAME close verb lands it (FOR-13 fallback):
+{{wave-cli}} issue-store close "$ID" "$PR_URL"
+#   host state=open|none → genuinely unmerged → leave in-review for the next touch.
 
 # 6. Idempotent coarse re-project for every non-fatal, non-done row
 # $COARSE is the `coarse` field from the ResumeResult row: a ClaimRung
