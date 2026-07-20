@@ -88,6 +88,12 @@ The `outcome` field is the routing discriminator: `done` / `done-with-concerns` 
 
 `prUrl` is optional *in shape* only so an honest `blocked` report isn't rejected; it is not optional on the path where the Worker finished. If a Worker's return is rejected at the boundary for a missing `prUrl`, the fix is the Worker reporting the URL it already has — never relaxing the schema.
 
+#### This literal's top-level `anyOf` is NOT boundary-portable — do not paste it into `agent({ schema })`
+
+The `WORKER_REPORT_SCHEMA` literal above is the **canonical** copy — deep-equal-pinned to the engine const — but its top-level `anyOf` is not something the agent-tool boundary accepts. The agent tool's `input_schema` validation **rejects a top-level `anyOf`/`oneOf`/`allOf` outright**: `input_schema does not support oneOf, allOf, or anyOf at the top level`. Pasting this literal verbatim into `agent({ schema })` fails every Worker dispatch instantly, before a single agent runs (live: **W5-F1**, `docs/retros/2026-07-19-hardening-w5.md` — the first Workflow dispatch of that wave failed this way, 0 tokens, all 4 Workers, 4.8s).
+
+**The form to paste into `agent({ schema })` is the anyOf-free driver copy in `.claude/skills/wave-start/reference/workflow-driver.md`** (also named `WORKER_REPORT_SCHEMA` there) — identical to the literal above minus the `anyOf` block. On that driver copy, the `prUrl`-on-`done`/`done-with-concerns` invariant is **brief-enforced, not schema-enforced**: `workerBrief()`'s Termination + Report sections state the requirement in prose, and there is no structural rejection at the `agent({ schema })` boundary for a `done` report that omits `prUrl` on that path. `tools/wave/src/skill-schema-drift.spec.ts` separately asserts the driver copy stays free of any top-level combinator, so the W5-F1 regression cannot silently return.
+
 ### Reviewer-Verdict schema
 
 ```js
@@ -288,6 +294,7 @@ An agent's tool output is not ephemeral — it is the session transcript on disk
 ## Common Mistakes
 
 - **Hand-editing an inlined schema literal.** The TS const is the source of truth; edit it, run the drift-guard, then sync the literal. A lone literal edit fails `skill-schema-drift.spec.ts`.
+- **Pasting this file's canonical `WORKER_REPORT_SCHEMA` (with `anyOf`) straight into `agent({ schema })`.** The agent tool rejects a top-level `anyOf`/`oneOf`/`allOf` at the boundary (live: W5-F1). Paste the anyOf-free driver copy in `workflow-driver.md` instead — on that copy the `prUrl`-on-`done` invariant is brief-enforced, not schema-enforced.
 - **Re-adding `briefProfile`.** It was removed engine-side (uniform Reviewer, ADR-0016). With `additionalProperties: false`, a verdict carrying it would be *rejected* at the agent boundary.
 - **Routing off prose.** Never read a verdict word, a test count, or an outcome out of the subagent's free text. Use the typed field through `route-verdict` / `route-outcome`.
 - **Dropping `riskClass` from a verdict.** It is required and bifurcates the route (G3). A verdict missing it is rejected before routing — by design.
