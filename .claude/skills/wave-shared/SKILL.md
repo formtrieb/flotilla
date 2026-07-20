@@ -193,6 +193,18 @@ Read `store.kind` off the consumer's `wave.config.json` (the same file `{{wave-c
 
 `linear`'s Linear-GitHub-integration precondition (installed + connected to the code repo) must already hold for this to work at all — `wave-setup`'s Linear operational-preconditions checklist confirms it before the store is ever configured.
 
+**Opening the PR goes through the engine — `{{wave-cli}} host-pr create`, never `gh pr create`.** The PR-open is the ADR-0023 last mile: every host write goes through the engine host seam, and `create` is that verb (`gh`'s creds are sandbox-denied and its TLS fought the proxy MITM cert in every live run — creation only ever worked sandbox-off). It is **find-before-create idempotent**: an OPEN PR already on the branch is reused (`outcome: reused`), a missing one is created (`outcome: created`) — so a cap=1 re-dispatch onto the same branch never opens a duplicate. The `--body` you pass carries the store-kind close phrase above, verbatim, and per the mention-footgun below it is the **only** tracker id the title or body may contain:
+
+```bash
+{{wave-cli}} host-pr create --branch <branch> --title "<title, no bare tracker id>" \
+  --body "<summary>
+
+<the store-kind close phrase, on its own line — e.g. Fixes EX-16>"
+# exit 0 → stdout JSON carries .url (outcome: created | reused) — pin that as the row's PR URL.
+# create reads GITHUB_TOKEN from the environment (never printed); github-only in M1,
+# bitbucket/unknown fail loud + typed like the landing verbs.
+```
+
 ### The flip side — a bare mention is also an action
 
 Convention 4 governs the phrase that closes an issue **on purpose**. Nothing governed the flip side until now: on a tracker with a native GitHub integration, the integration does not distinguish "the phrase that means close this" from "any other sighting of this issue's id" — it links **every** bare issue id it finds in a merged PR's title or body, and a linked issue is an issue the integration can act on. **An issue id belongs in a PR title or body only when closing that issue at merge is intended.** Do not name a bare tracker id to reference, credit, or contextualize other work — that reference is itself a close-shaped action on an integrated tracker, whether or not a Convention-4 close phrase is present anywhere.

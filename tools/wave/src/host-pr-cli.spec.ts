@@ -21,6 +21,9 @@ import {
   type MergeMethod,
   type MergeResult,
   type PrLandingStatus,
+  type HttpProbe,
+  type HttpRequest,
+  type HttpResponse,
 } from './host-pr';
 
 const GITHUB_REMOTE = 'git@github.com:example-org/example-repo.git';
@@ -238,8 +241,9 @@ describe('host-pr usage errors (exit 2)', () => {
     expect(stderr).toMatch(/usage/);
   });
 
-  it('an unknown verb → 2 and names the three real verbs', async () => {
+  it('an unknown verb → 2 and names the real verbs (create, arm, merge, status)', async () => {
     expect(await runHostPr(['bogus', '--branch', 'b'])).toBe(2);
+    expect(stderr).toMatch(/create/);
     expect(stderr).toMatch(/arm/);
     expect(stderr).toMatch(/merge/);
     expect(stderr).toMatch(/status/);
@@ -259,5 +263,230 @@ describe('host-pr usage errors (exit 2)', () => {
     const { host, calls } = fakeHost({ status: openPr('clean') });
     await runHostPr(['arm', '--remote', GITHUB_REMOTE], host);
     expect(calls).toEqual([]);
+  });
+});
+
+// ─── host-pr create (FOR-28 / ADR-0019 find-before-create) ──────────────────
+//
+// `create` is on the OTHER seam from arm/merge/status: the cross-host Basic-auth
+// `HttpProbe` (findOpenPr/createPr), not the LandingHost. Every path is driven by
+// an injected HttpProbe + a fixture env — no git process, no real network, and
+// no LandingHost. What is under test: find-before-create idempotency (reuse vs
+// create), the close phrase surviving into the PR body, detect-host routing
+// (github only; others fail loud+typed), and the create-specific usage guards.
+
+const ENV = { GITHUB_TOKEN: 'test-token' } as NodeJS.ProcessEnv;
+
+function fakeHttp(handlers: {
+  get?: (url: string) => HttpResponse;
+  post?: (url: string, body?: string) => HttpResponse;
+}): { http: HttpProbe; requests: HttpRequest[] } {
+  const requests: HttpRequest[] = [];
+  const http: HttpProbe = {
+    async request(req: HttpRequest): Promise<HttpResponse> {
+      requests.push(req);
+      if (req.method === 'GET') {
+        return handlers.get?.(req.url) ?? { status: 200, json: [] };
+      }
+      return (
+        handlers.post?.(req.url, req.body) ?? {
+          status: 201,
+          json: { html_url: 'https://github.com/example-org/example-repo/pull/1' },
+        }
+      );
+    },
+  };
+  return { http, requests };
+}
+
+const EXISTING_PR = 'https://github.com/example-org/example-repo/pull/7';
+const NEW_PR = 'https://github.com/example-org/example-repo/pull/8';
+
+describe('host-pr create — find-before-create idempotency', () => {
+  it('an OPEN PR already on the branch is reused — no create POST, exit 0', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR }] }),
+      post: () => {
+        throw new Error('createPr must NOT be called when an open PR exists');
+      },
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'B\n\nFixes EX-1', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, verb: 'create', host: 'github', outcome: 'reused', url: EXISTING_PR });
+    // Idempotent: exactly one request (the find query), zero writes.
+    expect(requests.map((r) => r.method)).toEqual(['GET']);
+  });
+
+  it('a cap=1 re-dispatch onto an existing branch reuses the already-open PR (never a duplicate)', async () => {
+    // The exact operational scenario FOR-28 exists for: a second Worker runs on
+    // the same branch. find-before-create returns the open PR — no second PR.
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR }] }),
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'reused', url: EXISTING_PR });
+    expect(requests.every((r) => r.method === 'GET')).toBe(true);
+  });
+
+  it('a missing PR is created — exit 0, outcome created, url returned', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [] }), // no open PR
+      post: () => ({ status: 201, json: { html_url: NEW_PR } }),
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-2-y', '--title', 'Add thing', '--body', 'body\n\nCloses #42', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, verb: 'create', outcome: 'created', url: NEW_PR });
+    // find first, then create.
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'POST']);
+  });
+
+  it('the PR-create body carries the title + branch + base + the store-kind close phrase verbatim', async () => {
+    let posted: string | undefined;
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: (_url, body) => {
+        posted = body;
+        return { status: 201, json: { html_url: NEW_PR } };
+      },
+    });
+    await runHostPr(
+      ['create', '--branch', 'wave/EX-3-z', '--title', 'Wire the verb', '--body', 'Summary line.\n\nFixes EX-3', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(posted).toBeDefined();
+    const payload = JSON.parse(posted as string);
+    expect(payload).toMatchObject({ title: 'Wire the verb', head: 'wave/EX-3-z', base: 'main' });
+    // Convention 4: the close phrase lands in the PR body exactly as passed.
+    expect(payload.body).toContain('Fixes EX-3');
+    expect(payload.body).toBe('Summary line.\n\nFixes EX-3');
+  });
+
+  it('--base overrides the default destination branch', async () => {
+    let posted: string | undefined;
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: (_url, body) => {
+        posted = body;
+        return { status: 201, json: { html_url: NEW_PR } };
+      },
+    });
+    await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-9', '--base', 'develop', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(JSON.parse(posted as string)).toMatchObject({ base: 'develop' });
+  });
+
+  it('a PR-create failure (401) → exit 1, outcome create-failed, error + fallbackPrefillUrl', async () => {
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: () => ({ status: 401, json: {} }),
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-4-w', '--title', 'T', '--body', 'Fixes EX-4', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(1);
+    const o = out();
+    expect(o).toMatchObject({ ok: false, verb: 'create', outcome: 'create-failed' });
+    expect(String(o.error)).toMatch(/401|unauthor/i);
+    expect(String(o.fallbackPrefillUrl)).toMatch(/github\.com\/example-org\/example-repo\/pull\/new/);
+  });
+});
+
+describe('host-pr create — routing (detect-host, github only)', () => {
+  it('bitbucket → exit 1, adapter-not-implemented, and NO http call', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => {
+        throw new Error('routing must reject a non-github host before any network');
+      },
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'x', '--remote', BITBUCKET_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'bitbucket' });
+    expect(requests).toEqual([]);
+  });
+
+  it('an unknown host (GitLab) → exit 1, adapter-not-implemented', async () => {
+    const { http } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'x', '--remote', UNKNOWN_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
+  });
+});
+
+describe('host-pr create — usage + credential guards', () => {
+  it('a missing --title → exit 2, decided BEFORE any host routing or network', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--body', 'x', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--title/);
+    expect(requests).toEqual([]);
+  });
+
+  it('a missing --body → exit 2 (the body carries the close phrase)', async () => {
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--remote', GITHUB_REMOTE],
+      undefined,
+      { env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--body/);
+  });
+
+  it('an empty --body → exit 2', async () => {
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', '', '--remote', GITHUB_REMOTE],
+      undefined,
+      { env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--body/);
+  });
+
+  it('a missing GITHUB_TOKEN → exit 1, loud, never printing a token', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-5', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: {} as NodeJS.ProcessEnv },
+    );
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, verb: 'create' });
+    expect(String(out().error)).toMatch(/GITHUB_TOKEN/);
+    // No network was attempted without a credential.
+    expect(requests).toEqual([]);
   });
 });

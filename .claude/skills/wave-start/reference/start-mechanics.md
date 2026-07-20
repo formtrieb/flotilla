@@ -123,7 +123,14 @@ WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
 #   → { "event": "...", "outcome": { "type": "...", ... } }
 
 # 7c. Apply (WAL — spine first, then rung)
-# transition → approved:  open PR host-aware, then
+# transition → approved:  open the PR through the engine (NEVER gh pr create).
+#   find-before-create is idempotent: the Worker already opened it (report.prUrl);
+#   this re-pins the same open PR — no duplicate. --body carries the store-kind
+#   close phrase (Convention 4), the ONLY tracker id the title/body may name.
+#   github-only in M1 (bitbucket/unknown fail loud + typed); reads GITHUB_TOKEN.
+PR_URL=$({{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
+  --title "$PR_TITLE" --body "$PR_BODY_WITH_CLOSE_PHRASE" | \
+  jq -r '.url')   # or reuse report.prUrl — both resolve to the one open PR
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" pr-created
 {{wave-cli}} spine set-row-pr    "$SPINE" "$ID" "$PR_URL"
 {{wave-cli}} issue-store transition "$ID" in-review
