@@ -82,19 +82,60 @@
  *         inside `.vscode/`/`.claude/`, or at the top level alongside junk,
  *         still means `dirty: true` → skipped upstream in planCleanup, the
  *         remover is never reached at all
+ *   12. listAgentWorktrees — toplevel-guarded orphan classification (FOR-59)
+ *      a. an orphan dir's dirty state is classified from its OWN content,
+ *         never leaked from a parent repo's unrelated untracked file
+ *      b. an orphan dir that is exclusively allowlisted junk → orphanAllJunk: true
+ *      c. an orphan dir with any real file (top-level, or nested in a
+ *         JUNK_DIR_NAMES directory) → orphanAllJunk: false
+ *      d. an empty orphan dir is vacuously all-junk
+ *      e. regression: an ordinary registered worktree (dirty or clean) is
+ *         still classified correctly via its own `git status` — unaffected
+ *         by the guard
+ *   13. planCleanup — orphan-dir routing + skip reasons (FOR-59)
+ *      a. orphan + orphanAllJunk: true → selected
+ *      b. orphan + orphanAllJunk: false → skipped, reason: 'orphan-with-real-files'
+ *      c. locked → skipped, reason: 'locked' (never reaches the remover)
+ *      d. dirty → skipped, reason: 'dirty'
+ *      e. every skipped[] entry in a mixed batch carries a reason
+ *   14. executeCleanup — local branch hygiene (FOR-59 scope extension)
+ *      a. rule (a): the wf_* harness throwaway branch is always force-deleted
+ *      b. rule (b): the worktree's own wave/* branch is force-deleted only
+ *         with merge evidence (upstream gone, or tip contained in default)
+ *      c. rule (b) refusal: no evidence → branch left alone
+ *      d. rule (c): a branch checked out elsewhere is never deleted, even
+ *         with merge evidence
+ *      e. an agent-* worktree never attempts the throwaway-branch rule; a
+ *         non-`wave/`-prefixed branch never triggers rule (b)
+ *      f. hygiene never runs for a failed removal, or when skipBranchHygiene
+ *         is set, or when nothing was selected
+ *      g. an orphan-dir purge also triggers hygiene, not just an ordinary removal
+ *   15. defaultBranchHygieneOps — real-git command shape (FOR-59)
+ *      a. listCheckedOutBranches parses porcelain `branch ` lines
+ *      b. isUpstreamGone / isContainedInDefaultBranch: correct classification
+ *         and fail-safe (false, never throws) on any git error
+ *      c. deleteBranch: correct invocation + idempotent swallow on failure
+ *   16. defaultWorktreeRemover — orphan-dir purge end-to-end (FOR-59)
+ *      a. an orphan dir selected by planCleanup removes cleanly through the
+ *         SAME two-phase remover pipeline as an ordinary worktree
  *
- * Section 10 is the one place in this file that exercises the REAL
- * `defaultWorktreeRemover` (every other section uses the injectable
- * `WorktreeRemover` seam). It mocks `node:child_process` (nothing else in this
- * file touches real child_process) and partially mocks `node:fs` — only
- * `rmSync` is overridden, and its default behaviour delegates to the real
- * implementation, so a test only diverges from real fs behaviour where it
- * explicitly queues a one-shot `mockImplementationOnce` throw.
+ * Section 10 is the one place THROUGH Section 11 that exercises the REAL
+ * `defaultWorktreeRemover` (every other section through 11 uses the
+ * injectable `WorktreeRemover` seam). It mocks `node:child_process` and
+ * partially mocks `node:fs` — only `rmSync` is overridden, and its default
+ * behaviour delegates to the real implementation, so a test only diverges
+ * from real fs behaviour where it explicitly queues a one-shot
+ * `mockImplementationOnce` throw. Section 12 (FOR-59) is the other place
+ * that touches real child_process: it temporarily reconfigures the SAME
+ * module-level `execFileSync` mock to delegate to the actual implementation
+ * (see `asExecFileSyncMock`), restoring the `() => ''` default afterward —
+ * needed because the toplevel-guard fix can only be proven against git's
+ * own toplevel-resolution fallback, not a hand-built porcelain fixture.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -105,15 +146,21 @@ import {
   cleanupCrashedRowForRedispatch,
   cleanupRedispatchRows,
   defaultWorktreeRemover,
+  listAgentWorktrees,
+  defaultBranchHygieneOps,
   type WorktreeEntry,
   type WorktreeRemover,
   type RedispatchCleanupOps,
+  type BranchHygieneOps,
 } from './worktree-cleanup';
 
 // node:child_process is mocked module-wide so Section 10's real
-// `defaultWorktreeRemover` calls don't shell out to a real `git`. No test
-// outside Section 10 touches real child_process (every other section uses an
-// injected seam), so this is a no-op for the rest of the file.
+// `defaultWorktreeRemover` calls don't shell out to a real `git`. Sections 12
+// and 15 (FOR-59: the toplevel-guard + orphan classification) are the
+// exception — they temporarily reconfigure this SAME mock's implementation to
+// delegate to the real `execFileSync` (see `asExecFileSyncMock` below,
+// mirroring `asRmSyncMock`'s `node:fs` technique), then restore the `() => ''`
+// default in `afterEach`. Every other section leaves the default untouched.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: vi.fn(() => '') };
@@ -138,6 +185,23 @@ vi.mock('node:fs', async (importOriginal) => {
 /** Type-erasing cast to reach vitest's mock methods on the mocked `rmSync`. */
 function asRmSyncMock(fn: typeof rmSync): { mockImplementationOnce: (impl: () => void) => void } {
   return fn as unknown as { mockImplementationOnce: (impl: () => void) => void };
+}
+
+/**
+ * Type-erasing cast to reach vitest's mock methods on the mocked
+ * `execFileSync` (FOR-59) — mirrors {@link asRmSyncMock}. `execFileSync`'s
+ * real type is a complex overload set; every caller here only needs the
+ * mock-control surface, so this narrows to exactly that rather than fighting
+ * the overloads with `unknown[]` args.
+ */
+function asExecFileSyncMock(fn: typeof execFileSync): {
+  mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+  mockReturnValue: (value: string) => void;
+} {
+  return fn as unknown as {
+    mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+    mockReturnValue: (value: string) => void;
+  };
 }
 
 /** Build a Node errno exception shaped like a real `rmSync` ENOTEMPTY failure. */
@@ -1235,7 +1299,7 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
     const result = executeCleanup(plan, { remover });
     expect(execFileSync).not.toHaveBeenCalled();
     expect(result.removed).toHaveLength(0);
-    expect(result.skipped).toEqual([dirty]);
+    expect(result.skipped).toEqual([{ ...dirty, reason: 'dirty' }]);
   });
 
   // ─── FOR-56: editor/harness junk classes (W12-F2) ─────────────────────────
@@ -1331,13 +1395,13 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
       };
       const plan = planCleanup([dirty]);
       expect(plan.selected).toHaveLength(0);
-      expect(plan.skipped).toEqual([dirty]);
+      expect(plan.skipped).toEqual([{ ...dirty, reason: 'dirty' }]);
 
       const remover = defaultWorktreeRemover('/repo');
       const result = executeCleanup(plan, { remover });
       expect(execFileSync).not.toHaveBeenCalled();
       expect(result.removed).toHaveLength(0);
-      expect(result.skipped).toEqual([dirty]);
+      expect(result.skipped).toEqual([{ ...dirty, reason: 'dirty' }]);
     });
 
     it('the dirty-worktree guarantee is unchanged: a real file at the worktree TOP LEVEL, with allowlisted junk below it, still means dirty:true → skipped, never removed', () => {
@@ -1352,13 +1416,13 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
       };
       const plan = planCleanup([dirty]);
       expect(plan.selected).toHaveLength(0);
-      expect(plan.skipped).toEqual([dirty]);
+      expect(plan.skipped).toEqual([{ ...dirty, reason: 'dirty' }]);
 
       const remover = defaultWorktreeRemover('/repo');
       const result = executeCleanup(plan, { remover });
       expect(execFileSync).not.toHaveBeenCalled();
       expect(result.removed).toHaveLength(0);
-      expect(result.skipped).toEqual([dirty]);
+      expect(result.skipped).toEqual([{ ...dirty, reason: 'dirty' }]);
     });
   });
 
@@ -1433,5 +1497,619 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
       // (proving describeError ran), not a pass-through of the raw error.
       expect(message).toMatch(/allowlisted-junk/);
     });
+  });
+});
+
+// ─── 12. listAgentWorktrees — toplevel-guarded orphan classification (FOR-59) ─
+//
+// W13 close finding: `git status --porcelain` invoked with `cwd` set to a
+// deregistered/prunable worktree directory does not error — since
+// `.claude/worktrees/<id>` sits INSIDE the parent checkout, git silently
+// walks UP and resolves against the nearest ANCESTOR repository instead,
+// reporting THAT repo's status. These tests reproduce the exact live shape
+// with REAL git repos + REAL worktrees (a hand-built porcelain fixture cannot
+// exercise git's own toplevel-resolution fallback), so — uniquely in this
+// file — the module-level `execFileSync` mock is temporarily reconfigured to
+// delegate to the ACTUAL implementation for the duration of each test here,
+// then restored to the file's `() => ''` default in `afterEach`.
+describe('listAgentWorktrees — toplevel-guarded orphan classification (FOR-59)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  /** Real `git`, bypassing the mock — used only for fixture SETUP in this section. */
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  /** Build a real repo with a real worktree nested under `.claude/worktrees/<name>`. */
+  function makeMainWithWorktree(name: string): { mainRoot: string; worktreePath: string } {
+    // Resolve symlinks (macOS's `/tmp` → `/private/tmp`) up front — git
+    // itself always reports fully-resolved paths (`git worktree list`,
+    // `git rev-parse --show-toplevel`), so building every downstream path
+    // off an already-resolved root keeps string-equality assertions honest.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-for59-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    const relPath = join('.claude', 'worktrees', name);
+    realGit(['worktree', 'add', '-q', relPath, '-b', `${name}/branch`], mainRoot);
+    return { mainRoot, worktreePath: join(mainRoot, relPath) };
+  }
+
+  /**
+   * Build a real repo + worktree, then DEREGISTER the worktree the way the
+   * live W13 incident did: remove ONLY the worktree's own `.git` pointer
+   * file, leaving its physical directory (and whatever junk/real content is
+   * written into it afterward) on disk — the exact orphan shape.
+   */
+  function makeOrphanedWorktree(name: string): { mainRoot: string; orphanPath: string } {
+    const { mainRoot, worktreePath } = makeMainWithWorktree(name);
+    rmSync(join(worktreePath, '.git'), { force: true });
+    return { mainRoot, orphanPath: worktreePath };
+  }
+
+  it('AC1: an orphan dir is classified from its OWN content, never the parent repo\'s — dirty stays false despite an unrelated untracked file at the parent root', () => {
+    const { mainRoot, orphanPath } = makeOrphanedWorktree('wf_orphan-dirty-leak');
+    writeFileSync(join(orphanPath, '.DS_Store'), 'finder-debris', 'utf-8');
+    // The exact leak vector the W13 incident hit: an untracked file sitting
+    // at the PARENT repo's root, which a toplevel-unguarded `git status`
+    // would silently attribute to the orphan dir instead.
+    writeFileSync(join(mainRoot, 'unrelated-untracked.txt'), 'noise', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toBe(orphanPath);
+    expect(result[0].dirty).toBe(false);
+    expect(result[0].orphan).toBe(true);
+  });
+
+  it('AC2a: an orphan dir whose content is EXCLUSIVELY allowlisted junk is classified orphanAllJunk: true', () => {
+    const { mainRoot, orphanPath } = makeOrphanedWorktree('wf_orphan-all-junk');
+    writeFileSync(join(orphanPath, '.DS_Store'), 'finder-debris', 'utf-8');
+    mkdirSync(join(orphanPath, '.vscode'), { recursive: true });
+    writeFileSync(join(orphanPath, '.vscode', 'settings.json'), '{}', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].orphan).toBe(true);
+    expect(result[0].orphanAllJunk).toBe(true);
+  });
+
+  it('AC2b: an orphan dir containing ANY real file is classified orphanAllJunk: false', () => {
+    const { mainRoot, orphanPath } = makeOrphanedWorktree('wf_orphan-real-file');
+    writeFileSync(join(orphanPath, '.DS_Store'), 'finder-debris', 'utf-8');
+    writeFileSync(join(orphanPath, 'notes.txt'), 'do not lose this', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].orphan).toBe(true);
+    expect(result[0].orphanAllJunk).toBe(false);
+  });
+
+  it('a JUNK_DIR_NAMES directory (.vscode/, .claude/) is an OPAQUE disposable unit for classification too — matches removeAllowlistedJunk\'s existing whole-subtree purge semantics, so the canonical W12/FOR-56 leftover shape (arbitrarily-named files under .vscode/.claude) still classifies orphanAllJunk: true', () => {
+    const { mainRoot, orphanPath } = makeOrphanedWorktree('wf_orphan-junkdir-shape');
+    mkdirSync(join(orphanPath, '.vscode'), { recursive: true });
+    // `settings.json` matches NEITHER FINDER_JUNK_NAMES nor the AppleDouble
+    // pattern by its own filename — it is classified as junk ONLY because
+    // `.vscode/` itself is a JUNK_DIR_NAMES unit (identical to how
+    // `removeAllowlistedJunk` purges it, per the FOR-56 W12 leftover shape).
+    writeFileSync(join(orphanPath, '.vscode', 'settings.json'), '{}', 'utf-8');
+    mkdirSync(join(orphanPath, '.claude', 'agents'), { recursive: true });
+    writeFileSync(
+      join(orphanPath, '.claude', 'agents', 'wave-reviewer.md'),
+      'post-agent leftover',
+      'utf-8',
+    );
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].orphanAllJunk).toBe(true);
+  });
+
+  it('an empty orphan dir (no content at all) is vacuously all-junk: true', () => {
+    const { mainRoot, orphanPath } = makeOrphanedWorktree('wf_orphan-empty');
+    void orphanPath; // no writes — directory is empty aside from the removed `.git`
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].orphanAllJunk).toBe(true);
+  });
+
+  it('AC5 regression: an ORDINARY registered worktree with a real uncommitted change is still correctly classified dirty:true via its OWN status', () => {
+    const { mainRoot, worktreePath } = makeMainWithWorktree('wf_normal-dirty');
+    writeFileSync(join(worktreePath, 'uncommitted.txt'), 'wip', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toBe(worktreePath);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].orphan).toBeFalsy();
+  });
+
+  it('AC5 regression: an ORDINARY registered+clean worktree is still correctly classified dirty:false, orphan unset', () => {
+    const { mainRoot, worktreePath } = makeMainWithWorktree('wf_normal-clean');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toBe(worktreePath);
+    expect(result[0].dirty).toBe(false);
+    expect(result[0].orphan).toBeFalsy();
+  });
+});
+
+// ─── 13. planCleanup — orphan-dir routing + skip reasons (FOR-59) ────────────
+
+describe('planCleanup — orphan-dir routing + skip reasons (FOR-59)', () => {
+  const baseOrphan: WorktreeEntry = {
+    path: '/repo/.claude/worktrees/wf_orphan-a',
+    branch: 'wf_orphan-a/branch',
+    head: 'aaaa1234aaaa1234aaaa1234aaaa1234aaaa1234',
+    dirty: false,
+  };
+
+  it('an orphan dir with orphanAllJunk: true is SELECTED for removal (never skipped)', () => {
+    const plan = planCleanup([{ ...baseOrphan, orphan: true, orphanAllJunk: true }]);
+    expect(plan.selected).toHaveLength(1);
+    expect(plan.skipped).toHaveLength(0);
+  });
+
+  it('an orphan dir with orphanAllJunk: false is SKIPPED with reason "orphan-with-real-files"', () => {
+    const plan = planCleanup([{ ...baseOrphan, orphan: true, orphanAllJunk: false }]);
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped).toHaveLength(1);
+    expect(plan.skipped[0].reason).toBe('orphan-with-real-files');
+  });
+
+  it('a locked worktree is SKIPPED with reason "locked" — even when clean — and never reaches selected', () => {
+    const locked: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/agent-locked-1',
+      branch: 'wave/FOR-10-locked',
+      head: 'bbbb1234bbbb1234bbbb1234bbbb1234bbbb1234',
+      dirty: false,
+      locked: true,
+    };
+    const plan = planCleanup([locked]);
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped).toHaveLength(1);
+    expect(plan.skipped[0].reason).toBe('locked');
+  });
+
+  it('a dirty (non-orphan, non-locked) worktree is SKIPPED with reason "dirty"', () => {
+    const dirty: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/agent-dirty-1',
+      branch: 'wave/FOR-59-dirty',
+      head: 'cccc1234cccc1234cccc1234cccc1234cccc1234',
+      dirty: true,
+    };
+    const plan = planCleanup([dirty]);
+    expect(plan.skipped).toHaveLength(1);
+    expect(plan.skipped[0].reason).toBe('dirty');
+  });
+
+  it('every skipped[] entry carries a reason, across a mixed batch (dirty + locked + orphan-with-real-files + one clean)', () => {
+    const dirty: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/agent-d',
+      branch: 'wave/d',
+      head: '1'.repeat(40),
+      dirty: true,
+    };
+    const locked: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/agent-l',
+      branch: 'wave/l',
+      head: '2'.repeat(40),
+      dirty: false,
+      locked: true,
+    };
+    const orphanReal: WorktreeEntry = {
+      ...baseOrphan,
+      path: '/repo/.claude/worktrees/wf_o',
+      orphan: true,
+      orphanAllJunk: false,
+    };
+    const clean: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/agent-c',
+      branch: 'wave/c',
+      head: '3'.repeat(40),
+      dirty: false,
+    };
+
+    const plan = planCleanup([dirty, locked, orphanReal, clean]);
+
+    expect(plan.selected.map((w) => w.path)).toEqual([clean.path]);
+    expect(plan.skipped).toHaveLength(3);
+    for (const s of plan.skipped) {
+      expect(typeof s.reason).toBe('string');
+      expect(s.reason).toBeTruthy();
+    }
+    expect(plan.skipped.find((s) => s.path === dirty.path)?.reason).toBe('dirty');
+    expect(plan.skipped.find((s) => s.path === locked.path)?.reason).toBe('locked');
+    expect(plan.skipped.find((s) => s.path === orphanReal.path)?.reason).toBe(
+      'orphan-with-real-files',
+    );
+  });
+
+  it('orphan routing is keyed on `orphan`/`orphanAllJunk`, not on the (untrusted) `dirty` flag — orphan+allJunk selects regardless', () => {
+    const plan = planCleanup([{ ...baseOrphan, dirty: false, orphan: true, orphanAllJunk: true }]);
+    expect(plan.selected).toHaveLength(1);
+  });
+});
+
+// ─── 14. executeCleanup — local branch hygiene (FOR-59) ──────────────────────
+
+describe('executeCleanup — local branch hygiene (FOR-59)', () => {
+  /** Build a fake BranchHygieneOps backed by vitest spies, with configurable classification. */
+  function fakeBranchHygiene(opts?: {
+    checkedOut?: Set<string>;
+    goneUpstream?: Set<string>;
+    containedInDefault?: Set<string>;
+  }): { ops: BranchHygieneOps; deleteSpy: ReturnType<typeof vi.fn> } {
+    const deleteSpy = vi.fn();
+    const ops: BranchHygieneOps = {
+      listCheckedOutBranches: () => opts?.checkedOut ?? new Set<string>(),
+      isUpstreamGone: (b) => opts?.goneUpstream?.has(b) ?? false,
+      isContainedInDefaultBranch: (b) => opts?.containedInDefault?.has(b) ?? false,
+      deleteBranch: deleteSpy,
+    };
+    return { ops, deleteSpy };
+  }
+
+  const wfWorktree: WorktreeEntry = {
+    path: '/repo/.claude/worktrees/wf_5b3073fb-abc-1',
+    branch: 'wave/FOR-59-fix',
+    head: 'a'.repeat(40),
+    dirty: false,
+  };
+
+  it('rule (a): the harness throwaway branch (worktree-wf_*) is ALWAYS force-deleted after a successful removal', () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene();
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).toHaveBeenCalledWith('worktree-wf_5b3073fb-abc-1');
+    expect(result.branchesDeleted).toContain('worktree-wf_5b3073fb-abc-1');
+  });
+
+  it("rule (b): the worktree's own wave/* branch is force-deleted when its upstream is gone", () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene({
+      goneUpstream: new Set([wfWorktree.branch as string]),
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).toHaveBeenCalledWith(wfWorktree.branch);
+    expect(result.branchesDeleted).toContain(wfWorktree.branch);
+  });
+
+  it("rule (b): the worktree's own wave/* branch is force-deleted when its tip is contained in the default branch", () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene({
+      containedInDefault: new Set([wfWorktree.branch as string]),
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).toHaveBeenCalledWith(wfWorktree.branch);
+  });
+
+  it('rule (b) refusal: a wave/* branch with NEITHER upstream-gone NOR contained-in-default evidence is left alone — real, unlanded work', () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene(); // no evidence configured
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).not.toHaveBeenCalledWith(wfWorktree.branch);
+    expect(result.branchesDeleted).not.toContain(wfWorktree.branch);
+    // The throwaway branch is still deleted independently — rule (a) is
+    // unconditional and does not depend on rule (b)'s outcome.
+    expect(deleteSpy).toHaveBeenCalledWith('worktree-wf_5b3073fb-abc-1');
+  });
+
+  it('rule (c) safety floor: a branch checked out in ANOTHER live worktree is NEVER deleted, for either rule — even with merge evidence present', () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene({
+      checkedOut: new Set(['worktree-wf_5b3073fb-abc-1', wfWorktree.branch as string]),
+      goneUpstream: new Set([wfWorktree.branch as string]), // would otherwise qualify
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('an agent-* (non-wf_) worktree never attempts the throwaway-branch rule — its derived name is not wf_-shaped', () => {
+    const agentWorktree: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/agent-abc123',
+      branch: 'wave/FOR-59-agent',
+      head: 'b'.repeat(40),
+      dirty: false,
+    };
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene({
+      goneUpstream: new Set([agentWorktree.branch as string]),
+    });
+    const plan = { selected: [agentWorktree], skipped: [] };
+
+    executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).not.toHaveBeenCalledWith('worktree-agent-abc123');
+    expect(deleteSpy).toHaveBeenCalledWith(agentWorktree.branch);
+  });
+
+  it('a non-"wave/"-prefixed branch (foreign naming convention) is never touched by rule (b), even with full merge evidence', () => {
+    const oddWorktree: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/wf_odd-1',
+      branch: 'not-a-wave-branch',
+      head: 'c'.repeat(40),
+      dirty: false,
+    };
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene({
+      goneUpstream: new Set(['not-a-wave-branch']),
+      containedInDefault: new Set(['not-a-wave-branch']),
+    });
+    const plan = { selected: [oddWorktree], skipped: [] };
+
+    executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).not.toHaveBeenCalledWith('not-a-wave-branch');
+  });
+
+  it('branch hygiene NEVER runs for a failed removal — an errored remover leaves the branch(es) in place', () => {
+    const { remover } = fakeRemover({ failFor: [wfWorktree.path] });
+    const { ops, deleteSpy } = fakeBranchHygiene({
+      goneUpstream: new Set([wfWorktree.branch as string]),
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(result.errors).toHaveLength(1);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('skipBranchHygiene: true opts out entirely — no BranchHygieneOps method is ever invoked', () => {
+    const { remover } = fakeRemover();
+    const listSpy = vi.fn(() => new Set<string>());
+    const ops: BranchHygieneOps = {
+      listCheckedOutBranches: listSpy,
+      isUpstreamGone: () => true,
+      isContainedInDefaultBranch: () => true,
+      deleteBranch: vi.fn(),
+    };
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      branchHygiene: ops,
+      skipBranchHygiene: true,
+    });
+
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('an orphan-dir purge (not just an ordinary removal) also triggers branch hygiene', () => {
+    const orphanWt: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/wf_orphan-purge-1',
+      branch: 'wf_orphan-purge-1/branch',
+      head: 'd'.repeat(40),
+      dirty: false,
+      orphan: true,
+      orphanAllJunk: true,
+    };
+    const plan = planCleanup([orphanWt]);
+    expect(plan.selected).toHaveLength(1);
+
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene();
+
+    executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).toHaveBeenCalledWith('worktree-wf_orphan-purge-1');
+  });
+
+  it('never invokes branch hygiene at all when the selected set is empty (idempotent no-op, unchanged from pre-FOR-59)', () => {
+    const { remover } = fakeRemover();
+    const listSpy = vi.fn(() => new Set<string>());
+    const ops: BranchHygieneOps = {
+      listCheckedOutBranches: listSpy,
+      isUpstreamGone: () => false,
+      isContainedInDefaultBranch: () => false,
+      deleteBranch: vi.fn(),
+    };
+    const plan = { selected: [], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+});
+
+// ─── 15. defaultBranchHygieneOps — real-git command shape (FOR-59) ───────────
+
+describe('defaultBranchHygieneOps — real-git command shape (FOR-59)', () => {
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+  });
+
+  it('listCheckedOutBranches parses "branch " lines from `git worktree list --porcelain`, stripping refs/heads/', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'worktree' && cmdArgs[1] === 'list') {
+        return [
+          'worktree /repo',
+          'HEAD ' + 'a'.repeat(40),
+          'branch refs/heads/main',
+          '',
+          'worktree /repo/.claude/worktrees/wf_x',
+          'HEAD ' + 'b'.repeat(40),
+          'branch refs/heads/wave/FOR-59-x',
+          '',
+        ].join('\n');
+      }
+      return '';
+    });
+
+    const ops = defaultBranchHygieneOps('/repo');
+    const checkedOut = ops.listCheckedOutBranches();
+
+    expect(checkedOut.has('main')).toBe(true);
+    expect(checkedOut.has('wave/FOR-59-x')).toBe(true);
+    expect(checkedOut.has('refs/heads/main')).toBe(false);
+  });
+
+  it('isUpstreamGone: true only when the upstream track marker is exactly "[gone]"', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '[gone]\n');
+    expect(defaultBranchHygieneOps('/repo').isUpstreamGone('wave/x')).toBe(true);
+  });
+
+  it('isUpstreamGone: false when there is no upstream configured at all (empty output)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    expect(defaultBranchHygieneOps('/repo').isUpstreamGone('wave/x')).toBe(false);
+  });
+
+  it('isUpstreamGone: false — never throws — when the underlying git command itself fails', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error('fatal: not a valid ref');
+    });
+    const ops = defaultBranchHygieneOps('/repo');
+    expect(() => ops.isUpstreamGone('wave/x')).not.toThrow();
+    expect(ops.isUpstreamGone('wave/x')).toBe(false);
+  });
+
+  it('isContainedInDefaultBranch: true when `git merge-base --is-ancestor` exits 0', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    expect(
+      defaultBranchHygieneOps('/repo').isContainedInDefaultBranch('wave/x', 'main'),
+    ).toBe(true);
+  });
+
+  it('isContainedInDefaultBranch: false — never throws — when `git merge-base --is-ancestor` fails (not an ancestor, or an invalid ref)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error('not an ancestor');
+    });
+    const ops = defaultBranchHygieneOps('/repo');
+    expect(() => ops.isContainedInDefaultBranch('wave/x', 'main')).not.toThrow();
+    expect(ops.isContainedInDefaultBranch('wave/x', 'main')).toBe(false);
+  });
+
+  it('deleteBranch: swallows a failure (already-absent branch) — idempotent no-op, never throws', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error("error: branch 'wave/x' not found");
+    });
+    expect(() => defaultBranchHygieneOps('/repo').deleteBranch('wave/x')).not.toThrow();
+  });
+
+  it('deleteBranch: invokes `git branch -D <branch>` against the given repoRoot', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    defaultBranchHygieneOps('/repo').deleteBranch('wave/x');
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['branch', '-D', 'wave/x'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+});
+
+// ─── 16. defaultWorktreeRemover — orphan-dir purge end-to-end (FOR-59) ───────
+//
+// Confirms the SAME two-phase remover that already handles ordinary
+// worktrees (FOR-34/45/56 above) also cleanly removes an orphan directory
+// `planCleanup` selected — no special-casing needed: `rmSync` does not care
+// whether the directory is a registered git worktree, and `git worktree
+// remove` on an already-physically-gone path succeeds cleanly (live-verified
+// git behaviour — see the file-level doc comment).
+describe('defaultWorktreeRemover — orphan-dir purge end-to-end (FOR-59)', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  it('an orphan dir selected by planCleanup (orphanAllJunk: true) is removed cleanly through the SAME remover pipeline as an ordinary worktree', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-orphan-e2e-'));
+    tempRoots.push(root);
+    const orphanPath = join(root, 'wf_orphan-e2e-1');
+    mkdirSync(orphanPath, { recursive: true });
+    writeFileSync(join(orphanPath, '.DS_Store'), 'finder-debris', 'utf-8');
+
+    const orphanEntry: WorktreeEntry = {
+      path: orphanPath,
+      branch: 'wf_orphan-e2e-1/branch',
+      head: 'e'.repeat(40),
+      dirty: false,
+      orphan: true,
+      orphanAllJunk: true,
+    };
+    const plan = planCleanup([orphanEntry]);
+    expect(plan.selected).toHaveLength(1);
+    expect(plan.skipped).toHaveLength(0);
+
+    const remover = defaultWorktreeRemover(root);
+    const result = executeCleanup(plan, { remover, skipBranchHygiene: true });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.removed).toHaveLength(1);
+    expect(existsSync(orphanPath)).toBe(false);
   });
 });

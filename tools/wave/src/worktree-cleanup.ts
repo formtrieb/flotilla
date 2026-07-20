@@ -100,10 +100,74 @@
  * ENOTEMPTY race, never deciding removal eligibility (that stays entirely in
  * `planCleanup`'s `git status --porcelain` check, per the dirty-worktree
  * safety invariant at the top of this file).
+ *
+ * ── Orphan-dir misclassification + skip reasons + local branch hygiene (FOR-59) ──
+ *
+ * W13 close evidence: six junk-only orphan worktree dirs — deregistered by git
+ * (`prunable` in `git worktree list --porcelain`) while their physical
+ * directories, holding nothing but the exact FOR-56 editor/harness junk shape,
+ * still sat on disk — were ALL misclassified `dirty: true` and skipped, so the
+ * junk purge-then-retry above never even got a chance. Root cause: `git status
+ * --porcelain` (and `git rev-parse --show-toplevel`) invoked with `cwd` set to
+ * such a directory does not error — since `.claude/worktrees/<id>` sits INSIDE
+ * the parent checkout, git silently walks UP and resolves against the nearest
+ * ANCESTOR repository instead, reporting THAT repo's status. One unrelated
+ * untracked file at the parent repo root was enough to flip every orphaned
+ * dir's classification.
+ *
+ * The fix is a TOPLEVEL GUARD: `probeWorktreeGitState` (used by
+ * `listAgentWorktrees`) resolves `git rev-parse --show-toplevel` for the
+ * worktree path FIRST. A `git status --porcelain` call there is trusted only
+ * when the resolved toplevel equals the worktree path itself — the ordinary,
+ * still-registered case, where the probe's result is byte-for-byte the
+ * pre-FOR-59 behaviour. Otherwise the directory is `orphan: true` and NO git
+ * status call is ever attempted; `listAgentWorktrees` instead classifies it
+ * directly against the junk allowlist via `isDirExclusivelyJunk` (the
+ * read-only counterpart to `removeAllowlistedJunk` above) — all-junk sets
+ * `orphanAllJunk: true` so `planCleanup` selects it for the ordinary removal
+ * pipeline (which purges + removes it cleanly — see the two-phase
+ * `defaultWorktreeRemover` doc comment above; a deregistered-but-still-present
+ * worktree directory removes via the exact same `rmSync`-then-`git worktree
+ * remove` sequence, live-verified), while any real file present skips it with
+ * `reason: 'orphan-with-real-files'` instead. `planCleanup` additionally now
+ * tags every `locked` worktree `reason: 'locked'` up front (previously it
+ * reached the remover and failed loudly as an `errors` entry instead) — every
+ * entry `planCleanup` places in `skipped` carries a machine-readable `reason`.
+ *
+ * ── Local branch hygiene — a W13/W14 accumulation follow-up (FOR-59 scope
+ *    extension) ──
+ *
+ * Second accumulation observed live: every Workflow-driver worktree leaves its
+ * harness throwaway branch (`worktree-wf_<run>-<n>` — the branch `isolation:
+ * 'worktree'` checks out FIRST, before the dispatched agent `git checkout -b`'s
+ * away to its real work branch) behind once the worktree is removed, and every
+ * landed row leaves its local `wave/<id>-<slug>` branch behind too (a
+ * squash-merge means a plain `git branch -d` merged-check refuses it forever).
+ * `executeCleanup` now runs `runBranchHygiene` after each worktree it actually
+ * removes/purges, via the injectable `BranchHygieneOps` seam (same injection
+ * pattern as `WorktreeRemover`/`RedispatchCleanupOps`):
+ *   (a) `worktree-<dir-basename>`, when it is `wf_`-shaped, is ALWAYS
+ *       force-deleted — by construction its tip sits on the wave anchor
+ *       commit, so it can never carry unique work (live-verified: a fresh
+ *       `wf_*` Workflow worktree's throwaway branch and `main` share a tip
+ *       the instant the worktree is created).
+ *   (b) the worktree's own checked-out branch, when it is `wave/`-shaped, is
+ *       force-deleted ONLY when there is merge evidence — its upstream is
+ *       confirmed gone (`[gone]`, the git track marker; wave-close deletes the
+ *       remote after a successful squash-merge) OR its tip is already
+ *       contained in the default branch.
+ *   (c) — the safety floor for both — a branch checked out in ANY live
+ *       worktree is never deleted; `listCheckedOutBranches()` is queried fresh
+ *       on every call, so a branch THIS removal just vacated reads as free
+ *       while one still live elsewhere does not.
+ * This is deliberately independent of, and additive to, the plain worktree
+ * removal above — `skipBranchHygiene: true` (or the FOR-10 crash-cleanup path,
+ * which never calls `executeCleanup` at all) opts a caller out entirely.
  */
 
 import { execFileSync } from 'node:child_process';
-import { rmSync, readdirSync } from 'node:fs';
+import { rmSync, readdirSync, realpathSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -128,16 +192,49 @@ export interface WorktreeEntry {
    * `locked`/`locked <reason>` line by {@link parseWorktreeList}.
    */
   locked?: boolean;
+  /**
+   * True when this worktree's own git context does NOT resolve to itself —
+   * a deregistered/prunable directory where `git status`/`git rev-parse`
+   * silently fall back to an ANCESTOR repository instead of erroring
+   * (FOR-59, W13 close finding: `.claude/worktrees/<id>` sits INSIDE the
+   * parent checkout, so that ancestor is the very main repo). Populated
+   * only by `listAgentWorktrees`'s toplevel-guarded probe
+   * ({@link probeWorktreeGitState}) — never by `parseWorktreeList` alone
+   * (pure text parsing, no filesystem access). Absent/undefined for an
+   * ordinary, still-registered worktree.
+   */
+  orphan?: boolean;
+  /**
+   * Present only when `orphan` is true: whether the directory's own content
+   * is EXCLUSIVELY allowlisted editor/harness/Finder junk (the same
+   * `FINDER_JUNK_NAMES` ∪ `JUNK_DIR_NAMES` allowlist
+   * {@link removeAllowlistedJunk} purges, checked read-only by
+   * {@link isDirExclusivelyJunk}). `planCleanup` selects such an entry for
+   * removal; any real file present makes this `false` and the entry is
+   * skipped instead (FOR-59).
+   */
+  orphanAllJunk?: boolean;
+  /**
+   * Present only on an entry `planCleanup` places into
+   * `CleanupPlan.skipped` / `CleanupResult.skipped` (FOR-59) — names the
+   * machine-readable skip cause. Absent on a `selected` entry, and absent
+   * on a bare `parseWorktreeList`/`listAgentWorktrees` result before
+   * `planCleanup` has run.
+   */
+  reason?: SkipReason;
 }
+
+/** Machine-readable cause a `planCleanup` skip is tagged with (FOR-59). */
+export type SkipReason = 'dirty' | 'locked' | 'orphan-with-real-files';
 
 /**
  * The result of a cleanup plan — which worktrees are selected for removal and
- * which are skipped (dirty).
+ * which are skipped (each tagged with a {@link SkipReason}, FOR-59).
  */
 export interface CleanupPlan {
-  /** Worktrees selected for removal (agent-path + clean). */
+  /** Worktrees selected for removal (agent-path + clean, or orphan+all-junk). */
   selected: WorktreeEntry[];
-  /** Worktrees that were skipped because they are dirty. */
+  /** Worktrees that were skipped, each carrying a `reason` (FOR-59). */
   skipped: WorktreeEntry[];
 }
 
@@ -147,10 +244,18 @@ export interface CleanupPlan {
 export interface CleanupResult {
   /** Worktrees that were successfully removed. */
   removed: WorktreeEntry[];
-  /** Worktrees that were skipped (dirty — never removed). */
+  /** Worktrees that were skipped (never removed) — each carries a `reason`. */
   skipped: WorktreeEntry[];
   /** Errors encountered during removal (worktree path → error message). */
   errors: Array<{ path: string; message: string }>;
+  /**
+   * Local branches force-deleted as a side-effect of a successful removal in
+   * this call (FOR-59) — the harness throwaway (`worktree-wf_*`) and/or the
+   * worktree's own dispatch branch, when merge evidence allowed it. Empty
+   * when hygiene is disabled (`skipBranchHygiene: true`) or nothing was
+   * eligible.
+   */
+  branchesDeleted: string[];
 }
 
 /**
@@ -201,6 +306,20 @@ export interface CleanupOptions {
    * remove the sibling wave's still-live worktrees (issue #77).
    */
   branchFilter?: Set<string>;
+  /**
+   * Default/protected branch name used by the local-branch-hygiene rule (b)
+   * "tip contained in default branch" check (FOR-59). Defaults to `'main'`
+   * — flotilla's protected default branch (CHARTER/CLAUDE.md convention).
+   */
+  defaultBranch?: string;
+  /** Injectable local-branch-hygiene seam. Defaults to {@link defaultBranchHygieneOps}. */
+  branchHygiene?: BranchHygieneOps;
+  /**
+   * Opt out of local-branch hygiene entirely — `executeCleanup` then behaves
+   * exactly like pre-FOR-59: only the worktree itself is ever touched.
+   * Defaults to `false` (hygiene runs after every successful removal/purge).
+   */
+  skipBranchHygiene?: boolean;
 }
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
@@ -344,8 +463,33 @@ export function planCleanup(
       }
     }
 
+    // A locked worktree is never auto-selected — git itself refuses to
+    // `remove` one without an explicit unlock/--force. Surfaced here as a
+    // machine-readable skip rather than reaching the remover and failing
+    // loudly as an `errors` entry instead (FOR-59).
+    if (wt.locked) {
+      skipped.push({ ...wt, reason: 'locked' });
+      continue;
+    }
+
+    // Deregistered/prunable/orphan directory (FOR-59): its `dirty` flag was
+    // never trusted for this path in the first place — see
+    // `probeWorktreeGitState` in `listAgentWorktrees` — so classify it
+    // directly from the pre-computed content scan instead. All-junk →
+    // selected for the ordinary removal pipeline (which purges + removes it
+    // cleanly, see the file-level doc comment); any real file → skipped
+    // with a reason, never silently dropped.
+    if (wt.orphan) {
+      if (wt.orphanAllJunk) {
+        selected.push(wt);
+      } else {
+        skipped.push({ ...wt, reason: 'orphan-with-real-files' });
+      }
+      continue;
+    }
+
     if (wt.dirty) {
-      skipped.push(wt);
+      skipped.push({ ...wt, reason: 'dirty' });
     } else {
       selected.push(wt);
     }
@@ -376,11 +520,26 @@ export function listAgentWorktrees(
   const entries = parseWorktreeList(raw, agentPathMarker);
 
   // For git versions that don't emit the `dirty` line in porcelain output,
-  // we verify each worktree's dirty state via `git status --porcelain`.
-  return entries.map((entry) => ({
-    ...entry,
-    dirty: entry.dirty || isWorktreeDirty(entry.path),
-  }));
+  // we verify each worktree's dirty state via a toplevel-guarded probe
+  // (FOR-59 — see `probeWorktreeGitState`'s doc comment for why the guard
+  // exists: an unguarded `git status --porcelain` silently leaks an
+  // ancestor repository's status for a deregistered/prunable directory).
+  return entries.map((entry) => {
+    // Porcelain already reported dirty — trust it outright, no further
+    // probing needed (byte-for-byte the pre-FOR-59 short-circuit).
+    if (entry.dirty) return entry;
+
+    const probe = probeWorktreeGitState(entry.path);
+    if (probe.orphan) {
+      return {
+        ...entry,
+        dirty: false,
+        orphan: true,
+        orphanAllJunk: isDirExclusivelyJunk(entry.path),
+      };
+    }
+    return { ...entry, dirty: probe.dirty };
+  });
 }
 
 /**
@@ -417,16 +576,31 @@ export function executeCleanup(
   plan: CleanupPlan,
   opts: CleanupOptions = {},
 ): CleanupResult {
-  const remover =
-    opts.remover ?? defaultWorktreeRemover(opts.repoRoot ?? process.cwd());
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const remover = opts.remover ?? defaultWorktreeRemover(repoRoot);
+  const hygieneEnabled = opts.skipBranchHygiene !== true;
+  const branchHygiene = hygieneEnabled
+    ? (opts.branchHygiene ?? defaultBranchHygieneOps(repoRoot))
+    : null;
+  const defaultBranch = opts.defaultBranch ?? 'main';
 
   const removed: WorktreeEntry[] = [];
   const errors: Array<{ path: string; message: string }> = [];
+  const branchesDeleted: string[] = [];
 
   for (const wt of plan.selected) {
     try {
       remover.remove(wt.path);
       removed.push(wt);
+      // Local branch hygiene (FOR-59) — best-effort, additive: it runs only
+      // after a successful removal/purge, and never affects `removed`/
+      // `errors` classification. See `runBranchHygiene`'s doc comment for
+      // the exact per-branch rules.
+      if (branchHygiene) {
+        branchesDeleted.push(
+          ...runBranchHygiene(wt, branchHygiene, defaultBranch),
+        );
+      }
     } catch (err) {
       errors.push({
         path: wt.path,
@@ -435,7 +609,60 @@ export function executeCleanup(
     }
   }
 
-  return { removed, skipped: plan.skipped, errors };
+  return { removed, skipped: plan.skipped, errors, branchesDeleted };
+}
+
+/**
+ * Local branch hygiene after ONE successful worktree removal/purge (FOR-59
+ * scope extension — see the file-level doc comment's dedicated section for
+ * the full accumulation writeup). Two independent branches are considered:
+ *
+ *   (a) the harness's own THROWAWAY branch, `worktree-<dir-basename>` — only
+ *       relevant when that derived name is itself `wf_`-shaped (i.e. `wt`
+ *       is a Workflow-driver worktree). ALWAYS force-deleted: by
+ *       construction its tip sits on the wave anchor commit, so it can
+ *       never carry unique work.
+ *   (b) the worktree's OWN checked-out branch (`wt.branch`), when it looks
+ *       like a wave dispatch branch (`wave/...`) — force-deleted ONLY when
+ *       there is merge evidence: its upstream is confirmed gone, or its tip
+ *       is already contained in the default branch. Neither signal present
+ *       → real, unlanded work → left alone.
+ *
+ * Rule (c), the safety floor for both: `listCheckedOutBranches()` is
+ * queried FRESH on every call (i.e. after this worktree's own removal
+ * already happened) — a branch still checked out in some OTHER live
+ * worktree is never deleted.
+ *
+ * Returns the branch names actually deleted (0, 1, or 2 entries).
+ */
+function runBranchHygiene(
+  wt: WorktreeEntry,
+  ops: BranchHygieneOps,
+  defaultBranch: string,
+): string[] {
+  const deleted: string[] = [];
+  const checkedOut = ops.listCheckedOutBranches();
+
+  const throwaway = `worktree-${nodePath.basename(wt.path)}`;
+  if (/^worktree-wf_/.test(throwaway) && !checkedOut.has(throwaway)) {
+    ops.deleteBranch(throwaway);
+    deleted.push(throwaway);
+  }
+
+  const dispatchBranch = wt.branch;
+  if (
+    dispatchBranch !== null &&
+    dispatchBranch !== throwaway &&
+    dispatchBranch.startsWith('wave/') &&
+    !checkedOut.has(dispatchBranch) &&
+    (ops.isUpstreamGone(dispatchBranch) ||
+      ops.isContainedInDefaultBranch(dispatchBranch, defaultBranch))
+  ) {
+    ops.deleteBranch(dispatchBranch);
+    deleted.push(dispatchBranch);
+  }
+
+  return deleted;
 }
 
 // ─── Convenience wrapper ───────────────────────────────────────────────────────
@@ -697,6 +924,113 @@ export function defaultRedispatchCleanupOps(repoRoot: string): RedispatchCleanup
   };
 }
 
+// ─── Local branch hygiene (FOR-59) ──────────────────────────────────────────
+
+/**
+ * Injectable local-branch-hygiene seam, mirroring the
+ * `WorktreeRemover`/`RedispatchCleanupOps` injection pattern above. All
+ * methods are read/best-effort — `deleteBranch` is IDEMPOTENT (no-op, never
+ * throws, if the branch is already absent), matching
+ * `RedispatchCleanupOps.deleteBranch`'s contract.
+ */
+export interface BranchHygieneOps {
+  /**
+   * Every branch name currently checked out across ALL live worktrees (this
+   * repo's primary checkout included) — queried fresh on every call so a
+   * branch a just-completed removal vacated is correctly seen as free.
+   */
+  listCheckedOutBranches(): Set<string>;
+  /**
+   * True when `branch`'s configured upstream is confirmed gone (the git
+   * `[gone]` track marker) — merge evidence for rule (b). False both when
+   * there is no upstream configured at all and when the upstream is still
+   * live — never a false positive.
+   */
+  isUpstreamGone(branch: string): boolean;
+  /**
+   * True when `branch`'s tip commit is an ancestor of (contained in)
+   * `defaultBranch` — the other merge-evidence path for rule (b). False on
+   * any error (invalid ref, `defaultBranch` absent locally, etc.) — never a
+   * false positive.
+   */
+  isContainedInDefaultBranch(branch: string, defaultBranch: string): boolean;
+  /**
+   * Force-delete a local branch ref. MUST NOT throw when the branch is
+   * already absent (idempotent no-op).
+   */
+  deleteBranch(branch: string): void;
+}
+
+/**
+ * Default {@link BranchHygieneOps} backed by real git.
+ */
+export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
+  return {
+    listCheckedOutBranches(): Set<string> {
+      const raw = shellGit(['worktree', 'list', '--porcelain'], repoRoot);
+      const branches = new Set<string>();
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('branch ')) {
+          branches.add(
+            trimmed
+              .slice('branch '.length)
+              .replace(/^refs\/heads\//, '')
+              .trim(),
+          );
+        }
+      }
+      return branches;
+    },
+    isUpstreamGone(branch: string): boolean {
+      try {
+        const out = execFileSync(
+          'git',
+          ['for-each-ref', '--format=%(upstream:track)', `refs/heads/${branch}`],
+          {
+            cwd: repoRoot,
+            encoding: 'utf-8',
+            timeout: 10_000,
+            stdio: ['ignore', 'pipe', 'ignore'],
+          },
+        );
+        return out.trim() === '[gone]';
+      } catch {
+        return false;
+      }
+    },
+    isContainedInDefaultBranch(branch: string, defaultBranch: string): boolean {
+      try {
+        execFileSync('git', ['merge-base', '--is-ancestor', branch, defaultBranch], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          timeout: 10_000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        return true; // exit 0 → branch IS an ancestor of defaultBranch.
+      } catch {
+        // exit 1 (not an ancestor) OR any other error (invalid ref, missing
+        // defaultBranch locally, ...) — both mean "no evidence", never
+        // treated as a false positive.
+        return false;
+      }
+    },
+    deleteBranch(branch: string): void {
+      try {
+        execFileSync('git', ['branch', '-D', branch], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          timeout: 15_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch {
+        // Already gone — idempotent no-op (mirrors
+        // defaultRedispatchCleanupOps.deleteBranch's contract).
+      }
+    },
+  };
+}
+
 // ─── Default git probe (real side-effects, isolated here) ──────────────────
 
 /**
@@ -892,6 +1226,38 @@ function removeAllowlistedJunk(dir: string): number {
   return removed;
 }
 
+/**
+ * True when every entry inside `dir` (recursively) is allowlisted
+ * editor/harness/Finder junk — the READ-ONLY counterpart to
+ * {@link removeAllowlistedJunk}, used to CLASSIFY an orphan directory
+ * (FOR-59) rather than delete anything. The actual purge for a directory
+ * this returns `true` for happens later, in `defaultWorktreeRemover`'s
+ * existing physical-delete step, once `planCleanup` has selected the entry
+ * for removal — this function never touches the filesystem beyond reading
+ * it.
+ *
+ * An unreadable or already-gone directory counts as vacuously all-junk
+ * (`true`) — there is nothing real left to lose.
+ */
+function isDirExclusivelyJunk(dir: string): boolean {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return true;
+  }
+
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (isJunkDirName(entry.name)) continue;
+      if (!isDirExclusivelyJunk(nodePath.join(dir, entry.name))) return false;
+      continue;
+    }
+    if (!isFinderJunkName(entry.name)) return false;
+  }
+  return true;
+}
+
 // ─── Internal helpers ──────────────────────────────────────────────────────────
 
 /**
@@ -933,8 +1299,73 @@ function shellGit(args: string[], cwd: string): string {
   }
 }
 
-/** Check if a worktree has uncommitted changes via `git status --porcelain`. */
-function isWorktreeDirty(worktreePath: string): boolean {
+/**
+ * Resolve `git rev-parse --show-toplevel` for `cwd`, or `null` when git
+ * cannot resolve one at all (`cwd` doesn't exist, or truly no `.git` exists
+ * anywhere in its ancestry).
+ */
+function resolveGitToplevel(cwd: string): string | null {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve symlinks for a stable path comparison (macOS's `/tmp` →
+ * `/private/tmp`, etc.); falls back to a plain `path.resolve` when the path
+ * cannot be `realpath`'d (already gone, or a fixture path that never
+ * existed on disk).
+ */
+function realpathForCompare(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return nodePath.resolve(p);
+  }
+}
+
+/**
+ * Toplevel-guarded dirty/orphan probe for ONE worktree path (FOR-59 — see
+ * the file-level doc comment's dedicated section for the full live-incident
+ * writeup).
+ *
+ * `git status --porcelain` invoked with `cwd` set to a deregistered/
+ * prunable worktree directory does not error — it silently resolves to the
+ * nearest ANCESTOR repository (since `.claude/worktrees/<id>` sits INSIDE
+ * the parent checkout) and reports THAT repo's status instead. The guard:
+ * resolve the git toplevel for the worktree path FIRST, and only trust a
+ * `git status` call there when it resolves back to the worktree path
+ * itself — the ordinary, still-registered-worktree case, where this
+ * probe's `dirty` result is exactly the pre-FOR-59 `isWorktreeDirty`
+ * behaviour, unchanged.
+ *
+ * When the toplevel does not self-resolve (including when git cannot
+ * resolve one at all), `orphan: true` is returned and NO git status call is
+ * even attempted — the caller ({@link listAgentWorktrees}) falls back to a
+ * content-based classification instead of trusting any git-derived signal
+ * for this path.
+ */
+function probeWorktreeGitState(worktreePath: string): {
+  dirty: boolean;
+  orphan: boolean;
+} {
+  const toplevel = resolveGitToplevel(worktreePath);
+  const selfScoped =
+    toplevel !== null &&
+    realpathForCompare(toplevel) === realpathForCompare(worktreePath);
+
+  if (!selfScoped) {
+    return { dirty: false, orphan: true };
+  }
+
   try {
     const out = execFileSync('git', ['status', '--porcelain'], {
       cwd: worktreePath,
@@ -942,10 +1373,10 @@ function isWorktreeDirty(worktreePath: string): boolean {
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return out.trim().length > 0;
+    return { dirty: out.trim().length > 0, orphan: false };
   } catch {
     // If git status fails (e.g. path no longer exists), treat as not dirty
     // (the worktree is stale/gone — removal would be a no-op anyway).
-    return false;
+    return { dirty: false, orphan: false };
   }
 }
