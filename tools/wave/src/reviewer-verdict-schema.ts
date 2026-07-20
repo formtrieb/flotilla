@@ -78,6 +78,35 @@ export interface ReviewerVerdict {
   gitStateSane?: boolean;
 }
 
+// ─── met-AC index derivation (FOR-17 — the dead --acked wire) ──────────────
+
+/**
+ * Derive the 0-based `acVerification` indexes the Reviewer marked `met` —
+ * the SINGLE-OWNER engine derivation `IssueStore.close(id, prUrl,
+ * ackedAcIndexes)` expects (ADR-0004: `ackedAcIndexes` are "stable AC indexes
+ * from the reviewer verdict"). `acVerification[]` is positional 1:1 with the
+ * issue's declared `acceptanceCriteria[]` (ADR-0004's re-based AC-count gate),
+ * so the index into this array IS the stable AC index `tickAcs()` consumes —
+ * no separate id/ordinal field is needed.
+ *
+ * `partial` / `not-met` / `deferred` rows are excluded — only an
+ * unambiguous `met` earns the cosmetic tick, so the issue's checklist reads
+ * as done for exactly what the Reviewer verified with evidence, never more.
+ *
+ * COSMETIC ONLY (ADR-0004 boundary): this is the human-visibility tick wired
+ * at `wave-close`'s done-reconcile step, at CLOSE time — never at verdict-in,
+ * since an approved-but-later-closed-unmerged PR would otherwise overstate
+ * what landed. The result is never fed back as gate input; `acVerification[]`
+ * itself remains the ground truth the DOR/reviewer gates read.
+ */
+export function metAcIndexes(verdict: ReviewerVerdict): number[] {
+  const indexes: number[] = [];
+  verdict.acVerification.forEach((row, i) => {
+    if (row.met === 'met') indexes.push(i);
+  });
+  return indexes;
+}
+
 // ─── JSON Schema (enforced by the Workflow tool at the agent() boundary) ─────
 
 /**
