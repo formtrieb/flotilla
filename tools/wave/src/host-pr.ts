@@ -577,6 +577,59 @@ export type LandingOutcome =
   | { outcome: 'refused'; prNumber?: number; prUrl?: string; reason: string }
   | { outcome: 'no-pr'; reason: string };
 
+// ─── Aligned PR reference (one url/number field name across every verb) ───────
+//
+// FOR-54: the four `host-pr` verbs (create | status | arm | merge) historically
+// carried the PR url/number under INCONSISTENT names — `url`/`number` on
+// create+status, `prUrl`/`prNumber` on the landing outcomes — so no caller could
+// read a single field name across all four (observed live filing a retro PR: a
+// caller reading `.prUrl` off `create` got null even though the URL was really
+// there under `.url`). The fix is deliberately ADDITIVE: every verb result now
+// exposes the URL under BOTH `url` AND `prUrl`, and the number under BOTH
+// `number` AND `prNumber`, so any single field name a caller picks resolves on
+// every verb — and no historical name is renamed or dropped, so the live
+// consumers keep working unchanged (the Worker terminator reads `create.url` as
+// its prUrl; wave-close reads `status`/`arm` url+number).
+
+/**
+ * A PR's url/number exposed under BOTH field-name conventions at once — the
+ * historical `url`/`number` AND the `prUrl`/`prNumber` the landing verbs grew.
+ * Every key is optional because a given verb may lack one (a `create` result
+ * carries no PR number — a deliberate, documented omission: find-before-create
+ * only round-trips the URL).
+ */
+export interface AlignedPrRef {
+  url?: string;
+  prUrl?: string;
+  number?: number;
+  prNumber?: number;
+}
+
+/**
+ * Project a canonical PR `{ url?, number? }` onto BOTH field-name conventions
+ * (FOR-54, purely additive). A defined `url` is emitted as both `url` and
+ * `prUrl`; a defined `number` as both `number` and `prNumber`. An `undefined`
+ * input drops out entirely — the key is ABSENT, not `undefined` — so a create
+ * result (no number) yields `{ url, prUrl }` and nothing else, and a `no-pr`
+ * outcome (neither) yields `{}`.
+ *
+ * This is the single owner of the url/number alignment: the CLI emitters route
+ * every verb's result through it so the four verbs read identically, regardless
+ * of which builder produced the underlying value.
+ */
+export function alignedPrRef(ref: { url?: string; number?: number }): AlignedPrRef {
+  const aligned: AlignedPrRef = {};
+  if (ref.url !== undefined) {
+    aligned.url = ref.url;
+    aligned.prUrl = ref.url;
+  }
+  if (ref.number !== undefined) {
+    aligned.number = ref.number;
+    aligned.prNumber = ref.number;
+  }
+  return aligned;
+}
+
 /**
  * Mergeability values GitHub reports while it is still working something out —
  * "not yet computed" (`unknown`) or "the base moved, recomputing against it"

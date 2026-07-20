@@ -509,6 +509,90 @@ describe('host-pr create — usage + credential guards', () => {
   });
 });
 
+// ─── Aligned url/number field names across every verb (FOR-54) ───────────────
+//
+// The CONTRACT the skills parse. Every verb result must expose the PR URL under
+// ONE consistent field name and the PR number under ONE — done ADDITIVELY, so
+// each verb carries BOTH `url`+`prUrl` and BOTH `number`+`prNumber`. This proves
+// the shape per verb AND that the pre-FOR-54 live-consumer reads still resolve
+// (Worker terminator: `create.url`; wave-close: `status`/`arm` url+number).
+
+describe('host-pr — aligned url/number field names (FOR-54), per verb', () => {
+  it('create (reused) carries the URL under BOTH `url` and `prUrl`; no number (documented omission)', async () => {
+    const { http } = fakeHttp({ get: () => ({ status: 200, json: [{ html_url: EXISTING_PR }] }) });
+    await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    const o = out();
+    expect(o.url).toBe(EXISTING_PR); // live consumer: Worker terminator reads create.url
+    expect(o.prUrl).toBe(EXISTING_PR);
+    expect('number' in o).toBe(false);
+    expect('prNumber' in o).toBe(false);
+  });
+
+  it('create (created) carries the URL under BOTH `url` and `prUrl`', async () => {
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: () => ({ status: 201, json: { html_url: NEW_PR } }),
+    });
+    await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-2', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    const o = out();
+    expect(o.url).toBe(NEW_PR);
+    expect(o.prUrl).toBe(NEW_PR);
+  });
+
+  it('status carries url+number under BOTH conventions (`url`/`prUrl`, `number`/`prNumber`)', async () => {
+    const { host } = fakeHost({ status: openPr('blocked') });
+    await runHostPr(['status', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    const o = out();
+    const PR_URL = 'https://github.com/example-org/example-repo/pull/42';
+    // live consumer: wave-close reads status.url + status.number
+    expect(o.url).toBe(PR_URL);
+    expect(o.number).toBe(42);
+    // …and now the aligned aliases too
+    expect(o.prUrl).toBe(PR_URL);
+    expect(o.prNumber).toBe(42);
+  });
+
+  it('arm carries url+number under BOTH conventions (`prUrl`/`prNumber`, `url`/`number`)', async () => {
+    const { host } = fakeHost({ status: openPr('clean') }); // clean → direct merge, outcome merged
+    await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    const o = out();
+    const PR_URL = 'https://github.com/example-org/example-repo/pull/42';
+    // live consumer: wave-close reads arm.prUrl + arm.prNumber
+    expect(o.prUrl).toBe(PR_URL);
+    expect(o.prNumber).toBe(42);
+    // …and now the aligned aliases too
+    expect(o.url).toBe(PR_URL);
+    expect(o.number).toBe(42);
+  });
+
+  it('merge carries url+number under BOTH conventions', async () => {
+    const { host } = fakeHost({ status: openPr('blocked') });
+    await runHostPr(['merge', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    const o = out();
+    const PR_URL = 'https://github.com/example-org/example-repo/pull/42';
+    expect(o.prUrl).toBe(PR_URL);
+    expect(o.prNumber).toBe(42);
+    expect(o.url).toBe(PR_URL);
+    expect(o.number).toBe(42);
+  });
+
+  it('a no-pr arm outcome carries none of the four ref fields (nothing to align)', async () => {
+    const { host } = fakeHost({ status: { state: 'none' } });
+    await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    const o = out();
+    expect(o).toMatchObject({ ok: false, outcome: 'no-pr' });
+    for (const k of ['url', 'prUrl', 'number', 'prNumber']) expect(k in o).toBe(false);
+  });
+});
+
 // ─── host-pr preflight (FOR-52 / ADR-0023 amendment — code-host posture) ─────
 //
 // preflight is store-BLIND: no --config, no --branch. It probes the code host
