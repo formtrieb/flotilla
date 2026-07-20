@@ -224,6 +224,24 @@ Two live occurrences are the evidence this is a real footgun, not a hypothetical
 - **w2 (2026-07-16):** `FOR-13` resolved to `Done` mid-session with the trigger unconfirmed at the time — PR #9's title/body named "FOR-13" though FOR-13 was not the row that PR landed (docs/retros/2026-07-16-hardening-w2.md).
 - **2026-07-19:** a docs-only PR (#29) whose **title** mentioned `FOR-6` and `FOR-33` — no Convention-4 close phrase anywhere in the body — was squash-merged, and the Linear GitHub integration moved both issues to `Done` before either had even been dispatched in the wave that was about to build them. Recovery required an out-of-band state reset (raw-GraphQL reopen) before the wave could run.
 
+### The reviewer-verdict render — the other half of the PR body
+
+Convention 4 governs *closing* the issue; this governs *informing the merge decision*. The close phrase alone leaves the human who reviews and lands the PR blind to what the Reviewer actually found — the verdict, the AC-verification table, re-run test counts, advisories — none of which lives anywhere the human looks. **A render lives where its reader lives, and a machine never reads a render back:** the sidecar (`.flotilla/waves/<slug>/verdicts/<id>-<iter>.md`) stays the full typed authority a machine resumes/routes from — never trimmed; the PR is the *one* human-facing render, written once at PR-open; the tracker carries state + pointers only (rung, AC ticks, PR attachment) — a prose result parked on the ticket would tax `listOpen`/`readTriage` on every future planning cycle.
+
+`{{wave-cli}} render-verdict <verdictsDir> <id> --anchor <sha>` is the single-owner render (`renderVerdictSection()`, `reviewer-verdict-schema.ts`): it reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` — the same `sidecar.ts` reader `verdict-acked` uses — and prints a compact `## Reviewer verdict` markdown section (verdict + iteration, the per-AC table, re-run verify counts, anchor SHA, advisories) to stdout. Call it at the `approved → pr-created` terminator (wave-start's PR-open step, right where the store-kind close phrase above is composed) and fold its output into the `--body` passed to `host-pr create`. Because the sidecar reader always resolves the LATEST iteration, a changes-requested → re-dispatch cycle's PR body carries the verdict that actually approved the row, never the stale first one:
+
+```bash
+VERDICT_SECTION=$({{wave-cli}} render-verdict "$VERDICTS" "$ID" --anchor "$ANCHOR_SHA")
+{{wave-cli}} host-pr create --branch <branch> --title "<title>" \
+  --body "<summary>
+
+$VERDICT_SECTION
+
+<the store-kind close phrase, on its own line>"
+```
+
+Kept compact by construction — this is a projection of the sidecar, not the full typed payload — because a re-dispatch Worker or a rebase resolver reading PR context reads this render too.
+
 ## Convention 5 — the sidecar write path (verb-written, at agent-return)
 
 Sidecars — the durable Worker-report / Reviewer-verdict records under `.flotilla/waves/<slug>/reports|verdicts/` — are the WAL the resume doctrine ("disk beats a non-landed spine flip", ADR-0002) stands on. **The invariant (ADR-0024): every sidecar comes into being through the engine write verb, at the moment its agent returns — never hand-formatted, never bundled after routing.** This is the P-1 live-gate fix: a Coordinator death used to leave zero sidecars because they were written last, in a batch, after the Workflow returned.

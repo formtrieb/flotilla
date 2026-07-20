@@ -23,6 +23,7 @@ import {
   AC_STATUS_VALUES,
   REVIEWER_VERDICT_JSON_SCHEMA,
   metAcIndexes,
+  renderVerdictSection,
   validateReviewerVerdict,
   type ReviewerVerdict,
 } from './reviewer-verdict-schema';
@@ -301,6 +302,159 @@ describe('metAcIndexes — met-AC index derivation (FOR-17, the dead --acked wir
     // reflects whichever verdict it is given, so the LATEST iteration's verdict
     // (never the stale one) is what must reach it.
     expect(metAcIndexes(sidecar2)).toEqual([0, 1]);
+  });
+});
+
+// ─── renderVerdictSection — the PR-body render (FOR-16) ─────────────────────
+//
+// AC1: renders verdict + iteration, the per-AC table (met/partial/not-met with
+// evidence), re-run verify counts, anchor SHA, and advisory notes — proven
+// against a REAL verdict sidecar fixture (the same on-disk round-trip
+// `metAcIndexes` above is proven against, not an in-memory object handed
+// straight to the function under test).
+// AC3: after a changes-requested → re-dispatch cycle, the render carries the
+// LATEST iteration's verdict, not the first.
+
+describe('renderVerdictSection — the PR-body render (FOR-16)', () => {
+  const ANCHOR = '94437315bfd3ffd4ec8651626240a0d60c33d03b';
+
+  it('renders verdict + iteration + risk class + anchor SHA', () => {
+    const v = validVerdict({ verdict: 'approve', riskClass: 'isolated-refactor' });
+    const out = renderVerdictSection(v, { iteration: 2, anchorSha: ANCHOR });
+    expect(out).toContain('## Reviewer verdict');
+    expect(out).toContain('**Verdict:** approve (iteration 2)');
+    expect(out).toContain('**Risk class:** isolated-refactor');
+    expect(out).toContain(`**Anchor SHA:** \`${ANCHOR}\``);
+  });
+
+  it('renders the per-AC verification table with met/partial/not-met + evidence', () => {
+    const v = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'tools/wave/src/cli.ts:42' },
+        { ac: '#2', met: 'partial', evidence: 'reviewed, one edge case missing' },
+        { ac: '#3', met: 'not-met', evidence: 'not implemented' },
+      ],
+    });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).toContain('| AC | Status | Evidence |');
+    expect(out).toContain('| #1 | met | tools/wave/src/cli.ts:42 |');
+    expect(out).toContain('| #2 | partial | reviewed, one edge case missing |');
+    expect(out).toContain('| #3 | not-met | not implemented |');
+  });
+
+  it('renders "no acceptance criteria declared" for an empty acVerification', () => {
+    const v = validVerdict({ acVerification: [] });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).toContain('_No acceptance criteria declared._');
+    expect(out).not.toContain('| AC | Status | Evidence |');
+  });
+
+  it('renders the re-run verify counts (lintTestSummary)', () => {
+    const v = validVerdict({ lintTestSummary: '1548/1548 green, 0 type errors' });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).toContain('**Verify:** 1548/1548 green, 0 type errors');
+  });
+
+  it('renders "not reported" when lintTestSummary is absent (optional field)', () => {
+    const bad = { ...validVerdict() } as Partial<ReviewerVerdict>;
+    delete bad.lintTestSummary;
+    const out = renderVerdictSection(bad as ReviewerVerdict, {
+      iteration: 1,
+      anchorSha: ANCHOR,
+    });
+    expect(out).toContain('**Verify:** not reported');
+  });
+
+  it('renders advisory notes (reviewerFocusItems) as a bullet list', () => {
+    const v = validVerdict({
+      reviewerFocusItems: [
+        '(advisory) consider a stall-watchdog follow-up',
+        'sibling wave/FOR-55 touches the same file — merge-tree overlap',
+      ],
+    });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).toContain('**Advisories:**');
+    expect(out).toContain('- (advisory) consider a stall-watchdog follow-up');
+    expect(out).toContain('- sibling wave/FOR-55 touches the same file — merge-tree overlap');
+  });
+
+  it('renders "- none" when there are no advisory notes', () => {
+    const v = validVerdict({ reviewerFocusItems: [] });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).toContain('**Advisories:**\n- none');
+  });
+
+  it('escapes a pipe in an evidence cell so it cannot break the markdown table', () => {
+    const v = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'ambiguous cell | with a pipe' },
+      ],
+    });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).toContain('ambiguous cell \\| with a pipe');
+  });
+
+  it('renders against a REAL verdict sidecar fixture — the on-disk write-verdict shape', () => {
+    const written = validVerdict({
+      verdict: 'approve',
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'tools/wave/src/cli.ts:42' },
+        { ac: '#2', met: 'met', evidence: 'tools/wave/src/reviewer-verdict-schema.ts:99' },
+      ],
+      lintTestSummary: '1548/1548 green, 0 type errors',
+    });
+    const sidecar = renderSidecar('16', 1, written);
+    const parsed = parseSidecarJson(sidecar);
+    const check = validateReviewerVerdict(parsed);
+    expect(check).toEqual({ valid: true, errors: [] });
+
+    const out = renderVerdictSection(parsed as ReviewerVerdict, {
+      iteration: 1,
+      anchorSha: ANCHOR,
+    });
+    expect(out).toContain('**Verdict:** approve (iteration 1)');
+    expect(out).toContain('| #1 | met | tools/wave/src/cli.ts:42 |');
+    expect(out).toContain('**Verify:** 1548/1548 green, 0 type errors');
+  });
+
+  it('after a changes-requested → re-dispatch cycle, the render carries the LATEST iteration — not the first (AC3)', () => {
+    // iter 1: changes-requested, one AC still failing.
+    const iter1 = validVerdict({
+      verdict: 'changes-requested',
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'a' },
+        { ac: '#2', met: 'not-met', evidence: 'missing test' },
+      ],
+      reviewerFocusItems: ['add the missing test for AC #2'],
+      lintTestSummary: '20/21 green',
+    });
+    // iter 2 (post re-dispatch): approve, both ACs now met.
+    const iter2 = validVerdict({
+      verdict: 'approve',
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'a' },
+        { ac: '#2', met: 'met', evidence: 'fixed in re-dispatch' },
+      ],
+      reviewerFocusItems: [],
+      lintTestSummary: '21/21 green',
+    });
+    const sidecar1 = parseSidecarJson(renderSidecar('16', 1, iter1)) as ReviewerVerdict;
+    const sidecar2 = parseSidecarJson(renderSidecar('16', 2, iter2)) as ReviewerVerdict;
+
+    // The PR-open step renders whichever verdict the sidecar reader's max-iter
+    // selection hands it (sidecar.ts's readSidecars/verdictFor) — proving THIS
+    // is iter 2's verdict, never iter 1's stale one, is the render-level half
+    // of AC3 (the reader-level half is already proven in sidecar.spec.ts).
+    const stale = renderVerdictSection(sidecar1, { iteration: 1, anchorSha: ANCHOR });
+    const latest = renderVerdictSection(sidecar2, { iteration: 2, anchorSha: ANCHOR });
+
+    expect(latest).toContain('**Verdict:** approve (iteration 2)');
+    expect(latest).toContain('| #2 | met | fixed in re-dispatch |');
+    expect(latest).toContain('**Verify:** 21/21 green');
+    expect(latest).toContain('**Advisories:**\n- none');
+
+    expect(stale).not.toEqual(latest);
+    expect(stale).toContain('**Verdict:** changes-requested (iteration 1)');
   });
 });
 

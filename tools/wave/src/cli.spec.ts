@@ -1672,3 +1672,136 @@ describe('verdict-acked subcommand', () => {
     expect(main(['verdict-acked'])).toBe(2);
   });
 });
+
+// ─── render-verdict subcommand (FOR-16 — end-to-end CLI composition) ────────
+//
+// render-verdict is verdict-acked's sibling: same readSidecars(verdictsDir,
+// ...) → verdictFor(id) plumbing, but rendering (renderVerdictSection) rather
+// than deriving ack indexes, and — unlike verdict-acked — a miss IS a failure
+// (exit 1), never a silent no-op. renderVerdictSection's own rendering detail
+// (table rows, escaping, "not reported" fallbacks, ...) is already exercised
+// at the unit level in reviewer-verdict-schema.spec.ts; these specs drive the
+// CLI composition itself (usage guard → readSidecars → verdictFor →
+// renderVerdictSection → stdout) end-to-end through `main()`, reading
+// sidecars produced ONLY by the REAL `write-verdict` verb (also routed
+// through `main()`) — never a hand-built fixture file for the happy paths —
+// so a drift in the writer's on-disk shape, the reader's parse, or the
+// render-verdict wiring itself fails loud here.
+
+const RENDER_ANCHOR = 'abc1234';
+
+describe('render-verdict subcommand', () => {
+  let dir: string;
+  let verdictsDir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'render-verdict-cli-'));
+    verdictsDir = join(dir, 'verdicts');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('happy path: renders the ## Reviewer verdict section from a sidecar written by the real write-verdict verb (exit 0)', () => {
+    const payloadFile = join(dir, 'v1.json');
+    writeFileSync(payloadFile, JSON.stringify(verdictAckedPayload()), 'utf-8');
+    const writeCode = main([
+      'write-verdict', payloadFile, '--dir', verdictsDir, '--id', 'FOR-16', '--iter', '1',
+    ]);
+    expect(writeCode).toBe(0);
+    stdoutBuf = ''; // discard the write verb's own stdout (the sidecar path) before reading
+
+    const code = main(['render-verdict', verdictsDir, 'FOR-16', '--anchor', RENDER_ANCHOR]);
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/^## Reviewer verdict/);
+    expect(stdoutBuf).toMatch(/\*\*Verdict:\*\* approve \(iteration 1\)/);
+    expect(stdoutBuf).toMatch(/\*\*Risk class:\*\* mechanical/);
+    expect(stdoutBuf).toMatch(new RegExp(`\\*\\*Anchor SHA:\\*\\* \`${RENDER_ANCHOR}\``));
+    expect(stdoutBuf).toMatch(/\| AC1 \| met \| src\/cli\.ts:1 \|/);
+    expect(stderrBuf).toBe('');
+  });
+
+  it('max-iter selection: a changes-requested iter-1 verdict is superseded by the approve iter-2 re-dispatch verdict in the render', () => {
+    const iter1 = join(dir, 'v1.json');
+    writeFileSync(
+      iter1,
+      JSON.stringify(
+        verdictAckedPayload({
+          verdict: 'changes-requested',
+          acVerification: [{ ac: 'AC1', met: 'not-met', evidence: 'missing' }],
+        }),
+      ),
+      'utf-8',
+    );
+    expect(
+      main(['write-verdict', iter1, '--dir', verdictsDir, '--id', 'FOR-16', '--iter', '1']),
+    ).toBe(0);
+
+    const iter2 = join(dir, 'v2.json');
+    writeFileSync(
+      iter2,
+      JSON.stringify(verdictAckedPayload({ verdict: 'approve' })),
+      'utf-8',
+    );
+    expect(
+      main(['write-verdict', iter2, '--dir', verdictsDir, '--id', 'FOR-16', '--iter', '2']),
+    ).toBe(0);
+    stdoutBuf = '';
+
+    const code = main(['render-verdict', verdictsDir, 'FOR-16', '--anchor', RENDER_ANCHOR]);
+    expect(code).toBe(0);
+    // the LATEST (iter-2) verdict wins — never the stale iter-1 changes-requested render
+    expect(stdoutBuf).toMatch(/\*\*Verdict:\*\* approve \(iteration 2\)/);
+    expect(stdoutBuf).not.toMatch(/changes-requested/);
+  });
+
+  it('no sidecar found for <id> (empty verdictsDir) → exit 1, nothing printed to stdout', () => {
+    // verdictsDir itself is absent — readSidecars treats a missing dir as "no
+    // sidecars" (same as verdict-acked), but render-verdict treats the miss
+    // as a failure rather than a cosmetic no-op.
+    const code = main(['render-verdict', verdictsDir, 'FOR-999', '--anchor', RENDER_ANCHOR]);
+    expect(code).toBe(1);
+    expect(stdoutBuf).toBe('');
+    expect(stderrBuf).toMatch(/no verdict sidecar found for "FOR-999"/);
+  });
+
+  it('a corrupt-only sidecar for <id> also exits 1, never silently rendering a schema-invalid verdict', () => {
+    mkdirSync(verdictsDir, { recursive: true });
+    // Hand-write a fenced-json sidecar missing the required riskClass (the
+    // write-verdict verb itself would refuse to write this — see
+    // route-cli.spec.ts's "an invalid verdict" case — so a corrupt sidecar can
+    // only arrive on disk some other way; write it directly here, same fixture
+    // pattern verdict-acked's corrupt-sidecar case uses).
+    const { riskClass: _omit, ...noRiskClass } = verdictAckedPayload();
+    writeFileSync(
+      join(verdictsDir, 'FOR-16-1.md'),
+      '# ReviewerVerdict FOR-16 iter 1\n\n```json\n' +
+        JSON.stringify(noRiskClass, null, 2) +
+        '\n```\n',
+      'utf-8',
+    );
+
+    const code = main(['render-verdict', verdictsDir, 'FOR-16', '--anchor', RENDER_ANCHOR]);
+    expect(code).toBe(1);
+    expect(stdoutBuf).toBe('');
+    expect(stderrBuf).toMatch(/no verdict sidecar found for "FOR-16"/);
+  });
+
+  it('missing --anchor → usage (exit 2)', () => {
+    const code = main(['render-verdict', verdictsDir, 'FOR-16']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/render-verdict requires <verdictsDir> <id> --anchor <sha>/);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('missing args (only <verdictsDir>, no <id>, no --anchor) → usage (exit 2)', () => {
+    const code = main(['render-verdict', verdictsDir]);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/render-verdict requires <verdictsDir> <id> --anchor <sha>/);
+  });
+
+  it('a bare "render-verdict" (zero args) also exits 2, via the generic zero-rest usage guard', () => {
+    expect(main(['render-verdict'])).toBe(2);
+  });
+});
