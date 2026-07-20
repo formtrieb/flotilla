@@ -10,7 +10,7 @@
  *   npx tsx tools/wave/src/cli.ts merge-order <wave-md-path>
  *   npx tsx tools/wave/src/cli.ts closed-by <closed-by-line>
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
- *   npx tsx tools/wave/src/cli.ts host-pr <arm|merge|status> --branch <b> [--remote <url>] [--method <m>]
+ *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>]
  *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [...]
  *
  * Subcommands:
@@ -77,12 +77,16 @@
  *   1 — unknown host (caller falls back to the pre-fill / manual path)
  *   2 — missing arg
  *
- * host-pr (ADR-0023) — the LANDING verb group. Every host write goes through the
- * engine host seam; `gh` is on none of these paths. Routed by detect-host to a
- * host-local LandingHost (github only in M1; bitbucket/unknown fail loud +
- * typed). See host-pr-cli.ts. Exit codes:
- *   0 — arm/merge landed the row (merged | armed | already-merged); status probed
- *   1 — not landed (no-pr | refused), no adapter for the host, or a host error
+ * host-pr (ADR-0019 + ADR-0023) — the host-write verb group. Every host write
+ * goes through the engine host seam; `gh` is on none of these paths. `create`
+ * opens the PR (find-before-create idempotent — an existing open PR is reused,
+ * requires --title/--body, reads GITHUB_TOKEN from the env); arm/merge/status
+ * land it. Routed by detect-host (github only in M1; bitbucket/unknown fail loud
+ * + typed for every verb). See host-pr-cli.ts. Exit codes:
+ *   0 — create opened/reused the PR; arm/merge landed the row (merged | armed |
+ *       already-merged); status probed
+ *   1 — create failed (create-failed + fallbackPrefillUrl); not landed (no-pr |
+ *       refused); no adapter for the host; or a host error
  *   2 — usage error
  *
  * worktree-cleanup exit codes:
