@@ -1537,3 +1537,138 @@ describe('host-pr subcommand routing', () => {
     expect(stderrBuf).toMatch(/--title/);
   });
 });
+
+// ─── verdict-acked subcommand (FOR-49 — end-to-end CLI composition) ─────────
+//
+// verdict-acked (route-cli's sibling write-verdict already has its own
+// end-to-end round-trip spec in route-cli.spec.ts) was previously only
+// unit-tested at its primitives (metAcIndexes, readSidecars) — the CLI
+// composition itself (usage guard → readSidecars(verdictsDir, ...) →
+// metAcIndexes → printJson) was only reviewer-eyeballed. These specs drive it
+// end-to-end through `main()`, reading sidecars produced ONLY by the REAL
+// `write-verdict` verb (also routed through `main()`) — never a hand-built
+// fixture file — so a drift in either half (writer's on-disk shape, reader's
+// parse, or the verdict-acked wiring itself) fails loud here.
+
+function verdictAckedPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    verdict: 'approve',
+    branchReviewed: 'wave/FOR-49-verdict-acked-spec',
+    riskClass: 'mechanical',
+    workerReportDigest: '10/10 green',
+    acVerification: [
+      { ac: 'AC1', met: 'met', evidence: 'src/cli.ts:1' },
+      { ac: 'AC2', met: 'partial', evidence: 'deferred' },
+      { ac: 'AC3', met: 'met', evidence: 'src/cli.ts:2' },
+    ],
+    reviewerFocusItems: [],
+    ...overrides,
+  };
+}
+
+describe('verdict-acked subcommand', () => {
+  let dir: string;
+  let verdictsDir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'verdict-acked-cli-'));
+    verdictsDir = join(dir, 'verdicts');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('happy path: { acked, iter, corrupt } from a sidecar written by the real write-verdict verb', () => {
+    const payloadFile = join(dir, 'v1.json');
+    writeFileSync(payloadFile, JSON.stringify(verdictAckedPayload()), 'utf-8');
+    const writeCode = main([
+      'write-verdict', payloadFile, '--dir', verdictsDir, '--id', 'FOR-49', '--iter', '1',
+    ]);
+    expect(writeCode).toBe(0);
+    stdoutBuf = ''; // discard the write verb's own stdout (the sidecar path) before reading
+
+    const code = main(['verdict-acked', verdictsDir, 'FOR-49']);
+    expect(code).toBe(0);
+    // met at indexes 0 and 2 only — the `partial` row at index 1 never earns a tick
+    expect(JSON.parse(stdoutBuf)).toEqual({ acked: [0, 2], iter: 1, corrupt: 0 });
+  });
+
+  it('max-iter selection: a changes-requested iter-1 verdict is superseded by the approve iter-2 re-dispatch verdict', () => {
+    const iter1 = join(dir, 'v1.json');
+    writeFileSync(
+      iter1,
+      JSON.stringify(
+        verdictAckedPayload({
+          verdict: 'changes-requested',
+          acVerification: [{ ac: 'AC1', met: 'not-met', evidence: 'missing' }],
+        }),
+      ),
+      'utf-8',
+    );
+    expect(
+      main(['write-verdict', iter1, '--dir', verdictsDir, '--id', 'FOR-49', '--iter', '1']),
+    ).toBe(0);
+
+    const iter2 = join(dir, 'v2.json');
+    writeFileSync(
+      iter2,
+      JSON.stringify(
+        verdictAckedPayload({
+          acVerification: [
+            { ac: 'AC1', met: 'met', evidence: 'src/cli.ts:1' },
+            { ac: 'AC2', met: 'met', evidence: 'src/cli.ts:2' },
+          ],
+        }),
+      ),
+      'utf-8',
+    );
+    expect(
+      main(['write-verdict', iter2, '--dir', verdictsDir, '--id', 'FOR-49', '--iter', '2']),
+    ).toBe(0);
+    stdoutBuf = '';
+
+    const code = main(['verdict-acked', verdictsDir, 'FOR-49']);
+    expect(code).toBe(0);
+    // the LATEST (iter-2) verdict wins — never the stale iter-1 changes-requested indexes
+    expect(JSON.parse(stdoutBuf)).toEqual({ acked: [0, 1], iter: 2, corrupt: 0 });
+  });
+
+  it('absent id → no-op { acked: [], iter: null, corrupt: 0 } (exit 0)', () => {
+    // verdictsDir itself is absent too — readSidecars treats a missing dir as
+    // "no sidecars", never an error.
+    const code = main(['verdict-acked', verdictsDir, 'FOR-999']);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdoutBuf)).toEqual({ acked: [], iter: null, corrupt: 0 });
+  });
+
+  it('corrupt-sidecar counting: a schema-invalid verdict file is reported via `corrupt`, never thrown or adopted', () => {
+    mkdirSync(verdictsDir, { recursive: true });
+    // Hand-write a fenced-json sidecar missing the required riskClass (the
+    // write-verdict verb itself would refuse to write this — see
+    // route-cli.spec.ts's "an invalid verdict" case — so a corrupt sidecar can
+    // only arrive on disk some other way; write it directly here).
+    const { riskClass: _omit, ...noRiskClass } = verdictAckedPayload();
+    writeFileSync(
+      join(verdictsDir, 'FOR-49-1.md'),
+      '# ReviewerVerdict FOR-49 iter 1\n\n```json\n' +
+        JSON.stringify(noRiskClass, null, 2) +
+        '\n```\n',
+      'utf-8',
+    );
+
+    const code = main(['verdict-acked', verdictsDir, 'FOR-49']);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdoutBuf)).toEqual({ acked: [], iter: null, corrupt: 1 });
+  });
+
+  it('missing args (only <verdictsDir>, no <id>) → usage (exit 2)', () => {
+    const code = main(['verdict-acked', verdictsDir]);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/verdict-acked requires <verdictsDir> <id>/);
+  });
+
+  it('a bare "verdict-acked" (zero args) also exits 2, via the generic zero-rest usage guard', () => {
+    expect(main(['verdict-acked'])).toBe(2);
+  });
+});
