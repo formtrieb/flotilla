@@ -1,0 +1,12 @@
+{
+  "files.watcherExclude": {
+    "**/.claude/worktrees/**": true,
+    "**/node_modules/**": true,
+    "**/.flotilla/**": true
+  },
+  "search.exclude": {
+    "**/.claude/worktrees/**": true,
+    "**/.flotilla/**": true
+  },
+  "git.autoRepositoryDetection": "openEditors"
+}

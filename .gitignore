@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+.npm-cache/
+
+# build / test output
+dist/
+coverage/
+*.tsbuildinfo
+
+# vitest / vite caches
+.vite/
+.vitest/
+
+# os
+.DS_Store
+
+_context/*
+
+.claude/projects
+.claude/settings.local.json
+.remember
+.claude/worktrees/
+
+# wave runtime artifacts — flotilla is the toolkit, not a consumer; a stray
+# in-repo spine / dogfood must never land in the toolkit repo. (In a CONSUMER
+# repo .flotilla/ is NOT ignored — the spine is branch-local committed for resume.)
+.flotilla/
+
+# de-client denylist (ADR-0026) — the pattern list names exactly what it
+# guards, so it stays a local, untracked file; scripts/check-client-refs.mjs
+# ships public and skips loudly when this file is absent.
+.declient-denylist

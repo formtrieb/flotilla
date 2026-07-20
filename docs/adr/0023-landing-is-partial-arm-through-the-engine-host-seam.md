@@ -1,0 +1,43 @@
+# Landing automation is partial-arm through the engine host seam — no `gh` on any host-write path
+
+`wave-close --auto` (ADR-0005's opt-in mode) gets its concrete shape from the 2026-07-16 auto-merge grill, under three fixed inputs: `--auto` stays **opt-in with human-confirm as the default posture**, the audience is **OSS** (consumers we don't sit next to), and a **Bitbucket+Linear team-internal pilot** is a named near-term consumer. Four decisions: **(1) partial-arm** — the confirm arms the order-free rows, the overlapping tail keeps the advisory merge-order as the human playbook; **(2) preconditions are probed and displayed, never dictated**; **(3) every host write goes through the engine host seam** — `gh` leaves the landing *and*, staged, the creation path; **(4) arm-and-exit** — no watch mode; `done` reconciles on the next touch, with a host-side evidence probe closing the no-integration gap.
+
+## Partial-arm: the Conflict-Map decides what arms
+
+Per-row arming eligibility is mechanical: verdict `approve`, no `needs-attention` flag, an open PR. There is **no second risk gate at landing** — a `public-API-change` row already met its human STOP at verdict routing (the G3 guard, fired three times correctly in the first live run); re-gating at merge would double-ask the same human. Wave-level, the confirm (**one per wave**, tabular: PR · row · verdict · conflict prediction · repo posture) arms exactly the rows that appear in **no Conflict-Map pair**; overlapping rows are listed with the recomputed advisory order — the Ur-strength ordered-landing experience preserved, with the order-free head landing itself. Headless runs never self-confirm: `--auto` without a human requires an explicit pre-authorization flag.
+
+Intra-wave file overlap remains a first-class wave shape (`wave-plan`/`wave-create` record it in the spine `## Conflict-Map`; workers run in parallel regardless — worktree isolation makes the *work* conflict-free, only the *landing* needs order). Partial-arm is what keeps that strength under automation instead of trading it away.
+
+## Preconditions: probe + transparency, not policy
+
+Two GitHub facts shape `--auto`: the repo setting **"Allow auto-merge" is off by default** (without it arming simply fails — a hard *functional* precondition), and **a PR with no pending required checks cannot be armed** (GitHub rejects enable-auto-merge on an already-clean PR; the only host action there is a direct merge). So the store-preflight (FOR-12's home) gains two probes: **allow-auto-merge** (FAIL with fix instruction when off) and **required-checks presence** (**report-only**). A no-CI repo keeps `--auto`: the confirm then states "no required checks — confirming means immediate merge", which is semantically honest — the human just gave exactly that click, backed by the Worker's verify run and the Reviewer's independent one. We deliberately do **not** hard-require CI: visibility over gatekeeping, the FOR-12 line — hard gates only where failure would be silent, and this failure is loud.
+
+## The engine host seam carries every host write
+
+`gh` leaves the landing path entirely — and, staged, the creation path too (amending ADR-0019's "gh is still used by skills for PR creation"). Reasons, all live-proven: gh's creds are sandbox-denied and its TLS stack fought both the keychain (`OSStatus -26276`, retro P-6) and the proxy MITM cert (w2-F4) on REST **and** GraphQL; the merge identity was already the ambient `GITHUB_TOKEN` (the FOR-12 preflight probes precisely "can this token merge"); and the permission classifier gets one narrow, auditable CLI verb instead of a broad `gh pr merge` bash rule.
+
+Mechanism per PR, deterministic: **checks pending → GraphQL `enablePullRequestAutoMerge`** (REST has no arming endpoint; GraphQL-where-REST-is-weak is the ADR-0019 pattern, same `GitHubHttp` seam as the closing probe) — **already clean → REST merge** (`PUT …/pulls/N/merge`, the exact call that landed run 1). No `gh --auto` fallback semantics to reverse-engineer. CLI surface: **`host-pr create | arm | merge | status`** with `detect-host` routing and host-local implementations (GitHub rides `GitHubHttp`; host-pr's cross-host Basic-auth `HttpProbe` stays untouched — the ADR-0019 boundary holds). `host-pr create` finally exposes the library's find-before-create idempotency (the P8 leftover), and this verb surface is what the Bitbucket pilot implements an adapter against — new adapter, no new skills.
+
+Token shape: classic PAT `repo` scope is the live-proven path; fine-grained needs Pull requests: RW + Contents: RW. Two build-slice spikes: fine-grained-PAT support for the arm mutation, and the exact error shape of arming an already-clean PR. Identity note: merges land as the PAT owner — a GitHub-App/bot identity for teams is M2 (parallel to the Linear bot-identity question).
+
+## Arm-and-exit; evidence-hierarchy done-reconcile
+
+`wave-close --auto` arms/merges, prints the summary, archives, exits — **no `--watch`** in M1. Watching is the babysitting the server-side design abolishes (ADR-0005 chose arming *because* it survives a dead Coordinator); re-running wave-close (idempotent, archived spines included) is the interactive substitute. Accepted, documented latency: an armed PR whose checks later fail flags only on the next wave-close/resume touch.
+
+Done-reconcile gains a host-side evidence source, hierarchy: **tracker attachment > host PR state (`host-pr status`) > nothing**. On a no-integration workspace (Linear without the GitHub integration — and the Bitbucket pilot, where Linear has no native integration at all) `readClosing` can never report `merged`; `host-pr status` answers "is the PR for this branch merged?" mechanically, and `issue-store close <id> <prUrl>` fires the FOR-13 `doneState` fallback — replacing the "out-of-band confirmed merge" prose with a probe. This docks onto FOR-20's evidence-state honesty (`closed-unmerged` vs closed-without-PR-evidence) rather than duplicating it.
+
+## Considered Options
+
+- **Partial-arm through the engine seam, arm-and-exit** (chosen) — keeps both proven strengths: the order-free subset lands itself, the overlapping tail keeps the human merge-order playbook; deterministic arm-vs-merge; narrow classifier surface; survives a dead Coordinator.
+- **Arm-all + fall-behind flags** (rejected — ADR-0005's literal sketch) — simplest, but knowingly converts *predicted* overlaps into `needs-attention` noise the Conflict-Map could have prevented.
+- **Hard disjointness gate** (rejected) — `--auto` only for fully-disjoint waves forfeits the common mixed wave (3 disjoint + 1 overlapping row) for no safety gain: a blocked PR fails loud, not wrong.
+- **`gh pr merge --auto` as the transport** (rejected) — sandbox-denied creds, keychain/proxy TLS failures (P-6, w2-F4), a broad bash allowlist rule, and undocumented clean-PR fallback semantics.
+- **GitHub Merge Queue as the standard ordered-auto path** (rejected as standard) — free on public repos but **paid on private** (Team/Enterprise); a dependency would tax exactly the small-team consumers flotilla targets. Noted as a consumer-side option; the M2 **rebase-train is "the free merge queue"** — offering the queue's ordered-landing feature tracker-agnostically at zero cost is an OSS differentiator, not merely a fallback.
+- **`--watch`** (rejected for M1) — possible M2 sugar if operations show the reconcile latency hurts.
+
+## Consequences
+
+- **Engine surface:** `GitHubApi`/`RealGitHubApi` gain arm/merge/PR-status methods (GraphQL mutation + REST merge on the existing `GitHubHttp` seam); new `host-pr` CLI verb group (`create|arm|merge|status`, detect-host-routed); store-preflight gains the allow-auto-merge and required-checks probes.
+- **Build slices:** **(A)** engine landing verbs + probes + spikes → **(B)** `wave-close --auto` partial-arm phase (blockedBy A; Files overlap FOR-20/FOR-21 on `wave-close/**` — the conflict-map will serialize) → **(C)** PR-creation moves to `host-pr create` (blockedBy A; touches the Worker terminator brief in `wave-shared`/`wave-start`).
+- **Amends [ADR-0005](0005-pr-route-protected-main-merge-terminality.md)** (the `auto` mode's shape is partial-arm; the transport is the engine seam — the server-side-completion property is retained) and **[ADR-0019](0019-real-githubapi-is-raw-fetch-rest-graphql-behind-a-github-local-seam.md)** (the creation-stays-`gh` consequence is superseded, staged).
+- The confirm table is the human-confirm default made concrete; explicit pre-authorization is the only headless bypass.
