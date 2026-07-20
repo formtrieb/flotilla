@@ -4,6 +4,7 @@ import {
   renderConflictMap,
   renderSpine,
   setRowState,
+  setRowIter,
   setRowPrCell,
   upsertPrLogRow,
   replaceClosedByBlock,
@@ -367,6 +368,128 @@ describe('writer guards', () => {
       const out = setRowState(SPINE, '54', state);
       expect(readSpine(out).planTable[0].state).toBe(state);
     }
+  });
+
+  it('setRowIter throws on an unknown id', () => {
+    expect(() => setRowIter(SPINE, '99', 2)).toThrow(/no Plan-Table row/);
+  });
+});
+
+// ─── setRowIter — Plan-Table Iter cell + sidecar-link renderer (FOR-53) ───────
+//
+// Closes the observability gap where a cap=1 re-dispatch leaves the Plan-Table
+// row describing iteration 1 (stale `Iter` cell + `r1`/`v1` sidecar links)
+// while the Scribe has already written iteration-2 sidecars to disk. This is
+// observability-only — the reconciler still reads the max-iter sidecar off
+// disk (ADR-0024) — so these tests assert the RENDERED cells, never a new
+// reconciler input.
+describe('setRowIter — bumps Iter + re-renders the sidecar-link cell (FOR-53)', () => {
+  // A freshly-rendered spine carries the MODERN two-link sidecar format
+  // (`[r1](…) → [v1](…)`) that renderSidecarCellForIter understands.
+  const meta = {
+    slug: 'demo', description: 'a demo wave', coordinator: 'at',
+    model: 'Opus 4.8', created: '2026-07-20', lastUpdated: '2026-07-20 10:00 CEST',
+  };
+  const roster = [
+    { id: 'FOR-30', title: 'Some row', worker: 'background', risk: 'isolated-refactor' },
+  ];
+  const rendered = renderSpine(meta, roster, { issues: [], cells: [] }, 'ok.');
+
+  it('bumps the Iter cell and re-renders the sidecar links to <id>-<iter>', () => {
+    const out = setRowIter(rendered, 'FOR-30', 2);
+    const row = readSpine(out).planTable[0];
+    expect(row.iter).toBe(2);
+    expect(row.reportsVerdicts).toBe(
+      '[r2](./demo/reports/FOR-30-2.md) → [v2](./demo/verdicts/FOR-30-2.md)',
+    );
+  });
+
+  it('is the same write a cap=1 re-dispatch performs alongside set-row-state', () => {
+    // Mirrors start-mechanics.md step 7d: set-row-state(id, 're-dispatched')
+    // first, then set-row-iter(id, 2) — the durable spine (WAL, ADR-0002)
+    // stops disagreeing with the iteration-2 sidecars already on disk.
+    const reDispatched = setRowState(rendered, 'FOR-30', 're-dispatched');
+    const out = setRowIter(reDispatched, 'FOR-30', 2);
+    const row = readSpine(out).planTable[0];
+    expect(row.state).toBe('re-dispatched');
+    expect(row.iter).toBe(2);
+    expect(row.reportsVerdicts).toContain('FOR-30-2.md');
+    expect(row.reportsVerdicts).not.toContain('FOR-30-1.md');
+  });
+
+  it('goes through the parser-consumed renderer — byte-safety: only the row line changes', () => {
+    const out = setRowIter(rendered, 'FOR-30', 2);
+    const before = rendered.split('\n');
+    const after = out.split('\n');
+    expect(after).toHaveLength(before.length);
+    const changed = before
+      .map((l, i) => (l === after[i] ? null : i))
+      .filter((i) => i !== null);
+    expect(changed).toHaveLength(1);
+    // readSpine → renderSpine stays stable: the mutated spine re-parses
+    // cleanly and every other structural element is untouched (ADR-0016).
+    expect(() => readSpine(out)).not.toThrow();
+    const beforeSpine = readSpine(rendered);
+    const afterSpine = readSpine(out);
+    expect(afterSpine.frontmatter).toEqual(beforeSpine.frontmatter);
+    expect(afterSpine.conflictMap).toEqual(beforeSpine.conflictMap);
+    expect(afterSpine.planTable).toHaveLength(beforeSpine.planTable.length);
+  });
+
+  it('is idempotent — re-writing the same iter twice is byte-identical on the second call', () => {
+    const once = setRowIter(rendered, 'FOR-30', 2);
+    const twice = setRowIter(once, 'FOR-30', 2);
+    expect(twice).toBe(once);
+  });
+
+  it('leaves an unrecognised sidecar cell (the "—" no-sidecar placeholder) untouched', () => {
+    // The minimal draft-spine fixture's row has reportsVerdicts === '—'.
+    const minimal = `# Wave X
+
+**Status:** draft
+
+## Plan-Table
+
+| ID  | Title | Worker          | Risk       | Reviewer     | PR  | State   | Iter | Reports → Verdicts |
+| --- | ----- | --------------- | ---------- | ------------ | --- | ------- | ---- | ------------------ |
+| 01  | Foo   | background-heavy | mechanical | quick-verify | —   | planned | 1    | —                  |
+`;
+    const out = setRowIter(minimal, '01', 2);
+    const row = readSpine(out).planTable[0];
+    expect(row.iter).toBe(2);
+    expect(row.reportsVerdicts).toBe('—');
+  });
+
+  it('leaves a legacy single-link sidecar cell untouched (Iter still bumps)', () => {
+    // The golden SPINE fixture's row 54 uses the pre-verdict-link shorthand
+    // `[r1](./r/54-1.md)` (no ` → [v1](…)` half) — setRowIter must not guess
+    // a verdicts path that was never recorded.
+    const out = setRowIter(SPINE, '54', 2);
+    const row = readSpine(out).planTable.find((r) => r.id === '54')!;
+    expect(row.iter).toBe(2);
+    expect(row.reportsVerdicts).toBe('[r1](./r/54-1.md)');
+  });
+
+  it('touches only the targeted row — sibling rows are byte-untouched', () => {
+    const roster2 = [
+      { id: 'A', title: 'First', worker: 'background', risk: 'mechanical' },
+      { id: 'B', title: 'Second', worker: 'background', risk: 'mechanical' },
+    ];
+    const spine2 = renderSpine(meta, roster2, { issues: [], cells: [] }, 'ok.');
+    const out = setRowIter(spine2, 'A', 2);
+    const rows = readSpine(out).planTable;
+    expect(rows.find((r) => r.id === 'A')?.iter).toBe(2);
+    expect(rows.find((r) => r.id === 'B')?.iter).toBe(1);
+    expect(rows.find((r) => r.id === 'B')?.reportsVerdicts).toContain('B-1.md');
+  });
+
+  it('handles a double-digit iteration correctly (path suffix disambiguation)', () => {
+    const out = setRowIter(rendered, 'FOR-30', 12);
+    const row = readSpine(out).planTable[0];
+    expect(row.iter).toBe(12);
+    expect(row.reportsVerdicts).toBe(
+      '[r12](./demo/reports/FOR-30-12.md) → [v12](./demo/verdicts/FOR-30-12.md)',
+    );
   });
 });
 

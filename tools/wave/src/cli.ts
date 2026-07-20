@@ -228,7 +228,7 @@ function printUsage(): void {
       '  wave-validate conflict-map <issue-path> [<issue-path> ...]',
       '  wave-validate cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
       '  wave-validate issue-store <op> [...args] [--config <path>]',
-      '  wave-validate spine <create|read|set-row-state|set-row-pr|set-branch|replace-closed-by|set-status> <spine-path> [...args]',
+      '  wave-validate spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status> <spine-path> [...args]',
       '  wave-validate config validate <path>',
       '  wave-validate route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>',
       '  wave-validate route-outcome --outcome <o> --state <s>',
