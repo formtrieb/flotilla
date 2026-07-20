@@ -267,6 +267,22 @@ On a merge proven by *either* tier, `issue-store close <id> <prUrl>` records the
 
 **Arm-and-exit, not watch.** `--auto` arms and exits; the host completes merges server-side (surviving a dead Coordinator). Late merges — and an armed PR whose checks later fail — reconcile on the next `wave-close` / `wave-resume` touch, not live. This latency is accepted and documented, never papered over with a poll loop.
 
+## Convention 8 — secret-safe briefs (never echo an environment variable's value)
+
+An agent's tool output is not ephemeral — it is the session transcript on disk, long-lived and read by humans and downstream agents alike. **A brief never causes an agent to echo an environment variable's VALUE into that output — not even with fallback syntax like `${VAR:-no}`.** This applies to every brief the driver composes (Worker, Reviewer, Scribe alike), not just the ones that write to the tracker.
+
+- **Fallback syntax is not safe.** `echo "${VAR:-no}"` still prints the live value whenever `VAR` is set — the fallback branch fires only when it is *absent*. There is no "just for diagnostics" form of `echo $VAR` that stays safe once the variable might hold a secret.
+- **Check availability value-free.** The only sanctioned presence test is one that cannot leak the value:
+  ```bash
+  [ -n "$VAR" ] && echo set
+  ```
+  This prints the literal string `set` (or nothing) — never the token.
+- **The constraint is on tool output generally, not just brief prose.** A brief that itself never asks for `${VAR:-no}` can still be defeated by an agent free-styling a diagnostic mid-task. Tool output must never contain a secret — full stop — whether it originates from brief-scripted bash or an agent's own improvised check.
+
+### Live occurrence (evidence)
+
+**2026-07-20, publication wave, finding W8-F1** (docs/retros/2026-07-20-publication-w8.md): a Worker checked host-token availability with a flawed `${VAR:-no}` diagnostic echo and printed the live `GITHUB_TOKEN` into its agent-visible tool output — i.e. into the session transcript on disk. The Worker self-disclosed it, the Reviewer escalated ("this review cannot verify or remediate"); nothing was committed and nothing left the machine, but the token was rotated as a precaution. This convention is the fix: value-free availability checks only, in every dispatched brief.
+
 ## Common Mistakes
 
 - **Hand-editing an inlined schema literal.** The TS const is the source of truth; edit it, run the drift-guard, then sync the literal. A lone literal edit fails `skill-schema-drift.spec.ts`.
@@ -282,6 +298,7 @@ On a merge proven by *either* tier, `issue-store close <id> <prUrl>` records the
 - **Naming a bare tracker id in a PR title/body you don't intend to close (the mention-footgun).** An integrated tracker links and can act on every issue id it finds, not just the Convention-4 close phrase — a docs/meta PR's title mentioning another row's id has auto-closed it before that row was even dispatched (live twice: w2 FOR-13, 2026-07-19 FOR-6/FOR-33). Reference an ADR/spec identifier instead; never a bare tracker id unless closing it is the point.
 - **Bundling sidecar writes after routing, or hand-formatting a sidecar (Convention 5).** Sidecars are written by `write-report`/`write-verdict` **at agent-return**, before routing — not batched at the end (the P-1 kill window) and never hand-typed. A hand-formatted sidecar drifts from the reader and resurfaces as "corrupt" at resume.
 - **Drift-pinning `SCRIBE_RESULT_SCHEMA`.** It is driver-local (no engine const); only the two agent-boundary schemas above are pinned by `skill-schema-drift.spec.ts`. Do not add the Scribe shape to that spec.
+- **Echoing an environment variable's value — even via `${VAR:-no}` fallback syntax.** The fallback only fires when the variable is absent; when it's set, the value prints straight into agent-visible tool output, i.e. the session transcript on disk (live: W8-F1, docs/retros/2026-07-20-publication-w8.md). Check availability value-free instead: `[ -n "$VAR" ] && echo set` (Convention 8).
 - **Letting a Scribe failure kill the tuple.** The driver's Scribe stage must pass the report/verdict through and log loud on a write failure — a throw would drop the row to `null` and convert a finished Worker into a spurious `worker-failed` STOP.
 
 - **Re-scoping or correcting an issue with raw tracker GraphQL / a tracker CLI.** The exact W4-F5 failure. To change an issue's title or prose, use `issue-store amend` (Convention 6); to change its Files/ACs, use `issue-store annotate`. A Worker *discloses* the needed change in its report and the Coordinator amends — never reach past the engine seam. And `amend` cannot be used to change acceptance criteria: an `AmendPatch` has no AC field and a reserved-heading section throws.
