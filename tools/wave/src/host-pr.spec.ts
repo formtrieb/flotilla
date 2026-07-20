@@ -10,7 +10,7 @@
  * `detectHost` is a pure parser and needs no seam at all.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   detectHost,
   verifyAuth,
@@ -22,6 +22,7 @@ import {
   AutoMergeUnavailableError,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
+  type ArmOptions,
   type HttpProbe,
   type HttpRequest,
   type HttpResponse,
@@ -448,16 +449,29 @@ describe('find-before-create idempotency', () => {
  * Fake {@link LandingHost}. The landing logic under test is host-NEUTRAL — it
  * routes on `PrMergeability` and on the two typed errors, never on GitHub
  * specifics — so a hand-rolled fake is the whole seam. Zero network.
+ *
+ * `statuses`, when given, answers `getPrStatus` from a QUEUE — call 1 gets
+ * `statuses[0]`, call 2 gets `statuses[1]`, etc., sticking on the last entry
+ * once exhausted. Models a mergeability that resolves over a few probes
+ * (the W10-F1 behind/recomputing race) without needing a real clock; `status`
+ * (singular) stays the fixed-answer form every existing test already uses.
  */
 function fakeLandingHost(opts: {
   status?: PrLandingStatus;
+  statuses?: PrLandingStatus[];
   onEnableAutoMerge?: () => void;
   onMerge?: () => MergeResult;
 }): { host: LandingHost; calls: string[] } {
   const calls: string[] = [];
+  let statusCall = 0;
   const host: LandingHost = {
     async getPrStatus(branch: string): Promise<PrLandingStatus> {
       calls.push(`getPrStatus:${branch}`);
+      if (opts.statuses !== undefined) {
+        const next = opts.statuses[Math.min(statusCall, opts.statuses.length - 1)];
+        statusCall++;
+        return next;
+      }
       return opts.status ?? { state: 'none' };
     },
     async enableAutoMerge(prNumber: number, method?: MergeMethod): Promise<void> {
@@ -478,6 +492,9 @@ const openPr = (mergeability: PrMergeability): PrLandingStatus => ({
   url: 'https://github.com/acme/widgets/pull/42',
   mergeability,
 });
+
+/** No-op {@link ArmOptions.sleep} — keeps recompute-retry specs hermetic and fast. */
+const instantSleep: NonNullable<ArmOptions['sleep']> = async () => {};
 
 describe('decideArmAction (ADR-0023 deterministic arm intent)', () => {
   it('clean → direct merge (nothing pending; arming a clean PR is rejected by the host)', () => {
@@ -556,7 +573,11 @@ describe('armPullRequest', () => {
 
   it('an open PR with no mergeability reported is treated as unknown → armed (never blind-merged)', async () => {
     const { host, calls } = fakeLandingHost({ status: { state: 'open', number: 42 } });
-    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'armed' });
+    // 'unknown' is a recomputing read too — inject an instant sleep so the
+    // default retry (which never resolves against a fixed fake) stays fast.
+    expect(await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep })).toMatchObject({
+      outcome: 'armed',
+    });
     expect(calls).toContain('enableAutoMerge:42:squash');
   });
 
@@ -568,13 +589,22 @@ describe('armPullRequest', () => {
         throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
       },
     });
-    const out = await armPullRequest(host, 'b');
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
     // …the host says "it is already clean" → the deterministic recovery is to merge.
     expect(out).toMatchObject({ outcome: 'merged', prNumber: 42 });
-    expect(calls).toEqual(['getPrStatus:b', 'enableAutoMerge:42:squash', 'mergePullRequest:42:squash']);
+    // 'unknown' also triggers the default recompute retry (2 extra probes,
+    // instant here) before the arm is even attempted; still never resolves
+    // against the fixed fake, so it decides on the last-known read.
+    expect(calls).toEqual([
+      'getPrStatus:b',
+      'getPrStatus:b',
+      'getPrStatus:b',
+      'enableAutoMerge:42:squash',
+      'mergePullRequest:42:squash',
+    ]);
   });
 
-  it('arm rejected with reason "not-allowed" (repo setting off) → refused, NOT merged', async () => {
+  it('arm rejected with reason "not-allowed" (repo setting off) + a pending required check (blocked) → refused, NOT merged', async () => {
     const { host, calls } = fakeLandingHost({
       status: openPr('blocked'),
       onEnableAutoMerge: () => {
@@ -583,8 +613,10 @@ describe('armPullRequest', () => {
     });
     const out = await armPullRequest(host, 'b');
     expect(out).toMatchObject({ outcome: 'refused' });
-    // The whole point: a repo with auto-merge OFF must NOT silently become an
-    // immediate merge of a PR whose required checks are still pending.
+    // The whole point (AC3, ADR-0023 amendment): a repo with auto-merge OFF
+    // must NOT silently become an immediate merge of a PR whose required
+    // checks are still pending — the controlled-degrade fallback below NEVER
+    // fires while mergeability is `blocked`.
     expect(calls).not.toContain('mergePullRequest:42:squash');
     expect((out as { reason: string }).reason).toMatch(/allow auto-merge/i);
   });
@@ -597,6 +629,151 @@ describe('armPullRequest', () => {
       },
     });
     await expect(armPullRequest(host, 'b')).rejects.toThrow('HTTP 500');
+  });
+});
+
+// ─── Recompute retry (AC2, ADR-0023 amendment / W10-F1) ──────────────────────
+
+describe('armPullRequest — recompute retry on a transient behind/recomputing read', () => {
+  it('a transient behind read resolves to clean via retry — never wastes an arm attempt', async () => {
+    const { host, calls } = fakeLandingHost({
+      statuses: [openPr('behind'), openPr('behind'), openPr('clean')],
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
+    expect(out).toMatchObject({ outcome: 'merged', prNumber: 42 });
+    expect(calls).toEqual(['getPrStatus:b', 'getPrStatus:b', 'getPrStatus:b', 'mergePullRequest:42:squash']);
+    expect(calls).not.toContain('enableAutoMerge:42:squash');
+  });
+
+  it('an unresolved recompute after the retry budget proceeds with the last-known read (never blocks indefinitely)', async () => {
+    const { host, calls } = fakeLandingHost({ statuses: [openPr('unknown')] }); // never settles
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
+    expect(out).toMatchObject({ outcome: 'armed' });
+    // Default budget: the initial read + 2 retries = 3 probes, then decide.
+    expect(calls.filter((c) => c.startsWith('getPrStatus'))).toHaveLength(3);
+    expect(calls).toContain('enableAutoMerge:42:squash');
+  });
+
+  it('recomputeRetries is honoured — 0 decides on the very first read', async () => {
+    const { host, calls } = fakeLandingHost({ statuses: [openPr('behind')] });
+    await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep, recomputeRetries: 0 });
+    expect(calls).toEqual(['getPrStatus:b', 'enableAutoMerge:42:squash']);
+  });
+
+  it('a PR that reaches a terminal state during the retry window is reported honestly, never re-armed', async () => {
+    const { host, calls } = fakeLandingHost({
+      statuses: [
+        openPr('behind'),
+        { state: 'merged', number: 42, url: 'https://github.com/acme/widgets/pull/42' },
+      ],
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
+    expect(out).toMatchObject({ outcome: 'already-merged' });
+    expect(calls).not.toContain('enableAutoMerge:42:squash');
+    expect(calls).not.toContain('mergePullRequest:42:squash');
+  });
+
+  it('N-PR sequential arm: a PR briefly behind right after a sibling merged still lands, no refusal (W10-F1)', async () => {
+    // PR #1 reads clean immediately and merges directly (mirrors the live #9).
+    const { host: host1 } = fakeLandingHost({ status: openPr('clean') });
+    expect(await armPullRequest(host1, 'wave/pr-1')).toMatchObject({ outcome: 'merged' });
+
+    // PR #2: the base just moved out from under it — briefly `behind`,
+    // resolving to `clean` on retry, exactly as the retro's #10 did ("an
+    // idempotent retry landed #10, in the window again clean").
+    const { host: host2, calls: calls2 } = fakeLandingHost({
+      statuses: [openPr('behind'), openPr('clean')],
+    });
+    const out2 = await armPullRequest(host2, 'wave/pr-2', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
+    expect(out2).toMatchObject({ outcome: 'merged' });
+    expect(calls2).not.toContain('enableAutoMerge:42:squash');
+  });
+
+  it('the default recompute delay is a real timer in production (no injected sleep) — not synchronous', async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, calls } = fakeLandingHost({ statuses: [openPr('behind'), openPr('clean')] });
+      const pending = armPullRequest(host, 'b'); // no opts — exercises defaultSleep for real
+      await vi.advanceTimersByTimeAsync(0);
+      // Still waiting on the timer: only the initial probe has happened.
+      expect(calls).toEqual(['getPrStatus:b']);
+      await vi.advanceTimersByTimeAsync(1000); // comfortably covers the default delay
+      const out = await pending;
+      expect(out).toMatchObject({ outcome: 'merged' });
+      expect(calls).toEqual(['getPrStatus:b', 'getPrStatus:b', 'mergePullRequest:42:squash']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ─── Controlled degrade: refused + zero pending required checks (AC1/AC3) ────
+
+describe('armPullRequest — refused+mergeable controlled degrade (ADR-0023 amendment, W10-F1)', () => {
+  it('not-allowed refusal + zero pending required checks (unstable) → falls back to a direct merge, reason names the fallback (the live refused-then-merged sequence)', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'The repository does not permit auto-merge');
+      },
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'merged', prNumber: 42 });
+    expect(calls).toEqual(['getPrStatus:b', 'enableAutoMerge:42:squash', 'mergePullRequest:42:squash']);
+    expect((out as { reason: string }).reason).toMatch(/controlled degrade/i);
+    expect((out as { reason: string }).reason).toMatch(/does not permit auto-merge/i);
+  });
+
+  it('not-allowed refusal + a still-behind read after the retry budget → also falls back (zero pending required checks)', async () => {
+    const { host, calls } = fakeLandingHost({
+      statuses: [openPr('behind')], // never resolves away from `behind`
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'The repository does not permit auto-merge');
+      },
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
+    expect(out).toMatchObject({ outcome: 'merged', prNumber: 42 });
+    expect(calls).toContain('mergePullRequest:42:squash');
+  });
+
+  it('clean-status refusal stays an UNCONDITIONAL fallback (SPIKE 2 unaffected by the new gate)', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
+      },
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'merged' });
+    expect(calls).toContain('mergePullRequest:42:squash');
+  });
+
+  it('NEGATIVE SPEC (AC3): not-allowed refusal + a pending required check — even one only revealed after the recompute retry — NEVER falls back; refused stays refused', async () => {
+    const { host, calls } = fakeLandingHost({
+      statuses: [openPr('unknown'), openPr('blocked')], // recompute settles into a REAL block
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'The repository does not permit auto-merge');
+      },
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
+    expect(out).toMatchObject({ outcome: 'refused' });
+    // The whole point of the gate: a required check IS pending — merging here
+    // would land a PR past exactly the check the human expected to hold.
+    expect(calls).not.toContain('mergePullRequest:42:squash');
+  });
+
+  it('a merge the host declines during the fallback (merged:false) is still reported as refused, not merged', async () => {
+    const { host } = fakeLandingHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'The repository does not permit auto-merge');
+      },
+      onMerge: () => ({ merged: false }),
+    });
+    const out = await armPullRequest(host, 'b');
+    // The host is the FINAL gate even inside the fallback: a decline is a
+    // decline, never silently upgraded to a false "merged".
+    expect(out).toMatchObject({ outcome: 'refused' });
   });
 });
 
