@@ -31,6 +31,27 @@
  *
  * wave-orchestration #57, #82.
  *
+ * ── macOS ENOTEMPTY hardening (FOR-45) ────────────────────────────────────────
+ *
+ * Live finding W9-F1 (docs/retros/2026-07-20-landing-seam-w9.md): the physical
+ * step-1 delete above errored `ENOTEMPTY` on every worktree in a wave close, with
+ * a Finder-created `.DS_Store` as the suspected obstruction — macOS Finder (or
+ * Spotlight) can recreate housekeeping files in a directory the instant it goes
+ * empty, racing our own recursive delete so the final `rmdir` sees a
+ * "non-empty" directory again. {@link defaultWorktreeRemover} now treats a
+ * small, fixed allowlist of known Finder junk (`.DS_Store` etc. — see
+ * `isFinderJunkName`) as deletable debris: on `ENOTEMPTY` it purges any junk
+ * found under the worktree and retries the physical delete exactly ONCE. If no
+ * junk was found, the original error is propagated unchanged — this can never
+ * be used to route around a real (non-junk) obstruction, and never touches the
+ * dirty-worktree safety invariant above (dirtiness is decided entirely upstream
+ * in {@link planCleanup}, before a worktree ever reaches the remover).
+ *
+ * The same incident's error text rendered a non-ASCII path segment (an en dash)
+ * as mojibake. {@link describeError} centralizes error-message extraction with
+ * an explicit UTF-8 decode rather than an implicit/platform-default one, so a
+ * path with non-ASCII segments always renders correctly.
+ *
  * ── Crash-cleanup before redispatch (FOR-10) ──────────────────────────────────
  *
  * A separate, narrower mechanism lives here too: `cleanupCrashedRowForRedispatch`
@@ -48,7 +69,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { rmSync, readdirSync } from 'node:fs';
 import * as nodePath from 'node:path';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -375,7 +396,7 @@ export function executeCleanup(
     } catch (err) {
       errors.push({
         path: wt.path,
-        message: err instanceof Error ? err.message : String(err),
+        message: describeError(err),
       });
     }
   }
@@ -527,7 +548,7 @@ export function cleanupCrashedRowForRedispatch(
       notes.push(`removed worktree at ${wt.path}`);
     } catch (err) {
       removeFailed = true;
-      const message = err instanceof Error ? err.message : String(err);
+      const message = describeError(err);
       notes.push(
         `worktree remove failed for ${wt.path}: ${message} — branch left in place (still checked out there)`,
       );
@@ -681,7 +702,29 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
       // exception for an ALREADY-missing path (idempotent re-run); it does
       // NOT swallow real errors like permission or non-empty-directory
       // failures, which is exactly the loud-failure behaviour we need.
-      rmSync(abs, { recursive: true, force: true });
+      try {
+        rmSync(abs, { recursive: true, force: true });
+      } catch (err) {
+        if (!isEnotempty(err)) throw err;
+
+        // macOS reality (FOR-45, live finding W9-F1): Finder/Spotlight can
+        // recreate `.DS_Store` (and similar housekeeping files) in a
+        // directory the instant it becomes empty, racing our recursive
+        // delete so the final rmdir sees a "non-empty" directory again.
+        // Purge known junk and retry ONCE. A worktree with zero junk found
+        // was never junk-shaped to begin with — propagate the ORIGINAL
+        // error unchanged rather than masking a real obstruction.
+        const junkRemoved = removeFinderJunk(abs);
+        if (junkRemoved === 0) throw err;
+
+        try {
+          rmSync(abs, { recursive: true, force: true });
+        } catch (retryErr) {
+          throw new Error(
+            `worktree removal still failed after purging ${junkRemoved} Finder-junk file(s) at ${abs}: ${describeError(retryErr)}`,
+          );
+        }
+      }
       // Step 2 — deregister. Reached only if step 1 fully succeeded.
       execFileSync('git', ['worktree', 'remove', abs], {
         cwd: repoRoot,
@@ -693,7 +736,106 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
   };
 }
 
+/**
+ * Known macOS Finder / Spotlight housekeeping debris (FOR-45). A FIXED
+ * allowlist of names/patterns only — never a wildcard — so purging it can
+ * never be used to route around the dirty-worktree safety invariant: a real
+ * (non-junk, e.g. actually-uncommitted) file is never touched by this pass,
+ * and the never-removed-when-dirty guarantee is decided entirely upstream in
+ * {@link planCleanup} anyway (a dirty worktree never reaches the remover).
+ */
+const FINDER_JUNK_NAMES = new Set<string>([
+  '.DS_Store',
+  '.Trashes',
+  '.Spotlight-V100',
+  '.fseventsd',
+  '.TemporaryItems',
+]);
+
+/** AppleDouble sidecar files macOS can drop for xattr-bearing files (e.g. `._foo.txt`). */
+const APPLE_DOUBLE_PATTERN = /^\._/;
+
+function isFinderJunkName(name: string): boolean {
+  return FINDER_JUNK_NAMES.has(name) || APPLE_DOUBLE_PATTERN.test(name);
+}
+
+/** True when `err` is a Node errno exception with `code === 'ENOTEMPTY'`. */
+function isEnotempty(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === 'ENOTEMPTY'
+  );
+}
+
+/**
+ * Recursively delete known Finder-junk debris (FOR-45) from a directory tree.
+ * Returns the count of junk entries removed, so the caller can tell whether
+ * an `ENOTEMPTY` was junk-shaped (>0 → worth retrying) or something else
+ * entirely (0 → propagate the original error, never mask a real obstruction).
+ *
+ * Best-effort: an unreadable/already-gone directory, or a junk file that
+ * itself fails to delete, does not throw here — it simply isn't counted, and
+ * the retry `rmSync` back in {@link defaultWorktreeRemover} is what surfaces
+ * any real obstruction that remains.
+ */
+function removeFinderJunk(dir: string): number {
+  let removed = 0;
+
+  function readEntries() {
+    try {
+      return readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+  }
+  const entries = readEntries();
+  if (entries === null) return removed;
+
+  for (const entry of entries) {
+    const entryPath = nodePath.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      removed += removeFinderJunk(entryPath);
+      continue;
+    }
+    if (isFinderJunkName(entry.name)) {
+      try {
+        rmSync(entryPath, { force: true });
+        removed += 1;
+      } catch {
+        // Leave it — the retry in defaultWorktreeRemover surfaces whatever
+        // obstruction remains; we never want a partial junk-delete failure
+        // to mask itself as a thrown error from this best-effort pass.
+      }
+    }
+  }
+
+  return removed;
+}
+
 // ─── Internal helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Extract a human-readable message from a thrown value, decoding explicitly
+ * as UTF-8 rather than relying on an implicit/platform-default conversion.
+ *
+ * Defensive hardening (FOR-45): the live incident (docs/retros/2026-07-20-
+ * landing-seam-w9.md) saw a worktree-removal error render a non-ASCII path
+ * segment as mojibake (an en dash decoded as "â"). A thrown `Error`'s
+ * `.message` is normally already a correctly-encoded JS string, but a raw
+ * errno/stderr payload can in principle arrive as a `Buffer` — decoding that
+ * implicitly (or with a non-UTF-8 encoding) is what corrupts multi-byte
+ * characters. This helper is the single place that turns "whatever was
+ * thrown" into a string, and it always decodes as UTF-8.
+ */
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    const raw: unknown = err.message;
+    return Buffer.isBuffer(raw) ? Buffer.from(raw).toString('utf-8') : String(raw);
+  }
+  if (Buffer.isBuffer(err)) return Buffer.from(err).toString('utf-8');
+  return String(err);
+}
 
 function shellGit(args: string[], cwd: string): string {
   try {

@@ -63,9 +63,29 @@
  *         never silently drops an item from either bucket
  *      c. a fully-clean batch (no failures) removes every item — unchanged
  *         from pre-FOR-34 behaviour
+ *   10. defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)
+ *      a. an injected `.DS_Store` causing ENOTEMPTY is purged and the removal
+ *         is retried once, succeeding cleanly (real fs fixture)
+ *      b. an ENOTEMPTY with NO junk present propagates the ORIGINAL error —
+ *         a real obstruction is never silently masked as a "junk" retry
+ *      c. non-ASCII path segments render correctly in error messages — no
+ *         mojibake — both through executeCleanup's error-collection path and
+ *         through defaultWorktreeRemover's own post-purge-retry-failure path
+ *
+ * Section 10 is the one place in this file that exercises the REAL
+ * `defaultWorktreeRemover` (every other section uses the injectable
+ * `WorktreeRemover` seam). It mocks `node:child_process` (nothing else in this
+ * file touches real child_process) and partially mocks `node:fs` — only
+ * `rmSync` is overridden, and its default behaviour delegates to the real
+ * implementation, so a test only diverges from real fs behaviour where it
+ * explicitly queues a one-shot `mockImplementationOnce` throw.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   DEFAULT_AGENT_PATH_MARKERS,
   parseWorktreeList,
@@ -73,10 +93,50 @@ import {
   executeCleanup,
   cleanupCrashedRowForRedispatch,
   cleanupRedispatchRows,
+  defaultWorktreeRemover,
   type WorktreeEntry,
   type WorktreeRemover,
   type RedispatchCleanupOps,
 } from './worktree-cleanup';
+
+// node:child_process is mocked module-wide so Section 10's real
+// `defaultWorktreeRemover` calls don't shell out to a real `git`. No test
+// outside Section 10 touches real child_process (every other section uses an
+// injected seam), so this is a no-op for the rest of the file.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(() => '') };
+});
+
+// node:fs is mocked module-wide but ONLY `rmSync` is overridden — and its
+// default implementation forwards to the REAL rmSync. Every other fs call in
+// this file (mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync
+// inside worktree-cleanup.ts, and any un-queued rmSync call) is completely
+// real; a test only diverges where it explicitly queues a one-shot throw via
+// `mockImplementationOnce` to model the macOS Finder race (FOR-45 / W9-F1).
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    rmSync: vi.fn((...args: unknown[]) =>
+      (actual.rmSync as (...a: unknown[]) => void)(...args),
+    ),
+  };
+});
+
+/** Type-erasing cast to reach vitest's mock methods on the mocked `rmSync`. */
+function asRmSyncMock(fn: typeof rmSync): { mockImplementationOnce: (impl: () => void) => void } {
+  return fn as unknown as { mockImplementationOnce: (impl: () => void) => void };
+}
+
+/** Build a Node errno exception shaped like a real `rmSync` ENOTEMPTY failure. */
+function makeEnotempty(path: string): NodeJS.ErrnoException {
+  const err = new Error(
+    `ENOTEMPTY: directory not empty, rmdir '${path}'`,
+  ) as NodeJS.ErrnoException;
+  err.code = 'ENOTEMPTY';
+  return err;
+}
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -1059,5 +1119,184 @@ describe('executeCleanup — per-worktree atomicity (FOR-34)', () => {
     expect(removedPaths).toEqual(
       [wtSucceedsA.path, wtSucceedsB.path].sort(),
     );
+  });
+});
+
+// ─── 10. defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45) ─────────
+//
+// Live finding W9-F1 (docs/retros/2026-07-20-landing-seam-w9.md): the real
+// `defaultWorktreeRemover` errored ENOTEMPTY on every worktree in a wave
+// close, with a Finder-created `.DS_Store` as the suspected obstruction, and
+// the error text rendered a non-ASCII (en-dash) path segment as mojibake.
+//
+// These tests use REAL fs fixtures (mkdtemp'd temp dirs) so the removal path
+// is exercised end to end; only the exact ENOTEMPTY race is simulated via a
+// one-shot `rmSync` mock (see the module-level `vi.mock('node:fs', ...)`
+// above), and `git worktree remove` is mocked to a no-op so no real git
+// registration is required for the fixture directory.
+
+describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function makeTempWorktree(...subPathSegments: string[]): { root: string; worktreePath: string } {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-spec-'));
+    tempRoots.push(root);
+    const worktreePath = join(root, ...subPathSegments);
+    mkdirSync(worktreePath, { recursive: true });
+    return { root, worktreePath };
+  }
+
+  it('purges an injected .DS_Store and retries once when it is the only ENOTEMPTY obstruction — the worktree is removed cleanly', () => {
+    const { root, worktreePath } = makeTempWorktree('agent-junk-only');
+    writeFileSync(join(worktreePath, 'real-file.txt'), 'hello', 'utf-8');
+    writeFileSync(join(worktreePath, '.DS_Store'), 'finder-debris', 'utf-8');
+
+    // The first rmSync attempt simulates the live Finder race: nothing is
+    // actually deleted on this call, so the fixture is untouched afterwards.
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {
+      throw makeEnotempty(worktreePath);
+    });
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).not.toThrow();
+
+    // The retry (real rmSync, after the .DS_Store purge) removed the tree.
+    expect(existsSync(worktreePath)).toBe(false);
+
+    // Step 2 (deregister) was still reached — the 2-step contract holds.
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'remove', worktreePath],
+      expect.objectContaining({ cwd: root }),
+    );
+  });
+
+  it('propagates the ORIGINAL ENOTEMPTY error when no Finder junk is found — a real obstruction is never silently masked', () => {
+    const { worktreePath, root } = makeTempWorktree('agent-real-obstruction');
+    writeFileSync(join(worktreePath, 'real-file.txt'), 'hello', 'utf-8');
+    // No .DS_Store / junk present — this ENOTEMPTY is NOT junk-shaped.
+
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {
+      throw makeEnotempty(worktreePath);
+    });
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).toThrow(/ENOTEMPTY/);
+
+    // Nothing was deleted, and step 2 (deregister) was never reached.
+    expect(existsSync(join(worktreePath, 'real-file.txt'))).toBe(true);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('a dirty worktree never reaches the remover at all — the skip decision is made upstream in planCleanup, unchanged by this hardening', () => {
+    // This is the same invariant Section 3 already pins ("NEVER invokes the
+    // remover for dirty/skipped worktrees"); restated here against the REAL
+    // defaultWorktreeRemover to document that FOR-45 touched only the
+    // physical-removal implementation, never the dirty/clean selection.
+    const dirty: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/agent-dirty-untouched',
+      branch: 'wave/FOR-45-dirty',
+      head: 'abc1234abc1234abc1234abc1234abc1234abcd',
+      dirty: true,
+    };
+    const plan = planCleanup([dirty]);
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped).toHaveLength(1);
+
+    // executeCleanup never calls a remover for a plan with nothing selected —
+    // the real defaultWorktreeRemover is passed here specifically to prove
+    // it is never invoked, not even indirectly.
+    const remover = defaultWorktreeRemover('/repo');
+    const result = executeCleanup(plan, { remover });
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(result.removed).toHaveLength(0);
+    expect(result.skipped).toEqual([dirty]);
+  });
+
+  describe('non-ASCII path rendering — no mojibake', () => {
+    // The live incident's path shape: an en dash (U+2013) path segment. The
+    // observed corruption was the classic symptom of UTF-8 bytes decoded as
+    // Latin-1/Windows-1252 (0xE2 0x80 0x93 → "â").
+    const NON_ASCII_SEGMENT = 'Projects – Clients';
+    const MOJIBAKE_SEGMENT = 'Projects â Clients';
+
+    it('executeCleanup preserves a non-ASCII path segment in a remover error message, byte-for-byte', () => {
+      const nonAsciiPath = `/Users/dev/${NON_ASCII_SEGMENT}/flotilla/.claude/worktrees/agent-nonascii1`;
+      const remover: WorktreeRemover = {
+        remove: () => {
+          throw new Error(`ENOTEMPTY: directory not empty, rmdir '${nonAsciiPath}'`);
+        },
+      };
+      const wt: WorktreeEntry = {
+        path: nonAsciiPath,
+        branch: 'wave/FOR-45-nonascii',
+        head: 'abc1234abc1234abc1234abc1234abc1234abcd',
+        dirty: false,
+      };
+      const plan = { selected: [wt], skipped: [] };
+
+      const result = executeCleanup(plan, { remover });
+
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toContain(NON_ASCII_SEGMENT);
+      expect(result.errors[0].message).not.toContain(MOJIBAKE_SEGMENT);
+    });
+
+    it('defaultWorktreeRemover renders a non-ASCII worktree path correctly when the post-purge retry itself still fails', async () => {
+      const { worktreePath, root } = makeTempWorktree(NON_ASCII_SEGMENT, 'agent-stubborn');
+      writeFileSync(join(worktreePath, 'real-file.txt'), 'hello', 'utf-8');
+      writeFileSync(join(worktreePath, '.DS_Store'), 'finder-debris', 'utf-8');
+
+      // Real rmSync, reached directly (bypassing the mock) so the queued
+      // "once" throws below can be reserved precisely for the two TOP-LEVEL
+      // calls (initial attempt + retry) without being consumed by the
+      // Finder-junk purge's own (real) deletion of `.DS_Store` in between.
+      const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+      const mockedRmSync = asRmSyncMock(rmSync);
+      // 1st top-level call: initial attempt — junk-shaped ENOTEMPTY.
+      mockedRmSync.mockImplementationOnce(() => {
+        throw makeEnotempty(worktreePath);
+      });
+      // The Finder-junk purge's own `.DS_Store` deletion — let it really happen.
+      (mockedRmSync as unknown as { mockImplementationOnce: (impl: (...args: unknown[]) => void) => void }).mockImplementationOnce(
+        (...args: unknown[]) => (actualFs.rmSync as (...a: unknown[]) => void)(...args),
+      );
+      // 2nd top-level call: the post-purge retry ALSO fails (a genuine
+      // obstruction alongside the junk) — the wrapped error must still
+      // render correctly.
+      mockedRmSync.mockImplementationOnce(() => {
+        throw makeEnotempty(worktreePath);
+      });
+
+      const remover = defaultWorktreeRemover(root);
+      let thrown: unknown;
+      try {
+        remover.remove(worktreePath);
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      const message = (thrown as Error).message;
+      expect(message).toContain(NON_ASCII_SEGMENT);
+      expect(message).not.toContain(MOJIBAKE_SEGMENT);
+      // Confirms this went through the "still failed after purge" wrap
+      // (proving describeError ran), not a pass-through of the raw error.
+      expect(message).toMatch(/Finder-junk/);
+    });
   });
 });
