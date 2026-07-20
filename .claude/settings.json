@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsx tools/wave/src/cli.ts:*)",
+      "Bash(npx tsx src/cli.ts:*)",
+      "Bash(npx tsx src/issue-store-cli.ts:*)",
+      "Bash(npx tsx src/cross-wave-cli.ts:*)",
+      "Bash(npx tsx src/host-pr-cli.ts:*)",
+      "Bash(./node_modules/.bin/tsx src/cli.ts:*)",
+      "Bash(./node_modules/.bin/tsx src/issue-store-cli.ts:*)",
+      "Bash(./node_modules/.bin/tsx src/cross-wave-cli.ts:*)",
+      "Bash(tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx tsx src/cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx tsx src/issue-store-cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx tsx src/cross-wave-cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx tsx src/host-pr-cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 ./node_modules/.bin/tsx src/cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 ./node_modules/.bin/tsx src/issue-store-cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 ./node_modules/.bin/tsx src/cross-wave-cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)"
+    ]
+  }
+}
