@@ -314,11 +314,12 @@ npx tsx tools/wave/src/cli-store.ts preflight --config "$CONFIG"
 
 ## `ClosingState` shape
 
-`read-closing` prints `{ "state": "open"|"merged"|"closed-unmerged", "prUrl"?: string }`.
+`read-closing` prints `{ "state": "open" | "merged" | "closed-unmerged" | "closed-unknown", "prUrl"?: string }` — the four outcomes are **evidence claims, not verdicts** (ADR-0020), matching the landed engine:
 
 - `open` — PR is open; no action needed (human merges in advisory order). Exception: a no-integration `states.doneState` workspace never reports `merged` — consult `host-pr status --branch <b>` (the evidence hierarchy, ADR-0023); on its `state: merged`, land it with `close` (FOR-13 fallback), `--acked` derived the same way as below.
 - `merged` — PR merged; **derive `--acked` via `verdict-acked <verdictsDir> <id>` (FOR-17), then land it `done` via `issue-store close <id> <prUrl> --acked <indexes>`** (the done-reconcile). On a native-integration tracker the row's `done` also derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), so `close` is an idempotent reconcile that records the closing facts + the cosmetic AC tick; then clear any stale flag.
-- `closed-unmerged` — PR was closed without merging; flag `recoverable-stop`.
+- `closed-unmerged` — a closing PR was **found and it did not merge** (a proven rejection); flag `recoverable-stop`.
+- `closed-unknown` — closed with **no PR evidence either way** (a hand-close, a duplicate, or the Convention-4 mention-footgun closing the row via a stray bare-id sighting). This is *absence of evidence*, **not** evidence of rejection — never flag on it alone (that false alarm is exactly why this fourth outcome exists). Read it via the same **evidence hierarchy — tracker attachment > host PR state > nothing**: fall to `host-pr status --branch <b>`. Its `state: merged` → the PR did land, the tracker just never attached it → derive `--acked` (above), then the same `close` call (FOR-13 fallback). Its `state: closed-unmerged` → the host proves a real rejection → flag `recoverable-stop`. Its `state: open`/`none` → still no merge evidence anywhere → report `closed-unknown — closed, but no merged-PR evidence found; confirm before landing`, naming the id, and leave it for the human. **Never guess** between merged and rejected.
 
 ## `NeedsAttentionPayload` shape
 
