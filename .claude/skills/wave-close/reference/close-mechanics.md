@@ -25,7 +25,7 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 | `{{wave-cli}} host-pr arm --branch <b> [--remote <url>] [--method <squash\|merge\|rebase>]` | `--auto` landing (ADR-0023): `{ ok, verb:"arm", host, branch, method, outcome:"armed"\|"merged"\|"already-merged"\|"refused"\|"no-pr", prNumber?, prUrl?, reason }`. Decides per PR: checks pending → enable auto-merge (GraphQL); already clean → direct merge (REST). Idempotent. Detect-host-routed; **no `--config`** (talks to the code host, not the tracker). |
 | `{{wave-cli}} host-pr status --branch <b> [--remote <url>]` | done-reconcile host-evidence probe: `{ ok, verb:"status", host, branch, state:"open"\|"merged"\|"closed-unmerged"\|"none", url?, number? }`. `none` is a valid answer (no PR), not a failure. |
 | `{{wave-cli}} host-pr merge --branch <b> [--method …]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`. |
-| `npx tsx tools/wave/src/cli-store.ts preflight --config <path>` | repo-posture probe for the `--auto` confirm (FOR-12/ADR-0023): `{ ok, storeKind, checks:[{name,status,detail}] }`. The `allow-auto-merge` (hard, github) + `required-checks` (report-only) checks feed the confirm's posture column. Own entrypoint, **not** a `{{wave-cli}}` subverb. |
+| `{{wave-cli}} host-pr preflight [--remote <url>]` | code-host posture probe for the `--auto` confirm (ADR-0023 amendment): `{ ok, verb:"preflight", host, checks:[{name,status,detail}] }` for `pr-merge-token` / `allow-auto-merge` / `required-checks`. **Store-blind** — detect-host-routed, **no `--config`**, **no `--branch`** (required checks read against the default branch) — so it answers on **every** store kind, unlike the store-preflight it replaced here. `status` may be `pass`/`fail`/`advisory`/`unknown`; only `fail` blocks. |
 | any command, no args | usage |
 
 ## Advisory merge-order write-back (ADR-0016 boundary)
@@ -251,15 +251,19 @@ fi
 #   "--auto needs a human to confirm the per-wave arm, or explicit
 #    --pre-authorized to proceed unattended"
 
-# ── Repo posture for the confirm's last column (probed, never dictated). ──
-# Own entrypoint (NOT {{wave-cli}}); NODE_USE_ENV_PROXY=1 under a proxied sandbox.
-npx tsx tools/wave/src/cli-store.ts preflight --config "$CONFIG"
-# github store → real: allow-auto-merge (FAIL if OFF → can't arm checks-pending
-#   PRs, land via advisory order; already-clean still direct-merges), and
-#   required-checks (report-only; ABSENT → confirm says "no required checks —
-#   confirming means immediate merge").
-# linear/markdown store → both not-applicable (tracker seam can't reach the code
-#   host, ADR-0020/0023); posture is decided per-PR at arm time by `host-pr arm`.
+# ── Code-host posture for the confirm's last column (probed, never dictated). ──
+# host-pr preflight is STORE-BLIND (no --config, no --branch): detect-host-routed,
+# reports the code host directly, so it answers on EVERY store kind (github,
+# linear, markdown) — the W10-F1 fix (the store-preflight reported these n/a on a
+# linear store). NODE_USE_ENV_PROXY=1 under a proxied sandbox.
+{{wave-cli}} host-pr preflight   # { ok, verb:"preflight", host, checks:[{name,status,detail}] }
+# allow-auto-merge: FAIL only when OFF *and* required checks present (can't arm
+#   those rows → land via advisory order; already-clean still direct-merges);
+#   ADVISORY when OFF with no CI; UNKNOWN when the token can't see it (below
+#   maintain/admin) → confirm says "posture unknown — the arm outcome decides".
+# required-checks: report-only. ABSENT → confirm says "no required checks —
+#   confirming means immediate merge". PRESENT → armed PRs land on green.
+# The probe is ADVISORY: the `host-pr arm` outcome below is the ground truth.
 
 # ── Present ONE confirm for the wave: a table, one line per terminal PR ──
 #   PR | row (id+branch) | verdict | conflict prediction | repo posture
@@ -310,7 +314,7 @@ npx tsx tools/wave/src/cli-store.ts preflight --config "$CONFIG"
 | `spine read` | raw source on stdout | file not found / parse error | usage |
 | `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage |
 | `host-pr status` | probe answered (read `state`; `none` is a valid answer) | host error | usage |
-| `cli-store preflight` | every check `pass`/`not-applicable`/`advisory` | a check `fail`ed | usage |
+| `host-pr preflight` | no check `fail`ed (checks may be `advisory`/`unknown`) | a check `fail`ed, no adapter (`adapter-not-implemented`), or host error / missing token | usage |
 
 ## `ClosingState` shape
 

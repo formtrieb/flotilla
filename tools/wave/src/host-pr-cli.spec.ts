@@ -18,12 +18,15 @@ import { runHostPr } from './host-pr-cli';
 import {
   AutoMergeUnavailableError,
   type LandingHost,
+  type LandingPosture,
   type MergeMethod,
   type MergeResult,
   type PrLandingStatus,
   type HttpProbe,
   type HttpRequest,
   type HttpResponse,
+  type AutoMergeSetting,
+  type RequiredChecksInfo,
 } from './host-pr';
 
 const GITHUB_REMOTE = 'git@github.com:example-org/example-repo.git';
@@ -255,12 +258,13 @@ describe('host-pr usage errors (exit 2)', () => {
     expect(stderr).toMatch(/usage/);
   });
 
-  it('an unknown verb → 2 and names the real verbs (create, arm, merge, status)', async () => {
+  it('an unknown verb → 2 and names the real verbs (create, arm, merge, status, preflight)', async () => {
     expect(await runHostPr(['bogus', '--branch', 'b'])).toBe(2);
     expect(stderr).toMatch(/create/);
     expect(stderr).toMatch(/arm/);
     expect(stderr).toMatch(/merge/);
     expect(stderr).toMatch(/status/);
+    expect(stderr).toMatch(/preflight/);
   });
 
   it('a missing --branch → 2', async () => {
@@ -502,5 +506,115 @@ describe('host-pr create — usage + credential guards', () => {
     expect(String(out().error)).toMatch(/GITHUB_TOKEN/);
     // No network was attempted without a credential.
     expect(requests).toEqual([]);
+  });
+});
+
+// ─── host-pr preflight (FOR-52 / ADR-0023 amendment — code-host posture) ─────
+//
+// preflight is store-BLIND: no --config, no --branch. It probes the code host
+// via an injected LandingPosture (tests) — the routing (github only), the
+// wiring (checks → JSON, exit code), and the store-blindness are what is under
+// test here; the GRADING matrix is host-pr.spec.ts's job.
+
+function fakePosture(
+  over: Partial<{ canMerge: boolean; autoMerge: AutoMergeSetting; required: RequiredChecksInfo }> = {},
+): LandingPosture {
+  return {
+    async canMergePullRequests() {
+      return over.canMerge ?? true;
+    },
+    async getAutoMergeSetting() {
+      return over.autoMerge ?? 'on';
+    },
+    async getRequiredChecks() {
+      return over.required ?? { state: 'absent', contexts: [], detail: 'no required checks' };
+    },
+  };
+}
+
+/** A posture that throws if touched — proves routing rejects a host BEFORE probing. */
+const throwingPosture: LandingPosture = {
+  async canMergePullRequests() {
+    throw new Error('routing must reject a non-github host before probing');
+  },
+  async getAutoMergeSetting() {
+    throw new Error('routing must reject a non-github host before probing');
+  },
+  async getRequiredChecks() {
+    throw new Error('routing must reject a non-github host before probing');
+  },
+};
+
+describe('host-pr preflight — code-host posture, store-blind', () => {
+  it('github: reports the three code-host checks + exit 0 on a healthy posture', async () => {
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      posture: fakePosture({ canMerge: true, autoMerge: 'on', required: { state: 'present', contexts: ['ci/test'], detail: 'one check' } }),
+    });
+    expect(code).toBe(0);
+    const o = out();
+    expect(o).toMatchObject({ ok: true, verb: 'preflight', host: 'github' });
+    const names = (o.checks as { name: string }[]).map((c) => c.name);
+    expect(names).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+  });
+
+  it('takes NO --branch (a repo-level probe) — succeeds without one', async () => {
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, { posture: fakePosture() });
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ verb: 'preflight' });
+  });
+
+  it('is store-BLIND: no --config, identical on every store kind (this is the linear/markdown-store invocation)', async () => {
+    // host-pr preflight never reads a wave.config.json — it probes the code host
+    // directly, so `wave-close --auto` runs the SAME command whether the tracker
+    // is github, linear, or markdown. There is no store to build, so a linear or
+    // markdown wave gets a real code-host answer (the W10-F1 fix), not the
+    // `not-applicable` the store-preflight reported. Passing an ignored --config
+    // does not change the answer.
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE, '--config', 'irrelevant.json'], undefined, {
+      posture: fakePosture(),
+    });
+    expect(code).toBe(0);
+    expect((out().checks as { name: string }[]).map((c) => c.name)).toEqual([
+      'pr-merge-token',
+      'allow-auto-merge',
+      'required-checks',
+    ]);
+  });
+
+  it('exit 1 when a check FAILs — allow-auto-merge OFF with required checks present', async () => {
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      posture: fakePosture({ autoMerge: 'off', required: { state: 'present', contexts: ['ci/test'], detail: 'one check' } }),
+    });
+    expect(code).toBe(1);
+    const o = out();
+    expect(o.ok).toBe(false);
+    expect((o.checks as { name: string; status: string }[]).find((c) => c.name === 'allow-auto-merge')?.status).toBe('fail');
+  });
+
+  it('exit 0 on an UNKNOWN allow-auto-merge — the token cannot see it, which never blocks', async () => {
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      posture: fakePosture({ autoMerge: 'unknown', required: { state: 'unknown', contexts: [], detail: 'needs admin' } }),
+    });
+    expect(code).toBe(0);
+    expect(out().ok).toBe(true);
+  });
+
+  it('bitbucket → exit 1, adapter-not-implemented, and the posture is NEVER probed', async () => {
+    const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, { posture: throwingPosture });
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'bitbucket' });
+  });
+
+  it('an unknown host (GitLab) → exit 1, adapter-not-implemented', async () => {
+    const code = await runHostPr(['preflight', '--remote', UNKNOWN_REMOTE], undefined, { posture: throwingPosture });
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
+  });
+
+  it('with no injected posture, a missing GITHUB_TOKEN fails loud (exit 1) without printing a token', async () => {
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, { env: {} as NodeJS.ProcessEnv });
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, verb: 'preflight' });
+    expect(String(out().error)).toMatch(/GITHUB_TOKEN/);
   });
 });

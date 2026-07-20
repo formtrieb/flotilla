@@ -25,9 +25,9 @@ The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx t
 
 On exit 1, read the error, fix the named field in the JSON, and re-run. Do not pass the config to downstream skills until you get exit 0.
 
-## Store-preflight (`cli-store preflight`)
+## Store-preflight (`cli-store preflight`) — tracker facts
 
-`config validate` proves the JSON parses; **the store-preflight proves the live store preconditions hold** (FOR-12). It probes them *for real* through the engine's existing API seam — no separate integration script.
+`config validate` proves the JSON parses; **the store-preflight proves the live TRACKER preconditions hold** (FOR-12). It probes them *for real* through the engine's existing API seam — no separate integration script. The code-host posture (merge token, allow-auto-merge, required-checks) is a **separate owner** — see the host-preflight section below (ADR-0023 amendment: one fact, one owner).
 
 > **Different entrypoint.** The preflight is its own runnable module, **not** a `{{wave-cli}}` (`cli.ts`) subcommand — invoke `tools/wave/src/cli-store.ts` directly:
 >
@@ -45,7 +45,6 @@ Each check reports `pass` / `fail` / `not-applicable`; the report `ok` is `true`
 |---|---|---|---|
 | `tracker-host-integration` | n/a (GitHub is its own host) | **probed** — Linear↔GitHub integration installed? (n/a when `states.doneState` is set — the FOR-13 fallback) | n/a |
 | `state-catalog` | n/a (claims are labels) | **probed** — team catalog covers every configured claim state (`Todo`/`In Progress`/`In Review` + `Backlog`/`Canceled` + `doneState`) | n/a |
-| `pr-merge-token` | **probed** — can the ambient `GITHUB_TOKEN` merge PRs on the bound repo? | n/a (PRs merge on GitHub with the consumer's own creds) | n/a |
 
 The report is JSON on stdout:
 
@@ -55,8 +54,7 @@ The report is JSON on stdout:
   "storeKind": "linear",
   "checks": [
     { "name": "tracker-host-integration", "status": "pass", "detail": "…" },
-    { "name": "state-catalog", "status": "fail", "detail": "Configured workflow states missing from the team catalog: \"In Review\". Create them in Linear (or fix the states map) before running a wave." },
-    { "name": "pr-merge-token", "status": "not-applicable", "detail": "…" }
+    { "name": "state-catalog", "status": "fail", "detail": "Configured workflow states missing from the team catalog: \"In Review\". Create them in Linear (or fix the states map) before running a wave." }
   ]
 }
 ```
@@ -69,7 +67,38 @@ The report is JSON on stdout:
 | `1` | a precondition FAILED loudly (read the failing check's `detail` — it names the gap), **or** the probe/host itself threw (bad token, unreachable host) |
 | `2` | usage error, or the config was unreadable/invalid |
 
-On exit 1 from a `fail`, fix the named gap (create the missing Linear state, grant the token write access, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0.
+On exit 1 from a `fail`, fix the named gap (create the missing Linear state, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0.
+
+## Host-preflight (`host-pr preflight`) — code-host posture
+
+The code-host landing posture has its own owner, the host seam (ADR-0023 amendment / W10-F1): `host-pr preflight` probes the code host **directly**, so it is **store-blind** — no `--config`, no store built, identical on a `github`, `linear`, *or* `markdown` wave (landing always happens on the code host). It is a landing verb, so it lives on the engine CLI:
+
+```bash
+{{wave-cli}} host-pr preflight    # detect-host-routed; NO --config, NO --branch
+# → { ok, verb: "preflight", host, checks: [ { name, status, detail }, … ] }
+```
+
+It builds the posture reader from `$GITHUB_TOKEN` (the same construction-time token check as `host-pr arm|merge|status`); prefix `NODE_USE_ENV_PROXY=1` under a proxied sandbox. `--remote <url>` overrides the detected remote (default `git remote get-url origin`). It takes **no `--branch`** — required checks are read against the repo's **default branch**.
+
+### What it checks (every store kind — code host only)
+
+Each check's `status` is one of `pass` / `fail` / `advisory` / `unknown` (the shared check-status union); `ok` is `true` iff no check is `fail` — `advisory` and `unknown` never block.
+
+| Check (`name`) | Meaning |
+|---|---|
+| `pr-merge-token` | `pass` if `GITHUB_TOKEN` can merge PRs on the bound repo; `fail` (with a write-access fix) if not. |
+| `allow-auto-merge` | `pass` when the repo setting is ON. A visible **OFF** grades by context: **required checks present → `fail`** (arming is structurally impossible; the fix instruction names Settings → General → Pull Requests / `allow_auto_merge=true`), **none → `advisory`** (a clean PR direct-merges today). `unknown` when the token cannot see the setting (below maintain/admin) — never blocks, never demands admin. |
+| `required-checks` | report-only: `advisory` whether present (names the contexts; `--auto` arms) or absent (confirming means an immediate merge); `unknown` when the branch-protection read needs admin the token lacks. |
+
+### Exit codes for `host-pr preflight`
+
+| Code | Meaning |
+|---|---|
+| `0` | nothing `fail`ed (checks may be `advisory`/`unknown`) — the code host can land rows under `--auto` |
+| `1` | a check `fail`ed (read its `detail` — it names the fix), the host has no adapter (`code: "adapter-not-implemented"` — bitbucket/unknown), or the host errored / `GITHUB_TOKEN` was missing |
+| `2` | usage error |
+
+On exit 1 from a `fail`, apply the fix the `detail` names (grant the token write access; tick "Allow auto-merge") and re-run. A no-CI repo where `allow-auto-merge` is `advisory` is a valid `--auto` consumer — it does not block.
 
 ## `WaveConfig` fields
 
@@ -238,10 +267,11 @@ Or with an explicit path (dogfood / temp file — use `$TMPDIR`, not a hardcoded
 
 Exit 0 means the engine will accept it. Any other exit code means there is a problem — the error output names the field; fix it and re-run.
 
-Then, once `config validate` passes, prove the live store preconditions (integration, state catalog, merge token) with the preflight:
+Then, once `config validate` passes, prove the live **tracker** preconditions (integration, state catalog) with the store-preflight, and the live **code-host** posture (merge token, allow-auto-merge, required-checks) with the host-preflight:
 
 ```bash
-npx tsx tools/wave/src/cli-store.ts preflight --config wave.config.json
+npx tsx tools/wave/src/cli-store.ts preflight --config wave.config.json   # tracker facts
+{{wave-cli}} host-pr preflight                                            # code-host posture (store-blind)
 ```
 
-Exit 0 means every check passed or is `not-applicable`. On exit 1, the failing check's `detail` names the exact gap — fix it in Linear/GitHub or the config and re-run. Only after both `config validate` and the preflight exit 0 is the config ready for `wave-plan`/`wave-create`.
+Exit 0 from each means every check passed / is `not-applicable` / is `advisory`/`unknown`. On exit 1, the failing check's `detail` names the exact gap — fix it in Linear/GitHub or the config and re-run. Only after `config validate` **and both preflights** exit 0 is the config ready for `wave-plan`/`wave-create`.

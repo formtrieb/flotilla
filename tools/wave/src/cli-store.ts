@@ -13,10 +13,16 @@
  *
  * This module is ALSO a runnable CLI (the `preflight` verb, FOR-12): invoked as
  * `tsx cli-store.ts preflight [--config <path>]`, it probes the store's live
- * preconditions THROUGH the existing API seams (tracker↔GitHub integration,
- * the workflow-state catalog, the ambient token's PR-merge ability) so
- * `wave-setup` RUNS the checks instead of merely asserting they hold. The probe
- * is pure over the seam — testable against the in-memory fakes with no network.
+ * TRACKER preconditions THROUGH the existing API seams (tracker↔GitHub
+ * integration, the workflow-state catalog) so `wave-setup` RUNS the checks
+ * instead of merely asserting they hold. The probe is pure over the seam —
+ * testable against the in-memory fakes with no network.
+ *
+ * Store-preflight is TRACKER FACTS ONLY. The three code-host posture checks it
+ * used to carry (`pr-merge-token`, `allow-auto-merge`, `required-checks`) moved
+ * to `host-pr preflight` under the ADR-0023 amendment's single-owner discipline:
+ * a code-host fact has ONE owner, the host seam, and `host-pr preflight` reports
+ * it store-blind on every store kind. See {@link preflightHost} in host-pr.ts.
  */
 
 import type { IssueStore } from './adapters/issue-store';
@@ -24,9 +30,8 @@ import { buildStore } from './store-factory';
 import { loadWaveConfig, type WaveConfig, type StoreConfig, type LinearStoreConfig } from './wave-config';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
 import { createLinearApiFromEnv } from './adapters/linear/linear-api-factory';
-import type { GitHubApi, RequiredChecksInfo } from './adapters/github/github-api';
+import type { CheckStatus } from './host-pr';
 import type { LinearApi } from './adapters/linear/linear-api';
-import type { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import type { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { DEFAULT_LINEAR_STATES, type LinearStateMap } from './adapters/linear/linear-issues-store';
 import { flag, printJson } from './cli-utils';
@@ -48,46 +53,37 @@ export async function resolveStore(args: string[], injected?: IssueStore): Promi
 // ── store-preflight (FOR-12) ──────────────────────────────────────────────
 
 /**
- * One probed precondition. Only `fail` blocks — `not-applicable` and `advisory`
- * are both ignored by `ok`.
+ * One probed TRACKER precondition. Only `fail` blocks — `not-applicable` never
+ * does. The `status` union is {@link CheckStatus}, SHARED with the host-preflight
+ * (host-pr.ts) so the two probes speak one status vocabulary; the store-preflight
+ * itself only ever emits `pass` / `fail` / `not-applicable` for its two checks.
  *
- * `advisory` (ADR-0023) is the third rung and is deliberately distinct from
- * `pass`: the probe RAN and has something the human should read, but the answer
- * is not a verdict — there is no "correct" value. `required-checks` is the case
- * that needed it: a repo with no CI is a perfectly valid `--auto` consumer (the
- * confirm just states that confirming means an immediate merge), so reporting
- * `pass`/`fail` would have to invent a policy flotilla explicitly declines to
- * have ("visibility over gatekeeping" — hard gates only where failure would be
- * silent, and this one is loud).
+ * The `name` union is TRACKER FACTS ONLY. The three code-host checks it used to
+ * carry (`pr-merge-token`, `allow-auto-merge`, `required-checks`) moved to
+ * `host-pr preflight` (ADR-0023 amendment, single-owner) — a code-host fact has
+ * one owner, the host seam.
  */
 export interface PreflightCheck {
   /** Stable machine key for the precondition. */
-  name:
-    | 'tracker-host-integration'
-    | 'state-catalog'
-    | 'pr-merge-token'
-    | 'allow-auto-merge'
-    | 'required-checks';
-  status: 'pass' | 'fail' | 'not-applicable' | 'advisory';
+  name: 'tracker-host-integration' | 'state-catalog';
+  status: CheckStatus;
   detail: string;
 }
 
 export interface StorePreflightReport {
-  /** true iff no check is `fail` — `not-applicable` / `advisory` never block. */
+  /** true iff no check is `fail` — `not-applicable` never blocks. */
   ok: boolean;
   storeKind: StoreConfig['kind'];
   checks: PreflightCheck[];
 }
 
 /**
- * Probe the store's live preconditions THROUGH its API seam. Each store kind
- * reports the checks that are meaningful for it and marks the rest
- * `not-applicable` — the union covers all three "for real" in exactly the store
- * where each is enforceable:
- *   - github → the ambient token's PR-merge ability (integration + catalog n/a:
- *     GitHub is its own host, claims are labels);
- *   - linear → the GitHub integration + the workflow-state catalog (PR-merge
- *     n/a: PRs land on GitHub with the consumer's own credentials, ADR-0020);
+ * Probe the store's live TRACKER preconditions THROUGH its API seam. Each store
+ * kind reports the tracker checks meaningful for it and marks the rest
+ * `not-applicable`:
+ *   - github → both n/a (GitHub is its own host, claims are labels — code-host
+ *     posture is `host-pr preflight`'s concern now, ADR-0023 amendment);
+ *   - linear → the GitHub integration + the workflow-state catalog (ADR-0020);
  *   - markdown → all n/a (a local dev/dogfood store).
  * Pure over the seam — `store` may wrap an in-memory fake (test) or a real impl.
  */
@@ -95,19 +91,14 @@ export async function preflightStore(config: WaveConfig, store: IssueStore): Pro
   const s = config.store;
   const checks =
     s.kind === 'github'
-      ? await githubChecks((store as GitHubIssuesStore).api)
+      ? githubChecks()
       : s.kind === 'linear'
         ? await linearChecks((store as LinearIssuesStore).api, s)
         : markdownChecks();
   return { ok: checks.every((c) => c.status !== 'fail'), storeKind: s.kind, checks };
 }
 
-async function githubChecks(api: GitHubApi): Promise<PreflightCheck[]> {
-  const canMerge = await api.canMergePullRequests();
-  // ADR-0023 landing preconditions. `getRequiredChecks` is contractually
-  // throw-free (an advisory probe may never block), so it needs no guard here.
-  const allowsAuto = await api.allowsAutoMerge();
-  const required = await api.getRequiredChecks();
+function githubChecks(): PreflightCheck[] {
   return [
     {
       name: 'tracker-host-integration',
@@ -119,48 +110,7 @@ async function githubChecks(api: GitHubApi): Promise<PreflightCheck[]> {
       status: 'not-applicable',
       detail: 'GitHub claims are labels (wave/<rung>) — there is no workflow-state catalog to verify.',
     },
-    {
-      name: 'pr-merge-token',
-      status: canMerge ? 'pass' : 'fail',
-      detail: canMerge
-        ? 'The ambient GITHUB_TOKEN has write access — it can merge PRs on the bound repo.'
-        : 'The ambient GITHUB_TOKEN lacks write (push) access — it CANNOT merge PRs on the bound repo. Grant the token write access before running a wave.',
-    },
-    {
-      name: 'allow-auto-merge',
-      status: allowsAuto ? 'pass' : 'fail',
-      detail: allowsAuto
-        ? 'The repo setting "Allow auto-merge" is ON — PRs with pending checks can be armed to land themselves.'
-        : 'The repo setting "Allow auto-merge" is OFF (the GitHub default) — arming a PR will FAIL, so `wave-close --auto` cannot land rows whose checks are still pending. ' +
-          'Fix: Settings → General → Pull Requests → tick "Allow auto-merge" (API: PATCH /repos/{owner}/{repo} with allow_auto_merge=true). ' +
-          'Without it, land this wave via the advisory merge-order instead (ADR-0023).',
-    },
-    {
-      // REPORT-ONLY (ADR-0023): never a FAIL. A repo with no required checks is
-      // a valid --auto consumer — the confirm just has to say so out loud.
-      name: 'required-checks',
-      status: 'advisory',
-      detail: requiredChecksDetail(required),
-    },
   ];
-}
-
-/**
- * Turn the required-checks probe into the sentence the wave-close confirm needs.
- *
- * The check CONTEXTS are read from the structured `contexts[]` — the contract —
- * not from the probe's `detail` prose, so the confirm names the real gates even
- * if an adapter words its detail differently.
- */
-function requiredChecksDetail(required: RequiredChecksInfo): string {
-  if (required.state === 'present') {
-    const named = required.contexts.length > 0 ? ` Required: ${required.contexts.join(', ')}.` : '';
-    return `${required.detail}${named} \`--auto\` will ARM these PRs: they land themselves once the checks pass.`;
-  }
-  if (required.state === 'absent') {
-    return `${required.detail} There is nothing to wait for, so confirming \`--auto\` means these PRs merge IMMEDIATELY — backed by the Worker's verify run and the Reviewer's independent one, not by CI. This is expected, not a fault (ADR-0023).`;
-  }
-  return `${required.detail} \`--auto\` still works: the arm intent is decided per-PR from its live merge-state, not from this probe.`;
 }
 
 async function linearChecks(api: LinearApi, storeConfig: LinearStoreConfig): Promise<PreflightCheck[]> {
@@ -208,6 +158,10 @@ async function linearChecks(api: LinearApi, storeConfig: LinearStoreConfig): Pro
     };
   }
 
+  // Code-host facts (pr-merge-token / allow-auto-merge / required-checks) are NOT
+  // reported here — the LinearApi seam reaches the tracker only, and those facts
+  // now have one owner, `host-pr preflight`, which probes the code host directly
+  // on every store kind (ADR-0020/0023 amendment).
   return [
     integration,
     {
@@ -216,24 +170,6 @@ async function linearChecks(api: LinearApi, storeConfig: LinearStoreConfig): Pro
       detail: catalogOk
         ? 'Every configured workflow-state name resolves to a state in the team catalog.'
         : `Configured workflow states missing from the team catalog: ${missing.map((m) => `"${m}"`).join(', ')}. Create them in Linear (or fix the states map) before running a wave.`,
-    },
-    {
-      name: 'pr-merge-token',
-      status: 'not-applicable',
-      detail: "PRs merge on the GitHub code host with the consumer's own GitHub credentials — not checkable from the Linear tracker (ADR-0020).",
-    },
-    {
-      // Same boundary as pr-merge-token: these are CODE-HOST facts, and the
-      // LinearApi seam reaches the tracker only. `host-pr` probes the host
-      // directly at landing time, where the repo credentials actually live.
-      name: 'allow-auto-merge',
-      status: 'not-applicable',
-      detail: 'Landing happens on the GitHub code host, not in Linear — the repo\'s "Allow auto-merge" setting is not reachable through the Linear seam (ADR-0020/0023).',
-    },
-    {
-      name: 'required-checks',
-      status: 'not-applicable',
-      detail: 'Required status checks live on the GitHub code host, not in Linear — not reachable through the Linear seam (ADR-0020/0023).',
     },
   ];
 }
@@ -250,27 +186,19 @@ function markdownChecks(): PreflightCheck[] {
       status: 'not-applicable',
       detail: 'The markdown store has no workflow-state catalog (claims live in the Status line).',
     },
-    {
-      name: 'pr-merge-token',
-      status: 'not-applicable',
-      detail: 'The markdown store lands no PRs — there is nothing to merge.',
-    },
-    {
-      name: 'allow-auto-merge',
-      status: 'not-applicable',
-      detail: 'The markdown store lands no PRs — there is nothing to arm.',
-    },
-    {
-      name: 'required-checks',
-      status: 'not-applicable',
-      detail: 'The markdown store lands no PRs — there are no required checks to report.',
-    },
   ];
 }
 
 function preflightUsage(message: string): number {
   process.stderr.write(
-    [`error: ${message}`, 'usage: cli-store preflight [--config <path>]', ''].join('\n'),
+    [
+      `error: ${message}`,
+      'usage: cli-store preflight [--config <path>]',
+      '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
+      '  For code-host posture (pr-merge-token, allow-auto-merge, required-checks) run',
+      '  `host-pr preflight` — it is store-blind and reports on every store kind (ADR-0023).',
+      '',
+    ].join('\n'),
   );
   return 2;
 }

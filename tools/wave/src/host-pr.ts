@@ -499,8 +499,8 @@ export class LandingNotImplementedError extends Error {
           // with no adapter: there is nothing to implement, because we could not
           // tell what to implement against.
           `Could not identify the code host from the git remote, so there is no landing adapter to route to ` +
-            `(host-pr create|arm|merge|status supports 'github'; ADR-0023). Check the remote URL, or pass --remote <url> explicitly.`
-        : `No landing adapter for host '${host}' — host-pr create|arm|merge|status is implemented for 'github' only (ADR-0023). ` +
+            `(host-pr create|arm|merge|status|preflight supports 'github'; ADR-0023). Check the remote URL, or pass --remote <url> explicitly.`
+        : `No landing adapter for host '${host}' — host-pr create|arm|merge|status|preflight is implemented for 'github' only (ADR-0023). ` +
             `Implementing the LandingHost interface for ${host} is all that is required; no skill changes are needed.`,
     );
   }
@@ -819,6 +819,207 @@ async function merge(
     };
   }
   return { outcome: 'merged', prNumber, prUrl, sha: res.sha, reason };
+}
+
+// ─── Host preflight: code-host posture probe (ADR-0023 amendment, W10-F1) ─────
+//
+// The POSTURE half of the host seam. Where `armPullRequest` acts on ONE PR,
+// `preflightHost` answers the wave-level question "can this repo land rows under
+// `--auto` at all?" — reusing the same host adapter. It is store-BLIND: the
+// tracker (github/linear/markdown) is irrelevant, because landing always happens
+// on the code host, so `host-pr preflight` gives an identical answer on every
+// store kind (this is the W10-F1 fix — the store-preflight reported these
+// `not-applicable` on a linear store, and the arm outcome was the only truth).
+// GitHub implements `LandingPosture` on `RealGitHubApi`; the Bitbucket pilot
+// inherits the probe by implementing the same three reads (ADR-0023: new
+// adapter, no new skills).
+
+/**
+ * The repo's "Allow auto-merge" setting, as the ambient token can OBSERVE it.
+ * `unknown` is a first-class answer, not a failure: GitHub hides the setting
+ * below maintain/admin, and an external consumer token must never NEED admin
+ * (ADR-0023 amendment — the `closed-unknown` lesson applied at the settings
+ * layer: absence of evidence is not a finding).
+ */
+export type AutoMergeSetting = 'on' | 'off' | 'unknown';
+
+/**
+ * The presence of required status checks on a branch (ADR-0023). REPORT-ONLY: a
+ * repo with none is a valid `--auto` consumer (a clean PR direct-merges), so this
+ * never hard-FAILs, and `unknown` is first-class — the branch-protection read
+ * needs admin the ambient token may lack. Host-neutral: GitHub and the Bitbucket
+ * pilot both produce this shape (it lived on the GitHub adapter before the
+ * ADR-0023 amendment re-homed the posture concern to the host seam).
+ */
+export interface RequiredChecksInfo {
+  state: 'present' | 'absent' | 'unknown';
+  /** The required check contexts, when readable. Empty for absent/unknown. */
+  contexts: string[];
+  /** Human-readable account of what was probed and what came back. */
+  detail: string;
+}
+
+/**
+ * The code-host POSTURE seam (ADR-0023 amendment). The three reads `host-pr
+ * preflight` grades. `GitHubApi extends` this (RealGitHubApi implements it on the
+ * `GitHubHttp` seam); a Bitbucket adapter implements the same three and inherits
+ * the probe. Distinct from {@link LandingHost} (per-PR arm/merge/status): this is
+ * the repo-level "can we `--auto` here?" question, not a single PR's landing.
+ */
+export interface LandingPosture {
+  /**
+   * Whether the ambient token can MERGE pull requests on the bound repo — write
+   * (push) access or higher. Surfaces a read-only token LOUDLY up-front rather
+   * than mid-wave at merge time.
+   */
+  canMergePullRequests(): Promise<boolean>;
+  /**
+   * The repo's "Allow auto-merge" setting as the token can see it. `unknown` when
+   * the token cannot read it (GitHub hides it below maintain/admin) — never a
+   * failure, never an admin requirement (ADR-0023 amendment).
+   */
+  getAutoMergeSetting(): Promise<AutoMergeSetting>;
+  /**
+   * Required status checks on `branch` (default: the repo's DEFAULT branch — the
+   * branch that gates landing to `main`). REPORT-ONLY — MUST NOT throw (an
+   * advisory probe may never block).
+   */
+  getRequiredChecks(branch?: string): Promise<RequiredChecksInfo>;
+}
+
+/**
+ * The check-status union, SHARED with the store-preflight (`cli-store`). Only
+ * `fail` blocks; `advisory` and `unknown` are read-and-carry-on. `unknown`
+ * (ADR-0023 amendment) is "the token cannot see this setting" — absence of
+ * evidence, never a finding, never an admin requirement.
+ */
+export type CheckStatus = 'pass' | 'fail' | 'not-applicable' | 'advisory' | 'unknown';
+
+/**
+ * The three code-host checks `host-pr preflight` reports. Single-owner (ADR-0023
+ * amendment): they left `cli-store preflight` entirely — one fact, one owner.
+ */
+export type HostCheckName = 'pr-merge-token' | 'allow-auto-merge' | 'required-checks';
+
+/** One probed code-host precondition. */
+export interface HostPreflightCheck {
+  name: HostCheckName;
+  status: CheckStatus;
+  detail: string;
+}
+
+/** The `host-pr preflight` report. `ok` is `true` iff no check is `fail`. */
+export interface HostPreflightReport {
+  ok: boolean;
+  host: Host;
+  checks: HostPreflightCheck[];
+}
+
+/**
+ * Probe the code host's landing posture through the {@link LandingPosture} seam
+ * (ADR-0023 amendment). Reports `pr-merge-token`, `allow-auto-merge`, and
+ * `required-checks` — the three checks the `--auto` confirm and `wave-setup`
+ * onboarding read. Advisory by design: the probe informs the confirm, the ARM
+ * OUTCOME stays the ground truth. `unknown` never blocks; only a visible-OFF
+ * auto-merge WITH required checks is a hard `fail`.
+ */
+export async function preflightHost(host: Host, posture: LandingPosture): Promise<HostPreflightReport> {
+  const canMerge = await posture.canMergePullRequests();
+  const autoMerge = await posture.getAutoMergeSetting();
+  // Read against the DEFAULT branch (no branch arg). `getRequiredChecks` is
+  // contractually throw-free, so it needs no guard here.
+  const required = await posture.getRequiredChecks();
+
+  const checks: HostPreflightCheck[] = [
+    prMergeTokenCheck(canMerge),
+    allowAutoMergeCheck(autoMerge, required.state),
+    requiredChecksCheck(required),
+  ];
+  return { ok: checks.every((c) => c.status !== 'fail'), host, checks };
+}
+
+function prMergeTokenCheck(canMerge: boolean): HostPreflightCheck {
+  return {
+    name: 'pr-merge-token',
+    status: canMerge ? 'pass' : 'fail',
+    detail: canMerge
+      ? 'The ambient GITHUB_TOKEN has write access — it can merge PRs on the bound repo.'
+      : 'The ambient GITHUB_TOKEN lacks write (push) access — it CANNOT merge PRs on the bound repo. Grant it write (push) access before landing a wave.',
+  };
+}
+
+/**
+ * Grade the "Allow auto-merge" setting. A visible OFF grades by CONTEXT
+ * (ADR-0023 amendment): required checks present → `fail` (arming is structurally
+ * impossible, and there IS something to arm for); none → `advisory` (a clean PR
+ * direct-merges today, so it only matters once CI arrives). `unknown` (the token
+ * cannot see the setting) never blocks and never demands admin.
+ */
+function allowAutoMergeCheck(setting: AutoMergeSetting, requiredState: RequiredChecksInfo['state']): HostPreflightCheck {
+  if (setting === 'on') {
+    return {
+      name: 'allow-auto-merge',
+      status: 'pass',
+      detail: 'The repo setting "Allow auto-merge" is ON — PRs with pending checks can be armed to land themselves.',
+    };
+  }
+  if (setting === 'unknown') {
+    return {
+      name: 'allow-auto-merge',
+      status: 'unknown',
+      detail:
+        'Could not read the "Allow auto-merge" setting — the GITHUB_TOKEN cannot see it (GitHub hides it below maintain/admin). ' +
+        'This is advisory only and never blocks: an external consumer token needs no admin rights. Verify by hand under ' +
+        'Settings → General → Pull Requests, and tick "Allow auto-merge" if it is off. The arm outcome remains the ground truth (ADR-0023).',
+    };
+  }
+  // setting === 'off' — a VISIBLE off, graded by whether there is anything to arm for.
+  if (requiredState === 'present') {
+    return {
+      name: 'allow-auto-merge',
+      status: 'fail',
+      detail:
+        'The repo setting "Allow auto-merge" is OFF (the GitHub default) and this branch has required status checks — a checks-pending PR ' +
+        'CANNOT be armed, so `wave-close --auto` cannot land those rows. Fix: Settings → General → Pull Requests → tick "Allow auto-merge" ' +
+        '(API: PATCH /repos/{owner}/{repo} with allow_auto_merge=true). Until then, land this wave via the advisory merge-order (ADR-0023).',
+    };
+  }
+  return {
+    name: 'allow-auto-merge',
+    status: 'advisory',
+    detail:
+      'The repo setting "Allow auto-merge" is OFF (the GitHub default), but this branch has no required status checks to wait for — ' +
+      'a clean PR direct-merges today, so arming is not needed yet. Tick "Allow auto-merge" (Settings → General → Pull Requests) before CI ' +
+      'is added, so checks-pending PRs can be armed then (ADR-0023).',
+  };
+}
+
+/**
+ * Grade required-status-checks presence into the confirm sentence. `present` /
+ * `absent` are advisory (report-only, never a fault); `unknown` (the probe needs
+ * admin the token lacks) is `unknown` — the arm intent is decided per-PR anyway.
+ */
+function requiredChecksCheck(required: RequiredChecksInfo): HostPreflightCheck {
+  if (required.state === 'present') {
+    const named = required.contexts.length > 0 ? ` Required: ${required.contexts.join(', ')}.` : '';
+    return {
+      name: 'required-checks',
+      status: 'advisory',
+      detail: `${required.detail}${named} \`--auto\` will ARM these PRs: they land themselves once the checks pass.`,
+    };
+  }
+  if (required.state === 'absent') {
+    return {
+      name: 'required-checks',
+      status: 'advisory',
+      detail: `${required.detail} There is nothing to wait for, so confirming \`--auto\` means these PRs merge IMMEDIATELY — backed by the Worker's verify run and the Reviewer's independent one, not by CI. This is expected, not a fault (ADR-0023).`,
+    };
+  }
+  return {
+    name: 'required-checks',
+    status: 'unknown',
+    detail: `${required.detail} Verify the branch's required checks by hand if you need certainty; \`--auto\` still works — the arm intent is decided per-PR from each PR's live merge-state, and the arm outcome is the ground truth (ADR-0023).`,
+  };
 }
 
 // ─── Bitbucket API shape ─────────────────────────────────────────────────────

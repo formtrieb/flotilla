@@ -14,6 +14,7 @@ import {
   type MergeResult,
   type PrLandingStatus,
   type PrMergeability,
+  type AutoMergeSetting,
 } from '../../host-pr';
 import { defaultGitHubHttp, type GitHubHttp, type GitHubHttpResponse } from './github-http';
 
@@ -55,9 +56,10 @@ export const ARM_CLEAN_STATUS_ERROR = 'Pull request is in clean status';
 
 /**
  * SPIKE 2 (companion) — arming when the repo forbids auto-merge. Also HTTP 200 +
- * `errors[].type: "UNPROCESSABLE"`. This is the runtime face of the hard
- * precondition the store-preflight probes via `allowsAutoMerge()` — GitHub ships
- * "Allow auto-merge" OFF by default.
+ * `errors[].type: "UNPROCESSABLE"`. This is the runtime face of the precondition
+ * the host-preflight probes via `getAutoMergeSetting()` — GitHub ships "Allow
+ * auto-merge" OFF by default (ADR-0023 amendment re-homed the probe to `host-pr
+ * preflight`).
  *
  * e2e-verify: assert a live arm against an auto-merge-disabled repo matches.
  */
@@ -380,15 +382,28 @@ export class RealGitHubApi implements GitHubApi {
   }
 
   /**
-   * ADR-0023 preflight probe: is the repo's "Allow auto-merge" setting ON?
-   * GitHub ships it OFF, so `false` is the DEFAULT, not an anomaly — an absent
-   * field reads as off (fail closed: claiming auto-merge is available when the
-   * response did not say so would fail later, at arm time, mid-wave).
+   * ADR-0023 (amendment) posture probe: the repo's "Allow auto-merge" setting, as
+   * the ambient token can OBSERVE it. `GET /repos/{o}/{r}` carries `allow_auto_merge`
+   * only for maintain/admin tokens — below that GitHub omits the field entirely.
+   * So the three cases are distinct and each load-bearing:
+   *   - field present, `true`  → `'on'`
+   *   - field present, `false` → `'off'`  (a VISIBLE off — the confirm can act on it)
+   *   - field ABSENT           → `'unknown'`  (the token cannot see it; NOT "off")
+   * Conflating absent with off (the pre-amendment behaviour) wrongly flagged an
+   * external consumer's read-scoped token as a hard precondition failure — the
+   * `closed-unknown` lesson at the settings layer: absence of evidence is not a
+   * finding, and no consumer token must ever NEED admin (ADR-0023 amendment).
    */
-  async allowsAutoMerge(): Promise<boolean> {
+  async getAutoMergeSetting(): Promise<AutoMergeSetting> {
     const res = await this.send('GET', this.base());
-    if (res.status !== 200) throw new GitHubApiError(res.status, 'allowsAutoMerge', ghMessage(res.json, 'allowsAutoMerge'));
-    return (res.json as Record<string, unknown>)?.allow_auto_merge === true;
+    if (res.status !== 200) throw new GitHubApiError(res.status, 'getAutoMergeSetting', ghMessage(res.json, 'getAutoMergeSetting'));
+    // Value-based, NOT `'x' in o` (which throws on a non-object body): a present
+    // boolean is on/off; anything else — the field is ABSENT (undefined) because
+    // the token cannot see it below maintain/admin — is `unknown`, never off.
+    const v = (res.json as Record<string, unknown>)?.allow_auto_merge;
+    if (v === true) return 'on';
+    if (v === false) return 'off';
+    return 'unknown';
   }
 
   /**

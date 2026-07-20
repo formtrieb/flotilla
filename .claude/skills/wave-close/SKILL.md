@@ -153,23 +153,24 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 | **row** | issue id + wave branch (sourced from the spine dispatch-log) |
 | **verdict** | the Reviewer verdict (`approve` is the eligibility floor — below) |
 | **conflict prediction** | **order-free** (in no `## Conflict-Map` pair → *will arm*) or **overlapping** (named in a pair → *not armed*; follow the advisory order) |
-| **repo posture** | `cli-store preflight`'s `allow-auto-merge` + `required-checks` checks, incl. the no-CI notice (below) |
+| **repo posture** | `host-pr preflight`'s `allow-auto-merge` + `required-checks` checks — the same on every store kind (below); on `unknown`, "posture unknown — the arm outcome decides" |
 
 Then **one** confirm for the whole wave. On confirm → arm the order-free rows. On decline → arm nothing; fall back to the printed advisory order.
 
 **Which rows arm — mechanical eligibility, no risk re-gate.** A row is armed iff **all** hold: Reviewer verdict is `approve`, it carries **no** `needs-attention` flag, it has an **open PR**, and it is **order-free** (in no `## Conflict-Map` pair, read from the spine section already in hand from phase 1). There is **no second risk gate at landing** — a `public-API-change` row already met its human STOP at verdict routing (the G3 guard in `route-verdict`); re-gating here would double-ask the same human. A row in any Conflict-Map pair is the overlapping tail: print it with the phase-4 advisory order, never arm it.
 
-**Repo posture (the confirm's last column) — probed, never dictated (ADR-0023).** Run the store-preflight (its own entrypoint, not `{{wave-cli}}`; prefix `NODE_USE_ENV_PROXY=1` under a proxied sandbox — wave-shared Convention 1):
+**Repo posture (the confirm's last column) — probed, never dictated (ADR-0023 amendment).** Run the **host-preflight** — the code-host posture probe. It is **store-blind**: no `--config`, detect-host-routed, so it gives a **real** answer on **every** store kind (github, linear, *and* markdown), because landing always happens on the code host. This is the W10-F1 fix: the store-preflight used to report these `not-applicable` on a linear store, leaving the arm outcome as the only truth (prefix `NODE_USE_ENV_PROXY=1` under a proxied sandbox — wave-shared Convention 1):
 
 ```bash
-npx tsx tools/wave/src/cli-store.ts preflight --config <path>   # → { ok, storeKind, checks: [ { name, status, detail }, … ] }
+{{wave-cli}} host-pr preflight   # detect-host-routed; NO --config → { ok, verb: "preflight", host, checks: [ { name, status, detail }, … ] }
 ```
 
 Read two checks:
 
-- **`allow-auto-merge`** — a hard functional precondition on a **github** store. `fail` (GitHub's default is OFF) means a checks-pending PR **cannot** be armed; surface the check's `detail` (it names the exact fix) and land that row via the advisory order instead. An already-clean PR still direct-merges without it.
-- **`required-checks`** — **report-only**, never a blocker. `advisory` with an `absent` posture (no CI) is a valid `--auto` repo: the confirm must state **"no required checks — confirming means immediate merge"** (honest — the click merges now, backed by the Worker's verify run and the Reviewer's independent one). A `present` posture → the armed PRs land themselves once those checks pass.
-- On a **linear** / **markdown** store `cli-store preflight` reports both `not-applicable` — the tracker seam cannot reach the code host (ADR-0020/0023). The posture is then decided **per-PR at arm time** by `host-pr arm` from each PR's live merge-state; the confirm says so, and the `arm` outcome (`merged` vs `armed`, below) is the ground truth.
+- **`allow-auto-merge`** — the CI-repo precondition. `fail` (GitHub's default is OFF) *with required checks present* means a checks-pending PR **cannot** be armed; surface the check's `detail` (it names the exact fix) and land that row via the advisory order instead. `advisory` (OFF but no required checks) is fine — an already-clean PR direct-merges without it. `unknown` means the token cannot see the setting (below maintain/admin): never blocks, and the confirm says **"posture unknown — the arm outcome decides"**.
+- **`required-checks`** — **report-only**, never a blocker. `advisory` with an `absent` posture (no CI) is a valid `--auto` repo: the confirm must state **"no required checks — confirming means immediate merge"** (honest — the click merges now, backed by the Worker's verify run and the Reviewer's independent one). A `present` posture → the armed PRs land themselves once those checks pass. `unknown` (the branch-protection read needs admin the token lacks) → the confirm says so; the arm intent is decided per-PR anyway.
+
+**The probe is advisory — the arm outcome is the ground truth.** `host-pr preflight` informs the confirm; it never gates it. On any `unknown`, state "posture unknown — the arm outcome decides" and proceed: `host-pr arm`'s per-PR outcome (`merged` vs `armed` vs `refused`, below) is the authority a static probe cannot be (a behind/recomputing race is not probeable).
 
 **Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`):
 
