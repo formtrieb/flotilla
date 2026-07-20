@@ -578,25 +578,114 @@ export type LandingOutcome =
   | { outcome: 'no-pr'; reason: string };
 
 /**
+ * Mergeability values GitHub reports while it is still working something out —
+ * "not yet computed" (`unknown`) or "the base moved, recomputing against it"
+ * (`behind`) — rather than a genuine, settled read. Read at the wrong instant
+ * either looks exactly like a real block, but neither IS one (W10-F1, the
+ * 2026-07-20 live gate: once a sibling PR in the same wave merged, every OTHER
+ * open PR briefly read one of these against the new base).
+ */
+const RECOMPUTING_MERGEABILITY = new Set<PrMergeability>(['unknown', 'behind']);
+
+/** Default shape of {@link awaitStableMergeability}'s brief retry (ADR-0023 amendment). */
+const DEFAULT_RECOMPUTE_RETRIES = 2;
+const DEFAULT_RECOMPUTE_RETRY_DELAY_MS = 250;
+
+/** Injectable knobs for {@link armPullRequest}'s recompute-retry (ADR-0023 amendment, W10-F1). */
+export interface ArmOptions {
+  /** Delay between recompute probes. Defaults to a real timer; tests inject an instant one. */
+  sleep?: (ms: number) => Promise<void>;
+  /** How many extra `getPrStatus` probes a recomputing mergeability gets before deciding anyway. Default 2. */
+  recomputeRetries?: number;
+  /** Delay per retry, in ms. Default 250. */
+  recomputeRetryDelayMs?: number;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Give a `behind`/`unknown` mergeability a brief chance to settle before the
+ * arm decision is made (ADR-0023 amendment, W10-F1 live gate): once a sibling
+ * PR in the same wave merges, GitHub briefly recomputes every OTHER open PR's
+ * mergeability against the new base. Deciding on that mid-flight read degrades
+ * a perfectly-landable PR (arms — or worse, refuses — for no reason) instead of
+ * just landing it. Re-probes up to `recomputeRetries` times, stopping at the
+ * first settled (non-recomputing) read; if it never settles, the caller
+ * proceeds with the last-known read anyway — the refused+mergeable fallback in
+ * {@link armPullRequest} is what recovers that residual case.
+ */
+async function awaitStableMergeability(
+  host: LandingHost,
+  branch: string,
+  status: PrLandingStatus,
+  opts: ArmOptions,
+): Promise<PrLandingStatus> {
+  const retries = opts.recomputeRetries ?? DEFAULT_RECOMPUTE_RETRIES;
+  const delayMs = opts.recomputeRetryDelayMs ?? DEFAULT_RECOMPUTE_RETRY_DELAY_MS;
+  const sleep = opts.sleep ?? defaultSleep;
+
+  let current = status;
+  for (
+    let attempt = 0;
+    attempt < retries && RECOMPUTING_MERGEABILITY.has(current.mergeability ?? 'unknown');
+    attempt++
+  ) {
+    await sleep(delayMs);
+    current = await host.getPrStatus(branch);
+  }
+  return current;
+}
+
+/**
+ * Whether a (post-retry) mergeability rules out a pending REQUIRED check.
+ * `blocked` is host-pr's own vocabulary for exactly that pending state (see
+ * {@link PrMergeability}'s docblock) — every OTHER value reachable here
+ * (`unstable`/`behind`/`unknown`) reports nothing required as still pending.
+ * This reuses the module's existing fact rather than inventing a new one
+ * (ADR-0016 single-owner): it is the "zero pending required checks" gate for
+ * the refused+mergeable fallback below.
+ */
+function hasNoPendingRequiredCheck(mergeability: PrMergeability): boolean {
+  return mergeability !== 'blocked';
+}
+
+/**
  * Land a branch's PR by the ADR-0023 arm intent: probe → decide → act.
  *
  * Idempotent and re-entrant, because `wave-close` is: an already-merged PR is a
  * no-op (no write of any kind), and a branch with no PR is reported, not thrown.
  * Unexpected host errors propagate — only the two typed
  * {@link AutoMergeUnavailableError} refusals are routed.
+ *
+ * Controlled degradation (ADR-0023 amendment, W10-F1): on ANY refusal — the
+ * repo forbids auto-merge, or the host says the PR is already clean — with
+ * zero pending required checks, the arm falls back to a direct merge instead
+ * of stopping at `refused`; with a required check still pending it never does
+ * (`refused` stays `refused` — arm must never merge past a check).
  */
 export async function armPullRequest(
   host: LandingHost,
   branch: string,
   method: MergeMethod = DEFAULT_MERGE_METHOD,
+  opts: ArmOptions = {},
 ): Promise<LandingOutcome> {
-  const status = await host.getPrStatus(branch);
+  const initial = await host.getPrStatus(branch);
+  const initialTerminal = terminalStatus(initial, branch);
+  if (initialTerminal !== null) return initialTerminal;
+
+  // Let a transient behind/recomputing read settle before deciding (AC2).
+  const status = await awaitStableMergeability(host, branch, initial, opts);
+  // The PR may have reached a terminal state (e.g. merged elsewhere) DURING
+  // the retry window — re-check rather than blindly acting on a stale `open`.
   const terminal = terminalStatus(status, branch);
   if (terminal !== null) return terminal;
 
   const prNumber = status.number as number;
   // An open PR with no reported mergeability is `unknown`, NEVER `clean`.
-  const decision = decideArmAction(status.mergeability ?? 'unknown');
+  const mergeability = status.mergeability ?? 'unknown';
+  const decision = decideArmAction(mergeability);
 
   if (decision.action === 'refuse') {
     return { outcome: 'refused', prNumber, prUrl: status.url, reason: decision.reason };
@@ -624,8 +713,23 @@ export async function armPullRequest(
       );
     }
     if (err instanceof AutoMergeUnavailableError && err.reason === 'not-allowed') {
-      // Deliberately NOT a merge fallback: checks may still be pending, and
-      // merging here would bypass the gate the human expected to hold.
+      if (hasNoPendingRequiredCheck(mergeability)) {
+        // Controlled degrade (ADR-0023 amendment, W10-F1 live gate): the repo
+        // forbids arming, but nothing REQUIRED is reported pending, so there is
+        // nothing to actually wait for — merge directly instead of stopping at
+        // `refused`. The host stays the final gate: a genuine block still
+        // declines/throws here, never silently bypassed.
+        return merge(
+          host,
+          prNumber,
+          status.url,
+          method,
+          `Host rejected the arm: this repository does not permit auto-merge, and no required check is pending — merged directly instead (controlled degrade). [${err.message}]`,
+        );
+      }
+      // Deliberately NOT a merge fallback: a required check IS reported
+      // pending, and merging here would bypass exactly the gate the human
+      // expected to hold.
       return {
         outcome: 'refused',
         prNumber,

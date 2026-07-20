@@ -190,7 +190,7 @@ describe('host-pr arm', () => {
     expect(String(out().reason)).toMatch(/conflict/i);
   });
 
-  it('a repo with auto-merge OFF → refused (exit 1) with the fix instruction, never merged', async () => {
+  it('a repo with auto-merge OFF and a pending required check (blocked) → refused (exit 1) with the fix instruction, never merged', async () => {
     const { host, calls } = fakeHost({
       status: openPr('blocked'),
       onEnableAutoMerge: () => {
@@ -202,6 +202,20 @@ describe('host-pr arm', () => {
     expect(out()).toMatchObject({ ok: false, outcome: 'refused' });
     expect(String(out().reason)).toMatch(/allow auto-merge/i);
     expect(calls).not.toContain('mergePullRequest:42:squash');
+  });
+
+  it('a repo with auto-merge OFF but ZERO pending required checks (unstable) → controlled degrade to a direct merge, exit 0 (the live refused-then-merged sequence, ADR-0023 amendment / W10-F1)', async () => {
+    const { host, calls } = fakeHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'The repository does not permit auto-merge');
+      },
+    });
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'merged', prNumber: 42 });
+    expect(String(out().reason)).toMatch(/controlled degrade/i);
+    expect(calls).toEqual(['getPrStatus:b', 'enableAutoMerge:42:squash', 'mergePullRequest:42:squash']);
   });
 
   it('an unexpected host error → exit 1 with the message on stderr, never a false success', async () => {
