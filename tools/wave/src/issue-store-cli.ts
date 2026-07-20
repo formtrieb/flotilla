@@ -21,7 +21,7 @@
  *   transition <id> <queued|in-flight|in-review>   → writes one claim rung
  *   unclaim  <id>                                  → drops the claim (queued→available)
  *   close    <id> <prUrl> [--acked 0,2,3]          → records closing facts (done-reconcile; FOR-13 doneState fallback)
- *   read-closing <id>                              → prints the ClosingState (JSON): open|merged|closed-unmerged
+ *   read-closing <id>                              → prints the ClosingState (JSON): open|merged|closed-unmerged|closed-unknown
  *   listOpen                                       → prints IssueView[] (JSON)
  *   listClaimed                                    → prints IssueView[] (JSON)
  *   publishDocument --input <PublishDocumentInput.json> → prints the opaque PRD id (ADR-0011)

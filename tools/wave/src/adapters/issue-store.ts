@@ -385,16 +385,21 @@ export interface IssueStore {
 
   /**
    * Probe how this issue was CLOSED (ADR-0005): `open`, `merged` (with the
-   * closing PR url), or `closed-unmerged`. This is the precise signal the coarse
-   * `done` projection deliberately discards (ADR-0002) — the resume
-   * done-reconcile needs merged-vs-unmerged to decide whether a `done` row is a
-   * real landing or an abandoned slice. Feeds the downstream `classifyClosedBy`
-   * predicate. Throws on an unknown id.
+   * closing PR url), `closed-unmerged` (a closing PR was FOUND and did not merge),
+   * or `closed-unknown` (closed with NO PR evidence either way — not a rejection,
+   * W2-F1c). See {@link ClosingState} for the evidence-shaped reading. This is the
+   * precise signal the coarse `done` projection deliberately discards (ADR-0002) —
+   * the resume/close done-reconcile needs merged-vs-rejected-vs-no-evidence to
+   * decide whether a `done` row is a real landing, an abandoned slice, or merely a
+   * close it cannot explain. Feeds the downstream `classifyClosedBy` predicate.
+   * Throws on an unknown id.
    *
    * GitHubIssuesStore: queries the issue's closing PR merge-state through the
-   * {@link GitHubApi} seam (NEVER raw `gh`). MarkdownFsStore: derives from the
-   * file's done-state + the `**Closed-by:**` annotation (a recorded PR ref ⇒
-   * merged, a done file without one ⇒ closed-unmerged).
+   * {@link GitHubApi} seam (NEVER raw `gh`) — a closed issue with no closing-PR
+   * reference reads `closed-unknown`. MarkdownFsStore: derives from the file's
+   * done-state + the `**Closed-by:**` annotation (a recorded PR ref ⇒ merged; a
+   * done file without one ⇒ `closed-unknown` — the store structurally cannot
+   * record a rejection, so it never claims one).
    */
   readClosing(id: string): Promise<ClosingState>;
 
@@ -480,6 +485,46 @@ export interface IssueStoreConformanceHooks {
    * merged PR's `Closes #N` would. After this, `read().status` derives `done`.
    */
   simulateNativeClose(store: IssueStore, id: string): Promise<void>;
+
+  // ── readClosing evidence-split drivers (ADR-0005 / W2-F1c) ─────────────────
+  // Each drives the store into one closing-probe scenario THROUGH the adapter's
+  // own mechanism, so the shared suite can assert readClosing without baking a
+  // storage assumption in — the same stance as simulateNativeClose.
+
+  /**
+   * Drive the issue closed by a MERGED linked PR (the wave happy path), recording
+   * `prUrl` as the merge evidence. After this, `readClosing` reports
+   * `{ state: 'merged', prUrl }` on every store.
+   */
+  simulateClosedMergedPr(
+    store: IssueStore,
+    id: string,
+    prUrl: string,
+  ): Promise<void>;
+
+  /**
+   * Drive the issue closed with POSITIVE evidence a linked PR was FOUND and did
+   * NOT merge — a genuine rejection. Returns the {@link ClosingState} state that
+   * `readClosing` is EXPECTED to report on THIS store: a store that can record the
+   * rejected PR (GitHub, Linear) answers `closed-unmerged`; a store that
+   * structurally cannot prove a rejection (MarkdownFs) answers `closed-unknown`
+   * (it never claims a rejection it cannot see — W2-F1c / the AC-2 honesty rule).
+   * The hook both drives the state and declares the honest per-store answer, so
+   * the suite pins the real (legitimately divergent) behaviour rather than a
+   * lowest-common mechanism.
+   */
+  simulateClosedUnmergedPr(
+    store: IssueStore,
+    id: string,
+  ): Promise<ClosingState['state']>;
+
+  /**
+   * Drive the issue closed with NO closing-PR evidence at all (closed by hand, as
+   * a duplicate, via a foreign-id mention, or on a store whose tracker↔host
+   * integration never attached a PR). Every store MUST report `closed-unknown`
+   * here — never a rejection it cannot prove (W2-F1c).
+   */
+  simulateClosedNoEvidence(store: IssueStore, id: string): Promise<void>;
 }
 
 export type { IssueView, IssueRef };

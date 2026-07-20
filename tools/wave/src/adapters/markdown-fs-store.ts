@@ -331,12 +331,16 @@ export class MarkdownFsStore implements IssueStore {
     if (!located) throw new Error(`Issue not found: ${id}`);
     if (!located.inDone) return { state: 'open' };
     // closed (lives in done/): a recorded Closed-by PR ref ⇒ merged; a done file
-    // with no PR ref (e.g. closeUnplanned's wontfix) ⇒ closed-unmerged.
+    // with no PR ref (a hand-close, a closeUnplanned wontfix, a foreign-id-mention
+    // close) ⇒ `closed-unknown`. This store structurally cannot record a REJECTED
+    // PR — it has only "a PR merged" (the Closed-by ref) or "no ref" — so it must
+    // NEVER report `closed-unmerged`: a store that cannot prove a rejection never
+    // claims one (W2-F1c). The absence reads as absence-of-evidence, not rejection.
     const source = await readFile(located.path, 'utf-8');
     const closedBy = readField(source, CLOSED_BY_FIELD);
     return closedBy !== undefined && closedBy.trim() !== ''
       ? { state: 'merged', prUrl: closedBy.trim() }
-      : { state: 'closed-unmerged' };
+      : { state: 'closed-unknown' };
   }
 
   // ── listOpen (eligibility OR-set) ─────────────────────────────────────────
@@ -516,6 +520,22 @@ export const markdownConformanceHooks: IssueStoreConformanceHooks = {
   // no-op-or-reconcile (the issue is already natively closed for markdown).
   async simulateNativeClose() {
     /* intentionally empty — markdown self-closes inside close() */
+  },
+  // close() records Closed-by:<prUrl> + moves to done/ → readClosing reads merged.
+  async simulateClosedMergedPr(store: IssueStore, id: string, prUrl: string) {
+    await store.close(id, prUrl, []);
+  },
+  // MarkdownFs structurally cannot record a REJECTED PR: closeUnplanned natively
+  // closes with NO Closed-by ref, which readClosing must read as closed-unknown —
+  // the store never claims a rejection it cannot prove (W2-F1c / AC-2). So the
+  // honest expectation on this store is `closed-unknown`, not `closed-unmerged`.
+  async simulateClosedUnmergedPr(store: IssueStore, id: string) {
+    await store.closeUnplanned(id, 'closed without a merged PR');
+    return 'closed-unknown' as const;
+  },
+  // A close with no PR evidence at all — same mechanism, same honest answer.
+  async simulateClosedNoEvidence(store: IssueStore, id: string) {
+    await store.closeUnplanned(id, 'closed with no PR evidence');
   },
 };
 

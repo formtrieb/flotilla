@@ -89,9 +89,17 @@ describe('RealGitHubApi', () => {
     expect(await api.getClosingState(7)).toEqual({ state: 'open' });
   });
 
-  it('getClosingState → closed-unmerged when closed with no merged PR', async () => {
+  it('getClosingState → closed-unmerged when a closing PR was FOUND and did not merge', async () => {
     const { api } = makeApi(() => ({ status: 200, json: { data: { repository: { issue: { state: 'CLOSED', closedByPullRequestsReferences: { nodes: [{ merged: false, url: 'u' }] } } } } } }));
     expect(await api.getClosingState(7)).toEqual({ state: 'closed-unmerged' });
+  });
+
+  it('getClosingState → closed-unknown when CLOSED with NO closing-PR reference (W2-F1c: not a rejection)', async () => {
+    // Closed by hand / as a duplicate / via a foreign-id mention: the issue is
+    // closed but no PR was ever linked. The old code collapsed this into
+    // closed-unmerged and flagged legitimately-finished rows as rejected PRs.
+    const { api } = makeApi(() => ({ status: 200, json: { data: { repository: { issue: { state: 'CLOSED', closedByPullRequestsReferences: { nodes: [] } } } } } }));
+    expect(await api.getClosingState(7)).toEqual({ state: 'closed-unknown' });
   });
 
   it('preflight throws on a non-200 GET /user', async () => {

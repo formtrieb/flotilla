@@ -467,6 +467,22 @@ describe('issue-store-cli — done-reconcile close seam (FOR-18)', () => {
     expect((JSON.parse(captured) as IssueView).status).toBe('done');
   });
 
+  it('closed-unknown path: read-closing reports the fourth outcome through the CLI (closed, NO PR evidence — never a rejection)', async () => {
+    // W2-F1c: a row that resolved to done outside flotilla (a foreign-id mention,
+    // a hand-close) has no PR evidence either way. The CLI must surface the fourth
+    // ClosingState so the done-reconcile can REPORT it, never auto-flag it as a
+    // rejected PR (which closed-unmerged is reserved for).
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const id = await store.create(linearInput());
+    await store.transition(id, 'in-review');
+    api.simulateCloseWithoutPrEvidence(id); // closed with no attachment at all
+
+    captured = '';
+    expect(await runIssueStore(['read-closing', id], store)).toBe(0);
+    expect(JSON.parse(captured) as ClosingState).toMatchObject({ state: 'closed-unknown' });
+  });
+
   it('doneState fallback path (FOR-13, no integration): the SAME `close` verb transitions the row to `done` + posts the loud advisory', async () => {
     const api = new InMemoryLinearApi();
     const store = new LinearIssuesStore({ api, states: { doneState: 'Done' } });

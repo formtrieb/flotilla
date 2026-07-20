@@ -80,11 +80,12 @@ In-repo, `{{wave-cli}}` is `npx tsx tools/wave/src/cli.ts <verb>` — used here 
 
 ## `ClosingState` shape (the done-reconcile probe)
 
-`read-closing` prints `{ "state": "open" | "merged" | "closed-unmerged", "prUrl"?: string }`:
+`read-closing` prints `{ "state": "open" | "merged" | "closed-unmerged" | "closed-unknown", "prUrl"?: string }` — the four outcomes are **evidence claims, not verdicts** (ADR-0020):
 
 - `open` — PR still open / no PR yet → keep the `in-review` rung; no action. Exception: a no-integration `states.doneState` workspace never reports `merged` — consult `host-pr status --branch <b>` (the evidence hierarchy, ADR-0023); on its `state: merged`, land it with `close` (FOR-13 fallback). No out-of-band human-confirmation step.
 - `merged` — the PR landed during the outage → **land it `done` via `issue-store close <id> <prUrl>`** (the done-reconcile). **Do not `transition`** (no `done` rung); `close` is idempotent and records the closing facts — on a native-integration tracker `read().status` also derives `done` from the merged PR's store-kind close phrase (`wave-shared` Convention 4). Carries `prUrl`.
-- `closed-unmerged` — PR closed without merging → **flag `recoverable-stop`** (not auto-`available`).
+- `closed-unmerged` — a closing PR was **found and it did not merge** (a proven rejection) → **flag `recoverable-stop`** (not auto-`available`).
+- `closed-unknown` — closed with **no PR evidence either way** (a hand-close, a duplicate, or the W2-F1c foreign-id mention). *Absence of evidence, not evidence of rejection* → **never flag on the tracker probe alone**. Fall to the host (evidence hierarchy): `host-pr status --branch <b>` — `merged` lands it (`close`, FOR-13 fallback), `closed-unmerged` is the only host answer that justifies a `recoverable-stop` flag, and `open`/`none` is **reported** (`closed-unknown — closed, no merged-PR evidence found; confirm before landing`) and left for the human, never re-dispatched.
 
 ## Worked sequence (grounded in the dogfood)
 
@@ -112,7 +113,7 @@ npx tsx tools/wave/src/resume-cli.ts \
 
 # 5. Done-reconcile each in-review row — evidence hierarchy (ADR-0023):
 #    tracker attachment (read-closing) > host PR state (host-pr status) > nothing
-{{wave-cli}} issue-store read-closing "$ID"     # merged → close (below); closed-unmerged → flag; open → host fallback
+{{wave-cli}} issue-store read-closing "$ID"     # merged → close (below); closed-unmerged → flag; open/closed-unknown → host fallback (closed-unknown never auto-flags)
 # merged → land it done via the existing close verb (NOT `transition … done`):
 {{wave-cli}} issue-store close "$ID" "$PR_URL"   # $PR_URL is read-closing's prUrl; FOR-13 fallback when no integration
 # open on a no-integration states.doneState workspace → read-closing can't see the

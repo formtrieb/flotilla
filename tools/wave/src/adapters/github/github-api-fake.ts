@@ -111,6 +111,8 @@ export class InMemoryGitHubApi implements GitHubApi {
    * Test affordance: record the closing PR for an issue (what the merged PR's
    * `Closes #N` establishes server-side). NOT part of GitHubApi — conformance
    * drivers reach it through the store's `api` field, like simulateNativeClose.
+   * NOT calling this before a `nativeClose` models a close with NO PR evidence:
+   * `getClosingState` then reads `closed-unknown`, never `closed-unmerged`.
    */
   async setClosingPr(
     number: number,
@@ -127,11 +129,16 @@ export class InMemoryGitHubApi implements GitHubApi {
     if (!issue) throw new Error(`GitHub issue not found: #${number}`);
     if (issue.state === 'open') return { state: 'open' };
     const pr = this.closingByIssue.get(number);
-    if (pr?.merged) {
+    // No recorded closing PR ⇒ closed with NO evidence either way (W2-F1c): the
+    // issue was closed by hand / as a duplicate / via a foreign-id mention.
+    // `closed-unknown`, never a rejection the fake cannot prove.
+    if (pr === undefined) return { state: 'closed-unknown' };
+    if (pr.merged) {
       return pr.url !== undefined
         ? { state: 'merged', prUrl: pr.url }
         : { state: 'merged' };
     }
+    // A closing PR WAS recorded and it did not merge ⇒ a proven rejection.
     return { state: 'closed-unmerged' };
   }
 
@@ -235,5 +242,32 @@ export const githubConformanceHooks: IssueStoreConformanceHooks = {
   async simulateNativeClose(store: IssueStore, id: string): Promise<void> {
     const api = (store as GitHubIssuesStore).api;
     await api.nativeClose(Number(id));
+  },
+  async simulateClosedMergedPr(
+    store: IssueStore,
+    id: string,
+    prUrl: string,
+  ): Promise<void> {
+    const api = (store as GitHubIssuesStore).api as InMemoryGitHubApi;
+    await api.setClosingPr(Number(id), { merged: true, url: prUrl });
+    await api.nativeClose(Number(id), 'completed');
+  },
+  async simulateClosedUnmergedPr(
+    store: IssueStore,
+    id: string,
+  ): Promise<'closed-unmerged'> {
+    // GitHub CAN record the rejected PR → a proven rejection (closed-unmerged).
+    const api = (store as GitHubIssuesStore).api as InMemoryGitHubApi;
+    await api.setClosingPr(Number(id), {
+      merged: false,
+      url: 'https://github.com/o/r/pull/0',
+    });
+    await api.nativeClose(Number(id), 'not_planned');
+    return 'closed-unmerged';
+  },
+  async simulateClosedNoEvidence(store: IssueStore, id: string): Promise<void> {
+    // Closed WITHOUT ever recording a closing PR → no evidence → closed-unknown.
+    const api = (store as GitHubIssuesStore).api as InMemoryGitHubApi;
+    await api.nativeClose(Number(id), 'completed');
   },
 };
