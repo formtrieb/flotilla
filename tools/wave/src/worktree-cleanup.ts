@@ -66,6 +66,40 @@
  * above (`planCleanup`/`executeCleanup`) — GC only ever touches clean worktrees
  * and never deletes branches; crash-cleanup targets one specific branch's debris
  * and, with `force`, may destroy a dirty worktree on explicit confirmation.
+ *
+ * ── Editor/harness junk-class hardening (FOR-56) ──────────────────────────────
+ *
+ * Live finding W12-F2 (docs/retros/2026-07-20-preflight-hardening-w12.md): worktree
+ * removal failed ENOTEMPTY on all five wave worktrees in a close (`errors:5,
+ * removed:0`) although every worktree was clean at the git-status snapshot taken
+ * upstream in `planCleanup` — the VS Code extension host, still attached to a
+ * worktree after its agent exited, wrote post-agent leftovers into it
+ * (`.vscode/settings.json`, a `.claude/agents/<file>` remnant, plus a NESTED
+ * `.DS_Store`) during the physical delete, racing it exactly like the FOR-45
+ * Finder race above — just from a different actor. The FOR-45 junk purge only
+ * recognized individual Finder-junk FILE names; it had no notion of an entire
+ * editor/harness-owned DIRECTORY as disposable, so `.vscode/settings.json` and
+ * the `.claude/agents/` remnant were never purged and the retry kept failing.
+ *
+ * `JUNK_DIR_NAMES` (`.vscode`, `.claude`) extends the purge pass
+ * ({@link removeAllowlistedJunk}, the FOR-45 `removeFinderJunk` generalized) so
+ * that a directory whose OWN name matches is purged as a single allowlisted unit
+ * — its entire subtree, at whatever depth it is found — rather than requiring
+ * every file inside it to individually match a known junk name. This is
+ * deliberately a fixed two-name allowlist, never a wildcard/dot-dir glob (a bare
+ * `.*` would also swallow `.git`), matching the same "small, fixed allowlist"
+ * discipline as `FINDER_JUNK_NAMES`.
+ *
+ * This purge pass runs ONLY after `defaultWorktreeRemover`'s initial physical
+ * delete already threw `ENOTEMPTY` on a worktree `planCleanup` already decided
+ * was safe to remove (git-clean, upstream, unchanged by this hardening — see the
+ * dedicated regression test in the spec file). It is not a second dirty-content
+ * gate: exactly like the FOR-45 Finder-junk case, once a worktree has reached
+ * the remover at all, ordinary co-resident content is torn down along with it as
+ * part of the full worktree teardown — the purge's only job is breaking the
+ * ENOTEMPTY race, never deciding removal eligibility (that stays entirely in
+ * `planCleanup`'s `git status --porcelain` check, per the dirty-worktree
+ * safety invariant at the top of this file).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -707,21 +741,25 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
       } catch (err) {
         if (!isEnotempty(err)) throw err;
 
-        // macOS reality (FOR-45, live finding W9-F1): Finder/Spotlight can
-        // recreate `.DS_Store` (and similar housekeeping files) in a
-        // directory the instant it becomes empty, racing our recursive
-        // delete so the final rmdir sees a "non-empty" directory again.
-        // Purge known junk and retry ONCE. A worktree with zero junk found
-        // was never junk-shaped to begin with — propagate the ORIGINAL
-        // error unchanged rather than masking a real obstruction.
-        const junkRemoved = removeFinderJunk(abs);
+        // macOS/editor-host reality (FOR-45 Finder race, generalized by
+        // FOR-56 to editor/harness junk classes): Finder/Spotlight — or a
+        // still-attached VS Code extension host — can recreate housekeeping
+        // files (`.DS_Store`, `.vscode/settings.json`, a `.claude/agents/`
+        // remnant) in a directory the instant it becomes empty, racing our
+        // recursive delete so the final rmdir sees a "non-empty" directory
+        // again. Purge known junk (files anywhere, plus whole allowlisted
+        // junk directories per {@link JUNK_DIR_NAMES}) and retry ONCE. A
+        // worktree with zero junk found was never junk-shaped to begin with
+        // — propagate the ORIGINAL error unchanged rather than masking a
+        // real obstruction.
+        const junkRemoved = removeAllowlistedJunk(abs);
         if (junkRemoved === 0) throw err;
 
         try {
           rmSync(abs, { recursive: true, force: true });
         } catch (retryErr) {
           throw new Error(
-            `worktree removal still failed after purging ${junkRemoved} Finder-junk file(s) at ${abs}: ${describeError(retryErr)}`,
+            `worktree removal still failed after purging ${junkRemoved} allowlisted-junk item(s) at ${abs}: ${describeError(retryErr)}`,
           );
         }
       }
@@ -759,6 +797,26 @@ function isFinderJunkName(name: string): boolean {
   return FINDER_JUNK_NAMES.has(name) || APPLE_DOUBLE_PATTERN.test(name);
 }
 
+/**
+ * Editor/harness junk DIRECTORY names (FOR-56 — see the file-level "Editor/
+ * harness junk-class hardening" doc comment for the live incident this
+ * closes). Unlike {@link FINDER_JUNK_NAMES} (individual junk FILE names,
+ * recognized wherever found), a name in this set marks an entire subtree as
+ * a single allowlisted purge unit: once a directory's own name matches, its
+ * whole contents are purged without inspecting individual file names inside
+ * it — a `.vscode/` or `.claude/` directory is itself editor/harness-owned
+ * debris in this worktree-teardown context.
+ *
+ * Exactly two fixed names — never a wildcard/dot-dir glob (a bare `.*` would
+ * also swallow `.git`) — keeps this allowlist conservative, matching the
+ * same fixed-set discipline as `FINDER_JUNK_NAMES`.
+ */
+const JUNK_DIR_NAMES = new Set<string>(['.vscode', '.claude']);
+
+function isJunkDirName(name: string): boolean {
+  return JUNK_DIR_NAMES.has(name);
+}
+
 /** True when `err` is a Node errno exception with `code === 'ENOTEMPTY'`. */
 function isEnotempty(err: unknown): boolean {
   return (
@@ -769,17 +827,26 @@ function isEnotempty(err: unknown): boolean {
 }
 
 /**
- * Recursively delete known Finder-junk debris (FOR-45) from a directory tree.
- * Returns the count of junk entries removed, so the caller can tell whether
- * an `ENOTEMPTY` was junk-shaped (>0 → worth retrying) or something else
- * entirely (0 → propagate the original error, never mask a real obstruction).
+ * Recursively delete known junk debris (FOR-45 Finder files, FOR-56
+ * editor/harness directories) from a directory tree. Returns the count of
+ * junk entries removed, so the caller can tell whether an `ENOTEMPTY` was
+ * junk-shaped (>0 → worth retrying) or something else entirely (0 →
+ * propagate the original error, never mask a real obstruction).
  *
- * Best-effort: an unreadable/already-gone directory, or a junk file that
+ * Two allowlist tiers:
+ *   - {@link FINDER_JUNK_NAMES} / the AppleDouble pattern — individual junk
+ *     FILE names, recognized at any depth (nested `.DS_Store` included).
+ *   - {@link JUNK_DIR_NAMES} — whole directory trees (`.vscode/`, `.claude/`)
+ *     purged as one allowlisted unit the moment the directory's own name
+ *     matches, at any depth, without recursing into it to check individual
+ *     file names first.
+ *
+ * Best-effort: an unreadable/already-gone directory, or a junk entry that
  * itself fails to delete, does not throw here — it simply isn't counted, and
  * the retry `rmSync` back in {@link defaultWorktreeRemover} is what surfaces
  * any real obstruction that remains.
  */
-function removeFinderJunk(dir: string): number {
+function removeAllowlistedJunk(dir: string): number {
   let removed = 0;
 
   function readEntries() {
@@ -795,7 +862,19 @@ function removeFinderJunk(dir: string): number {
   for (const entry of entries) {
     const entryPath = nodePath.join(dir, entry.name);
     if (entry.isDirectory()) {
-      removed += removeFinderJunk(entryPath);
+      if (isJunkDirName(entry.name)) {
+        // Whole allowlisted editor/harness directory tree (FOR-56): purge it
+        // as a single unit rather than recursing name-by-name into it.
+        try {
+          rmSync(entryPath, { recursive: true, force: true });
+          removed += 1;
+        } catch {
+          // Best-effort, same rationale as the file-level catch below — the
+          // retry rmSync surfaces whatever obstruction remains.
+        }
+        continue;
+      }
+      removed += removeAllowlistedJunk(entryPath);
       continue;
     }
     if (isFinderJunkName(entry.name)) {

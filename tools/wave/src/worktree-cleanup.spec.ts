@@ -71,6 +71,17 @@
  *      c. non-ASCII path segments render correctly in error messages — no
  *         mojibake — both through executeCleanup's error-collection path and
  *         through defaultWorktreeRemover's own post-purge-retry-failure path
+ *   11. defaultWorktreeRemover — editor/harness junk-class hardening (FOR-56, W12-F2)
+ *      a. the exact W12 leftover shape (.vscode/settings.json +
+ *         .claude/agents/<file> + a NESTED .DS_Store) is purged and the
+ *         removal retried once, succeeding cleanly
+ *      b. a real top-level file coexisting with the new junk classes is
+ *         still torn down once the remover is reached — the purge only
+ *         breaks the ENOTEMPTY race, it never decides removal eligibility
+ *      c. the dirty-worktree guarantee is unchanged: a real file nested
+ *         inside `.vscode/`/`.claude/`, or at the top level alongside junk,
+ *         still means `dirty: true` → skipped upstream in planCleanup, the
+ *         remover is never reached at all
  *
  * Section 10 is the one place in this file that exercises the REAL
  * `defaultWorktreeRemover` (every other section uses the injectable
@@ -1227,6 +1238,130 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
     expect(result.skipped).toEqual([dirty]);
   });
 
+  // ─── FOR-56: editor/harness junk classes (W12-F2) ─────────────────────────
+  //
+  // Live finding W12-F2 (docs/retros/2026-07-20-preflight-hardening-w12.md):
+  // the FOR-45 purge only recognized individual Finder-junk FILE names, not
+  // an entire editor/harness-owned DIRECTORY as disposable — a still-attached
+  // VS Code extension host wrote `.vscode/settings.json` and a
+  // `.claude/agents/<file>` remnant into worktrees post-agent, alongside a
+  // NESTED `.DS_Store`, and the ENOTEMPTY retry kept failing on all five.
+  describe('FOR-56: editor/harness junk-class hardening', () => {
+    it('purges the exact W12 leftover shape (.vscode/settings.json + .claude/agents/<file> + a NESTED .DS_Store) and retries once — the worktree is removed cleanly', () => {
+      const { root, worktreePath } = makeTempWorktree('agent-w12-leftovers');
+
+      // .vscode/settings.json — whole `.vscode/` directory tree.
+      mkdirSync(join(worktreePath, '.vscode'), { recursive: true });
+      writeFileSync(join(worktreePath, '.vscode', 'settings.json'), '{}', 'utf-8');
+
+      // .claude/agents/<file> — whole `.claude/` directory tree.
+      mkdirSync(join(worktreePath, '.claude', 'agents'), { recursive: true });
+      writeFileSync(
+        join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'),
+        'post-agent leftover',
+        'utf-8',
+      );
+
+      // A `.DS_Store` NESTED inside an ordinary subdirectory (not at the
+      // worktree root) — proves "nested junk directories, not only
+      // top-level files" per the FOR-56 acceptance criteria.
+      mkdirSync(join(worktreePath, 'nested', 'deeper'), { recursive: true });
+      writeFileSync(
+        join(worktreePath, 'nested', 'deeper', '.DS_Store'),
+        'finder-debris',
+        'utf-8',
+      );
+
+      // The first rmSync attempt simulates the live race: nothing is
+      // actually deleted on this call.
+      asRmSyncMock(rmSync).mockImplementationOnce(() => {
+        throw makeEnotempty(worktreePath);
+      });
+
+      const remover = defaultWorktreeRemover(root);
+      expect(() => remover.remove(worktreePath)).not.toThrow();
+
+      // The retry (real rmSync, after the allowlisted-junk purge) removed
+      // the whole tree, including the now-empty `nested/` directory.
+      expect(existsSync(worktreePath)).toBe(false);
+
+      // Step 2 (deregister) was still reached — the 2-step contract holds.
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        ['worktree', 'remove', worktreePath],
+        expect.objectContaining({ cwd: root }),
+      );
+    });
+
+    it('a worktree with .vscode/.claude junk AND a real top-level file is still removed once it reaches the remover — the purge never blocks an otherwise-successful retry', () => {
+      // Documents the boundary this hardening deliberately does NOT change:
+      // once a worktree has reached the remover at all (i.e. planCleanup
+      // already decided it is git-clean), ordinary co-resident content is
+      // torn down along with it as part of the full worktree teardown,
+      // exactly like the pre-existing FOR-45 `real-file.txt` + `.DS_Store`
+      // case above. The junk purge's only job is breaking the ENOTEMPTY
+      // race — it never decides removal eligibility; that stays entirely in
+      // planCleanup's `git status --porcelain` check (see the two tests
+      // below, which pin the actual "must skip, never remove" guarantee at
+      // the layer where it is actually enforced).
+      const { root, worktreePath } = makeTempWorktree('agent-mixed-content');
+      writeFileSync(join(worktreePath, 'real-file.txt'), 'hello', 'utf-8');
+      mkdirSync(join(worktreePath, '.vscode'), { recursive: true });
+      writeFileSync(join(worktreePath, '.vscode', 'settings.json'), '{}', 'utf-8');
+
+      asRmSyncMock(rmSync).mockImplementationOnce(() => {
+        throw makeEnotempty(worktreePath);
+      });
+
+      const remover = defaultWorktreeRemover(root);
+      expect(() => remover.remove(worktreePath)).not.toThrow();
+      expect(existsSync(worktreePath)).toBe(false);
+    });
+
+    it('the dirty-worktree guarantee is unchanged: a real file nested INSIDE .vscode/ or .claude/, alongside allowlisted junk, still means dirty:true → skipped, never removed', () => {
+      // A worktree carrying real, uncommitted content nested inside an
+      // otherwise-junk-shaped directory (e.g. a stray note dropped next to
+      // `.vscode/settings.json`) is caught by git status upstream — dirty is
+      // decided entirely in planCleanup, unaffected by JUNK_DIR_NAMES.
+      const dirty: WorktreeEntry = {
+        path: '/repo/.claude/worktrees/agent-real-file-nested-in-vscode',
+        branch: 'wave/FOR-56-nested-real-file',
+        head: 'abc1234abc1234abc1234abc1234abc1234abcd',
+        dirty: true,
+      };
+      const plan = planCleanup([dirty]);
+      expect(plan.selected).toHaveLength(0);
+      expect(plan.skipped).toEqual([dirty]);
+
+      const remover = defaultWorktreeRemover('/repo');
+      const result = executeCleanup(plan, { remover });
+      expect(execFileSync).not.toHaveBeenCalled();
+      expect(result.removed).toHaveLength(0);
+      expect(result.skipped).toEqual([dirty]);
+    });
+
+    it('the dirty-worktree guarantee is unchanged: a real file at the worktree TOP LEVEL, with allowlisted junk below it, still means dirty:true → skipped, never removed', () => {
+      // Same guarantee, mirrored for a real file living beside (rather than
+      // nested inside) the junk-allowlisted directories — allowlisted junk
+      // and real files coexisting never overrides the dirty flag.
+      const dirty: WorktreeEntry = {
+        path: '/repo/.claude/worktrees/agent-real-file-top-level',
+        branch: 'wave/FOR-56-top-level-real-file',
+        head: 'abc1234abc1234abc1234abc1234abc1234abcd',
+        dirty: true,
+      };
+      const plan = planCleanup([dirty]);
+      expect(plan.selected).toHaveLength(0);
+      expect(plan.skipped).toEqual([dirty]);
+
+      const remover = defaultWorktreeRemover('/repo');
+      const result = executeCleanup(plan, { remover });
+      expect(execFileSync).not.toHaveBeenCalled();
+      expect(result.removed).toHaveLength(0);
+      expect(result.skipped).toEqual([dirty]);
+    });
+  });
+
   describe('non-ASCII path rendering — no mojibake', () => {
     // The live incident's path shape: an en dash (U+2013) path segment. The
     // observed corruption was the classic symptom of UTF-8 bytes decoded as
@@ -1264,14 +1399,14 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
       // Real rmSync, reached directly (bypassing the mock) so the queued
       // "once" throws below can be reserved precisely for the two TOP-LEVEL
       // calls (initial attempt + retry) without being consumed by the
-      // Finder-junk purge's own (real) deletion of `.DS_Store` in between.
+      // allowlisted-junk purge's own (real) deletion of `.DS_Store` in between.
       const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs');
       const mockedRmSync = asRmSyncMock(rmSync);
       // 1st top-level call: initial attempt — junk-shaped ENOTEMPTY.
       mockedRmSync.mockImplementationOnce(() => {
         throw makeEnotempty(worktreePath);
       });
-      // The Finder-junk purge's own `.DS_Store` deletion — let it really happen.
+      // The allowlisted-junk purge's own `.DS_Store` deletion — let it really happen.
       (mockedRmSync as unknown as { mockImplementationOnce: (impl: (...args: unknown[]) => void) => void }).mockImplementationOnce(
         (...args: unknown[]) => (actualFs.rmSync as (...a: unknown[]) => void)(...args),
       );
@@ -1296,7 +1431,7 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
       expect(message).not.toContain(MOJIBAKE_SEGMENT);
       // Confirms this went through the "still failed after purge" wrap
       // (proving describeError ran), not a pass-through of the raw error.
-      expect(message).toMatch(/Finder-junk/);
+      expect(message).toMatch(/allowlisted-junk/);
     });
   });
 });
