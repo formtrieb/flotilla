@@ -1,5 +1,6 @@
 /**
- * find-repo-root.spec.ts — Regression net for the `findRepoRoot` footgun.
+ * find-repo-root.spec.ts — Regression net for the `findRepoRoot` footgun, plus
+ * (FOR-48) the legacy-warning-retirement coverage.
  *
  * Bug: `findRepoRoot(start)` walked up looking for a dir with BOTH a `.scratch/`
  * subdir AND a sibling `package.json`, and SILENTLY fell back to `process.cwd()`
@@ -11,13 +12,20 @@
  *
  * The fix anchors on the nearest `.scratch/` ancestor of `start`; package.json
  * is no longer required.
+ *
+ * FOR-48: the fallback-to-cwd path used to unconditionally print a "no
+ * .scratch/ ancestor found" warning — firing on EVERY run for a consumer
+ * without a `.scratch/` layout at all (any GitHub/Linear-backed wave). The
+ * warning is now opt-in (`warnOnFallback` / `WAVE_WARN_NO_SCRATCH_ROOT=1`),
+ * silent-off by default. Both paths are covered below.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findRepoRoot } from './cli';
+import { findScratchRoot } from './find-repo-root';
 import { validateIssue } from './dor-gate';
 
 describe('findRepoRoot — anchors on the nearest .scratch ancestor', () => {
@@ -96,5 +104,76 @@ describe('findRepoRoot — anchors on the nearest .scratch ancestor', () => {
       (g) => g.name === 'blocked-by-chain-resolves',
     );
     expect(gate5?.status).toBe('pass');
+  });
+});
+
+describe('findScratchRoot — the .scratch-ancestor warning is opt-in (FOR-48)', () => {
+  // A directory tree with NO `.scratch/` ancestor anywhere — the shape of
+  // every GitHub/Linear-backed wave (no MarkdownFsStore layout at all).
+  let noScratchStart: string;
+
+  beforeAll(() => {
+    noScratchStart = mkdtempSync(join(tmpdir(), 'find-repo-root-no-scratch-'));
+  });
+
+  afterAll(() => {
+    rmSync(noScratchStart, { recursive: true, force: true });
+  });
+
+  it('falls back to cwd silently by default — no legacy warning on stderr', () => {
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    const result = findScratchRoot(noScratchStart);
+    expect(result).toBe(process.cwd());
+    expect(stderrSpy).not.toHaveBeenCalled();
+    stderrSpy.mockRestore();
+  });
+
+  it('stays silent when an injected env leaves WAVE_WARN_NO_SCRATCH_ROOT unset/off', () => {
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    const result = findScratchRoot(noScratchStart, {
+      env: { WAVE_WARN_NO_SCRATCH_ROOT: '0' } as NodeJS.ProcessEnv,
+    });
+    expect(result).toBe(process.cwd());
+    expect(stderrSpy).not.toHaveBeenCalled();
+    stderrSpy.mockRestore();
+  });
+
+  it('the cli.ts findRepoRoot wrapper stays silent by default too — every consumer benefits', () => {
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    const result = findRepoRoot(noScratchStart);
+    expect(result).toBe(process.cwd());
+    expect(stderrSpy).not.toHaveBeenCalled();
+    stderrSpy.mockRestore();
+  });
+
+  it('the on-behavior stays covered: warnOnFallback: true prints the legacy warning', () => {
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    const result = findScratchRoot(noScratchStart, { warnOnFallback: true });
+    expect(result).toBe(process.cwd());
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    expect(String(stderrSpy.mock.calls[0]?.[0])).toMatch(
+      /no \.scratch\/ ancestor found/,
+    );
+    stderrSpy.mockRestore();
+  });
+
+  it('the on-behavior stays covered: WAVE_WARN_NO_SCRATCH_ROOT=1 (injected env) prints the legacy warning', () => {
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    const result = findScratchRoot(noScratchStart, {
+      env: { WAVE_WARN_NO_SCRATCH_ROOT: '1' } as NodeJS.ProcessEnv,
+    });
+    expect(result).toBe(process.cwd());
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    stderrSpy.mockRestore();
   });
 });
