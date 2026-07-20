@@ -127,8 +127,13 @@ git push origin --delete <branch>
 # recoverable-stop).
 #
 # Detect it mechanically BEFORE phase 5 (not from memory of this comment) —
-# diff each dispatch-log branch against main and grep the engine surface:
-ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/github-issues-store|linear/linear-issues-store)\.ts|issue-store-cli\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
+# diff each dispatch-log branch against main and grep the engine surface.
+# This also covers the transport/factory/wiring layer one level below the
+# store wrappers -- real-github-api.ts, github-api-factory.ts,
+# real-linear-api.ts, linear-api-factory.ts, cli-store.ts -- because a
+# probe-logic fix confined to that layer (the FOR-23 / real-linear-api.ts
+# precedent) would otherwise evade this check:
+ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
 for BRANCH in <every wave branch from the dispatch-log>; do
   HIT=$(git diff --name-only main...origin/"$BRANCH" | grep -E "$ENGINE_SURFACE")
   [ -n "$HIT" ] && echo "SELF-REPAIR HAZARD: $BRANCH touches $HIT"

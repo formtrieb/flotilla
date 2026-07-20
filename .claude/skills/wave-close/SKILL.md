@@ -99,8 +99,13 @@ Order : <branch-1> → <branch-2> → <branch-3>
 ```bash
 # The files behind read-closing / close / flag / clear-flag (per-adapter +
 # CLI wiring), merge-order, worktree-cleanup, the host-pr routing verbs, and
-# the top-level CLI dispatch that routes to all of them:
-ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/github-issues-store|linear/linear-issues-store)\.ts|issue-store-cli\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
+# the top-level CLI dispatch that routes to all of them. This also covers the
+# transport/factory/wiring layer one level below the store wrappers —
+# real-github-api.ts, github-api-factory.ts, real-linear-api.ts,
+# linear-api-factory.ts, cli-store.ts — because a probe-logic fix confined to
+# that layer (the FOR-23 / real-linear-api.ts precedent) would otherwise
+# evade this check:
+ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
 
 for BRANCH in <every wave branch from the dispatch-log>; do
   HIT=$(git diff --name-only main...origin/"$BRANCH" | grep -E "$ENGINE_SURFACE")
