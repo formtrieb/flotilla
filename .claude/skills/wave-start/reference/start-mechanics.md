@@ -123,14 +123,23 @@ WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
 #   → { "event": "...", "outcome": { "type": "...", ... } }
 
 # 7c. Apply (WAL — spine first, then rung)
-# transition → approved:  open the PR through the engine (NEVER gh pr create).
-#   find-before-create is idempotent: the Worker already opened it (report.prUrl);
-#   this re-pins the same open PR — no duplicate. --body carries the store-kind
-#   close phrase (Convention 4), the ONLY tracker id the title/body may name.
+# transition → approved:  render the verdict, then open the PR through the
+#   engine (NEVER gh pr create). find-before-create is idempotent: the Worker
+#   already opened it (report.prUrl); this re-pins the same open PR — no
+#   duplicate. --body carries the rendered `## Reviewer verdict` section
+#   (wave-shared "the reviewer-verdict render") ABOVE the store-kind close
+#   phrase (Convention 4), the ONLY tracker id the title/body may name.
 #   github-only in M1 (bitbucket/unknown fail loud + typed); reads GITHUB_TOKEN.
+VERDICT_SECTION=$({{wave-cli}} render-verdict "$VERDICTS" "$ID" --anchor "$ANCHOR_SHA")
+#   $ANCHOR_SHA is the row's roster-bound anchor — the SAME value threaded into
+#   this row's Worker/Reviewer briefs as `issue.anchorSha` (workflow-driver.md).
+#   render-verdict reads the MAX-iter valid verdict sidecar — the LATEST
+#   iteration's verdict, never a stale one from a changes-requested →
+#   re-dispatch cycle.
 PR_URL=$({{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
-  --title "$PR_TITLE" --body "$PR_BODY_WITH_CLOSE_PHRASE" | \
+  --title "$PR_TITLE" --body "$PR_BODY_WITH_CLOSE_PHRASE_AND_VERDICT" | \
   jq -r '.url')   # or reuse report.prUrl — both resolve to the one open PR
+#   $PR_BODY_WITH_CLOSE_PHRASE_AND_VERDICT = "<summary>\n\n$VERDICT_SECTION\n\n<close phrase>"
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" pr-created
 {{wave-cli}} spine set-row-pr    "$SPINE" "$ID" "$PR_URL"
 {{wave-cli}} issue-store transition "$ID" in-review

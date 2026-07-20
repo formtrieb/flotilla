@@ -107,6 +107,90 @@ export function metAcIndexes(verdict: ReviewerVerdict): number[] {
   return indexes;
 }
 
+// ─── PR-body render (FOR-16 — the seam where the human actually stands) ────
+
+/**
+ * The two facts a `ReviewerVerdict` sidecar does NOT itself carry, but that the
+ * render needs: which routing iteration produced it, and the wave anchor SHA
+ * (the diff base the Reviewer verified against) — both live on the routing
+ * tuple / spine row, never on the typed verdict.
+ */
+export interface RenderVerdictOptions {
+  /** The routing iteration this verdict was produced at (1 or 2, cap=1). */
+  iteration: number;
+  /** Wave anchor SHA — the diff base the Reviewer verified against. */
+  anchorSha: string;
+}
+
+/** Escape a markdown-table cell: pipes/newlines would otherwise break the row. */
+function escapeCell(s: string): string {
+  return s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+}
+
+/**
+ * Render the human-facing `## Reviewer verdict` PR-body section from a typed
+ * `ReviewerVerdict` sidecar — the single-owner rendering step so the human who
+ * merges the PR sees what the LLM reviewer found (verdict, the per-AC table,
+ * re-run verify counts, advisories) instead of re-reviewing blind or trusting
+ * the Coordinator's word. The engine owns the FORMAT so it is testable and
+ * cannot drift per skill-author (mirrors `write-report`/`write-verdict` owning
+ * the sidecar format, ADR-0024).
+ *
+ * Deliberately compact (wave-shared: "a render lives where its reader lives"):
+ * this is the PR's single human-facing render, not the full sidecar — a
+ * re-dispatch Worker or a rebase resolver reading PR context should not have
+ * to wade through the full typed payload. The sidecar (machine-read, never
+ * trimmed) remains the full authority; this is a projection of it.
+ *
+ * Called once per PR-open — at `approved → pr-created` (wave-start's routing
+ * terminator, `{{wave-cli}} host-pr create --body`) — against the MAX-iter
+ * valid verdict sidecar (`sidecar.ts`'s `readSidecars`/`verdictFor`, the same
+ * reader `verdict-acked` uses), so a changes-requested → re-dispatch cycle's
+ * final PR body always carries the LATEST iteration's verdict, never the
+ * first — the sidecar reader's max-iter selection is what guarantees this,
+ * not anything in this render itself.
+ */
+export function renderVerdictSection(
+  verdict: ReviewerVerdict,
+  opts: RenderVerdictOptions,
+): string {
+  const lines: string[] = [
+    '## Reviewer verdict',
+    '',
+    `**Verdict:** ${verdict.verdict} (iteration ${opts.iteration})`,
+    `**Risk class:** ${verdict.riskClass}`,
+    `**Anchor SHA:** \`${opts.anchorSha}\``,
+    '',
+  ];
+
+  if (verdict.acVerification.length > 0) {
+    lines.push('| AC | Status | Evidence |');
+    lines.push('|---|---|---|');
+    for (const row of verdict.acVerification) {
+      lines.push(
+        `| ${escapeCell(row.ac)} | ${row.met} | ${escapeCell(row.evidence)} |`,
+      );
+    }
+  } else {
+    lines.push('_No acceptance criteria declared._');
+  }
+  lines.push('');
+
+  lines.push(`**Verify:** ${verdict.lintTestSummary ?? 'not reported'}`);
+  lines.push('');
+
+  lines.push('**Advisories:**');
+  if (verdict.reviewerFocusItems.length > 0) {
+    for (const item of verdict.reviewerFocusItems) {
+      lines.push(`- ${item}`);
+    }
+  } else {
+    lines.push('- none');
+  }
+
+  return lines.join('\n');
+}
+
 // ─── JSON Schema (enforced by the Workflow tool at the agent() boundary) ─────
 
 /**

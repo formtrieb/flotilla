@@ -108,6 +108,22 @@
  * on disk to derive from. Exit codes:
  *   0 — printed (with or without a verdict found)
  *   2 — usage (missing <verdictsDir>/<id>)
+ *
+ * render-verdict (FOR-16 — the PR body carries the reviewer-verdict summary) —
+ * the single-owner engine render of the human-facing `## Reviewer verdict`
+ * PR-body section from the FINAL (max-iter valid) ReviewerVerdict sidecar for
+ * an id: reads `<verdictsDir>/<id>-<iter>.md` via the same sidecar reader
+ * `verdict-acked` uses (sidecar.ts, ADR-0002/0024), then runs
+ * `renderVerdictSection()` (reviewer-verdict-schema.ts) over the winning
+ * verdict — never a skill-side hand-format. After a changes-requested →
+ * re-dispatch cycle the max-iter selection means the render always carries the
+ * LATEST verdict, never the first. Invoked by wave-start's `approved →
+ * pr-created` terminator (the PR-open step) to compose the PR `--body`
+ * alongside the store-kind close phrase (`wave-shared` Convention 4). Prints
+ * the rendered markdown to stdout. Exit codes:
+ *   0 — rendered (a verdict sidecar was found for <id>)
+ *   1 — no verdict sidecar found for <id> (nothing to render)
+ *   2 — usage (missing <verdictsDir>/<id>/--anchor)
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -146,7 +162,7 @@ import { flag, printJson } from './cli-utils';
 import { resolveStore } from './cli-store';
 import type { IssueStore } from './adapters/issue-store';
 import { readSidecars, type SidecarReader } from './sidecar';
-import { metAcIndexes } from './reviewer-verdict-schema';
+import { metAcIndexes, renderVerdictSection } from './reviewer-verdict-schema';
 
 // NOTE (FOR-11): `resume` is deliberately NOT in this list. The reconciler has
 // its OWN separate entrypoint, `resume-cli.ts` (`npx tsx tools/wave/src/resume-cli.ts
@@ -176,6 +192,7 @@ const KNOWN_SUBCOMMANDS = [
   'write-report',
   'write-verdict',
   'verdict-acked',
+  'render-verdict',
 ] as const;
 type Subcommand = (typeof KNOWN_SUBCOMMANDS)[number];
 
@@ -237,6 +254,7 @@ function printUsage(): void {
       '  wave-validate write-report <json-file> --dir <reportsDir> --id <id> --iter <n>',
       '  wave-validate write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>',
       '  wave-validate verdict-acked <verdictsDir> <id>',
+      '  wave-validate render-verdict <verdictsDir> <id> --anchor <sha>',
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
       '',
@@ -757,6 +775,58 @@ function runVerdictAcked(args: string[]): number {
   return 0;
 }
 
+/**
+ * Run the `render-verdict` subcommand — the single-owner engine render of the
+ * human-facing `## Reviewer verdict` PR-body section (FOR-16). Reads the
+ * MAX-iter valid ReviewerVerdict sidecar for `<id>` out of `<verdictsDir>` (the
+ * same {@link readSidecars} max-iter-per-id reader `verdict-acked` uses — so a
+ * changes-requested → re-dispatch cycle's stale iter-1 verdict is never
+ * rendered over the latest), then runs {@link renderVerdictSection} over it
+ * with the supplied `--anchor` SHA. Unlike `verdict-acked`, a missing verdict
+ * IS a failure here: this verb is only ever called at the `approved →
+ * pr-created` terminator, by which point a verdict that routed to `approved`
+ * must exist on disk — a miss means the Scribe write step was skipped, and the
+ * caller should recover it (write-verdict) before opening the PR, not open a
+ * PR with a silently blank verdict section.
+ *
+ * Exit codes: 0 — rendered; 1 — no verdict sidecar found for <id>;
+ * 2 — usage (missing args).
+ */
+function runRenderVerdict(args: string[]): number {
+  const verdictsDir = args[0];
+  const id = args[1];
+  const anchorSha = flag(args, '--anchor');
+  if (verdictsDir === undefined || id === undefined || anchorSha === undefined) {
+    process.stderr.write(
+      [
+        'error: render-verdict requires <verdictsDir> <id> --anchor <sha>',
+        'usage: wave-validate render-verdict <verdictsDir> <id> --anchor <sha>',
+        '',
+      ].join('\n'),
+    );
+    return 2;
+  }
+  // Same reportsDir sidestep as verdict-acked (readSidecars indexes both kinds
+  // together; we only ever read verdictFor()).
+  const unusedReportsDir = join(verdictsDir, '.render-verdict-no-reports');
+  const idx = readSidecars(
+    unusedReportsDir,
+    verdictsDir,
+    defaultVerdictSidecarReader(),
+  );
+  const hit = idx.verdictFor(id);
+  if (hit === null) {
+    process.stderr.write(
+      `error: render-verdict: no verdict sidecar found for "${id}" under ${verdictsDir}\n`,
+    );
+    return 1;
+  }
+  process.stdout.write(
+    renderVerdictSection(hit.verdict, { iteration: hit.iter, anchorSha }) + '\n',
+  );
+  return 0;
+}
+
 export function main(argv: string[] = process.argv.slice(2)): number {
   if (argv.length === 0) {
     printUsage();
@@ -816,6 +886,8 @@ export function main(argv: string[] = process.argv.slice(2)): number {
         return runWriteVerdict(rest);
       case 'verdict-acked':
         return runVerdictAcked(rest);
+      case 'render-verdict':
+        return runRenderVerdict(rest);
       case 'issue-store':
         // `issue-store` is async (Promise<number>) and cannot run inside this
         // sync `main()`. The async entrypoint `mainAsync()` intercepts it BEFORE

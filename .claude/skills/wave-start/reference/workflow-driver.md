@@ -17,7 +17,7 @@ A Workflow `script` is plain JS with **no filesystem and no local-module import*
 | Sub-phase | Runs | Why |
 |---|---|---|
 | **Dispatch + Review + Scribe**: fan out Workers, collect schema-validated `WorkerReport`s, **persist each report sidecar (Scribe stage)**, pipeline each into a `wave-reviewer`, collect schema-validated `ReviewerVerdict`s, **persist each verdict sidecar (Scribe stage)** | **inside the Workflow script** (`pipeline()` + `agent()`) | the `agent()`-heavy parallel part; schema validation at the `agent({schema})` boundary kills the report-fabrication class. A Workflow script has no fs/shell of its own, so the sidecar write is delegated to a cheap `agent()` — the **Scribe** — that runs the paired `write-report`/`write-verdict` verb (ADR-0024) |
-| **Route + mutate**: `route-outcome`/`route-verdict` → `spine set-row-state` + `issue-store transition` + the terminator | **the Coordinator, after the Workflow returns**, via `{{wave-cli}}` calls | the script can't `import` the engine; spine writes must be **sequential** on the Coordinator branch (an in-script parallel writer would race the byte-preserving spine round-trip) |
+| **Route + mutate**: `route-outcome`/`route-verdict` → `spine set-row-state` + `issue-store transition` + the terminator (renders the verdict via `render-verdict` into the PR body it opens with `host-pr create`) | **the Coordinator, after the Workflow returns**, via `{{wave-cli}}` calls | the script can't `import` the engine; spine writes must be **sequential** on the Coordinator branch (an in-script parallel writer would race the byte-preserving spine round-trip) |
 
 ## The Scribe stages — the durable record exists the moment the work does (ADR-0024)
 
