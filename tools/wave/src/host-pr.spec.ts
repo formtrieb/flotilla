@@ -20,6 +20,7 @@ import {
   armPullRequest,
   mergePullRequestNow,
   preflightHost,
+  alignedPrRef,
   AutoMergeUnavailableError,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
@@ -499,6 +500,44 @@ const openPr = (mergeability: PrMergeability): PrLandingStatus => ({
 
 /** No-op {@link ArmOptions.sleep} — keeps recompute-retry specs hermetic and fast. */
 const instantSleep: NonNullable<ArmOptions['sleep']> = async () => {};
+
+describe('alignedPrRef (FOR-54 — one url/number field name across every verb)', () => {
+  it('projects a url onto BOTH `url` and `prUrl`', () => {
+    expect(alignedPrRef({ url: 'https://x/pull/7' })).toEqual({
+      url: 'https://x/pull/7',
+      prUrl: 'https://x/pull/7',
+    });
+  });
+
+  it('projects a number onto BOTH `number` and `prNumber`', () => {
+    expect(alignedPrRef({ number: 42 })).toEqual({ number: 42, prNumber: 42 });
+  });
+
+  it('carries a url AND a number under all four aligned names (the status/arm/merge shape)', () => {
+    expect(alignedPrRef({ url: 'u', number: 9 })).toEqual({
+      url: 'u',
+      prUrl: 'u',
+      number: 9,
+      prNumber: 9,
+    });
+  });
+
+  it('omits an absent number entirely — the documented `create` shape (url only, no number)', () => {
+    const ref = alignedPrRef({ url: 'u' });
+    expect(ref).toEqual({ url: 'u', prUrl: 'u' });
+    // ABSENT keys, not `undefined` values — so JSON.stringify drops them too.
+    expect('number' in ref).toBe(false);
+    expect('prNumber' in ref).toBe(false);
+  });
+
+  it('an empty ref (the `no-pr` outcome) yields no fields at all', () => {
+    expect(alignedPrRef({})).toEqual({});
+  });
+
+  it('a number of 0 is preserved (not treated as absent)', () => {
+    expect(alignedPrRef({ number: 0 })).toEqual({ number: 0, prNumber: 0 });
+  });
+});
 
 describe('decideArmAction (ADR-0023 deterministic arm intent)', () => {
   it('clean → direct merge (nothing pending; arming a clean PR is rejected by the host)', () => {

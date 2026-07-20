@@ -44,6 +44,15 @@
  *
  * stdout is ALWAYS a single JSON object carrying `ok` + the outcome, so the
  * caller can branch on either the exit code or the payload.
+ *
+ * PR url/number field names are ALIGNED across every verb (FOR-54): a PR URL is
+ * carried under BOTH `url` and `prUrl`, and a PR number under BOTH `number` and
+ * `prNumber`, so a single field name resolves on `create | status | arm | merge`
+ * alike. The alignment is additive — no historical name was renamed — so the
+ * live consumers keep reading what they always did (the Worker terminator reads
+ * `create.url`; wave-close reads `status`/`arm` url+number). `create` still
+ * carries no PR number (a deliberate omission: find-before-create only
+ * round-trips the URL). See {@link alignedPrRef}, the single owner of the shape.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -54,6 +63,7 @@ import {
   findOpenPr,
   createPr,
   preflightHost,
+  alignedPrRef,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
   type Host,
@@ -262,7 +272,16 @@ async function runCreate(
     // re-pins the already-open PR instead of opening a duplicate.
     const existing = await findOpenPr(info.host, creds, branch, info, opts);
     if (existing !== null) {
-      printJson({ ok: true, verb: 'create', host: info.host, branch, outcome: 'reused', url: existing });
+      printJson({
+        ok: true,
+        verb: 'create',
+        host: info.host,
+        branch,
+        outcome: 'reused',
+        // Aligned url/number field names across every verb (FOR-54): `url` +
+        // `prUrl`. `create` carries no PR number (documented omission).
+        ...alignedPrRef({ url: existing }),
+      });
       return 0;
     }
 
@@ -273,7 +292,16 @@ async function runCreate(
       opts,
     );
     if ('url' in result) {
-      printJson({ ok: true, verb: 'create', host: info.host, branch, outcome: 'created', url: result.url });
+      printJson({
+        ok: true,
+        verb: 'create',
+        host: info.host,
+        branch,
+        outcome: 'created',
+        // Aligned url/number field names across every verb (FOR-54): `url` +
+        // `prUrl`. `create` carries no PR number (documented omission).
+        ...alignedPrRef({ url: result.url }),
+      });
       return 0;
     }
 
@@ -344,7 +372,17 @@ async function dispatch(
     // A successful probe is exit 0 even when the answer is `none`: "there is no
     // PR" is an ANSWER (the done-reconcile evidence hierarchy consumes it), not
     // a failure. The caller reads `state`.
-    printJson({ ok: true, verb, host: hostName, branch, ...status });
+    printJson({
+      ok: true,
+      verb,
+      host: hostName,
+      branch,
+      ...status,
+      // Aligned url/number field names across every verb (FOR-54): `status`
+      // natively carries `url`/`number`; add the `prUrl`/`prNumber` aliases so
+      // the shape matches arm/merge/create.
+      ...alignedPrRef({ url: status.url, number: status.number }),
+    });
     return 0;
   }
 
@@ -354,7 +392,11 @@ async function dispatch(
       : await mergePullRequestNow(host, branch, method);
 
   const ok = outcome.outcome === 'merged' || outcome.outcome === 'armed' || outcome.outcome === 'already-merged';
-  printJson({ ok, verb, host: hostName, branch, method, ...outcome });
+  // Aligned url/number field names across every verb (FOR-54): the landing
+  // outcomes natively carry `prUrl`/`prNumber`; add the `url`/`number` aliases so
+  // the shape matches status/create. A `no-pr` outcome carries neither → `{}`.
+  const prRef = outcome.outcome === 'no-pr' ? {} : { url: outcome.prUrl, number: outcome.prNumber };
+  printJson({ ok, verb, host: hostName, branch, method, ...outcome, ...alignedPrRef(prRef) });
   return ok ? 0 : 1;
 }
 
