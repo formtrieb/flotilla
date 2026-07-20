@@ -110,7 +110,7 @@ export function verdictToEvent(
   switch (verdict) {
     case 'approve':
       // G3 guard: a public-API-change approve MUST route to the STOP path, so
-      // the Coordinator final-confirms before `gh pr create`. Never the
+      // the Coordinator final-confirms before `host-pr create`. Never the
       // 'reviewer-approve' auto-PR fast path.
       return risk === 'public-API-change'
         ? 'reviewer-approve-public-api'

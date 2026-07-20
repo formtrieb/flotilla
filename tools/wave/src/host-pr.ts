@@ -499,8 +499,8 @@ export class LandingNotImplementedError extends Error {
           // with no adapter: there is nothing to implement, because we could not
           // tell what to implement against.
           `Could not identify the code host from the git remote, so there is no landing adapter to route to ` +
-            `(host-pr arm|merge|status supports 'github'; ADR-0023). Check the remote URL, or pass --remote <url> explicitly.`
-        : `No landing adapter for host '${host}' — host-pr arm|merge|status is implemented for 'github' only (ADR-0023). ` +
+            `(host-pr create|arm|merge|status supports 'github'; ADR-0023). Check the remote URL, or pass --remote <url> explicitly.`
+        : `No landing adapter for host '${host}' — host-pr create|arm|merge|status is implemented for 'github' only (ADR-0023). ` +
             `Implementing the LandingHost interface for ${host} is all that is required; no skill changes are needed.`,
     );
   }
