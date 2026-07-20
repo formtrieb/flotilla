@@ -211,4 +211,95 @@ describe('spine-cli — runSpine', () => {
     const path = writeTmpSpine();
     expect(runSpine(['set-branch', path, ROW_ID, 'wave/01-thing', '--model'])).toBe(2);
   });
+
+  // ── set-row-iter (FOR-53) ────────────────────────────────────────────────
+  // The minimal-spine.md fixture's row `01` has reportsVerdicts === '—', which
+  // covers the Iter-only-bump path (no sidecar links). The two-link renderer
+  // path is covered by a locally-composed spine below, mirroring how a real
+  // renderSpine-produced wave carries `[r1](…) → [v1](…)` links.
+
+  describe('set-row-iter', () => {
+    const SIDECAR_SPINE = `# Wave 2026-07-20 — sidecar-test
+
+**Status:** in-flight
+
+## Plan-Table
+
+| ID  | Title | Worker     | Risk               | Reviewer     | PR  | State         | Iter | Reports → Verdicts |
+| --- | ----- | ---------- | ------------------- | ------------ | --- | ------------- | ---- | ------------------- |
+| FOR-30 | Row | background | isolated-refactor | quick-verify | —   | re-dispatched | 1    | [r1](./w/reports/FOR-30-1.md) → [v1](./w/verdicts/FOR-30-1.md) |
+
+## Closed-by
+
+_(none yet)_
+`;
+
+    function writeTmpSidecarSpine(): string {
+      const dir = mkdtempSync(join(tmpdir(), 'spine-cli-iter-'));
+      const path = join(dir, 'WAVE.md');
+      writeFileSync(path, SIDECAR_SPINE, 'utf-8');
+      return path;
+    }
+
+    it('bumps the Iter cell + flushes (minimal fixture, no sidecar cell)', () => {
+      const path = writeTmpSpine();
+      const code = runSpine(['set-row-iter', path, ROW_ID, '2']);
+      expect(code).toBe(0);
+      const after = readFileSync(path, 'utf-8');
+      const row = readSpine(after).planTable[0];
+      expect(row.iter).toBe(2);
+      // Surrounding sections are byte-preserved.
+      expect(after).toContain('branch wave-orch/01-thing');
+    });
+
+    it('re-renders the sidecar-link cell to the new iteration', () => {
+      const path = writeTmpSidecarSpine();
+      const code = runSpine(['set-row-iter', path, 'FOR-30', '2']);
+      expect(code).toBe(0);
+      const after = readFileSync(path, 'utf-8');
+      const row = readSpine(after).planTable[0];
+      expect(row.iter).toBe(2);
+      expect(row.reportsVerdicts).toBe(
+        '[r2](./w/reports/FOR-30-2.md) → [v2](./w/verdicts/FOR-30-2.md)',
+      );
+      // The re-dispatched State cell (written by the routing step's paired
+      // set-row-state call) is untouched by this op.
+      expect(row.state).toBe('re-dispatched');
+    });
+
+    it('missing the <n> arg → usage, returns 2', () => {
+      const path = writeTmpSpine();
+      const code = runSpine(['set-row-iter', path, ROW_ID]);
+      expect(code).toBe(2);
+      expect(stderrSpy).toHaveBeenCalled();
+    });
+
+    it('a non-integer <n> → usage, returns 2 (fail loud)', () => {
+      const path = writeTmpSpine();
+      const code = runSpine(['set-row-iter', path, ROW_ID, 'two']);
+      expect(code).toBe(2);
+      expect(stderrSpy).toHaveBeenCalled();
+      // The durable spine is untouched.
+      const after = readFileSync(path, 'utf-8');
+      expect(readSpine(after).planTable[0].iter).toBe(1);
+    });
+
+    it('a zero/negative <n> → usage, returns 2 (fail loud)', () => {
+      const path = writeTmpSpine();
+      expect(runSpine(['set-row-iter', path, ROW_ID, '0'])).toBe(2);
+      expect(runSpine(['set-row-iter', path, ROW_ID, '-1'])).toBe(2);
+    });
+
+    it('a fractional <n> → usage, returns 2 (fail loud)', () => {
+      const path = writeTmpSpine();
+      expect(runSpine(['set-row-iter', path, ROW_ID, '1.5'])).toBe(2);
+    });
+
+    it('an unknown row id → clean domain exit 1 (no stack trace)', () => {
+      const path = writeTmpSpine();
+      const code = runSpine(['set-row-iter', path, '99', '2']);
+      expect(code).toBe(1);
+      expect(stderrSpy).toHaveBeenCalled();
+    });
+  });
 });

@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 /**
  * spine-cli.ts — the thin shell the wave skills (wave-create/start/close) call
- * via `npx tsx` to read + mutate the WAVE.md orchestration spine. It is a pure
- * router over the byte-preserving {@link SpineStore} (spine-store.ts): every op
- * builds a disk-backed store, delegates the single mutation, and flushes. The
- * CLI adds no spine logic of its own — the spine parser (wave-md-rw) validates.
+ * via `npx tsx` to read + mutate the WAVE.md orchestration spine. Most ops are
+ * a pure router over the byte-preserving {@link SpineStore} (spine-store.ts):
+ * they build a disk-backed store, delegate the single mutation, and flush.
+ * `set-row-iter` is the one exception — it has no SpineStore method (yet), so
+ * it calls the byte-preserving `wave-md-rw` writer directly against the file.
+ * The CLI adds no spine logic of its own — the spine parser (wave-md-rw) validates.
  *
  * Usage:
  *   npx tsx tools/wave/src/spine-cli.ts read <spine-path>
  *   npx tsx tools/wave/src/spine-cli.ts set-row-state <spine-path> <id> <state>
+ *   npx tsx tools/wave/src/spine-cli.ts set-row-iter <spine-path> <id> <n>
  *   npx tsx tools/wave/src/spine-cli.ts set-row-pr <spine-path> <id> <pr-cell>
  *   npx tsx tools/wave/src/spine-cli.ts set-branch <spine-path> <id> <branch> [--model <m>]
  *   npx tsx tools/wave/src/spine-cli.ts replace-closed-by <spine-path> <body-file>
@@ -19,6 +22,17 @@
  *                     validated against ROW_STATES at this CLI boundary (the
  *                     spine writer writes any string verbatim, so an unchecked
  *                     typo would silently corrupt durable state — "fail loud").
+ *   set-row-iter      setRowIter(id, n) then flush — bumps the Plan-Table
+ *                     `Iter` cell and re-renders the `Reports → Verdicts`
+ *                     sidecar-link cell to the <id>-<n> paths (FOR-53,
+ *                     observability-only; the reconciler still reads the
+ *                     max-iter sidecar off disk, ADR-0024). `wave-start` calls
+ *                     this alongside `set-row-state <id> re-dispatched` at
+ *                     cap=1 re-dispatch. `n` must be a positive integer — "fail
+ *                     loud" at this CLI boundary, same stance as set-row-state.
+ *                     Reads/writes the file directly (no SpineStore method for
+ *                     this verb yet), so it is handled before the generic
+ *                     store/apply/flush flow below.
  *   set-row-pr        setRowPrCell(id, prCell) then flush.
  *   set-branch        upsertDispatchLogEntry(id, branch) — records the durable
  *                     branch home (ADR-0021) resume() reads via branchesByIssueId;
@@ -31,8 +45,8 @@
  * Exit codes:
  *   0 — success
  *   1 — domain failure: a spine mutator threw (bad row id, missing section)
- *   2 — usage error (missing op/path/args, unknown op, bad state token) or
- *       body-file read error
+ *   2 — usage error (missing op/path/args, unknown op, bad state token, or a
+ *       non-positive-integer `set-row-iter` <n>) or body-file read error
  */
 
 import { createSpineStore, type SpineIo, defaultSpineIo } from './spine-store';
@@ -40,6 +54,7 @@ import {
   ROW_STATES,
   SPINE_STATUSES,
   renderSpine,
+  setRowIter,
   type RowState,
   type SpineMeta,
   type SpineRosterRow,
@@ -53,6 +68,7 @@ function printUsage(): void {
       '  spine create <out-path> <payload-file>',
       '  spine read <spine-path>',
       '  spine set-row-state <spine-path> <id> <state>',
+      '  spine set-row-iter <spine-path> <id> <n>',
       '  spine set-row-pr <spine-path> <id> <pr-cell>',
       '  spine set-branch <spine-path> <id> <branch> [--model <m>]',
       '  spine replace-closed-by <spine-path> <body-file>',
@@ -91,6 +107,38 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
   if (!op || !path) {
     printUsage();
     return 2;
+  }
+
+  // `set-row-iter` has no SpineStore method (spine-store.ts is unchanged by
+  // FOR-53) — it reads + writes the file directly through the wave-md-rw
+  // writer, so it is handled here, ahead of the generic
+  // createSpineStore/apply/store.flush() flow below (which would otherwise
+  // flush the STORE's pristine, unmutated source over this op's own write).
+  if (op === 'set-row-iter') {
+    const id = args[2];
+    const iterRaw = args[3];
+    if (!id || iterRaw === undefined) {
+      printUsage();
+      return 2;
+    }
+    const iter = Number(iterRaw);
+    // Fail loud at the CLI boundary — mirrors set-row-state's token check:
+    // the writer accepts any number, so an unvalidated typo (non-numeric,
+    // zero, negative, fractional) would silently corrupt durable state.
+    if (!Number.isInteger(iter) || iter < 1) {
+      process.stderr.write(
+        `error: invalid iter "${iterRaw}"; expected a positive integer\n`,
+      );
+      return 2;
+    }
+    try {
+      const next = setRowIter(io.read(path), id, iter);
+      io.write(path, next);
+      return 0;
+    } catch (err) {
+      process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
+      return 1;
+    }
   }
 
   // ── Arg-presence + token validation FIRST (all usage errors → 2). These run
@@ -201,7 +249,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
 
     default:
       process.stderr.write(
-        `unknown op: ${op}; available: create, read, set-row-state, set-row-pr, set-branch, replace-closed-by, set-status\n`,
+        `unknown op: ${op}; available: create, read, set-row-state, set-row-iter, set-row-pr, set-branch, replace-closed-by, set-status\n`,
       );
       return 2;
   }

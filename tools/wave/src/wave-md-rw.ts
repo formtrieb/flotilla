@@ -777,6 +777,78 @@ export function setRowState(
 }
 
 /**
+ * Matches the two-link `Reports → Verdicts` sidecar-cell shape `renderSpine`
+ * emits: `[r<n>](<reports-path>) → [v<n>](<verdicts-path>)`, where each path
+ * ends in `-<n>.md`. Captures the path PREFIX (everything before the trailing
+ * `-<n>.md`) for both links so {@link renderSidecarCellForIter} can rebuild the
+ * cell for a new iteration without needing the slug or id separately — the
+ * existing cell already encodes them. The `.+` inside each capture is greedy,
+ * so it backtracks to the RIGHTMOST `-\d+\.md`, correctly splitting a path
+ * whose id itself contains a hyphen-digit run (e.g. `FOR-30-1.md` → prefix
+ * `FOR-30`, not `FOR`).
+ */
+const SIDECAR_CELL_RE =
+  /^\[r\d+\]\((.+)-\d+\.md\)\s*→\s*\[v\d+\]\((.+)-\d+\.md\)$/;
+
+/**
+ * Re-render a `Reports → Verdicts` sidecar-link cell for a new iteration
+ * number, preserving both link path prefixes exactly — only the trailing
+ * `-<iter>.md` suffix and the `r<iter>`/`v<iter>` labels change. Returns
+ * `null` when `cell` is not in the two-link `renderSpine` format (e.g. the
+ * `—` no-sidecar placeholder, or a hand-authored/legacy spine) — the caller
+ * ({@link setRowIter}) leaves such a cell untouched rather than guess a path.
+ */
+function renderSidecarCellForIter(cell: string, iter: number): string | null {
+  const m = SIDECAR_CELL_RE.exec(cell.trim());
+  if (!m) return null;
+  const [, reportsPrefix, verdictsPrefix] = m;
+  return `[r${iter}](${reportsPrefix}-${iter}.md) → [v${iter}](${verdictsPrefix}-${iter}.md)`;
+}
+
+/**
+ * Bump the `Iter` cell of the Plan-Table row `id` to `iter`, and re-render its
+ * `Reports → Verdicts` sidecar-link cell to point at the SAME iteration's
+ * `<id>-<iter>` report/verdict paths — observability only (FOR-53): the
+ * reconciler still reads the max-iter sidecar straight off disk (ADR-0024) and
+ * never consumes this cell, so a stale write here cannot cause data loss, only
+ * a spine that under-reports what iteration a row is on. `wave-start` calls
+ * this alongside `setRowState(id, 're-dispatched')` at cap=1 re-dispatch
+ * (start-mechanics.md step 7d) so the durable spine (ADR-0002) stops
+ * disagreeing with the sidecars already on disk.
+ *
+ * The sidecar cell is rewritten only when it is already in the two-link
+ * `renderSpine` format; an unrecognised cell (the `—` placeholder, or a
+ * hand-authored spine) is left byte-untouched — this writer never guesses a
+ * path (see {@link renderSidecarCellForIter}). Only the Iter cell and, when
+ * applicable, the sidecar cell change; the rest of the line and file are
+ * untouched.
+ *
+ * Throws if no Plan-Table row matches `id`.
+ */
+export function setRowIter(
+  source: string,
+  id: string,
+  iter: number,
+): string {
+  const model = splitLines(source);
+  const spine = readSpine(source);
+  const row = spine.planTable.find((r) => r.id === id);
+  if (!row) {
+    throw new Error(`setRowIter: no Plan-Table row with id "${id}".`);
+  }
+  // Iter is column index 7.
+  model.lines[row.line] = replaceCell(model.lines[row.line], 7, String(iter));
+  // Reports → Verdicts is column index 8. Re-render from the row's PRE-write
+  // cell text (read before this function touched the line) — the Iter write
+  // above only ever changes column 7, so column 8 is unaffected either way.
+  const newSidecar = renderSidecarCellForIter(row.reportsVerdicts, iter);
+  if (newSidecar !== null) {
+    model.lines[row.line] = replaceCell(model.lines[row.line], 8, newSidecar);
+  }
+  return joinLines(model);
+}
+
+/**
  * Set the `PR` cell of the Plan-Table row whose ID is `id`. `prCell` is the raw
  * cell content (e.g. `[PR#56](https://…)`). Only that cell's bytes change.
  */

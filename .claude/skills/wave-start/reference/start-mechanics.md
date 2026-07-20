@@ -137,6 +137,10 @@ PR_URL=$({{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
 
 # 7d. transition → re-dispatched (cap=1 — enforced by transition() itself):
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" re-dispatched
+{{wave-cli}} spine set-row-iter  "$SPINE" "$ID" 2   # cap=1 → the new iteration is always 2;
+#   bumps the Plan-Table Iter cell + re-renders the sidecar-link cell to the
+#   <id>-2 reports/verdicts paths (observability-only, FOR-53 — the reconciler
+#   still reads the max-iter sidecar off disk, never this cell, per ADR-0024)
 #   then re-dispatch the same Worker at iteration 2 with changes-requested items appended
 
 # 8. stop → flag needs-attention
