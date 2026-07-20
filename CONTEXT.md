@@ -136,6 +136,14 @@ _Avoid_: reading `closed-unknown` as a rejected PR — the distinction from `clo
 The consumer-configured set of issue labels that make an issue wave-grabbable — an issue is wave-eligible iff it carries **at least one** of them. flotilla treats them as opaque membership tokens (default `{ready-for-agent}`); the issue taxonomy itself is the consumer's, the `wave/*` ledger is flotilla's product (ADR-0003).
 _Avoid_: ready-label (singular — it is a set, OR semantics).
 
+**Store-Preflight**:
+The tracker-fact probe (`cli-store preflight`, config-driven): confirms the configured store's operational preconditions — tracker↔host integration installed, workflow-state catalog matches the config map. Reports `pass / fail / advisory / not-applicable / unknown`; only `fail` blocks. Code-host posture is *not* its concern (ADR-0023 Amendment 2026-07-20).
+_Avoid_: using it to answer landing-posture questions — that is the Host-Preflight.
+
+**Host-Preflight**:
+The code-host posture probe (`host-pr preflight`, detect-host-routed, store-blind — no `--config`): allow-auto-merge, required-checks, merge-token capability, read through the landing seam on every store kind. `unknown` means "the token cannot see this setting" — absence of evidence, never blocking, never requiring admin rights. Advisory by design: the arm outcome remains the ground truth (ADR-0023 Amendment 2026-07-20).
+_Avoid_: treating a probe result as a landing guarantee (the behind/recomputing race is not probeable); conflating `unknown` with a visible OFF.
+
 ### Provenance
 
 **Ur**:
