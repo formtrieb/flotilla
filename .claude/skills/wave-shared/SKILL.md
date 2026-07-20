@@ -140,7 +140,7 @@ Before **any** tracker write in an execution skill, confirm the host is reachabl
 
 This is a precondition, not a routing step: run it once at the top of `wave-start` / `wave-reviewer` / `wave-close`, surface a clear abort on failure.
 
-> **Raw-fetch adapters vs. a sandboxed harness (proxy requirement).** The real `GitHubApi`/`LinearApi` impls talk over raw `fetch` (ADR-0019/0020) — no `gh`/`git` subprocess. Under a sandboxed harness that forces outbound HTTP through a proxy, Node's global `fetch` ignores the proxy env by default and the call fails with `EPERM`/`ECONNREFUSED` (a false "unreachable host / unauthenticated" surface). On **Node ≥ 24**, prefix every engine CLI call that hits the network — the auth-preflight, `issue-store *`, `read-closing`, the store-preflight — with **`NODE_USE_ENV_PROXY=1`** so raw `fetch` honours `HTTP(S)_PROXY`:
+> **Raw-fetch adapters vs. a sandboxed harness (proxy requirement).** The real `GitHubApi`/`LinearApi` impls talk over raw `fetch` (ADR-0019/0020) — no `gh`/`git` subprocess. The `host-pr` landing verbs (ADR-0023) are raw-fetch too. Under a sandboxed harness that forces outbound HTTP through a proxy, Node's global `fetch` ignores the proxy env by default and the call fails with `EPERM`/`ECONNREFUSED` (a false "unreachable host / unauthenticated" surface). On **Node ≥ 24**, prefix every engine CLI call that hits the network — the auth-preflight, `issue-store *`, `read-closing`, the store-preflight, and `host-pr arm|merge|status` — with **`NODE_USE_ENV_PROXY=1`** so raw `fetch` honours `HTTP(S)_PROXY`:
 >
 > ```bash
 > NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts detect-host <remote-url> --config <path>
@@ -193,6 +193,18 @@ Read `store.kind` off the consumer's `wave.config.json` (the same file `{{wave-c
 
 `linear`'s Linear-GitHub-integration precondition (installed + connected to the code repo) must already hold for this to work at all — `wave-setup`'s Linear operational-preconditions checklist confirms it before the store is ever configured.
 
+**Opening the PR goes through the engine — `{{wave-cli}} host-pr create`, never `gh pr create`.** The PR-open is the ADR-0023 last mile: every host write goes through the engine host seam, and `create` is that verb (`gh`'s creds are sandbox-denied and its TLS fought the proxy MITM cert in every live run — creation only ever worked sandbox-off). It is **find-before-create idempotent**: an OPEN PR already on the branch is reused (`outcome: reused`), a missing one is created (`outcome: created`) — so a cap=1 re-dispatch onto the same branch never opens a duplicate. The `--body` you pass carries the store-kind close phrase above, verbatim, and per the mention-footgun below it is the **only** tracker id the title or body may contain:
+
+```bash
+{{wave-cli}} host-pr create --branch <branch> --title "<title, no bare tracker id>" \
+  --body "<summary>
+
+<the store-kind close phrase, on its own line — e.g. Fixes EX-16>"
+# exit 0 → stdout JSON carries .url (outcome: created | reused) — pin that as the row's PR URL.
+# create reads GITHUB_TOKEN from the environment (never printed); github-only in M1,
+# bitbucket/unknown fail loud + typed like the landing verbs.
+```
+
 ### The flip side — a bare mention is also an action
 
 Convention 4 governs the phrase that closes an issue **on purpose**. Nothing governed the flip side until now: on a tracker with a native GitHub integration, the integration does not distinguish "the phrase that means close this" from "any other sighting of this issue's id" — it links **every** bare issue id it finds in a merged PR's title or body, and a linked issue is an issue the integration can act on. **An issue id belongs in a PR title or body only when closing that issue at merge is intended.** Do not name a bare tracker id to reference, credit, or contextualize other work — that reference is itself a close-shaped action on an integrated tracker, whether or not a Convention-4 close phrase is present anywhere.
@@ -235,7 +247,27 @@ When a Worker discovers mid-slice that an issue's **authored content** needs cor
 
 This is the exact path W4-F5 lacked, where the only way to re-scope FOR-20 was raw Linear `issueUpdate` — bypassing the very seam flotilla is built around.
 
-## Convention 7 — secret-safe briefs (never echo an environment variable's value)
+## Convention 7 — the host landing seam + the done-reconcile evidence hierarchy
+
+Landing (arm / merge) and the host-side merge probe are **code-host** writes/reads, not tracker ones, and they all go through the engine's **`host-pr`** verb group (ADR-0023) — never raw `gh` (its creds are sandbox-denied and its TLS stack fought both the keychain and the proxy MITM cert, live-proven). Three shipped verbs, detect-host-routed, with `github` the one shipped adapter; the Bitbucket pilot implements the same interface and inherits them with no new skills:
+
+- **`host-pr arm --branch <b>`** — the `--auto` landing intent (wave-close phase 4b). It decides **per PR**: checks pending → **enable auto-merge** (GraphQL); already clean → **direct merge now** (REST). Idempotent (`already-merged` on a re-run). Outcomes: `armed` / `merged` / `already-merged` / `refused` / `no-pr`.
+- **`host-pr merge --branch <b>`** — merge now, no arm intent (the caller already decided).
+- **`host-pr status --branch <b>`** — the merge probe: `{ state: open|merged|closed-unmerged|none, url? }`. `none` ("no PR for this branch") is a valid answer, not a failure.
+
+None take `--config` — landing talks to the **code host**, not the tracker; the adapter builds from `$GITHUB_TOKEN`. Under a proxied sandbox, prefix `NODE_USE_ENV_PROXY=1` (Convention 1). The creation verb `host-pr create` is the *staged* half (ADR-0023 decision 3) and is not yet a CLI verb — PR creation still rides the Worker terminator.
+
+**The done-reconcile evidence hierarchy — tracker attachment > host PR state > nothing.** Both `wave-close` (phase 5) and `wave-resume` (step 5) land a merged row `done` the same way, consulting evidence in this order:
+
+1. **Tracker attachment** — `issue-store read-closing <id>`. On a native-integration tracker a merged PR attaches and this reports `merged` directly.
+2. **Host PR state** — `host-pr status --branch <b>`, consulted **only when tier 1 cannot see a merge** (a no-integration workspace — Linear without the GitHub integration, or the Bitbucket pilot — where `read-closing` stays `open` / `closed-unknown` even after the PR lands). The host answers "did the PR for this branch merge?" mechanically.
+3. **Nothing** — when neither tier proves a merge, leave the row `in-review` and report; a later touch reconciles.
+
+On a merge proven by *either* tier, `issue-store close <id> <prUrl>` records the closing facts and, on a `states.doneState` store, fires the FOR-13 done-state fallback. This **replaces the old out-of-band human-confirmation step** with a probe — a human is never asked to hand-assert a merge the host can report.
+
+**Arm-and-exit, not watch.** `--auto` arms and exits; the host completes merges server-side (surviving a dead Coordinator). Late merges — and an armed PR whose checks later fail — reconcile on the next `wave-close` / `wave-resume` touch, not live. This latency is accepted and documented, never papered over with a poll loop.
+
+## Convention 8 — secret-safe briefs (never echo an environment variable's value)
 
 An agent's tool output is not ephemeral — it is the session transcript on disk, long-lived and read by humans and downstream agents alike. **A brief never causes an agent to echo an environment variable's VALUE into that output — not even with fallback syntax like `${VAR:-no}`.** This applies to every brief the driver composes (Worker, Reviewer, Scribe alike), not just the ones that write to the tracker.
 
@@ -260,11 +292,13 @@ An agent's tool output is not ephemeral — it is the session transcript on disk
 - **Omitting `prUrl` on a finishing report.** `done` / `done-with-concerns` ⇒ the PR exists ⇒ report its URL. The Reviewer's PR-body check and the Coordinator's terminator both read the field as fact; its absence reads as "no PR exists" and costs you a blind review and a duplicate-PR attempt (retro W3-F2).
 - **Batching spine writes.** One atomic write per flip. A torn spine breaks resume.
 - **Shelling a tracker CLI.** All tracker writes go through the engine (`issue-store …`, the host seam). Never raw `gh` from an execution skill.
+- **Reaching for raw `gh` to arm, merge, or probe a PR.** Landing and the host merge-probe go through the `host-pr arm | merge | status` verbs (Convention 7, ADR-0023) — `gh` left the landing path entirely (sandbox-denied creds, keychain/proxy TLS). These verbs take no `--config` (they talk to the code host, not the tracker).
+- **Stopping the done-reconcile at `read-closing` on a no-integration workspace.** There the tracker never attaches the PR, so `read-closing` can never report `merged`. Follow the evidence hierarchy (Convention 7): consult `host-pr status`, and let the host's `merged` fire the FOR-13 `close` fallback. There is no out-of-band human-confirmation step. And do not build a watch/poll loop after `--auto` arms — arm-and-exit; a later touch reconciles.
 - **Hardcoding `Closes #N` in a PR body regardless of store kind.** The close phrase is store-kind-derived (Convention 4): `github` → `Closes #N`, `linear` → `Fixes <TEAM-NN>`. A `linear` consumer's PR carrying `Closes #N` closes nothing and creates no attachment — the row silently stalls at `in-review`.
 - **Naming a bare tracker id in a PR title/body you don't intend to close (the mention-footgun).** An integrated tracker links and can act on every issue id it finds, not just the Convention-4 close phrase — a docs/meta PR's title mentioning another row's id has auto-closed it before that row was even dispatched (live twice: w2 FOR-13, 2026-07-19 FOR-6/FOR-33). Reference an ADR/spec identifier instead; never a bare tracker id unless closing it is the point.
 - **Bundling sidecar writes after routing, or hand-formatting a sidecar (Convention 5).** Sidecars are written by `write-report`/`write-verdict` **at agent-return**, before routing — not batched at the end (the P-1 kill window) and never hand-typed. A hand-formatted sidecar drifts from the reader and resurfaces as "corrupt" at resume.
 - **Drift-pinning `SCRIBE_RESULT_SCHEMA`.** It is driver-local (no engine const); only the two agent-boundary schemas above are pinned by `skill-schema-drift.spec.ts`. Do not add the Scribe shape to that spec.
-- **Echoing an environment variable's value — even via `${VAR:-no}` fallback syntax.** The fallback only fires when the variable is absent; when it's set, the value prints straight into agent-visible tool output, i.e. the session transcript on disk (live: W8-F1, docs/retros/2026-07-20-publication-w8.md). Check availability value-free instead: `[ -n "$VAR" ] && echo set` (Convention 7).
+- **Echoing an environment variable's value — even via `${VAR:-no}` fallback syntax.** The fallback only fires when the variable is absent; when it's set, the value prints straight into agent-visible tool output, i.e. the session transcript on disk (live: W8-F1, docs/retros/2026-07-20-publication-w8.md). Check availability value-free instead: `[ -n "$VAR" ] && echo set` (Convention 8).
 - **Letting a Scribe failure kill the tuple.** The driver's Scribe stage must pass the report/verdict through and log loud on a write failure — a throw would drop the row to `null` and convert a finished Worker into a spurious `worker-failed` STOP.
 
 - **Re-scoping or correcting an issue with raw tracker GraphQL / a tracker CLI.** The exact W4-F5 failure. To change an issue's title or prose, use `issue-store amend` (Convention 6); to change its Files/ACs, use `issue-store annotate`. A Worker *discloses* the needed change in its report and the Coordinator amends — never reach past the engine seam. And `amend` cannot be used to change acceptance criteria: an `AmendPatch` has no AC field and a reserved-heading section throws.

@@ -1,29 +1,38 @@
 /**
- * host-pr-cli.ts — the `host-pr arm | merge | status` verb group (ADR-0023).
+ * host-pr-cli.ts — the `host-pr create | arm | merge | status` verb group
+ * (ADR-0019 PR-open + ADR-0023 landing).
  *
- * The landing half of the host boundary, exposed as ONE narrow CLI surface.
- * Why a CLI verb at all: a Workflow driver cannot import the engine, and
- * `gh` left the landing path entirely (sandbox-denied creds + keychain/proxy TLS
- * failures, live-proven in runs 1 and 3) — so the permission classifier gets one
- * auditable verb instead of a broad `gh pr merge` bash rule.
+ * The whole host boundary, exposed as ONE narrow CLI surface. Why a CLI verb at
+ * all: a Workflow driver cannot import the engine, and `gh` left the host path
+ * entirely (sandbox-denied creds + keychain/proxy TLS failures, live-proven in
+ * runs 1 and 3) — so the permission classifier gets one auditable verb instead
+ * of a broad `gh pr create` / `gh pr merge` bash rule. `create` is the staged
+ * second half of ADR-0023 ("every host write goes through the engine host
+ * seam"): it retires the Worker terminator's last `gh pr create`.
  *
- * This runner is a THIN router, in the house style — it holds no landing logic:
+ * This runner is a THIN router, in the house style — it holds no host logic:
  *
- *   detect-host  → picks the host-local {@link LandingHost}. `github` is the one
- *                  shipped implementation (`RealGitHubApi`, which satisfies the
- *                  interface directly); `bitbucket` / `unknown` fail LOUD and
- *                  typed. The Bitbucket pilot implements `LandingHost` and
- *                  inherits every verb below — new adapter, no new skills.
+ *   detect-host  → routes by host. `github` is the one shipped implementation;
+ *                  `bitbucket` / `unknown` fail LOUD and typed for EVERY verb
+ *                  (the Bitbucket pilot implements the seam and inherits them).
+ *   create       → `findOpenPr` then `createPr` (host-pr.ts owns the
+ *                  find-before-create idempotency): an existing open PR for the
+ *                  branch is REUSED, a missing one is created. Idempotent — a
+ *                  cap=1 re-dispatch onto the same branch never opens a second
+ *                  PR. This is the ADR-0019 cross-host Basic-auth seam
+ *                  (`HttpProbe` + `Creds`), NOT the ADR-0023 `LandingHost` seam.
  *   arm          → `armPullRequest`  (host-pr.ts owns the arm intent)
  *   merge        → `mergePullRequestNow`
  *   status       → `LandingHost.getPrStatus`
  *
  * Exit codes:
- *   0 — the op succeeded (`arm`/`merge`: merged, armed, or already-merged;
- *       `status`: the probe answered — read `state` for the answer, which may
- *       legitimately be `none`).
- *   1 — the op did not land the row (`no-pr`, `refused`), the host has no
- *       landing adapter (`code: "adapter-not-implemented"`), or the host errored.
+ *   0 — the op succeeded (`create`: the PR was created or an open one reused;
+ *       `arm`/`merge`: merged, armed, or already-merged; `status`: the probe
+ *       answered — read `state` for the answer, which may legitimately be `none`).
+ *   1 — the op did not land the row (`create`: the PR-create failed —
+ *       `outcome: "create-failed"` with a `fallbackPrefillUrl`; `arm`/`merge`:
+ *       `no-pr`, `refused`), the host has no adapter
+ *       (`code: "adapter-not-implemented"`), or the host errored.
  *   2 — usage error.
  *
  * stdout is ALWAYS a single JSON object carrying `ok` + the outcome, so the
@@ -35,17 +44,34 @@ import {
   detectHost,
   armPullRequest,
   mergePullRequestNow,
+  findOpenPr,
+  createPr,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
   type Host,
+  type HostInfo,
   type LandingHost,
   type MergeMethod,
+  type Creds,
+  type HttpProbe,
 } from './host-pr';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
 import { flag, printJson } from './cli-utils';
 
-const VERBS = ['arm', 'merge', 'status'] as const;
+const VERBS = ['create', 'arm', 'merge', 'status'] as const;
 type Verb = (typeof VERBS)[number];
+
+/**
+ * Impure inputs for the `create` verb, injectable for tests. In production both
+ * default: the network seam is host-pr's `defaultHttpProbe` (global `fetch`, the
+ * same path arm/merge/status use), and the token is read from `process.env`.
+ */
+export interface HostPrCreateDeps {
+  /** Injectable network seam (tests). Defaults inside `findOpenPr`/`createPr`. */
+  http?: HttpProbe;
+  /** Environment to read GITHUB_TOKEN from. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
 
 const MERGE_METHODS: MergeMethod[] = ['squash', 'merge', 'rebase'];
 
@@ -53,17 +79,22 @@ function usage(message: string): number {
   process.stderr.write(
     [
       `error: ${message}`,
-      // NB: deliberately NO --config. Landing talks to the code HOST, not the
+      // NB: deliberately NO --config. host-pr talks to the code HOST, not the
       // tracker, so there is no store to build and no wave.config.json to read.
-      `usage: host-pr <${VERBS.join('|')}> --branch <branch> [--remote <url>] [--method <${MERGE_METHODS.join('|')}>]`,
+      `usage: host-pr <${VERBS.join('|')}> --branch <branch> [--remote <url>]`,
+      `         create: --title <title> --body <body>   (the PR body carries the store-kind close phrase)`,
+      `         arm | merge: [--method <${MERGE_METHODS.join('|')}>]`,
       '',
+      '  create  Open the PR for --branch idempotently (find-before-create): an existing OPEN PR on the',
+      '          branch is reused (no duplicate), a missing one is created. Requires --title and --body.',
       '  arm     Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
       '          already clean → direct merge. Idempotent.',
       '  merge   Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
       '  status  Report the PR for a branch: open | merged | closed-unmerged | none (+ url).',
       '',
       '  --remote defaults to `git remote get-url origin`.',
-      `  --method defaults to '${DEFAULT_MERGE_METHOD}'.`,
+      `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
+      '  create reads GITHUB_TOKEN from the environment (never printed).',
       '',
     ].join('\n'),
   );
@@ -71,17 +102,25 @@ function usage(message: string): number {
 }
 
 /**
- * Run the `host-pr` CLI (FOR-26 / ADR-0023).
+ * Run the `host-pr` CLI (FOR-26 / FOR-28 / ADR-0019 + ADR-0023).
  *
  * @param args - CLI args; `args[0]` is the verb.
- * @param injected - a {@link LandingHost} to drive (tests). It is used ONLY when
- *   the detected host is `github`: routing is the ROUTER's decision, never the
- *   caller's, so an injected adapter can never smuggle a non-GitHub wave onto
- *   the GitHub path. When absent, the GitHub adapter is built from the env
- *   (impure — `GITHUB_TOKEN` + a construction-time preflight).
+ * @param injected - a {@link LandingHost} to drive the landing verbs
+ *   (`arm`/`merge`/`status`) in tests. It is used ONLY when the detected host is
+ *   `github`: routing is the ROUTER's decision, never the caller's, so an
+ *   injected adapter can never smuggle a non-GitHub wave onto the GitHub path.
+ *   When absent, the GitHub adapter is built from the env (impure —
+ *   `GITHUB_TOKEN` + a construction-time preflight). The `create` verb does not
+ *   use this seam (it is on the ADR-0019 `HttpProbe`/`Creds` boundary).
+ * @param createDeps - impure inputs for `create` only (tests inject the network
+ *   seam + env); production defaults to real `fetch` and `process.env`.
  * @returns the process exit code (see the module docblock).
  */
-export async function runHostPr(args: string[], injected?: LandingHost): Promise<number> {
+export async function runHostPr(
+  args: string[],
+  injected?: LandingHost,
+  createDeps: HostPrCreateDeps = {},
+): Promise<number> {
   // ── Usage is decided FIRST — before any routing, host build, or network. ──
   const verb = args[0] as Verb | undefined;
   if (verb === undefined) return usage('a verb is required');
@@ -94,13 +133,36 @@ export async function runHostPr(args: string[], injected?: LandingHost): Promise
     return usage('--branch <branch> is required');
   }
 
-  const rawMethod = flag(args, '--method');
-  if (rawMethod !== undefined && !MERGE_METHODS.includes(rawMethod as MergeMethod)) {
-    // Never silently downgrade to the default: a caller who asked for a merge
-    // method flotilla does not know must be told, not quietly squash-merged.
-    return usage(`invalid --method "${rawMethod}" — expected one of: ${MERGE_METHODS.join(', ')}`);
+  // `create`'s own required flags are decided here, before any host build or
+  // network — same "usage first" discipline. `--method` is landing-only and is
+  // neither read nor validated for `create`.
+  let title: string | undefined;
+  let body: string | undefined;
+  let base = 'main';
+  if (verb === 'create') {
+    title = flag(args, '--title');
+    if (title === undefined || title.length === 0) {
+      return usage('--title <title> is required for create');
+    }
+    body = flag(args, '--body');
+    if (body === undefined || body.length === 0) {
+      // The body carries the store-kind close phrase (Convention 4); an empty
+      // one would open a PR that closes nothing. Refuse, do not default.
+      return usage('--body <body> is required for create (it carries the store-kind close phrase)');
+    }
+    base = flag(args, '--base') ?? 'main';
   }
-  const method: MergeMethod = (rawMethod as MergeMethod) ?? DEFAULT_MERGE_METHOD;
+
+  let method: MergeMethod = DEFAULT_MERGE_METHOD;
+  if (verb !== 'create') {
+    const rawMethod = flag(args, '--method');
+    if (rawMethod !== undefined && !MERGE_METHODS.includes(rawMethod as MergeMethod)) {
+      // Never silently downgrade to the default: a caller who asked for a merge
+      // method flotilla does not know must be told, not quietly squash-merged.
+      return usage(`invalid --method "${rawMethod}" — expected one of: ${MERGE_METHODS.join(', ')}`);
+    }
+    method = (rawMethod as MergeMethod) ?? DEFAULT_MERGE_METHOD;
+  }
 
   let remoteUrl: string;
   try {
@@ -109,13 +171,18 @@ export async function runHostPr(args: string[], injected?: LandingHost): Promise
     return usage(`could not read the git remote (pass --remote <url>): ${(err as Error).message}`);
   }
 
-  // ── Route by host. ──
+  // ── Route by host. Every verb is github-only in M1; others fail loud+typed. ──
   const info = detectHost(remoteUrl);
   if (info.host !== 'github') {
     return notImplemented(verb, info.host, branch);
   }
 
-  // ── Build the host adapter + run the verb. ──
+  // ── create: the ADR-0019 find-before-create seam (HttpProbe/Creds). ──
+  if (verb === 'create') {
+    return runCreate(info, branch, title as string, body as string, base, createDeps);
+  }
+
+  // ── arm | merge | status: build the LandingHost adapter + run the verb. ──
   try {
     const host: LandingHost = injected ?? (await createGitHubApiFromEnv({ remoteUrl }));
     return await dispatch(verb, host, branch, method, info.host);
@@ -124,6 +191,84 @@ export async function runHostPr(args: string[], injected?: LandingHost): Promise
     printJson({
       ok: false,
       verb,
+      host: info.host,
+      branch,
+      error: (err as Error).message ?? String(err),
+    });
+    return 1;
+  }
+}
+
+/**
+ * The `create` verb — find-before-create, idempotently, over host-pr's
+ * cross-host Basic-auth seam. An OPEN PR already on the branch is reused (exit 0,
+ * `outcome: "reused"`); a missing one is created (exit 0, `outcome: "created"`);
+ * a create failure returns the pre-fill fallback signal (exit 1,
+ * `outcome: "create-failed"` with `fallbackPrefillUrl`).
+ *
+ * The GitHub token comes from the env (never printed); its absence fails loud
+ * (exit 1), mirroring `createGitHubApiFromEnv`. The Basic-auth credential is
+ * `x-access-token:<token>` — the GitHub form host-pr.ts's `HttpProbe` documents.
+ */
+async function runCreate(
+  info: HostInfo,
+  branch: string,
+  title: string,
+  body: string,
+  base: string,
+  deps: HostPrCreateDeps,
+): Promise<number> {
+  const env = deps.env ?? process.env;
+  const token = env.GITHUB_TOKEN;
+  if (token === undefined || token.length === 0) {
+    const message =
+      'GITHUB_TOKEN is required to open a PR through `host-pr create` (ADR-0019). Export it before running.';
+    process.stderr.write(`error: ${message}\n`);
+    printJson({ ok: false, verb: 'create', host: info.host, branch, error: message });
+    return 1;
+  }
+
+  const creds: Creds = { auth: `x-access-token:${token}` };
+  const opts = deps.http ? { http: deps.http } : {};
+
+  try {
+    // find-before-create: a re-run (or a cap=1 re-dispatch onto the same branch)
+    // re-pins the already-open PR instead of opening a duplicate.
+    const existing = await findOpenPr(info.host, creds, branch, info, opts);
+    if (existing !== null) {
+      printJson({ ok: true, verb: 'create', host: info.host, branch, outcome: 'reused', url: existing });
+      return 0;
+    }
+
+    const result = await createPr(
+      info.host,
+      creds,
+      { branch, title, body, destination: base, info },
+      opts,
+    );
+    if ('url' in result) {
+      printJson({ ok: true, verb: 'create', host: info.host, branch, outcome: 'created', url: result.url });
+      return 0;
+    }
+
+    // A create failure is a returned signal, not a throw (ADR-0019): surface the
+    // pre-fill fallback so the caller can open the PR by hand and continue.
+    process.stderr.write(`error: ${result.error}\n`);
+    printJson({
+      ok: false,
+      verb: 'create',
+      host: info.host,
+      branch,
+      outcome: 'create-failed',
+      error: result.error,
+      fallbackPrefillUrl: result.fallbackPrefillUrl,
+    });
+    return 1;
+  } catch (err) {
+    process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
+    printJson({
+      ok: false,
+      verb: 'create',
       host: info.host,
       branch,
       error: (err as Error).message ?? String(err),

@@ -1455,4 +1455,25 @@ describe('host-pr subcommand routing', () => {
     expect(code).toBe(2);
     expect(stderrBuf).toMatch(/async/i);
   });
+
+  it('routes "host-pr create" as a known subcommand (FOR-28) — bitbucket → typed not-implemented', async () => {
+    // A bitbucket remote proves the create verb reached the host-pr runner and
+    // was host-gated there — no network, no GITHUB_TOKEN needed.
+    const code = await mainAsync([
+      'host-pr', 'create', '--branch', 'b', '--title', 'T', '--body', 'x',
+      '--remote', 'git@bitbucket.org:ws/repo.git',
+    ]);
+    expect(code).toBe(1);
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+    expect(JSON.parse(stdoutBuf)).toMatchObject({ verb: 'create', code: 'adapter-not-implemented' });
+  });
+
+  it('"host-pr create" without --title exits 2 (create-specific usage) via the async wire', async () => {
+    const code = await mainAsync([
+      'host-pr', 'create', '--branch', 'b', '--body', 'x',
+      '--remote', 'git@github.com:o/r.git',
+    ]);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/--title/);
+  });
 });

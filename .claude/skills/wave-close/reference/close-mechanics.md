@@ -21,6 +21,10 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 | `{{wave-cli}} worktree-cleanup [--dry-run] --wave <wave-file>` | `{ "removed": [], "skipped": [], "errors": [] }` |
 | `{{wave-cli}} issue-store flag <id> --kind <recoverable-stop\|terminal-failure> --question "<q>" --option "<o>" [--option "<o>"]` | set needs-attention (orthogonal to the rung) |
 | `{{wave-cli}} issue-store clear-flag <id>` | clear needs-attention |
+| `{{wave-cli}} host-pr arm --branch <b> [--remote <url>] [--method <squash\|merge\|rebase>]` | `--auto` landing (ADR-0023): `{ ok, verb:"arm", host, branch, method, outcome:"armed"\|"merged"\|"already-merged"\|"refused"\|"no-pr", prNumber?, prUrl?, reason }`. Decides per PR: checks pending → enable auto-merge (GraphQL); already clean → direct merge (REST). Idempotent. Detect-host-routed; **no `--config`** (talks to the code host, not the tracker). |
+| `{{wave-cli}} host-pr status --branch <b> [--remote <url>]` | done-reconcile host-evidence probe: `{ ok, verb:"status", host, branch, state:"open"\|"merged"\|"closed-unmerged"\|"none", url?, number? }`. `none` is a valid answer (no PR), not a failure. |
+| `{{wave-cli}} host-pr merge --branch <b> [--method …]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`. |
+| `npx tsx tools/wave/src/cli-store.ts preflight --config <path>` | repo-posture probe for the `--auto` confirm (FOR-12/ADR-0023): `{ ok, storeKind, checks:[{name,status,detail}] }`. The `allow-auto-merge` (hard, github) + `required-checks` (report-only) checks feed the confirm's posture column. Own entrypoint, **not** a `{{wave-cli}}` subverb. |
 | any command, no args | usage |
 
 ## Advisory merge-order write-back (ADR-0016 boundary)
@@ -29,11 +33,11 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 
 - The `## Conflict-Map` section is **parser-consumed** (ADR-0016): it is rendered by `renderSpine`/`renderConflictMap` at wave creation and consumed by the merge-order engine. A skill must not hand-author content in a parser-consumed section.
 - `spine replace-closed-by` targets **`## Closed-by`**, not `## Conflict-Map` — it cannot be used as a merge-order write-back path.
-- No CLI verb exists to update the `## Conflict-Map` block with a recomputed advisory order (that would require a new `spine replace-conflict-map` verb, deferred to P8 hardening if needed).
+- No CLI verb exists to update the `## Conflict-Map` block with a recomputed advisory order (that would require a new `spine replace-conflict-map` verb, deferred to a later hardening slice if needed).
 
 **Consequence:** the Coordinator follows the printed advisory order manually. When an override is present (stacked branches / fall-behind detected), note it explicitly and instruct the human to rebase before merging if needed. Rebase-train automation is M2 — wave-close only advises the order.
 
-## Worked sequence (default advisory path — P7.4)
+## Worked sequence (default advisory path — human merges)
 
 ```bash
 # Variables
@@ -94,8 +98,9 @@ ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
 # Override: none
 # ---
 #
-# The human (or --auto, P8) merges each PR in this order, e.g.:
+# The human merges each PR in this order (default path), e.g.:
 #   gh pr merge <pr> --squash --delete-branch
+# (Under --auto, do NOT hand-merge the order-free rows — arm them in 4b below.)
 # `--delete-branch`'s exit code is NOT evidence the branch is gone: `gh pr
 # merge` exits 0 whenever the merge succeeds, even when the local delete fails
 # (branch held by a worktree, OR simply checked out — W3-F3 / W4-F11) — and a
@@ -155,15 +160,20 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 {{wave-cli}} issue-store flag "$ID" --kind recoverable-stop \
   --question "PR was closed without merging — reopen, re-dispatch, or abandon?" \
   --option reopen --option re-dispatch --option abandon
-# If state=closed-unknown → closed, but NO PR evidence either way. Do NOT flag and
-# do NOT close: absence of evidence is not a rejection (flagging here is the live
-# defect FOR-23 fixed). Report it and ask the human:
-#   "closed-unknown — closed, but no merged-PR evidence found; confirm before landing"
-# Then, only on the human's answer: merge confirmed → `close "$ID" "$PR_URL"`;
-# PR genuinely rejected → the `flag ... recoverable-stop` above.
-# If state=open in a no-integration `states.doneState` workspace AND the merge is
-# confirmed out-of-band → the SAME close verb lands it via the FOR-13 fallback:
+# Evidence hierarchy (ADR-0023): tracker attachment > host PR state > nothing.
+# When read-closing cannot see a merge (state=open on a no-integration workspace,
+# or state=closed-unknown), fall to the HOST for the evidence the tracker lacks —
+# no out-of-band human-confirmation step:
+{{wave-cli}} host-pr status --branch "$BRANCH"   # { state: open|merged|closed-unmerged|none, url? }
+#   host state=merged → land it via the SAME close verb (FOR-13 fallback fires on
+#                       a states.doneState store):
 {{wave-cli}} issue-store close "$ID" "$PR_URL"
+#   host state=closed-unmerged (only for a closed-unknown row) → real rejection →
+#                       the `flag ... recoverable-stop` above.
+#   host state=open|none → still no merge evidence anywhere → leave in-review
+#                       (open), or for closed-unknown report + ask the human:
+#                       "closed-unknown — closed, but no merged-PR evidence found;
+#                        confirm before landing". Never guess merged vs rejected.
 
 # ─────────────────────────────────────────────────────────────
 # 6. Archive (terminal-only; to _archive/, NOT done/; layout-aware — P-11)
@@ -196,25 +206,61 @@ else
 fi
 ```
 
-## Worked sequence (P8 --auto additions — not implemented in P7.4)
+## Worked sequence (4b. `--auto` — partial-arm confirm + arm-and-exit, ADR-0023)
 
 ```bash
-# P8 only: PR-open + pin (find-before-create) + auto-merge arming.
-# host-pr.ts findOpenPr/createPr have no CLI verb in P7.4 — these require
-# the real gh/HTTP GitHubApi. Describe as documented future capabilities.
+# Runs ONLY when invoked as `wave-close --auto`. Opt-in, human-confirm default.
+# It replaces phase 4's MANUAL merge for the order-free rows; the overlapping
+# tail keeps the phase-4 advisory order as the human playbook. Every host write
+# goes through `host-pr` — never raw gh (ADR-0023: gh left the landing path).
 
-# P8: Per row whose Closed-by needsPin — find before create:
-#   findOpenPr(host, creds, branch) → existing URL or null
-#   createPr(host, creds, {branch, title, body, destination: 'main'}) → real URL
-#   {{wave-cli}} spine set-row-pr "$WAVE" "$ID" "[PR]($REAL_URL)"
-#   {{wave-cli}} spine replace-closed-by "$WAVE" "$T/closed-by-block.md"
+# ── Headless guard: the per-wave confirm is a human click. ──
+# Headless AND no --pre-authorized → STOP before arming anything:
+#   "--auto needs a human to confirm the per-wave arm, or explicit
+#    --pre-authorized to proceed unattended"
 
-# P8: --auto arm in merge-order sequence:
-#   gh pr merge --auto <pr-url>   (through wave-shared, never raw inline)
-#   On arm failure (branch behind main) → flag recoverable-stop:
-#   {{wave-cli}} issue-store flag "$ID" --kind recoverable-stop \
-#     --question "auto-merge could not arm — branch is behind main; rebase then re-run wave-close --auto, or merge by hand." \
-#     --option rebase-and-retry --option merge-by-hand
+# ── Repo posture for the confirm's last column (probed, never dictated). ──
+# Own entrypoint (NOT {{wave-cli}}); NODE_USE_ENV_PROXY=1 under a proxied sandbox.
+npx tsx tools/wave/src/cli-store.ts preflight --config "$CONFIG"
+# github store → real: allow-auto-merge (FAIL if OFF → can't arm checks-pending
+#   PRs, land via advisory order; already-clean still direct-merges), and
+#   required-checks (report-only; ABSENT → confirm says "no required checks —
+#   confirming means immediate merge").
+# linear/markdown store → both not-applicable (tracker seam can't reach the code
+#   host, ADR-0020/0023); posture is decided per-PR at arm time by `host-pr arm`.
+
+# ── Present ONE confirm for the wave: a table, one line per terminal PR ──
+#   PR | row (id+branch) | verdict | conflict prediction | repo posture
+#   conflict prediction = order-free (in NO ## Conflict-Map pair → will arm) vs
+#   overlapping (named in a pair → printed with the advisory order, NEVER armed).
+# On DECLINE → arm nothing; fall back to the printed advisory order.
+
+# ── On CONFIRM: arm each ORDER-FREE, eligible row through the host seam. ──
+# Eligibility is mechanical: verdict=approve, NO needs-attention flag, open PR,
+# order-free. NO risk re-gate (G3 already fired at verdict routing).
+{{wave-cli}} host-pr arm --branch "$BRANCH"   # detect-host-routed; NO --config
+# { ok, verb:"arm", outcome, prNumber?, prUrl?, reason }
+#   outcome=armed         → auto-merge enabled; lands itself when checks pass.
+#   outcome=merged        → was already clean; merged immediately.
+#   outcome=already-merged→ idempotent no-op (a prior run did it). Re-run-safe.
+#   outcome=refused       → branch behind main / allow-auto-merge OFF / not
+#                           mergeable → flag recoverable-stop with the reason:
+{{wave-cli}} issue-store flag "$ID" --kind recoverable-stop \
+  --question "auto-merge could not arm — <reason>; rebase then re-run wave-close --auto, or merge by hand" \
+  --option rebase-and-retry --option merge-by-hand
+#   outcome=no-pr         → no open PR for the branch (shouldn't reach here — an
+#                           open PR is an eligibility floor) → report.
+
+# ── Arm-and-exit: NO watch, NO poll. ──
+# The host completes merges server-side (survives a dead Coordinator). A clean
+# PR may have merged just now (possibly this wave's own row) → re-run the 4a
+# pull before phase 5 so reconcile runs against the merged engine. Then phases
+# 5-6 proceed as on the default path, and the run EXITS. Late merges (and an
+# armed PR whose checks later FAIL) reconcile on the next wave-close/resume touch.
+
+# NOTE — PR *creation* / Closed-by pinning (find-before-create) is the STAGED
+# `host-pr create` verb (ADR-0023 decision 3), not yet a CLI verb; PR creation
+# still rides the Worker terminator. Only arm|merge|status ship today.
 ```
 
 ## Exit codes
@@ -229,12 +275,15 @@ fi
 | `close` | closing facts recorded (done-reconcile / FOR-13 fallback) | issue not found (store threw) | usage (missing `<id>`/`<prUrl>`) |
 | `flag` / `clear-flag` | written | issue not found | usage (bad `--kind`) |
 | `spine read` | raw source on stdout | file not found / parse error | usage |
+| `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage |
+| `host-pr status` | probe answered (read `state`; `none` is a valid answer) | host error | usage |
+| `cli-store preflight` | every check `pass`/`not-applicable`/`advisory` | a check `fail`ed | usage |
 
 ## `ClosingState` shape
 
 `read-closing` prints `{ "state": "open"|"merged"|"closed-unmerged", "prUrl"?: string }`.
 
-- `open` — PR is open; no action needed (human merges in advisory order). Exception: a no-integration `states.doneState` workspace never reports `merged` — once the merge is confirmed out-of-band, land it with `close` (FOR-13 fallback).
+- `open` — PR is open; no action needed (human merges in advisory order). Exception: a no-integration `states.doneState` workspace never reports `merged` — consult `host-pr status --branch <b>` (the evidence hierarchy, ADR-0023); on its `state: merged`, land it with `close` (FOR-13 fallback). No out-of-band human-confirmation step.
 - `merged` — PR merged; **land it `done` via `issue-store close <id> <prUrl>`** (the done-reconcile). On a native-integration tracker the row's `done` also derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), so `close` is an idempotent reconcile that records the closing facts; then clear any stale flag.
 - `closed-unmerged` — PR was closed without merging; flag `recoverable-stop`.
 
@@ -244,4 +293,4 @@ fi
 
 ## Disclaimer
 
-flotilla writes only the `queued → in-flight → in-review` ledger; `available` (eligible + unclaimed) and `done` are the derived bookends. On a native-integration tracker `done` derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), and the wave-close done-reconcile (`issue-store close`) is an idempotent reconcile that records the closing facts. On a **no-integration `states.doneState` workspace (FOR-13)** the tracker can never see the merge, so that same `close` verb forces the mapped done-state transition + a loud advisory — the operational trigger for `done` when nothing else can reach it. wave-close recomputes the advisory merge order (printed, not persisted), lands each merged row `done`, flags stuck rows, cleans worktrees, and archives the spine — it **never merges `main`**. Reaching `done` for a row whose PR merged is this done-reconcile, the resume done-reconcile (`wave-resume`), or the human's merge action.
+flotilla writes only the `queued → in-flight → in-review` ledger; `available` (eligible + unclaimed) and `done` are the derived bookends. On a native-integration tracker `done` derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), and the wave-close done-reconcile (`issue-store close`) is an idempotent reconcile that records the closing facts. On a **no-integration `states.doneState` workspace (FOR-13)** the tracker can never see the merge, so the done-reconcile follows the ADR-0023 evidence hierarchy — **tracker attachment (`read-closing`) > host PR state (`host-pr status`) > nothing** — and that same `close` verb forces the mapped done-state transition + a loud advisory the moment the host supplies the merge evidence, the operational trigger for `done` when the tracker cannot reach it. wave-close recomputes the advisory merge order (printed, not persisted), lands each merged row `done`, flags stuck rows, cleans worktrees, and archives the spine; opt-in `--auto` additionally partial-arms the order-free rows through `host-pr arm` and exits (arm-and-exit) — it **never merges `main`**. Reaching `done` for a row whose PR merged is this done-reconcile, the resume done-reconcile (`wave-resume`), or the human's merge action.

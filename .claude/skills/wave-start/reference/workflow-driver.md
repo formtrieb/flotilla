@@ -101,7 +101,7 @@ const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('
 
 // ── Per-row data — Coordinator fills this from the spine before invoking ──
 // Each: { id, slug, risk, iteration, model, anchorSha, coordinatorBranch,
-//         depsSetup, issueSpec, reviewerHints, siblingBranches }
+//         depsSetup, issueSpec, prTitle, closePhrase, reviewerHints, siblingBranches }
 const ISSUES = [
   {
     id: 'NN',
@@ -119,6 +119,15 @@ const ISSUES = [
     // declared Files globs, risk. NOT a tracker id/path: the store config that
     // would resolve one may itself be gitignored and absent from this worktree.
     issueSpec: '<embed title + body + acceptance criteria + Files globs + risk here>',
+    // The PR-open inputs the Worker passes to `host-pr create` (the Worker has no
+    // wave.config.json in its worktree, so the Coordinator supplies both):
+    //   prTitle     — the PR title. Composed WITHOUT any bare tracker id
+    //                 (mention discipline, wave-shared Convention 4).
+    //   closePhrase — the store-kind close phrase, derived from wave.config.json's
+    //                 store.kind: github → 'Closes #<N>', linear → 'Fixes <TEAM-NN>'.
+    //                 It is the ONLY tracker id allowed anywhere in the PR title/body.
+    prTitle: '<PR title — no bare tracker id>',
+    closePhrase: '<Closes #NN | Fixes TEAM-NN — store-kind-derived (Convention 4)>',
     reviewerHints: ['Verify <thing 1>.', 'Confirm <thing 2>.'],
     siblingBranches: '(none — last in-flight issue)',
   },
@@ -184,7 +193,17 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 ## Termination
 1. Commit all work in one commit.
 2. \`git push origin wave/${issue.id}-${issue.slug}\` (never \`-u\`, never to default).
-3. Open the PR (host-aware). Capture the PR URL.
+3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused**, never duplicated. Compose a PR body whose last line is the store-kind close phrase, then run:
+   \`\`\`bash
+   ${WAVE_CLI} host-pr create \\
+     --branch wave/${issue.id}-${issue.slug} \\
+     --title "${issue.prTitle}" \\
+     --body "<one-paragraph summary of what you changed>
+
+${issue.closePhrase}"
+   # exit 0 → stdout is one JSON object; its .url (outcome: created | reused) is your prUrl.
+   \`\`\`
+   The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline): do not reference any other issue id anywhere. Capture the printed \`.url\` as your prUrl.
 
 ## Report — emit as your FINAL message, matching the WorkerReport schema:
 outcome, issue, branch, worktree, commitShas, prUrl, filesChanged{new,modified,renamed},
