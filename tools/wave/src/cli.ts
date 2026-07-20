@@ -93,10 +93,25 @@
  *   0 — success (nothing to remove, or all selected removed cleanly)
  *   1 — completed with per-worktree removal errors
  *   2 — usage / unexpected error
+ *
+ * verdict-acked (FOR-17 — the dead --acked wire, ADR-0004) — the single-owner
+ * engine derivation of `issue-store close`'s `--acked` indexes from the FINAL
+ * (max-iter valid) ReviewerVerdict sidecar for an id: reads
+ * `<verdictsDir>/<id>-<iter>.md` via the same sidecar reader resume uses
+ * (sidecar.ts, ADR-0002/0024), then runs `metAcIndexes()`
+ * (reviewer-verdict-schema.ts) over the winning verdict — never a skill-side
+ * ad-hoc parse. After a changes-requested → re-dispatch cycle the max-iter
+ * selection means the indexes always come from the LATEST verdict. Prints
+ * `{ acked: number[], iter: number|null, corrupt: number }` — no verdict
+ * sidecar (or only a corrupt one) is `{ acked: [], iter: null, corrupt }`, not
+ * an error: the tick is cosmetic (ADR-0004) and a merged row may have nothing
+ * on disk to derive from. Exit codes:
+ *   0 — printed (with or without a verdict found)
+ *   2 — usage (missing <verdictsDir>/<id>)
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
 import { validateIssue, validateIssueView, type DorResult } from './dor-gate';
 import { detectDrift, type DriftResult } from './files-drift';
 import {
@@ -127,9 +142,11 @@ import {
   runWriteVerdict,
 } from './route-cli';
 import { findScratchRoot } from './find-repo-root';
-import { flag } from './cli-utils';
+import { flag, printJson } from './cli-utils';
 import { resolveStore } from './cli-store';
 import type { IssueStore } from './adapters/issue-store';
+import { readSidecars, type SidecarReader } from './sidecar';
+import { metAcIndexes } from './reviewer-verdict-schema';
 
 // NOTE (FOR-11): `resume` is deliberately NOT in this list. The reconciler has
 // its OWN separate entrypoint, `resume-cli.ts` (`npx tsx tools/wave/src/resume-cli.ts
@@ -158,6 +175,7 @@ const KNOWN_SUBCOMMANDS = [
   'validate-verdict',
   'write-report',
   'write-verdict',
+  'verdict-acked',
 ] as const;
 type Subcommand = (typeof KNOWN_SUBCOMMANDS)[number];
 
@@ -218,6 +236,7 @@ function printUsage(): void {
       '  wave-validate validate-verdict <file>',
       '  wave-validate write-report <json-file> --dir <reportsDir> --id <id> --iter <n>',
       '  wave-validate write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>',
+      '  wave-validate verdict-acked <verdictsDir> <id>',
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
       '',
@@ -674,6 +693,70 @@ function runWorktreeCleanup(args: string[]): number {
   }
 }
 
+/** Node fs-backed {@link SidecarReader} — mirrors resume-cli.ts's `defaultSidecarReader`
+ * (the only other disk-touching sidecar wiring), reused here rather than
+ * duplicated: an absent dir reads as no sidecars, never an error. */
+function defaultVerdictSidecarReader(): SidecarReader {
+  return {
+    list: (dir) => {
+      try {
+        return readdirSync(dir);
+      } catch {
+        return [];
+      }
+    },
+    read: (dir, file) => readFileSync(join(dir, file), 'utf-8'),
+  };
+}
+
+/**
+ * Run the `verdict-acked` subcommand — the single-owner engine derivation of
+ * `issue-store close --acked` for wave-close (FOR-17, ADR-0004). Reads the
+ * MAX-iter valid ReviewerVerdict sidecar for `<id>` out of `<verdictsDir>`
+ * (via {@link readSidecars}, the same max-iter-per-id reader the resume path
+ * uses — so a changes-requested → re-dispatch cycle's stale iter-1 verdict is
+ * never picked over the latest), then runs {@link metAcIndexes} over it. A
+ * missing or schema-invalid verdict sidecar is never a failure here — it
+ * prints `acked: []` (nothing to tick; the tick is cosmetic, ADR-0004), with
+ * `corrupt` reporting how many malformed sidecars were seen for this id so a
+ * skill/human can tell "no verdict yet" apart from "a verdict exists but
+ * failed to parse".
+ *
+ * Exit codes: 0 — printed (found or not found); 2 — usage (missing args).
+ */
+function runVerdictAcked(args: string[]): number {
+  const verdictsDir = args[0];
+  const id = args[1];
+  if (verdictsDir === undefined || id === undefined) {
+    process.stderr.write(
+      [
+        'error: verdict-acked requires <verdictsDir> <id>',
+        'usage: wave-validate verdict-acked <verdictsDir> <id>',
+        '',
+      ].join('\n'),
+    );
+    return 2;
+  }
+  // readSidecars wants a reportsDir too (it indexes both kinds together) — we
+  // only ever read verdictFor(), so point it at a sibling path guaranteed
+  // absent under verdictsDir rather than duplicate the reader's logic. The
+  // default reader above treats an absent dir as "no sidecars", never an error.
+  const unusedReportsDir = join(verdictsDir, '.verdict-acked-no-reports');
+  const idx = readSidecars(
+    unusedReportsDir,
+    verdictsDir,
+    defaultVerdictSidecarReader(),
+  );
+  const hit = idx.verdictFor(id);
+  const acked = hit ? metAcIndexes(hit.verdict) : [];
+  printJson({
+    acked,
+    iter: hit ? hit.iter : null,
+    corrupt: idx.corruptFor(id).filter((c) => c.kind === 'verdict').length,
+  });
+  return 0;
+}
+
 export function main(argv: string[] = process.argv.slice(2)): number {
   if (argv.length === 0) {
     printUsage();
@@ -731,6 +814,8 @@ export function main(argv: string[] = process.argv.slice(2)): number {
         return runWriteReport(rest);
       case 'write-verdict':
         return runWriteVerdict(rest);
+      case 'verdict-acked':
+        return runVerdictAcked(rest);
       case 'issue-store':
         // `issue-store` is async (Promise<number>) and cannot run inside this
         // sync `main()`. The async entrypoint `mainAsync()` intercepts it BEFORE

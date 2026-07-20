@@ -22,6 +22,7 @@ import {
 import {
   AC_STATUS_VALUES,
   REVIEWER_VERDICT_JSON_SCHEMA,
+  metAcIndexes,
   validateReviewerVerdict,
   type ReviewerVerdict,
 } from './reviewer-verdict-schema';
@@ -197,6 +198,109 @@ describe('briefProfile is removed (ADR-0016 uniform reviewer)', () => {
     // additionalProperties:false is the enforcement surface (the Workflow tool
     // validates against the JSON Schema, not validateReviewerVerdict).
     expect(REVIEWER_VERDICT_JSON_SCHEMA.additionalProperties).toBe(false);
+  });
+});
+
+// ─── metAcIndexes — the single-owner met-AC derivation (FOR-17) ────────────
+//
+// This is the ONE engine owner of "which AC indexes does wave-close tick at
+// close?" — the wire `IssueStore.close(id, prUrl, ackedAcIndexes)` has taken
+// since ADR-0004, dead until this. Covered here so no skill ever re-derives
+// it by ad-hoc parsing acVerification[] itself.
+
+/**
+ * Render a ReviewerVerdict exactly as `write-verdict` (route-cli.ts) writes a
+ * real sidecar to `<verdictsDir>/<id>-<iter>.md` — a fenced ```json block
+ * under a heading — and extract it back the way the resume-path reader
+ * (sidecar.ts's `readSidecars`) does. Round-tripping through this on-disk
+ * shape (rather than handing `metAcIndexes` an in-memory object straight from
+ * the test) is the "real verdict sidecar fixture" the derivation is proven
+ * against — the exact bytes wave-close's engine verb reads off disk.
+ */
+function renderSidecar(id: string, iter: number, verdict: ReviewerVerdict): string {
+  return (
+    `# ReviewerVerdict ${id} iter ${iter}\n\n` +
+    '```json\n' +
+    JSON.stringify(verdict, null, 2) +
+    '\n```\n'
+  );
+}
+
+function parseSidecarJson(raw: string): unknown {
+  const m = /```json\s*\n([\s\S]*?)\n```/.exec(raw);
+  return JSON.parse(m ? m[1] : raw);
+}
+
+describe('metAcIndexes — met-AC index derivation (FOR-17, the dead --acked wire)', () => {
+  it('returns the 0-based indexes of ONLY the `met` rows — partial/not-met/deferred excluded', () => {
+    const v = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'a' },
+        { ac: '#2', met: 'partial', evidence: 'b' },
+        { ac: '#3', met: 'not-met', evidence: 'c' },
+        { ac: '#4', met: 'met', evidence: 'd' },
+        { ac: '#5', met: 'deferred', evidence: 'e' },
+      ],
+    });
+    expect(metAcIndexes(v)).toEqual([0, 3]);
+  });
+
+  it('returns [] when no AC is met', () => {
+    const v = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'partial', evidence: 'a' },
+        { ac: '#2', met: 'not-met', evidence: 'b' },
+      ],
+    });
+    expect(metAcIndexes(v)).toEqual([]);
+  });
+
+  it('returns [] on an empty acVerification (issue with no ACs)', () => {
+    expect(metAcIndexes(validVerdict({ acVerification: [] }))).toEqual([]);
+  });
+
+  it('derives against a REAL verdict sidecar fixture — the on-disk write-verdict shape', () => {
+    const written = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'tools/wave/src/cli.ts:42' },
+        { ac: '#2', met: 'partial', evidence: 'reviewed, one edge case missing' },
+        { ac: '#3', met: 'met', evidence: 'tools/wave/src/reviewer-verdict-schema.ts:99' },
+      ],
+    });
+    const sidecar = renderSidecar('17', 1, written);
+    const parsed = parseSidecarJson(sidecar);
+    const check = validateReviewerVerdict(parsed);
+    expect(check).toEqual({ valid: true, errors: [] });
+    expect(metAcIndexes(parsed as ReviewerVerdict)).toEqual([0, 2]);
+  });
+
+  it('after a changes-requested → re-dispatch cycle, indexes come from the LATEST iteration', () => {
+    // iter 1: changes-requested, only AC #1 verified met so far.
+    const iter1 = validVerdict({
+      verdict: 'changes-requested',
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'a' },
+        { ac: '#2', met: 'not-met', evidence: 'missing test' },
+      ],
+    });
+    // iter 2 (post re-dispatch): approve, both ACs now met.
+    const iter2 = validVerdict({
+      verdict: 'approve',
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'a' },
+        { ac: '#2', met: 'met', evidence: 'fixed in re-dispatch' },
+      ],
+    });
+    const sidecar1 = parseSidecarJson(renderSidecar('17', 1, iter1)) as ReviewerVerdict;
+    const sidecar2 = parseSidecarJson(renderSidecar('17', 2, iter2)) as ReviewerVerdict;
+
+    expect(metAcIndexes(sidecar1)).toEqual([0]);
+    // The engine's sidecar reader (sidecar.ts's readSidecars/verdictFor) is the
+    // MAX-iter selector wave-close's `verdict-acked` CLI verb calls before
+    // handing the verdict to metAcIndexes — this proves the derivation itself
+    // reflects whichever verdict it is given, so the LATEST iteration's verdict
+    // (never the stale one) is what must reach it.
+    expect(metAcIndexes(sidecar2)).toEqual([0, 1]);
   });
 });
 

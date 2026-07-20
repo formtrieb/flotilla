@@ -14,7 +14,8 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 |---|---|
 | `{{wave-cli}} spine read <wave-file>` | print the spine source (raw markdown) |
 | `{{wave-cli}} issue-store read-closing <id>` | `ClosingState` JSON: `{ "state": "open"\|"merged"\|"closed-unmerged"\|"closed-unknown", "prUrl": "…" }` — `closed-unmerged` = a PR was found and did NOT merge (a real rejection → flag); `closed-unknown` = closed with NO PR evidence either way (→ report + ask, never auto-flag) |
-| `{{wave-cli}} issue-store close <id> <prUrl> [--acked 0,2,3]` | the done-reconcile: records the closing PR + cosmetic AC tick. Idempotent no-op-or-reconcile; on a `states.doneState` store with no integration it forces the mapped done-state transition + a loud advisory (FOR-13). The existing `IssueStore.close()` verb — never re-implemented. |
+| `{{wave-cli}} verdict-acked <verdictsDir> <id>` | (FOR-17) the single-owner derivation of `close`'s `--acked` indexes: `{ "acked": [0, 2], "iter": 2\|null, "corrupt": 0 }`. Reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` out of `<verdictsDir>` and returns the 0-based `acVerification` indexes marked `met` (`metAcIndexes()`, reviewer-verdict-schema.ts) — partial/not-met/deferred excluded. Max-iter means a changes-requested → re-dispatch cycle's answer is always the LATEST verdict. No verdict sidecar (or only a corrupt one) → `{ acked: [], iter: null, corrupt: N }`, never a failure — the tick is cosmetic (ADR-0004). |
+| `{{wave-cli}} issue-store close <id> <prUrl> [--acked 0,2,3]` | the done-reconcile: records the closing PR + cosmetic AC tick from `--acked` (source it from `verdict-acked`, above — never hand-parse a verdict). Idempotent no-op-or-reconcile; on a `states.doneState` store with no integration it forces the mapped done-state transition + a loud advisory (FOR-13). The existing `IssueStore.close()` verb — never re-implemented. |
 | `{{wave-cli}} closed-by "<closed-by-line>"` | `{ "class": "real-pr"\|"pre-fill"\|"placeholder"\|"sha"\|"prose"\|"empty", "needsPin": true\|false }` |
 | `{{wave-cli}} detect-host "<remote-url>"` | `{ "host": "github"\|"bitbucket"\|"unknown", "workspace": "…", "repo": "…" }` |
 | `{{wave-cli}} merge-order <wave-file>` | `{ "algorithmic": [branch, …], "override": [branch, …]\|null, "hasOverride": boolean, "reason": "…" }` |
@@ -43,6 +44,7 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 # Variables
 WAVE=.flotilla/waves/2026-06-19-foo.md
 SLUG=2026-06-19-foo
+VERDICTS=".flotilla/waves/$SLUG/verdicts"   # the same sidecar dir wave-start's Reviewer stage writes to
 T=$(mktemp -d)
 
 # ─────────────────────────────────────────────────────────────
@@ -153,8 +155,12 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 # claim already released at park time. Nothing for the probe to find.
 # Report "parked — released for re-planning".
 {{wave-cli}} issue-store read-closing "$ID"
-# If state=merged → land it DONE (the done-reconcile — the existing close verb):
-{{wave-cli}} issue-store close "$ID" "$PR_URL"      # $PR_URL is read-closing's prUrl
+# If state=merged → derive --acked from the FINAL verdict (FOR-17, single-owner
+# engine derivation — NEVER hand-parse a verdict sidecar here), then land it
+# DONE via the done-reconcile — the existing close verb:
+ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" "$ID")   # { acked: [...], iter, corrupt }
+ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf-8")).acked.join(","))')
+{{wave-cli}} issue-store close "$ID" "$PR_URL" --acked "$ACKED"   # $PR_URL is read-closing's prUrl; $ACKED may be "" (nothing met / no verdict yet)
 {{wave-cli}} issue-store clear-flag "$ID"            # then clear any stale flag
 # If state=closed-unmerged → a PR was FOUND and did not merge (real rejection) → flag:
 {{wave-cli}} issue-store flag "$ID" --kind recoverable-stop \
@@ -165,15 +171,22 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 # or state=closed-unknown), fall to the HOST for the evidence the tracker lacks —
 # no out-of-band human-confirmation step:
 {{wave-cli}} host-pr status --branch "$BRANCH"   # { state: open|merged|closed-unmerged|none, url? }
-#   host state=merged → land it via the SAME close verb (FOR-13 fallback fires on
+#   host state=merged → derive --acked (same verdict-acked call as above), then
+#                       land it via the SAME close verb (FOR-13 fallback fires on
 #                       a states.doneState store):
-{{wave-cli}} issue-store close "$ID" "$PR_URL"
+{{wave-cli}} issue-store close "$ID" "$PR_URL" --acked "$ACKED"
 #   host state=closed-unmerged (only for a closed-unknown row) → real rejection →
 #                       the `flag ... recoverable-stop` above.
 #   host state=open|none → still no merge evidence anywhere → leave in-review
 #                       (open), or for closed-unknown report + ask the human:
 #                       "closed-unknown — closed, but no merged-PR evidence found;
 #                        confirm before landing". Never guess merged vs rejected.
+#
+# --acked is COSMETIC ONLY (ADR-0004): it ticks the issue's AC checklist for
+# human visibility and is never re-read as gate input anywhere — acVerification[]
+# on the Reviewer verdict stays the ground truth. verdict-acked's `iter` selection
+# is MAX-iter-per-id, so a changes-requested → re-dispatch cycle's $ACKED always
+# reflects the LATEST verdict, never a stale one.
 
 # ─────────────────────────────────────────────────────────────
 # 6. Archive (terminal-only; to _archive/, NOT done/; layout-aware — P-11)
@@ -272,6 +285,7 @@ npx tsx tools/wave/src/cli-store.ts preflight --config "$CONFIG"
 | `merge-order` | advisory result on stdout (incl. empty wave) | — | usage / unreadable spine |
 | `worktree-cleanup` | clean | per-worktree removal errors | usage |
 | `read-closing` | `ClosingState` on stdout | issue not found | usage |
+| `verdict-acked` | `{ acked, iter, corrupt }` printed (found or not found — an absent/corrupt verdict is not a failure) | — | usage (missing `<verdictsDir>`/`<id>`) |
 | `close` | closing facts recorded (done-reconcile / FOR-13 fallback) | issue not found (store threw) | usage (missing `<id>`/`<prUrl>`) |
 | `flag` / `clear-flag` | written | issue not found | usage (bad `--kind`) |
 | `spine read` | raw source on stdout | file not found / parse error | usage |
@@ -283,8 +297,8 @@ npx tsx tools/wave/src/cli-store.ts preflight --config "$CONFIG"
 
 `read-closing` prints `{ "state": "open"|"merged"|"closed-unmerged", "prUrl"?: string }`.
 
-- `open` — PR is open; no action needed (human merges in advisory order). Exception: a no-integration `states.doneState` workspace never reports `merged` — consult `host-pr status --branch <b>` (the evidence hierarchy, ADR-0023); on its `state: merged`, land it with `close` (FOR-13 fallback). No out-of-band human-confirmation step.
-- `merged` — PR merged; **land it `done` via `issue-store close <id> <prUrl>`** (the done-reconcile). On a native-integration tracker the row's `done` also derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), so `close` is an idempotent reconcile that records the closing facts; then clear any stale flag.
+- `open` — PR is open; no action needed (human merges in advisory order). Exception: a no-integration `states.doneState` workspace never reports `merged` — consult `host-pr status --branch <b>` (the evidence hierarchy, ADR-0023); on its `state: merged`, land it with `close` (FOR-13 fallback), `--acked` derived the same way as below.
+- `merged` — PR merged; **derive `--acked` via `verdict-acked <verdictsDir> <id>` (FOR-17), then land it `done` via `issue-store close <id> <prUrl> --acked <indexes>`** (the done-reconcile). On a native-integration tracker the row's `done` also derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), so `close` is an idempotent reconcile that records the closing facts + the cosmetic AC tick; then clear any stale flag.
 - `closed-unmerged` — PR was closed without merging; flag `recoverable-stop`.
 
 ## `NeedsAttentionPayload` shape
@@ -293,4 +307,4 @@ npx tsx tools/wave/src/cli-store.ts preflight --config "$CONFIG"
 
 ## Disclaimer
 
-flotilla writes only the `queued → in-flight → in-review` ledger; `available` (eligible + unclaimed) and `done` are the derived bookends. On a native-integration tracker `done` derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), and the wave-close done-reconcile (`issue-store close`) is an idempotent reconcile that records the closing facts. On a **no-integration `states.doneState` workspace (FOR-13)** the tracker can never see the merge, so the done-reconcile follows the ADR-0023 evidence hierarchy — **tracker attachment (`read-closing`) > host PR state (`host-pr status`) > nothing** — and that same `close` verb forces the mapped done-state transition + a loud advisory the moment the host supplies the merge evidence, the operational trigger for `done` when the tracker cannot reach it. wave-close recomputes the advisory merge order (printed, not persisted), lands each merged row `done`, flags stuck rows, cleans worktrees, and archives the spine; opt-in `--auto` additionally partial-arms the order-free rows through `host-pr arm` and exits (arm-and-exit) — it **never merges `main`**. Reaching `done` for a row whose PR merged is this done-reconcile, the resume done-reconcile (`wave-resume`), or the human's merge action.
+flotilla writes only the `queued → in-flight → in-review` ledger; `available` (eligible + unclaimed) and `done` are the derived bookends. On a native-integration tracker `done` derives from the merged PR's store-kind close phrase (`wave-shared` Convention 4), and the wave-close done-reconcile (`issue-store close`) is an idempotent reconcile that records the closing facts. On a **no-integration `states.doneState` workspace (FOR-13)** the tracker can never see the merge, so the done-reconcile follows the ADR-0023 evidence hierarchy — **tracker attachment (`read-closing`) > host PR state (`host-pr status`) > nothing** — and that same `close` verb forces the mapped done-state transition + a loud advisory the moment the host supplies the merge evidence, the operational trigger for `done` when the tracker cannot reach it. Every `close` call on a merged row also carries `--acked`, derived per-row from that row's FINAL Reviewer verdict via `verdict-acked` (FOR-17, ADR-0004) — a cosmetic, human-facing tick only, never re-read as gate input. wave-close recomputes the advisory merge order (printed, not persisted), lands each merged row `done` (with its reviewer-met ACs ticked), flags stuck rows, cleans worktrees, and archives the spine; opt-in `--auto` additionally partial-arms the order-free rows through `host-pr arm` and exits (arm-and-exit) — it **never merges `main`**. Reaching `done` for a row whose PR merged is this done-reconcile, the resume done-reconcile (`wave-resume`), or the human's merge action.
