@@ -114,15 +114,34 @@ gh api "repos/<owner>/<repo>/branches" --jq '.[].name' | grep '^wave/'
 git push origin --delete <branch>
 
 # ─────────────────────────────────────────────────────────────
-# 4a. Pull to completion before you reconcile — sandbox reality (W5-F3)
+# 4a. Self-repair check + pull to completion — sandbox reality (W4-F1 / W5-F3)
 # ─────────────────────────────────────────────────────────────
-# Phase 5 probes with whatever engine is on disk right now. If this wave's own
-# rows changed the closing-probe machinery (or anything else phase 5 depends
-# on), that fix is not live in phase 5 until the just-merged main is pulled
-# locally — the self-repair trap (W4-F1; detecting/asserting it is FOR-30's
-# separate territory, not duplicated here). Run this after every merge in the
-# advisory order, before starting phase 5, every time — not only when you
-# believe this wave touched the probe engine:
+# Phase 5 probes with whatever engine is on disk right now. read-closing /
+# close / merge-order / worktree-cleanup / the host-pr routing verbs all run
+# from the LOCAL CHECKOUT, which sits at the wave anchor (pre-wave code). If
+# this wave's own rows changed any of that machinery, the fix is not live in
+# phase 5 until the just-merged main is pulled locally — the self-repair trap
+# (W4-F1: had phase 5 run before the pull, read-closing would have reported
+# closed-unmerged for all FOUR of that wave's already-merged rows, and the
+# skill's own prescription would have flagged four correctly-landed rows
+# recoverable-stop).
+#
+# Detect it mechanically BEFORE phase 5 (not from memory of this comment) —
+# diff each dispatch-log branch against main and grep the engine surface.
+# This also covers the transport/factory/wiring layer one level below the
+# store wrappers -- real-github-api.ts, github-api-factory.ts,
+# real-linear-api.ts, linear-api-factory.ts, cli-store.ts -- because a
+# probe-logic fix confined to that layer (the FOR-23 / real-linear-api.ts
+# precedent) would otherwise evade this check:
+ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
+for BRANCH in <every wave branch from the dispatch-log>; do
+  HIT=$(git diff --name-only main...origin/"$BRANCH" | grep -E "$ENGINE_SURFACE")
+  [ -n "$HIT" ] && echo "SELF-REPAIR HAZARD: $BRANCH touches $HIT"
+done
+# A hit or not, the merge -> pull -> reconcile order below always runs — the
+# detection step is early warning (surface it in the close summary), not a
+# gate that skips the pull. Run this after every merge in the advisory order,
+# before starting phase 5, every time — not only when the check above hits:
 git fetch origin main
 git pull --ff-only origin main
 git rev-parse HEAD   # MUST equal the merged main tip — trust nothing else

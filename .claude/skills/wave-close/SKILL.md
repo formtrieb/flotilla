@@ -24,6 +24,7 @@ Do **not** use this to dispatch (`wave-start`), to plan (`wave-plan`), or to mer
 - **Archive to `_archive/`, never to `done/`.** flotilla has no `git mv`-to-`done/` close ceremony (that is an Ur binding). The spine and its sidecar folder move together into `.flotilla/waves/_archive/`.
 - **Advisory merge-order is print-only.** The recomputed merge order is printed to stdout (advisory). It is **not** written into the spine's `## Conflict-Map` — that section is parser-consumed (ADR-0016 forbids skills hand-authoring parser-consumed spine content; there is no CLI verb to write an advisory order into `## Conflict-Map` separately from the conflict pairs, and `spine replace-closed-by` targets the `## Closed-by` section, not `## Conflict-Map`).
 - **Idempotent — read before mutate.** Every mutating step checks state first: skip already-flagged rows, skip already-archived spines.
+- **Self-repair hazard — every engine verb this skill calls predates the wave.** `issue-store read-closing`, `merge-order`, `worktree-cleanup`, the `host-pr` routing verbs (`arm`/`merge`/`status`), and `issue-store close` all run from the **local checkout** — and that checkout sits at the **wave anchor**, i.e. the code as it was BEFORE this wave's rows landed. A wave whose own rows change any of that machinery cannot reconcile against its own fix until the merge is pulled locally. Phase 4a below gives the mechanical detection step and the required `merge → pull → reconcile` order (W4-F1 / W5-F3).
 
 ## Terminality gate
 
@@ -89,13 +90,36 @@ Order : <branch-1> → <branch-2> → <branch-3>
 
 **`gh pr merge --delete-branch`'s exit code is not evidence the branch was deleted.** It exits **0** whenever the merge itself succeeds, even when the local branch delete fails — and a failed local delete silently aborts the paired remote delete too, without changing the exit code or printing anything past the merge success. This was observed twice for two different reasons: the branch's local ref was still checked out inside a wave worktree (W3-F3, before this phase reorder), and — reproduced live, phase reorder notwithstanding — the branch simply being the *current* checkout with no worktree at all (W4-F11). Treat branch deletion as a **separate, checked step** after every merge in the advisory order: query the host for surviving `wave/*` (or this store's branch-naming convention) branches — e.g. `gh api repos/<owner>/<repo>/branches` or `git ls-remote --heads origin 'wave/*'` — and delete by hand (`git push origin --delete <branch>`) whatever is still there. Do this **regardless of whether phase 3's cleanup ran cleanly** — cleanup only removes the worktree cause, not the checked-out-branch cause.
 
-### 4a. Pull to completion before you reconcile — sandbox reality (W5-F3)
+### 4a. Self-repair check + pull to completion before you reconcile (W4-F1 / W5-F3)
 
-**Phase 5 probes with whatever engine is on disk right now.** `read-closing`/`close`/`merge-order` all run against the local checkout — if *this wave's own rows* changed the closing-probe machinery (or anything else phase 5 depends on), that fix is not live in phase 5 until you have pulled the just-merged `main` locally. Detecting that a wave is touching its own probe engine and warning about it is a separate, not-yet-built concern (FOR-30's territory — referenced here, not duplicated); this section covers the **operational fix**, which is one more step in the sequence, always:
+**Phase 5 probes with whatever engine is on disk right now.** `issue-store read-closing`, `issue-store close`, `merge-order`, `worktree-cleanup`, and the `host-pr` routing verbs all run against the **local checkout** — and that checkout sits at the wave anchor (the code from BEFORE the wave), not at whatever `main` becomes once this wave's PRs merge. If *this wave's own rows* changed any of that machinery, the fix is not live in phase 5 until the just-merged `main` has been pulled locally.
+
+**Detect it — mechanical, before phase 5 (not a retro operating note to remember).** Once the dispatch-log branches are in hand (phase 4), diff each against `main` and grep for the engine surface wave-close depends on:
+
+```bash
+# The files behind read-closing / close / flag / clear-flag (per-adapter +
+# CLI wiring), merge-order, worktree-cleanup, the host-pr routing verbs, and
+# the top-level CLI dispatch that routes to all of them. This also covers the
+# transport/factory/wiring layer one level below the store wrappers —
+# real-github-api.ts, github-api-factory.ts, real-linear-api.ts,
+# linear-api-factory.ts, cli-store.ts — because a probe-logic fix confined to
+# that layer (the FOR-23 / real-linear-api.ts precedent) would otherwise
+# evade this check:
+ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
+
+for BRANCH in <every wave branch from the dispatch-log>; do
+  HIT=$(git diff --name-only main...origin/"$BRANCH" | grep -E "$ENGINE_SURFACE")
+  [ -n "$HIT" ] && echo "SELF-REPAIR HAZARD: $BRANCH changes wave-close's own engine surface — $HIT"
+done
+```
+
+Any hit means this wave is a self-repair case: **note it in the close summary** and treat the sequence below as non-negotiable for this run, not merely advisable. A clean run (no hits) still runs the sequence — the check is early warning, not a gate that skips the pull.
+
+**Why the order is `merge → pull → reconcile`, never `merge → reconcile`.** Reconciling before the pull probes with the un-fixed, pre-wave code — and can flag correctly-landed rows. This is not hypothetical: it is the live **W4-F1 near-miss** — had phase 5 run before the pull, `read-closing` would have reported `closed-unmerged` for **all four** of that wave's already-merged rows (the fix those same rows shipped, `read-closing` itself, was not yet live in the local checkout), and the skill's own prescription would have flagged four correctly-landed rows `recoverable-stop` — exactly the damage class the fix existed to remove, inside the wave that removed it. Pulling first is what makes phase 5 reconcile against the engine the wave actually shipped, not the one it replaced.
 
 **merge (phase 4) → pull to completion (sandbox disabled if needed) → only then reconcile (phase 5).**
 
-Run this after every merge in the advisory order, before starting phase 5, regardless of whether you believe this wave touched the probe engine:
+Run this after every merge in the advisory order, before starting phase 5, regardless of whether the check above found a hit:
 
 ```bash
 git fetch origin main
@@ -286,6 +310,7 @@ After archiving, print a close summary: wave slug, **which archive mode ran** (`
 - **Letting a headless `--auto` self-confirm.** The per-wave confirm is a human click; headless `--auto` STOPs unless `--pre-authorized` was passed (the only headless bypass, ADR-0023). Never auto-answer the confirm.
 - **Reaching for raw `gh` to arm/merge, or expecting a `host-pr create` verb.** The three **landing** verbs `host-pr arm | merge | status` are shipped and are the only host-write path (ADR-0023 — `gh` left the landing path entirely). The **creation** verb `host-pr create` is the *staged* half and is not yet a CLI verb; PR creation still rides the Worker terminator.
 - **Reconciling before the pull completes (W5-F3).** Phase 5 probes with whatever engine is on disk; if this wave's own rows touched that machinery, an un-pulled or half-pulled checkout reconciles against the *pre-merge* code — the exact conditions that would flag correctly-merged rows as `recoverable-stop` (W4-F1). Pull to the merged `main` tip (verified via `git rev-parse HEAD`, not the pull's exit code) before starting phase 5 — see "4a" above.
+- **Relying on memory of the W4-F1 retro instead of running the phase-4a detection step.** Whether *this* wave is a self-repair case is not something to eyeball from having read a prior operating note — diff each dispatch-log branch against `main` and grep it against the engine-surface list in phase 4a. The pull happens either way, but the detection step is what tells you (and the close summary) whether this run was the load-bearing case.
 - **Trusting a `git pull`/`git reset` that touched `.claude/skills/` without checking `HEAD`.** The sandbox can deny the skill-file half of a fast-forward while the rest applies silently — no error past the failed unlink, `git status` reads as ordinary pending changes, and `HEAD` stays on the pre-merge SHA. Disable the sandbox for that pull whenever this wave's rows touch `.claude/skills/**`, and confirm `git rev-parse HEAD` against the merged tip before trusting the checkout.
 
 ## Related
