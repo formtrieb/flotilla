@@ -12,25 +12,17 @@
  * threaded per call — the seam stays about issues, not hosts.
  */
 
-import type { LandingHost } from '../../host-pr';
+import type { LandingHost, LandingPosture } from '../../host-pr';
+
+// The code-host posture type `RequiredChecksInfo` was re-homed to the host seam
+// (host-pr.ts) by the ADR-0023 amendment — one owner for the landing-posture
+// facts. Re-exported here so the GitHub adapter's existing importers are
+// unchanged; the shape is host-neutral (the Bitbucket pilot produces it too).
+export type { RequiredChecksInfo, AutoMergeSetting } from '../../host-pr';
 
 /** GitHub's native issue lifecycle state. */
 export type GhState = 'open' | 'closed';
 
-/**
- * The presence of required status checks on a branch (ADR-0023 preflight).
- * REPORT-ONLY: a repo with none keeps `--auto` (the wave-close confirm then
- * simply states that confirming means an immediate merge), so this probe never
- * FAILs — and `unknown` is a first-class answer, because the underlying
- * branch-protection read needs admin rights the ambient token may not have.
- */
-export interface RequiredChecksInfo {
-  state: 'present' | 'absent' | 'unknown';
-  /** The required check contexts, when readable. Empty for absent/unknown. */
-  contexts: string[];
-  /** Human-readable account of what was probed and what came back. */
-  detail: string;
-}
 /**
  * GitHub's native close reason. NB: the coarse projection is lossy (ADR-0002) —
  * `deriveStatus` maps ANY `closed` issue to `done`, so this reason is NOT
@@ -92,8 +84,16 @@ export interface CreateIssueInput {
  * — are inherited rather than re-declared, and `RealGitHubApi` can be handed
  * straight to `armPullRequest` with no pass-through wrapper. A Bitbucket adapter
  * implements the same `LandingHost` and reuses the engine's arm intent verbatim.
+ *
+ * It also `extends LandingPosture` (ADR-0023 amendment): the three code-host
+ * posture reads — `canMergePullRequests`, `getAutoMergeSetting`,
+ * `getRequiredChecks` — that `host-pr preflight` grades are inherited from the
+ * host seam, so the GitHub adapter can be handed straight to `preflightHost`.
+ * They moved off this interface to the host seam under the single-owner
+ * discipline (one owner for the landing-posture facts); a Bitbucket adapter
+ * implements the same `LandingPosture` and inherits the probe.
  */
-export interface GitHubApi extends LandingHost {
+export interface GitHubApi extends LandingHost, LandingPosture {
   /** Create an issue; return the server-assigned number. */
   createIssue(input: CreateIssueInput): Promise<{ number: number }>;
   /** Fetch one issue; throw on a number that does not resolve. */
@@ -142,29 +142,9 @@ export interface GitHubApi extends LandingHost {
    * absence is likewise `closed-unknown`.
    */
   getClosingState(number: number): Promise<ClosingPrState>;
-  /**
-   * Whether the ambient token can MERGE pull requests on the bound repo — i.e.
-   * has write (push) access or higher. The store-preflight (FOR-12) surfaces
-   * this at wave-setup so a token that can read issues but not land PRs fails
-   * LOUDLY up-front, not at merge time mid-wave. Real impl: `GET /repos/{o}/{r}`
-   * → `permissions.{push|maintain|admin}`; the in-memory fake holds an explicit
-   * flag (test affordance).
-   */
-  canMergePullRequests(): Promise<boolean>;
-  /**
-   * Whether the repo's **"Allow auto-merge"** setting is ON (ADR-0023).
-   *
-   * A HARD functional precondition for `--auto`: GitHub ships this setting OFF
-   * by default, and with it off `enablePullRequestAutoMerge` simply fails. The
-   * store-preflight FAILs (with a fix instruction) rather than letting the wave
-   * discover it at arm time. Real impl: `GET /repos/{o}/{r}` → `allow_auto_merge`.
-   */
-  allowsAutoMerge(): Promise<boolean>;
-  /**
-   * Whether a branch (default: the repo's default branch) has required status
-   * checks (ADR-0023). REPORT-ONLY — see {@link RequiredChecksInfo}. Real impl:
-   * `GET /repos/{o}/{r}/branches/{b}/protection/required_status_checks`.
-   * MUST NOT throw: an advisory probe may never block the preflight.
-   */
-  getRequiredChecks(branch?: string): Promise<RequiredChecksInfo>;
+  // The three code-host posture reads — `canMergePullRequests`,
+  // `getAutoMergeSetting`, `getRequiredChecks` — are inherited from
+  // `LandingPosture` (host-pr.ts). They were declared here (FOR-12/ADR-0023) but
+  // re-homed to the host seam by the ADR-0023 amendment (single-owner): `host-pr
+  // preflight` grades them on every store kind, store-blind.
 }

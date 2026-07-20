@@ -472,27 +472,36 @@ describe('RealGitHubApi', () => {
     });
   });
 
-  describe('allowsAutoMerge (ADR-0023 preflight probe)', () => {
-    it('GETs the repo and reports the allow_auto_merge setting', async () => {
+  describe('getAutoMergeSetting (ADR-0023 amendment posture probe)', () => {
+    it('GETs the repo and reports ON when allow_auto_merge is true', async () => {
       const { api, http } = makeApi((req) => {
         expect(req.method).toBe('GET');
         expect(req.url).toBe('https://api.github.com/repos/example-org/example-repo');
         return { status: 200, json: { allow_auto_merge: true } };
       });
-      expect(await api.allowsAutoMerge()).toBe(true);
+      expect(await api.getAutoMergeSetting()).toBe('on');
       expect(http.requests).toHaveLength(1);
     });
 
-    it('reports false for the GitHub DEFAULT (setting off / field absent)', async () => {
+    it('reports OFF when the field is present and false (a VISIBLE off)', async () => {
       const { api } = makeApi(() => ({ status: 200, json: { allow_auto_merge: false } }));
-      expect(await api.allowsAutoMerge()).toBe(false);
-      const { api: api2 } = makeApi(() => ({ status: 200, json: { name: 'example-repo' } }));
-      expect(await api2.allowsAutoMerge()).toBe(false);
+      expect(await api.getAutoMergeSetting()).toBe('off');
+    });
+
+    it('reports UNKNOWN when the field is ABSENT — the token cannot see it (below maintain/admin), NOT off', async () => {
+      // GitHub hides `allow_auto_merge` from a token below maintain/admin. The
+      // pre-amendment code read absent as `false`; the amendment reads it as
+      // `unknown` — absence of evidence is not a finding (ADR-0023 amendment).
+      const { api } = makeApi(() => ({ status: 200, json: { name: 'example-repo' } }));
+      expect(await api.getAutoMergeSetting()).toBe('unknown');
+      // A null body is likewise unreadable → unknown, never off.
+      const { api: api2 } = makeApi(() => ({ status: 200, json: null }));
+      expect(await api2.getAutoMergeSetting()).toBe('unknown');
     });
 
     it('throws a typed error on a non-200', async () => {
       const { api } = makeApi(() => ({ status: 404, json: { message: 'Not Found' } }));
-      await expect(api.allowsAutoMerge()).rejects.toMatchObject({ name: 'GitHubApiError', op: 'allowsAutoMerge' });
+      await expect(api.getAutoMergeSetting()).rejects.toMatchObject({ name: 'GitHubApiError', op: 'getAutoMergeSetting' });
     });
   });
 

@@ -1,6 +1,6 @@
 /**
- * host-pr-cli.ts — the `host-pr create | arm | merge | status` verb group
- * (ADR-0019 PR-open + ADR-0023 landing).
+ * host-pr-cli.ts — the `host-pr create | arm | merge | status | preflight` verb
+ * group (ADR-0019 PR-open + ADR-0023 landing + amendment).
  *
  * The whole host boundary, exposed as ONE narrow CLI surface. Why a CLI verb at
  * all: a Workflow driver cannot import the engine, and `gh` left the host path
@@ -24,15 +24,22 @@
  *   arm          → `armPullRequest`  (host-pr.ts owns the arm intent)
  *   merge        → `mergePullRequestNow`
  *   status       → `LandingHost.getPrStatus`
+ *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
+ *                  the three code-host checks (pr-merge-token, allow-auto-merge,
+ *                  required-checks). Store-BLIND (no `--config`, no `--branch`) —
+ *                  identical on every store kind, because landing is always on the
+ *                  code host (ADR-0023 amendment / W10-F1). Builds the posture
+ *                  reader from `$GITHUB_TOKEN`, like arm/merge/status.
  *
  * Exit codes:
  *   0 — the op succeeded (`create`: the PR was created or an open one reused;
  *       `arm`/`merge`: merged, armed, or already-merged; `status`: the probe
- *       answered — read `state` for the answer, which may legitimately be `none`).
+ *       answered — read `state` for the answer, which may legitimately be `none`;
+ *       `preflight`: every check passed / advisory / unknown — read `checks`).
  *   1 — the op did not land the row (`create`: the PR-create failed —
  *       `outcome: "create-failed"` with a `fallbackPrefillUrl`; `arm`/`merge`:
- *       `no-pr`, `refused`), the host has no adapter
- *       (`code: "adapter-not-implemented"`), or the host errored.
+ *       `no-pr`, `refused`; `preflight`: a check `fail`ed — read `checks`), the
+ *       host has no adapter (`code: "adapter-not-implemented"`), or the host errored.
  *   2 — usage error.
  *
  * stdout is ALWAYS a single JSON object carrying `ok` + the outcome, so the
@@ -46,11 +53,13 @@ import {
   mergePullRequestNow,
   findOpenPr,
   createPr,
+  preflightHost,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
   type Host,
   type HostInfo,
   type LandingHost,
+  type LandingPosture,
   type MergeMethod,
   type Creds,
   type HttpProbe,
@@ -58,19 +67,22 @@ import {
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
 import { flag, printJson } from './cli-utils';
 
-const VERBS = ['create', 'arm', 'merge', 'status'] as const;
+const VERBS = ['create', 'arm', 'merge', 'status', 'preflight'] as const;
 type Verb = (typeof VERBS)[number];
 
 /**
- * Impure inputs for the `create` verb, injectable for tests. In production both
- * default: the network seam is host-pr's `defaultHttpProbe` (global `fetch`, the
- * same path arm/merge/status use), and the token is read from `process.env`.
+ * Impure inputs for the `create` and `preflight` verbs, injectable for tests. In
+ * production all default: the network seam is host-pr's `defaultHttpProbe`
+ * (global `fetch`, the same path arm/merge/status use), the token is read from
+ * `process.env`, and the posture reader is a `GitHubApi` built from the env.
  */
-export interface HostPrCreateDeps {
-  /** Injectable network seam (tests). Defaults inside `findOpenPr`/`createPr`. */
+export interface HostPrDeps {
+  /** `create`: injectable network seam (tests). Defaults inside `findOpenPr`/`createPr`. */
   http?: HttpProbe;
-  /** Environment to read GITHUB_TOKEN from. Defaults to `process.env`. */
+  /** `create` + `preflight`: environment to read GITHUB_TOKEN from. Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
+  /** `preflight`: a posture reader to probe (tests). Production builds a `GitHubApi` from the env. */
+  posture?: LandingPosture;
 }
 
 const MERGE_METHODS: MergeMethod[] = ['squash', 'merge', 'rebase'];
@@ -81,20 +93,23 @@ function usage(message: string): number {
       `error: ${message}`,
       // NB: deliberately NO --config. host-pr talks to the code HOST, not the
       // tracker, so there is no store to build and no wave.config.json to read.
-      `usage: host-pr <${VERBS.join('|')}> --branch <branch> [--remote <url>]`,
-      `         create: --title <title> --body <body>   (the PR body carries the store-kind close phrase)`,
-      `         arm | merge: [--method <${MERGE_METHODS.join('|')}>]`,
+      `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
+      `         create: --branch <branch> --title <title> --body <body>   (the PR body carries the store-kind close phrase)`,
+      `         arm | merge | status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
+      `         preflight: (no --branch — a repo-level probe)`,
       '',
-      '  create  Open the PR for --branch idempotently (find-before-create): an existing OPEN PR on the',
-      '          branch is reused (no duplicate), a missing one is created. Requires --title and --body.',
-      '  arm     Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
-      '          already clean → direct merge. Idempotent.',
-      '  merge   Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
-      '  status  Report the PR for a branch: open | merged | closed-unmerged | none (+ url).',
+      '  create    Open the PR for --branch idempotently (find-before-create): an existing OPEN PR on the',
+      '            branch is reused (no duplicate), a missing one is created. Requires --title and --body.',
+      '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
+      '            already clean → direct merge. Idempotent.',
+      '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
+      '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url).',
+      '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
+      '            Store-blind (no --config, no --branch) — identical on every store kind (ADR-0023 amendment).',
       '',
       '  --remote defaults to `git remote get-url origin`.',
       `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
-      '  create reads GITHUB_TOKEN from the environment (never printed).',
+      '  create + preflight read GITHUB_TOKEN from the environment (never printed).',
       '',
     ].join('\n'),
   );
@@ -110,16 +125,18 @@ function usage(message: string): number {
  *   `github`: routing is the ROUTER's decision, never the caller's, so an
  *   injected adapter can never smuggle a non-GitHub wave onto the GitHub path.
  *   When absent, the GitHub adapter is built from the env (impure —
- *   `GITHUB_TOKEN` + a construction-time preflight). The `create` verb does not
- *   use this seam (it is on the ADR-0019 `HttpProbe`/`Creds` boundary).
- * @param createDeps - impure inputs for `create` only (tests inject the network
- *   seam + env); production defaults to real `fetch` and `process.env`.
+ *   `GITHUB_TOKEN` + a construction-time preflight). The `create` and `preflight`
+ *   verbs do not use this seam (`create` is on the ADR-0019 `HttpProbe`/`Creds`
+ *   boundary; `preflight` reads the posture via `deps.posture`).
+ * @param deps - impure inputs for `create` (network seam + env) and `preflight`
+ *   (posture reader + env); tests inject them, production defaults to real
+ *   `fetch`, `process.env`, and a `GitHubApi` built from the env.
  * @returns the process exit code (see the module docblock).
  */
 export async function runHostPr(
   args: string[],
   injected?: LandingHost,
-  createDeps: HostPrCreateDeps = {},
+  deps: HostPrDeps = {},
 ): Promise<number> {
   // ── Usage is decided FIRST — before any routing, host build, or network. ──
   const verb = args[0] as Verb | undefined;
@@ -128,14 +145,16 @@ export async function runHostPr(
     return usage(`unknown verb "${verb}" — expected one of: ${VERBS.join(', ')}`);
   }
 
+  // `preflight` is a REPO-level probe — it takes no --branch (it reads required
+  // checks against the DEFAULT branch). Every other verb needs one.
   const branch = flag(args, '--branch');
-  if (branch === undefined || branch.length === 0) {
+  if (verb !== 'preflight' && (branch === undefined || branch.length === 0)) {
     return usage('--branch <branch> is required');
   }
 
   // `create`'s own required flags are decided here, before any host build or
   // network — same "usage first" discipline. `--method` is landing-only and is
-  // neither read nor validated for `create`.
+  // neither read nor validated for `create` or `preflight`.
   let title: string | undefined;
   let body: string | undefined;
   let base = 'main';
@@ -154,7 +173,7 @@ export async function runHostPr(
   }
 
   let method: MergeMethod = DEFAULT_MERGE_METHOD;
-  if (verb !== 'create') {
+  if (verb === 'arm' || verb === 'merge' || verb === 'status') {
     const rawMethod = flag(args, '--method');
     if (rawMethod !== undefined && !MERGE_METHODS.includes(rawMethod as MergeMethod)) {
       // Never silently downgrade to the default: a caller who asked for a merge
@@ -177,15 +196,22 @@ export async function runHostPr(
     return notImplemented(verb, info.host, branch);
   }
 
+  // ── preflight: the ADR-0023-amendment posture probe (LandingPosture seam). ──
+  // NB: the `injected` LandingHost is the LANDING seam (arm/merge/status); the
+  // posture reader is a different capability set, injected via `deps.posture`.
+  if (verb === 'preflight') {
+    return runPreflight(info, remoteUrl, deps);
+  }
+
   // ── create: the ADR-0019 find-before-create seam (HttpProbe/Creds). ──
   if (verb === 'create') {
-    return runCreate(info, branch, title as string, body as string, base, createDeps);
+    return runCreate(info, branch as string, title as string, body as string, base, deps);
   }
 
   // ── arm | merge | status: build the LandingHost adapter + run the verb. ──
   try {
     const host: LandingHost = injected ?? (await createGitHubApiFromEnv({ remoteUrl }));
-    return await dispatch(verb, host, branch, method, info.host);
+    return await dispatch(verb, host, branch as string, method, info.host);
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
     printJson({
@@ -216,7 +242,7 @@ async function runCreate(
   title: string,
   body: string,
   base: string,
-  deps: HostPrCreateDeps,
+  deps: HostPrDeps,
 ): Promise<number> {
   const env = deps.env ?? process.env;
   const token = env.GITHUB_TOKEN;
@@ -277,6 +303,35 @@ async function runCreate(
   }
 }
 
+/**
+ * The `preflight` verb — the code-host posture probe (ADR-0023 amendment). It is
+ * store-BLIND: no `--config`, no store, no `--branch`. It builds a posture reader
+ * from `$GITHUB_TOKEN` (the same construction-time token preflight as
+ * arm/merge/status), then grades the three code-host checks via `preflightHost`.
+ * Reports on every store kind identically — landing is always on the code host.
+ *
+ * Exit 0 = every check passed / advisory / unknown (a probe answer, not a block);
+ * exit 1 = a check `fail`ed (allow-auto-merge OFF with required checks present, or
+ * the token cannot merge PRs), or the host build/probe threw.
+ */
+async function runPreflight(info: HostInfo, remoteUrl: string, deps: HostPrDeps): Promise<number> {
+  try {
+    const posture: LandingPosture = deps.posture ?? (await createGitHubApiFromEnv({ remoteUrl, env: deps.env }));
+    const report = await preflightHost(info.host, posture);
+    printJson({ ok: report.ok, verb: 'preflight', host: report.host, checks: report.checks });
+    return report.ok ? 0 : 1;
+  } catch (err) {
+    process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
+    printJson({
+      ok: false,
+      verb: 'preflight',
+      host: info.host,
+      error: (err as Error).message ?? String(err),
+    });
+    return 1;
+  }
+}
+
 async function dispatch(
   verb: Verb,
   host: LandingHost,
@@ -304,10 +359,11 @@ async function dispatch(
 }
 
 /** The typed adapter-not-implemented exit — a distinct, machine-readable answer. */
-function notImplemented(verb: Verb, host: Host, branch: string): number {
+function notImplemented(verb: Verb, host: Host, branch: string | undefined): number {
   const err = new LandingNotImplementedError(host);
   process.stderr.write(`error: ${err.message}\n`);
-  printJson({ ok: false, code: err.code, verb, host, branch, error: err.message });
+  // `preflight` carries no branch — omit the key rather than emit `branch: null`.
+  printJson({ ok: false, code: err.code, verb, host, ...(branch !== undefined ? { branch } : {}), error: err.message });
   return 1;
 }
 

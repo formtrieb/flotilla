@@ -125,31 +125,45 @@ function statusByName(checks: { name: string; status: string }[]): Record<string
   return Object.fromEntries(checks.map((c) => [c.name, c.status]));
 }
 
-describe('preflightStore (FOR-12) — probes preconditions through the API seam', () => {
-  it('github: pr-merge passes when the token can merge; integration + catalog are n/a', async () => {
+describe('preflightStore (FOR-12) — probes TRACKER preconditions through the API seam', () => {
+  // Single-owner move (ADR-0023 amendment): the store-preflight reports ONLY the
+  // two tracker facts. The three code-host checks (pr-merge-token,
+  // allow-auto-merge, required-checks) left it entirely for `host-pr preflight` —
+  // asserted absent below and covered for real in host-pr(-cli).spec.ts.
+  const CODE_HOST_CHECKS = ['pr-merge-token', 'allow-auto-merge', 'required-checks'];
+
+  it('github: the tracker checks are both n/a (GitHub is its own host, claims are labels)', async () => {
     const store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
     const report = await preflightStore({ store: { kind: 'github' } }, store);
 
     expect(report.ok).toBe(true);
     expect(report.storeKind).toBe('github');
     const by = statusByName(report.checks);
-    expect(by['pr-merge-token']).toBe('pass');
     expect(by['tracker-host-integration']).toBe('not-applicable'); // GitHub is its own host
     expect(by['state-catalog']).toBe('not-applicable'); // GitHub claims are labels
   });
 
-  it('github: FAILS loudly when the ambient token cannot merge PRs (read-only token)', async () => {
-    const api = new InMemoryGitHubApi();
-    api.setCanMergePullRequests(false);
-    const report = await preflightStore({ store: { kind: 'github' } }, new GitHubIssuesStore({ api }));
-
-    expect(report.ok).toBe(false);
-    const merge = report.checks.find((c) => c.name === 'pr-merge-token');
-    expect(merge?.status).toBe('fail');
-    expect(merge?.detail).toMatch(/write/i);
+  it('the CheckName union no longer carries the code-host checks — they moved to host-pr preflight (ADR-0023 amendment)', async () => {
+    for (const config of [
+      { store: { kind: 'github' as const } },
+      { store: { kind: 'linear' as const, team: 'EX' } },
+      { store: { kind: 'markdown' as const, repoRoot: '/tmp/x', slug: '2026-07-20-x' } },
+    ]) {
+      const store =
+        config.store.kind === 'linear'
+          ? new LinearIssuesStore({ api: new InMemoryLinearApi() })
+          : config.store.kind === 'github'
+            ? new GitHubIssuesStore({ api: new InMemoryGitHubApi() })
+            : ({} as IssueStore);
+      const report = await preflightStore(config, store);
+      const names = report.checks.map((c) => c.name);
+      // Only tracker facts remain — no code-host check appears on ANY store kind.
+      expect(names.every((n) => n === 'tracker-host-integration' || n === 'state-catalog')).toBe(true);
+      expect(names.some((n) => CODE_HOST_CHECKS.includes(n))).toBe(false);
+    }
   });
 
-  it('linear: every precondition passes on a healthy workspace (integration + full catalog)', async () => {
+  it('linear: every tracker precondition passes on a healthy workspace (integration + full catalog)', async () => {
     const store = new LinearIssuesStore({ api: new InMemoryLinearApi() });
     const report = await preflightStore({ store: { kind: 'linear', team: 'EX' } }, store);
 
@@ -157,7 +171,6 @@ describe('preflightStore (FOR-12) — probes preconditions through the API seam'
     const by = statusByName(report.checks);
     expect(by['tracker-host-integration']).toBe('pass');
     expect(by['state-catalog']).toBe('pass');
-    expect(by['pr-merge-token']).toBe('not-applicable'); // PRs merge on GitHub, not Linear
   });
 
   it('AC3 — fresh workspace: the state map names a state the team lacks (missing In Review) → FAILS loudly', async () => {
@@ -170,95 +183,6 @@ describe('preflightStore (FOR-12) — probes preconditions through the API seam'
     const catalog = report.checks.find((c) => c.name === 'state-catalog');
     expect(catalog?.status).toBe('fail');
     expect(catalog?.detail).toContain('In Review'); // names the EXACT missing state, loudly
-  });
-
-  // ── ADR-0023 landing preconditions (FOR-26) ──────────────────────────
-
-  it('github: allow-auto-merge PASSES when the repo setting is on', async () => {
-    const store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
-    const report = await preflightStore({ store: { kind: 'github' } }, store);
-
-    expect(report.ok).toBe(true);
-    const check = report.checks.find((c) => c.name === 'allow-auto-merge');
-    expect(check?.status).toBe('pass');
-  });
-
-  it('github: allow-auto-merge FAILS with a fix instruction when the setting is off (the GitHub default)', async () => {
-    const api = new InMemoryGitHubApi();
-    api.setAllowsAutoMerge(false);
-    const report = await preflightStore({ store: { kind: 'github' } }, new GitHubIssuesStore({ api }));
-
-    expect(report.ok).toBe(false); // a HARD functional precondition (ADR-0023)
-    const check = report.checks.find((c) => c.name === 'allow-auto-merge');
-    expect(check?.status).toBe('fail');
-    // The instruction must be actionable, not just a diagnosis.
-    expect(check?.detail).toMatch(/Settings/i);
-    expect(check?.detail).toMatch(/auto-merge/i);
-  });
-
-  it('github: required-checks is ADVISORY when present — reported, never a FAIL', async () => {
-    const api = new InMemoryGitHubApi();
-    api.setRequiredChecks({ state: 'present', contexts: ['ci/test', 'ci/lint'], detail: 'two checks' });
-    const report = await preflightStore({ store: { kind: 'github' } }, new GitHubIssuesStore({ api }));
-
-    const check = report.checks.find((c) => c.name === 'required-checks');
-    expect(check?.status).toBe('advisory');
-    expect(check?.detail).toContain('ci/test');
-    expect(report.ok).toBe(true);
-  });
-
-  it('github: a no-CI repo KEEPS --auto — required-checks absent is advisory + states the consequence', async () => {
-    const api = new InMemoryGitHubApi();
-    api.setRequiredChecks({ state: 'absent', contexts: [], detail: 'no required checks' });
-    const report = await preflightStore({ store: { kind: 'github' } }, new GitHubIssuesStore({ api }));
-
-    // ADR-0023: visibility over gatekeeping. This must NOT block.
-    expect(report.ok).toBe(true);
-    const check = report.checks.find((c) => c.name === 'required-checks');
-    expect(check?.status).toBe('advisory');
-    // The confirm has to be able to say "confirming means immediate merge".
-    expect(check?.detail).toMatch(/immediate|immediately/i);
-  });
-
-  it('github: an unreadable required-checks probe (needs admin) is advisory unknown, never a FAIL', async () => {
-    const api = new InMemoryGitHubApi();
-    api.setRequiredChecks({ state: 'unknown', contexts: [], detail: 'HTTP 403 — admin rights required' });
-    const report = await preflightStore({ store: { kind: 'github' } }, new GitHubIssuesStore({ api }));
-
-    expect(report.ok).toBe(true);
-    expect(report.checks.find((c) => c.name === 'required-checks')?.status).toBe('advisory');
-  });
-
-  it('an advisory check NEVER drags ok to false, even alongside a real failure', async () => {
-    const api = new InMemoryGitHubApi();
-    api.setCanMergePullRequests(false); // one genuine FAIL
-    api.setRequiredChecks({ state: 'absent', contexts: [], detail: 'none' });
-    const report = await preflightStore({ store: { kind: 'github' } }, new GitHubIssuesStore({ api }));
-
-    expect(report.ok).toBe(false); // …caused by pr-merge-token, not by the advisory
-    expect(report.checks.find((c) => c.name === 'pr-merge-token')?.status).toBe('fail');
-    expect(report.checks.find((c) => c.name === 'required-checks')?.status).toBe('advisory');
-  });
-
-  it('linear: both landing probes are not-applicable (PRs land on GitHub, ADR-0020)', async () => {
-    const store = new LinearIssuesStore({ api: new InMemoryLinearApi() });
-    const report = await preflightStore({ store: { kind: 'linear', team: 'EX' } }, store);
-
-    expect(report.ok).toBe(true);
-    const by = statusByName(report.checks);
-    expect(by['allow-auto-merge']).toBe('not-applicable');
-    expect(by['required-checks']).toBe('not-applicable');
-  });
-
-  it('markdown: both landing probes are not-applicable', async () => {
-    const report = await preflightStore(
-      { store: { kind: 'markdown', repoRoot: '/tmp/x', slug: '2026-07-16-x' } },
-      {} as IssueStore,
-    );
-    const by = statusByName(report.checks);
-    expect(by['allow-auto-merge']).toBe('not-applicable');
-    expect(by['required-checks']).toBe('not-applicable');
-    expect(report.ok).toBe(true);
   });
 
   it('linear: a missing GitHub integration with NO doneState fallback → FAILS loudly', async () => {

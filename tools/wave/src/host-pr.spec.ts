@@ -19,6 +19,7 @@ import {
   decideArmAction,
   armPullRequest,
   mergePullRequestNow,
+  preflightHost,
   AutoMergeUnavailableError,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
@@ -27,10 +28,13 @@ import {
   type HttpRequest,
   type HttpResponse,
   type LandingHost,
+  type LandingPosture,
   type MergeMethod,
   type MergeResult,
   type PrLandingStatus,
   type PrMergeability,
+  type AutoMergeSetting,
+  type RequiredChecksInfo,
 } from './host-pr';
 
 // ─── HTTP seam fixture ───────────────────────────────────────────────────────
@@ -825,5 +829,146 @@ describe('LandingNotImplementedError', () => {
     // nonsense (and reads as broken English).
     expect(err.message).toMatch(/remote/i);
     expect(err.message).not.toMatch(/A unknown/);
+  });
+});
+
+// ─── preflightHost (ADR-0023 amendment — code-host posture probe) ─────────────
+//
+// The pure GRADING matrix, driven by a fake LandingPosture (no network, no
+// GitHub adapter). The CLI wiring (detect-host routing, $GITHUB_TOKEN build,
+// store-blindness) is host-pr-cli.spec.ts's job; this covers what each posture
+// grades to.
+
+const REQUIRED_PRESENT: RequiredChecksInfo = {
+  state: 'present',
+  contexts: ['ci/test', 'ci/lint'],
+  detail: 'Branch requires 2 checks.',
+};
+const REQUIRED_ABSENT: RequiredChecksInfo = {
+  state: 'absent',
+  contexts: [],
+  detail: 'Branch has no required status checks.',
+};
+const REQUIRED_UNKNOWN: RequiredChecksInfo = {
+  state: 'unknown',
+  contexts: [],
+  detail: 'Could not read branch protection — needs admin (HTTP 403). Advisory only.',
+};
+
+function fakePosture(opts: {
+  canMerge?: boolean;
+  autoMerge?: AutoMergeSetting;
+  required?: RequiredChecksInfo;
+  onGetRequiredChecks?: (branch?: string) => void;
+}): LandingPosture {
+  return {
+    async canMergePullRequests() {
+      return opts.canMerge ?? true;
+    },
+    async getAutoMergeSetting() {
+      return opts.autoMerge ?? 'on';
+    },
+    async getRequiredChecks(branch?: string) {
+      opts.onGetRequiredChecks?.(branch);
+      return opts.required ?? REQUIRED_ABSENT;
+    },
+  };
+}
+
+const byName = (checks: { name: string; status: string; detail: string }[]) =>
+  Object.fromEntries(checks.map((c) => [c.name, c]));
+
+describe('preflightHost (ADR-0023 amendment posture grading)', () => {
+  it('reports exactly the three code-host checks and echoes the host', async () => {
+    const report = await preflightHost('github', fakePosture({ autoMerge: 'on', required: REQUIRED_ABSENT }));
+    expect(report.host).toBe('github');
+    expect(report.checks.map((c) => c.name)).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+  });
+
+  it('reads required-checks against the DEFAULT branch (no branch argument)', async () => {
+    let seen: string | undefined | 'UNCALLED' = 'UNCALLED';
+    await preflightHost('github', fakePosture({ onGetRequiredChecks: (b) => (seen = b) }));
+    expect(seen).toBeUndefined(); // called with no arg → the default branch
+  });
+
+  describe('pr-merge-token', () => {
+    it('pass when the token can merge', async () => {
+      const report = await preflightHost('github', fakePosture({ canMerge: true }));
+      expect(byName(report.checks)['pr-merge-token'].status).toBe('pass');
+    });
+
+    it('FAIL (ok:false) with a write-access instruction when it cannot', async () => {
+      const report = await preflightHost('github', fakePosture({ canMerge: false }));
+      const c = byName(report.checks)['pr-merge-token'];
+      expect(c.status).toBe('fail');
+      expect(c.detail).toMatch(/write/i);
+      expect(report.ok).toBe(false);
+    });
+  });
+
+  describe('allow-auto-merge', () => {
+    it('ON → pass', async () => {
+      const report = await preflightHost('github', fakePosture({ autoMerge: 'on', required: REQUIRED_PRESENT }));
+      expect(byName(report.checks)['allow-auto-merge'].status).toBe('pass');
+      expect(report.ok).toBe(true);
+    });
+
+    it('a visible OFF with required checks present → FAIL (ok:false) + the fix instruction', async () => {
+      const report = await preflightHost('github', fakePosture({ autoMerge: 'off', required: REQUIRED_PRESENT }));
+      const c = byName(report.checks)['allow-auto-merge'];
+      expect(c.status).toBe('fail');
+      expect(c.detail).toMatch(/Settings/);
+      expect(c.detail).toMatch(/auto-merge/i);
+      expect(report.ok).toBe(false); // structurally impossible to arm those rows
+    });
+
+    it('a visible OFF with NO required checks → advisory (a clean PR direct-merges today), never blocks', async () => {
+      const report = await preflightHost('github', fakePosture({ autoMerge: 'off', required: REQUIRED_ABSENT }));
+      const c = byName(report.checks)['allow-auto-merge'];
+      expect(c.status).toBe('advisory');
+      expect(report.ok).toBe(true);
+    });
+
+    it('UNKNOWN (the token cannot see it) → unknown, never blocks, detail carries the manual-verify/permission fix and demands no admin', async () => {
+      const report = await preflightHost('github', fakePosture({ autoMerge: 'unknown', required: REQUIRED_PRESENT }));
+      const c = byName(report.checks)['allow-auto-merge'];
+      expect(c.status).toBe('unknown');
+      expect(report.ok).toBe(true); // absence of evidence is not a finding
+      expect(c.detail).toMatch(/maintain\/admin|cannot see/i);
+      expect(c.detail).toMatch(/no admin|needs no admin/i);
+      expect(c.detail).toMatch(/Settings|verify by hand/i);
+    });
+  });
+
+  describe('required-checks', () => {
+    it('present → advisory, names the contexts, and says --auto will ARM', async () => {
+      const report = await preflightHost('github', fakePosture({ required: REQUIRED_PRESENT }));
+      const c = byName(report.checks)['required-checks'];
+      expect(c.status).toBe('advisory');
+      expect(c.detail).toContain('ci/test');
+      expect(c.detail).toMatch(/ARM/);
+    });
+
+    it('absent → advisory, states that confirming means an IMMEDIATE merge', async () => {
+      const report = await preflightHost('github', fakePosture({ required: REQUIRED_ABSENT }));
+      const c = byName(report.checks)['required-checks'];
+      expect(c.status).toBe('advisory');
+      expect(c.detail).toMatch(/immediate/i);
+    });
+
+    it('unknown → unknown (report-only), never blocks', async () => {
+      const report = await preflightHost('github', fakePosture({ required: REQUIRED_UNKNOWN }));
+      expect(byName(report.checks)['required-checks'].status).toBe('unknown');
+      expect(report.ok).toBe(true);
+    });
+  });
+
+  it('unknown + advisory NEVER drag ok to false — only a fail blocks', async () => {
+    const report = await preflightHost(
+      'github',
+      fakePosture({ canMerge: true, autoMerge: 'unknown', required: REQUIRED_UNKNOWN }),
+    );
+    expect(report.ok).toBe(true);
+    expect(report.checks.map((c) => c.status).sort()).toEqual(['pass', 'unknown', 'unknown']);
   });
 });

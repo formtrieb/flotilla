@@ -20,6 +20,7 @@ import {
   type MergeMethod,
   type MergeResult,
   type PrLandingStatus,
+  type AutoMergeSetting,
 } from '../../host-pr';
 import type { GitHubIssuesStore } from './github-issues-store';
 import type { IssueStoreConformanceHooks, IssueStore } from '../issue-store';
@@ -167,7 +168,7 @@ export class InMemoryGitHubApi implements GitHubApi {
   private readonly prsByBranch = new Map<string, PrLandingStatus>();
   private readonly armed = new Map<number, MergeMethod>();
   private readonly merges: { prNumber: number; method: MergeMethod }[] = [];
-  private allowAutoMerge = true;
+  private autoMergeSetting: AutoMergeSetting = 'on';
   private requiredChecks: RequiredChecksInfo = {
     state: 'present',
     contexts: ['ci/test'],
@@ -179,9 +180,13 @@ export class InMemoryGitHubApi implements GitHubApi {
     this.prsByBranch.set(branch, status);
   }
 
-  /** Test affordance: flip the repo's "Allow auto-merge" setting. */
-  setAllowsAutoMerge(allow: boolean): void {
-    this.allowAutoMerge = allow;
+  /**
+   * Test affordance: set the repo's "Allow auto-merge" posture as the token would
+   * observe it (`on` / `off` / `unknown` — ADR-0023 amendment). Drives the
+   * host-preflight grading against the fake exactly as against GitHub.
+   */
+  setAutoMergeSetting(setting: AutoMergeSetting): void {
+    this.autoMergeSetting = setting;
   }
 
   /** Test affordance: set what the required-checks probe reports. */
@@ -205,8 +210,9 @@ export class InMemoryGitHubApi implements GitHubApi {
 
   async enableAutoMerge(prNumber: number, method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<void> {
     // Mirrors the real host's two typed refusals so a CLI-level spec can drive
-    // the arm-vs-merge routing against the fake exactly as against GitHub.
-    if (!this.allowAutoMerge) {
+    // the arm-vs-merge routing against the fake exactly as against GitHub. Only a
+    // VISIBLE off refuses; `unknown` (the token cannot see the setting) does not.
+    if (this.autoMergeSetting === 'off') {
       throw new AutoMergeUnavailableError('not-allowed', 'Auto merge is not allowed for this repository');
     }
     this.armed.set(prNumber, method);
@@ -217,8 +223,8 @@ export class InMemoryGitHubApi implements GitHubApi {
     return { merged: true, sha: `sha-${prNumber}` };
   }
 
-  async allowsAutoMerge(): Promise<boolean> {
-    return this.allowAutoMerge;
+  async getAutoMergeSetting(): Promise<AutoMergeSetting> {
+    return this.autoMergeSetting;
   }
 
   async getRequiredChecks(): Promise<RequiredChecksInfo> {
