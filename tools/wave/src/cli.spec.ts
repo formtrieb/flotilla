@@ -29,7 +29,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, mainAsync, runDorById } from './cli';
+import { main, mainAsync, runDorById, findRepoRoot } from './cli';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import type { CreateInput, IssueStore } from './adapters/issue-store';
 import type { IssueView } from './contract';
@@ -814,6 +814,66 @@ describe('merge-order subcommand — KNOWN_SUBCOMMANDS routing sanity', () => {
     main(['merge-order']);
     expect(stdoutBuf).not.toMatch(/^PASS/m);
     expect(stdoutBuf).not.toMatch(/^FAIL/m);
+  });
+});
+
+// FOR-48: a repo with NO `.scratch/` ancestor ANYWHERE (the real shape of
+// every GitHub/Linear-backed wave — `.scratch/` is a MarkdownFsStore-only
+// convention). Before the fix, findRepoRoot's cwd fallback unconditionally
+// printed a "no .scratch/ ancestor found" warning to stderr on every such
+// run. The fixture below is deliberately NOT nested under the shared `root`
+// (which has a `.scratch/` child directory) — it lives in its own bare temp
+// dir so no `.scratch/` ancestor exists at all.
+describe('merge-order subcommand — repo without a .scratch/ ancestor (FOR-48, no legacy warning)', () => {
+  let noScratchRoot: string;
+  let noScratchSpineFile: string;
+
+  beforeAll(() => {
+    noScratchRoot = mkdtempSync(join(tmpdir(), 'wave-cli-no-scratch-'));
+    noScratchSpineFile = join(noScratchRoot, 'github-wave.md');
+    writeFileSync(
+      noScratchSpineFile,
+      [
+        '# GitHub wave (no .scratch/ layout)',
+        '',
+        '**Status:** in-review',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| 7 | Add route handler | background | mechanical | universal | — | in-review | 1 | — |',
+        '',
+        '## Conflict-Map',
+        '',
+        'none',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+  });
+
+  afterAll(() => {
+    rmSync(noScratchRoot, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReturnValue('');
+  });
+
+  it('exits with code 0 for a spine with no .scratch/ ancestor anywhere', () => {
+    const code = main(['merge-order', noScratchSpineFile]);
+    expect(code).toBe(0);
+  });
+
+  it('prints NO legacy .scratch/ ancestor warning on stderr', () => {
+    main(['merge-order', noScratchSpineFile]);
+    expect(stderrBuf).not.toMatch(/no \.scratch\/ ancestor found/);
+    expect(stderrBuf).toBe('');
+  });
+
+  it('still resolves the correct consumer root (process.cwd(), silently) via findRepoRoot', () => {
+    expect(findRepoRoot(noScratchSpineFile)).toBe(process.cwd());
   });
 });
 
