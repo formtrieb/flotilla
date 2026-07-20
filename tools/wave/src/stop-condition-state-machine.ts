@@ -304,8 +304,9 @@ export function transition(
     case 'approved':
       switch (resolvedEvent) {
         case 'reviewer-approve':
-          // Loop-driver calls gh pr create and sets state to pr-created;
-          // if the driver emits this event before updating state, resolve it here.
+          // Loop-driver calls host-pr create (the engine verb) and sets state
+          // to pr-created; if the driver emits this event before updating
+          // state, resolve it here.
           return t('pr-created');
         case 'all-issues-done':
           return stop('wave-complete-pending-close', 'info');

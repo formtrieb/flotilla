@@ -143,10 +143,10 @@ export interface WorkerReport {
  * exists", when it can equally mean "the Worker forgot". FOR-19's Worker
  * opened PR #13 correctly and returned no `prUrl` — the Reviewer could not
  * verify the PR body (incl. the Convention 4 close phrase that decides whether
- * a Linear row can ever reach `done`), and the Coordinator ran `gh pr create`
- * against a branch that already had a PR. Only `gh`'s own refusal stopped the
- * duplicate. A field the protocol reads as fact must not be omissible on the
- * path where the fact is required.
+ * a Linear row can ever reach `done`), and the Coordinator ran `host-pr create`
+ * against a branch that already had a PR. Only find-before-create's own
+ * idempotency stopped the duplicate. A field the protocol reads as fact must
+ * not be omissible on the path where the fact is required.
  *
  * **Encoded with `anyOf`, deliberately.** `if`/`then` reads more directly, but
  * the documented structured-output schema subset covers `anyOf`/`allOf` and

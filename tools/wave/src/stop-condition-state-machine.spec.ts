@@ -503,7 +503,7 @@ describe('sample wave-run trace: planned → dispatched → report-in → review
     ).toEqual(t('approved'));
   });
 
-  it('approved + reviewer-approve (loop-driver calls gh pr create) → pr-created', () => {
+  it('approved + reviewer-approve (loop-driver calls host-pr create) → pr-created', () => {
     expect(transition('approved', 'reviewer-approve')).toEqual(t('pr-created'));
   });
 

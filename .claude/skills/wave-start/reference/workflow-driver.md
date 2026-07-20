@@ -186,6 +186,7 @@ ${issue.issueSpec}
    git diff --cached --name-only | xargs -I{} grep -l '^<<<<<<<\\|^>>>>>>>\\|^=======$' {} 2>/dev/null | head
    \`\`\`
 5. SECRET-SAFE: never echo any environment variable's VALUE — not even with fallback syntax like \${VAR:-no}. Check availability value-free only: \`[ -n "$GITHUB_TOKEN" ] && echo set\`. Tool output must never contain a secret.
+6. MENTION DISCIPLINE: the PR title and body must not contain ANY bare tracker id except the single close phrase (\`${issue.closePhrase}\`, Termination step 3 below) — reference ADR numbers or doc slugs instead.
 
 ## Verification gates (run the consumer's verify profile — from wave.config.json verify)
 Run the commands the VerifyGate selects for your changed files; report exact counts.
@@ -203,7 +204,7 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 ${issue.closePhrase}"
    # exit 0 → stdout is one JSON object; its .url (outcome: created | reused) is your prUrl.
    \`\`\`
-   The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline): do not reference any other issue id anywhere. Capture the printed \`.url\` as your prUrl.
+   The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline, policy clause 6): do not reference any other issue id anywhere. Capture the printed \`.url\` as your prUrl.
 
 ## Report — emit as your FINAL message, matching the WorkerReport schema:
 outcome, issue, branch, worktree, commitShas, prUrl, filesChanged{new,modified,renamed},
