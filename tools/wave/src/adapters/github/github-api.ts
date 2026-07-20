@@ -52,14 +52,27 @@ export interface GhIssue {
 }
 
 /**
- * The merge-state of an issue's CLOSING pull request (ADR-0005). `merged` = the
- * issue was closed by a merged PR (the wave's done signal); `closed-unmerged` =
- * closed without a merge; `open` = not closed. The real impl resolves this via
- * the GitHub `closedByPullRequestsReferences`/timeline; the fake holds it
- * explicitly (test affordance).
+ * The merge-state of an issue's CLOSING pull request (ADR-0005). Evidence-shaped,
+ * mirroring {@link ClosingState} — each value is what the probe actually FOUND,
+ * never inferred from an absence:
+ *
+ * - `open` — not closed.
+ * - `merged` — the issue was closed by a merged PR (the wave's done signal).
+ * - `closed-unmerged` — a closing PR was FOUND and did NOT merge: positive
+ *   evidence of a genuine rejection (a `closedByPullRequestsReferences` node
+ *   exists, none merged).
+ * - `closed-unknown` — the issue is closed but NO closing-PR reference was found
+ *   either way (closed by hand, as a duplicate, via a foreign-id mention, or with
+ *   the tracker↔host integration never attaching a PR). NOT a rejection — callers
+ *   MUST NOT treat it as one (W2-F1c). The absence-of-evidence case the probe
+ *   used to collapse into `closed-unmerged`, wrongly flagging legitimately-
+ *   finished rows as rejected PRs.
+ *
+ * The real impl resolves this via the GitHub `closedByPullRequestsReferences`/
+ * timeline; the fake holds it explicitly (test affordance).
  */
 export interface ClosingPrState {
-  state: 'open' | 'merged' | 'closed-unmerged';
+  state: 'open' | 'merged' | 'closed-unmerged' | 'closed-unknown';
   prUrl?: string;
 }
 
@@ -120,10 +133,13 @@ export interface GitHubApi extends LandingHost {
   nativeClose(number: number, reason?: GhStateReason): Promise<void>;
   /**
    * Resolve how an issue was closed: open / closed-by-merged-PR (with url) /
-   * closed-unmerged. The store's {@link IssueStore.readClosing} probe (ADR-0005).
-   * Throws on an unknown number. P8 real-impl: GraphQL
-   * `closedByPullRequestsReferences(includeClosedPrs:true)` + the PR `merged`
-   * flag; the in-memory fake holds an explicit closing-PR record.
+   * closed-unmerged (a closing PR was FOUND, none merged) / closed-unknown (closed
+   * with NO closing-PR reference either way — never a rejection, W2-F1c). The
+   * store's {@link IssueStore.readClosing} probe (ADR-0005). Throws on an unknown
+   * number. P8 real-impl: GraphQL `closedByPullRequestsReferences(includeClosedPrs:
+   * true)` + the PR `merged` flag — an empty node set on a closed issue is
+   * `closed-unknown`; the in-memory fake holds an explicit closing-PR record whose
+   * absence is likewise `closed-unknown`.
    */
   getClosingState(number: number): Promise<ClosingPrState>;
   /**

@@ -290,4 +290,27 @@ export const linearConformanceHooks: IssueStoreConformanceHooks = {
     const api = (store as LinearIssuesStore).api as InMemoryLinearApi;
     api.simulateMergedPrClose(id, 'https://github.com/x/y/pull/1');
   },
+  async simulateClosedMergedPr(
+    store: IssueStore,
+    id: string,
+    prUrl: string,
+  ): Promise<void> {
+    const api = (store as LinearIssuesStore).api as InMemoryLinearApi;
+    api.simulateMergedPrClose(id, prUrl);
+  },
+  async simulateClosedUnmergedPr(
+    store: IssueStore,
+    id: string,
+  ): Promise<'closed-unmerged'> {
+    // Linear's GitHub integration leaves a non-merged PR attachment → the store
+    // CAN prove the rejection → closed-unmerged.
+    const api = (store as LinearIssuesStore).api as InMemoryLinearApi;
+    api.simulateUnmergedClose(id);
+    return 'closed-unmerged';
+  },
+  async simulateClosedNoEvidence(store: IssueStore, id: string): Promise<void> {
+    // A completed state with NO attachment → no PR evidence → closed-unknown.
+    const api = (store as LinearIssuesStore).api as InMemoryLinearApi;
+    api.simulateCloseWithoutPrEvidence(id);
+  },
 };

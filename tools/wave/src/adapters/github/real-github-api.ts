@@ -246,6 +246,12 @@ export class RealGitHubApi implements GitHubApi {
     if (issue.state === 'OPEN') return { state: 'open' };
     const merged = issue.nodes.find((n) => n.merged);
     if (merged) return merged.url ? { state: 'merged', prUrl: merged.url } : { state: 'merged' };
+    // Closed, no merged PR. Distinguish PROVEN rejection from absence of evidence
+    // (W2-F1c): a closing-PR reference that did not merge is `closed-unmerged`; a
+    // closed issue with NO reference at all (closed by hand, as a duplicate, via a
+    // foreign-id mention, or on a repo whose PR was never linked) is
+    // `closed-unknown` — never a rejection the probe cannot prove.
+    if (issue.nodes.length === 0) return { state: 'closed-unknown' };
     return { state: 'closed-unmerged' };
   }
 

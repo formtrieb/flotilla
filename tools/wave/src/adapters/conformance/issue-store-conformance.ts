@@ -609,5 +609,61 @@ export function runIssueStoreConformance(
         expect(Array.isArray(v.files)).toBe(true);
       }
     });
+
+    // ── readClosing (the closing probe, ADR-0005 / W2-F1c) ────────────────
+    //
+    // The four ClosingState outcomes are EVIDENCE claims, not verdicts. Before
+    // this block the shared suite never exercised readClosing, so the union
+    // FOR-23 widened was a contract only one adapter (Linear) demonstrably
+    // honoured — GitHub and MarkdownFs could collapse an evidence-less close into
+    // `closed-unmerged` (the exact W2-F1c bug) and nothing here caught it. These
+    // cases force every store to draw the line, and DELIBERATELY diverge per
+    // adapter on the rejection scenario (no longer 0-diff): a store that can
+    // record a rejected PR reports `closed-unmerged`; one that structurally
+    // cannot reports `closed-unknown` — never a rejection it cannot prove. The
+    // per-store drivers live on the adapter's conformance hooks (the same stance
+    // as simulateNativeClose — the suite asserts behaviour, never a mechanism).
+    it('readClosing reads "open" for a still-open issue', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+      expect((await store.readClosing(id)).state).toBe('open');
+    });
+
+    it('readClosing reads "merged" (with prUrl) for a merged-PR close', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+      await store.transition(id, 'in-review');
+      await h.hooks.simulateClosedMergedPr(store, id, 'https://example/pr/merged');
+      const closing = await store.readClosing(id);
+      expect(closing.state).toBe('merged');
+      expect(closing.prUrl).toBe('https://example/pr/merged');
+    });
+
+    it('readClosing distinguishes a PROVEN rejection (closed-unmerged) from a store that cannot prove one (closed-unknown)', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+      await store.transition(id, 'in-review');
+      // The hook drives the "a linked PR was found and did NOT merge" scenario AND
+      // declares the honest state THIS store reports for it — closed-unmerged where
+      // the rejection can be recorded (GitHub, Linear), closed-unknown where it
+      // structurally cannot (MarkdownFs). Either is a legitimate ClosingState; the
+      // one thing forbidden is a store inventing a rejection it never saw (W2-F1c).
+      const expected = await h.hooks.simulateClosedUnmergedPr(store, id);
+      expect(['closed-unmerged', 'closed-unknown']).toContain(expected);
+      expect((await store.readClosing(id)).state).toBe(expected);
+    });
+
+    it('readClosing reads "closed-unknown" for a close with NO PR evidence — never a rejection it cannot prove', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+      await store.transition(id, 'in-review');
+      await h.hooks.simulateClosedNoEvidence(store, id);
+      expect((await store.readClosing(id)).state).toBe('closed-unknown');
+    });
+
+    it('readClosing throws on an unknown id', async () => {
+      const { store } = await fresh();
+      await expect(store.readClosing('definitely#99')).rejects.toThrow();
+    });
   });
 }

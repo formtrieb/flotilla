@@ -211,6 +211,8 @@ Convention 4 governs the phrase that closes an issue **on purpose**. Nothing gov
 
 The sanctioned alternative for docs/meta PRs that legitimately discuss other work — an ADR write-up, a retro, a wave-shared change spanning multiple rows — is to reference the **ADR number or spec/doc slug** (`ADR-0024`, `2026-07-19-hardening-w6`), never the bare tracker id. An ADR/spec identifier names the artifact without being integration-linked.
 
+When this footgun *does* fire, the detection side is the closing probe: an issue closed by a stray mention leaves **no closing-PR evidence**, so `issue-store read-closing` reports it `closed-unknown` — the fourth outcome, an "evidence claim, not a verdict" (ADR-0020). The done-reconcile must **report** such a row, never auto-flag it as a rejection: `closed-unmerged` is reserved for a PR that was found and did not merge, and a mention-closed row is not that. Prevention (this convention) and honest detection (`closed-unknown`) are the two halves of the same W2-F1c defect.
+
 Two live occurrences are the evidence this is a real footgun, not a hypothetical:
 
 - **w2 (2026-07-16):** `FOR-13` resolved to `Done` mid-session with the trigger unconfirmed at the time — PR #9's title/body named "FOR-13" though FOR-13 was not the row that PR landed (docs/retros/2026-07-16-hardening-w2.md).
