@@ -1,13 +1,25 @@
 /**
  * skill-schema-drift.spec.ts — pins the inlined agent-boundary schema literals
- * in .claude/skills/wave-shared/SKILL.md to the exported engine consts.
+ * in .claude/skills/wave-shared/SKILL.md to the exported engine consts, AND
+ * guards the boundary-suitability of the separate, anyOf-free copy inlined in
+ * .claude/skills/wave-start/reference/workflow-driver.md.
  *
- * The Workflow driver pastes the SKILL.md `const …_SCHEMA = {…}` literals into
+ * The Workflow driver pastes a `const …_SCHEMA = {…}` literal into
  * `agent({ schema })` — a skill cannot `import` a TS const. Those literals are
  * hand-maintained COPIES of WORKER_REPORT_JSON_SCHEMA / REVIEWER_VERDICT_JSON_SCHEMA;
  * nothing else asserts the copies still equal the source. This spec extracts each
  * inlined literal by its stable fence comment, parses it, and deep-equals it to
  * the imported const. A drift (or a missing anchor) fails loud.
+ *
+ * A second, narrower concern lives alongside the drift pins (W5-F1, live: the
+ * first Workflow dispatch of 2026-07-19-hardening-w5 failed instantly — "input_schema
+ * does not support oneOf, allOf, or anyOf at the top level" — because the canonical
+ * wave-shared `WORKER_REPORT_SCHEMA` literal, which carries a top-level `anyOf`, was
+ * pasted verbatim into `agent({ schema })`). The driver's own copy in
+ * workflow-driver.md deliberately omits that `anyOf`; this spec asserts that copy
+ * stays free of any top-level `anyOf`/`oneOf`/`allOf`, with a negative control that
+ * proves the assertion actually fires when a combinator is (re-)introduced — see
+ * docs/retros/2026-07-19-hardening-w5.md (W5-F1) for the live incident.
  *
  * Pure test — zero production change. Ur precedent: issue #78 (wave-start/SKILL.md).
  *
@@ -28,6 +40,19 @@ const SKILL_MD = join(
   __dirname,
   '../../../.claude/skills/wave-shared/SKILL.md',
 );
+
+const WORKFLOW_DRIVER_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-start/reference/workflow-driver.md',
+);
+
+const DRIVER_WORKER_REPORT_ANCHOR =
+  '// ── inlined from wave-shared (copy of WORKER_REPORT_SCHEMA) ──';
+
+/** Top-level JSON-Schema combinator keys the agent tool's `input_schema`
+ * validator rejects outright when present at the schema root (nested is
+ * fine — only the top level is agent-tool-checked). */
+const TOP_LEVEL_COMBINATOR_KEYS = ['anyOf', 'oneOf', 'allOf'] as const;
 
 /**
  * Extract one inlined object literal from SKILL.md by its fence anchor and the
@@ -77,6 +102,31 @@ function extractInlinedSchema(md: string, anchor: string, openerVar: string): un
 /** Strip `as const` readonly typing to a plain JSON-shaped value for deep-equal. */
 function plain(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * Boundary-suitability guard (W5-F1): throws if `schema` carries a top-level
+ * `anyOf`/`oneOf`/`allOf` key — the exact shape the agent tool's `input_schema`
+ * validation rejects at the `agent({ schema })` boundary ("input_schema does
+ * not support oneOf, allOf, or anyOf at the top level"). A schema with no
+ * top-level combinator is a silent no-op; naming which key(s) offend keeps a
+ * failure legible instead of a bare "objects differ".
+ */
+function assertBoundarySafe(schema: unknown, label: string): void {
+  if (typeof schema !== 'object' || schema === null) {
+    throw new Error(`${label}: not an object`);
+  }
+  const offending = TOP_LEVEL_COMBINATOR_KEYS.filter(
+    (key) => key in (schema as Record<string, unknown>),
+  );
+  if (offending.length > 0) {
+    throw new Error(
+      `${label} carries a top-level ${offending.join('/')} — the agent tool's ` +
+        'input_schema validator rejects this at the agent({ schema }) boundary ' +
+        '(live: W5-F1, docs/retros/2026-07-19-hardening-w5.md). A schema pasted ' +
+        'into agent({ schema }) must not use anyOf/oneOf/allOf at the top level.',
+    );
+  }
 }
 
 describe('skill-schema-drift — wave-shared inlined literals pin the engine consts', () => {
@@ -144,5 +194,58 @@ describe('skill-schema-drift — wave-shared inlined literals pin the engine con
         'WORKER_REPORT_SCHEMA',
       ),
     ).toThrow(/extraction anchor missing/);
+  });
+});
+
+describe('skill-schema-drift — the driver-facing schema literal is boundary-safe (W5-F1)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  function extractDriverWorkerReportSchema(md: string): Record<string, unknown> {
+    return extractInlinedSchema(
+      md,
+      DRIVER_WORKER_REPORT_ANCHOR,
+      'WORKER_REPORT_SCHEMA',
+    ) as Record<string, unknown>;
+  }
+
+  it('the driver-facing WORKER_REPORT_SCHEMA literal (workflow-driver.md) carries no top-level anyOf/oneOf/allOf', () => {
+    const driverSchema = extractDriverWorkerReportSchema(driverMd);
+    expect(() =>
+      assertBoundarySafe(driverSchema, 'workflow-driver.md WORKER_REPORT_SCHEMA'),
+    ).not.toThrow();
+    // Belt-and-braces: the guard above is the load-bearing assertion, but a
+    // direct key check pins the exact shape without going through the helper.
+    for (const key of TOP_LEVEL_COMBINATOR_KEYS) {
+      expect(driverSchema).not.toHaveProperty(key);
+    }
+  });
+
+  it('negative control — assertBoundarySafe fails when the canonical (anyOf-bearing) literal is pasted in its place', () => {
+    // The exact live regression (W5-F1): the wave-shared canonical literal —
+    // which legitimately carries a top-level anyOf, per the drift-pin above —
+    // pasted verbatim into the driver slot. If this stopped throwing, that
+    // regression would again ship silently past this spec.
+    expect(() =>
+      assertBoundarySafe(
+        plain(WORKER_REPORT_JSON_SCHEMA),
+        'canonical WORKER_REPORT_JSON_SCHEMA pasted as the driver copy',
+      ),
+    ).toThrow(/top-level anyOf/);
+  });
+
+  it.each(TOP_LEVEL_COMBINATOR_KEYS)(
+    'negative control — assertBoundarySafe fails when a bare top-level %s is introduced onto the driver literal',
+    (key) => {
+      const regressed = { ...extractDriverWorkerReportSchema(driverMd), [key]: [] };
+      expect(() =>
+        assertBoundarySafe(regressed, `regressed driver schema (${key})`),
+      ).toThrow(new RegExp(key));
+    },
+  );
+
+  it('positive control — assertBoundarySafe does not throw on a combinator-free object', () => {
+    expect(() =>
+      assertBoundarySafe({ type: 'object', properties: {} }, 'clean schema'),
+    ).not.toThrow();
   });
 });

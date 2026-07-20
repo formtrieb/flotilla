@@ -4,6 +4,12 @@ The single dispatch mechanism (ADR-0016: no dual prose-vs-driver selector, no ex
 
 > **The CLI + the agent-tool schema are the source of truth for shapes.** The two inlined `*_SCHEMA` literals are **copies** of the exported consts in `tools/wave/src/worker-report-schema.ts` + `reviewer-verdict-schema.ts` — the Workflow script runs in a no-fs, no-import sandbox, so it cannot `import` them. The `skill-schema-drift` spec reads these literals from the **wave-shared** skill and deep-equals them against the exported engine consts — if they drift, that spec fails loud. **The canonical copies live in `wave-shared/SKILL.md`; keep these in sync with those, never hand-edit one copy in isolation.**
 
+## Why this copy's `WORKER_REPORT_SCHEMA` drops `anyOf` — the prUrl invariant is brief-enforced here, not schema-enforced
+
+`wave-shared`'s canonical `WORKER_REPORT_SCHEMA` literal carries a top-level `anyOf` (the `outcome: done`/`done-with-concerns` ⇒ `prUrl`-required invariant). The agent tool's `input_schema` validation **rejects a top-level `anyOf`/`oneOf`/`allOf` outright** — `input_schema does not support oneOf, allOf, or anyOf at the top level` — so the copy pasted into `agent({ schema })` below **omits it, deliberately**. This is not a drift from the canonical literal; it is the one shape difference the agent boundary forces (live-confirmed regression: **W5-F1**, `docs/retros/2026-07-19-hardening-w5.md` — the first Workflow dispatch of that wave failed instantly this way, 0 tokens, all 4 Workers, before a single agent ran, because the canonical `anyOf`-bearing literal had been pasted here verbatim).
+
+**The `prUrl`-on-`done`/`done-with-concerns` invariant still holds on this path — it is enforced by the Worker brief, not the schema.** `workerBrief()`'s Termination step 3 ("Capture the printed `.url` as your prUrl") and its Report section both state the requirement in prose; there is no structural rejection at the `agent({ schema })` boundary here for a `done` report that omits `prUrl` (unlike a hypothetical boundary-portable form of the canonical `anyOf`, which would reject it structurally). `tools/wave/src/skill-schema-drift.spec.ts` asserts this literal stays free of any top-level combinator, with a negative control proving that assertion actually fires — so the W5-F1 regression cannot silently ship again.
+
 ## Harness constraint that shapes the decomposition (read first)
 
 A Workflow `script` is plain JS with **no filesystem and no local-module import** — it cannot `import tools/wave/src/*` or read a file. Its `agent()` calls, however, are full subagents (bash, fs, all tools). So the driver splits in two:
@@ -47,6 +53,9 @@ export const meta = {
 }
 
 // ── inlined from wave-shared (copy of WORKER_REPORT_SCHEMA) ──
+// anyOf-free by design (agent tool's input_schema rejects a top-level anyOf/oneOf/allOf,
+// W5-F1) — the prUrl-on-done/done-with-concerns invariant is BRIEF-enforced below, not
+// schema-enforced. See "Why this copy drops anyOf" above; skill-schema-drift.spec.ts pins it.
 const WORKER_REPORT_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['outcome','issue','branch','commitShas','filesChanged','tests','lint','judgmentCalls','reviewerFocusItems'],
