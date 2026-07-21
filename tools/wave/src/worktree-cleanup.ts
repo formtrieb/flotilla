@@ -196,8 +196,20 @@
  * match (this is `gone`) and a DIFFERENT non-zero status for every other
  * failure mode (network error, auth failure, remote unreachable — all
  * `probe-failed`, carrying a machine-readable `reason`, NEVER treated as
- * `gone`). A `probe-failed` branch is left alone by rule (b) exactly like the
- * pre-existing "no evidence" refusal — skipped, never deleted.
+ * `gone`). A `probe-failed` branch is left alone by rule (b) — never deleted
+ * — but unlike the pre-existing "no evidence at all" refusal (silent, as
+ * before), it is NOT silent: `runBranchHygiene` records a
+ * {@link BranchHygieneSkip} (`reason: 'branch-probe-failed'`, plus the
+ * probe's own detail) onto {@link CleanupResult.branchHygieneSkipped} — the
+ * caller-visible surface, not just the ops-level `RemoteRefProbeResult` the
+ * seam itself returns — because an inconclusive probe is the one outcome a
+ * human reading the cleanup result cannot already infer from "the branch
+ * didn't move" (iter-2 coordinator resolution on top of the FOR-62 slice).
+ *
+ * A note on the non-throwing success branch itself: exit 0 is `present`
+ * UNCONDITIONALLY (never inferred from stdout length) — real
+ * `git ls-remote --exit-code` never exits 0 with empty stdout, a genuine
+ * no-match is always the structural exit-2 case above.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -291,6 +303,18 @@ export interface CleanupResult {
    * eligible.
    */
   branchesDeleted: string[];
+  /**
+   * `wave/*` branches local-branch hygiene left in place because their
+   * FOR-62 remote-ref probe FAILED (network/transport error) rather than
+   * authoritatively confirming presence or absence — additive surface for
+   * the "skipped with a machine-readable reason" AC (see
+   * {@link BranchHygieneSkip}). Distinct from `branchesDeleted` (nothing
+   * here was deleted) and from the ordinary "no merge evidence at all"
+   * refusal, which stays a silent no-op exactly as before FOR-62. Empty
+   * when hygiene is disabled (`skipBranchHygiene: true`) or nothing hit
+   * this case.
+   */
+  branchHygieneSkipped: BranchHygieneSkip[];
 }
 
 /**
@@ -622,6 +646,7 @@ export function executeCleanup(
   const removed: WorktreeEntry[] = [];
   const errors: Array<{ path: string; message: string }> = [];
   const branchesDeleted: string[] = [];
+  const branchHygieneSkipped: BranchHygieneSkip[] = [];
 
   for (const wt of plan.selected) {
     try {
@@ -632,9 +657,9 @@ export function executeCleanup(
       // `errors` classification. See `runBranchHygiene`'s doc comment for
       // the exact per-branch rules.
       if (branchHygiene) {
-        branchesDeleted.push(
-          ...runBranchHygiene(wt, branchHygiene, defaultBranch),
-        );
+        const hygieneResult = runBranchHygiene(wt, branchHygiene, defaultBranch);
+        branchesDeleted.push(...hygieneResult.deleted);
+        branchHygieneSkipped.push(...hygieneResult.skipped);
       }
     } catch (err) {
       errors.push({
@@ -644,7 +669,7 @@ export function executeCleanup(
     }
   }
 
-  return { removed, skipped: plan.skipped, errors, branchesDeleted };
+  return { removed, skipped: plan.skipped, errors, branchesDeleted, branchHygieneSkipped };
 }
 
 /**
@@ -674,14 +699,19 @@ export function executeCleanup(
  * already happened) — a branch still checked out in some OTHER live
  * worktree is never deleted.
  *
- * Returns the branch names actually deleted (0, 1, or 2 entries).
+ * Returns the branch names actually deleted (0, 1, or 2 entries) alongside
+ * any {@link BranchHygieneSkip} entries — today, only ever populated when
+ * rule (b)'s remote-ref probe itself FAILED (FOR-62 coordinator resolution):
+ * the ordinary "no merge evidence at all" refusal is NOT recorded here and
+ * remains a silent no-op, exactly as before FOR-62.
  */
 function runBranchHygiene(
   wt: WorktreeEntry,
   ops: BranchHygieneOps,
   defaultBranch: string,
-): string[] {
+): { deleted: string[]; skipped: BranchHygieneSkip[] } {
   const deleted: string[] = [];
+  const skipped: BranchHygieneSkip[] = [];
   const checkedOut = ops.listCheckedOutBranches();
 
   const throwaway = `worktree-${nodePath.basename(wt.path)}`;
@@ -695,16 +725,36 @@ function runBranchHygiene(
     dispatchBranch !== null &&
     dispatchBranch !== throwaway &&
     dispatchBranch.startsWith('wave/') &&
-    !checkedOut.has(dispatchBranch) &&
-    (ops.isUpstreamGone(dispatchBranch) ||
-      ops.isContainedInDefaultBranch(dispatchBranch, defaultBranch) ||
-      ops.probeRemoteRef(dispatchBranch).status === 'gone')
+    !checkedOut.has(dispatchBranch)
   ) {
-    ops.deleteBranch(dispatchBranch);
-    deleted.push(dispatchBranch);
+    if (
+      ops.isUpstreamGone(dispatchBranch) ||
+      ops.isContainedInDefaultBranch(dispatchBranch, defaultBranch)
+    ) {
+      ops.deleteBranch(dispatchBranch);
+      deleted.push(dispatchBranch);
+    } else {
+      // Neither earlier signal fired — the remote-ref probe (FOR-62) is the
+      // deciding evidence. Its full result (not just a boolean) is inspected
+      // here so a genuine `probe-failed` can be threaded onto the
+      // caller-visible `CleanupResult.branchHygieneSkipped`, distinct from a
+      // `present` result (authoritatively NOT evidence — correctly left
+      // alone, nothing ambiguous to report).
+      const probe = ops.probeRemoteRef(dispatchBranch);
+      if (probe.status === 'gone') {
+        ops.deleteBranch(dispatchBranch);
+        deleted.push(dispatchBranch);
+      } else if (probe.status === 'probe-failed') {
+        skipped.push({
+          branch: dispatchBranch,
+          reason: 'branch-probe-failed',
+          detail: probe.reason,
+        });
+      }
+    }
   }
 
-  return deleted;
+  return { deleted, skipped };
 }
 
 // ─── Convenience wrapper ───────────────────────────────────────────────────────
@@ -983,6 +1033,35 @@ export type RemoteRefProbeResult =
   | { status: 'probe-failed'; reason: string };
 
 /**
+ * Machine-readable cause recorded on {@link CleanupResult.branchHygieneSkipped}
+ * (FOR-62 coordinator resolution) — today the only member is the case where
+ * rule (b)'s remote-ref probe itself FAILED (network/transport error) rather
+ * than authoritatively confirming the branch present or gone. This is
+ * deliberately NOT recorded for the pre-existing "no evidence at all" refusal
+ * (all three signals came back negative/absent) — that stays the silent,
+ * unremarkable no-op it always was; only an inconclusive PROBE is surfaced,
+ * because that is the one outcome a human/caller cannot already infer from
+ * "the branch didn't move".
+ */
+export type BranchHygieneSkipReason = 'branch-probe-failed';
+
+/**
+ * One `wave/*` branch that local-branch hygiene left in place because its
+ * FOR-62 remote-ref probe could not authoritatively complete — additive,
+ * caller-visible surface (see {@link CleanupResult.branchHygieneSkipped})
+ * distinct from the ops-level {@link RemoteRefProbeResult} the seam itself
+ * returns, which the caller of `executeCleanup` never sees directly.
+ */
+export interface BranchHygieneSkip {
+  /** The `wave/*` branch left in place. */
+  branch: string;
+  /** Machine-readable cause. */
+  reason: BranchHygieneSkipReason;
+  /** Human-readable detail carried over from the underlying probe's `reason`. */
+  detail: string;
+}
+
+/**
  * Injectable local-branch-hygiene seam, mirroring the
  * `WorktreeRemover`/`RedispatchCleanupOps` injection pattern above. All
  * methods are read/best-effort — `deleteBranch` is IDEMPOTENT (no-op, never
@@ -1095,7 +1174,7 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
       // never `gone` — the gone-vs-failure distinction is carried by the exit
       // status itself, not inferred from whether stdout happened to be empty.
       try {
-        const out = execFileSync(
+        execFileSync(
           'git',
           ['ls-remote', '--exit-code', '--heads', 'origin', branch],
           {
@@ -1105,7 +1184,13 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
             stdio: ['ignore', 'pipe', 'pipe'],
           },
         );
-        return out.trim().length > 0 ? { status: 'present' } : { status: 'gone' };
+        // Exit 0 is git's own "at least one matching ref found" signal —
+        // `present` UNCONDITIONALLY. Real `git ls-remote --exit-code` never
+        // exits 0 with empty stdout (a true no-match is always the `2` exit
+        // handled in the catch below), so there is no stdout-length case to
+        // infer from here; doing so would contradict the exit-code-is-the-
+        // only-authority contract this function documents (FOR-62 iter-2 fix).
+        return { status: 'present' };
       } catch (err) {
         const exitStatus = (err as { status?: unknown }).status;
         if (exitStatus === 2) return { status: 'gone' };

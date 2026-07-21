@@ -164,6 +164,7 @@ import {
   type RedispatchCleanupOps,
   type BranchHygieneOps,
   type RemoteRefProbeResult,
+  type BranchHygieneSkip,
 } from './worktree-cleanup';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -1905,7 +1906,24 @@ describe('executeCleanup — local branch hygiene (FOR-59)', () => {
     expect(result.branchesDeleted).not.toContain(wfWorktree.branch);
   });
 
-  it('rule (b), FOR-62: a probe that authoritatively finds the remote ref still present is not evidence — branch left alone', () => {
+  it('rule (b), FOR-62 coordinator resolution: a probe FAILURE is threaded onto the caller-visible `CleanupResult.branchHygieneSkipped` with a machine-readable reason — not only the ops-level RemoteRefProbeResult', () => {
+    const { remover } = fakeRemover();
+    const { ops } = fakeBranchHygiene({
+      remoteProbeFailedFor: new Map([[wfWorktree.branch as string, 'network error: could not resolve host']]),
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    const expected: BranchHygieneSkip = {
+      branch: wfWorktree.branch as string,
+      reason: 'branch-probe-failed',
+      detail: 'network error: could not resolve host',
+    };
+    expect(result.branchHygieneSkipped).toEqual([expected]);
+  });
+
+  it('rule (b), FOR-62: a probe that authoritatively finds the remote ref still present is not evidence — branch left alone, and NOT recorded in branchHygieneSkipped (a confirmed "present" is not ambiguous)', () => {
     const { remover } = fakeRemover();
     // Default fakeBranchHygiene() (no remoteGone/remoteProbeFailedFor) already
     // resolves every branch to { status: 'present' } — assert that explicitly
@@ -1913,10 +1931,25 @@ describe('executeCleanup — local branch hygiene (FOR-59)', () => {
     const { ops, deleteSpy, probeRemoteRefSpy } = fakeBranchHygiene();
     const plan = { selected: [wfWorktree], skipped: [] };
 
-    executeCleanup(plan, { remover, branchHygiene: ops });
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
 
     expect(probeRemoteRefSpy).toHaveBeenCalledWith(wfWorktree.branch);
     expect(deleteSpy).not.toHaveBeenCalledWith(wfWorktree.branch);
+    expect(result.branchHygieneSkipped).toEqual([]);
+  });
+
+  it('rule (b), FOR-62 coordinator resolution: when EARLY merge evidence (upstream-gone) already deletes the branch, the probe is never reached and branchHygieneSkipped stays empty', () => {
+    const { remover } = fakeRemover();
+    const { ops, probeRemoteRefSpy } = fakeBranchHygiene({
+      goneUpstream: new Set([wfWorktree.branch as string]),
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(probeRemoteRefSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toContain(wfWorktree.branch);
+    expect(result.branchHygieneSkipped).toEqual([]);
   });
 
   it('rule (c) safety floor: a branch checked out in ANOTHER live worktree is NEVER deleted, for either rule — even with merge evidence present', () => {
@@ -2156,6 +2189,13 @@ describe('defaultBranchHygieneOps — real-git command shape (FOR-59)', () => {
       ['ls-remote', '--exit-code', '--heads', 'origin', 'wave/x'],
       expect.objectContaining({ cwd: '/repo' }),
     );
+  });
+
+  it('probeRemoteRef: { status: "present" } on ANY non-throwing (exit 0) invocation, even with empty stdout — "gone" is NEVER inferred from stdout length (FOR-62 iter-2: real `--exit-code` never exits 0 with empty output; a no-match is always the structural exit-2 case below)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    expect(defaultBranchHygieneOps('/repo').probeRemoteRef('wave/x')).toEqual({
+      status: 'present',
+    });
   });
 
   it('probeRemoteRef: { status: "gone" } when the underlying command exits with git\'s own "no matching ref" status (2)', () => {
