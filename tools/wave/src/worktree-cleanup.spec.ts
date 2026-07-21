@@ -98,23 +98,34 @@
  *      c. locked → skipped, reason: 'locked' (never reaches the remover)
  *      d. dirty → skipped, reason: 'dirty'
  *      e. every skipped[] entry in a mixed batch carries a reason
- *   14. executeCleanup — local branch hygiene (FOR-59 scope extension)
+ *   14. executeCleanup — local branch hygiene (FOR-59 scope extension, + FOR-62)
  *      a. rule (a): the wf_* harness throwaway branch is always force-deleted
  *      b. rule (b): the worktree's own wave/* branch is force-deleted only
- *         with merge evidence (upstream gone, or tip contained in default)
+ *         with merge evidence (upstream gone, tip contained in default, OR
+ *         — FOR-62 — the remote ref for exactly that branch confirmed gone)
  *      c. rule (b) refusal: no evidence → branch left alone
  *      d. rule (c): a branch checked out elsewhere is never deleted, even
- *         with merge evidence
+ *         with merge evidence (including remote-ref-gone evidence, FOR-62)
  *      e. an agent-* worktree never attempts the throwaway-branch rule; a
- *         non-`wave/`-prefixed branch never triggers rule (b)
+ *         non-`wave/`-prefixed branch never triggers rule (b) (nor the
+ *         remote-ref probe)
  *      f. hygiene never runs for a failed removal, or when skipBranchHygiene
  *         is set, or when nothing was selected
  *      g. an orphan-dir purge also triggers hygiene, not just an ordinary removal
- *   15. defaultBranchHygieneOps — real-git command shape (FOR-59)
+ *      h. FOR-62: remote-ref-gone alone is sufficient (no other signal needed)
+ *      i. FOR-62: a probe FAILURE is never read as gone — branch left alone
+ *      j. FOR-62: a probe that finds the ref still present is not evidence
+ *   15. defaultBranchHygieneOps — real-git command shape (FOR-59, + FOR-62)
  *      a. listCheckedOutBranches parses porcelain `branch ` lines
  *      b. isUpstreamGone / isContainedInDefaultBranch: correct classification
  *         and fail-safe (false, never throws) on any git error
  *      c. deleteBranch: correct invocation + idempotent swallow on failure
+ *      d. probeRemoteRef (FOR-62): `git ls-remote --exit-code --heads origin
+ *         <branch>` — exit status 2 (git's own "no matching ref" signal) →
+ *         'gone'; a match → 'present'; ANY OTHER non-zero exit or thrown
+ *         error (incl. one with no exit status at all) → 'probe-failed',
+ *         NEVER 'gone' — the distinction is structural (the exit status),
+ *         not inferred from empty stdout
  *   16. defaultWorktreeRemover — orphan-dir purge end-to-end (FOR-59)
  *      a. an orphan dir selected by planCleanup removes cleanly through the
  *         SAME two-phase remover pipeline as an ordinary worktree
@@ -152,6 +163,7 @@ import {
   type WorktreeRemover,
   type RedispatchCleanupOps,
   type BranchHygieneOps,
+  type RemoteRefProbeResult,
 } from './worktree-cleanup';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -1782,15 +1794,30 @@ describe('executeCleanup — local branch hygiene (FOR-59)', () => {
     checkedOut?: Set<string>;
     goneUpstream?: Set<string>;
     containedInDefault?: Set<string>;
-  }): { ops: BranchHygieneOps; deleteSpy: ReturnType<typeof vi.fn> } {
+    remoteGone?: Set<string>;
+    remoteProbeFailedFor?: Map<string, string>;
+  }): {
+    ops: BranchHygieneOps;
+    deleteSpy: ReturnType<typeof vi.fn>;
+    probeRemoteRefSpy: ReturnType<typeof vi.fn>;
+  } {
     const deleteSpy = vi.fn();
+    const probeRemoteRefSpy = vi.fn(
+      (b: string): RemoteRefProbeResult => {
+        if (opts?.remoteGone?.has(b)) return { status: 'gone' };
+        const failReason = opts?.remoteProbeFailedFor?.get(b);
+        if (failReason !== undefined) return { status: 'probe-failed', reason: failReason };
+        return { status: 'present' };
+      },
+    );
     const ops: BranchHygieneOps = {
       listCheckedOutBranches: () => opts?.checkedOut ?? new Set<string>(),
       isUpstreamGone: (b) => opts?.goneUpstream?.has(b) ?? false,
       isContainedInDefaultBranch: (b) => opts?.containedInDefault?.has(b) ?? false,
+      probeRemoteRef: probeRemoteRefSpy,
       deleteBranch: deleteSpy,
     };
-    return { ops, deleteSpy };
+    return { ops, deleteSpy, probeRemoteRefSpy };
   }
 
   const wfWorktree: WorktreeEntry = {
@@ -1850,11 +1877,67 @@ describe('executeCleanup — local branch hygiene (FOR-59)', () => {
     expect(deleteSpy).toHaveBeenCalledWith('worktree-wf_5b3073fb-abc-1');
   });
 
+  it('rule (b), FOR-62: the remote-ref-gone signal alone is sufficient — deletes even with NO upstream-gone/tip-contained evidence (the no-`-u`-push, squash-merge reality)', () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy, probeRemoteRefSpy } = fakeBranchHygiene({
+      remoteGone: new Set([wfWorktree.branch as string]),
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(probeRemoteRefSpy).toHaveBeenCalledWith(wfWorktree.branch);
+    expect(deleteSpy).toHaveBeenCalledWith(wfWorktree.branch);
+    expect(result.branchesDeleted).toContain(wfWorktree.branch);
+  });
+
+  it('rule (b), FOR-62: a probe FAILURE (network/transport error, non-zero exit) is NEVER read as gone — the branch is left alone, never deleted', () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy, probeRemoteRefSpy } = fakeBranchHygiene({
+      remoteProbeFailedFor: new Map([[wfWorktree.branch as string, 'network error: could not resolve host']]),
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(probeRemoteRefSpy).toHaveBeenCalledWith(wfWorktree.branch);
+    expect(deleteSpy).not.toHaveBeenCalledWith(wfWorktree.branch);
+    expect(result.branchesDeleted).not.toContain(wfWorktree.branch);
+  });
+
+  it('rule (b), FOR-62: a probe that authoritatively finds the remote ref still present is not evidence — branch left alone', () => {
+    const { remover } = fakeRemover();
+    // Default fakeBranchHygiene() (no remoteGone/remoteProbeFailedFor) already
+    // resolves every branch to { status: 'present' } — assert that explicitly
+    // as its own scenario, distinct from the "probe failed" case above.
+    const { ops, deleteSpy, probeRemoteRefSpy } = fakeBranchHygiene();
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(probeRemoteRefSpy).toHaveBeenCalledWith(wfWorktree.branch);
+    expect(deleteSpy).not.toHaveBeenCalledWith(wfWorktree.branch);
+  });
+
   it('rule (c) safety floor: a branch checked out in ANOTHER live worktree is NEVER deleted, for either rule — even with merge evidence present', () => {
     const { remover } = fakeRemover();
     const { ops, deleteSpy } = fakeBranchHygiene({
       checkedOut: new Set(['worktree-wf_5b3073fb-abc-1', wfWorktree.branch as string]),
       goneUpstream: new Set([wfWorktree.branch as string]), // would otherwise qualify
+    });
+    const plan = { selected: [wfWorktree], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, branchHygiene: ops });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('rule (c) safety floor extends to the FOR-62 remote-ref-gone signal too: a branch checked out elsewhere is never deleted even when the remote ref is confirmed gone', () => {
+    const { remover } = fakeRemover();
+    const { ops, deleteSpy } = fakeBranchHygiene({
+      checkedOut: new Set(['worktree-wf_5b3073fb-abc-1', wfWorktree.branch as string]),
+      remoteGone: new Set([wfWorktree.branch as string]), // would otherwise qualify
     });
     const plan = { selected: [wfWorktree], skipped: [] };
 
@@ -1923,6 +2006,7 @@ describe('executeCleanup — local branch hygiene (FOR-59)', () => {
       listCheckedOutBranches: listSpy,
       isUpstreamGone: () => true,
       isContainedInDefaultBranch: () => true,
+      probeRemoteRef: () => ({ status: 'gone' }),
       deleteBranch: vi.fn(),
     };
     const plan = { selected: [wfWorktree], skipped: [] };
@@ -1964,6 +2048,7 @@ describe('executeCleanup — local branch hygiene (FOR-59)', () => {
       listCheckedOutBranches: listSpy,
       isUpstreamGone: () => false,
       isContainedInDefaultBranch: () => false,
+      probeRemoteRef: () => ({ status: 'present' }),
       deleteBranch: vi.fn(),
     };
     const plan = { selected: [], skipped: [] };
@@ -2058,6 +2143,63 @@ describe('defaultBranchHygieneOps — real-git command shape (FOR-59)', () => {
       ['branch', '-D', 'wave/x'],
       expect.objectContaining({ cwd: '/repo' }),
     );
+  });
+
+  // ── probeRemoteRef (FOR-62) — the gone-vs-failure distinction is carried by
+  //    git's own `--exit-code` exit status, never inferred from empty stdout ──
+
+  it('probeRemoteRef: invokes `git ls-remote --exit-code --heads origin <branch>` against the given repoRoot', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    defaultBranchHygieneOps('/repo').probeRemoteRef('wave/x');
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['ls-remote', '--exit-code', '--heads', 'origin', 'wave/x'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+
+  it('probeRemoteRef: { status: "gone" } when the underlying command exits with git\'s own "no matching ref" status (2)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      const err = new Error('') as NodeJS.ErrnoException & { status?: number };
+      err.status = 2;
+      throw err;
+    });
+    expect(defaultBranchHygieneOps('/repo').probeRemoteRef('wave/x')).toEqual({
+      status: 'gone',
+    });
+  });
+
+  it('probeRemoteRef: { status: "present" } when the command succeeds and reports a matching ref', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      () => 'a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\trefs/heads/wave/x\n',
+    );
+    expect(defaultBranchHygieneOps('/repo').probeRemoteRef('wave/x')).toEqual({
+      status: 'present',
+    });
+  });
+
+  it('probeRemoteRef: { status: "probe-failed", reason } — NEVER "gone" — on a non-2 non-zero exit (a real transport/auth failure, structurally distinct from git\'s "no match" exit code)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      const err = new Error('fatal: unable to access remote: Could not resolve host') as NodeJS.ErrnoException & {
+        status?: number;
+      };
+      err.status = 128;
+      throw err;
+    });
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/x');
+    expect(result.status).toBe('probe-failed');
+    expect((result as { status: 'probe-failed'; reason: string }).reason).toContain(
+      'Could not resolve host',
+    );
+  });
+
+  it('probeRemoteRef: { status: "probe-failed" } — never throws, never "gone" — when the thrown error carries no exit status at all (e.g. git itself missing, a timeout)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error('spawnSync git ENOENT');
+    });
+    const ops = defaultBranchHygieneOps('/repo');
+    expect(() => ops.probeRemoteRef('wave/x')).not.toThrow();
+    expect(ops.probeRemoteRef('wave/x').status).toBe('probe-failed');
   });
 });
 
