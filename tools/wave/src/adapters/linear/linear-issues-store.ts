@@ -148,6 +148,11 @@ export class LinearIssuesStore implements IssueStore {
       description,
       labels,
     });
+    // Mirror the just-written body-codec blockedBy into NATIVE Linear relations
+    // (ADR-0020 write half) so blocked rows carry a visible board relation, not
+    // just a body line. Best-effort: the body-codec write above is the
+    // authoritative one (ADR-0020), so a failed mirror never fails create().
+    await this.mirrorBlockedBy(identifier, input.blockedBy);
     return identifier; // filingHint ignored — id is the opaque team identifier (ADR-0001/0020)
   }
 
@@ -194,6 +199,16 @@ export class LinearIssuesStore implements IssueStore {
       description = upsertLine(description, 'Parent', parentToLine(patch.parent));
     }
     if (description !== issue.description) await this.api.setDescription(id, description);
+
+    // Mirror the issue's CANONICAL body-codec blockedBy into native relations
+    // (ADR-0020 write half). AnnotatePatch deliberately carries no `blockedBy`
+    // (dependency structure is out-of-band — issue-store.ts), and annotate never
+    // rewrites the Blocked-by section, so this reconciles the native side
+    // against the EXISTING codec block: any codec ref not yet natively
+    // represented ("newly added") is created, additively. It NEVER deletes — a
+    // human-drawn or stale native relation survives. Best-effort (see
+    // mirrorBlockedBy): a failed mirror never fails annotate().
+    await this.mirrorBlockedBy(id, parseBody(issue.description).blockedBy);
   }
 
   // ── amend (ADR-0025 — authored content: title + free-prose sections) ───────
@@ -264,6 +279,52 @@ export class LinearIssuesStore implements IssueStore {
     }
     const out = [...merged.values()];
     return out.length === 0 ? 'none' : out;
+  }
+
+  /**
+   * The WRITE counterpart of {@link unionBlockedBy} (ADR-0020 fast-follow):
+   * mirror the canonical body-codec `blockedBy` into NATIVE Linear issue
+   * relations so a blocked row carries a visible board relation, not just a body
+   * line. Three properties, all load-bearing:
+   *
+   *  - **Additive-only.** Only refs NOT already represented natively are
+   *    created (delta vs {@link LinearApi.getBlockedBy}, keyed by the SAME
+   *    `ownSlug`-normalized {@link refKey} the read-union dedups on). This
+   *    method has no delete/update path: a human-drawn relation survives any
+   *    re-scope, and a stale mirror is harmless (read() dedups double
+   *    representation). "Newly added refs" = codec refs missing from the native
+   *    side (the AnnotatePatch has no `blockedBy`, so annotate reconciles the
+   *    existing codec block rather than a patch delta).
+   *  - **Best-effort / non-fatal.** The body-codec write is the authoritative
+   *    one (ADR-0020); a mirror that throws — an unresolvable ref (COORDINATOR
+   *    note 2), or a rejected `issueRelationCreate` — is SKIPPED per-ref, never
+   *    propagated, so create()/annotate() always complete the issue write. Same
+   *    ADR-0004 best-effort-swallow class as the cosmetic inbox clear below; no
+   *    logger seam exists in the engine, so the disclosure is structural: read()
+   *    still surfaces the codec ref via the union, and a later create/annotate
+   *    re-reconciles the native side.
+   */
+  private async mirrorBlockedBy(id: string, blockedBy: BlockedBy): Promise<void> {
+    if (blockedBy === 'none' || blockedBy.length === 0) return;
+    const ownSlug = this.parseRef(id).slug;
+    let existing: Set<string>;
+    try {
+      existing = new Set(
+        (await this.api.getBlockedBy(id)).map((nid) => refKey(this.parseRef(nid), ownSlug)),
+      );
+    } catch {
+      existing = new Set(); // a failed native read must not fail the body write
+    }
+    for (const ref of blockedBy) {
+      if (existing.has(refKey(ref, ownSlug))) continue; // already native — additive, no duplicate
+      try {
+        await this.api.addBlockedBy(id, refToIdentifier(ref, ownSlug));
+      } catch {
+        // swallow — best-effort mirror (ADR-0020). The authoritative body-codec
+        // write already landed; a missing native mirror is harmless (read()
+        // unions codec ∪ native and dedups).
+      }
+    }
   }
 
   async transition(id: string, rung: ClaimRung): Promise<void> {
@@ -628,4 +689,23 @@ function soleLabelValue(labels: string[], prefix: string, id: string): string {
  */
 function refKey(ref: IssueRef, ownSlug: string | undefined): string {
   return `${ref.slug ?? ownSlug ?? ''}#${ref.issue}`;
+}
+
+/**
+ * A blockedBy `IssueRef` → the Linear identifier the native mirror resolves
+ * (ADR-0020 write half). Inverse of {@link LinearIssuesStore.parseRef}: joins
+ * with `-` (Linear's `<TEAM>-<number>` id form, NOT the codec's `slug#issue`
+ * wire form). A slug-less same-team ref (`#16`, hand-written body shorthand)
+ * means the referencing issue's own team, so `ownSlug` is substituted — the
+ * same rule the read-union's dedup key uses.
+ */
+function refToIdentifier(ref: IssueRef, ownSlug: string | undefined): string {
+  const slug = ref.slug ?? ownSlug;
+  if (slug === undefined) {
+    // Unreachable for a real Linear id (parseRef always yields a `<TEAM>-`
+    // slug), but guard rather than mint a malformed `-16`: mirrorBlockedBy's
+    // per-ref catch turns this into a non-fatal skip.
+    throw new Error(`refToIdentifier: cannot resolve slug-less ref #${ref.issue} without an owning team slug.`);
+  }
+  return `${slug}-${ref.issue}`;
 }

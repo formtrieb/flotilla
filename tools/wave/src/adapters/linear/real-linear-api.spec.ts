@@ -499,6 +499,68 @@ describe('RealLinearApi', () => {
     });
   });
 
+  // ── native blocked-by WRITE half (ADR-0020 fast-follow) ───────────────────
+  describe('addBlockedBy', () => {
+    // Resolve each identifier to a distinct uuid by its number, so the mutation
+    // args can be asserted to encode the RIGHT direction.
+    const resolveByNumber: LinearHttpFakeHandler = (req) => {
+      const n = (req.variables as { number: number }).number;
+      return issueByIdentifierResponse({ id: `issue-uuid-${n}`, identifier: `EX-${n}` });
+    };
+
+    it('creates a `blocks` relation with the BLOCKER as issueId and the BLOCKED issue as relatedIssueId (direction: blocker blocks blocked)', async () => {
+      const { api, http } = makeApi({
+        IssueByIdentifier: resolveByNumber,
+        CreateIssueRelation: (req) => {
+          // THE load-bearing direction assertion (adversarial focus): the read
+          // half reads `blocked`'s inverseRelations for `type:'blocks'` and
+          // returns the SOURCE issue — so the source (`issueId`) MUST be the
+          // blocker, the target (`relatedIssueId`) the blocked issue.
+          expect(req.variables).toEqual({
+            input: { issueId: 'issue-uuid-1', relatedIssueId: 'issue-uuid-16', type: 'blocks' },
+          });
+          return { status: 200, json: { data: { issueRelationCreate: { success: true, issueRelation: { id: 'rel-1' } } } } };
+        },
+      });
+      // addBlockedBy(blocked = EX-16, blocker = EX-1): EX-16 is blocked BY EX-1.
+      await expect(api.addBlockedBy('EX-16', 'EX-1')).resolves.toBeUndefined();
+      // two resolveIssue round-trips (blocked + blocker) + the mutation.
+      expect(http.requests).toHaveLength(3);
+    });
+
+    it('throws a plain (non-wire) error when the BLOCKER identifier cannot be resolved (store skips that single mirror)', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: (req) => {
+          const n = (req.variables as { number: number }).number;
+          if (n === 999) return { status: 200, json: { data: { issues: { nodes: [] } } } };
+          return issueByIdentifierResponse({ id: `issue-uuid-${n}`, identifier: `EX-${n}` });
+        },
+      });
+      await expect(api.addBlockedBy('EX-16', 'EX-999')).rejects.toThrow(/EX-999/);
+      await expect(api.addBlockedBy('EX-16', 'EX-999')).rejects.not.toBeInstanceOf(LinearApiError);
+    });
+
+    it('throws LinearApiError when issueRelationCreate does not report success', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: resolveByNumber,
+        CreateIssueRelation: () => ({ status: 200, json: { data: { issueRelationCreate: { success: false } } } }),
+      });
+      await expect(api.addBlockedBy('EX-16', 'EX-1')).rejects.toSatisfy(
+        (e: unknown) => e instanceof LinearApiError && e.op === 'CreateIssueRelation',
+      );
+    });
+
+    it('propagates a LinearApiError when the GraphQL response carries errors[] (HTTP 200)', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: resolveByNumber,
+        CreateIssueRelation: () => ({ status: 200, json: { data: null, errors: [{ message: 'not allowed' }] } }),
+      });
+      await expect(api.addBlockedBy('EX-16', 'EX-1')).rejects.toSatisfy(
+        (e: unknown) => e instanceof LinearApiError && e.message.includes('GraphQL error'),
+      );
+    });
+  });
+
   // ── Document facet (ADR-0017): a PRD is a NATIVE Linear Document ───────────
   describe('createDocument', () => {
     it('resolves the project id and POSTs documentCreate with title/content/projectId, returns the uuid', async () => {

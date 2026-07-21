@@ -55,6 +55,8 @@ export class InMemoryLinearApi implements LinearApi {
   private catalog: { name: string; type: LinearStateType }[] = [...DEFAULT_STATE_CATALOG];
   /** Store-preflight substrate (FOR-12): is the workspace's GitHub integration installed? Default yes. */
   private githubIntegrationInstalled = true;
+  /** When set, the production {@link addBlockedBy} mirror rejects with it (models a failed `issueRelationCreate`). */
+  private relationWriteError: Error | undefined;
   private counter = 0; // per-instance; never reset between calls
   private docCounter = 0;
   private readonly teamKey: string;
@@ -131,6 +133,26 @@ export class InMemoryLinearApi implements LinearApi {
   async getBlockedBy(identifier: string): Promise<string[]> {
     this.mustGet(identifier);
     return [...(this.nativeBlockedBy.get(identifier) ?? [])];
+  }
+
+  /**
+   * Mirror ONE blockedBy ref natively (ADR-0020 write half). Both sides are
+   * resolved via {@link mustGet} — modelling `RealLinearApi.addBlockedBy`, which
+   * resolves both identifiers to UUIDs and throws on an unknown one (the store
+   * treats that as a non-fatal single-mirror skip). An injected
+   * {@link failRelationWrites} error models a rejected `issueRelationCreate`
+   * mutation (transport/GraphQL failure). ADDITIVE-ONLY: appends to the same
+   * `nativeBlockedBy` substrate `getBlockedBy` reads (never deletes) — a repeat
+   * mirror double-represents, exactly as a live duplicate relation would, and
+   * the store's read-union dedups it.
+   */
+  async addBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void> {
+    this.mustGet(blockedIdentifier);
+    this.mustGet(blockerIdentifier);
+    if (this.relationWriteError) throw this.relationWriteError;
+    const list = this.nativeBlockedBy.get(blockedIdentifier) ?? [];
+    list.push(blockerIdentifier);
+    this.nativeBlockedBy.set(blockedIdentifier, list);
   }
 
   async hasGitHubIntegration(): Promise<boolean> {
@@ -236,6 +258,18 @@ export class InMemoryLinearApi implements LinearApi {
     const list = this.nativeBlockedBy.get(blocked) ?? [];
     list.push(blocker);
     this.nativeBlockedBy.set(blocked, list);
+  }
+
+  /**
+   * Test affordance (ADR-0020 write half): force the production
+   * {@link addBlockedBy} mirror to REJECT with `error` (a rejected
+   * `issueRelationCreate`), or pass `null` to clear it. NOT part of `LinearApi`
+   * — the store's non-fatal-mirror spec reaches it to prove a failed native
+   * relation write never fails the authoritative create/annotate. Mirrors
+   * `setStateCatalog`/`setGitHubIntegration`'s stance.
+   */
+  failRelationWrites(error: Error | null): void {
+    this.relationWriteError = error ?? undefined;
   }
 
   // ── internals ───────────────────────────────────────────────────────────────
