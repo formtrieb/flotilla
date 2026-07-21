@@ -126,9 +126,12 @@ WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
 # transition → approved:  render the verdict, then open the PR through the
 #   engine (NEVER gh pr create). find-before-create is idempotent: the Worker
 #   already opened it (report.prUrl); this re-pins the same open PR — no
-#   duplicate. --body carries the rendered `## Reviewer verdict` section
-#   (wave-shared "the reviewer-verdict render") ABOVE the store-kind close
-#   phrase (Convention 4), the ONLY tracker id the title/body may name.
+#   duplicate — AND re-writes its title/body to the values passed here
+#   (`updated: true` discloses it), so the rendered verdict reliably lands on
+#   the Worker-opened PR (last-writer-wins). --body carries the rendered
+#   `## Reviewer verdict` section (wave-shared "the reviewer-verdict render")
+#   ABOVE the store-kind close phrase (Convention 4), the ONLY tracker id the
+#   title/body may name.
 #   github-only in M1 (bitbucket/unknown fail loud + typed); reads GITHUB_TOKEN.
 VERDICT_SECTION=$({{wave-cli}} render-verdict "$VERDICTS" "$ID" --anchor "$ANCHOR_SHA")
 #   $ANCHOR_SHA is the row's roster-bound anchor — the SAME value threaded into

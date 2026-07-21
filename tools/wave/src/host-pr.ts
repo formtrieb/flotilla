@@ -10,6 +10,10 @@
  *     (Finding L1: a mid-flight 401 becomes an up-front warning).
  *   - `findOpenPr(host, creds, branch)` — idempotency: query open PRs on the
  *     source branch BEFORE creating, so a re-run never opens a duplicate.
+ *     `findOpenPrRef` is the richer form that also surfaces the PR number.
+ *   - `updateOpenPr(host, creds, ref, {title, body})` — on reuse, re-write the
+ *     open PR's title/body to the passed values (PATCH/PUT through the same
+ *     seam) so the terminator's composed render lands on a Worker-opened PR.
  *   - `createPr(host, creds, {...})` — 201 → real URL; 401/failure → the
  *     pre-fill fallback signal (a returned value, never a throw).
  *
@@ -135,7 +139,7 @@ function unknownHost(): HostInfo {
  * already-serialised JSON payload for writes; omitted for reads.
  */
 export interface HttpRequest {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT';
   url: string;
   auth: string;
   body?: string;
@@ -187,10 +191,21 @@ interface HostApi {
   createBody: (req: CreatePrRequest) => string;
   /** Pull the PR html URL out of a list/create response body. */
   extractPrUrl: (json: unknown) => string | null;
-  /** Pull the FIRST open-PR url out of a list response, or `null`. */
-  extractFirstOpenPr: (json: unknown) => string | null;
+  /**
+   * Pull the FIRST open-PR ref (html url + host-local number) out of a list
+   * response, or `null`. The number is what {@link updateOpenPr} addresses the
+   * update PATCH/PUT to; it is optional because a malformed body may omit it,
+   * in which case the URL still round-trips (reuse never becomes a duplicate).
+   */
+  extractOpenPrRef: (json: unknown) => OpenPrRef | null;
   /** Build the manual pre-fill "open a PR" URL for the fallback signal. */
   prefillUrl: (info: HostInfo, req: CreatePrRequest) => string;
+  /** HTTP verb the host expects for a PR update (GitHub `PATCH`, Bitbucket `PUT`). */
+  updateMethod: 'PATCH' | 'PUT';
+  /** Update endpoint for the open PR addressed by its host-local number. */
+  updateUrl: (info: HostInfo, prNumber: number) => string;
+  /** Serialise the title/body update payload for the host. */
+  updateBody: (fields: PrUpdateFields) => string;
 }
 
 function apiFor(info: HostInfo): HostApi | null {
@@ -262,22 +277,37 @@ function extractIdentity(json: unknown): string | null {
 // ─── findOpenPr ──────────────────────────────────────────────────────────────
 
 /**
- * Query the host for an OPEN PR whose source branch is `branch`. Returns the
- * PR's html URL on a hit, or `null` on a miss (no open PR, or a non-200 query —
- * a query failure is treated as "no known open PR" so the caller proceeds to
- * create; the create step has its own failure handling).
- *
- * This is the idempotency guard: `/wave close` calls it before `createPr` so a
- * re-run that already opened the PR re-pins the existing URL instead of opening
- * a duplicate.
+ * The coordinates of an already-open PR: its html `url` (the value the wave pins
+ * as the row's PR URL) plus the host-local `number` that {@link updateOpenPr}
+ * addresses its update to. `number` is optional — a malformed list body may omit
+ * it, and the URL alone is enough to REUSE (never open a duplicate); only the
+ * body/title UPDATE needs the number.
  */
-export async function findOpenPr(
+export interface OpenPrRef {
+  /** The PR's html URL. */
+  url: string;
+  /** The PR's host-local number, when the list body carried one. */
+  number?: number;
+}
+
+/**
+ * Query the host for an OPEN PR whose source branch is `branch`. Returns the
+ * PR's `{ url, number? }` on a hit, or `null` on a miss (no open PR, or a
+ * non-200 query — a query failure is treated as "no known open PR" so the caller
+ * proceeds to create; the create step has its own failure handling).
+ *
+ * This is the richer form behind {@link findOpenPr}: it additionally surfaces
+ * the PR number so the reuse path can PATCH the open PR's title/body to the
+ * passed values (the terminator's composition is the authoritative final render;
+ * see {@link updateOpenPr}) instead of silently discarding them.
+ */
+export async function findOpenPrRef(
   host: Host,
   creds: Creds,
   branch: string,
   info: Pick<HostInfo, 'workspace' | 'repo'>,
   opts: HostOptions = {},
-): Promise<string | null> {
+): Promise<OpenPrRef | null> {
   const full: HostInfo = { host, workspace: info.workspace, repo: info.repo };
   const api = apiFor(full);
   if (api === null) return null;
@@ -290,7 +320,92 @@ export async function findOpenPr(
   });
 
   if (res.status !== 200) return null;
-  return api.extractFirstOpenPr(res.json);
+  return api.extractOpenPrRef(res.json);
+}
+
+/**
+ * Query the host for an OPEN PR whose source branch is `branch`. Returns the
+ * PR's html URL on a hit, or `null` on a miss.
+ *
+ * This is the idempotency guard: `/wave close` calls it before `createPr` so a
+ * re-run that already opened the PR re-pins the existing URL instead of opening
+ * a duplicate. It delegates to {@link findOpenPrRef} (single query path) and
+ * projects to the URL — kept for callers that need only "is there an open PR?".
+ */
+export async function findOpenPr(
+  host: Host,
+  creds: Creds,
+  branch: string,
+  info: Pick<HostInfo, 'workspace' | 'repo'>,
+  opts: HostOptions = {},
+): Promise<string | null> {
+  const ref = await findOpenPrRef(host, creds, branch, info, opts);
+  return ref?.url ?? null;
+}
+
+// ─── updateOpenPr (reuse-time body/title re-render) ──────────────────────────
+
+/** The authored fields a reuse re-writes onto the open PR. */
+export interface PrUpdateFields {
+  title: string;
+  body: string;
+}
+
+/**
+ * Outcome of the reuse-time update. `url` is the PR's html URL (a title/body
+ * edit never changes it, so it round-trips unchanged from the find). `updated`
+ * DISCLOSES whether the PATCH/PUT actually landed: `true` on a 200, `false` when
+ * there was nothing to address (no PR number in the find), an unsupported host,
+ * or the host declined/errored. A `false` never fails the reuse — the URL is
+ * still re-pinned (never a duplicate, never a wave-abort); it only signals that
+ * the authoritative render did not reach the live PR body this time.
+ */
+export interface UpdateOpenPrResult {
+  url: string;
+  updated: boolean;
+}
+
+/**
+ * Re-write an already-open PR's title/body to the passed values, through the
+ * SAME cross-host `HttpProbe` seam `findOpenPr`/`createPr` use (no new
+ * transport). This is the update-on-reuse the find-before-create path grew: when
+ * a Worker already opened the PR, the terminator's composed body (verdict render
+ * + close phrase) must still reach the live PR — last-writer-wins across a
+ * re-dispatch, the render written once at PR-open.
+ *
+ * Best-effort by contract: a missing PR number, an unsupported host, or a host
+ * decline all resolve to `{ url: ref.url, updated: false }` rather than throwing,
+ * so a title/body edit the host refuses never aborts the wave — the reuse still
+ * re-pins the same open PR.
+ */
+export async function updateOpenPr(
+  host: Host,
+  creds: Creds,
+  ref: OpenPrRef,
+  fields: PrUpdateFields,
+  info: Pick<HostInfo, 'workspace' | 'repo'>,
+  opts: HostOptions = {},
+): Promise<UpdateOpenPrResult> {
+  const full: HostInfo = { host, workspace: info.workspace, repo: info.repo };
+  const api = apiFor(full);
+  // No adapter, or no number to address the update to → re-pin the URL only.
+  if (api === null || ref.number === undefined) {
+    return { url: ref.url, updated: false };
+  }
+
+  const http = opts.http ?? defaultHttpProbe();
+  try {
+    const res = await http.request({
+      method: api.updateMethod,
+      url: api.updateUrl(full, ref.number),
+      auth: creds.auth,
+      body: api.updateBody(fields),
+    });
+    return { url: ref.url, updated: res.status === 200 };
+  } catch {
+    // A failed update must never abort the reuse: report the URL, disclose miss.
+    return { url: ref.url, updated: false };
+  }
 }
 
 // ─── createPr ────────────────────────────────────────────────────────────────
@@ -1098,16 +1213,20 @@ function bitbucketApi(): HostApi {
         close_source_branch: true,
       }),
     extractPrUrl: (json) => bbHref(json),
-    extractFirstOpenPr: (json) => {
+    extractOpenPrRef: (json) => {
       if (json === null || typeof json !== 'object') return null;
       const values = (json as Record<string, unknown>).values;
       if (!Array.isArray(values) || values.length === 0) return null;
-      return bbHref(values[0]);
+      return bbRef(values[0]);
     },
     prefillUrl: (info, req) =>
       `https://bitbucket.org/${info.workspace}/${info.repo}/pull-requests/new?source=${encodeURIComponent(
         req.branch,
       )}&t=1`,
+    updateMethod: 'PUT',
+    updateUrl: (info, prNumber) =>
+      `${base}/repositories/${info.workspace}/${info.repo}/pullrequests/${prNumber}`,
+    updateBody: (fields) => JSON.stringify({ title: fields.title, description: fields.body }),
   };
 }
 
@@ -1120,6 +1239,14 @@ function bbHref(json: unknown): string | null {
   if (html === null || typeof html !== 'object') return null;
   const href = (html as Record<string, unknown>).href;
   return typeof href === 'string' && href.length > 0 ? href : null;
+}
+
+/** Pull `{ url, number? }` from a Bitbucket PR object (`links.html.href` + `id`). */
+function bbRef(json: unknown): OpenPrRef | null {
+  const url = bbHref(json);
+  if (url === null) return null;
+  const id = (json as Record<string, unknown>).id;
+  return typeof id === 'number' ? { url, number: id } : { url };
 }
 
 // ─── GitHub API shape ────────────────────────────────────────────────────────
@@ -1141,14 +1268,17 @@ function githubApi(): HostApi {
         base: req.destination ?? 'main',
       }),
     extractPrUrl: (json) => ghHtmlUrl(json),
-    extractFirstOpenPr: (json) => {
+    extractOpenPrRef: (json) => {
       if (!Array.isArray(json) || json.length === 0) return null;
-      return ghHtmlUrl(json[0]);
+      return ghRef(json[0]);
     },
     prefillUrl: (info, req) =>
       `https://github.com/${info.workspace}/${info.repo}/pull/new/${encodeURIComponent(
         req.branch,
       )}`,
+    updateMethod: 'PATCH',
+    updateUrl: (info, prNumber) => `${base}/repos/${info.workspace}/${info.repo}/pulls/${prNumber}`,
+    updateBody: (fields) => JSON.stringify({ title: fields.title, body: fields.body }),
   };
 }
 
@@ -1157,6 +1287,14 @@ function ghHtmlUrl(json: unknown): string | null {
   if (json === null || typeof json !== 'object') return null;
   const href = (json as Record<string, unknown>).html_url;
   return typeof href === 'string' && href.length > 0 ? href : null;
+}
+
+/** Pull `{ url, number? }` from a GitHub PR object (`html_url` + `number`). */
+function ghRef(json: unknown): OpenPrRef | null {
+  const url = ghHtmlUrl(json);
+  if (url === null) return null;
+  const number = (json as Record<string, unknown>).number;
+  return typeof number === 'number' ? { url, number } : { url };
 }
 
 // ─── Default network probe (real side-effect, isolated here) ─────────────────
