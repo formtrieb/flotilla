@@ -256,6 +256,109 @@ describe('LinearIssuesStore — blockedBy read-union (ADR-0020 DoR-gate fix)', (
   });
 });
 
+// ── blockedBy native WRITE half (ADR-0020 fast-follow): create/annotate MIRROR
+// the canonical body-codec blockedBy into native Linear relations so a blocked
+// row carries a visible board relation, not just a body line. Additive-only
+// (never deletes), best-effort (a failed mirror never fails the issue write),
+// and the body codec stays the canonical, store-agnostic home. ───────────────
+describe('LinearIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follow)', () => {
+  let api: InMemoryLinearApi;
+  let store: LinearIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryLinearApi();
+    store = new LinearIssuesStore({ api });
+  });
+
+  it('create mirrors EVERY blockedBy ref into a native relation (multi-ref)', async () => {
+    const b1 = await store.create(baseInput({ title: 'blocker one' }));
+    const b2 = await store.create(baseInput({ title: 'blocker two' }));
+    const blocked = await store.create(
+      baseInput({ title: 'blocked', blockedBy: [store.parseRef(b1), store.parseRef(b2)] }),
+    );
+    expect((await api.getBlockedBy(blocked)).sort()).toEqual([b1, b2].sort());
+  });
+
+  it('create resolves a slug-less codec ref through the issue\'s own team slug before mirroring', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const num = store.parseRef(blocker).issue;
+    // a hand-written same-team shorthand `#num` (no slug) must still mirror to EX-num.
+    const blocked = await store.create(baseInput({ title: 'blocked', blockedBy: [{ issue: num }] }));
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
+  });
+
+  it('create with blockedBy "none" mirrors nothing', async () => {
+    const id = await store.create(baseInput({ blockedBy: 'none' }));
+    expect(await api.getBlockedBy(id)).toEqual([]);
+  });
+
+  it('the body codec stays the CANONICAL home — the blockedBy wire form is written unchanged alongside the native mirror', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    const codec = parseBody((await api.getIssue(blocked)).description).blockedBy;
+    expect(codec).not.toBe('none');
+    expect((codec as { issue: number }[]).map((r) => r.issue)).toEqual([store.parseRef(blocker).issue]);
+  });
+
+  it('annotate mirrors a body-codec blockedBy ref not yet represented natively ("newly added" reconcile)', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failRelationWrites(new Error('relation write down')); // create-time mirror fails
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    expect(await api.getBlockedBy(blocked)).toEqual([]); // create mirror was skipped
+    api.failRelationWrites(null);
+    await store.annotate(blocked, { files: ['src/new.ts'] }); // any annotate reconciles the native side
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
+  });
+
+  it('annotate is strictly ADDITIVE — a pre-existing native relation is never deleted, and an already-native ref is not duplicated', async () => {
+    const codecBlocker = await store.create(baseInput({ title: 'codec blocker' }));
+    const humanBlocker = await store.create(baseInput({ title: 'human-drawn blocker' }));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(codecBlocker)] }));
+    expect(await api.getBlockedBy(blocked)).toEqual([codecBlocker]); // create mirror
+    // a human draws a native relation to a blocker that is NOT in the body codec:
+    api.addNativeRelation(blocked, humanBlocker);
+
+    await store.annotate(blocked, { risk: 'isolated-refactor' });
+
+    const native = await api.getBlockedBy(blocked);
+    // no-delete guarantee: BOTH survive; no-duplicate: the codec ref stays single.
+    expect(native.filter((n) => n === codecBlocker)).toEqual([codecBlocker]);
+    expect(native).toContain(humanBlocker);
+    expect(native.sort()).toEqual([codecBlocker, humanBlocker].sort());
+  });
+
+  it('a REJECTED native relation write is non-fatal for create — the issue write survives, the codec ref stays authoritative', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failRelationWrites(new Error('issueRelationCreate rejected'));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    // create RESOLVED (never threw); read() still surfaces the codec ref.
+    const view = await store.read(blocked);
+    expect(view.blockedBy).not.toBe('none');
+    expect(await api.getBlockedBy(blocked)).toEqual([]); // the mirror was skipped
+  });
+
+  it('a REJECTED native relation write is non-fatal for annotate — the annotate body write still lands', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failRelationWrites(new Error('relation write down'));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    await expect(store.annotate(blocked, { files: ['src/x.ts'] })).resolves.toBeUndefined();
+    expect((await store.read(blocked)).files).toEqual(['src/x.ts']);
+  });
+
+  it('an UNRESOLVABLE blockedBy ref is skipped non-fatally; a resolvable sibling still mirrors', async () => {
+    const realBlocker = await store.create(baseInput({ title: 'real blocker' }));
+    const blocked = await store.create(
+      baseInput({ blockedBy: [{ issue: 9999 }, store.parseRef(realBlocker)] }),
+    );
+    // only the resolvable ref mirrored; the phantom `#9999` was skipped, not thrown.
+    expect(await api.getBlockedBy(blocked)).toEqual([realBlocker]);
+    // and the body codec (authoritative) still carries BOTH refs untouched.
+    const codec = parseBody((await api.getIssue(blocked)).description).blockedBy;
+    expect((codec as { issue: number }[]).map((r) => r.issue).sort()).toEqual(
+      [9999, store.parseRef(realBlocker).issue].sort(),
+    );
+  });
+});
+
 // ── Linear-only facet semantics (ADR-0020 / ADR-0015-as-amended / ADR-0017) ──
 // The parts of the four shared facet suites (triage/document/needs-attention/
 // closing) that can't see Linear's OWN extra behaviour, because the shared

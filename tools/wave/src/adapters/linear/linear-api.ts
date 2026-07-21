@@ -84,10 +84,32 @@ export interface LinearApi {
   /**
    * Identifiers of issues NATIVELY blocking this one, via Linear's own
    * blocked-by relation (ADR-0020 DoR-gate fix) — orthogonal to the
-   * body-codec `**Blocked by:**` line. `read()` unions both; native
-   * *write* stays a declared fast-follow (this seam is read-only for now).
+   * body-codec `**Blocked by:**` line. `read()` unions both. The mirroring
+   * *write* half is {@link addBlockedBy} (ADR-0020 fast-follow).
    */
   getBlockedBy(identifier: string): Promise<string[]>;
+  /**
+   * Mirror ONE body-codec blockedBy ref into a NATIVE Linear issue relation
+   * (ADR-0020 fast-follow, the write half of {@link getBlockedBy}): record that
+   * `blockerIdentifier` **blocks** `blockedIdentifier` — so from
+   * `blockedIdentifier`'s OWN perspective it is *blocked-by* `blockerIdentifier`
+   * (the asymmetric-blockedBy direction fixed in the Linear-adapter grill). The
+   * read union then surfaces `blockerIdentifier` in `blockedIdentifier`'s
+   * blockedBy, giving humans a visible relation on the Linear board.
+   *
+   * ADDITIVE-ONLY by contract: this ONLY ever creates a relation. It never
+   * deletes or updates one, so a human-drawn relation survives any re-scope and
+   * a stale mirror is harmless (the read-union's ownSlug-normalized dedup
+   * tolerates double representation). The body codec stays the canonical,
+   * store-agnostic home of blockedBy — this is a redundant board-visibility
+   * mirror, never the source of truth.
+   *
+   * Throws on an unresolvable identifier (either side) or a transport/GraphQL
+   * failure. The caller ({@link LinearIssuesStore}) treats a throw as a
+   * best-effort mirror skip: the authoritative body-codec write already
+   * happened, so a failed native mirror is logged/disclosed, never fatal.
+   */
+  addBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void>;
   /**
    * Whether the workspace has the GitHub integration installed — the substrate
    * the closing probe ({@link getPrAttachments}) depends on. Without it a

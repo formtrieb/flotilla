@@ -172,6 +172,38 @@ const CREATE_COMMENT_MUTATION = `mutation CreateComment($input: CommentCreateInp
   }
 }`;
 
+/**
+ * The native blocked-by WRITE half (ADR-0020 fast-follow): mirror ONE body-codec
+ * blockedBy ref into a Linear issue relation. `issueRelationCreate` takes an
+ * `IssueRelationCreateInput` of `{ issueId, relatedIssueId, type }` — a directed
+ * relation FROM `issueId` TO `relatedIssueId`.
+ *
+ * e2e-verify — STILL UNPROVEN. This wave ships NO live Linear probe (hermetic
+ * specs only); the first subsequent `wave-create` carrying a real blockedBy ref
+ * is the live gate. Pinned from Linear's documented `issueRelationCreate` /
+ * `IssueRelationCreateInput` shape, alongside the `description`/`labelIds`/
+ * `stateId` inputs already e2e-VERIFIED on {@link UPDATE_ISSUE_MUTATION}
+ * (FOR-23). Flip to VERIFIED on that first live mirror.
+ */
+const CREATE_ISSUE_RELATION_MUTATION = `mutation CreateIssueRelation($input: IssueRelationCreateInput!) {
+  issueRelationCreate(input: $input) {
+    success
+    issueRelation { id }
+  }
+}`;
+
+/**
+ * The `IssueRelationType` enum value for a blocking relation.
+ *
+ * e2e-verify — STILL UNPROVEN (this wave has no live probe). Pinned from
+ * Linear's documented `IssueRelationType` enum (`blocks | duplicate | related |
+ * similar`). It is the SAME literal the READ half already filters on —
+ * `toBlockedByIdentifiers` keeps `inverseRelations` nodes whose `type ===
+ * 'blocks'` — so read and write are pinned to one constant string, not two
+ * independent guesses. Flip to VERIFIED on the first live mirror.
+ */
+const BLOCKS_RELATION_TYPE = 'blocks';
+
 /** `addLabel`'s auto-create fallback: mirrors Task 3's seam-doc "auto-create missing labels" contract. */
 const CREATE_ISSUE_LABEL_MUTATION = `mutation CreateIssueLabel($input: IssueLabelCreateInput!) {
   issueLabelCreate(input: $input) {
@@ -381,6 +413,32 @@ export class RealLinearApi implements LinearApi {
   async getBlockedBy(identifier: string): Promise<string[]> {
     const node = await this.resolveIssue(identifier);
     return node.blockedByIdentifiers;
+  }
+
+  /**
+   * Mirror ONE blockedBy ref natively (ADR-0020 write half). Both identifiers
+   * are resolved to their UUIDs (either resolution throwing on an unknown id —
+   * the store treats that as a non-fatal single-mirror skip), then a `blocks`
+   * relation is created with the BLOCKER as the source (`issueId`) and the
+   * BLOCKED issue as the target (`relatedIssueId`): "blocker blocks blocked",
+   * i.e. from the blocked issue's own perspective it is blocked-BY the blocker
+   * ({@link BLOCKS_RELATION_TYPE} direction). ADDITIVE-ONLY — this method has no
+   * delete/update branch by construction (ADR-0020: never remove a relation).
+   */
+  async addBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void> {
+    const blockedUuid = (await this.resolveIssue(blockedIdentifier)).uuid;
+    const blockerUuid = (await this.resolveIssue(blockerIdentifier)).uuid;
+    const { data } = await this.gql('CreateIssueRelation', CREATE_ISSUE_RELATION_MUTATION, {
+      // issueId = the BLOCKER (source that "blocks"), relatedIssueId = the
+      // BLOCKED issue (target). This is the exact inverse the READ half reads
+      // back: the blocked issue's `inverseRelations` will then carry this
+      // node with `type: 'blocks'` and `issue` = the blocker.
+      input: { issueId: blockerUuid, relatedIssueId: blockedUuid, type: BLOCKS_RELATION_TYPE },
+    });
+    const payload = data.issueRelationCreate as Record<string, unknown> | undefined;
+    if (payload?.success !== true) {
+      throw new LinearApiError('CreateIssueRelation', 200, 'issueRelationCreate did not report success');
+    }
   }
 
   async hasGitHubIntegration(): Promise<boolean> {
