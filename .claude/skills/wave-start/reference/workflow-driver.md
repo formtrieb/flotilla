@@ -32,7 +32,7 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 1. **Embed per-row data in the script body** as `const ISSUES = [...]` — the Workflow `args` channel does not reliably deliver a large nested payload. Never depend on external `args` for structured input.
 2. **Compose briefs in-script** via a helper that string-interpolates the structured fields — a function field cannot survive JSON serialization through `args`.
 3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`.
-4. **Fill the Scribe compose-time constants** — `WAVE_CLI` (the absolute engine CLI invocation) and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts`), just as you fill `depsSetup`. Scribes run as plain `agent()` (no worktree isolation) in the **session cwd**, where the engine checkout and `.flotilla/` actually live — absolute paths make that explicit and independent of any agent's cwd.
+4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute), `WAVE_CLI` (repo-relative), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts`), just as you fill `depsSetup`. `WAVE_CLI` is deliberately **repo-relative, not absolute**: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe therefore hits the permission gate mid-wave and breaks AFK dispatch. This is proven practice, not a proposal — the wave dispatching this very script already runs this exact repo-relative form as its live probe. A Worker's worktree needs no extra step for this to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
 
 ## A worktree carries tracked files only (FOR-32, W4-F4)
 
@@ -101,8 +101,26 @@ const SCRIBE_RESULT_SCHEMA = {
 }
 
 // ── Scribe compose-time constants (Coordinator-filled, like depsSetup) ──
-// ABSOLUTE — Scribes run in the session cwd where the engine + .flotilla/ live.
-const WAVE_CLI = '<absolute engine CLI, e.g. "npx tsx /abs/path/to/tools/wave/src/cli.ts">'
+// REPO_ROOT is the one ABSOLUTE-by-necessity constant: Scribes run in the
+// session cwd (no worktree isolation), so their brief `cd`s here first
+// (step 1, below) before any WAVE_CLI call.
+const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
+// WAVE_CLI is REPO-RELATIVE, not absolute — the tracked `.claude/settings.json`
+// permission allowlist a dispatched agent inherits can only match
+// repo-relative invocation prefixes; an absolute form would embed a machine-
+// and client-specific path a public repo's tracked settings must never carry.
+// Worker AND Reviewer worktrees carry tracked files only (see "A worktree
+// carries tracked files only" above) — that tracked allowlist is the ONLY
+// permission source they inherit, so an absolute-form engine call from a
+// Worker's termination step or a Scribe hits the permission gate mid-wave and
+// breaks AFK dispatch. Proven practice, not a proposal: the wave dispatching
+// this very script already runs this exact repo-relative form as its live
+// probe. A Worker's worktree needs no `cd` for this to resolve — its
+// post-checkout cwd already IS a repo-relative root; a Scribe gets the same
+// guarantee via the REPO_ROOT `cd` above.
+const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts'
+// REPORTS_DIR / VERDICTS_DIR stay ABSOLUTE regardless — sidecar dirs are
+// addressed independent of whatever cwd the Scribe's REPO_ROOT `cd` leaves it in.
 const REPORTS_DIR = '<absolute .flotilla/waves/<slug>/reports>'
 const VERDICTS_DIR = '<absolute .flotilla/waves/<slug>/verdicts>'
 
@@ -206,6 +224,9 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 2. \`git push origin wave/${issue.id}-${issue.slug}\` (never \`-u\`, never to default).
 3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused, never duplicated — and its title/body are re-written to the \`--title\`/\`--body\` you pass** (\`updated: true\` in the JSON discloses it), so the body you compose reliably lands on the live PR (last-writer-wins). Compose a PR body whose last line is the store-kind close phrase, then run:
    \`\`\`bash
+   # WAVE_CLI is repo-relative; it resolves here because a worktree checkout
+   # is a full copy of tracked files, and step 4 above (depsSetup) already
+   # installed the local tsx binary this invocation needs.
    ${WAVE_CLI} host-pr create \\
      --branch wave/${issue.id}-${issue.slug} \\
      --title "${issue.prTitle}" \\
@@ -285,11 +306,14 @@ function scribeBrief(kind, issue, iter, payload) {
   const verb = kind === 'report' ? 'write-report' : 'write-verdict'
   return `You are a Wave Scribe. Persist one ${kind} sidecar THROUGH THE ENGINE — do not reformat, re-type, or "fix" anything in the payload.
 
-1. Write this EXACT JSON to a temp file, byte-for-byte via a heredoc (no edits):
+1. \`cd ${REPO_ROOT}\` — the compose-time absolute repo root. WAVE_CLI below is
+   repo-relative (tracked-settings permission match, see Authoring constraints
+   #4); this cd guarantees it resolves regardless of your starting cwd.
+2. Write this EXACT JSON to a temp file, byte-for-byte via a heredoc (no edits):
 ${JSON.stringify(payload)}
-2. Run:  ${WAVE_CLI} ${verb} <that-temp-file> --dir ${dir} --id ${issue.id} --iter ${iter}
+3. Run:  ${WAVE_CLI} ${verb} <that-temp-file> --dir ${dir} --id ${issue.id} --iter ${iter}
    (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload / id mismatch; exit 2 → usage/unreadable)
-3. If the exit code is non-zero, retry the SAME command ONCE, byte-identical.
+4. If the exit code is non-zero, retry the SAME command ONCE, byte-identical.
 Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure> }.`
 }
 
