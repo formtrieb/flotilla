@@ -163,6 +163,53 @@
  * This is deliberately independent of, and additive to, the plain worktree
  * removal above — `skipBranchHygiene: true` (or the FOR-10 crash-cleanup path,
  * which never calls `executeCleanup` at all) opts a caller out entirely.
+ *
+ * ── remote-ref-gone — a third rule-(b) signal (FOR-62 — a W14 accumulation
+ *    follow-up) ──────────────────────────────────────────────────────────────
+ *
+ * Live finding (docs/retros/2026-07-21-afk-polish-w14.md, W14-F1): rule (b)'s
+ * two signals — upstream-gone, tip-contained-in-default — structurally never
+ * fire for a wave dispatch branch in this repo's actual close flow. Workers
+ * push without `-u` (no upstream is ever configured, so `[gone]` can never
+ * appear), and `wave-close` lands every row via a SQUASH merge (the tip commit
+ * is never an ancestor of the default branch). Nine `wave/*` locals had
+ * accumulated after 13 waves — exactly the accumulation rule (b) exists to stop.
+ *
+ * `runBranchHygiene` now also accepts **remote-ref-gone** as merge evidence:
+ * `ops.probeRemoteRef(branch)` asks the remote, authoritatively, whether a ref
+ * for exactly that branch name still exists — `wave-close` deletes the remote
+ * branch immediately after a successful squash-merge, so a confirmed-absent
+ * remote ref IS the merge evidence the other two signals can't produce here.
+ * This is an ADDITIONAL sufficient condition alongside (not a replacement for)
+ * the existing two — any one of the three still qualifies a branch for rule (b).
+ *
+ * The safety-critical part is the FAILURE case: a probe that could not
+ * authoritatively determine "no ref" (network/transport error, a non-zero exit
+ * that is not git's own "no match" signal) must never be read as `gone` — that
+ * would turn a flaky network into silent data loss of a real, unlanded branch.
+ * {@link RemoteRefProbeResult} is therefore a 3-way discriminated union
+ * (`'gone' | 'present' | 'probe-failed'`) rather than a boolean, so the
+ * distinction is STRUCTURAL — carried in the return type itself — not inferred
+ * by the caller from "was stdout empty". {@link defaultBranchHygieneOps}'s
+ * implementation uses `git ls-remote --exit-code --heads origin <branch>`:
+ * git's own `--exit-code` contract exits `2` for an authoritatively-empty
+ * match (this is `gone`) and a DIFFERENT non-zero status for every other
+ * failure mode (network error, auth failure, remote unreachable — all
+ * `probe-failed`, carrying a machine-readable `reason`, NEVER treated as
+ * `gone`). A `probe-failed` branch is left alone by rule (b) — never deleted
+ * — but unlike the pre-existing "no evidence at all" refusal (silent, as
+ * before), it is NOT silent: `runBranchHygiene` records a
+ * {@link BranchHygieneSkip} (`reason: 'branch-probe-failed'`, plus the
+ * probe's own detail) onto {@link CleanupResult.branchHygieneSkipped} — the
+ * caller-visible surface, not just the ops-level `RemoteRefProbeResult` the
+ * seam itself returns — because an inconclusive probe is the one outcome a
+ * human reading the cleanup result cannot already infer from "the branch
+ * didn't move" (iter-2 coordinator resolution on top of the FOR-62 slice).
+ *
+ * A note on the non-throwing success branch itself: exit 0 is `present`
+ * UNCONDITIONALLY (never inferred from stdout length) — real
+ * `git ls-remote --exit-code` never exits 0 with empty stdout, a genuine
+ * no-match is always the structural exit-2 case above.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -256,6 +303,18 @@ export interface CleanupResult {
    * eligible.
    */
   branchesDeleted: string[];
+  /**
+   * `wave/*` branches local-branch hygiene left in place because their
+   * FOR-62 remote-ref probe FAILED (network/transport error) rather than
+   * authoritatively confirming presence or absence — additive surface for
+   * the "skipped with a machine-readable reason" AC (see
+   * {@link BranchHygieneSkip}). Distinct from `branchesDeleted` (nothing
+   * here was deleted) and from the ordinary "no merge evidence at all"
+   * refusal, which stays a silent no-op exactly as before FOR-62. Empty
+   * when hygiene is disabled (`skipBranchHygiene: true`) or nothing hit
+   * this case.
+   */
+  branchHygieneSkipped: BranchHygieneSkip[];
 }
 
 /**
@@ -587,6 +646,7 @@ export function executeCleanup(
   const removed: WorktreeEntry[] = [];
   const errors: Array<{ path: string; message: string }> = [];
   const branchesDeleted: string[] = [];
+  const branchHygieneSkipped: BranchHygieneSkip[] = [];
 
   for (const wt of plan.selected) {
     try {
@@ -597,9 +657,9 @@ export function executeCleanup(
       // `errors` classification. See `runBranchHygiene`'s doc comment for
       // the exact per-branch rules.
       if (branchHygiene) {
-        branchesDeleted.push(
-          ...runBranchHygiene(wt, branchHygiene, defaultBranch),
-        );
+        const hygieneResult = runBranchHygiene(wt, branchHygiene, defaultBranch);
+        branchesDeleted.push(...hygieneResult.deleted);
+        branchHygieneSkipped.push(...hygieneResult.skipped);
       }
     } catch (err) {
       errors.push({
@@ -609,7 +669,7 @@ export function executeCleanup(
     }
   }
 
-  return { removed, skipped: plan.skipped, errors, branchesDeleted };
+  return { removed, skipped: plan.skipped, errors, branchesDeleted, branchHygieneSkipped };
 }
 
 /**
@@ -624,23 +684,34 @@ export function executeCleanup(
  *       never carry unique work.
  *   (b) the worktree's OWN checked-out branch (`wt.branch`), when it looks
  *       like a wave dispatch branch (`wave/...`) — force-deleted ONLY when
- *       there is merge evidence: its upstream is confirmed gone, or its tip
- *       is already contained in the default branch. Neither signal present
- *       → real, unlanded work → left alone.
+ *       there is merge evidence: its upstream is confirmed gone, its tip is
+ *       already contained in the default branch, or (FOR-62) the remote ref
+ *       for this exact branch name is authoritatively confirmed gone (see
+ *       the file-level "remote-ref-gone" doc section above — this is the
+ *       signal that actually fires in this repo's no-upstream/squash-merge
+ *       close flow). A `probe-failed` remote-ref result is NEVER treated as
+ *       evidence — it contributes nothing, exactly like "no evidence" from
+ *       the other two checks. No signal present → real, unlanded work (or an
+ *       inconclusive probe) → left alone.
  *
  * Rule (c), the safety floor for both: `listCheckedOutBranches()` is
  * queried FRESH on every call (i.e. after this worktree's own removal
  * already happened) — a branch still checked out in some OTHER live
  * worktree is never deleted.
  *
- * Returns the branch names actually deleted (0, 1, or 2 entries).
+ * Returns the branch names actually deleted (0, 1, or 2 entries) alongside
+ * any {@link BranchHygieneSkip} entries — today, only ever populated when
+ * rule (b)'s remote-ref probe itself FAILED (FOR-62 coordinator resolution):
+ * the ordinary "no merge evidence at all" refusal is NOT recorded here and
+ * remains a silent no-op, exactly as before FOR-62.
  */
 function runBranchHygiene(
   wt: WorktreeEntry,
   ops: BranchHygieneOps,
   defaultBranch: string,
-): string[] {
+): { deleted: string[]; skipped: BranchHygieneSkip[] } {
   const deleted: string[] = [];
+  const skipped: BranchHygieneSkip[] = [];
   const checkedOut = ops.listCheckedOutBranches();
 
   const throwaway = `worktree-${nodePath.basename(wt.path)}`;
@@ -654,15 +725,36 @@ function runBranchHygiene(
     dispatchBranch !== null &&
     dispatchBranch !== throwaway &&
     dispatchBranch.startsWith('wave/') &&
-    !checkedOut.has(dispatchBranch) &&
-    (ops.isUpstreamGone(dispatchBranch) ||
-      ops.isContainedInDefaultBranch(dispatchBranch, defaultBranch))
+    !checkedOut.has(dispatchBranch)
   ) {
-    ops.deleteBranch(dispatchBranch);
-    deleted.push(dispatchBranch);
+    if (
+      ops.isUpstreamGone(dispatchBranch) ||
+      ops.isContainedInDefaultBranch(dispatchBranch, defaultBranch)
+    ) {
+      ops.deleteBranch(dispatchBranch);
+      deleted.push(dispatchBranch);
+    } else {
+      // Neither earlier signal fired — the remote-ref probe (FOR-62) is the
+      // deciding evidence. Its full result (not just a boolean) is inspected
+      // here so a genuine `probe-failed` can be threaded onto the
+      // caller-visible `CleanupResult.branchHygieneSkipped`, distinct from a
+      // `present` result (authoritatively NOT evidence — correctly left
+      // alone, nothing ambiguous to report).
+      const probe = ops.probeRemoteRef(dispatchBranch);
+      if (probe.status === 'gone') {
+        ops.deleteBranch(dispatchBranch);
+        deleted.push(dispatchBranch);
+      } else if (probe.status === 'probe-failed') {
+        skipped.push({
+          branch: dispatchBranch,
+          reason: 'branch-probe-failed',
+          detail: probe.reason,
+        });
+      }
+    }
   }
 
-  return deleted;
+  return { deleted, skipped };
 }
 
 // ─── Convenience wrapper ───────────────────────────────────────────────────────
@@ -927,6 +1019,49 @@ export function defaultRedispatchCleanupOps(repoRoot: string): RedispatchCleanup
 // ─── Local branch hygiene (FOR-59) ──────────────────────────────────────────
 
 /**
+ * Result of an authoritative remote-ref probe for ONE branch name (FOR-62 —
+ * see the file-level "remote-ref-gone" doc section for the full writeup). A
+ * discriminated union, deliberately NOT a boolean: a probe that
+ * authoritatively confirms no matching ref (`'gone'`) must be structurally
+ * distinguishable from a probe that simply could not complete
+ * (`'probe-failed'`) — the latter is NEVER treated as evidence of deletion,
+ * no matter how empty its output looked.
+ */
+export type RemoteRefProbeResult =
+  | { status: 'gone' }
+  | { status: 'present' }
+  | { status: 'probe-failed'; reason: string };
+
+/**
+ * Machine-readable cause recorded on {@link CleanupResult.branchHygieneSkipped}
+ * (FOR-62 coordinator resolution) — today the only member is the case where
+ * rule (b)'s remote-ref probe itself FAILED (network/transport error) rather
+ * than authoritatively confirming the branch present or gone. This is
+ * deliberately NOT recorded for the pre-existing "no evidence at all" refusal
+ * (all three signals came back negative/absent) — that stays the silent,
+ * unremarkable no-op it always was; only an inconclusive PROBE is surfaced,
+ * because that is the one outcome a human/caller cannot already infer from
+ * "the branch didn't move".
+ */
+export type BranchHygieneSkipReason = 'branch-probe-failed';
+
+/**
+ * One `wave/*` branch that local-branch hygiene left in place because its
+ * FOR-62 remote-ref probe could not authoritatively complete — additive,
+ * caller-visible surface (see {@link CleanupResult.branchHygieneSkipped})
+ * distinct from the ops-level {@link RemoteRefProbeResult} the seam itself
+ * returns, which the caller of `executeCleanup` never sees directly.
+ */
+export interface BranchHygieneSkip {
+  /** The `wave/*` branch left in place. */
+  branch: string;
+  /** Machine-readable cause. */
+  reason: BranchHygieneSkipReason;
+  /** Human-readable detail carried over from the underlying probe's `reason`. */
+  detail: string;
+}
+
+/**
  * Injectable local-branch-hygiene seam, mirroring the
  * `WorktreeRemover`/`RedispatchCleanupOps` injection pattern above. All
  * methods are read/best-effort — `deleteBranch` is IDEMPOTENT (no-op, never
@@ -954,6 +1089,18 @@ export interface BranchHygieneOps {
    * false positive.
    */
   isContainedInDefaultBranch(branch: string, defaultBranch: string): boolean;
+  /**
+   * Authoritative remote-ref probe for exactly `branch` (FOR-62) — a third,
+   * additional merge-evidence path for rule (b): `wave-close` deletes the
+   * remote branch right after a successful squash-merge, so a confirmed-gone
+   * remote ref is merge evidence even when neither upstream-tracking nor
+   * tip-containment can ever fire (no `-u` push, squash merge). MUST return
+   * `'probe-failed'` — never `'gone'` — for anything short of an
+   * authoritative "no matching ref" answer from the remote (network error,
+   * non-zero exit that isn't the remote's own "not found" signal, timeout,
+   * ...); see {@link RemoteRefProbeResult}.
+   */
+  probeRemoteRef(branch: string): RemoteRefProbeResult;
   /**
    * Force-delete a local branch ref. MUST NOT throw when the branch is
    * already absent (idempotent no-op).
@@ -1013,6 +1160,41 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
         // defaultBranch locally, ...) — both mean "no evidence", never
         // treated as a false positive.
         return false;
+      }
+    },
+    probeRemoteRef(branch: string): RemoteRefProbeResult {
+      // `--exit-code` is git's own authoritative "did we find a match" signal:
+      // exit 0 with output = at least one matching ref found; exit 2 = the
+      // remote was reached successfully and reported NO matching ref for
+      // exactly this branch name (git's documented "no matching refs" exit
+      // code) — THIS, and only this, is `gone`. Any other outcome (a
+      // different non-zero status, a thrown error with no `status` at all —
+      // e.g. `git` itself missing, a timeout, DNS/network failure) is a probe
+      // that could not authoritatively answer and is always `probe-failed`,
+      // never `gone` — the gone-vs-failure distinction is carried by the exit
+      // status itself, not inferred from whether stdout happened to be empty.
+      try {
+        execFileSync(
+          'git',
+          ['ls-remote', '--exit-code', '--heads', 'origin', branch],
+          {
+            cwd: repoRoot,
+            encoding: 'utf-8',
+            timeout: 15_000,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        // Exit 0 is git's own "at least one matching ref found" signal —
+        // `present` UNCONDITIONALLY. Real `git ls-remote --exit-code` never
+        // exits 0 with empty stdout (a true no-match is always the `2` exit
+        // handled in the catch below), so there is no stdout-length case to
+        // infer from here; doing so would contradict the exit-code-is-the-
+        // only-authority contract this function documents (FOR-62 iter-2 fix).
+        return { status: 'present' };
+      } catch (err) {
+        const exitStatus = (err as { status?: unknown }).status;
+        if (exitStatus === 2) return { status: 'gone' };
+        return { status: 'probe-failed', reason: describeError(err) };
       }
     },
     deleteBranch(branch: string): void {
