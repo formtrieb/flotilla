@@ -57,6 +57,8 @@ export class InMemoryLinearApi implements LinearApi {
   private githubIntegrationInstalled = true;
   /** When set, the production {@link addBlockedBy} mirror rejects with it (models a failed `issueRelationCreate`). */
   private relationWriteError: Error | undefined;
+  /** identifier → remaining {@link setState} calls to silently drop (FOR-64 / consumer KW-F2 fault injector). */
+  private readonly droppedStateWrites = new Map<string, number>();
   private counter = 0; // per-instance; never reset between calls
   private docCounter = 0;
   private readonly teamKey: string;
@@ -121,6 +123,16 @@ export class InMemoryLinearApi implements LinearApi {
     const issue = this.mustGet(identifier);
     if (!this.catalog.some((s) => s.name === stateName)) {
       throw new Error(`Linear state not found in the team workflow: "${stateName}"`);
+    }
+    const dropsLeft = this.droppedStateWrites.get(identifier);
+    if (dropsLeft && dropsLeft > 0) {
+      // Report success but drop the write — models the live silent-transition
+      // failure class (FOR-64 / consumer KW-F2): `setState` resolves normally
+      // while `issue.stateName` is left untouched, so a caller's read-back
+      // sees the pre-write state.
+      if (dropsLeft === 1) this.droppedStateWrites.delete(identifier);
+      else this.droppedStateWrites.set(identifier, dropsLeft - 1);
+      return;
     }
     issue.stateName = stateName;
   }
@@ -270,6 +282,22 @@ export class InMemoryLinearApi implements LinearApi {
    */
   failRelationWrites(error: Error | null): void {
     this.relationWriteError = error ?? undefined;
+  }
+
+  /**
+   * Test affordance (FOR-64 / consumer KW-F2): make the next `times` calls to
+   * {@link setState} for `identifier` resolve successfully WITHOUT actually
+   * changing the stored state — models the live silent-transition failure
+   * class that motivated {@link LinearIssuesStore}'s verify-after-write guard
+   * on `transition()` (a `setState` mutation that reports `success: true`
+   * while the issue's real state never moves). Self-clearing: once the drop
+   * budget is spent, subsequent calls apply normally, so a caller's retry
+   * after the guard throws can succeed. NOT part of `LinearApi` — mirrors
+   * `failRelationWrites`'s stance as a test-only fault injector.
+   */
+  simulateDroppedStateWrite(identifier: string, times = 1): void {
+    this.mustGet(identifier);
+    this.droppedStateWrites.set(identifier, times);
   }
 
   // ── internals ───────────────────────────────────────────────────────────────

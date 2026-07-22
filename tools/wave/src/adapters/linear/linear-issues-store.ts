@@ -66,7 +66,54 @@ const NEEDS_ATTENTION_LABEL = 'wave/needs-attention';
 /** State categories that project to the terminal `done` bookend (ADR-0020, lossy per ADR-0002 — a duplicate-close is a close). */
 const CLOSED_TYPES = new Set(['completed', 'canceled', 'duplicate']);
 
-/** Claim-rung → workflow-state-NAME mapping + the unclaim/unplanned targets (ADR-0020). */
+/**
+ * Thrown by {@link LinearIssuesStore.transition} when a `setState` call
+ * reported success but an immediate read-back shows a DIFFERENT state
+ * (consumer KW-F2, live retro 2026-07-21): on the first Linear consumer wave,
+ * three consecutive `transition()` calls each got `success: true` back from
+ * Linear, yet the issue's own stateHistory shows no state change for ~50
+ * minutes — the coarse rung silently lied to every human and to
+ * `listClaimed`-based planning until a human noticed before the engine did.
+ * Root cause never reproduced; eventual consistency at Linear's write/read
+ * edge is the leading suspicion (three identical `success:true` responses
+ * make an adapter-side bug unlikely). This guard makes the whole failure
+ * class visible AT THE WRITE SITE instead of leaving it to a human: one extra
+ * read per transition, thrown loud with the issue id and both state names so
+ * the caller can retry or flag rather than silently drift.
+ */
+export class LinearTransitionVerifyError extends Error {
+  constructor(
+    readonly issueId: string,
+    readonly expectedState: string,
+    readonly actualState: string,
+  ) {
+    super(
+      `LinearIssuesStore.transition(${issueId}): setState("${expectedState}") reported ` +
+        `success, but reading the issue back immediately shows state "${actualState}" — ` +
+        'the write was silently dropped (verify-after-write guard, consumer KW-F2).',
+    );
+    this.name = 'LinearTransitionVerifyError';
+  }
+}
+
+/**
+ * Claim-rung → workflow-state-NAME mapping + the unclaim/unplanned targets
+ * (ADR-0020).
+ *
+ * **Side-finding (consumer KW-F2 retro, 2026-07-21 — documented here so the
+ * next coordinator does not re-investigate it):** `create()` never sets a
+ * `stateId` on the `issueCreate` mutation (see `real-linear-api.ts`), so a
+ * freshly engine-created issue lands wherever the TEAM's own default landing
+ * state is. On a team with Linear's Triage feature enabled, that default is
+ * the native `Triage` inbox column — NOT `Backlog`
+ * (`DEFAULT_LINEAR_STATES.unclaimTarget`), even though `unclaimTarget` is
+ * where `unclaim()` and the cosmetic triage-move write BACK to. A
+ * newly-created issue therefore does not visibly leave `Triage` until either
+ * it is claimed (`transition(id, 'queued')` moves it to `queued`'s mapped
+ * state) or an explicit `applyTriage()` call fires the cosmetic inbox-clear
+ * (see `applyTriage`, below). This is expected tracker behaviour, not an
+ * adapter bug.
+ */
 export interface LinearStateMap {
   queued: string;
   inFlight: string;
@@ -337,7 +384,18 @@ export class LinearIssuesStore implements IssueStore {
     // The claim ledger IS the workflow state (ADR-0020): set the single mapped
     // state NAME. States are mutually exclusive by construction (one state at a
     // time) and idempotent (setting the same name twice is a no-op).
-    await this.api.setState(id, this.stateNameForRung(rung));
+    const expected = this.stateNameForRung(rung);
+    await this.api.setState(id, expected);
+    // Verify-after-write (consumer KW-F2, live retro 2026-07-21): a
+    // success-reported `setState` can silently drop the write (see
+    // {@link LinearTransitionVerifyError} for the incident this guards
+    // against). One extra read per flip makes the entire failure class
+    // visible at the write site — the skill-side read-backs used as a
+    // stopgap during that wave saw zero further incidents once this landed.
+    const actual = (await this.api.getIssue(id)).stateName;
+    if (actual !== expected) {
+      throw new LinearTransitionVerifyError(id, expected, actual);
+    }
   }
 
   async unclaim(id: string): Promise<void> {
