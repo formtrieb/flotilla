@@ -17,6 +17,8 @@ The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx t
 | `issue-store listDocuments` | draw the PRD panel (`DocumentView[]`) |
 | `cross-wave --candidates <f.json> --claimed <f.json> --repo-root <dir>` | cross-wave parallel-safety check (`CrossWaveResult`) |
 
+`cross-wave` is wave-plan's overlap path (it unions candidates and claims). The standalone `conflict-map` CLI is a different, narrower tool — if you ever reach for it on a github/linear roster for a quick overlap check, it is **not** path-only: `conflict-map --id <id> [--id <id> ...] [--repo-root <dir>] [--config <path>]` is the store-backed (non-file) entrypoint that reads each id's `Files` from the `IssueStore`, so a bare store id no longer forces exporting paths or hand-rolling a tsx one-off (bare `conflict-map <path>...` stays the file form).
+
 ## Exact sequence
 
 ```bash
@@ -88,6 +90,17 @@ consumed(prd) = candidates.some(c => c.parent === prd.id)
 ```
 
 An un-consumed PRD has no slices yet. Flag it: "run `to-issues` to slice". A PRD is never in `candidates` — the Document facet and the issue facet are separate, and a PRD carries no eligibility marker.
+
+## Public-API-change pairing derivation (KW-F4)
+
+The public-API-change pairing advisory (SKILL step 3b) is derived **skill-side** from the candidate `risk` fields already loaded by `listOpen` — there is no engine call and nothing is persisted (wave-plan writes nothing). The file-overlap check cannot see it: two rows that each change a global contract can force landing rework with **disjoint `Files`**, the semantic cross-suite conflict the file map is blind to (it broke 27 test assertions on the first Linear consumer wave, past a green conflict-map — both rows were `public-API-change`).
+
+```
+apiChangers = candidates.filter(c => c.risk === 'public-API-change')
+// two or more → surface the whole set as ONE advisory pairing
+```
+
+When `apiChangers` has **two or more** members, surface them as an advisory pairing — the same human-decided, never-auto-excluded treatment `intraWaveBlockedByPairs` get downstream (wave-create). The advisory: each row changes a global contract, so expect reconciled-merge landing rework even though the `Files` are disjoint; plan the wave-close reconciled-merge verify, and consider serializing the pair or splitting it across waves. The coordinator decides; wave-plan only raises it.
 
 ## Exit codes for `cross-wave`
 

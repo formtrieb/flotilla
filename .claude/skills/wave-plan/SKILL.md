@@ -62,6 +62,12 @@ The result distinguishes two overlap kinds:
 
 Report: "disjoint → parallel-safe" or "overlaps at `<file>` → serialize" (or sequence within-wave for intra-wave conflicts). Give enough detail that the coordinator can act: which issue ids, which files.
 
+### 3b. Public-API-change pairing advisory (KW-F4)
+
+The step-3 file-overlap check is structurally blind to *semantic* cross-suite conflicts. Two candidates that each change a **global contract** can force landing rework even with **disjoint `Files`** — an API-wide change in one meets a new or success-path test in the other on the reconciled merge. That is exactly what broke 27 test assertions on the first Linear consumer wave, past a green conflict-map: **both** colliding rows carried `Risk: public-API-change`.
+
+So surface it at plan time, the same advisory way intra-wave Blocked-by pairs are surfaced downstream — a pairing the **human decides on**, never an auto-exclusion. When **two or more** candidates in the proposed set carry `Risk: public-API-change`, flag them as an advisory pairing. Derive it skill-side from the candidate `risk` fields already in hand from `listOpen` — no engine call, nothing persisted (see [reference/plan-mechanics.md](reference/plan-mechanics.md)). The advisory reads: *these rows each change a global contract; expect landing rework on the reconciled merge even though their `Files` are disjoint — plan the wave-close reconciled-merge verify, and consider serializing them or splitting them across waves.* The coordinator decides whether to run them together, sequence them, or split them; wave-plan only raises the flag.
+
 ### 4. PRD panel
 
 ```bash
@@ -76,6 +82,7 @@ Present the full picture:
 - Eligible candidates with their Risk, Worker, and Blocked-by. Flag any `HITL-required` rows.
 - Cross-wave result: parallel-safe or serialize (with the conflicting files and issue ids).
 - Intra-wave conflicts, if any, so the coordinator can plan the sequence.
+- Public-API-change pairing advisory (KW-F4): any two-or-more `public-API-change` candidates flagged as a pairing — expect reconciled-merge landing rework even with disjoint `Files`; the human decides whether to serialize or split them across waves.
 - PRD panel: consumed (✓) and un-consumed (needs slicing).
 
 **Persist nothing.** The human picks the ids they want in the wave and hands them to `wave-create`.
@@ -90,3 +97,5 @@ Present the full picture:
 - **Conflating `HITL-required` (Worker) with `ready-for-human` (triage terminal).** `ready-for-human` never enters a wave and never appears in `listOpen`. `HITL-required` is in the eligible set and must be surfaced.
 - **Reaching for raw `gh`.** wave-plan never touches a tracker directly — everything goes through the engine CLI (`{{wave-cli}}`), which selects the configured store.
 - **Omitting `--repo-root` on `cross-wave` (FOR-38).** This is not a harmless shortcut — it silently degrades glob-pattern conflict detection to exact-text matching only, and a live finding showed it drop conflict cells (17 vs. 40 on the same roster). Always pass it. If `cross-wave` ever returns a non-empty `warnings`, surface it — do not report `parallelSafe: true` as clean when patterns went unevaluated.
+- **Treating a green file-overlap check as proof two `public-API-change` rows are safe together (KW-F4).** Two or more `public-API-change` candidates in one wave predict landing rework even with disjoint `Files` — the semantic cross-suite conflict the file map cannot see. Surface them as an advisory pairing (step 3b), the same way intra-wave Blocked-by pairs are surfaced; the human decides, do not auto-exclude.
+- **Reaching for a path-only `conflict-map` (or a tsx one-off) on store-backed ids.** wave-plan's overlap reasoning goes through `cross-wave` on the `IssueView[]` arrays, not the standalone `conflict-map` CLI. If you *do* reach for `conflict-map` directly on a github/linear roster, it is no longer path-only: `conflict-map --id <id> [--id <id> ...] [--repo-root <dir>] [--config <path>]` is the store-backed (non-file) entrypoint that reads each id's `Files` from the `IssueStore` — never export paths or hand-roll a tsx script to feed it.
