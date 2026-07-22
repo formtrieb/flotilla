@@ -2049,6 +2049,40 @@ describe('render-verdict subcommand', () => {
     expect(stderrBuf).toBe('');
   });
 
+  it('threads the <id> argument into the render (mention footgun): a foreign id in evidence is neutralized, the own id passes through — no new caller-side step', () => {
+    // A verdict whose evidence + advisory each smuggle a foreign tracker id
+    // (the W19 shape) plus the row's own id as the close target. The verb
+    // resolves the sidecar by <id> AND renders with that same <id> as the own
+    // id — the whole scrub happens inside `render-verdict` with no extra step.
+    const payloadFile = join(dir, 'v1.json');
+    writeFileSync(
+      payloadFile,
+      JSON.stringify(
+        verdictAckedPayload({
+          acVerification: [
+            { ac: 'AC1', met: 'met', evidence: 'same fix as FOR-72; closes FOR-16 (this row)' },
+          ],
+          reviewerFocusItems: ['sibling wave/FOR-55 overlaps — merge-tree'],
+        }),
+      ),
+      'utf-8',
+    );
+    expect(
+      main(['write-verdict', payloadFile, '--dir', verdictsDir, '--id', 'FOR-16', '--iter', '1']),
+    ).toBe(0);
+    stdoutBuf = '';
+
+    const code = main(['render-verdict', verdictsDir, 'FOR-16', '--anchor', RENDER_ANCHOR]);
+    expect(code).toBe(0);
+    // The own id (the <id> argument) passes through — it is the close target.
+    expect(stdoutBuf).toContain('FOR-16');
+    // Every OTHER tracker-id-shaped token is neutralized (contiguous token gone).
+    expect(stdoutBuf).not.toContain('FOR-72');
+    expect(stdoutBuf).not.toContain('FOR-55');
+    // An integration scan of the rendered markdown finds ONLY the own id.
+    expect(stdoutBuf.match(/[A-Z][A-Z0-9]*-\d+|#\d+/g) ?? []).toEqual(['FOR-16']);
+  });
+
   it('max-iter selection: a changes-requested iter-1 verdict is superseded by the approve iter-2 re-dispatch verdict in the render', () => {
     const iter1 = join(dir, 'v1.json');
     writeFileSync(

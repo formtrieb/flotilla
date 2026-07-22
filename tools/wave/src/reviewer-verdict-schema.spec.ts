@@ -23,6 +23,7 @@ import {
   AC_STATUS_VALUES,
   REVIEWER_VERDICT_JSON_SCHEMA,
   metAcIndexes,
+  neutralizeForeignTrackerIds,
   renderVerdictSection,
   validateReviewerVerdict,
   type ReviewerVerdict,
@@ -328,18 +329,20 @@ describe('renderVerdictSection — the PR-body render (FOR-16)', () => {
   });
 
   it('renders the per-AC verification table with met/partial/not-met + evidence', () => {
+    // Non-id-shaped AC labels (`AC1`, not `#1`) so this row-rendering test is not
+    // entangled with the foreign-id scrub — that is covered on its own below.
     const v = validVerdict({
       acVerification: [
-        { ac: '#1', met: 'met', evidence: 'tools/wave/src/cli.ts:42' },
-        { ac: '#2', met: 'partial', evidence: 'reviewed, one edge case missing' },
-        { ac: '#3', met: 'not-met', evidence: 'not implemented' },
+        { ac: 'AC1', met: 'met', evidence: 'tools/wave/src/cli.ts:42' },
+        { ac: 'AC2', met: 'partial', evidence: 'reviewed, one edge case missing' },
+        { ac: 'AC3', met: 'not-met', evidence: 'not implemented' },
       ],
     });
     const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
     expect(out).toContain('| AC | Status | Evidence |');
-    expect(out).toContain('| #1 | met | tools/wave/src/cli.ts:42 |');
-    expect(out).toContain('| #2 | partial | reviewed, one edge case missing |');
-    expect(out).toContain('| #3 | not-met | not implemented |');
+    expect(out).toContain('| AC1 | met | tools/wave/src/cli.ts:42 |');
+    expect(out).toContain('| AC2 | partial | reviewed, one edge case missing |');
+    expect(out).toContain('| AC3 | not-met | not implemented |');
   });
 
   it('renders "no acceptance criteria declared" for an empty acVerification', () => {
@@ -366,16 +369,18 @@ describe('renderVerdictSection — the PR-body render (FOR-16)', () => {
   });
 
   it('renders advisory notes (reviewerFocusItems) as a bullet list', () => {
+    // Id-free advisory text so this bullet-list test is not entangled with the
+    // foreign-id scrub (covered on its own below).
     const v = validVerdict({
       reviewerFocusItems: [
         '(advisory) consider a stall-watchdog follow-up',
-        'sibling wave/FOR-55 touches the same file — merge-tree overlap',
+        'a sibling branch touches the same file — merge-tree overlap',
       ],
     });
     const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
     expect(out).toContain('**Advisories:**');
     expect(out).toContain('- (advisory) consider a stall-watchdog follow-up');
-    expect(out).toContain('- sibling wave/FOR-55 touches the same file — merge-tree overlap');
+    expect(out).toContain('- a sibling branch touches the same file — merge-tree overlap');
   });
 
   it('renders "- none" when there are no advisory notes', () => {
@@ -398,8 +403,8 @@ describe('renderVerdictSection — the PR-body render (FOR-16)', () => {
     const written = validVerdict({
       verdict: 'approve',
       acVerification: [
-        { ac: '#1', met: 'met', evidence: 'tools/wave/src/cli.ts:42' },
-        { ac: '#2', met: 'met', evidence: 'tools/wave/src/reviewer-verdict-schema.ts:99' },
+        { ac: 'AC1', met: 'met', evidence: 'tools/wave/src/cli.ts:42' },
+        { ac: 'AC2', met: 'met', evidence: 'tools/wave/src/reviewer-verdict-schema.ts:99' },
       ],
       lintTestSummary: '1548/1548 green, 0 type errors',
     });
@@ -413,27 +418,29 @@ describe('renderVerdictSection — the PR-body render (FOR-16)', () => {
       anchorSha: ANCHOR,
     });
     expect(out).toContain('**Verdict:** approve (iteration 1)');
-    expect(out).toContain('| #1 | met | tools/wave/src/cli.ts:42 |');
+    expect(out).toContain('| AC1 | met | tools/wave/src/cli.ts:42 |');
     expect(out).toContain('**Verify:** 1548/1548 green, 0 type errors');
   });
 
   it('after a changes-requested → re-dispatch cycle, the render carries the LATEST iteration — not the first (AC3)', () => {
-    // iter 1: changes-requested, one AC still failing.
+    // iter 1: changes-requested, one AC still failing. (Non-id-shaped AC labels
+    // — `AC1`/`AC2`, not `#1`/`#2` — keep this iteration-selection test out of
+    // the foreign-id scrub, covered on its own below.)
     const iter1 = validVerdict({
       verdict: 'changes-requested',
       acVerification: [
-        { ac: '#1', met: 'met', evidence: 'a' },
-        { ac: '#2', met: 'not-met', evidence: 'missing test' },
+        { ac: 'AC1', met: 'met', evidence: 'a' },
+        { ac: 'AC2', met: 'not-met', evidence: 'missing test' },
       ],
-      reviewerFocusItems: ['add the missing test for AC #2'],
+      reviewerFocusItems: ['add the missing test for the second AC'],
       lintTestSummary: '20/21 green',
     });
     // iter 2 (post re-dispatch): approve, both ACs now met.
     const iter2 = validVerdict({
       verdict: 'approve',
       acVerification: [
-        { ac: '#1', met: 'met', evidence: 'a' },
-        { ac: '#2', met: 'met', evidence: 'fixed in re-dispatch' },
+        { ac: 'AC1', met: 'met', evidence: 'a' },
+        { ac: 'AC2', met: 'met', evidence: 'fixed in re-dispatch' },
       ],
       reviewerFocusItems: [],
       lintTestSummary: '21/21 green',
@@ -449,12 +456,174 @@ describe('renderVerdictSection — the PR-body render (FOR-16)', () => {
     const latest = renderVerdictSection(sidecar2, { iteration: 2, anchorSha: ANCHOR });
 
     expect(latest).toContain('**Verdict:** approve (iteration 2)');
-    expect(latest).toContain('| #2 | met | fixed in re-dispatch |');
+    expect(latest).toContain('| AC2 | met | fixed in re-dispatch |');
     expect(latest).toContain('**Verify:** 21/21 green');
     expect(latest).toContain('**Advisories:**\n- none');
 
     expect(stale).not.toEqual(latest);
     expect(stale).toContain('**Verdict:** changes-requested (iteration 1)');
+  });
+});
+
+// ─── foreign-tracker-id scrub in the render (the mention-footgun backstop) ──
+//
+// On a tracker with a native GitHub integration EVERY bare tracker id in a
+// merged PR's title/body is linkable and actable (the mention footgun,
+// wave-shared Convention 4 — burned live twice). The render is the single-owner
+// composition of the `## Reviewer verdict` PR-body section, so it is the
+// structural place to neutralize a foreign id that slipped into the Reviewer's
+// evidence. The row's OWN id is the intended close target and passes through;
+// every OTHER id-shaped token is neutralized into a spelling that stays
+// human-readable but a native integration's id scan can no longer match.
+
+// The word joiner the render inserts before the digits of a neutralized id. It
+// is zero-width, so the id renders unchanged to a human; but the digits are no
+// longer adjacent to the id's sigil/hyphen, so `#\d+` / `[A-Z]+-\d+` no longer
+// matches. Strip it back out and the original human-readable token returns.
+const WJ = '\u2060';
+const stripJoiner = (s: string): string => s.replace(new RegExp(WJ, 'g'), '');
+
+/**
+ * A native tracker integration's id scan: bare Linear team ids (`[A-Z]+-\d+`)
+ * and bare GitHub issue refs (`#\d+`). The test asserts the render output holds
+ * NO scannable token (except an exempt own id) — i.e. this scan, run over the
+ * rendered markdown, finds nothing to linkify.
+ */
+function integrationIdScan(rendered: string): string[] {
+  return rendered.match(/[A-Z][A-Z0-9]*-\d+|#\d+/g) ?? [];
+}
+
+describe('neutralizeForeignTrackerIds — the unit transform', () => {
+  it('breaks a Linear team id so an integration scan misses it, yet a human still reads it', () => {
+    const out = neutralizeForeignTrackerIds('see FOR-16 for context', 'FOR-74');
+    expect(out).not.toContain('FOR-16'); // the contiguous scannable token is gone
+    expect(out).toContain(`FOR-${WJ}16`); // broken by the joiner
+    expect(stripJoiner(out)).toBe('see FOR-16 for context'); // human still reads FOR-16
+    expect(integrationIdScan(out)).toEqual([]);
+  });
+
+  it('breaks a GitHub issue ref the same way', () => {
+    const out = neutralizeForeignTrackerIds('same failure as #99', 'FOR-74');
+    expect(out).not.toContain('#99');
+    expect(out).toContain(`#${WJ}99`);
+    expect(stripJoiner(out)).toBe('same failure as #99');
+    expect(integrationIdScan(out)).toEqual([]);
+  });
+
+  it('leaves the row OWN id untouched — it is the intended close target', () => {
+    const out = neutralizeForeignTrackerIds('this is FOR-74, the close target', 'FOR-74');
+    expect(out).toBe('this is FOR-74, the close target');
+    expect(integrationIdScan(out)).toEqual(['FOR-74']); // own id is deliberately still scannable
+  });
+
+  it('a bare-number own id (GitHub store) also exempts its `#N` link form', () => {
+    // The GitHub store mints a bare-number id ("42"); its linkable spelling is
+    // "#42". Both are the own close target; a foreign "#99" is not.
+    const out = neutralizeForeignTrackerIds('own #42 vs foreign #99', '42');
+    expect(out).toContain('#42'); // own link form passes through
+    expect(out).not.toContain('#99');
+    expect(out).toContain(`#${WJ}99`);
+  });
+
+  it('with NO own id, neutralizes ALL id-shaped tokens (fail-safe default)', () => {
+    const out = neutralizeForeignTrackerIds('FOR-74 and FOR-16 and #99');
+    expect(out).not.toContain('FOR-74'); // even the would-be own id — nothing is exempt
+    expect(out).not.toContain('FOR-16');
+    expect(out).not.toContain('#99');
+    expect(integrationIdScan(out)).toEqual([]);
+    expect(stripJoiner(out)).toBe('FOR-74 and FOR-16 and #99'); // all still human-readable
+  });
+
+  it('neutralizes multiple foreign ids of both shapes in one string', () => {
+    const out = neutralizeForeignTrackerIds(
+      'blocked like FOR-16, mirrors EX-3, cf #99',
+      'FOR-74',
+    );
+    expect(integrationIdScan(out)).toEqual([]);
+    expect(stripJoiner(out)).toBe('blocked like FOR-16, mirrors EX-3, cf #99');
+  });
+});
+
+describe('renderVerdictSection — neutralizes foreign tracker ids in evidence (mention footgun, Convention 4)', () => {
+  const ANCHOR = '94437315bfd3ffd4ec8651626240a0d60c33d03b';
+
+  // A verdict whose Reviewer-authored free-text fields each smuggle a foreign
+  // tracker id — the exact W19 shape (an evidence string named a sibling id).
+  function verdictWithForeignIds(): ReviewerVerdict {
+    return validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'same fix as FOR-16, see tools/wave/src/cli.ts:42' },
+        { ac: '#2', met: 'partial', evidence: 'mirrors the approach in #99' },
+      ],
+      reviewerFocusItems: ['sibling wave/FOR-55 touches the same file — merge-tree overlap'],
+      lintTestSummary: 'green, but note the flake tracked in FOR-30',
+    });
+  }
+
+  it('AC1/AC2: neutralizes every OTHER id-shaped token, own id passes through, spec-covered with representative evidence', () => {
+    const out = renderVerdictSection(verdictWithForeignIds(), {
+      iteration: 1,
+      anchorSha: ANCHOR,
+      ownId: 'FOR-74',
+    });
+    // No foreign id survives an integration scan of the rendered markdown...
+    expect(out).not.toContain('FOR-16');
+    expect(out).not.toContain('FOR-55');
+    expect(out).not.toContain('FOR-30');
+    expect(out).not.toContain('#99');
+    expect(out).not.toContain('| #1 |'); // the AC-ordinal label `#1` is id-shaped too
+    // ...but every one stays human-readable once the invisible joiner is stripped.
+    expect(stripJoiner(out)).toContain('same fix as FOR-16');
+    expect(stripJoiner(out)).toContain('mirrors the approach in #99');
+    expect(stripJoiner(out)).toContain('sibling wave/FOR-55 touches the same file');
+    expect(stripJoiner(out)).toContain('flake tracked in FOR-30');
+    // The render carries NO scannable foreign id — the own id is not present in
+    // this fixture's evidence, so the scan comes back empty.
+    expect(integrationIdScan(out)).toEqual([]);
+  });
+
+  it("AC2: the row's own id in an evidence string passes through the render untouched", () => {
+    const v = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'closes FOR-74 (this row) alongside sibling FOR-16' },
+      ],
+      reviewerFocusItems: [],
+      lintTestSummary: undefined,
+    });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR, ownId: 'FOR-74' });
+    expect(out).toContain('FOR-74'); // own id: intact and still linkable (intended)
+    expect(out).not.toContain('FOR-16'); // sibling: neutralized
+    expect(integrationIdScan(out)).toEqual(['FOR-74']); // only the own id is scannable
+  });
+
+  it('AC2: a render invoked WITHOUT an own id neutralizes ALL id-shaped tokens — the fail-safe default', () => {
+    const v = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'closes FOR-74 alongside FOR-16' },
+      ],
+      reviewerFocusItems: [],
+      lintTestSummary: undefined,
+    });
+    // No ownId option → nothing is exempt, not even a would-be own id.
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).not.toContain('FOR-74');
+    expect(out).not.toContain('FOR-16');
+    expect(integrationIdScan(out)).toEqual([]);
+    expect(stripJoiner(out)).toContain('closes FOR-74 alongside FOR-16');
+  });
+
+  it('the neutralization survives the markdown-table escaping (both transforms compose)', () => {
+    const v = validVerdict({
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'FOR-16 | note the pipe' },
+      ],
+      reviewerFocusItems: [],
+      lintTestSummary: undefined,
+    });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR, ownId: 'FOR-74' });
+    expect(out).toContain('\\|'); // pipe still escaped
+    expect(out).not.toContain('FOR-16'); // id still neutralized
+    expect(integrationIdScan(out)).toEqual([]);
   });
 });
 

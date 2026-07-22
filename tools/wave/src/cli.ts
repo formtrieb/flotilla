@@ -946,8 +946,17 @@ function runRenderVerdict(args: string[]): number {
     );
     return 1;
   }
+  // Thread the row's own id straight into the render: it is the close target,
+  // so it passes through untouched, while every OTHER tracker-id-shaped token in
+  // the Reviewer's evidence is neutralized (the mention footgun, wave-shared
+  // Convention 4). The id is the same `<id>` argument this verb already resolved
+  // the sidecar by — no new caller-side step at the wave-start terminator.
   process.stdout.write(
-    renderVerdictSection(hit.verdict, { iteration: hit.iter, anchorSha }) + '\n',
+    renderVerdictSection(hit.verdict, {
+      iteration: hit.iter,
+      anchorSha,
+      ownId: id,
+    }) + '\n',
   );
   return 0;
 }

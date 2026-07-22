@@ -120,11 +120,84 @@ export interface RenderVerdictOptions {
   iteration: number;
   /** Wave anchor SHA — the diff base the Reviewer verified against. */
   anchorSha: string;
+  /**
+   * The row's OWN tracker id (the close target). Every OTHER tracker-id-shaped
+   * token in the rendered evidence is neutralized (see
+   * {@link neutralizeForeignTrackerIds}) so a native tracker integration cannot
+   * linkify+act on a stray foreign id in a merged PR body (the mention footgun,
+   * wave-shared Convention 4). The own id passes through untouched — linking it
+   * is intended. **Omitted → fail-safe:** every id-shaped token is neutralized,
+   * since with no own id the render cannot know which one is the close target.
+   */
+  ownId?: string;
 }
 
 /** Escape a markdown-table cell: pipes/newlines would otherwise break the row. */
 function escapeCell(s: string): string {
   return s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+}
+
+/**
+ * Word joiner (U+2060) inserted immediately before the numeric run of a
+ * neutralized tracker-id token. It is zero-width, so the id still renders
+ * byte-for-byte the same to a human (`FOR-16` stays visually `FOR-16`), but the
+ * digits are no longer adjacent to the id's sigil/hyphen — so a native tracker
+ * integration's id scan (`#\d+` for a GitHub ref, `[A-Z]+-\d+` for a Linear
+ * team id) no longer matches. It is a non-breaking, non-ignorable character
+ * (not whitespace, not a combinator), so it survives markdown rendering as an
+ * ordinary text character: the neutralization holds in the rendered HTML the
+ * integration scans, not only in the markdown source.
+ */
+const ID_JOINER = '\u2060';
+
+/**
+ * A tracker-id-shaped token: a Linear-style team id (`FOR-16` — an
+ * uppercase-led prefix + `-` + digits) or a GitHub-style issue ref (`#42`).
+ * These are the two shapes a native GitHub/Linear integration linkifies and
+ * acts on when it finds them in a merged PR's title or body. Deliberately
+ * broad: with the neutralization being visually identical (a zero-width
+ * joiner), catching an incidental non-id lookalike (`UTF-8`, `SHA-256`,
+ * `ADR-0024`) is harmless — it renders unchanged — so no prefix allow-listing
+ * is needed to stay safe.
+ */
+const TRACKER_ID_RE = /([A-Z][A-Z0-9]*-)(\d+)|(#)(\d+)/g;
+
+/**
+ * Neutralize every tracker-id-shaped token in `text` into a human-readable but
+ * non-integration-linkable spelling — EXCEPT the row's own id, which passes
+ * through untouched (linking the close target is intended).
+ *
+ * The exemption compares the matched token to `ownId` with any leading `#`
+ * stripped from both, so a bare-number own id (`42`, the GitHub store's opaque
+ * id) also exempts its link form `#42`, while a Linear own id (`FOR-74`) exempts
+ * exactly itself. `ownId` omitted (or `undefined`) exempts nothing — the
+ * fail-safe default that neutralizes every id-shaped token.
+ *
+ * Neutralization is a single {@link ID_JOINER} inserted before the digits (see
+ * that const for why it is invisible-yet-un-scannable and survives markdown).
+ */
+export function neutralizeForeignTrackerIds(
+  text: string,
+  ownId?: string,
+): string {
+  const ownBare = ownId === undefined ? undefined : ownId.replace(/^#/, '');
+  return text.replace(
+    TRACKER_ID_RE,
+    (
+      match: string,
+      linearPrefix: string | undefined,
+      linearDigits: string | undefined,
+      hashSigil: string | undefined,
+      hashDigits: string | undefined,
+    ): string => {
+      if (ownBare !== undefined && match.replace(/^#/, '') === ownBare) {
+        return match; // the row's own id — the intended close target
+      }
+      return linearPrefix !== undefined
+        ? `${linearPrefix}${ID_JOINER}${linearDigits}`
+        : `${hashSigil}${ID_JOINER}${hashDigits}`;
+    },
+  );
 }
 
 /**
@@ -149,11 +222,23 @@ function escapeCell(s: string): string {
  * final PR body always carries the LATEST iteration's verdict, never the
  * first — the sidecar reader's max-iter selection is what guarantees this,
  * not anything in this render itself.
+ *
+ * Every Reviewer-authored free-text field this render emits (the AC label +
+ * evidence cells, the verify summary, the advisories) is passed through
+ * {@link neutralizeForeignTrackerIds} with `opts.ownId` — so a foreign tracker
+ * id that slipped into an evidence string cannot linkify+act on a merged PR
+ * body (the mention footgun, wave-shared Convention 4). The structural fields
+ * (verdict/riskClass enums, iteration, anchor SHA) are engine-owned and carry
+ * no id-shaped tokens, so they are rendered verbatim. This is the structural
+ * backstop; the Reviewer brief's evidence-discipline clause is the first line.
  */
 export function renderVerdictSection(
   verdict: ReviewerVerdict,
   opts: RenderVerdictOptions,
 ): string {
+  const scrub = (s: string): string =>
+    neutralizeForeignTrackerIds(s, opts.ownId);
+
   const lines: string[] = [
     '## Reviewer verdict',
     '',
@@ -168,7 +253,7 @@ export function renderVerdictSection(
     lines.push('|---|---|---|');
     for (const row of verdict.acVerification) {
       lines.push(
-        `| ${escapeCell(row.ac)} | ${row.met} | ${escapeCell(row.evidence)} |`,
+        `| ${escapeCell(scrub(row.ac))} | ${row.met} | ${escapeCell(scrub(row.evidence))} |`,
       );
     }
   } else {
@@ -176,13 +261,13 @@ export function renderVerdictSection(
   }
   lines.push('');
 
-  lines.push(`**Verify:** ${verdict.lintTestSummary ?? 'not reported'}`);
+  lines.push(`**Verify:** ${scrub(verdict.lintTestSummary ?? 'not reported')}`);
   lines.push('');
 
   lines.push('**Advisories:**');
   if (verdict.reviewerFocusItems.length > 0) {
     for (const item of verdict.reviewerFocusItems) {
-      lines.push(`- ${item}`);
+      lines.push(`- ${scrub(item)}`);
     }
   } else {
     lines.push('- none');
