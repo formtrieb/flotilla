@@ -26,7 +26,7 @@ import {
   afterEach,
 } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, mainAsync, runDorById, findRepoRoot } from './cli';
@@ -1087,6 +1087,117 @@ describe('worktree-cleanup subcommand — explicit-arg behavior is unchanged (FO
     expect(parsed.dryRun).toBe(true);
     expect(parsed.selected).toEqual([]);
     expect(parsed.skipped).toEqual([]);
+  });
+});
+
+// ─── Form 8b: worktree-cleanup — full summary + --orphans sweep (FOR-67) ─────
+//
+// FOR-67 (consumer KW-F6 + W15): the CLI must (1) print the FULL engine summary
+// so a run can never do work and show nothing (branchesDeleted /
+// branchHygieneSkipped / the deregistered-but-not-deleted class were computed
+// but invisible), and (2) grow a --orphans sweep of directories under the
+// worktrees root that `git worktree list` does not know about at all. The
+// module-level execFileSync mock returns '' → `git worktree list` is empty, so
+// every prefixed directory under a real (temp) worktrees root reads as an
+// orphan; node:fs is NOT mocked here, so the physical removal is real.
+
+describe('worktree-cleanup subcommand — full summary is always printed (FOR-67)', () => {
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+  });
+
+  it('a real (non-dry-run) run surfaces every structural field — deregisteredNotDeleted, branchesDeleted, branchHygieneSkipped — so work is never invisible', () => {
+    const code = main(['worktree-cleanup', root]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as Record<string, unknown>;
+    expect(parsed.removed).toEqual([]);
+    expect(parsed.skipped).toEqual([]);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.deregisteredNotDeleted).toEqual([]);
+    expect(parsed.branchesDeleted).toEqual([]);
+    expect(parsed.branchHygieneSkipped).toEqual([]);
+  });
+
+  it('without --orphans there is no `orphans` key (scoping/behaviour untouched)', () => {
+    main(['worktree-cleanup', root]);
+    const parsed = JSON.parse(stdoutBuf) as Record<string, unknown>;
+    expect('orphans' in parsed).toBe(false);
+  });
+});
+
+describe('worktree-cleanup subcommand — --orphans sweep (FOR-67)', () => {
+  let orphanRepo: string;
+  let worktreesRoot: string;
+  let emptyOrphan: string;
+  let junkOrphan: string;
+  let realOrphan: string;
+  let scratch: string;
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    orphanRepo = mkdtempSync(join(tmpdir(), 'wave-cli-orphans-'));
+    worktreesRoot = join(orphanRepo, '.claude', 'worktrees');
+    mkdirSync(worktreesRoot, { recursive: true });
+    // Empty leftover from an earlier wave — the exact "--wave scoping ignores
+    // it but nothing reports it" case.
+    emptyOrphan = join(worktreesRoot, 'wf_orphan-empty');
+    mkdirSync(emptyOrphan, { recursive: true });
+    // Deregistered-but-not-deleted junk leftover.
+    junkOrphan = join(worktreesRoot, 'agent-orphan-junk');
+    mkdirSync(junkOrphan, { recursive: true });
+    writeFileSync(join(junkOrphan, '.DS_Store'), 'debris', 'utf-8');
+    // Orphan holding real work — reported, never removed.
+    realOrphan = join(worktreesRoot, 'wf_orphan-real');
+    mkdirSync(realOrphan, { recursive: true });
+    writeFileSync(join(realOrphan, 'notes.txt'), 'do not lose', 'utf-8');
+    // Human scratch dir without a recognized prefix — never swept.
+    scratch = join(worktreesRoot, 'my-scratch');
+    mkdirSync(scratch, { recursive: true });
+    writeFileSync(join(scratch, 'keep.txt'), 'keep', 'utf-8');
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(orphanRepo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('--orphans --dry-run reports the orphan plan under `orphans` and removes nothing', () => {
+    const code = main(['worktree-cleanup', orphanRepo, '--orphans', '--dry-run']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      dryRun: boolean;
+      orphans: { selected: Array<{ path: string }>; skipped: Array<{ path: string; reason: string }> };
+    };
+    expect(parsed.dryRun).toBe(true);
+    expect(parsed.orphans.selected.map((o) => o.path).sort()).toEqual(
+      [emptyOrphan, junkOrphan].sort(),
+    );
+    expect(parsed.orphans.skipped.map((o) => o.path)).toEqual([realOrphan]);
+    // Dry-run: nothing removed from disk.
+    expect(existsSync(emptyOrphan)).toBe(true);
+    expect(existsSync(junkOrphan)).toBe(true);
+  });
+
+  it('--orphans (real run) removes empty + all-junk orphans, keeps the real-file orphan and the non-prefixed scratch dir', () => {
+    const code = main(['worktree-cleanup', orphanRepo, '--orphans']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      orphans: { removed: Array<{ path: string }>; skipped: Array<{ path: string; reason: string }>; errors: unknown[] };
+    };
+    expect(parsed.orphans.removed.map((o) => o.path).sort()).toEqual(
+      [emptyOrphan, junkOrphan].sort(),
+    );
+    expect(parsed.orphans.skipped[0].path).toBe(realOrphan);
+    expect(parsed.orphans.skipped[0].reason).toBe('orphan-with-real-files');
+    expect(parsed.orphans.errors).toEqual([]);
+    // On-disk truth.
+    expect(existsSync(emptyOrphan)).toBe(false);
+    expect(existsSync(junkOrphan)).toBe(false);
+    expect(existsSync(realOrphan)).toBe(true);
+    expect(existsSync(scratch)).toBe(true);
   });
 });
 

@@ -213,7 +213,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { rmSync, readdirSync, realpathSync } from 'node:fs';
+import { rmSync, readdirSync, realpathSync, existsSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
 
@@ -296,6 +296,23 @@ export interface CleanupResult {
   /** Errors encountered during removal (worktree path → error message). */
   errors: Array<{ path: string; message: string }>;
   /**
+   * The "deregistered-but-not-deleted" (ENOTEMPTY) class, made STRUCTURAL
+   * (FOR-67 — consumer KW-F6 + W15 findings). A remover's non-throwing return
+   * is NOT trusted on its own: after every successful `remover.remove()` the
+   * worktree's own directory is re-checked on disk ({@link CleanupOptions.pathExists},
+   * default `fs.existsSync`), and a directory STILL present is recorded here
+   * instead of in `removed` — the exact live shape where `git worktree remove`
+   * deregisters the worktree (so `git worktree list` goes quiet) while a
+   * Finder/editor-host race leaves the physical directory on disk (see the
+   * file-level FOR-45/FOR-56 doc sections for the race, and the FOR-67 section
+   * for why trusting the non-throw let this class vanish from the summary and
+   * depend on a careful human's on-disk check). Empty on the ordinary path
+   * where every removal's directory is confirmed gone. These entries never
+   * reach local-branch hygiene — an incompletely-removed worktree is not a
+   * clean removal.
+   */
+  deregisteredNotDeleted: WorktreeEntry[];
+  /**
    * Local branches force-deleted as a side-effect of a successful removal in
    * this call (FOR-59) — the harness throwaway (`worktree-wf_*`) and/or the
    * worktree's own dispatch branch, when merge evidence allowed it. Empty
@@ -353,6 +370,16 @@ export interface CleanupOptions {
   agentPathMarker?: string | readonly string[];
   /** Injectable removal seam. Defaults to {@link defaultWorktreeRemover}. */
   remover?: WorktreeRemover;
+  /**
+   * Injectable on-disk existence probe for the verify-after-write guard that
+   * detects the "deregistered-but-not-deleted" class (FOR-67 — see
+   * {@link CleanupResult.deregisteredNotDeleted}). Called with a worktree's
+   * absolute path AFTER its remover reports success; `true` means the
+   * directory is still on disk (an incomplete removal). Defaults to
+   * `fs.existsSync`. The spec injects a fixture so the class can be exercised
+   * without a real Finder/editor race.
+   */
+  pathExists?: (path: string) => boolean;
   /**
    * Optional branch-scoped filter. When provided, a candidate worktree is
    * selected **only if** its checked-out branch is a member of this set (in
@@ -637,6 +664,7 @@ export function executeCleanup(
 ): CleanupResult {
   const repoRoot = opts.repoRoot ?? process.cwd();
   const remover = opts.remover ?? defaultWorktreeRemover(repoRoot);
+  const pathExists = opts.pathExists ?? existsSync;
   const hygieneEnabled = opts.skipBranchHygiene !== true;
   const branchHygiene = hygieneEnabled
     ? (opts.branchHygiene ?? defaultBranchHygieneOps(repoRoot))
@@ -644,6 +672,7 @@ export function executeCleanup(
   const defaultBranch = opts.defaultBranch ?? 'main';
 
   const removed: WorktreeEntry[] = [];
+  const deregisteredNotDeleted: WorktreeEntry[] = [];
   const errors: Array<{ path: string; message: string }> = [];
   const branchesDeleted: string[] = [];
   const branchHygieneSkipped: BranchHygieneSkip[] = [];
@@ -651,6 +680,19 @@ export function executeCleanup(
   for (const wt of plan.selected) {
     try {
       remover.remove(wt.path);
+      // Verify-after-write (FOR-67): a non-throwing remover is NOT trusted on
+      // its own. The "deregistered-but-not-deleted" ENOTEMPTY class leaves the
+      // physical directory on disk even after `git worktree remove` forgot it
+      // (a Finder/editor-host race, see the file-level FOR-45/FOR-56 sections)
+      // — recording it as a clean `removed` would let it vanish from the
+      // summary and depend on a careful human's on-disk check. So a directory
+      // still present after removal is captured STRUCTURALLY here and never
+      // counted as removed (nor handed to branch hygiene — an incomplete
+      // removal is not a clean one).
+      if (pathExists(nodePath.resolve(wt.path))) {
+        deregisteredNotDeleted.push(wt);
+        continue;
+      }
       removed.push(wt);
       // Local branch hygiene (FOR-59) — best-effort, additive: it runs only
       // after a successful removal/purge, and never affects `removed`/
@@ -669,7 +711,14 @@ export function executeCleanup(
     }
   }
 
-  return { removed, skipped: plan.skipped, errors, branchesDeleted, branchHygieneSkipped };
+  return {
+    removed,
+    skipped: plan.skipped,
+    errors,
+    deregisteredNotDeleted,
+    branchesDeleted,
+    branchHygieneSkipped,
+  };
 }
 
 /**
@@ -775,6 +824,269 @@ export function cleanAgentWorktrees(opts: CleanupOptions = {}): CleanupResult {
   const worktrees = listAgentWorktrees(repoRoot, agentPathMarker);
   const plan = planCleanup(worktrees, opts.branchFilter);
   return executeCleanup(plan, opts);
+}
+
+// ─── Orphan-directory sweep (FOR-67 — consumer KW-F6 + W15 findings) ─────────
+//
+// A DIFFERENT class from FOR-59's orphan handling. FOR-59 handles directories
+// that ARE still in `git worktree list --porcelain` (as prunable/deregistered)
+// but whose in-directory `git status` leaks the ancestor repo's state; those
+// flow through `planCleanup`/`executeCleanup` and are removed with the ordinary
+// `git worktree remove` step. THIS sweep handles the class git worktree list
+// does NOT know about at all: a physical directory left under the worktrees
+// root after `git worktree remove` already deregistered it (the
+// deregistered-but-not-deleted ENOTEMPTY leftover), OR an EMPTY leftover dir
+// from an earlier wave that `--wave`/`--branches` scoping correctly ignores but
+// nothing ever reports. Because these carry NO git registration, removal is a
+// plain physical delete (no `git worktree remove` — git has nothing to forget)
+// with the same junk-purge retry as the registered path.
+//
+// Safety mirrors the rest of the module: only directories whose basename
+// matches a recognized `agent-`/`wf_` prefix are ever swept (a human-created
+// scratch dir under the worktrees root is never touched), a directory that is
+// STILL a registered worktree is excluded outright (it is live, not orphan),
+// and a directory holding any real (non-junk) file is reported but never
+// removed — the same `orphan-with-real-files` refusal FOR-59 uses.
+
+/** Machine-readable cause an orphan-sweep skip is tagged with (FOR-67). */
+export type OrphanSkipReason = 'orphan-with-real-files';
+
+/** One orphan directory found under the worktrees root (FOR-67). */
+export interface OrphanDir {
+  /** Absolute path to the orphan directory. */
+  path: string;
+  /**
+   * Whether the directory's own content is EXCLUSIVELY allowlisted
+   * editor/harness/Finder junk (an EMPTY directory counts as vacuously
+   * all-junk) — the same read-only {@link isDirExclusivelyJunk} classifier
+   * FOR-59 uses. `true` → selected for removal; `false` → skipped.
+   */
+  allJunk: boolean;
+  /**
+   * Present only on a skipped orphan (`allJunk: false`): the machine-readable
+   * skip cause. Absent on a selected/removed entry.
+   */
+  reason?: OrphanSkipReason;
+}
+
+/** The orphan-sweep plan — which orphan dirs are removed, which are skipped. */
+export interface OrphanSweepPlan {
+  /** Orphan dirs selected for removal (empty or all-junk). */
+  selected: OrphanDir[];
+  /** Orphan dirs skipped (a real file is present), each carrying a `reason`. */
+  skipped: OrphanDir[];
+}
+
+/** Result of executing an orphan sweep (FOR-67). */
+export interface OrphanSweepResult {
+  /** Orphan dirs successfully removed. */
+  removed: OrphanDir[];
+  /** Orphan dirs skipped (never removed) — each carries a `reason`. */
+  skipped: OrphanDir[];
+  /**
+   * Errors encountered during removal — including the verify-after-write
+   * case where the remover reported success but the directory is STILL on
+   * disk (so nothing an orphan sweep did to disk ever vanishes silently).
+   */
+  errors: Array<{ path: string; message: string }>;
+}
+
+/**
+ * Physical-removal seam for an orphan directory (FOR-67), mirroring the
+ * {@link WorktreeRemover} injection pattern. Unlike `WorktreeRemover.remove`,
+ * an orphan directory carries NO git registration, so the default performs a
+ * plain physical delete with no `git worktree remove` step.
+ */
+export interface OrphanRemover {
+  /** Physically delete an orphan directory by its absolute path. Throws on failure. */
+  remove(dirPath: string): void;
+}
+
+export interface OrphanSweepOptions {
+  /**
+   * Absolute repo root the worktrees root is resolved under, and where
+   * `git worktree list` is invoked to learn the still-registered paths.
+   * Defaults to `process.cwd()`.
+   */
+  repoRoot?: string;
+  /**
+   * Path prefix(es) that identify auto-managed worktrees — the SAME allowlist
+   * {@link listAgentWorktrees} uses (defaults to {@link DEFAULT_AGENT_PATH_MARKERS}).
+   * Both the worktrees-root directory and the per-directory basename
+   * eligibility are derived from these, so a human-created scratch dir under
+   * the worktrees root (no recognized prefix) is never swept.
+   */
+  agentPathMarker?: string | readonly string[];
+  /** Injectable removal seam. Defaults to {@link defaultOrphanRemover}. */
+  remover?: OrphanRemover;
+  /**
+   * Injectable on-disk existence probe (verify-after-write) — mirrors
+   * {@link CleanupOptions.pathExists}. Called AFTER a remover reports success;
+   * `true` means the directory is still present (recorded as an error, never
+   * as a silent success). Defaults to `fs.existsSync`.
+   */
+  pathExists?: (path: string) => boolean;
+}
+
+/**
+ * Derive the distinct worktrees-root relative directories from a marker
+ * allowlist (e.g. `.claude/worktrees/agent-` → `.claude/worktrees`). The
+ * empty-string marker used by {@link listAllWorktrees} yields dirname `'.'`
+ * and is excluded — the orphan sweep only ever operates under a real
+ * worktrees root, never the repo root itself.
+ */
+function worktreesRootsFromMarkers(markers: string[]): string[] {
+  const roots = new Set<string>();
+  for (const m of markers) {
+    const dir = nodePath.dirname(m);
+    if (dir && dir !== '.') roots.add(dir);
+  }
+  return [...roots];
+}
+
+/** Every path currently registered in `git worktree list --porcelain`, realpath-normalized. */
+function registeredWorktreePaths(repoRoot: string): Set<string> {
+  const raw = shellGit(['worktree', 'list', '--porcelain'], repoRoot);
+  const paths = new Set<string>();
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('worktree ')) {
+      paths.add(realpathForCompare(trimmed.slice('worktree '.length).trim()));
+    }
+  }
+  return paths;
+}
+
+/**
+ * List orphan directories under the worktrees root (FOR-67): physical
+ * directories whose basename matches a recognized `agent-`/`wf_` prefix, that
+ * are NOT currently registered in `git worktree list`. Each is classified
+ * against the junk allowlist ({@link isDirExclusivelyJunk}) so the caller can
+ * tell an empty/all-junk leftover (safe to remove) from one holding real work
+ * (report-only).
+ *
+ * @param repoRoot Absolute repo root. Defaults to `process.cwd()`.
+ * @param opts Marker allowlist override (defaults to {@link DEFAULT_AGENT_PATH_MARKERS}).
+ */
+export function listOrphanDirs(
+  repoRoot = process.cwd(),
+  opts: { agentPathMarker?: string | readonly string[] } = {},
+): OrphanDir[] {
+  const markers = normalizeMarkers(opts.agentPathMarker);
+  const roots = worktreesRootsFromMarkers(markers);
+  const registered = registeredWorktreePaths(repoRoot);
+
+  const orphans: OrphanDir[] = [];
+  for (const relRoot of roots) {
+    const absRoot = nodePath.resolve(repoRoot, relRoot);
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(absRoot, { withFileTypes: true });
+    } catch {
+      // The worktrees root doesn't exist yet (no wave has ever run here) —
+      // nothing to sweep.
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const fullPath = nodePath.join(absRoot, entry.name);
+
+      // Still a live, registered worktree → NEVER an orphan; leave it alone.
+      if (registered.has(realpathForCompare(fullPath))) continue;
+
+      // Not a recognized auto-managed prefix → a human scratch dir; never swept.
+      if (!isRecognizedWorktree(fullPath, markers)) continue;
+
+      orphans.push({ path: fullPath, allJunk: isDirExclusivelyJunk(fullPath) });
+    }
+  }
+
+  return orphans;
+}
+
+/**
+ * Build the orphan-sweep plan: an all-junk (or empty) orphan is selected for
+ * removal; an orphan holding any real file is skipped with
+ * `reason: 'orphan-with-real-files'` — the same content-based refusal FOR-59's
+ * `planCleanup` applies to registered orphans, so a directory with real work
+ * is never destroyed by the sweep.
+ */
+export function planOrphanSweep(orphans: OrphanDir[]): OrphanSweepPlan {
+  const selected: OrphanDir[] = [];
+  const skipped: OrphanDir[] = [];
+  for (const orphan of orphans) {
+    if (orphan.allJunk) {
+      selected.push(orphan);
+    } else {
+      skipped.push({ ...orphan, reason: 'orphan-with-real-files' });
+    }
+  }
+  return { selected, skipped };
+}
+
+/**
+ * Execute an orphan sweep: physically remove each selected orphan directory
+ * (dry-run is the caller's concern — a dry run simply never calls this). The
+ * remover is invoked ONLY for `selected` entries; skipped entries pass through
+ * untouched. A per-item failure — a throw, OR a directory still present after
+ * the remover reported success (verify-after-write) — is collected in `errors`
+ * and never silently dropped.
+ */
+export function executeOrphanSweep(
+  plan: OrphanSweepPlan,
+  opts: OrphanSweepOptions = {},
+): OrphanSweepResult {
+  const remover = opts.remover ?? defaultOrphanRemover();
+  const pathExists = opts.pathExists ?? existsSync;
+
+  const removed: OrphanDir[] = [];
+  const errors: Array<{ path: string; message: string }> = [];
+
+  for (const orphan of plan.selected) {
+    try {
+      remover.remove(orphan.path);
+      if (pathExists(nodePath.resolve(orphan.path))) {
+        errors.push({
+          path: orphan.path,
+          message: `orphan directory still present after removal: ${orphan.path}`,
+        });
+        continue;
+      }
+      removed.push(orphan);
+    } catch (err) {
+      errors.push({ path: orphan.path, message: describeError(err) });
+    }
+  }
+
+  return { removed, skipped: plan.skipped, errors };
+}
+
+/**
+ * High-level orphan-sweep convenience: list → plan → execute in one call
+ * (FOR-67). The registered-worktree cleanup (`cleanAgentWorktrees`) and this
+ * sweep are independent and additive — a caller runs both to fully clean a
+ * worktrees root after a wave close.
+ */
+export function sweepOrphanWorktrees(opts: OrphanSweepOptions = {}): OrphanSweepResult {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const orphans = listOrphanDirs(repoRoot, { agentPathMarker: opts.agentPathMarker });
+  const plan = planOrphanSweep(orphans);
+  return executeOrphanSweep(plan, opts);
+}
+
+/**
+ * Default {@link OrphanRemover} backed by a plain physical delete (with the
+ * shared {@link physicallyDeleteWithJunkPurge} ENOTEMPTY retry). No
+ * `git worktree remove` step: an orphan directory carries no git registration
+ * to deregister — see the orphan-sweep section doc above.
+ */
+export function defaultOrphanRemover(): OrphanRemover {
+  return {
+    remove(dirPath: string): void {
+      physicallyDeleteWithJunkPurge(nodePath.resolve(dirPath));
+    },
+  };
 }
 
 // ─── Crash-cleanup before redispatch (FOR-10) ───────────────────────────────
@@ -1248,37 +1560,8 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
       // `git worktree remove` requires an absolute path or relative-from-cwd.
       // We pass absolute to be unambiguous.
       const abs = nodePath.resolve(worktreePath);
-      // Step 1 — physical deletion. `force: true` only suppresses the
-      // exception for an ALREADY-missing path (idempotent re-run); it does
-      // NOT swallow real errors like permission or non-empty-directory
-      // failures, which is exactly the loud-failure behaviour we need.
-      try {
-        rmSync(abs, { recursive: true, force: true });
-      } catch (err) {
-        if (!isEnotempty(err)) throw err;
-
-        // macOS/editor-host reality (FOR-45 Finder race, generalized by
-        // FOR-56 to editor/harness junk classes): Finder/Spotlight — or a
-        // still-attached VS Code extension host — can recreate housekeeping
-        // files (`.DS_Store`, `.vscode/settings.json`, a `.claude/agents/`
-        // remnant) in a directory the instant it becomes empty, racing our
-        // recursive delete so the final rmdir sees a "non-empty" directory
-        // again. Purge known junk (files anywhere, plus whole allowlisted
-        // junk directories per {@link JUNK_DIR_NAMES}) and retry ONCE. A
-        // worktree with zero junk found was never junk-shaped to begin with
-        // — propagate the ORIGINAL error unchanged rather than masking a
-        // real obstruction.
-        const junkRemoved = removeAllowlistedJunk(abs);
-        if (junkRemoved === 0) throw err;
-
-        try {
-          rmSync(abs, { recursive: true, force: true });
-        } catch (retryErr) {
-          throw new Error(
-            `worktree removal still failed after purging ${junkRemoved} allowlisted-junk item(s) at ${abs}: ${describeError(retryErr)}`,
-          );
-        }
-      }
+      // Step 1 — physical deletion (with the ENOTEMPTY junk-purge retry).
+      physicallyDeleteWithJunkPurge(abs);
       // Step 2 — deregister. Reached only if step 1 fully succeeded.
       execFileSync('git', ['worktree', 'remove', abs], {
         cwd: repoRoot,
@@ -1288,6 +1571,44 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
       });
     },
   };
+}
+
+/**
+ * Physically delete a directory tree, breaking the macOS/editor-host
+ * `ENOTEMPTY` race with the same allowlisted-junk purge-then-retry the
+ * registered-worktree remover uses (FOR-45 Finder race, generalized by FOR-56
+ * to editor/harness junk classes — see the file-level doc sections). On the
+ * first `ENOTEMPTY`, known junk (files anywhere, plus whole allowlisted junk
+ * directories per {@link JUNK_DIR_NAMES}) is purged and the delete retried
+ * ONCE; a directory with zero junk found was never junk-shaped to begin with,
+ * so the ORIGINAL error is propagated unchanged rather than masking a real
+ * obstruction. `force: true` only suppresses the exception for an
+ * ALREADY-missing path (idempotent re-run); it never swallows a real
+ * permission/non-empty failure.
+ *
+ * Shared by {@link defaultWorktreeRemover} (as its step-1 physical delete,
+ * BEFORE it deregisters via `git worktree remove`) and by
+ * {@link defaultOrphanRemover} (FOR-67), which has NO git registration to
+ * deregister — an orphan directory under the worktrees root that
+ * `git worktree list` does not know about at all.
+ */
+function physicallyDeleteWithJunkPurge(abs: string): void {
+  try {
+    rmSync(abs, { recursive: true, force: true });
+  } catch (err) {
+    if (!isEnotempty(err)) throw err;
+
+    const junkRemoved = removeAllowlistedJunk(abs);
+    if (junkRemoved === 0) throw err;
+
+    try {
+      rmSync(abs, { recursive: true, force: true });
+    } catch (retryErr) {
+      throw new Error(
+        `worktree removal still failed after purging ${junkRemoved} allowlisted-junk item(s) at ${abs}: ${describeError(retryErr)}`,
+      );
+    }
+  }
 }
 
 /**
