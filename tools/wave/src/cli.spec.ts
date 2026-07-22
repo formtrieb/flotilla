@@ -1193,6 +1193,59 @@ describe('P7.1 router wiring — conflict-map', () => {
   });
 });
 
+// ─── conflict-map --id: async store-form disambiguation (ADR-0014 parity) ───
+//
+// `--id` routes `conflict-map` to the async store reader exactly as `dor --id`
+// does — bare `conflict-map <path>...` stays in the sync `main()`. These pin the
+// mainAsync-level disambiguation: the store form reads through the injected
+// store, the path form is untouched, and a path mixed with `--id` is a usage
+// error surfaced by the store reader.
+
+describe('conflict-map --id router wiring (mainAsync store form)', () => {
+  it('routes `conflict-map --id` to the async store reader and prints the overlap', async () => {
+    const store = fakeStore(async (id) => ({
+      id,
+      risk: 'mechanical',
+      worker: 'background',
+      files: id === 'A' ? ['src/shared.ts', 'src/a.ts'] : ['src/shared.ts', 'src/b.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+      status: 'available',
+    }));
+
+    const code = await mainAsync(['conflict-map', '--id', 'A', '--id', 'B'], store);
+
+    expect(code).toBe(0);
+    const out = JSON.parse(stdoutBuf) as {
+      issues: string[];
+      cells: { a: string; b: string; files: string[] }[];
+    };
+    expect(out.issues).toEqual(['A', 'B']);
+    expect(out.cells).toEqual([{ a: 'A', b: 'B', files: ['src/shared.ts'] }]);
+  });
+
+  it('errors with usage (exit 2) when a path is mixed with --id', async () => {
+    const store = fakeStore(async () => {
+      throw new Error('should not be read when args are rejected');
+    });
+
+    const code = await mainAsync(
+      ['conflict-map', '--id', 'A', issueFile],
+      store,
+    );
+
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/cannot mix issue paths and --id/);
+  });
+
+  it('leaves the bare path form on the sync path (no --id → unchanged exit 0)', async () => {
+    const code = await mainAsync(['conflict-map', issueFile]);
+    expect(code).toBe(0);
+    const out = JSON.parse(stdoutBuf) as { issues: string[] };
+    expect(Array.isArray(out.issues)).toBe(true);
+  });
+});
+
 describe('P7.1 router wiring — issue-store (async via mainAsync)', () => {
   it('mainAsync(["issue-store"]) resolves to 2 (runner usage path: no op)', async () => {
     const code = await mainAsync(['issue-store']);
