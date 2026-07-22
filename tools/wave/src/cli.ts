@@ -31,15 +31,22 @@
  *   worktree-cleanup List + plan + (unless --dry-run) remove pushed-and-clean
  *                    agent worktrees (worktree-cleanup.ts #57) → JSON. The full
  *                    engine summary is printed — { removed, skipped, errors,
- *                    deregisteredNotDeleted, branchesDeleted, branchHygieneSkipped }
- *                    (or { selected, skipped } on --dry-run) — so a run can
- *                    never do work and show nothing (FOR-67 W15 finding). Backs
- *                    Phase 5.
+ *                    deregisteredNotDeleted, erroredStillListed, branchesDeleted,
+ *                    branchHygieneSkipped } (or { selected, skipped } on
+ *                    --dry-run) — so a run can never do work and show nothing
+ *                    (FOR-67 W15 finding). Backs Phase 5.
  *
  *                    deregisteredNotDeleted is the "deregistered-but-not-deleted"
  *                    ENOTEMPTY class made structural: a worktree whose remover
  *                    reported success but whose directory is verified still on
  *                    disk (FOR-67 — consumer KW-F6). Its presence forces exit 1.
+ *
+ *                    erroredStillListed is a THIRD ENOTEMPTY-family class (FOR-73
+ *                    — W18-F1): the remover THREW, yet `git worktree list` still
+ *                    lists the worktree afterwards (as prunable) with its
+ *                    directory on disk — an incomplete removal, distinct from a
+ *                    genuine failure (which stays in errors). Its presence forces
+ *                    exit 1: an operator's prune/retry case, not a defect.
  *
  *                    --orphans (FOR-67) adds a sweep of directories UNDER the
  *                    worktrees root that `git worktree list` does not know about
@@ -689,17 +696,19 @@ function resolveBranchFilter(
  *
  * Prints the FULL engine summary so a run can never do work and show nothing
  * (FOR-67): removed/skipped/errors PLUS deregisteredNotDeleted (the ENOTEMPTY
- * class), branchesDeleted, branchHygieneSkipped (both of which, with --orphans,
- * fold in the standalone orphaned-branch sweep — FOR-72), and (with --orphans)
- * orphans.
+ * class), erroredStillListed (FOR-73 — a throwing removal git still lists as
+ * prunable), branchesDeleted, branchHygieneSkipped (both of which, with
+ * --orphans, fold in the standalone orphaned-branch sweep — FOR-72), and (with
+ * --orphans) orphans.
  *
  * Idempotent: a re-run after everything is cleaned reports an empty plan and
  * exits 0 (nothing selected → nothing removed).
  *
  * Exit codes:
  *   0 — success (incl. nothing-to-do)
- *   1 — a removal error, a deregistered-but-not-deleted directory, or an
- *       orphan-sweep removal error
+ *   1 — a removal error, a deregistered-but-not-deleted directory, an
+ *       errored-yet-still-listed worktree (FOR-73), or an orphan-sweep removal
+ *       error
  *   2 — usage / unexpected error
  */
 function runWorktreeCleanup(args: string[]): number {
@@ -799,6 +808,7 @@ function runWorktreeCleanup(args: string[]): number {
           skipped: result.skipped,
           errors: result.errors,
           deregisteredNotDeleted: result.deregisteredNotDeleted,
+          erroredStillListed: result.erroredStillListed,
           branchesDeleted,
           branchHygieneSkipped,
           ...(orphanResult !== null ? { orphans: orphanResult } : {}),
@@ -809,10 +819,13 @@ function runWorktreeCleanup(args: string[]): number {
     );
     // Exit non-zero on any incomplete outcome a human/skill must notice: a
     // removal error, a deregistered-but-not-deleted directory (removal did not
-    // fully complete), or an orphan-sweep removal error.
+    // fully complete), an errored-yet-still-listed worktree (FOR-73 — the
+    // removal threw and git still lists it as prunable, a prune/retry case an
+    // operator must see), or an orphan-sweep removal error.
     const anyFailure =
       result.errors.length > 0 ||
       result.deregisteredNotDeleted.length > 0 ||
+      result.erroredStillListed.length > 0 ||
       (orphanResult !== null && orphanResult.errors.length > 0);
     return anyFailure ? 1 : 0;
   } catch (err) {

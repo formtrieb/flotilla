@@ -2415,6 +2415,120 @@ describe('executeCleanup — deregistered-but-not-deleted (FOR-67)', () => {
   });
 });
 
+// ─── 17b. executeCleanup — errored-yet-still-listed (ENOTEMPTY) class ─────────
+//    made STRUCTURAL via a throw-path still-listed probe (FOR-73 — W18-F1)
+//
+// A THIRD form of the ENOTEMPTY family, distinct from both `removed` (confirmed
+// gone) and `deregisteredNotDeleted` (a NON-throwing return whose directory
+// survives). Wave 18's close hit the case where the remover THREW yet
+// `git worktree list` still fully lists the worktree afterwards (as prunable)
+// with the directory on disk. On the throw path, `executeCleanup` probes the
+// injectable `stillListed` seam (default: a `git worktree list` membership
+// check): still listed → recorded in its own `erroredStillListed` class (never
+// the generic `errors`, and — like deregisteredNotDeleted — never handed to
+// branch hygiene); genuinely no longer listed → stays in `errors`, unchanged.
+
+describe('executeCleanup — errored-yet-still-listed (FOR-73)', () => {
+  const cleanA: WorktreeEntry = {
+    path: AGENT_PATH_A,
+    branch: 'wave/FOR-73-a',
+    head: 'a'.repeat(40),
+    dirty: false,
+  };
+  const cleanB: WorktreeEntry = {
+    path: AGENT_PATH_B,
+    branch: 'wave/FOR-73-b',
+    head: 'b'.repeat(40),
+    dirty: false,
+  };
+
+  it('a removal that THROWS while git STILL lists the worktree → erroredStillListed, NOT errors', () => {
+    const { remover } = fakeRemover({ failFor: [AGENT_PATH_A] });
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      // git still lists it afterwards (prunable, directory on disk).
+      stillListed: () => true,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    expect(result.erroredStillListed[0].path).toBe(AGENT_PATH_A);
+    expect(result.errors).toHaveLength(0);
+    expect(result.removed).toHaveLength(0);
+    expect(result.deregisteredNotDeleted).toHaveLength(0);
+  });
+
+  it('a removal that THROWS with the worktree NO LONGER listed → stays in errors (no reclassification of genuine failures)', () => {
+    const { remover } = fakeRemover({ failFor: [AGENT_PATH_A] });
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      // genuine failure — git no longer lists the worktree afterwards.
+      stillListed: () => false,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].path).toBe(AGENT_PATH_A);
+    expect(result.erroredStillListed).toHaveLength(0);
+  });
+
+  it('splits a mixed batch of throwing removals: still-listed → erroredStillListed, gone → errors', () => {
+    const { remover } = fakeRemover({ failFor: [AGENT_PATH_A, AGENT_PATH_B] });
+    const plan = { selected: [cleanA, cleanB], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      // A is still listed; B is genuinely gone from the list.
+      stillListed: (p) => p === AGENT_PATH_A,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.erroredStillListed.map((w) => w.path)).toEqual([AGENT_PATH_A]);
+    expect(result.errors.map((e) => e.path)).toEqual([AGENT_PATH_B]);
+    expect(result.removed).toHaveLength(0);
+  });
+
+  it('an erroredStillListed entry is NEVER handed to local-branch hygiene', () => {
+    const { remover } = fakeRemover({ failFor: [AGENT_PATH_A] });
+    const plan = { selected: [cleanA], skipped: [] };
+    const deleteBranch = vi.fn();
+    const branchHygiene: BranchHygieneOps = {
+      listCheckedOutBranches: () => new Set<string>(),
+      isUpstreamGone: () => true, // would delete if it ran
+      isContainedInDefaultBranch: () => false,
+      probeRemoteRef: () => ({ status: 'gone' }) as RemoteRefProbeResult,
+      deleteBranch,
+    };
+
+    const result = executeCleanup(plan, {
+      remover,
+      stillListed: () => true, // still listed → incomplete removal
+      branchHygiene,
+    });
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    expect(result.branchesDeleted).toHaveLength(0);
+    expect(deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('the default stillListed probe (module-mocked git → empty worktree list) keeps a genuine throw in errors — backward-compatible', () => {
+    // execFileSync is mocked module-wide to return '' → `git worktree list` is
+    // empty → the default probe reports the worktree NOT listed, so a throwing
+    // removal stays in `errors` exactly as before FOR-73 (no injected seam).
+    const { remover } = fakeRemover({ failFor: [AGENT_PATH_A] });
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, skipBranchHygiene: true });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.erroredStillListed).toHaveLength(0);
+  });
+});
+
 // ─── 18. Orphan sweep — planOrphanSweep + executeOrphanSweep (FOR-67) ─────────
 
 describe('planOrphanSweep (FOR-67)', () => {

@@ -75,16 +75,33 @@ T=$(mktemp -d)
 # remote-branch hygiene is now the merge step's own job (`branchDeletion`).
 {{wave-cli}} worktree-cleanup --dry-run --wave "$WAVE"   # preview
 {{wave-cli}} worktree-cleanup --wave "$WAVE"             # execute
-# { "removed": [...], "skipped": [...], "errors": [...] }
+# { "removed": [...], "skipped": [...], "errors": [...],
+#   "deregisteredNotDeleted": [...], "erroredStillListed": [...],
+#   "branchesDeleted": [...], "branchHygieneSkipped": [...] }
 #
 # A clean `git worktree list` afterwards is NOT proof the directories are gone:
 # git can deregister a worktree from its list while still failing to delete the
 # on-disk directory (`Directory not empty` / `Operation not permitted`) — that
 # worktree then shows up in `errors` here AND is absent from `git worktree list`.
+#
+# Read the STRUCTURAL classes, not just `errors` — each is a distinct incomplete
+# outcome an operator must act on differently (all non-empty values force exit 1):
+#   - deregisteredNotDeleted — removal returned WITHOUT throwing, yet the
+#     directory is verified still on disk (git already forgot the worktree, so it
+#     is absent from `git worktree list`). A Finder/editor-host race left the
+#     directory behind. → delete the survivor by hand (`rm -rf`).
+#   - erroredStillListed (FOR-73 — W18-F1) — removal THREW, and `git worktree
+#     list` STILL lists the worktree afterwards, as `prunable`, with its
+#     directory on disk. This is the prune/retry case, NOT a defect: the worktree
+#     is intact and fully registered, nothing was half-torn-down. → re-run
+#     `worktree-cleanup` (idempotent), or `git worktree prune` + `rm -rf` the
+#     directory. A genuine failure (removal threw AND the worktree is gone from
+#     the list) stays in `errors` — never reclassified here.
 # Verify on disk, e.g.:
 ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
-# Cross-check any survivor against the `errors` array; remove confirmed orphans
-# by hand (`rm -rf`, sandbox disabled if the harness denies the path).
+# Cross-check any survivor against `errors` / `deregisteredNotDeleted` /
+# `erroredStillListed`; remove confirmed orphans by hand (`rm -rf`, sandbox
+# disabled if the harness denies the path).
 #
 # After any manual removal (and again after the phase-4a pull), run the
 # standalone orphan sweep — it covers what the per-removal hygiene misses when

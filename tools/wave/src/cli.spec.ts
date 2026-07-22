@@ -1106,7 +1106,7 @@ describe('worktree-cleanup subcommand — full summary is always printed (FOR-67
     vi.mocked(execFileSync).mockImplementation(() => '');
   });
 
-  it('a real (non-dry-run) run surfaces every structural field — deregisteredNotDeleted, branchesDeleted, branchHygieneSkipped — so work is never invisible', () => {
+  it('a real (non-dry-run) run surfaces every structural field — deregisteredNotDeleted, erroredStillListed, branchesDeleted, branchHygieneSkipped — so work is never invisible', () => {
     const code = main(['worktree-cleanup', root]);
     expect(code).toBe(0);
     const parsed = JSON.parse(stdoutBuf) as Record<string, unknown>;
@@ -1114,6 +1114,7 @@ describe('worktree-cleanup subcommand — full summary is always printed (FOR-67
     expect(parsed.skipped).toEqual([]);
     expect(parsed.errors).toEqual([]);
     expect(parsed.deregisteredNotDeleted).toEqual([]);
+    expect(parsed.erroredStillListed).toEqual([]);
     expect(parsed.branchesDeleted).toEqual([]);
     expect(parsed.branchHygieneSkipped).toEqual([]);
   });
@@ -1292,6 +1293,74 @@ describe('worktree-cleanup subcommand — --orphans folds the orphaned-branch sw
       .mocked(execFileSync)
       .mock.calls.some((c) => Array.isArray(c[1]) && (c[1] as string[])[0] === 'for-each-ref');
     expect(forEachRefCalled).toBe(false);
+  });
+});
+
+// ─── Form 8d: worktree-cleanup — a throwing removal git still lists lands in
+//             erroredStillListed and counts as visible work (FOR-73 — W18-F1) ──
+//
+// The remover THROWS yet `git worktree list` still lists the worktree afterwards
+// (as prunable) — a THIRD ENOTEMPTY-family form, distinct from a genuine failure
+// (`errors`). The whole git surface is driven through the module-level
+// execFileSync mock per subcommand: `worktree list` returns one clean registered
+// agent worktree (so it is selected AND, on the throw-path re-probe, still
+// listed), `worktree remove` throws, and everything else is ''. node:fs is NOT
+// mocked here — the default remover's physical delete is a real no-op on the
+// never-created directory, so the throw comes from the mocked `git worktree
+// remove` step. The non-empty erroredStillListed field must force exit 1 (the
+// work-visibility condition in the cleanup verb).
+describe('worktree-cleanup subcommand — errored-yet-still-listed forces visible work (FOR-73)', () => {
+  let repo: string;
+
+  function driveErroredStillListed(worktreePath: string): void {
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      const sub = cmdArgs[0];
+      if (sub === 'worktree' && cmdArgs[1] === 'list') {
+        // One clean, registered agent worktree — selected for removal, and
+        // still listed on the throw-path re-probe.
+        return `worktree ${worktreePath}\nHEAD ${'a'.repeat(40)}\nbranch refs/heads/wave/FOR-73-x\n`;
+      }
+      if (sub === 'rev-parse') return `${worktreePath}\n`; // toplevel self-resolves → not an orphan
+      if (sub === 'status') return ''; // clean
+      if (sub === 'worktree' && cmdArgs[1] === 'remove') {
+        throw new Error(
+          `git worktree remove: cannot remove worktree at '${worktreePath}': Directory not empty`,
+        );
+      }
+      return '';
+    });
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'wave-cli-for73-'));
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('surfaces the throwing-still-listed worktree in erroredStillListed (not errors) and exits 1', () => {
+    const worktreePath = join(repo, '.claude', 'worktrees', 'wf_errored-1');
+    driveErroredStillListed(worktreePath);
+    const code = main(['worktree-cleanup', repo]);
+    expect(code).toBe(1);
+    const parsed = JSON.parse(stdoutBuf) as {
+      erroredStillListed: Array<{ path: string }>;
+      errors: unknown[];
+      removed: unknown[];
+      deregisteredNotDeleted: unknown[];
+    };
+    expect(parsed.erroredStillListed.map((w) => w.path)).toEqual([worktreePath]);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.removed).toEqual([]);
+    expect(parsed.deregisteredNotDeleted).toEqual([]);
   });
 });
 
