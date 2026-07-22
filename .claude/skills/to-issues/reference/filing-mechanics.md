@@ -17,7 +17,7 @@ The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx t
 | `issue-store read <id>` | dump the `IssueView` (verify round-trip) |
 | `issue-store parse-ref <id>` | invert an opaque id → `IssueRef` JSON (for `blockedBy`/`parent`) |
 | `dor <path>... ` / `dor --id <id>` | Definition-of-Ready gate; self-content gates run on a path *or* a github id (ADR-0014) |
-| `conflict-map <path>...` | file-overlap cells across issues |
+| `conflict-map <path>...` / `conflict-map --id <id> [--id <id> ...]` | file-overlap cells across issues; `--id` is the store-backed (non-file) form — reads each id's `Files` from the `IssueStore` (ADR-0014) |
 | any command, no args | usage |
 
 ## `create` mode — `CreateInput`
@@ -81,11 +81,12 @@ The target must already carry `Blocked by` (the patch cannot add it). If it has 
 
 A deferred gate is neither pass nor fail — it shows as `deferred` in the report and never blocks. Only a self-content-gate **FAIL** does.
 
-On a **markdown** store, `create` writes each issue to `<repoRoot>/.scratch/<slug>/issues/<NN>-<filingHint>.md` — pass those paths. On **github**, pass the issue id with `--id` (the non-file entrypoint).
+On a **markdown** store, `create` writes each issue to `<repoRoot>/.scratch/<slug>/issues/<NN>-<filingHint>.md` — pass those paths. On **github** (and any other store-backed tracker, e.g. `linear`), pass the issue id with `--id` (the non-file entrypoint) — **both** `dor` and `conflict-map` take it, so a store-backed batch never needs a path export or a tsx one-off:
 
 ```bash
 {{wave-cli}} dor <repoRoot>/.scratch/<slug>/issues/<NN>-*.md ...   # or: dor --id <id>
-{{wave-cli}} conflict-map <issue> <issue> ...                      # overlap cells → serialized lanes
+{{wave-cli}} conflict-map <issue> <issue> ...                      # file form: overlap cells → serialized lanes
+{{wave-cli}} conflict-map --id <id> --id <id> [--repo-root <dir>]  # store-backed form: same cells, reads Files from the IssueStore
 ```
 
 Report the published list with ids and their Risk/Worker, plus any conflict-map overlap cells.

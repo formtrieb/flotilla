@@ -113,6 +113,22 @@ gh api "repos/<owner>/<repo>/branches" --jq '.[].name' | grep '^wave/'
 # Delete by hand whatever survives:
 git push origin --delete <branch>
 
+# Reconciled-merge verify (KW-F4) — the checked step before a serialized lane's
+# TAIL PR merges. File-level conflict prediction is blind to SEMANTIC cross-suite
+# conflicts: two rows with ZERO Files overlap broke 27 test assertions on the
+# reconciled merge of the first Linear consumer wave (a new test file meeting an
+# API-wide change; a success-path test decoding a changed response envelope) —
+# past a green conflict-map. For each serialized lane (a chain of 2+ branches
+# that must merge in order — the overlapping tail, NEVER the order-free rows),
+# after the lane's earlier PRs merged and `main` is pulled (4a below), reconcile
+# the tail locally and run the CONSUMER VERIFY PROFILE (wave.config.json — the
+# same commands the Worker/Reviewer ran per row) BEFORE merging the tail PR:
+git fetch origin main
+git checkout <tail-branch> && git rebase origin/main       # reconcile the tail onto the merged head(s)
+<consumer verify profile from wave.config.json>            # e.g. (cd tools/wave && npx vitest run && npx tsc --noEmit)
+# green → merge the tail PR. red → a real landing conflict the file-level map
+# could not predict; fix it (rebase/patch the tail) BEFORE the tail merges.
+
 # ─────────────────────────────────────────────────────────────
 # 4a. Self-repair check + pull to completion — sandbox reality (W4-F1 / W5-F3)
 # ─────────────────────────────────────────────────────────────

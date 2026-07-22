@@ -70,6 +70,8 @@ conflict = {
 }
 ```
 
+The spine's `## Conflict-Map` is built from `cross-wave`'s `intraWaveConflicts` (above) — **not** from the standalone `conflict-map` CLI. Do not reach for `conflict-map` here to build the spine. If you ever want a standalone overlap check on this roster outside the `cross-wave` flow, `conflict-map` is no longer path-only: `conflict-map --id <id> [--id <id> ...] [--repo-root <dir>] [--config <path>]` is the store-backed (non-file) entrypoint that reads each id's `Files` from the `IssueStore`, so a bare github/linear id needs neither a path export nor a tsx one-off (bare `conflict-map <path>...` stays the file form).
+
 `crossWaveConflicts` and `parallelSafe` are a **launch-gate** — handled in step 4 of the skill body (surface + ask, default abort). They are **never** placed in the payload or the spine.
 
 `intraWaveBlockedByPairs` (FOR-8) is a **second, independent launch-gate**, also handled in step 4 — surface + ask, default abort on any non-empty array. It is **not** written into the spine payload either; a `Blocked by` sequencing hint is a launch-time confirmation, not durable spine state (the spine's own `## Resume-Metadata`/Plan-Table already carries each row's declared `Blocked by` implicitly via its `IssueView`, re-read fresh by `wave-start` at dispatch time).

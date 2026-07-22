@@ -154,6 +154,8 @@ This is a precondition, not a routing step: run it once at the top of `wave-star
 >
 > A local-git-only command (`git worktree`, `git push`) does not need this — it is a raw-`fetch`-only concern. If auth-preflight fails inside a proxied sandbox, check this flag before concluding the token is bad.
 
+> **Sandbox footgun (KW-F6) — `env -u GITHUB_TOKEN gh …` does not match a `gh *` allowlist/excludedCommands prefix.** A sandbox rule keyed on the `gh *` command prefix never fires on an `env`-wrapped invocation: the command the sandbox actually parses starts with **`env`**, not `gh`, so `env -u GITHUB_TOKEN gh …` slips the prefix match entirely. flotilla's sanctioned path never shells `gh` (all host writes go through the engine's raw-`fetch` seam, above), so this cannot bite there — but if you ever reach for a raw `gh` diagnostic under a sandbox, know that wrapping it in `env` defeats the very `gh` prefix rule you were relying on to scope it.
+
 ## Convention 2 — the deterministic routing chain
 
 Routing is **never** hand-synthesised from prose. The chain is, in order:
@@ -214,6 +216,8 @@ Read `store.kind` off the consumer's `wave.config.json` (the same file `{{wave-c
 ### The flip side — a bare mention is also an action
 
 Convention 4 governs the phrase that closes an issue **on purpose**. Nothing governed the flip side until now: on a tracker with a native GitHub integration, the integration does not distinguish "the phrase that means close this" from "any other sighting of this issue's id" — it links **every** bare issue id it finds in a merged PR's title or body, and a linked issue is an issue the integration can act on. **An issue id belongs in a PR title or body only when closing that issue at merge is intended.** Do not name a bare tracker id to reference, credit, or contextualize other work — that reference is itself a close-shaped action on an integrated tracker, whether or not a Convention-4 close phrase is present anywhere.
+
+**KW-F5 — a working close phrase is itself the warning, not the all-clear.** The first Linear consumer wave confirmed this: its store-kind close phrases resolved rows correctly, which is direct proof the GitHub↔Linear integration is *live and connected* on that workspace — and a live integration is exactly what acts on a **bare** id too. If `Fixes <TEAM-NN>` closes a row here, then a stray `<TEAM-NN>` anywhere in a PR title or body is acted on with the same reach. So the close phrase working is a reason to keep id-scrub discipline **strict**, never a signal that the tracker is lenient about incidental mentions.
 
 The sanctioned alternative for docs/meta PRs that legitimately discuss other work — an ADR write-up, a retro, a wave-shared change spanning multiple rows — is to reference the **ADR number or spec/doc slug** (`ADR-0024`, `2026-07-19-hardening-w6`), never the bare tracker id. An ADR/spec identifier names the artifact without being integration-linked.
 
