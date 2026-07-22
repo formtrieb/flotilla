@@ -144,7 +144,7 @@ import {
   planCleanup,
   executeCleanup,
 } from './worktree-cleanup';
-import { runConflictMap } from './conflict-map-cli';
+import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
 import { runIssueStore } from './issue-store-cli';
 import { runSpine } from './spine-cli';
@@ -243,6 +243,7 @@ function printUsage(): void {
       '  wave-validate detect-host <remote-url>',
       '  wave-validate worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [...]',
       '  wave-validate conflict-map <issue-path> [<issue-path> ...]',
+      '  wave-validate conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
       '  wave-validate cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
       '  wave-validate issue-store <op> [...args] [--config <path>]',
       '  wave-validate spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status> <spine-path> [...args]',
@@ -951,6 +952,13 @@ export async function mainAsync(
     // stays in the sync `main()`. The `--id` flag is the disambiguator (ADR-0014).
     if (argv[0] === 'dor' && argv.includes('--id')) {
       return await runDorById(argv.slice(1), injected);
+    }
+    // `conflict-map --id <id> [...]` is the store-backed (async) form — the same
+    // ADR-0014 disambiguator as `dor --id`: bare `conflict-map <path>...` stays
+    // in the sync `main()`; `--id` routes to the async store reader (which also
+    // rejects a path mixed with `--id`).
+    if (argv[0] === 'conflict-map' && argv.includes('--id')) {
+      return await runConflictMapById(argv.slice(1), injected);
     }
     return main(argv);
   } catch (err) {
