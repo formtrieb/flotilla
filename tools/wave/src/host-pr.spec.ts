@@ -616,6 +616,7 @@ function fakeLandingHost(opts: {
   statuses?: PrLandingStatus[];
   onEnableAutoMerge?: () => void;
   onMerge?: () => MergeResult;
+  onDeleteBranch?: () => void;
 }): { host: LandingHost; calls: string[] } {
   const calls: string[] = [];
   let statusCall = 0;
@@ -636,6 +637,10 @@ function fakeLandingHost(opts: {
     async mergePullRequest(prNumber: number, method?: MergeMethod): Promise<MergeResult> {
       calls.push(`mergePullRequest:${prNumber}:${method ?? ''}`);
       return opts.onMerge?.() ?? { merged: true, sha: 'deadbeef' };
+    },
+    async deleteBranch(branch: string): Promise<void> {
+      calls.push(`deleteBranch:${branch}`);
+      opts.onDeleteBranch?.();
     },
   };
   return { host, calls };
@@ -994,6 +999,89 @@ describe('mergePullRequestNow (the `merge` verb — no arming, no decision)', ()
       onMerge: () => ({ merged: false }),
     });
     expect(await mergePullRequestNow(host, 'b')).toMatchObject({ outcome: 'refused' });
+  });
+});
+
+// ─── merge --delete-branch (consumer KW-F6 — remote branch hygiene at landing) ─
+
+describe('mergePullRequestNow — --delete-branch (consumer KW-F6)', () => {
+  it('deletes the PR head branch AFTER a successful merge, reported structurally', async () => {
+    const { host, calls } = fakeLandingHost({ status: openPr('blocked') });
+    const out = await mergePullRequestNow(host, 'wave/FOR-66-x', DEFAULT_MERGE_METHOD, {
+      deleteBranch: true,
+    });
+    expect(out).toMatchObject({
+      outcome: 'merged',
+      prNumber: 42,
+      branchDeletion: { branch: 'wave/FOR-66-x', deleted: true },
+    });
+    // Deletion happens strictly AFTER the merge (ordering matters — never before).
+    expect(calls).toEqual([
+      'getPrStatus:wave/FOR-66-x',
+      'mergePullRequest:42:squash',
+      'deleteBranch:wave/FOR-66-x',
+    ]);
+    // A success carries no `error` key.
+    expect('error' in (out as { branchDeletion: object }).branchDeletion).toBe(false);
+  });
+
+  it('without the flag, the merge is BYTE-IDENTICAL — no delete call, no branchDeletion key', async () => {
+    const { host, calls } = fakeLandingHost({ status: openPr('blocked') });
+    const out = await mergePullRequestNow(host, 'b');
+    // The exact shape the `merge` verb has always returned (no new key).
+    expect(out).toEqual({
+      outcome: 'merged',
+      prNumber: 42,
+      prUrl: 'https://github.com/acme/widgets/pull/42',
+      sha: 'deadbeef',
+      reason: 'Direct merge requested — no arm intent evaluated.',
+    });
+    expect('branchDeletion' in out).toBe(false);
+    expect(calls).toEqual(['getPrStatus:b', 'mergePullRequest:42:squash']);
+  });
+
+  it('a FAILED branch deletion after a successful merge is a reported degradation, NOT a merge failure', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('blocked'),
+      onDeleteBranch: () => {
+        throw new Error('Reference does not exist');
+      },
+    });
+    const out = await mergePullRequestNow(host, 'b', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    // The merge still succeeded → the outcome stays `merged`, sha intact.
+    expect(out).toMatchObject({
+      outcome: 'merged',
+      prNumber: 42,
+      sha: 'deadbeef',
+      branchDeletion: { branch: 'b', deleted: false, error: 'Reference does not exist' },
+    });
+    expect(calls).toEqual(['getPrStatus:b', 'mergePullRequest:42:squash', 'deleteBranch:b']);
+  });
+
+  it('a host that DECLINED the merge (merged:false) never attempts a branch delete', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('blocked'),
+      onMerge: () => ({ merged: false }),
+    });
+    const out = await mergePullRequestNow(host, 'b', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    expect(out).toMatchObject({ outcome: 'refused' });
+    expect(calls).not.toContain('deleteBranch:b');
+  });
+
+  it('the merge method is honoured independently of the delete flag', async () => {
+    const { host, calls } = fakeLandingHost({ status: openPr('blocked') });
+    await mergePullRequestNow(host, 'b', 'rebase', { deleteBranch: true });
+    expect(calls).toEqual(['getPrStatus:b', 'mergePullRequest:42:rebase', 'deleteBranch:b']);
+  });
+
+  it('arm NEVER deletes the branch — --delete-branch is a merge-verb-only concern', async () => {
+    // A clean PR arms into a DIRECT merge (same `merge` helper), yet arm threads
+    // no delete option, so the branch is untouched and no branchDeletion appears.
+    const { host, calls } = fakeLandingHost({ status: openPr('clean') });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'merged' });
+    expect('branchDeletion' in out).toBe(false);
+    expect(calls).not.toContain('deleteBranch:b');
   });
 });
 

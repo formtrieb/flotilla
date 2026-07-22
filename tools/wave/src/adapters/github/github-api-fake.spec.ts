@@ -36,3 +36,23 @@ describe('InMemoryGitHubApi PR-merge preflight (FOR-12)', () => {
     expect(await api.canMergePullRequests()).toBe(true);
   });
 });
+
+describe('InMemoryGitHubApi deleteBranch (consumer KW-F6)', () => {
+  it('records the deleted branch', async () => {
+    const api = new InMemoryGitHubApi();
+    await api.deleteBranch('wave/FOR-66-x');
+    expect(api.deletedRemoteBranches).toEqual(['wave/FOR-66-x']);
+  });
+
+  it('setDeleteBranchError makes deleteBranch throw — the host-refusal degrade path', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setDeleteBranchError('Reference does not exist');
+    await expect(api.deleteBranch('wave/x')).rejects.toThrow(/Reference does not exist/);
+    // A failed delete records nothing.
+    expect(api.deletedRemoteBranches).toEqual([]);
+    // Clearing the error restores normal recording.
+    api.setDeleteBranchError(null);
+    await api.deleteBranch('wave/x');
+    expect(api.deletedRemoteBranches).toEqual(['wave/x']);
+  });
+});

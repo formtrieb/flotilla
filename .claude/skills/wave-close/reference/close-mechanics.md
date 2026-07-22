@@ -24,7 +24,7 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 | `{{wave-cli}} issue-store clear-flag <id>` | clear needs-attention |
 | `{{wave-cli}} host-pr arm --branch <b> [--remote <url>] [--method <squash\|merge\|rebase>]` | `--auto` landing (ADR-0023): `{ ok, verb:"arm", host, branch, method, outcome:"armed"\|"merged"\|"already-merged"\|"refused"\|"no-pr", prNumber?, prUrl?, reason }`. Decides per PR: checks pending → enable auto-merge (GraphQL); already clean → direct merge (REST). Idempotent. Detect-host-routed; **no `--config`** (talks to the code host, not the tracker). |
 | `{{wave-cli}} host-pr status --branch <b> [--remote <url>]` | done-reconcile host-evidence probe: `{ ok, verb:"status", host, branch, state:"open"\|"merged"\|"closed-unmerged"\|"none", url?, number? }`. `none` is a valid answer (no PR), not a failure. |
-| `{{wave-cli}} host-pr merge --branch <b> [--method …]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`. |
+| `{{wave-cli}} host-pr merge --branch <b> [--method …] [--delete-branch]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`, plus — with `--delete-branch` (consumer KW-F6) — it deletes the PR's **remote** head branch through the host API after a successful merge and reports the outcome under `branchDeletion:{ branch, deleted, error? }`. A failed delete is a reported degradation (`deleted:false`), **never** a merge failure (exit stays 0). Merge-only: `arm` defers the merge to the host, so it deletes nothing. |
 | `{{wave-cli}} host-pr preflight [--remote <url>]` | code-host posture probe for the `--auto` confirm (ADR-0023 amendment): `{ ok, verb:"preflight", host, checks:[{name,status,detail}] }` for `pr-merge-token` / `allow-auto-merge` / `required-checks`. **Store-blind** — detect-host-routed, **no `--config`**, **no `--branch`** (required checks read against the default branch) — so it answers on **every** store kind, unlike the store-preflight it replaced here. `status` may be `pass`/`fail`/`advisory`/`unknown`; only `fail` blocks. |
 | any command, no args | usage |
 
@@ -65,13 +65,14 @@ T=$(mktemp -d)
 # ─────────────────────────────────────────────────────────────
 # 3. Worktree cleanup — BEFORE the merge (W3-F3 / W4-F11)
 # ─────────────────────────────────────────────────────────────
-# Runs ahead of the advisory merge-order print: whatever still holds a wave
-# branch locally (a worktree, W3-F3; or the branch simply being the current
-# checkout, W4-F11) makes `--delete-branch` fail locally at merge time, and a
-# failed local delete silently aborts the remote delete too — with the merge
-# command still exiting 0. Cleanup here removes the worktree cause before the
-# human ever reaches the merge step (it does not remove the checked-out-branch
-# cause — see step 4's verification, which is required regardless).
+# Runs ahead of the advisory merge-order print, to remove the agent worktrees
+# this wave created. NB: step 4's wired `host-pr merge --delete-branch` deletes
+# the REMOTE head ref through the host API, so it does NOT depend on local branch
+# state — the old `gh pr merge --delete-branch` footgun (a worktree or the
+# current checkout holding the branch locally made the LOCAL delete fail, which
+# silently aborted the remote delete too — W3-F3 / W4-F11) no longer applies on
+# the wired path. Cleanup still runs here for the worktrees themselves; the
+# remote-branch hygiene is now the merge step's own job (`branchDeletion`).
 {{wave-cli}} worktree-cleanup --dry-run --wave "$WAVE"   # preview
 {{wave-cli}} worktree-cleanup --wave "$WAVE"             # execute
 # { "removed": [...], "skipped": [...], "errors": [...] }
@@ -87,7 +88,7 @@ ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
 
 # ─────────────────────────────────────────────────────────────
 # 4. Advisory merge-order (print only — not written to spine) — the merge
-#    happens here; verify branch deletion as its own checked step
+#    happens here; branch deletion is WIRED into the merge (not a manual step)
 # ─────────────────────────────────────────────────────────────
 {{wave-cli}} merge-order "$WAVE"
 # Example output:
@@ -100,17 +101,25 @@ ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
 # Override: none
 # ---
 #
-# The human merges each PR in this order (default path), e.g.:
-#   gh pr merge <pr> --squash --delete-branch
+# Merge each PR in this order (default path) through the engine host seam — gh is
+# off the landing path (ADR-0023). Merge AND delete the remote head branch in one
+# wired step (consumer KW-F6), so branch hygiene is the default, not an advisory
+# afterthought:
+{{wave-cli}} host-pr merge --branch <branch> --delete-branch
+# { ok, verb:"merge", outcome:"merged"|"already-merged"|..., prNumber?, prUrl?,
+#   branchDeletion:{ branch, deleted, error? } }
 # (Under --auto, do NOT hand-merge the order-free rows — arm them in 4b below.)
-# `--delete-branch`'s exit code is NOT evidence the branch is gone: `gh pr
-# merge` exits 0 whenever the merge succeeds, even when the local delete fails
-# (branch held by a worktree, OR simply checked out — W3-F3 / W4-F11) — and a
-# failed local delete silently aborts the paired remote delete too, without
-# changing the exit code. After every merge, verify separately:
+#
+# --delete-branch deletes the PR's REMOTE head branch through the host API
+# (GitHub DELETE .../git/refs/heads/<branch>) — there is NO local git delete, so
+# the worktree/checked-out footgun that used to silently abort `gh pr merge
+# --delete-branch` (W3-F3 / W4-F11) does not apply on this path. Read the outcome
+# from `branchDeletion.deleted`, never the exit code: a failed delete is
+# `deleted:false` (+ `error`) and NEVER turns the merge into a failure — the
+# merge already landed. Only when `deleted:false` (or on a legacy hand-merge)
+# sweep for strays and delete by hand:
 gh api "repos/<owner>/<repo>/branches" --jq '.[].name' | grep '^wave/'
 # (or: git ls-remote --heads origin 'wave/*')
-# Delete by hand whatever survives:
 git push origin --delete <branch>
 
 # ─────────────────────────────────────────────────────────────
@@ -312,7 +321,7 @@ fi
 | `close` | closing facts recorded (done-reconcile / FOR-13 fallback) | issue not found (store threw) | usage (missing `<id>`/`<prUrl>`) |
 | `flag` / `clear-flag` | written | issue not found | usage (bad `--kind`) |
 | `spine read` | raw source on stdout | file not found / parse error | usage |
-| `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage |
+| `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) — incl. a `merge --delete-branch` whose deletion FAILED (`branchDeletion.deleted:false` is a reported degradation, not a merge failure) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage (incl. `--delete-branch` on a non-`merge` verb) |
 | `host-pr status` | probe answered (read `state`; `none` is a valid answer) | host error | usage |
 | `host-pr preflight` | no check `fail`ed (checks may be `advisory`/`unknown`) | a check `fail`ed, no adapter (`adapter-not-implemented`), or host error / missing token | usage |
 

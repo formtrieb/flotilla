@@ -25,7 +25,11 @@
  *                  is the ADR-0019 cross-host Basic-auth seam (`HttpProbe` +
  *                  `Creds`), NOT the ADR-0023 `LandingHost` seam.
  *   arm          → `armPullRequest`  (host-pr.ts owns the arm intent)
- *   merge        → `mergePullRequestNow`
+ *   merge        → `mergePullRequestNow`. `--delete-branch` (consumer KW-F6)
+ *                  deletes the PR's remote head branch after a successful merge
+ *                  through `LandingHost.deleteBranch`; a failed delete is a
+ *                  structural `branchDeletion` degradation, never a merge
+ *                  failure. Merge-only — `arm` defers the merge to the host.
  *   status       → `LandingHost.getPrStatus`
  *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
  *                  the three code-host checks (pr-merge-token, allow-auto-merge,
@@ -109,7 +113,8 @@ function usage(message: string): number {
       // tracker, so there is no store to build and no wave.config.json to read.
       `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
       `         create: --branch <branch> --title <title> --body <body>   (the PR body carries the store-kind close phrase)`,
-      `         arm | merge | status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
+      `         arm | status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
+      `         merge: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
       `         preflight: (no --branch — a repo-level probe)`,
       '',
       '  create    Open the PR for --branch idempotently (find-before-create): an existing OPEN PR on the',
@@ -118,6 +123,9 @@ function usage(message: string): number {
       '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
       '            already clean → direct merge. Idempotent.',
       '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
+      '            With --delete-branch, deletes the PR head branch after a successful merge (branch hygiene,',
+      '            consumer KW-F6) — best-effort: a failed delete is reported in `branchDeletion`, never a merge',
+      '            failure. --delete-branch is merge-only (arm defers the merge to the host, so it deletes nothing).',
       '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url).',
       '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
       '            Store-blind (no --config, no --branch) — identical on every store kind (ADR-0023 amendment).',
@@ -198,6 +206,20 @@ export async function runHostPr(
     method = (rawMethod as MergeMethod) ?? DEFAULT_MERGE_METHOD;
   }
 
+  // `--delete-branch` is a MERGE-only branch-hygiene flag (consumer KW-F6): on a
+  // successful `merge` it deletes the PR's remote head branch through the host
+  // API. It is deliberately NOT wired to `arm` — arm DEFERS the merge to the host
+  // (auto-merge lands it later, out of band), so there is no synchronous
+  // post-merge moment here to delete the branch in; repo-level "automatically
+  // delete head branches" is the arm-path story. Reject it on any other verb
+  // rather than silently ignore it (the arm-delete footgun).
+  const deleteBranch = args.includes('--delete-branch');
+  if (deleteBranch && verb !== 'merge') {
+    return usage(
+      `--delete-branch is only supported by 'merge' (a post-merge branch-hygiene step); '${verb}' does not delete branches`,
+    );
+  }
+
   let remoteUrl: string;
   try {
     remoteUrl = flag(args, '--remote') ?? gitRemoteUrl();
@@ -226,7 +248,7 @@ export async function runHostPr(
   // ── arm | merge | status: build the LandingHost adapter + run the verb. ──
   try {
     const host: LandingHost = injected ?? (await createGitHubApiFromEnv({ remoteUrl }));
-    return await dispatch(verb, host, branch as string, method, info.host);
+    return await dispatch(verb, host, branch as string, method, info.host, deleteBranch);
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
     printJson({
@@ -382,6 +404,7 @@ async function dispatch(
   branch: string,
   method: MergeMethod,
   hostName: Host,
+  deleteBranch: boolean,
 ): Promise<number> {
   if (verb === 'status') {
     const status = await host.getPrStatus(branch);
@@ -405,7 +428,7 @@ async function dispatch(
   const outcome =
     verb === 'arm'
       ? await armPullRequest(host, branch, method)
-      : await mergePullRequestNow(host, branch, method);
+      : await mergePullRequestNow(host, branch, method, { deleteBranch });
 
   const ok = outcome.outcome === 'merged' || outcome.outcome === 'armed' || outcome.outcome === 'already-merged';
   // Aligned url/number field names across every verb (FOR-54): the landing

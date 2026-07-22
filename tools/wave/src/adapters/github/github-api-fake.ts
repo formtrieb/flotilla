@@ -168,6 +168,8 @@ export class InMemoryGitHubApi implements GitHubApi {
   private readonly prsByBranch = new Map<string, PrLandingStatus>();
   private readonly armed = new Map<number, MergeMethod>();
   private readonly merges: { prNumber: number; method: MergeMethod }[] = [];
+  private readonly deletedBranches: string[] = [];
+  private deleteBranchError: string | null = null;
   private autoMergeSetting: AutoMergeSetting = 'on';
   private requiredChecks: RequiredChecksInfo = {
     state: 'present',
@@ -204,6 +206,21 @@ export class InMemoryGitHubApi implements GitHubApi {
     return [...this.merges];
   }
 
+  /** Test affordance (KW-F6): the remote branches deleted through the host API. */
+  get deletedRemoteBranches(): string[] {
+    return [...this.deletedBranches];
+  }
+
+  /**
+   * Test affordance (KW-F6): make `deleteBranch` throw — models a host refusal
+   * (a 422 "Reference does not exist", a protected branch) so a spec can drive
+   * the reported-degradation path. `null` clears it. Mirrors setClosingPr's
+   * stance: NOT part of GitHubApi.
+   */
+  setDeleteBranchError(message: string | null): void {
+    this.deleteBranchError = message;
+  }
+
   async getPrStatus(branch: string): Promise<PrLandingStatus> {
     return this.prsByBranch.get(branch) ?? { state: 'none' };
   }
@@ -221,6 +238,15 @@ export class InMemoryGitHubApi implements GitHubApi {
   async mergePullRequest(prNumber: number, method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<MergeResult> {
     this.merges.push({ prNumber, method });
     return { merged: true, sha: `sha-${prNumber}` };
+  }
+
+  async deleteBranch(branch: string): Promise<void> {
+    // Mirror the real host's typed throw on a refusal so the KW-F6 degrade path
+    // (a failed delete is reported, never a merge failure) is drivable here.
+    if (this.deleteBranchError !== null) {
+      throw new Error(this.deleteBranchError);
+    }
+    this.deletedBranches.push(branch);
   }
 
   async getAutoMergeSetting(): Promise<AutoMergeSetting> {

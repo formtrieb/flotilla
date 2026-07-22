@@ -37,6 +37,7 @@ function fakeHost(opts: {
   status?: PrLandingStatus;
   onEnableAutoMerge?: () => void;
   onMerge?: () => MergeResult;
+  onDeleteBranch?: () => void;
 }): { host: LandingHost; calls: string[] } {
   const calls: string[] = [];
   const host: LandingHost = {
@@ -51,6 +52,10 @@ function fakeHost(opts: {
     async mergePullRequest(n: number, m?: MergeMethod) {
       calls.push(`mergePullRequest:${n}:${m ?? ''}`);
       return opts.onMerge?.() ?? { merged: true, sha: 'sha1' };
+    },
+    async deleteBranch(branch: string) {
+      calls.push(`deleteBranch:${branch}`);
+      opts.onDeleteBranch?.();
     },
   };
   return { host, calls };
@@ -249,6 +254,62 @@ describe('host-pr merge', () => {
     const { host } = fakeHost({ status: { state: 'merged', number: 42 } });
     expect(await runHostPr(['merge', '--branch', 'b', '--remote', GITHUB_REMOTE], host)).toBe(0);
     expect(out()).toMatchObject({ outcome: 'already-merged' });
+  });
+});
+
+describe('host-pr merge --delete-branch (consumer KW-F6 — remote branch hygiene)', () => {
+  it('deletes the head branch after a successful merge, reported structurally, exit 0', async () => {
+    const { host, calls } = fakeHost({ status: openPr('blocked') });
+    const code = await runHostPr(
+      ['merge', '--branch', 'wave/FOR-66-x', '--remote', GITHUB_REMOTE, '--delete-branch'],
+      host,
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      ok: true,
+      verb: 'merge',
+      outcome: 'merged',
+      branchDeletion: { branch: 'wave/FOR-66-x', deleted: true },
+    });
+    expect(calls).toContain('deleteBranch:wave/FOR-66-x');
+  });
+
+  it('without the flag, the merge JSON is byte-identical — no branchDeletion key, no delete call', async () => {
+    const { host, calls } = fakeHost({ status: openPr('blocked') });
+    const code = await runHostPr(['merge', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    expect(code).toBe(0);
+    expect('branchDeletion' in out()).toBe(false);
+    expect(calls).not.toContain('deleteBranch:b');
+  });
+
+  it('a FAILED deletion after a successful merge stays exit 0 + outcome merged (degradation, not failure)', async () => {
+    const { host } = fakeHost({
+      status: openPr('blocked'),
+      onDeleteBranch: () => {
+        throw new Error('Reference does not exist');
+      },
+    });
+    const code = await runHostPr(
+      ['merge', '--branch', 'b', '--remote', GITHUB_REMOTE, '--delete-branch'],
+      host,
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      ok: true,
+      outcome: 'merged',
+      branchDeletion: { branch: 'b', deleted: false, error: 'Reference does not exist' },
+    });
+  });
+
+  it('--delete-branch on arm is a usage error (exit 2) — arm defers the merge, it deletes no branch', async () => {
+    const { host, calls } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(
+      ['arm', '--branch', 'b', '--remote', GITHUB_REMOTE, '--delete-branch'],
+      host,
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--delete-branch is only supported by 'merge'/);
+    expect(calls).not.toContain('deleteBranch:b');
   });
 });
 
