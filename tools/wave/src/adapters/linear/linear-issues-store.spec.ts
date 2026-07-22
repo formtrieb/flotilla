@@ -397,6 +397,83 @@ describe('LinearIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
       [9999, store.parseRef(realBlocker).issue].sort(),
     );
   });
+
+  // ── FOR-77: annotate must not throw on a genuine decorate-target (a
+  // pre-patch description with no parseable codec body yet — the exact case
+  // decorate exists for). The mirror at the end of annotate must parse the
+  // UPDATED (post-patch) description, and that parse must sit inside the same
+  // best-effort boundary as the mirror call itself. ─────────────────────────
+  it('annotate on a genuine decorate-target (no Files section pre-patch) exits 0 with labels + description writes applied', async () => {
+    // a bare, not-yet-decorated issue: no `## Files` / `## Acceptance criteria`
+    // section at all — parsing THIS pre-patch body throws (missing `## Files`).
+    const { identifier: target } = await api.createIssue({
+      title: 'not yet decorated',
+      description: 'Some free-form prose with no managed sections yet.',
+      labels: [],
+    });
+
+    await expect(
+      store.annotate(target, {
+        risk: 'isolated-refactor',
+        worker: 'background',
+        files: ['src/new.ts'],
+        acceptanceCriteria: [{ text: 'does the thing', checked: false }],
+      }),
+    ).resolves.toBeUndefined(); // exit 0 — the old bug threw here (issue #FOR-77)
+
+    const issue = await api.getIssue(target);
+    expect(issue.labels).toEqual(
+      expect.arrayContaining(['risk/isolated-refactor', 'worker/background']),
+    );
+    const parsed = parseBody(issue.description);
+    expect(parsed.files).toEqual(['src/new.ts']);
+    expect(parsed.acceptanceCriteria).toEqual([{ text: 'does the thing', checked: false }]);
+  });
+
+  it('the blockedBy mirror reconciles from the UPDATED (post-patch) description, not the stale pre-patch read', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const blockerRef = store.parseRef(blocker);
+
+    // a genuine decorate-target: the raw pre-patch description already carries
+    // a `## Blocked by` ref (unaffected by annotate, which never rewrites that
+    // section) but has NO `## Files` / `## Acceptance criteria` section — so
+    // parsing the STALE pre-patch description throws, while parsing the
+    // UPDATED post-patch description (Files + AC now present, Blocked by
+    // carried through unchanged) succeeds and surfaces the ref to mirror.
+    const { identifier: target } = await api.createIssue({
+      title: 'decorate target with a pre-existing Blocked by ref',
+      description: `## Blocked by\n\n${blockerRef.slug}#${blockerRef.issue}\n`,
+      labels: [],
+    });
+
+    await expect(
+      store.annotate(target, {
+        files: ['src/new.ts'],
+        acceptanceCriteria: [{ text: 'does the thing', checked: false }],
+      }),
+    ).resolves.toBeUndefined();
+
+    // proof the mirror used the UPDATED description: the ref only becomes
+    // parseable once Files/AC are present, and it WAS mirrored.
+    expect(await api.getBlockedBy(target)).toEqual([blocker]);
+  });
+
+  it('a body that STILL fails to parse after the patch degrades to a skipped mirror — never a thrown/rejected annotate', async () => {
+    // only `files` is patched, never `acceptanceCriteria` — so even the
+    // UPDATED description is still missing the required `## Acceptance
+    // criteria` section and parseBody keeps throwing. annotate must still
+    // resolve (best-effort boundary swallows the parse failure too).
+    const { identifier: target } = await api.createIssue({
+      title: 'still unparseable after the patch',
+      description: 'no managed sections at all',
+      labels: [],
+    });
+
+    await expect(store.annotate(target, { files: ['src/x.ts'] })).resolves.toBeUndefined();
+    const issue = await api.getIssue(target);
+    expect(issue.description).toContain('## Files');
+    expect(await api.getBlockedBy(target)).toEqual([]); // mirror skipped, not attempted
+  });
 });
 
 // ── Linear-only facet semantics (ADR-0020 / ADR-0015-as-amended / ADR-0017) ──

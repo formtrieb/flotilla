@@ -253,9 +253,28 @@ export class LinearIssuesStore implements IssueStore {
     // rewrites the Blocked-by section, so this reconciles the native side
     // against the EXISTING codec block: any codec ref not yet natively
     // represented ("newly added") is created, additively. It NEVER deletes — a
-    // human-drawn or stale native relation survives. Best-effort (see
-    // mirrorBlockedBy): a failed mirror never fails annotate().
-    await this.mirrorBlockedBy(id, parseBody(issue.description).blockedBy);
+    // human-drawn or stale native relation survives.
+    //
+    // Parse the UPDATED (post-patch) `description` local, not the stale
+    // `issue.description` read at the top of this method: on a genuine
+    // decorate-target the pre-patch body has no Files section yet (that's
+    // exactly the write this call just performed above), so parsing the
+    // pre-patch value throws even though the write itself succeeded. And the
+    // parse must sit INSIDE this same try — the surrounding comment on
+    // mirrorBlockedBy promises "a failed mirror never fails annotate()", but a
+    // throw from parseBody in the argument expression happens BEFORE
+    // mirrorBlockedBy's own try/catch ever runs, so it used to escape
+    // annotate() as an uncaught rejection after every write had already
+    // landed. Folding the parse into this guard makes an unparseable body
+    // degrade to a skipped mirror, matching the documented best-effort
+    // semantics exactly.
+    try {
+      await this.mirrorBlockedBy(id, parseBody(description).blockedBy);
+    } catch {
+      // best-effort (ADR-0020): the body-codec write above is authoritative
+      // and already landed; a body that still fails to parse (or a mirror
+      // that itself throws) must not fail annotate().
+    }
   }
 
   // ── amend (ADR-0025 — authored content: title + free-prose sections) ───────
