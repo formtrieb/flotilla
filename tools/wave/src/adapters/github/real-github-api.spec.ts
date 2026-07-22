@@ -344,6 +344,25 @@ describe('RealGitHubApi', () => {
     });
   });
 
+  describe('deleteBranch (REST DELETE .../git/refs/heads/{branch}, consumer KW-F6)', () => {
+    it('DELETEs the head ref (slashes preserved as a ref path) and resolves on 204', async () => {
+      const { api, http } = makeApi((req) => {
+        expect(req.method).toBe('DELETE');
+        expect(req.url).toBe('https://api.github.com/repos/example-org/example-repo/git/refs/heads/wave/FOR-66-x');
+        expect(req.body).toBeUndefined();
+        return { status: 204, json: null };
+      });
+      await expect(api.deleteBranch('wave/FOR-66-x')).resolves.toBeUndefined();
+      expect(http.requests).toHaveLength(1);
+    });
+
+    it('throws a typed GitHubApiError carrying GitHub message on a non-204 (422 reference not found)', async () => {
+      const { api } = makeApi(() => ({ status: 422, json: { message: 'Reference does not exist' } }));
+      await expect(api.deleteBranch('wave/x')).rejects.toMatchObject({ name: 'GitHubApiError', status: 422, op: 'deleteBranch' });
+      await expect(api.deleteBranch('wave/x')).rejects.toThrow(/Reference does not exist/);
+    });
+  });
+
   describe('enableAutoMerge (GraphQL enablePullRequestAutoMerge)', () => {
     it('resolves the PR node id, then POSTs the mutation with the uppercased merge method', async () => {
       const { api, http } = makeApi((req) => {

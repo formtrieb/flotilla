@@ -78,12 +78,15 @@ export interface CreateIssueInput {
  * The GitHub seam.
  *
  * It `extends LandingHost` (ADR-0023): the GitHub adapter IS the GitHub landing
- * adapter, so the three landing methods — `getPrStatus` (branch → open/merged/
+ * adapter, so the landing methods — `getPrStatus` (branch → open/merged/
  * closed-unmerged + url), `enableAutoMerge` (GraphQL `enablePullRequestAutoMerge`
- * — REST has no arming endpoint), `mergePullRequest` (REST `PUT …/pulls/N/merge`)
- * — are inherited rather than re-declared, and `RealGitHubApi` can be handed
- * straight to `armPullRequest` with no pass-through wrapper. A Bitbucket adapter
- * implements the same `LandingHost` and reuses the engine's arm intent verbatim.
+ * — REST has no arming endpoint), `mergePullRequest` (REST `PUT …/pulls/N/merge`),
+ * and `deleteBranch` (REST `DELETE …/git/refs/heads/{branch}` — the `host-pr
+ * merge --delete-branch` hygiene step, consumer KW-F6) — are inherited rather
+ * than re-declared, and `RealGitHubApi` can be handed straight to
+ * `armPullRequest` / `mergePullRequestNow` with no pass-through wrapper. A
+ * Bitbucket adapter implements the same `LandingHost` and reuses the engine's
+ * arm intent verbatim.
  *
  * It also `extends LandingPosture` (ADR-0023 amendment): the three code-host
  * posture reads — `canMergePullRequests`, `getAutoMergeSetting`,

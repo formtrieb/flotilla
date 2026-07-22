@@ -338,6 +338,28 @@ export class RealGitHubApi implements GitHubApi {
   }
 
   /**
+   * Delete a remote branch — REST `DELETE /repos/{o}/{r}/git/refs/heads/{branch}`
+   * (204 No Content on success). The `host-pr merge --delete-branch` hygiene step
+   * (consumer KW-F6), called only after a successful merge. Throws a typed
+   * {@link GitHubApiError} on any non-204 so the merge path records the failure
+   * STRUCTURALLY — e.g. a 422 "Reference does not exist" (the branch is already
+   * gone) surfaces as a reported degradation, never a merge failure.
+   *
+   * The branch is interpolated as a REF PATH: a `wave/FOR-xx` branch's slashes
+   * are path separators GitHub matches on, so each segment is encoded
+   * individually (odd characters within a segment are escaped) while the slashes
+   * are preserved.
+   */
+  async deleteBranch(branch: string): Promise<void> {
+    const ref = branch.split('/').map(encodeURIComponent).join('/');
+    const res = await this.send('DELETE', `${this.base()}/git/refs/heads/${ref}`);
+    // GitHub returns 204 on a successful ref delete; tolerate a 200 defensively.
+    if (res.status !== 204 && res.status !== 200) {
+      throw new GitHubApiError(res.status, 'deleteBranch', ghMessage(res.json, 'deleteBranch'));
+    }
+  }
+
+  /**
    * Arm a PR to merge itself once its checks pass — GraphQL
    * `enablePullRequestAutoMerge`. GraphQL because **REST has no arming
    * endpoint** at all (the ADR-0019 "GraphQL only where REST is weak" pattern,

@@ -562,9 +562,27 @@ export interface MergeResult {
 }
 
 /**
+ * The structural outcome of a `host-pr merge --delete-branch` request (consumer
+ * KW-F6 — remote branch hygiene at landing). Present on a `merged` outcome ONLY
+ * when the caller asked to delete the PR's head branch: its ABSENCE means no
+ * deletion was requested, so a merge without the flag stays byte-identical to
+ * before. A failed deletion (`deleted:false` + `error`) is a REPORTED
+ * degradation, never a merge failure — the merge already happened, so the
+ * outcome stays `merged` and the exit code stays 0.
+ */
+export interface BranchDeletionResult {
+  /** The remote head branch the deletion targeted. */
+  branch: string;
+  /** Whether the host actually deleted the ref. */
+  deleted: boolean;
+  /** The host's failure message when `deleted:false`; absent on success. */
+  error?: string;
+}
+
+/**
  * The host-local landing seam (ADR-0023). GitHub's implementation is
  * `RealGitHubApi` (which structurally satisfies this — see `GitHubApi extends
- * LandingHost`); the Bitbucket pilot implements the same three methods.
+ * LandingHost`); the Bitbucket pilot implements the same methods.
  */
 export interface LandingHost {
   /** Resolve the PR for a source branch → its landing state. */
@@ -577,6 +595,16 @@ export interface LandingHost {
   enableAutoMerge(prNumber: number, method?: MergeMethod): Promise<void>;
   /** Merge the PR now. */
   mergePullRequest(prNumber: number, method?: MergeMethod): Promise<MergeResult>;
+  /**
+   * Delete the remote head branch `branch` through the host API (GitHub REST
+   * `DELETE …/git/refs/heads/{branch}`) — the `host-pr merge --delete-branch`
+   * hygiene step (consumer KW-F6). Called ONLY after a successful merge, and
+   * only when the caller requested it. MUST throw on a host-side failure so the
+   * merge path can record a structural {@link BranchDeletionResult} degradation
+   * rather than swallow it — a failed delete never turns the merge into a
+   * failure (the merge already landed).
+   */
+  deleteBranch(branch: string): Promise<void>;
 }
 
 /**
@@ -686,7 +714,20 @@ export function decideArmAction(mergeability: PrMergeability): ArmDecision {
 
 /** What a landing attempt did. Every variant is terminal + reportable. */
 export type LandingOutcome =
-  | { outcome: 'merged'; prNumber: number; prUrl?: string; sha?: string; reason: string }
+  | {
+      outcome: 'merged';
+      prNumber: number;
+      prUrl?: string;
+      sha?: string;
+      reason: string;
+      /**
+       * The `--delete-branch` outcome (consumer KW-F6). Present ONLY when the
+       * `merge` verb was asked to delete the head branch — absent otherwise, so a
+       * merge without the flag is byte-identical. A `deleted:false` here is a
+       * reported degradation, never a merge failure (this stays `merged`).
+       */
+      branchDeletion?: BranchDeletionResult;
+    }
   | { outcome: 'armed'; prNumber: number; prUrl?: string; reason: string }
   | { outcome: 'already-merged'; prNumber?: number; prUrl?: string; reason: string }
   | { outcome: 'refused'; prNumber?: number; prUrl?: string; reason: string }
@@ -911,6 +952,21 @@ export async function armPullRequest(
   }
 }
 
+/** Options for the `merge` verb ({@link mergePullRequestNow}). */
+export interface MergeOptions {
+  /**
+   * After a successful merge, delete the PR's remote head branch through the
+   * host API (`host-pr merge --delete-branch`, consumer KW-F6 — remote branch
+   * hygiene at landing). Off by default: a merge without it is byte-identical to
+   * before. A deletion failure is reported structurally on the `merged` outcome
+   * ({@link BranchDeletionResult}), never a merge failure. Deliberately scoped to
+   * the `merge` verb — `arm` DEFERS the merge to the host (auto-merge lands it
+   * out of band, so there is no synchronous post-merge moment here to delete in;
+   * repo-level "automatically delete head branches" is the arm-path story).
+   */
+  deleteBranch?: boolean;
+}
+
 /**
  * Merge a branch's PR NOW — the `merge` verb. No decision, no arming: the caller
  * (a human at the wave-close confirm) has already decided. Same idempotency as
@@ -920,6 +976,7 @@ export async function mergePullRequestNow(
   host: LandingHost,
   branch: string,
   method: MergeMethod = DEFAULT_MERGE_METHOD,
+  opts: MergeOptions = {},
 ): Promise<LandingOutcome> {
   const status = await host.getPrStatus(branch);
   const terminal = terminalStatus(status, branch);
@@ -930,6 +987,9 @@ export async function mergePullRequestNow(
     status.url,
     method,
     'Direct merge requested — no arm intent evaluated.',
+    // Delete the just-merged head branch only when the flag was passed (KW-F6);
+    // the branch is the PR's own source branch (`--branch`), which IS the head.
+    opts.deleteBranch ? branch : undefined,
   );
 }
 
@@ -969,13 +1029,23 @@ function terminalStatus(status: PrLandingStatus, branch: string): LandingOutcome
   return null;
 }
 
-/** Perform the merge write + normalise a declined merge into `refused`. */
+/**
+ * Perform the merge write + normalise a declined merge into `refused`.
+ *
+ * `deleteBranchOf`, when given, is the head branch to delete AFTER a successful
+ * merge (`host-pr merge --delete-branch`, consumer KW-F6). It is threaded only
+ * by {@link mergePullRequestNow} — {@link armPullRequest}'s three merge call-sites
+ * omit it, so the arm path never deletes and stays byte-identical. The deletion
+ * is best-effort: a failure is captured on `branchDeletion` (a reported
+ * degradation), never propagated, so the merge result never flips to a failure.
+ */
 async function merge(
   host: LandingHost,
   prNumber: number,
   prUrl: string | undefined,
   method: MergeMethod,
   reason: string,
+  deleteBranchOf?: string,
 ): Promise<LandingOutcome> {
   const res = await host.mergePullRequest(prNumber, method);
   if (!res.merged) {
@@ -986,7 +1056,35 @@ async function merge(
       reason: `The host declined the merge (no error, but merged=false). ${reason}`,
     };
   }
-  return { outcome: 'merged', prNumber, prUrl, sha: res.sha, reason };
+  // The merge landed. Only when a deletion was requested do we touch the branch
+  // — and its outcome is recorded structurally, so a failed delete degrades the
+  // report without un-merging the PR. Absent the request, the merged shape is
+  // exactly what it was before (no `branchDeletion` key at all).
+  const branchDeletion =
+    deleteBranchOf !== undefined ? await deleteHeadBranch(host, deleteBranchOf) : undefined;
+  return {
+    outcome: 'merged',
+    prNumber,
+    prUrl,
+    sha: res.sha,
+    reason,
+    ...(branchDeletion !== undefined ? { branchDeletion } : {}),
+  };
+}
+
+/**
+ * Delete the just-merged PR's remote head branch, CAPTURING the outcome rather
+ * than propagating a failure (consumer KW-F6): the merge already succeeded, so a
+ * ref-deletion refusal — the branch is already gone, protected, or a transient
+ * host error — is a reported degradation, never a merge failure.
+ */
+async function deleteHeadBranch(host: LandingHost, branch: string): Promise<BranchDeletionResult> {
+  try {
+    await host.deleteBranch(branch);
+    return { branch, deleted: true };
+  } catch (err) {
+    return { branch, deleted: false, error: errMessage(err) };
+  }
 }
 
 // ─── Host preflight: code-host posture probe (ADR-0023 amendment, W10-F1) ─────
