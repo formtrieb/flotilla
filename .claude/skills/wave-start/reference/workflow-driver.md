@@ -310,6 +310,16 @@ commands + the floor checks against \`${issue.anchorSha}..wave/${issue.id}-${iss
 per-AC met/partial/not-met with evidence (against the embedded spec above), sibling
 merge-tree prediction.
 
+## Evidence discipline (mention footgun — wave-shared Convention 4)
+Your \`acVerification[].evidence\` and \`reviewerFocusItems[]\` are folded verbatim into
+the PR body at the terminator. On a tracker with a native GitHub integration, every bare
+tracker id there is linkable and actable — a stray sibling id closes/links the wrong row.
+**Reference ADR numbers or doc slugs (\`ADR-0024\`, \`2026-07-19-hardening-w6\`), never a
+foreign tracker id, when you name related work.** The row's own id (\`${issue.id}\`, the
+close target) is the one id that belongs there. The engine's render-side scrub neutralizes
+any other id-shaped token as a structural backstop — treat that as a safety net, not a
+license to reach for a bare id.
+
 Return a JSON object matching the ReviewerVerdict schema:
 verdict, branchReviewed, riskClass, workerReportDigest, acVerification[], reviewerFocusItems[].`
 }
