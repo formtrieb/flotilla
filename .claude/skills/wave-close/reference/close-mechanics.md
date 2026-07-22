@@ -85,6 +85,14 @@ T=$(mktemp -d)
 ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
 # Cross-check any survivor against the `errors` array; remove confirmed orphans
 # by hand (`rm -rf`, sandbox disabled if the harness denies the path).
+#
+# After any manual removal (and again after the phase-4a pull), run the
+# standalone orphan sweep — it covers what the per-removal hygiene misses when
+# no removal event ever fired: orphaned DIRECTORIES under the worktrees root,
+# local wave branches whose remote ref is gone, and Workflow-driver worktree
+# base branches whose worktree no longer exists. Deletions/skips are structural
+# (`branchesDeleted` / `branchHygieneSkipped` / `orphans`), never silent:
+{{wave-cli}} worktree-cleanup --orphans
 
 # ─────────────────────────────────────────────────────────────
 # 4. Advisory merge-order (print only — not written to spine) — the merge
