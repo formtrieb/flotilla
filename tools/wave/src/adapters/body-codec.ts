@@ -46,6 +46,27 @@ const RESERVED_SECTIONS = ['files', 'blocked by', 'unblocks', 'acceptance criter
 /** Compose a fresh issue body. Managed sections follow the free prose sections. */
 export function serializeBody(input: BodyInput): string {
   const parts: string[] = [];
+
+  // Compose-side belt (FOR-63 / consumer KW-F1): emit the `**Parent:**` /
+  // `**Estimated wallclock:**` metadata lines BEFORE every `##` section —
+  // including the free bodySections — so no section's sectionBody() read can
+  // ever absorb them, regardless of which optional sections (Unblocks, a free
+  // bodySection) happen to be present. The prior layout emitted them AFTER the
+  // last section, which meant they landed textually INSIDE whichever section
+  // was last when there was no `## Unblocks` to shield `## Blocked by` — the
+  // exact defect this fixes. `parseRefs` below independently filters stray
+  // metadata lines out of any ref-list section, so a body already filed in
+  // that legacy order still parses (belt AND suspenders, not belt-replaces-
+  // suspenders).
+  if (input.parent !== undefined) {
+    // Render the opaque PRD id as `#<id>` so GitHub lights up the cross-reference
+    // on the PRD (ADR-0013); read() strips the `#` back to the opaque id.
+    parts.push(`**Parent:** ${parentToLine(input.parent)}`, '');
+  }
+  if (input.estimatedWallclock !== undefined) {
+    parts.push(`**Estimated wallclock:** ${input.estimatedWallclock}`, '');
+  }
+
   for (const s of input.bodySections ?? []) {
     // A bodySection heading equal to a managed section name would write a
     // duplicate `##` header that sectionBody() reads FIRST, silently shadowing
@@ -68,14 +89,6 @@ export function serializeBody(input: BodyInput): string {
 
   if (input.unblocks && input.unblocks.length > 0) {
     parts.push('## Unblocks', '', input.unblocks.map(refToString).join(', '), '');
-  }
-  if (input.parent !== undefined) {
-    // Render the opaque PRD id as `#<id>` so GitHub lights up the cross-reference
-    // on the PRD (ADR-0013); read() strips the `#` back to the opaque id.
-    parts.push(`**Parent:** ${parentToLine(input.parent)}`, '');
-  }
-  if (input.estimatedWallclock !== undefined) {
-    parts.push(`**Estimated wallclock:** ${input.estimatedWallclock}`, '');
   }
 
   parts.push('## Acceptance criteria', '');
@@ -289,6 +302,19 @@ function parseBlockedBy(section: string | null): BlockedBy {
 const REF_RE = /^(?:([a-z0-9][a-z0-9-]*)#)?#?(\d+)$/i;
 
 /**
+ * A codec-own bold-metadata line (`**Parent:**`, `**Estimated wallclock:**`, …).
+ * `serializeBody` now emits these before the first `##` section (see the belt
+ * comment there), but a body already filed in the legacy order (metadata after
+ * the last section) still carries them inside whichever section happened to be
+ * last — most commonly `## Blocked by` when there is no `## Unblocks` to shield
+ * it (consumer KW-F1 / FOR-63). {@link parseRefs} filters lines matching this
+ * shape out of a ref-list section BEFORE tokenizing, so dropping them never
+ * weakens fail-loud: a genuinely malformed ref token still throws naming
+ * itself, and a section containing ONLY metadata lines (no refs) reads as `none`.
+ */
+const BOLD_METADATA_LINE = /^\*\*[^*]+:\*\*/;
+
+/**
  * Tokenise a comma/newline/bullet-delimited ref list into {@link IssueRef}s.
  *
  * By default (`unblocks`) an unrecognised token is skipped. In `strict` mode
@@ -301,6 +327,9 @@ function parseRefs(
   opts: { strict?: boolean; field?: string } = {},
 ): IssueRef[] {
   const tokens = text
+    .split('\n')
+    .filter((line) => !BOLD_METADATA_LINE.test(line.trim()))
+    .join('\n')
     .replace(/^[-*]\s+/gm, '')
     .split(/[,\n]/)
     .map((s) => s.trim())

@@ -55,6 +55,100 @@ describe('body-codec round-trip', () => {
   });
 });
 
+// ── FOR-63 / consumer KW-F1: codec-own metadata lines tolerated in Blocked-by ─
+//
+// Defect: serializeBody emitted its `**Parent:**` / `**Estimated wallclock:**`
+// bold metadata lines AFTER the last `##` section. Without an `## Unblocks`
+// section in between (unblocks absent), they landed textually INSIDE
+// `## Blocked by`, where the strict fail-loud ref parser rejected them as
+// unparseable refs — the codec threw on its own output for the combination
+// refs + parent + no unblocks. The canonical round-trip test above carries
+// `unblocks` (which shields the strict section) and no test carried `parent`,
+// which is why the suite missed it.
+describe('body-codec metadata-in-Blocked-by tolerance (FOR-63 / consumer KW-F1)', () => {
+  const wrapBlocked = (blocked: string) =>
+    [
+      '## Files',
+      '- src/a.ts',
+      '',
+      '## Blocked by',
+      blocked,
+      '',
+      '## Acceptance criteria',
+      '- [ ] a',
+      '',
+    ].join('\n');
+
+  it('serialize+parse refs + parent + estimatedWallclock with NO unblocks — the exact consumer combination', () => {
+    const body = serializeBody({
+      files: ['a.ts'],
+      blockedBy: [{ issue: 7 }, { slug: 'other', issue: 9 }],
+      parent: 'PRD-1',
+      estimatedWallclock: '1h',
+      acceptanceCriteria: [{ text: 'do it', checked: false }],
+    });
+    const p = parseBody(body);
+    expect(p.blockedBy).toEqual([{ issue: 7 }, { slug: 'other', issue: 9 }]);
+    expect(p.parent).toBe('PRD-1');
+    expect(p.estimatedWallclock).toBe('1h');
+  });
+
+  it('parseRefs filters bold-metadata lines: a metadata-only Blocked-by section reads as none', () => {
+    const body = wrapBlocked('**Parent:** #1\n\n**Estimated wallclock:** 30min');
+    expect(parseBody(body).blockedBy).toBe('none');
+  });
+
+  it('parses a LEGACY-ORDER body (metadata after the last section, no Unblocks to shield it)', () => {
+    // Pre-fix serializeBody emitted Parent/Estimated-wallclock AFTER
+    // `## Blocked by` when there was no `## Unblocks` section — landing them
+    // textually inside `## Blocked by`. A body already filed in that shape
+    // must still parse.
+    const legacyBody = [
+      '## Files',
+      '- a.ts',
+      '',
+      '## Blocked by',
+      'FOR#7, other#9',
+      '',
+      '**Parent:** #PRD-1',
+      '',
+      '**Estimated wallclock:** 1h',
+      '',
+      '## Acceptance criteria',
+      '- [ ] do it',
+      '',
+    ].join('\n');
+    const p = parseBody(legacyBody);
+    expect(p.blockedBy).toEqual([
+      { slug: 'FOR', issue: 7 },
+      { slug: 'other', issue: 9 },
+    ]);
+    expect(p.parent).toBe('PRD-1');
+    expect(p.estimatedWallclock).toBe('1h');
+  });
+
+  it('fail-loud is preserved: a hand-written wrong-form ref token in Blocked-by still throws naming it', () => {
+    expect(() => parseBody(wrapBlocked('FOR-23\n\n**Parent:** #1'))).toThrow(/FOR-23/);
+  });
+
+  it('compose-side belt: serializeBody emits Parent / Estimated-wallclock BEFORE the Files section', () => {
+    const body = serializeBody({
+      files: ['a.ts'],
+      blockedBy: 'none',
+      parent: 'PRD-2',
+      estimatedWallclock: '2h',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+    });
+    const parentIdx = body.indexOf('**Parent:**');
+    const wallclockIdx = body.indexOf('**Estimated wallclock:**');
+    const filesIdx = body.indexOf('## Files');
+    expect(parentIdx).toBeGreaterThanOrEqual(0);
+    expect(wallclockIdx).toBeGreaterThanOrEqual(0);
+    expect(parentIdx).toBeLessThan(filesIdx);
+    expect(wallclockIdx).toBeLessThan(filesIdx);
+  });
+});
+
 // ── FOR-31 / W4-F2: parseBlockedBy fails loud, never fabricates `none` ────────
 //
 // The pre-FOR-31 defect: a `## Blocked by` section that is non-empty, is not the
