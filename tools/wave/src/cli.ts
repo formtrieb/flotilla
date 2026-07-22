@@ -11,7 +11,7 @@
  *   npx tsx tools/wave/src/cli.ts closed-by <closed-by-line>
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
  *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>]
- *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [...]
+ *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]
  *
  * Subcommands:
  *   dor          Run the DOR-Gate validator (default when no subcommand is given).
@@ -29,9 +29,27 @@
  *   detect-host      Parse a git remote URL (host-pr.ts #56) → JSON
  *                    { host, workspace, repo }. Backs Phase 2/3's host detection.
  *   worktree-cleanup List + plan + (unless --dry-run) remove pushed-and-clean
- *                    agent worktrees (worktree-cleanup.ts #57) → JSON
- *                    { removed, skipped, errors } (or { selected, skipped } on
- *                    --dry-run). Backs Phase 5.
+ *                    agent worktrees (worktree-cleanup.ts #57) → JSON. The full
+ *                    engine summary is printed — { removed, skipped, errors,
+ *                    deregisteredNotDeleted, branchesDeleted, branchHygieneSkipped }
+ *                    (or { selected, skipped } on --dry-run) — so a run can
+ *                    never do work and show nothing (FOR-67 W15 finding). Backs
+ *                    Phase 5.
+ *
+ *                    deregisteredNotDeleted is the "deregistered-but-not-deleted"
+ *                    ENOTEMPTY class made structural: a worktree whose remover
+ *                    reported success but whose directory is verified still on
+ *                    disk (FOR-67 — consumer KW-F6). Its presence forces exit 1.
+ *
+ *                    --orphans (FOR-67) adds a sweep of directories UNDER the
+ *                    worktrees root that `git worktree list` does not know about
+ *                    at all — deregistered leftovers + EMPTY leftovers from
+ *                    earlier waves that --wave scoping correctly ignores. Empty/
+ *                    all-junk orphans are removed (report-only under --dry-run);
+ *                    an orphan holding a real file is skipped
+ *                    (orphan-with-real-files). Reported under the `orphans` key.
+ *                    A REGISTERED worktree is never swept, so it is parallel-safe
+ *                    and independent of the --wave/--branches scoping below.
  *
  *                    Optional branch-scoped filter (issue #77 — parallel-wave safety):
  *                      --wave <spine-path>  Read the WAVE.md spine and derive the
@@ -143,6 +161,9 @@ import {
   listAgentWorktrees,
   planCleanup,
   executeCleanup,
+  listOrphanDirs,
+  planOrphanSweep,
+  executeOrphanSweep,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
@@ -241,7 +262,7 @@ function printUsage(): void {
       '  wave-validate merge-order <wave-md-path>',
       '  wave-validate closed-by <closed-by-line>',
       '  wave-validate detect-host <remote-url>',
-      '  wave-validate worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [...]',
+      '  wave-validate worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]',
       '  wave-validate conflict-map <issue-path> [<issue-path> ...]',
       '  wave-validate conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
       '  wave-validate cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
@@ -641,15 +662,30 @@ function resolveBranchFilter(
  * Without either flag, the original global-GC behaviour applies (all
  * pushed-and-clean agent worktrees are selected — correct for serial closes).
  *
+ * Optional orphan sweep (FOR-67 — consumer KW-F6 + W15 findings):
+ *   --orphans             Additionally sweep directories under the worktrees
+ *                         root that `git worktree list` does not know about at
+ *                         all (deregistered leftovers + empty leftovers from
+ *                         earlier waves). Independent of --wave/--branches and
+ *                         parallel-safe (a registered worktree is never an
+ *                         orphan). Reported under the `orphans` key.
+ *
+ * Prints the FULL engine summary so a run can never do work and show nothing
+ * (FOR-67): removed/skipped/errors PLUS deregisteredNotDeleted (the ENOTEMPTY
+ * class), branchesDeleted, branchHygieneSkipped, and (with --orphans) orphans.
+ *
  * Idempotent: a re-run after everything is cleaned reports an empty plan and
  * exits 0 (nothing selected → nothing removed).
  *
  * Exit codes:
- *   0 — success (incl. nothing-to-do)   1 — completed with removal errors
+ *   0 — success (incl. nothing-to-do)
+ *   1 — a removal error, a deregistered-but-not-deleted directory, or an
+ *       orphan-sweep removal error
  *   2 — usage / unexpected error
  */
 function runWorktreeCleanup(args: string[]): number {
   const dryRun = args.includes('--dry-run');
+  const orphans = args.includes('--orphans');
   // Positional args are those that don't start with '--' and are not values of
   // a known flag (--wave / --branches consume the token after them).
   const flagsWithValues = new Set(['--wave', '--branches']);
@@ -669,6 +705,15 @@ function runWorktreeCleanup(args: string[]): number {
     const worktrees = listAgentWorktrees(repoRoot);
     const plan = planCleanup(worktrees, branchFilter);
 
+    // The orphan sweep (FOR-67) is an additive, branch-filter-independent pass:
+    // it sweeps directories under the worktrees root that `git worktree list`
+    // does not know about at all (deregistered-but-not-deleted ENOTEMPTY
+    // leftovers + empty leftovers from earlier waves). It is inherently
+    // parallel-safe — a sibling wave's live worktree is REGISTERED, so it is
+    // never seen as an orphan (--wave/--branches scoping of the registered
+    // cleanup above is untouched).
+    const orphanPlan = orphans ? planOrphanSweep(listOrphanDirs(repoRoot)) : null;
+
     if (dryRun) {
       process.stdout.write(
         JSON.stringify(
@@ -679,6 +724,14 @@ function runWorktreeCleanup(args: string[]): number {
               : {}),
             selected: plan.selected,
             skipped: plan.skipped,
+            ...(orphanPlan !== null
+              ? {
+                  orphans: {
+                    selected: orphanPlan.selected,
+                    skipped: orphanPlan.skipped,
+                  },
+                }
+              : {}),
           },
           null,
           2,
@@ -688,6 +741,14 @@ function runWorktreeCleanup(args: string[]): number {
     }
 
     const result = executeCleanup(plan, { repoRoot });
+    const orphanResult =
+      orphanPlan !== null ? executeOrphanSweep(orphanPlan, { repoRoot }) : null;
+
+    // Print the FULL cleanup summary (FOR-67 — W15 finding: branchesDeleted /
+    // branchHygieneSkipped were computed by the engine but never surfaced at
+    // the CLI, so a run could delete branches and show nothing). Every
+    // structural field the engine returns — including the
+    // deregistered-but-not-deleted class and the orphan sweep — is now printed.
     process.stdout.write(
       JSON.stringify(
         {
@@ -698,12 +759,23 @@ function runWorktreeCleanup(args: string[]): number {
           removed: result.removed,
           skipped: result.skipped,
           errors: result.errors,
+          deregisteredNotDeleted: result.deregisteredNotDeleted,
+          branchesDeleted: result.branchesDeleted,
+          branchHygieneSkipped: result.branchHygieneSkipped,
+          ...(orphanResult !== null ? { orphans: orphanResult } : {}),
         },
         null,
         2,
       ) + '\n',
     );
-    return result.errors.length > 0 ? 1 : 0;
+    // Exit non-zero on any incomplete outcome a human/skill must notice: a
+    // removal error, a deregistered-but-not-deleted directory (removal did not
+    // fully complete), or an orphan-sweep removal error.
+    const anyFailure =
+      result.errors.length > 0 ||
+      result.deregisteredNotDeleted.length > 0 ||
+      (orphanResult !== null && orphanResult.errors.length > 0);
+    return anyFailure ? 1 : 0;
   } catch (err) {
     process.stderr.write(
       `error: worktree-cleanup failed: ${(err as Error).message}\n`,

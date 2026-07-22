@@ -159,12 +159,18 @@ import {
   defaultWorktreeRemover,
   listAgentWorktrees,
   defaultBranchHygieneOps,
+  listOrphanDirs,
+  planOrphanSweep,
+  executeOrphanSweep,
+  sweepOrphanWorktrees,
   type WorktreeEntry,
   type WorktreeRemover,
   type RedispatchCleanupOps,
   type BranchHygieneOps,
   type RemoteRefProbeResult,
   type BranchHygieneSkip,
+  type OrphanDir,
+  type OrphanRemover,
 } from './worktree-cleanup';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -2293,5 +2299,369 @@ describe('defaultWorktreeRemover — orphan-dir purge end-to-end (FOR-59)', () =
     expect(result.errors).toHaveLength(0);
     expect(result.removed).toHaveLength(1);
     expect(existsSync(orphanPath)).toBe(false);
+  });
+});
+
+// ─── 17. executeCleanup — deregistered-but-not-deleted (ENOTEMPTY) class ─────
+//    made STRUCTURAL via verify-after-write (FOR-67 — consumer KW-F6 + W15)
+//
+// A remover's non-throwing return is not trusted on its own: after every
+// successful `remover.remove()`, the worktree's own directory is re-checked on
+// disk (the injectable `pathExists`, default `fs.existsSync`). A directory
+// STILL present is the "deregistered-but-not-deleted" class — `git worktree
+// remove` forgot the worktree (so `git worktree list` goes quiet) while a
+// Finder/editor-host race left the physical directory behind. It is recorded in
+// `deregisteredNotDeleted` instead of `removed`, so it stops depending on a
+// careful human's on-disk check.
+
+describe('executeCleanup — deregistered-but-not-deleted (FOR-67)', () => {
+  const cleanA: WorktreeEntry = {
+    path: AGENT_PATH_A,
+    branch: 'wave/FOR-67-a',
+    head: 'a'.repeat(40),
+    dirty: false,
+  };
+  const cleanB: WorktreeEntry = {
+    path: AGENT_PATH_B,
+    branch: 'wave/FOR-67-b',
+    head: 'b'.repeat(40),
+    dirty: false,
+  };
+
+  it('a remover that reports success but leaves the dir on disk → deregisteredNotDeleted, NOT removed', () => {
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      // The verify probe reports the dir is STILL there after "removal".
+      pathExists: () => true,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed).toHaveLength(0);
+    expect(result.deregisteredNotDeleted).toHaveLength(1);
+    expect(result.deregisteredNotDeleted[0].path).toBe(AGENT_PATH_A);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('a remover whose dir is confirmed gone → removed, deregisteredNotDeleted empty (ordinary path)', () => {
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists: () => false,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed).toHaveLength(1);
+    expect(result.removed[0].path).toBe(AGENT_PATH_A);
+    expect(result.deregisteredNotDeleted).toHaveLength(0);
+  });
+
+  it('splits a mixed batch: one confirmed-gone → removed, one still-present → deregisteredNotDeleted', () => {
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA, cleanB], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      // AGENT_PATH_A stays on disk; AGENT_PATH_B is confirmed gone.
+      pathExists: (p) => p === AGENT_PATH_A,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed.map((w) => w.path)).toEqual([AGENT_PATH_B]);
+    expect(result.deregisteredNotDeleted.map((w) => w.path)).toEqual([AGENT_PATH_A]);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('a deregistered-but-not-deleted entry is NEVER handed to local-branch hygiene', () => {
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+    const deleteBranch = vi.fn();
+    const branchHygiene: BranchHygieneOps = {
+      listCheckedOutBranches: () => new Set<string>(),
+      isUpstreamGone: () => true, // would delete if it ran
+      isContainedInDefaultBranch: () => false,
+      probeRemoteRef: () => ({ status: 'gone' }) as RemoteRefProbeResult,
+      deleteBranch,
+    };
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists: () => true, // still on disk → incomplete removal
+      branchHygiene,
+    });
+
+    expect(result.deregisteredNotDeleted).toHaveLength(1);
+    expect(result.branchesDeleted).toHaveLength(0);
+    expect(deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('the default pathExists (existsSync) treats a non-existent fixture path as removed — backward-compatible', () => {
+    // AGENT_PATH_A is a synthetic path that never existed on disk, so the real
+    // existsSync default returns false → the pre-FOR-67 `removed` classification.
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, { remover, skipBranchHygiene: true });
+
+    expect(result.removed).toHaveLength(1);
+    expect(result.deregisteredNotDeleted).toHaveLength(0);
+  });
+});
+
+// ─── 18. Orphan sweep — planOrphanSweep + executeOrphanSweep (FOR-67) ─────────
+
+describe('planOrphanSweep (FOR-67)', () => {
+  it('an all-junk (or empty) orphan is SELECTED for removal', () => {
+    const plan = planOrphanSweep([{ path: '/r/.claude/worktrees/wf_x', allJunk: true }]);
+    expect(plan.selected).toHaveLength(1);
+    expect(plan.skipped).toHaveLength(0);
+  });
+
+  it('an orphan holding a real file is SKIPPED with reason "orphan-with-real-files"', () => {
+    const plan = planOrphanSweep([{ path: '/r/.claude/worktrees/wf_y', allJunk: false }]);
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped).toHaveLength(1);
+    expect(plan.skipped[0].reason).toBe('orphan-with-real-files');
+  });
+
+  it('splits a mixed batch by allJunk', () => {
+    const plan = planOrphanSweep([
+      { path: '/r/.claude/worktrees/wf_a', allJunk: true },
+      { path: '/r/.claude/worktrees/wf_b', allJunk: false },
+      { path: '/r/.claude/worktrees/agent-c', allJunk: true },
+    ]);
+    expect(plan.selected.map((o) => o.path)).toEqual([
+      '/r/.claude/worktrees/wf_a',
+      '/r/.claude/worktrees/agent-c',
+    ]);
+    expect(plan.skipped.map((o) => o.path)).toEqual(['/r/.claude/worktrees/wf_b']);
+  });
+});
+
+describe('executeOrphanSweep (FOR-67)', () => {
+  /** Fake OrphanRemover backed by a vitest spy, optionally failing for named paths. */
+  function fakeOrphanRemover(opts?: { failFor?: string[] }): {
+    remover: OrphanRemover;
+    removeSpy: ReturnType<typeof vi.fn>;
+  } {
+    const failFor = new Set(opts?.failFor ?? []);
+    const removeSpy = vi.fn((path: string) => {
+      if (failFor.has(path)) throw new Error(`rm failed for ${path}`);
+    });
+    return { remover: { remove: removeSpy }, removeSpy };
+  }
+
+  const junkA: OrphanDir = { path: '/r/.claude/worktrees/wf_a', allJunk: true };
+  const realB: OrphanDir = { path: '/r/.claude/worktrees/wf_b', allJunk: false, reason: 'orphan-with-real-files' };
+
+  it('invokes the remover once per selected orphan; skipped pass through untouched', () => {
+    const { remover, removeSpy } = fakeOrphanRemover();
+    const plan = { selected: [junkA], skipped: [realB] };
+
+    const result = executeOrphanSweep(plan, { remover, pathExists: () => false });
+
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledWith(junkA.path);
+    expect(result.removed.map((o) => o.path)).toEqual([junkA.path]);
+    expect(result.skipped).toEqual([realB]);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('a throwing remover lands the orphan in errors, never removed', () => {
+    const { remover } = fakeOrphanRemover({ failFor: [junkA.path] });
+    const plan = { selected: [junkA], skipped: [] };
+
+    const result = executeOrphanSweep(plan, { remover, pathExists: () => false });
+
+    expect(result.removed).toHaveLength(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].path).toBe(junkA.path);
+  });
+
+  it('verify-after-write: a dir still present after a "successful" remove → errors, not removed', () => {
+    const { remover } = fakeOrphanRemover();
+    const plan = { selected: [junkA], skipped: [] };
+
+    const result = executeOrphanSweep(plan, { remover, pathExists: () => true });
+
+    expect(result.removed).toHaveLength(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toMatch(/still present after removal/);
+  });
+
+  it('is idempotent: empty selected set → zero remover calls, empty result', () => {
+    const { remover, removeSpy } = fakeOrphanRemover();
+    const plan = { selected: [], skipped: [] };
+
+    const result = executeOrphanSweep(plan, { remover });
+
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(result.removed).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+  });
+});
+
+// ─── 19. Orphan sweep — listOrphanDirs + sweepOrphanWorktrees, real git/fs ────
+//    (FOR-67 — consumer KW-F6 + W15 findings)
+//
+// The FOR-67 orphan class is a physical directory UNDER the worktrees root that
+// `git worktree list` does not know about at ALL — a deregistered-but-not-
+// deleted leftover, or an EMPTY leftover from an earlier wave that --wave
+// scoping correctly ignores but nothing ever reports. This section builds the
+// exact shape with a REAL repo + a REAL registered worktree (so the
+// registered-exclusion runs against genuine `git worktree list` output),
+// delegating the module-level execFileSync mock to real git for setup + the
+// under-test listing, exactly like Section 12.
+describe('orphan sweep — listOrphanDirs + sweepOrphanWorktrees, real git/fs (FOR-67)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  /**
+   * Build a real repo with ONE registered worktree, plus arbitrary orphan
+   * (unregistered) directories placed directly under `.claude/worktrees/` that
+   * git never knew about — the exact leftover shape.
+   */
+  function makeRepoWithOrphans(): {
+    mainRoot: string;
+    registeredPath: string;
+    worktreesRoot: string;
+  } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-for67-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    const worktreesRoot = join(mainRoot, '.claude', 'worktrees');
+    mkdirSync(worktreesRoot, { recursive: true });
+    // One genuinely-registered live worktree — must NEVER be swept.
+    const relReg = join('.claude', 'worktrees', 'wf_registered-live');
+    realGit(['worktree', 'add', '-q', relReg, '-b', 'wf_registered-live/branch'], mainRoot);
+    return { mainRoot, registeredPath: join(mainRoot, relReg), worktreesRoot };
+  }
+
+  it('listOrphanDirs finds unregistered prefixed dirs, classifies junk vs real, excludes the registered worktree and non-prefixed scratch dirs', () => {
+    const { mainRoot, registeredPath, worktreesRoot } = makeRepoWithOrphans();
+
+    // Empty leftover from an earlier wave.
+    const emptyOrphan = join(worktreesRoot, 'wf_orphan-empty');
+    mkdirSync(emptyOrphan, { recursive: true });
+    // Deregistered-but-not-deleted junk leftover.
+    const junkOrphan = join(worktreesRoot, 'agent-orphan-junk');
+    mkdirSync(join(junkOrphan, '.vscode'), { recursive: true });
+    writeFileSync(join(junkOrphan, '.vscode', 'settings.json'), '{}', 'utf-8');
+    writeFileSync(join(junkOrphan, '.DS_Store'), 'debris', 'utf-8');
+    // Orphan holding real work — must be reported but never selected.
+    const realOrphan = join(worktreesRoot, 'wf_orphan-real');
+    mkdirSync(realOrphan, { recursive: true });
+    writeFileSync(join(realOrphan, 'notes.txt'), 'do not lose', 'utf-8');
+    // Human scratch dir without a recognized prefix — never swept.
+    const scratch = join(worktreesRoot, 'my-scratch');
+    mkdirSync(scratch, { recursive: true });
+    writeFileSync(join(scratch, 'stuff.txt'), 'keep', 'utf-8');
+
+    const found = listOrphanDirs(mainRoot);
+    const byPath = new Map(found.map((o) => [o.path, o]));
+
+    expect(byPath.get(emptyOrphan)?.allJunk).toBe(true);
+    expect(byPath.get(junkOrphan)?.allJunk).toBe(true);
+    expect(byPath.get(realOrphan)?.allJunk).toBe(false);
+    // Registered worktree + non-prefixed scratch dir are NOT orphans.
+    expect(byPath.has(registeredPath)).toBe(false);
+    expect(byPath.has(scratch)).toBe(false);
+    expect(found).toHaveLength(3);
+  });
+
+  it('sweepOrphanWorktrees removes empty + all-junk orphans, keeps the real-file orphan, and never touches the registered worktree', () => {
+    const { mainRoot, registeredPath, worktreesRoot } = makeRepoWithOrphans();
+
+    const emptyOrphan = join(worktreesRoot, 'wf_orphan-empty');
+    mkdirSync(emptyOrphan, { recursive: true });
+    const junkOrphan = join(worktreesRoot, 'agent-orphan-junk');
+    mkdirSync(junkOrphan, { recursive: true });
+    writeFileSync(join(junkOrphan, '.DS_Store'), 'debris', 'utf-8');
+    const realOrphan = join(worktreesRoot, 'wf_orphan-real');
+    mkdirSync(realOrphan, { recursive: true });
+    writeFileSync(join(realOrphan, 'notes.txt'), 'do not lose', 'utf-8');
+
+    const result = sweepOrphanWorktrees({ repoRoot: mainRoot });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.removed.map((o) => o.path).sort()).toEqual(
+      [emptyOrphan, junkOrphan].sort(),
+    );
+    expect(result.skipped.map((o) => o.path)).toEqual([realOrphan]);
+    expect(result.skipped[0].reason).toBe('orphan-with-real-files');
+
+    // On-disk truth: removed dirs are gone; kept dirs remain.
+    expect(existsSync(emptyOrphan)).toBe(false);
+    expect(existsSync(junkOrphan)).toBe(false);
+    expect(existsSync(realOrphan)).toBe(true);
+    expect(existsSync(registeredPath)).toBe(true);
+  });
+
+  it('is idempotent: a re-run after everything is swept reports nothing to do', () => {
+    const { mainRoot, worktreesRoot } = makeRepoWithOrphans();
+    const emptyOrphan = join(worktreesRoot, 'wf_orphan-empty');
+    mkdirSync(emptyOrphan, { recursive: true });
+
+    const first = sweepOrphanWorktrees({ repoRoot: mainRoot });
+    expect(first.removed).toHaveLength(1);
+
+    const second = sweepOrphanWorktrees({ repoRoot: mainRoot });
+    expect(second.removed).toHaveLength(0);
+    expect(second.skipped).toHaveLength(0);
+    expect(second.errors).toHaveLength(0);
+  });
+
+  it('a worktrees root that does not exist yet (no wave ever ran) → empty sweep, no throw', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-for67-empty-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+
+    const result = sweepOrphanWorktrees({ repoRoot: mainRoot });
+    expect(result.removed).toHaveLength(0);
+    expect(result.skipped).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
   });
 });
