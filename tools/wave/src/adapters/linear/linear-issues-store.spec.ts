@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { LinearIssuesStore, DEFAULT_LINEAR_STATES } from './linear-issues-store';
+import { LinearIssuesStore, DEFAULT_LINEAR_STATES, LinearTransitionVerifyError } from './linear-issues-store';
 import { InMemoryLinearApi, linearConformanceHooks } from './linear-api-fake';
 import type { LinearStateType } from './linear-api';
 import type { CreateInput } from '../issue-store';
@@ -65,6 +65,46 @@ describe('LinearIssuesStore — Linear-specific mapping (ADR-0020)', () => {
     await store.transition(id, 'in-flight');
     expect((await api.getIssue(id)).stateName).toBe(DEFAULT_LINEAR_STATES.inFlight);
     expect((await store.read(id)).status).toBe('in-flight');
+  });
+
+  // ── verify-after-write (consumer KW-F2, FOR-64) ──────────────────────────
+  it('transition() throws a named LinearTransitionVerifyError when setState reports success but silently drops the write', async () => {
+    const id = await store.create(baseInput());
+    api.simulateDroppedStateWrite(id);
+    await expect(store.transition(id, 'in-flight')).rejects.toThrow(LinearTransitionVerifyError);
+    // the fake genuinely dropped the write — the issue never actually moved.
+    expect((await api.getIssue(id)).stateName).not.toBe(DEFAULT_LINEAR_STATES.inFlight);
+  });
+
+  it('the LinearTransitionVerifyError carries the issue id, expected state, and the (unmoved) actual state', async () => {
+    const id = await store.create(baseInput());
+    const before = (await api.getIssue(id)).stateName;
+    api.simulateDroppedStateWrite(id);
+    let thrown: unknown;
+    try {
+      await store.transition(id, 'in-flight');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(LinearTransitionVerifyError);
+    const e = thrown as LinearTransitionVerifyError;
+    expect(e.issueId).toBe(id);
+    expect(e.expectedState).toBe(DEFAULT_LINEAR_STATES.inFlight);
+    expect(e.actualState).toBe(before);
+  });
+
+  it('after a dropped-write failure is surfaced, a retried transition (drop budget spent) succeeds and is verified normally', async () => {
+    const id = await store.create(baseInput());
+    api.simulateDroppedStateWrite(id); // drops exactly the next call
+    await expect(store.transition(id, 'in-flight')).rejects.toThrow(LinearTransitionVerifyError);
+    await store.transition(id, 'in-flight'); // retry — no more drops queued
+    expect((await api.getIssue(id)).stateName).toBe(DEFAULT_LINEAR_STATES.inFlight);
+  });
+
+  it('the happy path is unaffected — a normal transition still sets the mapped state with no error', async () => {
+    const id = await store.create(baseInput());
+    await expect(store.transition(id, 'in-review')).resolves.toBeUndefined();
+    expect((await api.getIssue(id)).stateName).toBe(DEFAULT_LINEAR_STATES.inReview);
   });
 
   it("unclaim from 'Todo' moves to 'Backlog'; unclaim when 'Backlog' is a no-op", async () => {
