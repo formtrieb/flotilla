@@ -275,3 +275,55 @@ npx tsx tools/wave/src/cli-store.ts preflight --config wave.config.json   # trac
 ```
 
 Exit 0 from each means every check passed / is `not-applicable` / is `advisory`/`unknown`. On exit 1, the failing check's `detail` names the exact gap — fix it in Linear/GitHub or the config and re-run. Only after `config validate` **and both preflights** exit 0 is the config ready for `wave-plan`/`wave-create`.
+
+## AFK permission allowlist scaffold (`.claude/settings.json`)
+
+The SKILL.md "Scaffolding the tracked permission allowlist" precondition owns the **judgment** (what must be allowlisted, and why `docker` stays off it); this is the concrete scaffold. Write it to the consumer repo's **tracked** `.claude/settings.json` — the ONLY permission source an AFK Worker/Reviewer worktree inherits (a worktree carries tracked files only, so the gitignored `.claude/settings.local.json` never reaches it). This is a separate file from `wave.config.json` and is not validated by any engine verb; it is a harness config the consumer commits.
+
+> **Both engine-CLI prefixes, deliberately.** The driver's `WAVE_CLI` defaults to the npx-free local binary (`./tools/wave/node_modules/.bin/tsx …`) to dodge the shared-npm-cache-lock `ECOMPROMISED` deaths under fan-out (consumer retro KW-F7), with `npx tsx …` as the documented fallback — so the allowlist names **both**, each with and without the `NODE_USE_ENV_PROXY=1` proxy prefix. Naming only the `npx` form is the exact KW-F3 miss that briefed Workers onto a gated path.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(npx tsx tools/wave/src/cli.ts:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts:*)",
+      "Bash(git worktree:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git reset:*)",
+      "Bash(git push:*)",
+      "Bash(npm ci:*)"
+    ]
+  }
+}
+```
+
+- **Engine-CLI prefixes** — the first four entries: the npx-free local binary and the `npx` fallback, each with and without `NODE_USE_ENV_PROXY=1`. If this consumer runs the engine from a different repo-relative path, scaffold that prefix instead — the invariant is *both invocation forms*, not this exact path.
+- **Worker git verbs** — `worktree/fetch/checkout/branch/add/commit/reset/push`: the workspace-setup and termination surface (anchor, branch, stage, commit, push) every Worker and Reviewer runs.
+- **Deps installer** — the last entry is a placeholder: replace `npm ci` with the consumer's actual `depsSetup` command(s) (`composer install`, `npm ci --prefix tools/wave`, …). It is the **first** Worker step and installs the local `tsx` binary the npx-free `WAVE_CLI` resolves against, so it must be allowlisted too.
+
+### Sandbox `excludedCommands` — network git verbs for an SSH origin
+
+When `git remote get-url origin` is an **SSH** remote (`git@…`), the network git verbs must run outside the sandbox's network denial. That is **not just `push`** — `git fetch` (the Worker's anchor fetch at setup) and `git pull` (wave-close's `main` pull) are network operations too. Include all three in the sandbox `excludedCommands` guidance for an SSH origin:
+
+```
+git fetch, git pull, git push
+```
+
+An **HTTPS** origin that authenticates through the harness proxy does not need this — it is an SSH-origin concern.
+
+### `docker` — kept OUT of the tracked `excludedCommands` (host-escape)
+
+Do **not** scaffold a `docker`-star entry into the tracked `excludedCommands`. A tracked un-sandboxed `docker` grants a host escape to **every future agent of the repo**, not just this wave's Workers — a security review on the first Linear consumer wave flagged exactly this. The proven pattern:
+
+- **Operator-local only.** If the operator needs docker un-sandboxed, it goes in their **untracked** `.claude/settings.local.json`, never the tracked file that Workers inherit.
+- **Brief the Worker for graceful degradation** (the Coordinator embeds this in the row's `issueSpec`/verify expectations when a verify step touches docker):
+  1. **Socket-free floor, always** — `docker compose config` (validates the compose file) and `bash -n` (syntax-checks scripts) need no daemon; run them unconditionally.
+  2. **Live path only when reachable** — run the actual `docker` / `docker compose up` path **only when the docker socket happens to be reachable**.
+  3. **Precise deferral disclosure otherwise** — when the socket is unreachable, the Worker names in its report exactly which checks were deferred, so the Reviewer reads a deferred-not-passed signal rather than a false green.
