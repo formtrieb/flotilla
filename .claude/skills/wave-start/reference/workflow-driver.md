@@ -32,7 +32,7 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 1. **Embed per-row data in the script body** as `const ISSUES = [...]` — the Workflow `args` channel does not reliably deliver a large nested payload. Never depend on external `args` for structured input.
 2. **Compose briefs in-script** via a helper that string-interpolates the structured fields — a function field cannot survive JSON serialization through `args`.
 3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`.
-4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute), `WAVE_CLI` (repo-relative), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts`), just as you fill `depsSetup`. `WAVE_CLI` is deliberately **repo-relative, not absolute**: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe therefore hits the permission gate mid-wave and breaks AFK dispatch. This is proven practice, not a proposal — the wave dispatching this very script already runs this exact repo-relative form as its live probe. A Worker's worktree needs no extra step for this to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
+4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute), `WAVE_CLI` (repo-relative **and npx-free** — the local `node_modules/.bin/tsx` binary, not `npx tsx`; see its comment below for the shared-npm-cache-lock reason and the `npx` fallback), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts`), just as you fill `depsSetup`. `WAVE_CLI` is deliberately **repo-relative, not absolute**: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe therefore hits the permission gate mid-wave and breaks AFK dispatch. This is proven practice, not a proposal — the wave dispatching this very script already runs this exact repo-relative form as its live probe. A Worker's worktree needs no extra step for this to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
 
 ## A worktree carries tracked files only (FOR-32, W4-F4)
 
@@ -118,6 +118,21 @@ const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // probe. A Worker's worktree needs no `cd` for this to resolve — its
 // post-checkout cwd already IS a repo-relative root; a Scribe gets the same
 // guarantee via the REPO_ROOT `cd` above.
+//
+// It also defaults to the npx-FREE LOCAL BINARY (`./tools/wave/node_modules/
+// .bin/tsx …`), NOT `npx tsx …`. Under agent fan-out, parallel `npx`
+// invocations contend on the one shared npm cache lock and intermittently die
+// with ECOMPROMISED — three live hits on the first Linear consumer wave (a
+// Scribe verdict-write, a Worker `host-pr` call, and a coordinator-side
+// transition; consumer retro KW-F7). The local binary resolves tsx off the
+// worktree's own tracked tree and never touches that shared lock. `npx tsx
+// tools/wave/src/cli.ts` stays the DOCUMENTED FALLBACK for a context where the
+// local binary is genuinely absent (a one-off call outside a wave, deps never
+// installed) — the tracked allowlist wave-setup scaffolds names BOTH prefixes,
+// so either resolves without hitting the permission gate. depsSetup (Worker
+// step 4, the FIRST step) installs that local binary, so it exists before the
+// terminator's WAVE_CLI call — keep depsSetup first for this reason as well as
+// the verify-gate one.
 const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts'
 // REPORTS_DIR / VERDICTS_DIR stay ABSOLUTE regardless — sidecar dirs are
 // addressed independent of whatever cwd the Scribe's REPO_ROOT `cd` leaves it in.
@@ -190,7 +205,9 @@ function workerBrief(issue) {
 4. Install dependencies. A worktree checkout carries **tracked files only** — if
    this consumer's dependency directory is gitignored (the ordinary case for a
    lockfile-managed tree), it is **absent here, not merely un-installed**, and
-   the verify gate below cannot run at all without this step first:
+   the verify gate below cannot run at all — and the npx-free engine CLI the
+   terminator invokes (a local \`node_modules/.bin/tsx\` binary, see Termination
+   step 3) has no binary to resolve — without this step first:
    \`\`\`bash
    ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
    \`\`\`
