@@ -329,6 +329,16 @@ Two consecutive cap=1 re-dispatches were caused by exactly this class — each c
 - **W11 — FOR-30** (docs/retros/2026-07-20-hardening-polish-w11.md): the new `ENGINE_SURFACE` detection regex matched the wrapper stores but not the transport layer beneath them (`real-*-api.ts`, the factories, `cli-store.ts`) — spec-covered, gate green, caught by the Reviewer; iter-2 widened the regex.
 - **W12 — FOR-53** (docs/retros/2026-07-20-preflight-hardening-w12.md): `setRowIter` + the `spine set-row-iter` CLI verb landed correct and spec-covered, but a repo-wide grep for the new verb name returned 0 hits — the consuming call site (`start-mechanics.md` Step 7d) still invoked only the old `set-row-state re-dispatched`. Caught by the Reviewer; iter-2 wired it via a Coordinator scope extension to exactly the two named files.
 
+## Convention 10 — runtime residue (a Worker tears down or discloses self-started stacks)
+
+A Worker's slice can start more than files-on-disk — a compose project, a container, a background server, anything holding a port, a volume, or a network. `worktree-cleanup` knows only git artifacts (worktrees, branches); nothing in the Worker brief otherwise requires runtime teardown, so a self-started runtime resource can silently outlive its worktree. **A Worker that starts any runtime resource in the course of its slice must tear it down before termination, or explicitly disclose the surviving resource under `judgmentCalls` — mirrored in `reviewerFocusItems`, the same disclosure shape as Convention 9 — so the Coordinator can clean up after landing.**
+
+The clause itself lives in `workerBrief()`'s policy-clauses list (`.claude/skills/wave-start/reference/workflow-driver.md`) — the text a Worker actually receives; this section documents the convention it encodes. The engine stays untouched here: runtime-resource knowledge (docker, ports) deliberately does not enter the node-pure core (the two-layer split, CHARTER §4) — a structural cleanup sweep remains a possible future slice only if this convention proves insufficient in practice.
+
+### Live occurrence (evidence)
+
+**2026-07-22, second consumer wave, finding PC-F2** (doc slug 2026-07-22-postgres-ci): a lane Worker's self-started compose project — container, volume, network, a bound host port — survived worktree cleanup and later held the port during a local reproduction, cascading into a blocked repro session. The consumer mitigated ad-hoc with a per-wave brief clause; this convention generalizes that fix upstream so future consumers don't have to rediscover it.
+
 ## Common Mistakes
 
 - **Hand-editing an inlined schema literal.** The TS const is the source of truth; edit it, run the drift-guard, then sync the literal. A lone literal edit fails `skill-schema-drift.spec.ts`.
@@ -348,5 +358,6 @@ Two consecutive cap=1 re-dispatches were caused by exactly this class — each c
 - **Drift-pinning `SCRIBE_RESULT_SCHEMA`.** It is driver-local (no engine const); only the two agent-boundary schemas above are pinned by `skill-schema-drift.spec.ts`. Do not add the Scribe shape to that spec.
 - **Echoing an environment variable's value — even via `${VAR:-no}` fallback syntax.** The fallback only fires when the variable is absent; when it's set, the value prints straight into agent-visible tool output, i.e. the session transcript on disk (live: W8-F1, docs/retros/2026-07-20-publication-w8.md). Check availability value-free instead: `[ -n "$VAR" ] && echo set` (Convention 8).
 - **Letting a Scribe failure kill the tuple.** The driver's Scribe stage must pass the report/verdict through and log loud on a write failure — a throw would drop the row to `null` and convert a finished Worker into a spurious `worker-failed` STOP.
+- **Leaving a self-started runtime resource running with no disclosure (Convention 10).** `worktree-cleanup` only knows git artifacts — a compose project, container, volume, network, or bound port a Worker starts is invisible to it. Tear the resource down before termination, or disclose it under `judgmentCalls` (mirrored in `reviewerFocusItems`) so the Coordinator can clean up after landing (live: PC-F2, doc slug 2026-07-22-postgres-ci).
 
 - **Re-scoping or correcting an issue with raw tracker GraphQL / a tracker CLI.** The exact W4-F5 failure. To change an issue's title or prose, use `issue-store amend` (Convention 6); to change its Files/ACs, use `issue-store annotate`. A Worker *discloses* the needed change in its report and the Coordinator amends — never reach past the engine seam. And `amend` cannot be used to change acceptance criteria: an `AmendPatch` has no AC field and a reserved-heading section throws.
