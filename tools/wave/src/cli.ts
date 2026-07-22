@@ -50,6 +50,14 @@
  *                    (orphan-with-real-files). Reported under the `orphans` key.
  *                    A REGISTERED worktree is never swept, so it is parallel-safe
  *                    and independent of the --wave/--branches scoping below.
+ *                    --orphans additionally sweeps orphaned LOCAL branches with
+ *                    no removal event (FOR-72 — W15-F1): local wave/* branches
+ *                    whose remote ref is gone, and harness worktree-wf_* base
+ *                    branches whose worktree is no longer registered or on disk.
+ *                    Those deletions/skips fold into branchesDeleted /
+ *                    branchHygieneSkipped. The current branch and any checked-out
+ *                    branch are never deleted. (Real run only — --dry-run
+ *                    previews the orphan DIRECTORY plan, not branches.)
  *
  *                    Optional branch-scoped filter (issue #77 — parallel-wave safety):
  *                      --wave <spine-path>  Read the WAVE.md spine and derive the
@@ -164,6 +172,7 @@ import {
   listOrphanDirs,
   planOrphanSweep,
   executeOrphanSweep,
+  sweepOrphanBranches,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
@@ -662,17 +671,27 @@ function resolveBranchFilter(
  * Without either flag, the original global-GC behaviour applies (all
  * pushed-and-clean agent worktrees are selected — correct for serial closes).
  *
- * Optional orphan sweep (FOR-67 — consumer KW-F6 + W15 findings):
- *   --orphans             Additionally sweep directories under the worktrees
+ * Optional orphan sweep (FOR-67 — consumer KW-F6 + W15 findings; extended by
+ * FOR-72 — W15-F1):
+ *   --orphans             Additionally sweep (a) directories under the worktrees
  *                         root that `git worktree list` does not know about at
  *                         all (deregistered leftovers + empty leftovers from
- *                         earlier waves). Independent of --wave/--branches and
- *                         parallel-safe (a registered worktree is never an
- *                         orphan). Reported under the `orphans` key.
+ *                         earlier waves — reported under the `orphans` key), AND
+ *                         (b, FOR-72) orphaned LOCAL branches with no removal
+ *                         event: local wave/* branches whose remote ref is gone
+ *                         and harness worktree-wf_* base branches whose worktree
+ *                         is no longer registered or on disk. Both are
+ *                         independent of --wave/--branches and parallel-safe (a
+ *                         registered worktree is never an orphan; a checked-out
+ *                         or current branch is never deleted). The branch
+ *                         deletions/skips ride the existing branchesDeleted /
+ *                         branchHygieneSkipped fields.
  *
  * Prints the FULL engine summary so a run can never do work and show nothing
  * (FOR-67): removed/skipped/errors PLUS deregisteredNotDeleted (the ENOTEMPTY
- * class), branchesDeleted, branchHygieneSkipped, and (with --orphans) orphans.
+ * class), branchesDeleted, branchHygieneSkipped (both of which, with --orphans,
+ * fold in the standalone orphaned-branch sweep — FOR-72), and (with --orphans)
+ * orphans.
  *
  * Idempotent: a re-run after everything is cleaned reports an empty plan and
  * exits 0 (nothing selected → nothing removed).
@@ -744,6 +763,26 @@ function runWorktreeCleanup(args: string[]): number {
     const orphanResult =
       orphanPlan !== null ? executeOrphanSweep(orphanPlan, { repoRoot }) : null;
 
+    // Standalone orphaned-BRANCH sweep (FOR-72 — W15-F1, 3× reproduced): the
+    // counterpart to the orphan-DIRECTORY sweep, gated on the same --orphans
+    // flag. It deletes local wave branches whose remote ref is gone and harness
+    // worktree-wf_* base branches whose worktree is gone, WITHOUT needing a
+    // worktree-removal event in this run (the manual force-remove ENOTEMPTY-
+    // fallback leaves those branches orphaned silently). Run AFTER the orphan-
+    // DIR sweep so a just-removed orphan dir's throwaway branch reads as
+    // eligible (its worktree is now gone from disk). Its deletions/skips ride
+    // the EXISTING branchesDeleted / branchHygieneSkipped fields below, so the
+    // whole sweep stays observable in one summary.
+    const orphanBranchResult = orphans ? sweepOrphanBranches({ repoRoot }) : null;
+    const branchesDeleted =
+      orphanBranchResult !== null
+        ? [...result.branchesDeleted, ...orphanBranchResult.branchesDeleted]
+        : result.branchesDeleted;
+    const branchHygieneSkipped =
+      orphanBranchResult !== null
+        ? [...result.branchHygieneSkipped, ...orphanBranchResult.branchHygieneSkipped]
+        : result.branchHygieneSkipped;
+
     // Print the FULL cleanup summary (FOR-67 — W15 finding: branchesDeleted /
     // branchHygieneSkipped were computed by the engine but never surfaced at
     // the CLI, so a run could delete branches and show nothing). Every
@@ -760,8 +799,8 @@ function runWorktreeCleanup(args: string[]): number {
           skipped: result.skipped,
           errors: result.errors,
           deregisteredNotDeleted: result.deregisteredNotDeleted,
-          branchesDeleted: result.branchesDeleted,
-          branchHygieneSkipped: result.branchHygieneSkipped,
+          branchesDeleted,
+          branchHygieneSkipped,
           ...(orphanResult !== null ? { orphans: orphanResult } : {}),
         },
         null,

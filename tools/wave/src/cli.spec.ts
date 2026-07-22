@@ -1201,6 +1201,100 @@ describe('worktree-cleanup subcommand — --orphans sweep (FOR-67)', () => {
   });
 });
 
+// ─── Form 8c: worktree-cleanup — --orphans folds the standalone orphaned-BRANCH
+//             sweep into branchesDeleted / branchHygieneSkipped (FOR-72) ───────
+//
+// FOR-72 (W15-F1, 3× reproduced): --orphans, besides the orphan-DIRECTORY sweep
+// above, also deletes local branches orphaned WITHOUT a worktree-removal event
+// — wave/* branches whose remote ref is gone and harness worktree-wf_* base
+// branches whose worktree is gone. Those deletions ride the EXISTING
+// branchesDeleted / branchHygieneSkipped summary fields. The whole git surface
+// is driven through the module-level execFileSync mock (per git subcommand), so
+// no real repo/branches are needed; the temp repo dir simply gives a resolvable
+// repo-root with no worktrees dir (dir sweep + live-worktree scan both empty).
+describe('worktree-cleanup subcommand — --orphans folds the orphaned-branch sweep into the summary (FOR-72)', () => {
+  let repo: string;
+
+  /**
+   * Drive each git subcommand the cleanup path issues:
+   *   - for-each-ref  → the local branch set (a gone wave branch, an orphaned
+   *                     worktree-wf_ branch, and the current branch)
+   *   - symbolic-ref  → the current branch (never deleted)
+   *   - ls-remote     → exit 2 (git's authoritative "no matching ref" = gone)
+   *   - everything else (worktree list, rev-parse, branch -D, ...) → ''
+   */
+  function driveBranchSweepGit(): void {
+    // Reset call history first so `mock.calls` reflects only this invocation
+    // (the shared module-level mock accumulates calls across the whole file).
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      const sub = cmdArgs[0];
+      if (sub === 'for-each-ref') {
+        return 'main\nwave/FOR-72-gone\nworktree-wf_orphan-1\n';
+      }
+      if (sub === 'symbolic-ref') return 'main\n';
+      if (sub === 'ls-remote') {
+        const err = new Error('') as NodeJS.ErrnoException & { status?: number };
+        err.status = 2; // authoritative "no matching ref" → gone
+        throw err;
+      }
+      return '';
+    });
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'wave-cli-for72-'));
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('--orphans (real run) folds the gone wave branch + orphaned worktree-wf_ branch into branchesDeleted; the current branch is never deleted', () => {
+    driveBranchSweepGit();
+    const code = main(['worktree-cleanup', repo, '--orphans']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      branchesDeleted: string[];
+      branchHygieneSkipped: unknown[];
+    };
+    expect(parsed.branchesDeleted.sort()).toEqual(
+      ['wave/FOR-72-gone', 'worktree-wf_orphan-1'].sort(),
+    );
+    expect(parsed.branchesDeleted).not.toContain('main');
+    expect(parsed.branchHygieneSkipped).toEqual([]);
+    // The deletions actually went through `git branch -D`.
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['branch', '-D', 'wave/FOR-72-gone'],
+      expect.objectContaining({ cwd: repo }),
+    );
+  });
+
+  it('WITHOUT --orphans the branch sweep never runs — branchesDeleted stays [] and `git for-each-ref` is never issued (no-flag path byte-identical)', () => {
+    driveBranchSweepGit();
+    const code = main(['worktree-cleanup', repo]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      branchesDeleted: string[];
+      branchHygieneSkipped: unknown[];
+    };
+    expect(parsed.branchesDeleted).toEqual([]);
+    expect(parsed.branchHygieneSkipped).toEqual([]);
+    expect('orphans' in parsed).toBe(false);
+    const forEachRefCalled = vi
+      .mocked(execFileSync)
+      .mock.calls.some((c) => Array.isArray(c[1]) && (c[1] as string[])[0] === 'for-each-ref');
+    expect(forEachRefCalled).toBe(false);
+  });
+});
+
 // ─── Form 9: P7.1-wired subcommands (cross-wave / spine / conflict-map
 //             / issue-store) ─────────────────────────────────────────────────
 //

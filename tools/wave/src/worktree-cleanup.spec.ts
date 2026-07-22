@@ -163,6 +163,8 @@ import {
   planOrphanSweep,
   executeOrphanSweep,
   sweepOrphanWorktrees,
+  sweepOrphanBranches,
+  defaultOrphanBranchSweepOps,
   type WorktreeEntry,
   type WorktreeRemover,
   type RedispatchCleanupOps,
@@ -171,6 +173,7 @@ import {
   type BranchHygieneSkip,
   type OrphanDir,
   type OrphanRemover,
+  type OrphanBranchSweepOps,
 } from './worktree-cleanup';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -2663,5 +2666,384 @@ describe('orphan sweep — listOrphanDirs + sweepOrphanWorktrees, real git/fs (F
     expect(result.removed).toHaveLength(0);
     expect(result.skipped).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
+  });
+});
+
+// ─── 20. Standalone orphaned-branch sweep — sweepOrphanBranches (FOR-72) ──────
+//
+// The counterpart to the orphan-DIRECTORY sweep (Section 18/19): the same
+// --orphans flag, but for LOCAL branches orphaned WITHOUT a worktree-removal
+// event (the manual force-remove ENOTEMPTY fallback leaves them behind — W15-F1,
+// 3× reproduced). These pure tests inject a fake OrphanBranchSweepOps so the two
+// signals + the safety floor are exercised with zero real git/fs.
+describe('sweepOrphanBranches — standalone orphaned-branch sweep (FOR-72)', () => {
+  /** Build a fake OrphanBranchSweepOps backed by vitest spies, fully configurable. */
+  function fakeOrphanBranchOps(opts?: {
+    localBranches?: string[];
+    currentBranch?: string | null;
+    checkedOut?: Set<string>;
+    liveWorktreeBasenames?: Set<string>;
+    remoteGone?: Set<string>;
+    remoteProbeFailedFor?: Map<string, string>;
+  }): {
+    ops: OrphanBranchSweepOps;
+    deleteSpy: ReturnType<typeof vi.fn>;
+    probeSpy: ReturnType<typeof vi.fn>;
+  } {
+    const deleteSpy = vi.fn();
+    const probeSpy = vi.fn((b: string): RemoteRefProbeResult => {
+      if (opts?.remoteGone?.has(b)) return { status: 'gone' };
+      const fail = opts?.remoteProbeFailedFor?.get(b);
+      if (fail !== undefined) return { status: 'probe-failed', reason: fail };
+      return { status: 'present' };
+    });
+    const ops: OrphanBranchSweepOps = {
+      listLocalBranches: () => opts?.localBranches ?? [],
+      currentBranch: () => opts?.currentBranch ?? null,
+      listCheckedOutBranches: () => opts?.checkedOut ?? new Set<string>(),
+      listLiveWorktreeBasenames: () => opts?.liveWorktreeBasenames ?? new Set<string>(),
+      probeRemoteRef: probeSpy,
+      deleteBranch: deleteSpy,
+    };
+    return { ops, deleteSpy, probeSpy };
+  }
+
+  // ── Signal 1: wave/* branch whose remote ref is gone ──────────────────────
+
+  it('signal 1: a wave/* branch whose remote ref is authoritatively gone is force-deleted — WITHOUT any worktree-removal event', () => {
+    const { ops, deleteSpy } = fakeOrphanBranchOps({
+      localBranches: ['wave/FOR-72-x'],
+      remoteGone: new Set(['wave/FOR-72-x']),
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).toHaveBeenCalledWith('wave/FOR-72-x');
+    expect(result.branchesDeleted).toEqual(['wave/FOR-72-x']);
+    expect(result.branchHygieneSkipped).toEqual([]);
+  });
+
+  it('signal 1: a wave/* branch whose remote ref is still PRESENT (real unlanded work) is left alone — not deleted, not recorded as a skip', () => {
+    const { ops, deleteSpy } = fakeOrphanBranchOps({
+      localBranches: ['wave/FOR-72-unlanded'],
+      // default probe → 'present'
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+    expect(result.branchHygieneSkipped).toEqual([]);
+  });
+
+  it('signal 1: a wave/* branch whose remote-ref probe FAILED is NEVER deleted, and is recorded in branchHygieneSkipped with a machine-readable reason + detail', () => {
+    const { ops, deleteSpy } = fakeOrphanBranchOps({
+      localBranches: ['wave/FOR-72-flaky'],
+      remoteProbeFailedFor: new Map([['wave/FOR-72-flaky', 'network error: could not resolve host']]),
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+    const expected: BranchHygieneSkip = {
+      branch: 'wave/FOR-72-flaky',
+      reason: 'branch-probe-failed',
+      detail: 'network error: could not resolve host',
+    };
+    expect(result.branchHygieneSkipped).toEqual([expected]);
+  });
+
+  // ── Signal 2: harness worktree-wf_* base branch whose worktree is gone ─────
+
+  it('signal 2: a harness worktree-wf_* base branch whose worktree is neither registered nor on disk is force-deleted', () => {
+    const { ops, deleteSpy, probeSpy } = fakeOrphanBranchOps({
+      localBranches: ['worktree-wf_run9-3'],
+      liveWorktreeBasenames: new Set<string>(), // wf_run9-3 absent → worktree gone
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).toHaveBeenCalledWith('worktree-wf_run9-3');
+    expect(result.branchesDeleted).toEqual(['worktree-wf_run9-3']);
+    // A worktree-* branch is never remote-ref-probed.
+    expect(probeSpy).not.toHaveBeenCalled();
+  });
+
+  it('signal 2: a harness worktree-wf_* branch whose worktree is STILL LIVE (basename registered/on disk) is left alone — even though it is not itself checked out', () => {
+    const { ops, deleteSpy } = fakeOrphanBranchOps({
+      localBranches: ['worktree-wf_live-1'],
+      liveWorktreeBasenames: new Set(['wf_live-1']), // worktree still present
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('signal 2 is restricted to the wf_ shape: a bare worktree-* branch (not wf_) is never touched, even with no matching worktree', () => {
+    const { ops, deleteSpy } = fakeOrphanBranchOps({
+      localBranches: ['worktree-notes', 'worktree-scratch'],
+      liveWorktreeBasenames: new Set<string>(), // no matching worktrees
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  // ── Safety floor (rule c, made explicit) ──────────────────────────────────
+
+  it('safety floor: the CURRENT branch is never deleted, even when it would otherwise match a signal', () => {
+    const { ops, deleteSpy, probeSpy } = fakeOrphanBranchOps({
+      localBranches: ['wave/FOR-72-current'],
+      currentBranch: 'wave/FOR-72-current',
+      remoteGone: new Set(['wave/FOR-72-current']), // would otherwise qualify
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(probeSpy).not.toHaveBeenCalled(); // never even probed
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('safety floor: a branch checked out in ANY live worktree is never deleted (or probed), for either signal', () => {
+    const { ops, deleteSpy, probeSpy } = fakeOrphanBranchOps({
+      localBranches: ['wave/FOR-72-elsewhere', 'worktree-wf_busy-2'],
+      checkedOut: new Set(['wave/FOR-72-elsewhere', 'worktree-wf_busy-2']),
+      remoteGone: new Set(['wave/FOR-72-elsewhere']), // would otherwise qualify
+      liveWorktreeBasenames: new Set<string>(), // worktree-wf_busy-2 would otherwise qualify
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(probeSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('a branch matching NEITHER signal (main, feature/*, a plain branch) is never touched and never probed', () => {
+    const { ops, deleteSpy, probeSpy } = fakeOrphanBranchOps({
+      localBranches: ['main', 'feature/keep', 'develop'],
+      remoteGone: new Set(['feature/keep']), // irrelevant: not a wave/* branch
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(probeSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+    expect(result.branchHygieneSkipped).toEqual([]);
+  });
+
+  it('empty local-branch set → empty result, nothing probed or deleted (idempotent no-op)', () => {
+    const { ops, deleteSpy, probeSpy } = fakeOrphanBranchOps({ localBranches: [] });
+    const result = sweepOrphanBranches({ ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(probeSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+    expect(result.branchHygieneSkipped).toEqual([]);
+  });
+
+  it('the W15-F1 accumulation shape: 7 gone wave/* + 7 orphaned worktree-wf_* branches all swept in ONE standalone run, while the current branch and a still-live worktree branch survive', () => {
+    const waveGone = Array.from({ length: 7 }, (_, i) => `wave/FOR-${60 + i}-x`);
+    const worktreeOrphans = Array.from({ length: 7 }, (_, i) => `worktree-wf_run${i}-1`);
+    const { ops, deleteSpy } = fakeOrphanBranchOps({
+      localBranches: [
+        'main', // current + neither signal
+        'wave/FOR-live', // checked out in a live worktree
+        'worktree-wf_live-9', // its worktree is still live
+        ...waveGone,
+        ...worktreeOrphans,
+      ],
+      currentBranch: 'main',
+      checkedOut: new Set(['main', 'wave/FOR-live']),
+      liveWorktreeBasenames: new Set(['wf_live-9']),
+      remoteGone: new Set(waveGone),
+    });
+    const result = sweepOrphanBranches({ ops });
+    expect(result.branchesDeleted.sort()).toEqual([...waveGone, ...worktreeOrphans].sort());
+    expect(deleteSpy).not.toHaveBeenCalledWith('main');
+    expect(deleteSpy).not.toHaveBeenCalledWith('wave/FOR-live');
+    expect(deleteSpy).not.toHaveBeenCalledWith('worktree-wf_live-9');
+    expect(result.branchHygieneSkipped).toEqual([]);
+  });
+});
+
+// ─── 21. defaultOrphanBranchSweepOps — real-git command shape (FOR-72) ────────
+
+describe('defaultOrphanBranchSweepOps — real-git command shape (FOR-72)', () => {
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+  });
+
+  it('listLocalBranches invokes `git for-each-ref --format=%(refname:short) refs/heads/` and parses newline-split branch names (trimming, dropping empties)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'for-each-ref') {
+        return 'main\nwave/FOR-72-x\nworktree-wf_run9-3\n';
+      }
+      return '';
+    });
+    const ops = defaultOrphanBranchSweepOps('/repo', [...DEFAULT_AGENT_PATH_MARKERS]);
+    expect(ops.listLocalBranches()).toEqual(['main', 'wave/FOR-72-x', 'worktree-wf_run9-3']);
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+
+  it('currentBranch invokes `git symbolic-ref --quiet --short HEAD` and returns the trimmed branch name', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'symbolic-ref') return 'wave/FOR-72-here\n';
+      return '';
+    });
+    const ops = defaultOrphanBranchSweepOps('/repo');
+    expect(ops.currentBranch()).toBe('wave/FOR-72-here');
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+
+  it('currentBranch returns null on a detached HEAD (symbolic-ref errors → empty output)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error('fatal: ref HEAD is not a symbolic ref');
+    });
+    expect(defaultOrphanBranchSweepOps('/repo').currentBranch()).toBeNull();
+  });
+
+  it('probeRemoteRef REUSES the FOR-62 signal verbatim — `git ls-remote --exit-code --heads origin <branch>`', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    defaultOrphanBranchSweepOps('/repo').probeRemoteRef('wave/x');
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['ls-remote', '--exit-code', '--heads', 'origin', 'wave/x'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+
+  it('deleteBranch REUSES `git branch -D <branch>` and is idempotent (swallows an already-absent failure)', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error("error: branch 'wave/x' not found");
+    });
+    expect(() => defaultOrphanBranchSweepOps('/repo').deleteBranch('wave/x')).not.toThrow();
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['branch', '-D', 'wave/x'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+});
+
+// ─── 22. Standalone orphaned-branch sweep — real git/fs end-to-end (FOR-72) ───
+//
+// Builds a REAL repo with a REAL registered worktree and a REAL (local, bare)
+// origin so the remote-ref-gone signal is exercised against genuine
+// `git ls-remote --exit-code` behaviour (exit 2 = no matching ref = gone), and
+// signal 2 + the safety floor run against real `git worktree list`/branch state.
+describe('sweepOrphanBranches — real git/fs end-to-end (FOR-72)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  function localBranches(mainRoot: string): Set<string> {
+    const out = realExecFileSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'], {
+      cwd: mainRoot,
+      encoding: 'utf-8',
+    }) as string;
+    return new Set(out.split('\n').map((l) => l.trim()).filter((l) => l.length > 0));
+  }
+
+  it('sweeps a gone-remote wave/* branch and an orphaned worktree-wf_* branch, while preserving the current branch, a live worktree branch, its still-live throwaway branch, and a neither-signal branch', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-for72-')));
+    tempRoots.push(root);
+
+    // A real bare origin so `git ls-remote --exit-code` can authoritatively
+    // report a missing ref (exit 2) rather than a transport failure.
+    const originPath = join(root, 'origin.git');
+    realGit(['init', '-q', '--bare', originPath], root);
+
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    realGit(['branch', '-M', 'main'], mainRoot); // deterministic current branch
+    realGit(['remote', 'add', 'origin', originPath], mainRoot);
+
+    // A live, registered worktree on wave/FOR-live at basename wf_live-1.
+    const relLive = join('.claude', 'worktrees', 'wf_live-1');
+    realGit(['worktree', 'add', '-q', relLive, '-b', 'wave/FOR-live'], mainRoot);
+
+    // Orphaned + preserved local branches, all pointing at the initial commit.
+    realGit(['branch', 'wave/FOR-gone'], mainRoot); // never pushed → remote ref gone
+    realGit(['branch', 'worktree-wf_orphan-9'], mainRoot); // no such worktree
+    realGit(['branch', 'worktree-wf_live-1'], mainRoot); // its worktree IS live
+    realGit(['branch', 'feature/keep'], mainRoot); // neither signal
+
+    const before = localBranches(mainRoot);
+    expect(before).toContain('wave/FOR-gone');
+    expect(before).toContain('worktree-wf_orphan-9');
+
+    const result = sweepOrphanBranches({ repoRoot: mainRoot });
+
+    expect(result.branchesDeleted.sort()).toEqual(
+      ['wave/FOR-gone', 'worktree-wf_orphan-9'].sort(),
+    );
+    expect(result.branchHygieneSkipped).toEqual([]);
+
+    const after = localBranches(mainRoot);
+    // Deleted:
+    expect(after.has('wave/FOR-gone')).toBe(false);
+    expect(after.has('worktree-wf_orphan-9')).toBe(false);
+    // Preserved:
+    expect(after.has('main')).toBe(true); // current branch
+    expect(after.has('wave/FOR-live')).toBe(true); // checked out in a live worktree
+    expect(after.has('worktree-wf_live-1')).toBe(true); // worktree still live
+    expect(after.has('feature/keep')).toBe(true); // neither signal
+  });
+
+  it('is idempotent: a second run after everything orphaned is swept deletes nothing more', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-for72-idem-')));
+    tempRoots.push(root);
+    const originPath = join(root, 'origin.git');
+    realGit(['init', '-q', '--bare', originPath], root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    realGit(['branch', '-M', 'main'], mainRoot);
+    realGit(['remote', 'add', 'origin', originPath], mainRoot);
+    realGit(['branch', 'wave/FOR-gone'], mainRoot);
+
+    const first = sweepOrphanBranches({ repoRoot: mainRoot });
+    expect(first.branchesDeleted).toEqual(['wave/FOR-gone']);
+
+    const second = sweepOrphanBranches({ repoRoot: mainRoot });
+    expect(second.branchesDeleted).toEqual([]);
+    expect(second.branchHygieneSkipped).toEqual([]);
   });
 });

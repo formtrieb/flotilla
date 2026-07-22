@@ -1089,6 +1089,268 @@ export function defaultOrphanRemover(): OrphanRemover {
   };
 }
 
+// ─── Standalone orphaned-branch sweep (FOR-72 — W15-F1, 3× reproduced) ────────
+//
+// A THIRD orphan class, and the counterpart to the orphan-DIRECTORY sweep above.
+// The local-branch hygiene in `runBranchHygiene` fires ONLY per removal event
+// (the throwaway-branch delete and the remote-ref-gone signal both ride an
+// `executeCleanup` worktree removal). When a worktree is force-removed manually
+// instead — the documented ENOTEMPTY-class fallback — no removal event ever
+// fires, and its local branches orphan silently. Three consecutive live
+// reproductions (the blockedby-refgone close's manual `-D` sweep, retro W15-F1;
+// and 14 stale locals — 7 wave branches with their remotes long deleted, 7
+// harness `worktree-*` base branches — after the consumer-findings day) are the
+// evidence this sweep exists to stop.
+//
+// It reuses the exact two signals the per-removal hygiene already trusts, but
+// keyed off the branch itself rather than a just-removed worktree:
+//   • a `wave/*` branch whose remote ref is authoritatively gone (the same
+//     {@link RemoteRefProbeResult} `probeRemoteRef` signal — the one that
+//     actually fires in this repo's no-`-u`-push / squash-merge close flow); and
+//   • a harness `worktree-wf_*` base branch whose worktree is no longer live —
+//     neither registered in `git worktree list` NOR present on disk under the
+//     worktrees root. By construction such a branch's tip sits on the wave
+//     anchor commit (it is the branch `isolation: 'worktree'` checks out FIRST,
+//     before the dispatched agent `git checkout -b`'s away), so it can never
+//     carry unique work — the exact rule-(a) guarantee, here additionally gated
+//     on the worktree being gone.
+//
+// Safety floor (mirrors `runBranchHygiene`'s rule (c), made explicit): the
+// CURRENT branch is never deleted, a branch checked out in ANY live worktree is
+// never deleted, and a branch matching NEITHER signal is never touched.
+
+/**
+ * Result of a standalone orphaned-branch sweep (FOR-72). Rides the SAME
+ * structural surface the per-removal hygiene populates on
+ * {@link CleanupResult}: `branchesDeleted` (branches actually force-deleted)
+ * and `branchHygieneSkipped` (a `wave/*` branch left in place because its
+ * remote-ref probe could not authoritatively complete — `branch-probe-failed`,
+ * see {@link BranchHygieneSkip}), so a caller can merge the two into one
+ * observable summary.
+ */
+export interface OrphanBranchSweepResult {
+  /** Local branches force-deleted by this sweep (0+ entries). */
+  branchesDeleted: string[];
+  /**
+   * `wave/*` branches left in place because their remote-ref probe FAILED
+   * (network/transport error) rather than authoritatively confirming presence
+   * or absence — never deleted, but surfaced (same reason a per-removal
+   * probe-failure is surfaced, FOR-62). A `present` result (real unlanded
+   * work) is NOT recorded here — it stays the silent no-op it is in the
+   * per-removal path.
+   */
+  branchHygieneSkipped: BranchHygieneSkip[];
+}
+
+/**
+ * Injectable seam for the standalone orphaned-branch sweep (FOR-72), mirroring
+ * the {@link WorktreeRemover}/{@link BranchHygieneOps} injection pattern. Its
+ * remote-ref + delete + checked-out methods reuse {@link defaultBranchHygieneOps}
+ * in {@link defaultOrphanBranchSweepOps} so the remote-ref-gone signal is the
+ * exact same one the per-removal hygiene trusts.
+ */
+export interface OrphanBranchSweepOps {
+  /** Every local branch name (`git for-each-ref --format=%(refname:short) refs/heads/`). */
+  listLocalBranches(): string[];
+  /**
+   * The branch the repo's primary checkout HEAD points to, or `null` when
+   * detached. An explicit member of the safety floor: this branch is NEVER
+   * deleted, independent of whether it also appears in
+   * {@link listCheckedOutBranches}.
+   */
+  currentBranch(): string | null;
+  /**
+   * Every branch checked out across ALL live worktrees (safety floor) —
+   * queried fresh, same contract as {@link BranchHygieneOps.listCheckedOutBranches}.
+   */
+  listCheckedOutBranches(): Set<string>;
+  /**
+   * Basenames of every LIVE worktree — registered in `git worktree list`
+   * (its `worktree` path basenames) UNION the directory names present on disk
+   * under the worktrees root. A `worktree-wf_<x>` branch is an orphan only
+   * when `<x>` is absent from this set (worktree neither registered nor on
+   * disk).
+   */
+  listLiveWorktreeBasenames(): Set<string>;
+  /** Authoritative remote-ref probe — reuses the FOR-62 signal (see {@link BranchHygieneOps.probeRemoteRef}). */
+  probeRemoteRef(branch: string): RemoteRefProbeResult;
+  /** Force-delete a local branch. MUST be idempotent (no-op, never throws, when already absent). */
+  deleteBranch(branch: string): void;
+}
+
+export interface OrphanBranchSweepOptions {
+  /** Absolute repo root the git/fs probes run against. Defaults to `process.cwd()`. */
+  repoRoot?: string;
+  /**
+   * Path prefix(es) that identify auto-managed worktrees — the SAME allowlist
+   * {@link listAgentWorktrees}/{@link listOrphanDirs} use (defaults to
+   * {@link DEFAULT_AGENT_PATH_MARKERS}). Used to locate the worktrees root(s)
+   * whose on-disk directory names feed {@link OrphanBranchSweepOps.listLiveWorktreeBasenames}.
+   */
+  agentPathMarker?: string | readonly string[];
+  /** Injectable seam. Defaults to {@link defaultOrphanBranchSweepOps}. */
+  ops?: OrphanBranchSweepOps;
+}
+
+/**
+ * Sweep orphaned LOCAL branches (FOR-72) — the standalone path, requiring NO
+ * worktree-removal event in the same run. See the section doc comment above
+ * for the full accumulation writeup and the two signals.
+ *
+ * For every local branch, in order:
+ *   1. Safety floor — the current branch and any branch checked out in a live
+ *      worktree are skipped outright (never probed, never deleted).
+ *   2. A `worktree-wf_*` branch is force-deleted iff its worktree (basename =
+ *      the branch name minus the `worktree-` prefix) is neither registered nor
+ *      on disk — otherwise the worktree is still live and the branch is left
+ *      alone.
+ *   3. A `wave/*` branch is force-deleted iff its remote ref is authoritatively
+ *      `gone`; a `probe-failed` result is recorded in `branchHygieneSkipped`
+ *      (never deleted); a `present` result is left alone silently.
+ *   4. A branch matching neither shape is never touched.
+ *
+ * Idempotent: a re-run after everything is swept finds no eligible branch and
+ * returns empty arrays. Best-effort: `deleteBranch` is idempotent by contract,
+ * so a branch that vanished between listing and deletion is a no-op.
+ */
+export function sweepOrphanBranches(
+  opts: OrphanBranchSweepOptions = {},
+): OrphanBranchSweepResult {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const markers = normalizeMarkers(opts.agentPathMarker);
+  const ops = opts.ops ?? defaultOrphanBranchSweepOps(repoRoot, markers);
+
+  const localBranches = ops.listLocalBranches();
+  const current = ops.currentBranch();
+  const checkedOut = ops.listCheckedOutBranches();
+  const liveWorktreeBasenames = ops.listLiveWorktreeBasenames();
+
+  const branchesDeleted: string[] = [];
+  const branchHygieneSkipped: BranchHygieneSkip[] = [];
+
+  for (const branch of localBranches) {
+    // Safety floor (rule c, made explicit): the current branch is structurally
+    // undeletable, and a branch checked out in ANY live worktree is never
+    // touched — neither is even probed.
+    if (current !== null && branch === current) continue;
+    if (checkedOut.has(branch)) continue;
+
+    // Signal 2 — harness worktree base branch (worktree-wf_* naming) whose
+    // worktree is gone. Restricted to the `wf_` Workflow-driver shape (the
+    // same restriction rule (a) applies): only that shape carries the
+    // tip-on-the-anchor guarantee that makes an unconditional force-delete
+    // safe. A bare `worktree-*` without `wf_` is not a recognized harness
+    // branch and is left untouched.
+    if (/^worktree-wf_/.test(branch)) {
+      const worktreeBasename = branch.slice('worktree-'.length);
+      if (!liveWorktreeBasenames.has(worktreeBasename)) {
+        ops.deleteBranch(branch);
+        branchesDeleted.push(branch);
+      }
+      // Worktree still live (registered or on disk) → leave the branch alone.
+      continue;
+    }
+
+    // Signal 1 — wave/* branch whose remote ref is authoritatively gone (the
+    // same remote-ref-gone evidence the per-removal hygiene trusts).
+    if (branch.startsWith('wave/')) {
+      const probe = ops.probeRemoteRef(branch);
+      if (probe.status === 'gone') {
+        ops.deleteBranch(branch);
+        branchesDeleted.push(branch);
+      } else if (probe.status === 'probe-failed') {
+        branchHygieneSkipped.push({
+          branch,
+          reason: 'branch-probe-failed',
+          detail: probe.reason,
+        });
+      }
+      // 'present' → real, unlanded work → left alone (silent, exactly as the
+      // per-removal hygiene handles a confirmed-present remote ref).
+      continue;
+    }
+
+    // Matches neither signal → never touched.
+  }
+
+  return { branchesDeleted, branchHygieneSkipped };
+}
+
+/**
+ * Default {@link OrphanBranchSweepOps} backed by real git/fs. Its remote-ref
+ * probe, branch delete, and checked-out listing REUSE
+ * {@link defaultBranchHygieneOps} verbatim — the standalone sweep trusts the
+ * exact same signals the per-removal hygiene does. `listLiveWorktreeBasenames`
+ * unions the registered-worktree path basenames (`git worktree list`) with the
+ * on-disk directory names under the marker-derived worktrees root(s).
+ */
+export function defaultOrphanBranchSweepOps(
+  repoRoot: string,
+  markers: string[] = [...DEFAULT_AGENT_PATH_MARKERS],
+): OrphanBranchSweepOps {
+  const hygiene = defaultBranchHygieneOps(repoRoot);
+  return {
+    listLocalBranches(): string[] {
+      const raw = shellGit(
+        ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'],
+        repoRoot,
+      );
+      return raw
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+    },
+    currentBranch(): string | null {
+      // `symbolic-ref --quiet --short HEAD` prints the branch on an attached
+      // HEAD and exits non-zero (→ `shellGit` returns '') on a detached HEAD.
+      const out = shellGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], repoRoot).trim();
+      return out.length > 0 ? out : null;
+    },
+    listCheckedOutBranches: hygiene.listCheckedOutBranches,
+    listLiveWorktreeBasenames(): Set<string> {
+      return collectLiveWorktreeBasenames(repoRoot, markers);
+    },
+    probeRemoteRef: hygiene.probeRemoteRef,
+    deleteBranch: hygiene.deleteBranch,
+  };
+}
+
+/**
+ * Basenames of every LIVE worktree for the orphaned-branch sweep (FOR-72):
+ * the registered worktree path basenames (from `git worktree list --porcelain`)
+ * UNION every directory name physically present under the marker-derived
+ * worktrees root(s). A `worktree-wf_<x>` branch counts as orphaned only when
+ * `<x>` is absent from this union — i.e. the worktree is neither registered nor
+ * on disk. Including extra (unrelated) basenames only ever makes the sweep MORE
+ * conservative — it can only ever protect a branch, never delete one wrongly.
+ */
+function collectLiveWorktreeBasenames(
+  repoRoot: string,
+  markers: string[],
+): Set<string> {
+  const basenames = new Set<string>();
+
+  for (const p of registeredWorktreePaths(repoRoot)) {
+    basenames.add(nodePath.basename(p));
+  }
+
+  for (const relRoot of worktreesRootsFromMarkers(markers)) {
+    const absRoot = nodePath.resolve(repoRoot, relRoot);
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(absRoot, { withFileTypes: true });
+    } catch {
+      // The worktrees root doesn't exist yet — nothing to add.
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) basenames.add(entry.name);
+    }
+  }
+
+  return basenames;
+}
+
 // ─── Crash-cleanup before redispatch (FOR-10) ───────────────────────────────
 
 /**
