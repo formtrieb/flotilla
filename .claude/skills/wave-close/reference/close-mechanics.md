@@ -95,8 +95,12 @@ T=$(mktemp -d)
 #     directory on disk. This is the prune/retry case, NOT a defect: the worktree
 #     is intact and fully registered, nothing was half-torn-down. → re-run
 #     `worktree-cleanup` (idempotent), or `git worktree prune` + `rm -rf` the
-#     directory. A genuine failure (removal threw AND the worktree is gone from
-#     the list) stays in `errors` — never reclassified here.
+#     directory — removing that directory under the harness worktree root
+#     typically needs the sandbox disabled, since the harness write-deny on
+#     those paths otherwise swallows the removal silently (the command exits 0
+#     but the directory is still on disk). A genuine failure (removal threw AND
+#     the worktree is gone from the list) stays in `errors` — never reclassified
+#     here.
 # Verify on disk, e.g.:
 ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
 # Cross-check any survivor against `errors` / `deregisteredNotDeleted` /
