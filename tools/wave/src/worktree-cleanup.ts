@@ -210,6 +210,31 @@
  * UNCONDITIONALLY (never inferred from stdout length) — real
  * `git ls-remote --exit-code` never exits 0 with empty stdout, a genuine
  * no-match is always the structural exit-2 case above.
+ *
+ * ── errored-still-listed — a THIRD ENOTEMPTY-family removal form (FOR-73 —
+ *    W18-F1) ─────────────────────────────────────────────────────────────────
+ *
+ * {@link CleanupResult} already distinguishes two structural outcomes of a
+ * removal: confirmed-gone (`removed`) and the class where the remover returns
+ * WITHOUT throwing yet the directory survives (`deregisteredNotDeleted`).
+ * Wave 18's close (retro finding W18-F1) hit a THIRD form of the same
+ * ENOTEMPTY family: the remover THREW, and afterwards the worktree was still
+ * FULLY registered — `git worktree list` kept listing it (as prunable) with
+ * the directory on disk. That form fell into the generic `errors` bucket, so
+ * the structural classification stayed empty and an operator could not tell
+ * "removal failed, worktree intact and prunable" apart from any other error.
+ *
+ * {@link executeCleanup} now, after a THROWING removal, probes whether git
+ * still lists the worktree ({@link CleanupOptions.stillListed}, default
+ * {@link defaultStillListedProbe} — a `git worktree list --porcelain`
+ * membership check). Still listed → the entry is recorded in its own
+ * {@link CleanupResult.erroredStillListed} class rather than `errors`; like
+ * the `deregisteredNotDeleted` class these are INCOMPLETE removals and NEVER
+ * reach local-branch hygiene (an incompletely-removed worktree is not a clean
+ * removal). A throw where the worktree is genuinely no longer listed stays in
+ * `errors`, unchanged — genuine failures are never reclassified. Operator
+ * playbook: an `erroredStillListed` entry is the prune/retry case
+ * (prunable-listed + directory on disk), not a defect.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -313,6 +338,24 @@ export interface CleanupResult {
    */
   deregisteredNotDeleted: WorktreeEntry[];
   /**
+   * The "removal-threw-yet-git-still-lists-it" class, made STRUCTURAL (FOR-73 —
+   * W18-F1). A THIRD form of the ENOTEMPTY family, distinct from both `removed`
+   * (confirmed gone) and `deregisteredNotDeleted` (a NON-throwing return whose
+   * directory survives): the remover THREW, and afterwards `git worktree list`
+   * STILL fully lists the worktree (as prunable) with the directory on disk.
+   * Rather than dropping such a throw into the generic `errors` bucket — where
+   * the structural classification stays empty and an operator cannot tell
+   * "removal failed, worktree intact and prunable" apart from any other error
+   * — `executeCleanup` probes {@link CleanupOptions.stillListed} on the throw
+   * path and, when the worktree is still listed, records it here. Like
+   * `deregisteredNotDeleted`, these are INCOMPLETE removals: they never reach
+   * local-branch hygiene. A throw where the worktree is genuinely no longer
+   * listed stays in `errors`, unchanged (genuine failures are never
+   * reclassified). Empty on the ordinary path. Operator playbook: this is the
+   * prune/retry case, not a defect.
+   */
+  erroredStillListed: WorktreeEntry[];
+  /**
    * Local branches force-deleted as a side-effect of a successful removal in
    * this call (FOR-59) — the harness throwaway (`worktree-wf_*`) and/or the
    * worktree's own dispatch branch, when merge evidence allowed it. Empty
@@ -380,6 +423,19 @@ export interface CleanupOptions {
    * without a real Finder/editor race.
    */
   pathExists?: (path: string) => boolean;
+  /**
+   * Injectable "is this worktree STILL listed by git?" probe for the
+   * throwing-removal classifier (FOR-73 — see
+   * {@link CleanupResult.erroredStillListed}). Called with a worktree's
+   * absolute path ONLY on the throw path, AFTER its remover threw; `true`
+   * means `git worktree list` still lists the worktree (registered/prunable,
+   * directory on disk) — an incomplete removal recorded in `erroredStillListed`
+   * rather than the generic `errors` array. Defaults to
+   * {@link defaultStillListedProbe} (a `git worktree list --porcelain`
+   * membership check). The spec injects a fixture so the class can be exercised
+   * without a real prunable worktree.
+   */
+  stillListed?: (path: string) => boolean;
   /**
    * Optional branch-scoped filter. When provided, a candidate worktree is
    * selected **only if** its checked-out branch is a member of this set (in
@@ -665,6 +721,7 @@ export function executeCleanup(
   const repoRoot = opts.repoRoot ?? process.cwd();
   const remover = opts.remover ?? defaultWorktreeRemover(repoRoot);
   const pathExists = opts.pathExists ?? existsSync;
+  const stillListed = opts.stillListed ?? defaultStillListedProbe(repoRoot);
   const hygieneEnabled = opts.skipBranchHygiene !== true;
   const branchHygiene = hygieneEnabled
     ? (opts.branchHygiene ?? defaultBranchHygieneOps(repoRoot))
@@ -673,6 +730,7 @@ export function executeCleanup(
 
   const removed: WorktreeEntry[] = [];
   const deregisteredNotDeleted: WorktreeEntry[] = [];
+  const erroredStillListed: WorktreeEntry[] = [];
   const errors: Array<{ path: string; message: string }> = [];
   const branchesDeleted: string[] = [];
   const branchHygieneSkipped: BranchHygieneSkip[] = [];
@@ -704,10 +762,25 @@ export function executeCleanup(
         branchHygieneSkipped.push(...hygieneResult.skipped);
       }
     } catch (err) {
-      errors.push({
-        path: wt.path,
-        message: describeError(err),
-      });
+      // FOR-73 (W18-F1): a THROWING removal is NOT automatically a generic
+      // error. Wave 18's close hit a third ENOTEMPTY-family form — the remover
+      // threw, yet git still fully LISTED the worktree afterwards (as prunable)
+      // with its directory on disk. Probe whether the worktree is still listed
+      // (default: a `git worktree list` membership check): still listed → this
+      // is an INCOMPLETE removal, recorded in its own `erroredStillListed`
+      // class (never the generic `errors`, and — like deregisteredNotDeleted —
+      // never handed to branch hygiene) so an operator can tell "removal
+      // failed, worktree intact and prunable" apart from any other error. A
+      // throw where the worktree is genuinely no longer listed stays in
+      // `errors`, unchanged — genuine failures are never reclassified.
+      if (stillListed(nodePath.resolve(wt.path))) {
+        erroredStillListed.push(wt);
+      } else {
+        errors.push({
+          path: wt.path,
+          message: describeError(err),
+        });
+      }
     }
   }
 
@@ -716,6 +789,7 @@ export function executeCleanup(
     skipped: plan.skipped,
     errors,
     deregisteredNotDeleted,
+    erroredStillListed,
     branchesDeleted,
     branchHygieneSkipped,
   };
@@ -1833,6 +1907,24 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
       });
     },
   };
+}
+
+/**
+ * Default {@link CleanupOptions.stillListed} probe (FOR-73): after a THROWING
+ * removal, is `worktreePath` STILL registered per `git worktree list
+ * --porcelain`? Reuses the same porcelain read {@link listOrphanDirs} uses
+ * ({@link registeredWorktreePaths}), realpath-normalized on both sides so a
+ * symlinked worktrees root (macOS `/tmp` → `/private/tmp`, etc.) still matches.
+ * A worktree git still lists after a failed removal (as prunable, with its
+ * directory on disk) is the W18-F1 form the {@link CleanupResult.erroredStillListed}
+ * class names — distinct from a genuine failure, where the worktree is gone
+ * from the list and the entry stays in `errors`.
+ */
+export function defaultStillListedProbe(
+  repoRoot: string,
+): (worktreePath: string) => boolean {
+  return (worktreePath: string) =>
+    registeredWorktreePaths(repoRoot).has(realpathForCompare(worktreePath));
 }
 
 /**
