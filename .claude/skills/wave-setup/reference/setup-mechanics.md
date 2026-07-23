@@ -276,14 +276,19 @@ npx tsx tools/wave/src/cli-store.ts preflight --config wave.config.json   # trac
 
 Exit 0 from each means every check passed / is `not-applicable` / is `advisory`/`unknown`. On exit 1, the failing check's `detail` names the exact gap — fix it in Linear/GitHub or the config and re-run. Only after `config validate` **and both preflights** exit 0 is the config ready for `wave-plan`/`wave-create`.
 
-## AFK permission allowlist scaffold (`.claude/settings.json`)
+## AFK harness config scaffold: env block + permission allowlist (`.claude/settings.json`)
 
-The SKILL.md "Scaffolding the tracked permission allowlist" precondition owns the **judgment** (what must be allowlisted, and why `docker` stays off it); this is the concrete scaffold. Write it to the consumer repo's **tracked** `.claude/settings.json` — the ONLY permission source an AFK Worker/Reviewer worktree inherits (a worktree carries tracked files only, so the gitignored `.claude/settings.local.json` never reaches it). This is a separate file from `wave.config.json` and is not validated by any engine verb; it is a harness config the consumer commits.
+The SKILL.md "Scaffolding the tracked permission allowlist and env block" precondition owns the **judgment** (what must be in the env block and on the allowlist, and why `docker` stays off it); this is the concrete scaffold. Write it to the consumer repo's **tracked** `.claude/settings.json` — the ONLY permission *and* environment source an AFK Worker/Reviewer worktree inherits (a worktree carries tracked files only, so the gitignored `.claude/settings.local.json` never reaches it). This is a separate file from `wave.config.json` and is not validated by any engine verb; it is a harness config the consumer commits.
 
-> **Both engine-CLI prefixes, deliberately.** The driver's `WAVE_CLI` defaults to the npx-free local binary (`./tools/wave/node_modules/.bin/tsx …`) to dodge the shared-npm-cache-lock `ECOMPROMISED` deaths under fan-out (consumer retro KW-F7), with `npx tsx …` as the documented fallback — so the allowlist names **both**, each with and without the `NODE_USE_ENV_PROXY=1` proxy prefix. Naming only the `npx` form is the exact KW-F3 miss that briefed Workers onto a gated path.
+> **The env block, first — the structural fix.** A consumer pattern proven live (the second consumer's tracked settings, observed 2026-07-22): set `NODE_USE_ENV_PROXY=1` in the tracked `env` block and every engine-CLI invocation in the repo inherits it — no per-call prefix, no way to forget it. The raw-fetch adapters need this under a proxied sandbox (wave-shared Convention 1); baking the flag only into allowlist entries instead is fragile in two directions from a single miss — an un-prefixed call silently drops the proxy (a false-`unreachable`/mis-authenticated failure) *and* fails the allowlist's literal prefix match at the same time, hitting the permission gate mid-wave.
+>
+> **Both engine-CLI invocation forms, deliberately doubled on the allowlist.** With the env block in place the per-call `NODE_USE_ENV_PROXY=1` prefix is *redundant* for every in-repo invocation, so the allowlist names the **prefix-free** forms (both binary styles) as the primary path. The **env-prefixed** forms stay on the allowlist too — they remain valid for existing briefs written before the env block existed and for cross-repo habits that still type the prefix — so neither invocation style hits the gate. The driver's `WAVE_CLI` defaults to the npx-free local binary (`./tools/wave/node_modules/.bin/tsx …`) to dodge the shared-npm-cache-lock `ECOMPROMISED` deaths under fan-out (consumer retro KW-F7), with `npx tsx …` as the documented fallback — so the allowlist names **both** binary styles, each with and without the prefix. Naming only the `npx` form is the exact KW-F3 miss that briefed Workers onto a gated path.
 
 ```json
 {
+  "env": {
+    "NODE_USE_ENV_PROXY": "1"
+  },
   "permissions": {
     "allow": [
       "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
@@ -304,7 +309,8 @@ The SKILL.md "Scaffolding the tracked permission allowlist" precondition owns th
 }
 ```
 
-- **Engine-CLI prefixes** — the first four entries: the npx-free local binary and the `npx` fallback, each with and without `NODE_USE_ENV_PROXY=1`. If this consumer runs the engine from a different repo-relative path, scaffold that prefix instead — the invariant is *both invocation forms*, not this exact path.
+- **`env` block** — sets `NODE_USE_ENV_PROXY: "1"` for every command the harness runs in this repo (Bash and the engine CLI alike). This is the recommended mode for every consumer under a proxied sandbox; it makes the per-call prefix on the allowlist entries below redundant, not required — see the rationale above.
+- **Engine-CLI invocation forms** — the first four allowlist entries: the npx-free local binary and the `npx` fallback, each named **prefix-free** (the form every in-repo call now resolves to, thanks to the env block) **and** env-prefixed (kept for backwards compatibility with existing briefs and cross-repo habits). If this consumer runs the engine from a different repo-relative path, scaffold that prefix instead — the invariant is *both invocation forms for both binary styles*, not this exact path.
 - **Worker git verbs** — `worktree/fetch/checkout/branch/add/commit/reset/push`: the workspace-setup and termination surface (anchor, branch, stage, commit, push) every Worker and Reviewer runs.
 - **Deps installer** — the last entry is a placeholder: replace `npm ci` with the consumer's actual `depsSetup` command(s) (`composer install`, `npm ci --prefix tools/wave`, …). It is the **first** Worker step and installs the local `tsx` binary the npx-free `WAVE_CLI` resolves against, so it must be allowlisted too.
 
