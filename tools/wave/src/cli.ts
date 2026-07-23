@@ -694,6 +694,17 @@ function resolveBranchFilter(
  *                         deletions/skips ride the existing branchesDeleted /
  *                         branchHygieneSkipped fields.
  *
+ * Uniform-wrapper tolerance (FOR-87 — W25-F2): a Coordinator wrapper appends
+ * `--config <path>` to every store-adjacent verb invocation uniformly — the
+ * documented pattern every OTHER verb already tolerates. `worktree-cleanup` had
+ * no case for it, so the config path silently bound as the <repo-root>
+ * positional (a concatenated phantom path → a confusing ENOTDIR). `--config
+ * <path>` is now accepted and its value discarded, same as `--wave`/`--branches`
+ * consume their value token; it never reaches `positional`. Any OTHER unknown
+ * `--flag` is a hard usage error (exit 2) naming the flag — never a silent
+ * positional. This is a parsing-boundary fix only; the cleanup engine
+ * (worktree-cleanup.ts) is untouched.
+ *
  * Prints the FULL engine summary so a run can never do work and show nothing
  * (FOR-67): removed/skipped/errors PLUS deregisteredNotDeleted (the ENOTEMPTY
  * class), erroredStillListed (FOR-73 — a throwing removal git still lists as
@@ -715,15 +726,36 @@ function runWorktreeCleanup(args: string[]): number {
   const dryRun = args.includes('--dry-run');
   const orphans = args.includes('--orphans');
   // Positional args are those that don't start with '--' and are not values of
-  // a known flag (--wave / --branches consume the token after them).
-  const flagsWithValues = new Set(['--wave', '--branches']);
+  // a known flag (--wave / --branches / --config consume the token after
+  // them). `--config <path>` is accepted-and-ignored (FOR-87, W25-F2): every
+  // sibling verb already tolerates the uniform Coordinator-wrapper flag, and
+  // without a case for it here its value token fell through to `positional`
+  // (silently binding as <repo-root> — a confusing ENOTDIR on a concatenated
+  // phantom path). Any OTHER unknown `--flag` fails loud below — a
+  // flag-shaped token must never silently bind as data.
+  const noValueFlags = new Set(['--dry-run', '--orphans']);
+  const flagsWithValues = new Set(['--wave', '--branches', '--config']);
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith('--')) {
-      if (flagsWithValues.has(args[i])) i++; // consume the value token
-      continue;
+    const a = args[i];
+    if (a.startsWith('--')) {
+      if (flagsWithValues.has(a)) {
+        i++; // consume the value token (--config's value is deliberately discarded)
+        continue;
+      }
+      if (noValueFlags.has(a)) {
+        continue;
+      }
+      process.stderr.write(
+        [
+          `error: worktree-cleanup: unknown flag ${a}`,
+          'usage: wave-validate worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--config <path>]',
+          '',
+        ].join('\n'),
+      );
+      return 2;
     }
-    positional.push(args[i]);
+    positional.push(a);
   }
   const repoRoot =
     positional.length > 0 ? resolve(positional[0]) : process.cwd();

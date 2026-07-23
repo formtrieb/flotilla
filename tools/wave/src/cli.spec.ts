@@ -1090,6 +1090,132 @@ describe('worktree-cleanup subcommand — explicit-arg behavior is unchanged (FO
   });
 });
 
+// ─── Form 8e: worktree-cleanup — --config tolerance + fail-loud on unknown
+// flags (FOR-87, W25-F2) ──────────────────────────────────────────────────────
+//
+// Live finding from the hardening-vendor wave close: worktree-cleanup was the
+// only store-adjacent CLI verb that did NOT tolerate a uniformly-appended
+// `--config <path>` (the Coordinator wrapper's documented pattern for every
+// sibling verb). Because `--config` wasn't in the flag vocabulary, its own
+// token was silently dropped but its VALUE fell through to `positional` —
+// binding as the <repo-root> positional and producing a confusing ENOTDIR on
+// a concatenated phantom path once something joined it with a further
+// relative path. `--config <path>` must now be accepted-and-ignored, and any
+// OTHER unknown `--flag` must fail loud (exit 2, naming the flag) instead of
+// silently becoming data.
+describe('worktree-cleanup subcommand — --config is accepted and ignored (FOR-87)', () => {
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+  });
+
+  it('a trailing --config <path> after an explicit repo-root does not shift into the <repo-root> positional', () => {
+    const code = main([
+      'worktree-cleanup',
+      root,
+      '--config',
+      '/definitely/not/a/real/config/path.json',
+    ]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      dryRun: boolean;
+      removed: unknown[];
+      skipped: unknown[];
+      errors: unknown[];
+    };
+    expect(parsed.dryRun).toBe(false);
+    expect(parsed.removed).toEqual([]);
+    expect(parsed.skipped).toEqual([]);
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it('--config LEADING a bare (no positional) invocation resolves --wave against the real repo-root, not the config path (the exact ENOTDIR footgun from the retro)', () => {
+    // No explicit repo-root positional here — the real-world Coordinator
+    // shape this retro finding came from: `--wave <relative spine> --config
+    // <path>` with the repo-root implied by cwd. Mock cwd to the fixture
+    // root so a RELATIVE --wave path is meaningfully sensitive to which
+    // value `repoRoot` actually resolved to.
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root);
+    try {
+      const code = main([
+        'worktree-cleanup',
+        '--wave',
+        join('.scratch', 'waves', '2026-01-03-stacked-wave.md'),
+        '--config',
+        '/definitely/not/a/real/config/path.json',
+      ]);
+      // Pre-fix, --config's value bound as <repo-root> (an absolute,
+      // non-directory phantom path); resolving the RELATIVE --wave path
+      // against it throws (ENOENT/ENOTDIR) and the CLI exits 2. Post-fix,
+      // --config is ignored, repoRoot falls back to the mocked cwd (root),
+      // the relative spine resolves and reads fine, and the spine's
+      // dispatch-log-declared branches surface in the dry-run-free summary.
+      expect(code).toBe(0);
+      const parsed = JSON.parse(stdoutBuf) as { branchFilter?: string[] };
+      expect(parsed.branchFilter).toEqual(
+        ['wave-orch/02-second-issue', 'wave-orch/03-third-issue'].sort(),
+      );
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('--config before a --dry-run + explicit repo-root combination is tolerated identically to omitting it', () => {
+    const code = main([
+      'worktree-cleanup',
+      '--config',
+      '/some/other/phantom/path',
+      '--dry-run',
+      root,
+    ]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      dryRun: boolean;
+      selected: unknown[];
+      skipped: unknown[];
+    };
+    expect(parsed.dryRun).toBe(true);
+    expect(parsed.selected).toEqual([]);
+    expect(parsed.skipped).toEqual([]);
+  });
+
+  it('--config combined with --orphans is tolerated (both flags recognized, neither becomes positional)', () => {
+    const code = main(['worktree-cleanup', root, '--orphans', '--config', '/some/path']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as { orphans?: { selected: unknown[] } };
+    expect(parsed.orphans).toBeDefined();
+  });
+});
+
+describe('worktree-cleanup subcommand — unknown flags fail loud instead of silently binding as positional (FOR-87)', () => {
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockClear();
+    vi.mocked(execFileSync).mockImplementation(() => '');
+  });
+
+  it('an unrecognized --flag exits 2 with a usage error naming the offending flag', () => {
+    const code = main(['worktree-cleanup', root, '--bogus']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/--bogus/);
+    expect(stderrBuf).toMatch(/usage:/);
+  });
+
+  it('never shells out to git when the unknown-flag guard fires — the usage error is raised before any listing/removal', () => {
+    main(['worktree-cleanup', root, '--bogus']);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('emits no JSON result on the unknown-flag usage path (stdout stays empty)', () => {
+    main(['worktree-cleanup', root, '--bogus']);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('an unknown flag alongside otherwise-valid flags (--dry-run, --orphans) still fails loud naming the flag', () => {
+    const code = main(['worktree-cleanup', root, '--dry-run', '--orphans', '--not-a-flag']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/--not-a-flag/);
+  });
+});
+
 // ─── Form 8b: worktree-cleanup — full summary + --orphans sweep (FOR-67) ─────
 //
 // FOR-67 (consumer KW-F6 + W15): the CLI must (1) print the FULL engine summary
