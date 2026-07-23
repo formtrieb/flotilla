@@ -58,13 +58,34 @@ notice is retained (reproduced at the end of this file).
   (ADR-0010).
 - **Skills seeded (P7, 2026-06-06):** `to-issues`, `to-prd`, `triage` — copied from
   the local install at `~/.claude/skills/{to-issues,to-prd,triage}` and rewritten
-  generic (flotilla-first, GitHub-Issues-first, tracker-agnostic). `grill-me` and
-  `grill-with-docs` were already present as pre-existing project skills and were not
-  re-seeded.
+  generic (flotilla-first, GitHub-Issues-first, tracker-agnostic). `grill-me` was
+  already present as a pre-existing project skill and was not re-seeded.
+  `grill-with-docs` was **not** shipped at P7 — flotilla's references to it (this
+  CLAUDE.md's skill-pipeline line, `triage`'s step 4, `to-prd`'s handoff line)
+  resolved only on a machine where the operator had personally installed it,
+  breaking ADR-0010's "no external skill required to be installed" promise for
+  that one leg. Re-seeded 2026-07-23 (FOR-85, ADR-0010 execution): `SKILL.md`,
+  `CONTEXT-FORMAT.md`, `ADR-FORMAT.md` copied byte-identical from the local
+  operator install at `~/.claude/skills/grill-with-docs/` into
+  `.claude/skills/grill-with-docs/` — no rewrite, no rename, since the content
+  was already fully generic (assumes only `CONTEXT.md` + `docs/adr/`, flotilla's
+  own conventions). From this point the project skill shadows the operator's
+  user-level install (most specific wins); future grill improvements belong
+  in-repo.
 - **Upstream `main` tip SHA at seed time (2026-06-06):** `be55a7970319ede7965edbb02b5e41cba1ca82c9`
   (obtained via `git ls-remote https://github.com/mattpocock/skills main`; the
   verification reference point noted at ADR-0010 was `aaf2453`, 2026-05-31).
-- **Status:** seeded + rewritten generic.
+- **Upstream `main` tip SHA at the 2026-07-23 grill-with-docs re-seed:**
+  `ed37663cc5fbef691ddfecd080dff42f7e7e350d` (obtained via
+  `git ls-remote https://github.com/mattpocock/skills refs/heads/main`).
+- **Upstream restructure note (2026-07-23):** upstream's `grill-with-docs` has
+  since been restructured into a 245-byte stub that delegates to `/grilling` +
+  `/domain-modeling` and no longer ships `CONTEXT-FORMAT.md` / `ADR-FORMAT.md`.
+  flotilla's copy is a **deliberate fork of the proven, battle-tested version**
+  installed locally at seed time, not a resync candidate — do not replace it
+  with the upstream stub.
+- **Status:** `to-issues`/`to-prd`/`triage` seeded + rewritten generic (P7);
+  `grill-with-docs` seeded verbatim, forked from upstream (2026-07-23).
 
 ---
 
