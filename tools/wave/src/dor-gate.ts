@@ -555,12 +555,23 @@ function isPathCovered(mentionedPath: string, files: string[]): boolean {
  * It was over-broad — firing on `nx run ds:test`, `file:line` refs, ratios
  * (`1:1`), and JSON tokens (`ff:true`). Empirical scan of 457 `.scratch/*.md`
  * files found 33 false-positive fires.
+ *
+ * NOTE (iteration 2 of W25-F3): the `add(ed) … npm run` pairing below requires
+ * PROXIMITY, not just co-occurrence — its word-gap is capped at a small fixed
+ * count (0–3 tokens). An earlier, unbounded gap let an unrelated `add(ed)` at
+ * the start of a bullet pair with a later, unrelated run-only `npm run`
+ * mention in the *same* bullet, e.g. "Add error handling for the empty-input
+ * case; npm run test stays green." — the change-verb and the npm-run mention
+ * belong to different clauses there and must NOT warn. Genuine proximate
+ * phrasing ("add(ed) npm run <name>", "add an npm run <name>") still matches
+ * within the bound; the `wire(d) into/in … npm run` pairing is unaffected —
+ * only the `add(ed)` pattern was reported unbounded.
  */
 const NPM_SCRIPT_PATTERNS: RegExp[] = [
   // `[^\w\s]*` tolerates a wrapping backtick/quote directly against `npm`
   // (e.g. "wired into `npm run test:hooks`") with no space in between.
   /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*[^\w\s]*npm\s+run\s+[\w:.-]+/i,
-  /\badd(?:ed)?\s+(?:(?:\S+\s+)*)?[^\w\s]*npm\s+run\s+[\w:.-]+/i,
+  /\badd(?:ed)?\s+(?:\S+\s+){0,3}[^\w\s]*npm\s+run\s+[\w:.-]+/i,
   /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*package\.json/i,
   /\badd(?:ed)?\s+(?:(?:\S+\s+)*)?(?:to\s+)?package\.json/i,
   /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*script/i,

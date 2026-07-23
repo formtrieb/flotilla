@@ -678,6 +678,33 @@ describe('acFilesCoverageCheck — run-only ACs are gates, not change surfaces (
     );
   });
 
+  it('does NOT warn when an unrelated earlier add verb pairs with a later, unrelated run-only npm run mention (iteration-2 repro 1)', () => {
+    // Live repro from the reviewer: "Add" here is the change-verb for the
+    // empty-input-handling clause, not for the npm run mention that follows
+    // in a separate clause. An unbounded word-gap wrongly paired the two.
+    const acBody = `
+- [ ] Add error handling for the empty-input case; npm run test stays green.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['src/index.ts']), acBody);
+    expect(
+      warns.filter((w) => w.suggestions.includes('package.json')),
+    ).toHaveLength(0);
+  });
+
+  it('does NOT warn when an add verb is followed by run-only npm mentions many words later in the same bullet (iteration-2 repro 2)', () => {
+    // Live repro from the reviewer: "Add retry handling to the fetcher" is
+    // the change clause; "npm test and npm run typecheck clean from
+    // tools/wave/" is the standard run-only verify-floor gate tacked on
+    // after a colon. The two must not pair up.
+    const acBody = `
+- [ ] Add retry handling to the fetcher: npm test and npm run typecheck clean from tools/wave/.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['src/fetcher.ts']), acBody);
+    expect(
+      warns.filter((w) => w.suggestions.includes('package.json')),
+    ).toHaveLength(0);
+  });
+
   it('full gate: the standard verify-floor AC passes ac-files-coverage warn-free with package.json absent from Files:', () => {
     const source = [
       '# 82 — Verify-floor AC gate test',
