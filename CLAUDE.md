@@ -44,6 +44,8 @@ npm run typecheck  # tsc --noEmit
 
 Both must be clean (all tests green, zero type errors) before any change lands.
 
+**The same two gates run as CI and are required to merge.** Every PR (and every push to `main`) runs them via `.github/workflows/verify.yml` as the status checks **"Engine Tests (vitest)"** and **"Engine Typecheck (tsc)"** — both are required status checks on `main`'s ruleset, so a PR lands only with both green. The landing seam reflects this: `host-pr arm` on a checks-pending PR now genuinely **arms** (enables auto-merge; the PR lands itself at green) instead of always direct-merging — direct merge remains only for a PR whose checks have already completed green (repo setting "Allow auto-merge" is ON).
+
 ## Status
 
 flotilla's build history and wave-by-wave operational status live in a private ops archive, not in this file. This file plus [docs/CHARTER.md](docs/CHARTER.md), [CONTEXT.md](CONTEXT.md), and [docs/adr/](docs/adr/) are sufficient orientation to start contributing — the ADRs are where "why does it work this way" is answered in full.
