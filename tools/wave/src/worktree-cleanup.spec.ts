@@ -1254,6 +1254,11 @@ describe('defaultWorktreeRemover — macOS ENOTEMPTY hardening (FOR-45)', () => 
     tempRoots.push(root);
     const worktreePath = join(root, ...subPathSegments);
     mkdirSync(worktreePath, { recursive: true });
+    // A real worktree always carries its own `.git` gitfile — present here so
+    // these fixtures exercise the ORDINARY (git-present) removal path rather
+    // than the FOR-86 half-removed-recovery branch (see section 23 below for
+    // fixtures that deliberately omit it).
+    writeFileSync(join(worktreePath, '.git'), 'gitdir: ../fake-admin/worktrees/fixture\n', 'utf-8');
     return { root, worktreePath };
   }
 
@@ -3483,5 +3488,291 @@ describe('sweepOrphanBranches — real git/fs end-to-end (FOR-72)', () => {
     const second = sweepOrphanBranches({ repoRoot: mainRoot });
     expect(second.branchesDeleted).toEqual([]);
     expect(second.branchHygieneSkipped).toEqual([]);
+  });
+});
+
+// ─── 23. defaultWorktreeRemover — `.git` deleted LAST (FOR-86 — W25-F1) ──────
+//
+// Live finding W25-F1 (docs/retros/2026-07-23-hardening-vendor-w25.md, 5×
+// reproduced): the physical removal deleted a worktree's own `.git` gitfile
+// at whatever point `rmSync`'s internal traversal order happened to reach it
+// — often early — so an interruption partway through the rest of the removal
+// left a directory git still LISTS as a registered worktree, on disk, but
+// WITHOUT its own `.git`. `git worktree remove` validates `.git`'s existence
+// unconditionally and refuses ("validation failed: '.git' does not exist")
+// even though the directory is otherwise trivial to finish removing.
+//
+// These tests use REAL fs fixtures (mirroring Section 10's technique) so the
+// ordering is exercised end to end; `git worktree remove`/`prune` are mocked
+// to no-ops so no real git registration is required for the fixture
+// directory.
+describe('defaultWorktreeRemover — `.git` deleted LAST (FOR-86)', () => {
+  const tempRoots: string[] = [];
+
+  // A `beforeEach` clear (not just `afterEach`) is required here: earlier
+  // describe blocks (e.g. Section 22's real-git end-to-end tests) reset their
+  // OWN mock's *implementation* in their `afterEach` but don't clear its call
+  // history — so the FIRST test in this block that asserts
+  // `not.toHaveBeenCalled()` needs its own clean slate regardless of what ran
+  // immediately before it.
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function makeWorktreeWithGit(name: string): { root: string; worktreePath: string } {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-for86-order-'));
+    tempRoots.push(root);
+    const worktreePath = join(root, name);
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, '.git'), 'gitdir: ../fake-admin/worktrees/fixture\n', 'utf-8');
+    writeFileSync(join(worktreePath, 'real-file.txt'), 'hello', 'utf-8');
+    mkdirSync(join(worktreePath, 'nested'), { recursive: true });
+    writeFileSync(join(worktreePath, 'nested', 'inner.txt'), 'wip', 'utf-8');
+    return { root, worktreePath };
+  }
+
+  /** Build a Node errno exception shaped like a sandbox write-deny (NOT ENOTEMPTY — never junk-purge-retried). */
+  function makeEacces(path: string): NodeJS.ErrnoException {
+    const err = new Error(`EACCES: permission denied, unlink '${path}'`) as NodeJS.ErrnoException;
+    err.code = 'EACCES';
+    return err;
+  }
+
+  it('AC1: an interruption (sandbox write-deny) during the non-.git phase propagates the error and leaves `.git` fully intact on disk', () => {
+    const { root, worktreePath } = makeWorktreeWithGit('agent-interrupted');
+
+    // Simulates a PERSISTENT (non-transient) sandbox write-deny: NOT
+    // ENOTEMPTY, so it is never routed through the junk-purge-retry at all —
+    // it propagates on the very first attempt, exactly like a real EACCES.
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {
+      throw makeEacces(join(worktreePath, 'real-file.txt'));
+    });
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).toThrow(/EACCES/);
+
+    // `.git` was never even attempted — it is phase 2, reached only after
+    // phase 1 (every OTHER top-level entry) fully succeeds.
+    expect(existsSync(join(worktreePath, '.git'))).toBe(true);
+    // Nothing at all was deleted — the very first rmSync call threw.
+    expect(existsSync(join(worktreePath, 'real-file.txt'))).toBe(true);
+    expect(existsSync(join(worktreePath, 'nested', 'inner.txt'))).toBe(true);
+
+    // Never reached the git-level step at all — the worktree git still
+    // recognizes is left exactly as a later removal attempt (ours, retried,
+    // or a bare `git worktree remove`) needs it: `.git` present, content
+    // otherwise unchanged.
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('AC1: a SUCCESSFUL removal still deletes `.git` strictly after every other top-level entry (and the parent dir last of all)', () => {
+    const { root, worktreePath } = makeWorktreeWithGit('agent-ordered-success');
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).not.toThrow();
+
+    expect(existsSync(worktreePath)).toBe(false);
+
+    // Inspect the recorded call order on the (mostly-real-passthrough) rmSync
+    // spy: every call whose target is `.git` or the worktree root itself must
+    // come AFTER every call targeting `real-file.txt` or `nested`.
+    const calls = (rmSync as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const targets = calls
+      .map((args) => args[0])
+      .filter((p): p is string => typeof p === 'string' && p.startsWith(worktreePath));
+
+    const gitIndex = targets.findIndex((p) => p === join(worktreePath, '.git'));
+    const rootIndex = targets.findIndex((p) => p === worktreePath);
+    const otherIndices = targets
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => p === join(worktreePath, 'real-file.txt') || p === join(worktreePath, 'nested'))
+      .map(({ i }) => i);
+
+    expect(gitIndex).toBeGreaterThan(-1);
+    expect(rootIndex).toBeGreaterThan(-1);
+    for (const otherIndex of otherIndices) {
+      expect(gitIndex).toBeGreaterThan(otherIndex);
+    }
+    // The parent directory's own removal call is the very last of the batch.
+    expect(rootIndex).toBeGreaterThan(gitIndex);
+
+    // Step 2 (deregister) was still reached — the ordinary two-step contract
+    // holds once `.git` was actually present at the start.
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'remove', worktreePath],
+      expect.objectContaining({ cwd: root }),
+    );
+  });
+
+  it("a directory that doesn't exist at all is a no-op for the ordering phase (mirrors rmSync's own force:true idempotence) and still reaches `git worktree remove`", () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-for86-gone-'));
+    tempRoots.push(root);
+    const worktreePath = join(root, 'agent-already-gone');
+    // Never created — exercise the "directory absent" branch directly.
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).not.toThrow();
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'remove', worktreePath],
+      expect.objectContaining({ cwd: root }),
+    );
+  });
+});
+
+// ─── 24. defaultWorktreeRemover — half-removed recovery (FOR-86 — W25-F1) ────
+//
+// The counterpart to Section 23: a worktree ALREADY left in the half-removed
+// shape by an older, pre-fix interrupted removal (still on disk, still
+// registered with git, its own `.git` already gone). Rather than reaching
+// `git worktree remove` and tripping its `.git`-existence validation, cleanup
+// finishes the physical delete directly and runs `git worktree prune`.
+describe('defaultWorktreeRemover — half-removed recovery (FOR-86)', () => {
+  const tempRoots: string[] = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function makeHalfRemovedWorktree(name: string): { root: string; worktreePath: string } {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-for86-halfremoved-'));
+    tempRoots.push(root);
+    const worktreePath = join(root, name);
+    // `.git` deliberately absent — the exact shape a pre-fix interrupted
+    // removal (or a FOR-59 orphan) leaves behind. Some ordinary leftover
+    // content remains, exactly as an interrupted removal would leave it.
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, 'leftover.txt'), 'residue', 'utf-8');
+    return { root, worktreePath };
+  }
+
+  it('AC2: a registered worktree whose `.git` is already missing is finished off — directory removed, `git worktree prune` run (never `git worktree remove`)', () => {
+    const { root, worktreePath } = makeHalfRemovedWorktree('agent-halfremoved-1');
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).not.toThrow();
+
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'prune'],
+      expect.objectContaining({ cwd: root }),
+    );
+    expect(execFileSync).not.toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'remove', worktreePath],
+      expect.anything(),
+    );
+  });
+
+  it('AC2: an EMPTY half-removed directory (no leftover content, `.git` missing) is still finished off via prune, not remove', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-for86-halfremoved-empty-'));
+    tempRoots.push(root);
+    const worktreePath = join(root, 'agent-halfremoved-empty');
+    mkdirSync(worktreePath, { recursive: true });
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).not.toThrow();
+
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'prune'],
+      expect.objectContaining({ cwd: root }),
+    );
+  });
+
+  it('AC2: a STILL-FAILING half-removed directory removal propagates the error (never a silent success) — `git worktree prune` is never reached', () => {
+    const { root, worktreePath } = makeHalfRemovedWorktree('agent-halfremoved-stuck');
+
+    // A persistent (non-ENOTEMPTY) obstruction — every attempt fails, exactly
+    // like a genuinely sandbox-denied path with the sandbox still on.
+    const stuck = new Error(`EACCES: permission denied, unlink '${join(worktreePath, 'leftover.txt')}'`) as NodeJS.ErrnoException;
+    stuck.code = 'EACCES';
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {
+      throw stuck;
+    });
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).toThrow(/EACCES/);
+
+    // The directory is still there — nothing was silently finished.
+    expect(existsSync(worktreePath)).toBe(true);
+    // `git worktree prune` is only reached AFTER the physical delete
+    // succeeds — a throw here must never reach it.
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('AC2 (integration): a still-failing half-removed worktree stays classified as `erroredStillListed` through the full executeCleanup pipeline (bounded retry included) — never `removed`', () => {
+    const { root, worktreePath } = makeHalfRemovedWorktree('agent-halfremoved-pipeline');
+
+    function throwStuck(): never {
+      const err = new Error(
+        `EACCES: permission denied, unlink '${join(worktreePath, 'leftover.txt')}'`,
+      ) as NodeJS.ErrnoException;
+      err.code = 'EACCES';
+      throw err;
+    }
+    // Two queued throws (bounded, never a persistent `mockImplementation` —
+    // that would leak into later tests since `clearAllMocks` doesn't reset
+    // implementations): the initial attempt AND executeCleanup's own FOR-84
+    // bounded retry. Each `remover.remove()` call makes exactly one rmSync
+    // call in the half-removed recovery branch (EACCES is not `ENOTEMPTY`,
+    // so it is never itself junk-purge-retried internally).
+    asRmSyncMock(rmSync).mockImplementationOnce(throwStuck);
+    asRmSyncMock(rmSync).mockImplementationOnce(throwStuck);
+
+    const entry: WorktreeEntry = {
+      path: worktreePath,
+      branch: 'wave/FOR-86-halfremoved',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+    const plan = { selected: [entry], skipped: [] };
+    const remover = defaultWorktreeRemover(root);
+
+    const result = executeCleanup(plan, {
+      remover,
+      // The exact "still registered" half-removed shape (FOR-86's own
+      // premise) — `git worktree list` would still show this worktree.
+      stillListed: () => true,
+      retryPause: () => {},
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+    expect(result.erroredStillListed.map((e) => e.path)).toEqual([worktreePath]);
+    // Directory genuinely still present — never silently reported as removed.
+    expect(existsSync(worktreePath)).toBe(true);
   });
 });

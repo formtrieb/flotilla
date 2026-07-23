@@ -290,6 +290,64 @@
  *     precedent already established elsewhere in the toolkit (the FOR-45
  *     junk-purge-then-retry inside {@link physicallyDeleteWithJunkPurge}, the
  *     cap=1 re-dispatch in wave-start).
+ *
+ * ── delete `.git` last + half-removed recovery (FOR-86 — hardening-vendor W25-F1) ──
+ *
+ * Live finding W25-F1 (docs/retros/2026-07-23-hardening-vendor-w25.md, 5×
+ * reproduced): the physical removal above deletes a worktree's OWN `.git`
+ * gitfile at whatever point `rmSync`'s internal (unspecified) traversal order
+ * happens to reach it — often early. When something interrupts the rest of
+ * the removal afterward (a sandbox write-deny that is NOT `ENOTEMPTY`, so it
+ * propagates immediately per the FOR-45 contract above, never entering the
+ * junk-purge-retry at all), the leftover is a directory git still lists as a
+ * registered worktree, sitting on disk WITHOUT its own `.git` — and
+ * `git worktree remove` unconditionally validates that `.git` exists before
+ * touching anything else, refusing with "validation failed: '.git' does not
+ * exist" even though the directory is otherwise trivial to finish removing.
+ * The only prior resolution was a manual `rm -rf` + `git worktree prune` with
+ * the sandbox disabled.
+ *
+ * Two independent changes close this, each documented at its own definition:
+ *
+ *   1. {@link physicallyDeleteGitLast} reorders the physical delete into three
+ *      ordered phases — every OTHER top-level entry, then `.git` itself (a
+ *      single atomic unlink — a worktree's own `.git` is always a plain
+ *      gitfile, never a directory, in this context), then the now-empty
+ *      parent directory. An interruption during phase 1 can therefore never
+ *      have touched `.git` yet: the directory a later attempt (ours, on
+ *      retry, or a bare `git worktree remove`) finds is still one git fully
+ *      recognizes as a legitimate worktree, so the ORDINARY removal path
+ *      stays viable instead of degrading into the half-removed shape above.
+ *      {@link defaultWorktreeRemover} uses this in place of the plain
+ *      whole-tree {@link physicallyDeleteWithJunkPurge} call FOR-34 used to
+ *      make as its own step 1.
+ *
+ *   2. {@link defaultWorktreeRemover} additionally detects the half-removed
+ *      state ITSELF left behind by an OLDER, pre-fix interrupted removal (or
+ *      by a FOR-59 orphan whose `.git` was independently stripped/broken —
+ *      the two shapes are structurally identical: still on disk, still
+ *      registered, `.git` already gone): when the worktree directory exists
+ *      but its own `.git` does not, the ordinary `physicallyDeleteGitLast` +
+ *      `git worktree remove` path is skipped entirely (there is nothing left
+ *      to preserve an ordering for, and `remove` would only trip its own
+ *      validation) in favor of finishing the physical delete directly and
+ *      running `git worktree prune` — the git subcommand that clears
+ *      administrative entries for a worktree that can no longer be
+ *      validated, requiring no `.git` round-trip at all. A throw during this
+ *      recovery delete (a genuinely-stuck, non-junk obstruction) propagates
+ *      UNCHANGED into the exact same throw-classification
+ *      {@link executeCleanup} already applies to the ordinary path
+ *      (`errors`/`erroredStillListed`) — this branch never fabricates a
+ *      `removed` outcome for a directory that is still actually there.
+ *
+ * Neither change alters {@link CleanupResult}'s shape, the bounded-retry
+ * classification (FOR-84) built on top of {@link attemptWorktreeRemoval}, or
+ * {@link defaultOrphanRemover} (FOR-67) — that remover's directories are
+ * structurally never registered with git at all (nothing to `remove` OR
+ * `prune`), and FOR-59's `isDirExclusivelyJunk` already refuses to classify a
+ * directory containing a real `.git` entry as all-junk, so it never reaches
+ * removal in the first place — this fix only ever changes what happens
+ * *inside* an already-selected `WorktreeEntry`'s physical removal.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -2072,11 +2130,40 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
 export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
   return {
     remove(worktreePath: string): void {
-      // `git worktree remove` requires an absolute path or relative-from-cwd.
-      // We pass absolute to be unambiguous.
+      // `git worktree remove`/`prune` require an absolute path or
+      // relative-from-cwd. We pass absolute to be unambiguous.
       const abs = nodePath.resolve(worktreePath);
-      // Step 1 — physical deletion (with the ENOTEMPTY junk-purge retry).
-      physicallyDeleteWithJunkPurge(abs);
+
+      // FOR-86 half-removed recovery: the directory is still on disk but its
+      // OWN `.git` gitfile is already gone — the shape a pre-fix interrupted
+      // removal (or a FOR-59 orphan whose `.git` was independently
+      // stripped/broken) leaves behind. `git worktree remove` validates
+      // `.git`'s existence unconditionally and would refuse here
+      // ("validation failed: '.git' does not exist") even though the
+      // directory itself is otherwise trivial to finish removing — so this
+      // path never calls `remove` at all. There is nothing left to preserve
+      // an ordering for (see the file-level FOR-86 doc section), so finish
+      // the physical delete directly and let `git worktree prune` — which
+      // needs no `.git` round-trip — clear git's own bookkeeping. A throw
+      // here (a still-genuinely-stuck obstruction) propagates UNCHANGED into
+      // the same throw-classification `executeCleanup` already applies to
+      // the ordinary path below; this branch never fabricates a `removed`
+      // outcome.
+      if (existsSync(abs) && !existsSync(nodePath.join(abs, '.git'))) {
+        physicallyDeleteWithJunkPurge(abs);
+        execFileSync('git', ['worktree', 'prune'], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          timeout: 30_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        return;
+      }
+
+      // Ordinary path — `.git` present (or the directory doesn't exist at
+      // all, in which case there is nothing to preserve either way).
+      // Step 1 — physical deletion, `.git` deleted LAST (FOR-86).
+      physicallyDeleteGitLast(abs);
       // Step 2 — deregister. Reached only if step 1 fully succeeded.
       execFileSync('git', ['worktree', 'remove', abs], {
         cwd: repoRoot,
@@ -2119,29 +2206,96 @@ export function defaultStillListedProbe(
  * ALREADY-missing path (idempotent re-run); it never swallows a real
  * permission/non-empty failure.
  *
- * Shared by {@link defaultWorktreeRemover} (as its step-1 physical delete,
- * BEFORE it deregisters via `git worktree remove`) and by
- * {@link defaultOrphanRemover} (FOR-67), which has NO git registration to
- * deregister — an orphan directory under the worktrees root that
- * `git worktree list` does not know about at all.
+ * Shared by {@link defaultOrphanRemover} (FOR-67), which has NO git
+ * registration to deregister — an orphan directory under the worktrees root
+ * that `git worktree list` does not know about at all — and, within
+ * {@link defaultWorktreeRemover}, by both its half-removed-recovery branch
+ * (the whole-tree delete, FOR-86) and as the final "remove the now-empty
+ * parent directory" phase of {@link physicallyDeleteGitLast}'s ordinary,
+ * `.git`-last path.
  */
 function physicallyDeleteWithJunkPurge(abs: string): void {
+  runWithEnotemptyRetry(abs, () => rmSync(abs, { recursive: true, force: true }));
+}
+
+/**
+ * Run `deleteStep` once; on a genuine `ENOTEMPTY` (and ONLY `ENOTEMPTY` — any
+ * other error propagates immediately, no purge attempted), purge the
+ * allowlisted junk found anywhere under `junkScanRoot` and retry `deleteStep`
+ * exactly once more. A retry that ALSO throws is re-wrapped with the purge
+ * count so the message names what was tried; an `ENOTEMPTY` with NO junk
+ * found is a real obstruction and is propagated UNCHANGED — never masked as a
+ * "junk" retry (the exact FOR-45 contract).
+ *
+ * Extracted so every physical-removal step shares byte-for-byte the same
+ * purge-then-retry-once contract: the whole-tree delete
+ * {@link physicallyDeleteWithJunkPurge} performs, AND each of
+ * {@link physicallyDeleteGitLast}'s two ordered phases (FOR-86).
+ */
+function runWithEnotemptyRetry(junkScanRoot: string, deleteStep: () => void): void {
   try {
-    rmSync(abs, { recursive: true, force: true });
+    deleteStep();
   } catch (err) {
     if (!isEnotempty(err)) throw err;
 
-    const junkRemoved = removeAllowlistedJunk(abs);
+    const junkRemoved = removeAllowlistedJunk(junkScanRoot);
     if (junkRemoved === 0) throw err;
 
     try {
-      rmSync(abs, { recursive: true, force: true });
+      deleteStep();
     } catch (retryErr) {
       throw new Error(
-        `worktree removal still failed after purging ${junkRemoved} allowlisted-junk item(s) at ${abs}: ${describeError(retryErr)}`,
+        `worktree removal still failed after purging ${junkRemoved} allowlisted-junk item(s) at ${junkScanRoot}: ${describeError(retryErr)}`,
       );
     }
   }
+}
+
+/**
+ * Physically delete a worktree directory with its OWN `.git` entry deleted
+ * LAST (FOR-86 — see the file-level "delete `.git` last" doc section for the
+ * live incident this closes). Splits the removal into ordered phases so an
+ * interruption during phase 1 can never have touched `.git` yet:
+ *
+ *   1. Every top-level entry EXCEPT `.git`, each via the same
+ *      ENOTEMPTY-junk-purge-retry contract {@link physicallyDeleteWithJunkPurge}
+ *      already uses (see {@link runWithEnotemptyRetry}) — a whole-tree
+ *      allowlisted-junk purge scoped at `abs`, never at the individual entry,
+ *      so a race anywhere under the directory is still caught exactly as
+ *      before.
+ *   2. `.git` itself, LAST — a plain worktree gitfile, never a directory in
+ *      this context, so its removal is a single atomic unlink: it either
+ *      fully succeeds or is left untouched, never partially deleted.
+ *   3. The now-empty parent directory (via {@link physicallyDeleteWithJunkPurge},
+ *      protecting against a fresh race dropping debris into the directory the
+ *      instant it goes empty — the exact FOR-45 shape, one level up).
+ *
+ * A directory that doesn't exist at all (already fully removed) is a no-op,
+ * mirroring `rmSync`'s own `force: true` idempotence.
+ */
+function physicallyDeleteGitLast(abs: string): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(abs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const nonGitEntries = entries.filter((e) => e.name !== '.git');
+
+  // Phase 1 — everything except `.git`.
+  runWithEnotemptyRetry(abs, () => {
+    for (const entry of nonGitEntries) {
+      rmSync(nodePath.join(abs, entry.name), { recursive: true, force: true });
+    }
+  });
+
+  // Phase 2 — `.git` LAST (a single atomic unlink; see doc comment above).
+  const gitPath = nodePath.join(abs, '.git');
+  runWithEnotemptyRetry(abs, () => rmSync(gitPath, { recursive: true, force: true }));
+
+  // Phase 3 — the now-empty parent directory itself.
+  physicallyDeleteWithJunkPurge(abs);
 }
 
 /**
