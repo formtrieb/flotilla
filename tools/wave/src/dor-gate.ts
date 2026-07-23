@@ -526,29 +526,60 @@ function isPathCovered(mentionedPath: string, files: string[]): boolean {
 }
 
 /**
- * Patterns that signal an AC bullet references an npm script, indicating
+ * Patterns that signal an AC bullet describes a *change* to `package.json`
+ * (a new/rewired script), as opposed to merely *running* one — indicating
  * `package.json` should be in the Files: header.
  *
- * Matches:
- *  - `npm run <name>` or `npm run <word>:<word>` anywhere in the bullet
- *  - Prose patterns like "wired into … package.json" / "add … to package.json"
- *    / "wire … into … script"
+ * Matches only prose that pairs a change-verb ("wire(d)", "add(ed)") with
+ * the change target:
+ *  - "wired into … `npm run test:hooks`" / "add … npm run <name>" — a script
+ *    is being introduced or rewired, i.e. package.json's `scripts` map changes.
+ *  - "wired into … package.json" / "add … to package.json" — package.json
+ *    named directly.
+ *  - "wire … into … script" — script wiring named without "npm run".
  *
- * NOTE: A bare `<word>:<word>` pattern was intentionally dropped. It was
- * over-broad — firing on `nx run ds:test`, `file:line` refs, ratios (`1:1`),
- * and JSON tokens (`ff:true`). Empirical scan of 457 `.scratch/*.md` files
- * found 33 false-positive fires. `npm run <name>` (above) catches all
- * explicit script invocations; prose patterns catch the narrative cases.
+ * Deliberately NOT matched: a bare `npm run <name>` / `npm test` / `npx …`
+ * mention with no change-verb. That is a **run-only** reference — the AC is
+ * describing a *gate* ("tests pass", "typecheck clean"), not a change surface,
+ * and package.json is not being edited. Demanding it in Files: would be a
+ * false positive (W25-F3): the standard verify-floor AC ("npm test and npm
+ * run typecheck clean from tools/wave/") runs this way on every issue and
+ * package.json is never actually touched by it.
+ *
+ * When in doubt this stays conservative: a bullet naming *both* a run-only
+ * command and a concrete changed file still gets file coverage demanded on
+ * the file half via Refinement 2 below — only the package.json inference is
+ * narrowed here.
+ *
+ * NOTE: A bare `<word>:<word>` pattern was intentionally dropped previously.
+ * It was over-broad — firing on `nx run ds:test`, `file:line` refs, ratios
+ * (`1:1`), and JSON tokens (`ff:true`). Empirical scan of 457 `.scratch/*.md`
+ * files found 33 false-positive fires.
+ *
+ * NOTE (iteration 2 of W25-F3): the `add(ed) … npm run` pairing below requires
+ * PROXIMITY, not just co-occurrence — its word-gap is capped at a small fixed
+ * count (0–3 tokens). An earlier, unbounded gap let an unrelated `add(ed)` at
+ * the start of a bullet pair with a later, unrelated run-only `npm run`
+ * mention in the *same* bullet, e.g. "Add error handling for the empty-input
+ * case; npm run test stays green." — the change-verb and the npm-run mention
+ * belong to different clauses there and must NOT warn. Genuine proximate
+ * phrasing ("add(ed) npm run <name>", "add an npm run <name>") still matches
+ * within the bound; the `wire(d) into/in … npm run` pairing is unaffected —
+ * only the `add(ed)` pattern was reported unbounded.
  */
 const NPM_SCRIPT_PATTERNS: RegExp[] = [
-  /\bnpm\s+run\s+[\w:.-]+/,
+  // `[^\w\s]*` tolerates a wrapping backtick/quote directly against `npm`
+  // (e.g. "wired into `npm run test:hooks`") with no space in between.
+  /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*[^\w\s]*npm\s+run\s+[\w:.-]+/i,
+  /\badd(?:ed)?\s+(?:\S+\s+){0,3}[^\w\s]*npm\s+run\s+[\w:.-]+/i,
   /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*package\.json/i,
   /\badd(?:ed)?\s+(?:(?:\S+\s+)*)?(?:to\s+)?package\.json/i,
   /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*script/i,
 ];
 
 /**
- * Returns true if the bullet text references an npm script.
+ * Returns true if the bullet text describes a package.json/script *change*
+ * (not merely running an existing script — see {@link NPM_SCRIPT_PATTERNS}).
  */
 function bulletMentionsNpmScript(bulletText: string): boolean {
   return NPM_SCRIPT_PATTERNS.some((re) => re.test(bulletText));
@@ -568,10 +599,14 @@ function packageJsonCovered(files: string[]): boolean {
  *
  * Two refinements applied here:
  *
- * Refinement 1 — npm-script → `package.json` coverage:
- *   When any AC bullet references an npm script (via `npm run <name>`,
- *   `<word>:<word>` token, or prose like "wire into package.json") and
- *   `package.json` is absent from `Files:`, emit a warn suggesting it be added.
+ * Refinement 1 — npm-script *change* → `package.json` coverage:
+ *   When any AC bullet describes a script being introduced or rewired (via
+ *   "wire(d) into npm run <name>", "add(ed) npm run <name>", or prose like
+ *   "wire into package.json") and `package.json` is absent from `Files:`,
+ *   emit a warn suggesting it be added. A bullet that merely *runs* a script
+ *   (`npm test`, `npm run <name>`, `npx …` with no change-verb attached) is a
+ *   gate, not a change surface, and does not trigger this warn — see
+ *   {@link NPM_SCRIPT_PATTERNS}.
  *
  * Refinement 2 — basename↔fullpath false-positive:
  *   A Files: entry is considered to cover an AC mention if either a full
