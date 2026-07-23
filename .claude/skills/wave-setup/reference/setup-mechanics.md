@@ -304,6 +304,24 @@ The SKILL.md "Scaffolding the tracked permission allowlist and env block" precon
       "Bash(git reset:*)",
       "Bash(git push:*)",
       "Bash(npm ci:*)"
+    ],
+    "deny": [
+      "Read(.claude/settings.local.json)",
+      "Read(**/.claude/settings.local.json)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Bash(cat .claude/settings.local.json:*)",
+      "Bash(less .claude/settings.local.json:*)",
+      "Bash(more .claude/settings.local.json:*)",
+      "Bash(head .claude/settings.local.json:*)",
+      "Bash(tail .claude/settings.local.json:*)",
+      "Bash(cat .env:*)",
+      "Bash(less .env:*)",
+      "Bash(more .env:*)",
+      "Bash(head .env:*)",
+      "Bash(tail .env:*)"
     ]
   }
 }
@@ -313,6 +331,7 @@ The SKILL.md "Scaffolding the tracked permission allowlist and env block" precon
 - **Engine-CLI invocation forms** — the first four allowlist entries: the npx-free local binary and the `npx` fallback, each named **prefix-free** (the form every in-repo call now resolves to, thanks to the env block) **and** env-prefixed (kept for backwards compatibility with existing briefs and cross-repo habits). If this consumer runs the engine from a different repo-relative path, scaffold that prefix instead — the invariant is *both invocation forms for both binary styles*, not this exact path.
 - **Worker git verbs** — `worktree/fetch/checkout/branch/add/commit/reset/push`: the workspace-setup and termination surface (anchor, branch, stage, commit, push) every Worker and Reviewer runs.
 - **Deps installer** — the last entry is a placeholder: replace `npm ci` with the consumer's actual `depsSetup` command(s) (`composer install`, `npm ci --prefix tools/wave`, …). It is the **first** Worker step and installs the local `tsx` binary the npx-free `WAVE_CLI` resolves against, so it must be allowlisted too.
+- **`deny` block — the secret-echo structural anchor (wave-shared Convention 8, FOR-81).** Three live occurrences of the same class — a Worker's flawed `${VAR:-no}` echo, a Worker's `printenv` whole-environment dump, then a Reviewer's `cat` of the gitignored `.claude/settings.local.json` while hunting a config precedent — each found a vector the previous prose hardening hadn't named. A brief clause depends on an agent having read and internalized it; a `permissions.deny` entry does not. These entries block the `Read` tool, and — as far as the permission syntax can express it — Bash's read-shaped command forms (`cat`/`less`/`more`/`head`/`tail`), against the two file classes every consumer's harness can hold live credentials in: the gitignored local settings file and any `.env`-class file. Scaffold this **identically** to flotilla's own tracked `.claude/settings.json` — the vector is universal, not consumer-specific, so there is no per-consumer judgment to exercise here (unlike the allow-list, which does vary by the consumer's own engine-invocation path). The brief clause (wave-start's `workerBrief()` policy clause 5) stays in place as defense-in-depth on top of this anchor, not a replacement for it.
 
 ### Sandbox `excludedCommands` — network git verbs for an SSH origin
 

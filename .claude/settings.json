@@ -21,6 +21,24 @@
       "Bash(NODE_USE_ENV_PROXY=1 ./node_modules/.bin/tsx src/cross-wave-cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)"
+    ],
+    "deny": [
+      "Read(.claude/settings.local.json)",
+      "Read(**/.claude/settings.local.json)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Bash(cat .claude/settings.local.json:*)",
+      "Bash(less .claude/settings.local.json:*)",
+      "Bash(more .claude/settings.local.json:*)",
+      "Bash(head .claude/settings.local.json:*)",
+      "Bash(tail .claude/settings.local.json:*)",
+      "Bash(cat .env:*)",
+      "Bash(less .env:*)",
+      "Bash(more .env:*)",
+      "Bash(head .env:*)",
+      "Bash(tail .env:*)"
     ]
   }
 }
