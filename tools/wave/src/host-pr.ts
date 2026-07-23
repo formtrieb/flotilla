@@ -1126,6 +1126,87 @@ export interface RequiredChecksInfo {
 }
 
 /**
+ * The required status checks a branch's ACTIVE RULESETS put in force, read from
+ * GitHub's effective-rules endpoint (`GET /repos/{o}/{r}/rules/branches/{branch}`).
+ *
+ * That endpoint is the fix for two defects of the legacy branch-protection read
+ * that the 2026-07-23 gate-arming row hit (doc slug 2026-07-23-ci-gate-arm): the
+ * legacy `.../protection/required_status_checks` read is admin-gated (it degraded
+ * to `unknown` on an HTTP 403 for months) AND ruleset-blind (it reported "no
+ * required status checks" the instant required checks landed in the repo's active
+ * ruleset). The effective-rules endpoint aggregates classic branch protection AND
+ * every active ruleset into the rules actually in force, and needs only READ
+ * access — so it SEES ruleset-carried checks and never 403s for a non-admin
+ * token, fixing both defects at once.
+ *
+ * `readable` is the evidence-vs-absence distinction the closing-probe uses
+ * (W2-F1c) applied here: `true` = the endpoint answered, so an empty `contexts`
+ * is an AUTHORITATIVE "no rule requires checks"; `false` = the read itself failed
+ * (a non-200 / transport error), so it contributes no evidence either way and the
+ * merge falls back to the legacy read. Host-neutral in SHAPE (a Bitbucket adapter
+ * with no rulesets endpoint returns `readable:false`), GitHub-specific in SOURCE.
+ */
+export interface RulesetChecksInfo {
+  /** Whether the effective-rules endpoint answered at all. */
+  readable: boolean;
+  /** The required-status-check contexts the active rulesets put in force. */
+  contexts: string[];
+  /** Human-readable account of what was probed and what came back. */
+  detail: string;
+}
+
+/**
+ * Reconcile the two required-status-check reads — the effective-rules read
+ * ({@link RulesetChecksInfo}) and the legacy branch-protection read
+ * ({@link RequiredChecksInfo}) — into the single canonical answer the preflight
+ * grades. The one owner of the ruleset-vs-legacy merge (single-owner discipline
+ * for the landing-posture facts; 2026-07-23 gate-arm gap).
+ *
+ * "Either source finding checks means checks are present": the reported contexts
+ * are the de-duplicated union of both reads (rulesets first), and ANY context →
+ * `present`. With no context from either read, the state is `absent` when at
+ * LEAST one read was authoritative that nothing is required — the effective-rules
+ * endpoint answered (`ruleset.readable`), or legacy branch protection reported
+ * `absent`. That read-only effective-rules answer is exactly what lets a
+ * non-admin token reach `absent` instead of the legacy admin-403 `unknown`. Only
+ * when BOTH reads were blind (the rules read failed AND legacy was `unknown`)
+ * does the merge stay `unknown`. The three posture MEANINGS are unchanged from
+ * the legacy-only probe (present/absent/unknown mean exactly what they did).
+ */
+export function mergeRequiredChecks(
+  branch: string,
+  legacy: RequiredChecksInfo,
+  ruleset: RulesetChecksInfo,
+): RequiredChecksInfo {
+  const contexts = [...new Set([...ruleset.contexts, ...legacy.contexts].filter((c) => c.length > 0))];
+  if (contexts.length > 0) {
+    return {
+      state: 'present',
+      contexts,
+      detail:
+        `Branch '${branch}' requires ${contexts.length} status check(s): ${contexts.join(', ')} ` +
+        `(read from the effective rules — active rulesets and legacy branch protection combined).`,
+    };
+  }
+  if (ruleset.readable || legacy.state === 'absent') {
+    return {
+      state: 'absent',
+      contexts: [],
+      detail:
+        `Branch '${branch}' has no required status checks in force — neither an active ruleset nor legacy ` +
+        `branch protection requires any (read from the effective-rules endpoint, which needs no admin rights).`,
+    };
+  }
+  return {
+    state: 'unknown',
+    contexts: [],
+    detail:
+      `Could not determine required checks for '${branch}' from either the effective-rules endpoint or legacy ` +
+      `branch protection (both reads were unavailable). Advisory only — the wave is not blocked.`,
+  };
+}
+
+/**
  * The code-host POSTURE seam (ADR-0023 amendment). The three reads `host-pr
  * preflight` grades. `GitHubApi extends` this (RealGitHubApi implements it on the
  * `GitHubHttp` seam); a Bitbucket adapter implements the same three and inherits

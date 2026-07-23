@@ -22,6 +22,7 @@ import {
   armPullRequest,
   mergePullRequestNow,
   preflightHost,
+  mergeRequiredChecks,
   alignedPrRef,
   AutoMergeUnavailableError,
   LandingNotImplementedError,
@@ -38,6 +39,7 @@ import {
   type PrMergeability,
   type AutoMergeSetting,
   type RequiredChecksInfo,
+  type RulesetChecksInfo,
 } from './host-pr';
 
 // ─── HTTP seam fixture ───────────────────────────────────────────────────────
@@ -1106,6 +1108,67 @@ describe('LandingNotImplementedError', () => {
     // nonsense (and reads as broken English).
     expect(err.message).toMatch(/remote/i);
     expect(err.message).not.toMatch(/A unknown/);
+  });
+});
+
+// ─── mergeRequiredChecks (ruleset-vs-legacy reconciliation) ──────────────────
+//
+// The single owner of the effective-rules + legacy branch-protection merge
+// (2026-07-23 gate-arm gap). A pure total function — no seam, no network.
+
+const legacy = (over: Partial<RequiredChecksInfo> = {}): RequiredChecksInfo => ({
+  state: 'absent',
+  contexts: [],
+  detail: 'legacy',
+  ...over,
+});
+const ruleset = (over: Partial<RulesetChecksInfo> = {}): RulesetChecksInfo => ({
+  readable: false,
+  contexts: [],
+  detail: 'ruleset',
+  ...over,
+});
+
+describe('mergeRequiredChecks (effective-rules + legacy reconciliation)', () => {
+  it('checks found ONLY in the ruleset (legacy 403/unknown) → present, names them — the AC2 admin-403 fix', async () => {
+    const merged = mergeRequiredChecks(
+      'main',
+      legacy({ state: 'unknown' }), // legacy branch-protection 403'd
+      ruleset({ readable: true, contexts: ['Engine Tests (vitest)', 'Engine Typecheck (tsc)'] }),
+    );
+    expect(merged.state).toBe('present');
+    expect(merged.contexts).toEqual(['Engine Tests (vitest)', 'Engine Typecheck (tsc)']);
+    expect(merged.detail).toContain('Engine Tests (vitest)');
+  });
+
+  it('checks found ONLY in legacy (rules read blind) → present — either source counts (AC3 defensive)', () => {
+    const merged = mergeRequiredChecks('main', legacy({ state: 'present', contexts: ['ci/test'] }), ruleset());
+    expect(merged.state).toBe('present');
+    expect(merged.contexts).toEqual(['ci/test']);
+  });
+
+  it('the union is DE-DUPLICATED when both sources carry the same context (rules aggregates classic protection)', () => {
+    const merged = mergeRequiredChecks(
+      'main',
+      legacy({ state: 'present', contexts: ['ci/test'] }),
+      ruleset({ readable: true, contexts: ['ci/test'] }),
+    );
+    expect(merged.contexts).toEqual(['ci/test']);
+  });
+
+  it('no checks, but a READABLE rules answer → absent (a non-admin token reaches absent, not unknown)', () => {
+    const merged = mergeRequiredChecks('main', legacy({ state: 'unknown' }), ruleset({ readable: true, contexts: [] }));
+    expect(merged.state).toBe('absent');
+  });
+
+  it('no checks, legacy authoritative-absent, rules blind → absent', () => {
+    const merged = mergeRequiredChecks('main', legacy({ state: 'absent' }), ruleset({ readable: false }));
+    expect(merged.state).toBe('absent');
+  });
+
+  it('BOTH reads blind (legacy unknown + rules unreadable) → unknown (the residual advisory case)', () => {
+    const merged = mergeRequiredChecks('main', legacy({ state: 'unknown' }), ruleset({ readable: false }));
+    expect(merged.state).toBe('unknown');
   });
 });
 

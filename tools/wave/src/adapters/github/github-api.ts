@@ -12,13 +12,13 @@
  * threaded per call — the seam stays about issues, not hosts.
  */
 
-import type { LandingHost, LandingPosture } from '../../host-pr';
+import type { LandingHost, LandingPosture, RulesetChecksInfo } from '../../host-pr';
 
 // The code-host posture type `RequiredChecksInfo` was re-homed to the host seam
 // (host-pr.ts) by the ADR-0023 amendment — one owner for the landing-posture
 // facts. Re-exported here so the GitHub adapter's existing importers are
 // unchanged; the shape is host-neutral (the Bitbucket pilot produces it too).
-export type { RequiredChecksInfo, AutoMergeSetting } from '../../host-pr';
+export type { RequiredChecksInfo, RulesetChecksInfo, AutoMergeSetting } from '../../host-pr';
 
 /** GitHub's native issue lifecycle state. */
 export type GhState = 'open' | 'closed';
@@ -145,6 +145,20 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    * absence is likewise `closed-unknown`.
    */
   getClosingState(number: number): Promise<ClosingPrState>;
+  /**
+   * Required status checks a branch's ACTIVE RULESETS put in force, read from the
+   * effective-rules endpoint (GitHub `GET /repos/{o}/{r}/rules/branches/{branch}`;
+   * default: the repo's default branch). This is the ruleset-aware companion to
+   * the inherited {@link LandingPosture.getRequiredChecks} legacy read: it needs
+   * only READ access, and it SEES ruleset-carried checks the legacy admin-gated,
+   * ruleset-blind branch-protection read cannot (2026-07-23 gate-arm gap). The
+   * two are reconciled by `mergeRequiredChecks` (host-pr) inside
+   * `getRequiredChecks`. REPORT-ONLY — MUST NOT throw; an unreadable answer
+   * degrades to `{ readable:false }`. Distinct from the three inherited
+   * `LandingPosture` posture reads because it is GitHub-effective-rules-specific;
+   * a Bitbucket adapter (no rulesets endpoint) returns `readable:false`.
+   */
+  getRulesetRequiredChecks(branch?: string): Promise<RulesetChecksInfo>;
   // The three code-host posture reads — `canMergePullRequests`,
   // `getAutoMergeSetting`, `getRequiredChecks` — are inherited from
   // `LandingPosture` (host-pr.ts). They were declared here (FOR-12/ADR-0023) but

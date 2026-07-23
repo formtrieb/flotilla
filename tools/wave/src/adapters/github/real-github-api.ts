@@ -5,10 +5,11 @@
  */
 
 import type {
-  GitHubApi, GhIssue, GhStateReason, CreateIssueInput, ClosingPrState, RequiredChecksInfo,
+  GitHubApi, GhIssue, GhStateReason, CreateIssueInput, ClosingPrState, RequiredChecksInfo, RulesetChecksInfo,
 } from './github-api';
 import {
   AutoMergeUnavailableError,
+  mergeRequiredChecks,
   DEFAULT_MERGE_METHOD,
   type MergeMethod,
   type MergeResult,
@@ -432,60 +433,90 @@ export class RealGitHubApi implements GitHubApi {
    * ADR-0023 report-only probe: does `branch` (default: the repo's default
    * branch) carry required status checks?
    *
+   * Reads BOTH sources and merges them (2026-07-23 gate-arm gap, doc slug
+   * 2026-07-23-ci-gate-arm): the effective-rules endpoint (ruleset-aware, needs
+   * no admin) via {@link getRulesetRequiredChecks}, and the legacy
+   * branch-protection endpoint (admin-gated, ruleset-blind) via
+   * {@link legacyRequiredChecks}. `mergeRequiredChecks` (host-pr, single owner)
+   * reconciles them: either source finding checks → `present`, and a readable
+   * effective-rules answer lets a non-admin token reach `absent` instead of the
+   * legacy admin-403 `unknown`.
+   *
    * **Never throws** — that is a contract, not defensiveness. This probe is
    * advisory (a no-CI repo keeps `--auto`), so any failure to read it must
-   * degrade to `unknown`, never block the preflight. That matters concretely:
-   * the branch-protection endpoint needs ADMIN rights, which the ambient wave
-   * token routinely lacks — a 403 here is an ordinary, expected answer.
-   *
-   * Responses: 200 → contexts (legacy `contexts[]` or newer `checks[].context`);
-   * 404 → the branch is unprotected → `absent`; 403 → `unknown`.
+   * degrade to `unknown`, never block the preflight. Both underlying reads are
+   * themselves throw-free; the outer guard is a final safety net (e.g. the
+   * default-branch resolve).
    */
   async getRequiredChecks(branch?: string): Promise<RequiredChecksInfo> {
     try {
       const target = branch ?? (await this.defaultBranch());
-      const res = await this.send('GET', `${this.base()}/branches/${encodeURIComponent(target)}/protection/required_status_checks`);
-
-      if (res.status === 404) {
-        return {
-          state: 'absent',
-          contexts: [],
-          detail: `Branch '${target}' has no required status checks (not protected, or protection carries none).`,
-        };
-      }
-      if (res.status === 403) {
-        return {
-          state: 'unknown',
-          contexts: [],
-          detail: `Could not read branch protection for '${target}' — the endpoint requires admin rights on the repository (HTTP 403). This is advisory only and does not block the wave.`,
-        };
-      }
-      if (res.status !== 200) {
-        return {
-          state: 'unknown',
-          contexts: [],
-          detail: `Could not read required checks for '${target}' (HTTP ${res.status}). Advisory only — the wave is not blocked.`,
-        };
-      }
-
-      const contexts = toContexts(res.json);
-      return contexts.length > 0
-        ? {
-            state: 'present',
-            contexts,
-            detail: `Branch '${target}' requires ${contexts.length} status check(s): ${contexts.join(', ')}.`,
-          }
-        : {
-            state: 'absent',
-            contexts: [],
-            detail: `Branch '${target}' is protected but requires no status checks.`,
-          };
+      // Resolve the branch ONCE, then read both endpoints against it (the ruleset
+      // read is passed the concrete target so it never re-resolves the default).
+      const legacy = await this.legacyRequiredChecks(target);
+      const ruleset = await this.getRulesetRequiredChecks(target);
+      return mergeRequiredChecks(target, legacy, ruleset);
     } catch (err) {
       return {
         state: 'unknown',
         contexts: [],
         detail: `Could not probe required checks: ${(err as Error).message ?? String(err)}. Advisory only — the wave is not blocked.`,
       };
+    }
+  }
+
+  /**
+   * The LEGACY required-status-checks read — classic branch protection
+   * (`GET .../branches/{b}/protection/required_status_checks`). Admin-gated and
+   * ruleset-blind; kept ONLY as the fallback source `getRequiredChecks` merges
+   * with the effective-rules read. Throw-free by the same report-only contract:
+   *   200 → contexts (legacy `contexts[]` or newer `checks[].context`)
+   *   404 → the branch carries no classic protection → `absent`
+   *   403 → admin-gated → `unknown` (the defect the effective-rules read routes around)
+   */
+  private async legacyRequiredChecks(target: string): Promise<RequiredChecksInfo> {
+    const res = await this.send('GET', `${this.base()}/branches/${encodeURIComponent(target)}/protection/required_status_checks`);
+    if (res.status === 404) {
+      return { state: 'absent', contexts: [], detail: `Branch '${target}' carries no classic branch-protection required status checks.` };
+    }
+    if (res.status === 403) {
+      return { state: 'unknown', contexts: [], detail: `Classic branch protection for '${target}' is admin-gated (HTTP 403).` };
+    }
+    if (res.status !== 200) {
+      return { state: 'unknown', contexts: [], detail: `Could not read classic branch protection for '${target}' (HTTP ${res.status}).` };
+    }
+    const contexts = toContexts(res.json);
+    return contexts.length > 0
+      ? { state: 'present', contexts, detail: `Classic branch protection on '${target}' requires: ${contexts.join(', ')}.` }
+      : { state: 'absent', contexts: [], detail: `Branch '${target}' has classic protection but requires no status checks.` };
+  }
+
+  /**
+   * The RULESET required-status-checks read — GitHub's effective-rules endpoint
+   * (`GET /repos/{o}/{r}/rules/branches/{branch}`; default: the repo's default
+   * branch). It aggregates classic branch protection AND every active ruleset into
+   * the rules in force, and needs only READ access — so it both SEES
+   * ruleset-carried checks the legacy endpoint is blind to and never degrades to
+   * the admin-403 `unknown` (2026-07-23 gate-arm gap).
+   *
+   * Report-only: NEVER throws; a non-200 / transport failure degrades to
+   * `readable:false` (contributes no evidence — the merge falls back to legacy).
+   * The response is an array of rule objects; every `type:"required_status_checks"`
+   * rule carries the check contexts under `parameters.required_status_checks[].context`.
+   */
+  async getRulesetRequiredChecks(branch?: string): Promise<RulesetChecksInfo> {
+    try {
+      const target = branch ?? (await this.defaultBranch());
+      const res = await this.send('GET', `${this.base()}/rules/branches/${encodeURIComponent(target)}`);
+      if (res.status !== 200) {
+        return { readable: false, contexts: [], detail: `Could not read the effective rules for '${target}' (HTTP ${res.status}). Advisory only.` };
+      }
+      const contexts = toRulesetContexts(res.json);
+      return contexts.length > 0
+        ? { readable: true, contexts, detail: `Active rulesets on '${target}' require: ${contexts.join(', ')}.` }
+        : { readable: true, contexts: [], detail: `The effective rules on '${target}' require no status checks.` };
+    } catch (err) {
+      return { readable: false, contexts: [], detail: `Could not probe the effective rules: ${(err as Error).message ?? String(err)}. Advisory only.` };
     }
   }
 
@@ -545,6 +576,31 @@ function toContexts(json: unknown): string[] {
       .filter((s) => s.length > 0);
   }
   return [];
+}
+
+/**
+ * Required-check contexts from the effective-rules endpoint's array of rule
+ * objects: every `type:"required_status_checks"` rule's
+ * `parameters.required_status_checks[].context`, aggregated across rules and
+ * de-duplicated (first-seen order). A body that is not an array, or carries no
+ * such rule, yields `[]`.
+ */
+function toRulesetContexts(json: unknown): string[] {
+  if (!Array.isArray(json)) return [];
+  const out: string[] = [];
+  for (const rule of json) {
+    if (rule === null || typeof rule !== 'object') continue;
+    const r = rule as Record<string, unknown>;
+    if (r.type !== 'required_status_checks') continue;
+    const params = r.parameters as Record<string, unknown> | undefined;
+    const checks = params?.required_status_checks;
+    if (!Array.isArray(checks)) continue;
+    for (const c of checks) {
+      const ctx = c !== null && typeof c === 'object' ? (c as Record<string, unknown>).context : undefined;
+      if (typeof ctx === 'string' && ctx.length > 0) out.push(ctx);
+    }
+  }
+  return [...new Set(out)];
 }
 
 /** Surface GitHub's own `message` in the typed error — operators need it verbatim. */
