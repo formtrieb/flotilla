@@ -1,4 +1,7 @@
 {
+  "env": {
+    "NODE_USE_ENV_PROXY": "1"
+  },
   "permissions": {
     "allow": [
       "Bash(npx tsx tools/wave/src/cli.ts:*)",
