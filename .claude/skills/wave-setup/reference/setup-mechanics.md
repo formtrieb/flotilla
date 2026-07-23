@@ -35,7 +35,7 @@ On exit 1, read the error, fix the named field in the JSON, and re-run. Do not p
 > npx tsx tools/wave/src/cli-store.ts preflight --config wave.config.json
 > ```
 >
-> `--config` selects the store config (default `wave.config.json`). Like the other store-touching verbs, this one builds the real store — a `github` config needs `GITHUB_TOKEN`, a `linear` config needs `LINEAR_API_KEY`, in the ambient env (dogfood in the sandbox: prefix `NODE_USE_ENV_PROXY=1` so the raw-fetch adapters honour the harness proxy on Node ≥ 24).
+> `--config` selects the store config (default `wave.config.json`). Like the other store-touching verbs, this one builds the real store — a `github` config needs `GITHUB_TOKEN`, a `linear` config needs `LINEAR_API_KEY`, in the ambient env. On Node ≥ 24 under a proxied sandbox this needs `NODE_USE_ENV_PROXY=1` so the raw-fetch adapters honour the harness proxy — the tracked env block below is the standing source for that flag once it's scaffolded; prefix it explicitly (dogfood in the sandbox) only where no tracked env block applies yet.
 
 ### What it checks (per store kind)
 
@@ -78,7 +78,7 @@ The code-host landing posture has its own owner, the host seam (ADR-0023 amendme
 # → { ok, verb: "preflight", host, checks: [ { name, status, detail }, … ] }
 ```
 
-It builds the posture reader from `$GITHUB_TOKEN` (the same construction-time token check as `host-pr arm|merge|status`); prefix `NODE_USE_ENV_PROXY=1` under a proxied sandbox. `--remote <url>` overrides the detected remote (default `git remote get-url origin`). It takes **no `--branch`** — required checks are read against the repo's **default branch**.
+It builds the posture reader from `$GITHUB_TOKEN` (the same construction-time token check as `host-pr arm|merge|status`); under a proxied sandbox the tracked env block below is the standing source for `NODE_USE_ENV_PROXY=1` — prefix it explicitly only where no tracked env block applies. `--remote <url>` overrides the detected remote (default `git remote get-url origin`). It takes **no `--branch`** — required checks are read against the repo's **default branch**.
 
 ### What it checks (every store kind — code host only)
 

@@ -134,6 +134,18 @@ const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // step 4, the FIRST step) installs that local binary, so it exists before the
 // terminator's WAVE_CLI call — keep depsSetup first for this reason as well as
 // the verify-gate one.
+//
+// WAVE_CLI also carries an explicit NODE_USE_ENV_PROXY=1 prefix (wave-shared
+// Convention 1's raw-fetch-vs-proxied-sandbox fix). The tracked settings `env`
+// block — scaffolded by wave-setup, and set the same way in flotilla's own
+// tracked `.claude/settings.json` — is the STANDING source for this flag once
+// it applies: every command the harness runs already inherits it, which makes
+// this prefix REDUNDANT-BUT-HARMLESS wherever that block is present. The
+// prefix stays on the constant anyway because it is LOAD-BEARING for any
+// consumer WITHOUT that tracked block yet (a fresh repo before wave-setup has
+// run, or a harness without settings-env support) — the driver has no way to
+// know which posture a given consumer is in, so it keeps the belt-and-braces
+// form rather than assume the block is present.
 const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts'
 // REPORTS_DIR / VERDICTS_DIR stay ABSOLUTE regardless — sidecar dirs are
 // addressed independent of whatever cwd the Scribe's REPO_ROOT `cd` leaves it in.
