@@ -564,13 +564,21 @@ function isPathCovered(mentionedPath: string, files: string[]): boolean {
  * case; npm run test stays green." — the change-verb and the npm-run mention
  * belong to different clauses there and must NOT warn. Genuine proximate
  * phrasing ("add(ed) npm run <name>", "add an npm run <name>") still matches
- * within the bound; the `wire(d) into/in … npm run` pairing is unaffected —
- * only the `add(ed)` pattern was reported unbounded.
+ * within the bound.
+ *
+ * NOTE (iteration 3, W26-F3): the `wire(d) into/in … npm run` pairing carried
+ * the identical structurally unbounded gap — self-reported by the iteration-2
+ * worker as out-of-scope there because the reviewer's blocking finding was
+ * scoped to `add(ed)` only. Same fix, same rationale: bounded to 0–3 tokens
+ * so an unrelated, earlier `wired`/`wire in` no longer pairs with a distant,
+ * unrelated run-only `npm run` mention in the same bullet. Genuine proximate
+ * phrasing ("wired into npm run <name>", "wired into `npm run <name>`" with
+ * the backtick tolerance) still matches within the bound.
  */
 const NPM_SCRIPT_PATTERNS: RegExp[] = [
   // `[^\w\s]*` tolerates a wrapping backtick/quote directly against `npm`
   // (e.g. "wired into `npm run test:hooks`") with no space in between.
-  /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*[^\w\s]*npm\s+run\s+[\w:.-]+/i,
+  /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+){0,3}[^\w\s]*npm\s+run\s+[\w:.-]+/i,
   /\badd(?:ed)?\s+(?:\S+\s+){0,3}[^\w\s]*npm\s+run\s+[\w:.-]+/i,
   /\bwire(?:d)?\s+(?:into|in)\s+(?:\S+\s+)*package\.json/i,
   /\badd(?:ed)?\s+(?:(?:\S+\s+)*)?(?:to\s+)?package\.json/i,
