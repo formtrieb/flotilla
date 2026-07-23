@@ -235,6 +235,61 @@
  * `errors`, unchanged — genuine failures are never reclassified. Operator
  * playbook: an `erroredStillListed` entry is the prune/retry case
  * (prunable-listed + directory on disk), not a defect.
+ *
+ * ── bounded retry before classifying an incomplete removal (FOR-84 — W22-F1) ──
+ *
+ * The two INCOMPLETE ENOTEMPTY-family outcomes above — `deregisteredNotDeleted`
+ * (a non-throwing return whose directory survives the on-disk re-check) and
+ * `erroredStillListed` (a throwing removal git still lists) — had become the
+ * per-wave NORMAL case rather than the exception: they fired in five consecutive
+ * closes, and the operator playbook (prune, then a manual `rm`) had turned into
+ * a routine per-close step. A 2026-07-23 grill resolved the cause chain. The
+ * editor-side excludes (tracked `.vscode` watcher/search excludes on the
+ * worktree location) have been active since the initial public commit and are
+ * therefore proven INSUFFICIENT; the residual actors are OS-level (Finder
+ * re-dropping `.DS_Store` mid-removal is proven on disk; Spotlight; a stale
+ * language server still holding worktree paths), and the race window is
+ * TRANSIENT — a short-lived worktree removed cleanly in the same day's second
+ * close.
+ *
+ * A transient race wants a bounded RETRY, not a force flag. {@link executeCleanup}
+ * now gives every entry that lands in the ENOTEMPTY family exactly ONE
+ * re-attempt — re-purge the allowlisted junk ({@link CleanupOptions.purgeJunk},
+ * default {@link removeAllowlistedJunk}), pause ({@link CleanupOptions.retryPause},
+ * default a short real synchronous pause; a spec injects a zero-delay hook),
+ * retry the removal, and re-probe — BEFORE it classifies the entry into
+ * `deregisteredNotDeleted` or `erroredStillListed`. A removal that succeeds only
+ * via that retry is classified `removed` and carries an additive
+ * {@link WorktreeEntry.retried} (`= true`) marker so a close summary can measure
+ * the race-conversion rate (the live gate for this hardening: the incomplete
+ * classes returning to being the exception). A first-try removal carries no
+ * marker, and the field is additive-optional so every existing consumer of
+ * `CleanupResult` stays valid. Whatever is still incomplete AFTER the retry
+ * keeps today's classification unchanged in meaning and, exactly as before,
+ * never reaches local-branch hygiene — an incompletely-removed worktree is not
+ * a clean removal.
+ *
+ * TWO deliberate boundaries, each documented here where the class rationales
+ * already live:
+ *
+ *   • NO force flag. A `git worktree remove --force` (or an `rmSync` that
+ *     ignores errors) cannot add capability past the harness sandbox's own
+ *     write-deny — the bytes it is refused permission to delete stay refused
+ *     no matter how forcefully we ask. A force path would therefore not
+ *     recover anything the bounded retry cannot; it would only RELOCATE the
+ *     human decision (from "an operator prunes the genuinely-stuck residual"
+ *     to "an operator audits what a force just destroyed"). Whatever survives
+ *     the one retry is genuinely stuck and stays a deliberate operator step,
+ *     with the dirty-worktree safety invariant at the top of this file intact.
+ *
+ *   • The retry is bounded at ONE. The race this closes is transient — a single
+ *     re-attempt after a re-purge + pause is enough to clear it — so a second
+ *     attempt buys nothing a first did not, while an unbounded loop would turn
+ *     a genuinely-stuck worktree (a real, non-junk obstruction the sandbox
+ *     will never let us remove) into a spin. One retry matches the retry-once
+ *     precedent already established elsewhere in the toolkit (the FOR-45
+ *     junk-purge-then-retry inside {@link physicallyDeleteWithJunkPurge}, the
+ *     cap=1 re-dispatch in wave-start).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -294,6 +349,16 @@ export interface WorktreeEntry {
    * `planCleanup` has run.
    */
   reason?: SkipReason;
+  /**
+   * Present only on a `CleanupResult.removed` entry whose removal completed
+   * only via the bounded ENOTEMPTY-family retry (FOR-84 — see the file-level
+   * "bounded retry" doc section). `true` marks a race-conversion so a close
+   * summary can count how often the transient Finder/editor race was cleared
+   * on the second attempt; a first-try removal never carries this field.
+   * Additive-optional — absent everywhere else (skipped/incomplete/first-try
+   * entries), so every existing `CleanupResult` consumer stays valid.
+   */
+  retried?: boolean;
 }
 
 /** Machine-readable cause a `planCleanup` skip is tagged with (FOR-59). */
@@ -332,9 +397,12 @@ export interface CleanupResult {
    * file-level FOR-45/FOR-56 doc sections for the race, and the FOR-67 section
    * for why trusting the non-throw let this class vanish from the summary and
    * depend on a careful human's on-disk check). Empty on the ordinary path
-   * where every removal's directory is confirmed gone. These entries never
-   * reach local-branch hygiene — an incompletely-removed worktree is not a
-   * clean removal.
+   * where every removal's directory is confirmed gone. An entry reaches this
+   * class only AFTER the bounded one-shot retry (FOR-84) also left the
+   * directory on disk — a first-attempt survivor whose retry then succeeds is
+   * `removed` (with `retried: true`) instead. These entries never reach
+   * local-branch hygiene — an incompletely-removed worktree is not a clean
+   * removal.
    */
   deregisteredNotDeleted: WorktreeEntry[];
   /**
@@ -351,8 +419,11 @@ export interface CleanupResult {
    * `deregisteredNotDeleted`, these are INCOMPLETE removals: they never reach
    * local-branch hygiene. A throw where the worktree is genuinely no longer
    * listed stays in `errors`, unchanged (genuine failures are never
-   * reclassified). Empty on the ordinary path. Operator playbook: this is the
-   * prune/retry case, not a defect.
+   * reclassified). Empty on the ordinary path. An entry reaches this class only
+   * AFTER the bounded one-shot retry (FOR-84) also threw-yet-still-listed — a
+   * first-attempt survivor whose retry then succeeds is `removed` (with
+   * `retried: true`) instead. Operator playbook: this is the prune/retry case,
+   * not a defect.
    */
   erroredStillListed: WorktreeEntry[];
   /**
@@ -462,6 +533,27 @@ export interface CleanupOptions {
    * Defaults to `false` (hygiene runs after every successful removal/purge).
    */
   skipBranchHygiene?: boolean;
+  /**
+   * Injectable allowlisted-junk re-purge for the bounded ENOTEMPTY-family
+   * retry (FOR-84 — see {@link WorktreeEntry.retried} and the file-level
+   * "bounded retry" doc section). Called with a worktree's absolute path ONCE,
+   * BEFORE the single re-attempt, only when the first attempt landed in the
+   * ENOTEMPTY family (`deregisteredNotDeleted`/`erroredStillListed`). Defaults
+   * to purging the allowlisted junk under the path ({@link removeAllowlistedJunk})
+   * — the same debris the default remover clears — so a Finder/editor race that
+   * re-dropped junk mid-removal is swept before the retry. The spec injects a
+   * spy to observe the re-purge without a real filesystem race.
+   */
+  purgeJunk?: (worktreePath: string) => void;
+  /**
+   * Injectable pause between the bounded retry's re-purge and its re-attempt
+   * (FOR-84). Invoked at most ONCE per worktree, only on the retry path.
+   * Defaults to a short real synchronous pause ({@link defaultRetryPause}) that
+   * lets the transient OS race settle; the spec injects a zero-delay
+   * `() => {}` so the suite never actually sleeps. Never called on the ordinary
+   * (first-attempt-succeeds) path.
+   */
+  retryPause?: () => void;
 }
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
@@ -722,6 +814,9 @@ export function executeCleanup(
   const remover = opts.remover ?? defaultWorktreeRemover(repoRoot);
   const pathExists = opts.pathExists ?? existsSync;
   const stillListed = opts.stillListed ?? defaultStillListedProbe(repoRoot);
+  const purgeJunk =
+    opts.purgeJunk ?? ((p: string) => void removeAllowlistedJunk(nodePath.resolve(p)));
+  const retryPause = opts.retryPause ?? defaultRetryPause;
   const hygieneEnabled = opts.skipBranchHygiene !== true;
   const branchHygiene = hygieneEnabled
     ? (opts.branchHygiene ?? defaultBranchHygieneOps(repoRoot))
@@ -736,51 +831,69 @@ export function executeCleanup(
   const branchHygieneSkipped: BranchHygieneSkip[] = [];
 
   for (const wt of plan.selected) {
-    try {
-      remover.remove(wt.path);
-      // Verify-after-write (FOR-67): a non-throwing remover is NOT trusted on
-      // its own. The "deregistered-but-not-deleted" ENOTEMPTY class leaves the
-      // physical directory on disk even after `git worktree remove` forgot it
-      // (a Finder/editor-host race, see the file-level FOR-45/FOR-56 sections)
-      // — recording it as a clean `removed` would let it vanish from the
-      // summary and depend on a careful human's on-disk check. So a directory
-      // still present after removal is captured STRUCTURALLY here and never
-      // counted as removed (nor handed to branch hygiene — an incomplete
-      // removal is not a clean one).
-      if (pathExists(nodePath.resolve(wt.path))) {
+    let attempt = attemptWorktreeRemoval(wt.path, remover, pathExists, stillListed);
+    let retried = false;
+
+    // Bounded retry (FOR-84 — W22-F1): the two INCOMPLETE outcomes are the
+    // ENOTEMPTY family — a non-throwing return whose directory survived the
+    // on-disk re-check (`deregisteredNotDeleted`) or a throwing removal git
+    // still lists (`erroredStillListed`). Both are transient-race candidates
+    // (Finder re-dropping `.DS_Store` mid-removal, Spotlight, a stale language
+    // server; the race window is transient — see the file-level "bounded retry"
+    // doc section). Give exactly ONE re-attempt — re-purge the allowlisted junk
+    // a racing actor may have re-dropped, pause for the race to settle, retry
+    // the removal, and re-probe — BEFORE classifying. A genuine failure (a
+    // throw where git no longer lists the worktree) is NOT the ENOTEMPTY family
+    // and never enters the retry: it stays a first-try `errors` entry. The
+    // retry is bounded at one, never a loop — whatever survives it is genuinely
+    // stuck (a real, sandbox-write-denied obstruction) and keeps today's
+    // classification plus the deliberate operator step.
+    if (
+      attempt.kind === 'deregisteredNotDeleted' ||
+      attempt.kind === 'erroredStillListed'
+    ) {
+      purgeJunk(wt.path);
+      retryPause();
+      attempt = attemptWorktreeRemoval(wt.path, remover, pathExists, stillListed);
+      retried = true;
+    }
+
+    switch (attempt.kind) {
+      case 'removed':
+        // A removal that only succeeded via the retry carries the additive
+        // `retried: true` marker (FOR-84) so a close summary can count race
+        // conversions; a first-try removal carries no marker.
+        removed.push(retried ? { ...wt, retried: true } : wt);
+        // Local branch hygiene (FOR-59) — best-effort, additive: it runs only
+        // after a successful removal/purge (including a retry-converted one),
+        // and never affects `removed`/`errors` classification. See
+        // `runBranchHygiene`'s doc comment for the exact per-branch rules.
+        if (branchHygiene) {
+          const hygieneResult = runBranchHygiene(wt, branchHygiene, defaultBranch);
+          branchesDeleted.push(...hygieneResult.deleted);
+          branchHygieneSkipped.push(...hygieneResult.skipped);
+        }
+        break;
+      case 'deregisteredNotDeleted':
+        // Still incomplete after the retry: the "deregistered-but-not-deleted"
+        // ENOTEMPTY class (FOR-67), unchanged in meaning — a directory still on
+        // disk after `git worktree remove` forgot it. Never counted as removed,
+        // never handed to branch hygiene (an incomplete removal is not clean).
         deregisteredNotDeleted.push(wt);
-        continue;
-      }
-      removed.push(wt);
-      // Local branch hygiene (FOR-59) — best-effort, additive: it runs only
-      // after a successful removal/purge, and never affects `removed`/
-      // `errors` classification. See `runBranchHygiene`'s doc comment for
-      // the exact per-branch rules.
-      if (branchHygiene) {
-        const hygieneResult = runBranchHygiene(wt, branchHygiene, defaultBranch);
-        branchesDeleted.push(...hygieneResult.deleted);
-        branchHygieneSkipped.push(...hygieneResult.skipped);
-      }
-    } catch (err) {
-      // FOR-73 (W18-F1): a THROWING removal is NOT automatically a generic
-      // error. Wave 18's close hit a third ENOTEMPTY-family form — the remover
-      // threw, yet git still fully LISTED the worktree afterwards (as prunable)
-      // with its directory on disk. Probe whether the worktree is still listed
-      // (default: a `git worktree list` membership check): still listed → this
-      // is an INCOMPLETE removal, recorded in its own `erroredStillListed`
-      // class (never the generic `errors`, and — like deregisteredNotDeleted —
-      // never handed to branch hygiene) so an operator can tell "removal
-      // failed, worktree intact and prunable" apart from any other error. A
-      // throw where the worktree is genuinely no longer listed stays in
-      // `errors`, unchanged — genuine failures are never reclassified.
-      if (stillListed(nodePath.resolve(wt.path))) {
+        break;
+      case 'erroredStillListed':
+        // Still incomplete after the retry: the throwing-yet-still-listed
+        // ENOTEMPTY class (FOR-73 — W18-F1), unchanged in meaning. Recorded in
+        // its own class (never the generic `errors`, never branch hygiene) so
+        // an operator can tell "removal failed, worktree intact and prunable"
+        // apart from any other error.
         erroredStillListed.push(wt);
-      } else {
-        errors.push({
-          path: wt.path,
-          message: describeError(err),
-        });
-      }
+        break;
+      case 'errored':
+        // A genuine failure: the removal threw and git no longer lists the
+        // worktree. Never reclassified — stays a loud per-item error.
+        errors.push({ path: wt.path, message: attempt.message });
+        break;
     }
   }
 
@@ -793,6 +906,72 @@ export function executeCleanup(
     branchesDeleted,
     branchHygieneSkipped,
   };
+}
+
+/**
+ * The outcome of ONE `remover.remove()` attempt, classified against the same
+ * two probes `executeCleanup` uses:
+ *   - `removed`                 — the remover returned and the directory is
+ *                                 confirmed gone (`pathExists` false).
+ *   - `deregisteredNotDeleted`  — the remover returned WITHOUT throwing yet the
+ *                                 directory survives on disk (`pathExists` true).
+ *   - `erroredStillListed`      — the remover THREW and git still lists the
+ *                                 worktree (`stillListed` true).
+ *   - `errored`                 — the remover threw and git no longer lists it
+ *                                 (a genuine failure), carrying its message.
+ *
+ * The two INCOMPLETE outcomes (`deregisteredNotDeleted`/`erroredStillListed`)
+ * are the ENOTEMPTY family {@link executeCleanup} retries exactly once (FOR-84);
+ * `removed`/`errored` are terminal. Extracted so the first attempt and the
+ * single bounded re-attempt share byte-for-byte the same classification logic.
+ */
+type RemovalAttempt =
+  | { kind: 'removed' }
+  | { kind: 'deregisteredNotDeleted' }
+  | { kind: 'erroredStillListed' }
+  | { kind: 'errored'; message: string };
+
+function attemptWorktreeRemoval(
+  worktreePath: string,
+  remover: WorktreeRemover,
+  pathExists: (path: string) => boolean,
+  stillListed: (path: string) => boolean,
+): RemovalAttempt {
+  try {
+    remover.remove(worktreePath);
+    // Verify-after-write (FOR-67): a non-throwing remover is NOT trusted on its
+    // own. The "deregistered-but-not-deleted" ENOTEMPTY class leaves the
+    // physical directory on disk even after `git worktree remove` forgot it (a
+    // Finder/editor-host race, see the file-level FOR-45/FOR-56 sections).
+    if (pathExists(nodePath.resolve(worktreePath))) {
+      return { kind: 'deregisteredNotDeleted' };
+    }
+    return { kind: 'removed' };
+  } catch (err) {
+    // FOR-73 (W18-F1): a THROWING removal is NOT automatically a generic error.
+    // Probe whether git still lists the worktree (default: a `git worktree
+    // list` membership check): still listed → the throwing-yet-still-listed
+    // ENOTEMPTY class; genuinely gone → a real failure.
+    if (stillListed(nodePath.resolve(worktreePath))) {
+      return { kind: 'erroredStillListed' };
+    }
+    return { kind: 'errored', message: describeError(err) };
+  }
+}
+
+/** A short real synchronous pause between the bounded retry's re-purge and re-attempt (FOR-84). */
+const RETRY_PAUSE_MS = 250;
+
+/**
+ * Default {@link CleanupOptions.retryPause}: block synchronously for
+ * {@link RETRY_PAUSE_MS} so the transient OS race (Finder/Spotlight/stale LSP)
+ * has a moment to settle before the single re-attempt. Uses `Atomics.wait` on a
+ * private, never-signalled buffer — a real pause without a busy CPU spin —
+ * because `executeCleanup` is synchronous. The spec injects `() => {}` so the
+ * suite never actually sleeps.
+ */
+function defaultRetryPause(): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_PAUSE_MS);
 }
 
 /**

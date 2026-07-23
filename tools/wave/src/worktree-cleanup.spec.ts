@@ -2339,6 +2339,9 @@ describe('executeCleanup — deregistered-but-not-deleted (FOR-67)', () => {
       remover,
       // The verify probe reports the dir is STILL there after "removal".
       pathExists: () => true,
+      // Zero-delay retry pause (FOR-84): the bounded one-shot retry fires here
+      // (still on disk after the re-attempt), so keep the suite from sleeping.
+      retryPause: () => {},
       skipBranchHygiene: true,
     });
 
@@ -2371,6 +2374,7 @@ describe('executeCleanup — deregistered-but-not-deleted (FOR-67)', () => {
       remover,
       // AGENT_PATH_A stays on disk; AGENT_PATH_B is confirmed gone.
       pathExists: (p) => p === AGENT_PATH_A,
+      retryPause: () => {}, // zero-delay (FOR-84): A retries once, still on disk.
       skipBranchHygiene: true,
     });
 
@@ -2394,6 +2398,7 @@ describe('executeCleanup — deregistered-but-not-deleted (FOR-67)', () => {
     const result = executeCleanup(plan, {
       remover,
       pathExists: () => true, // still on disk → incomplete removal
+      retryPause: () => {}, // zero-delay (FOR-84): retries once, still on disk.
       branchHygiene,
     });
 
@@ -2450,6 +2455,9 @@ describe('executeCleanup — errored-yet-still-listed (FOR-73)', () => {
       remover,
       // git still lists it afterwards (prunable, directory on disk).
       stillListed: () => true,
+      // Zero-delay retry pause (FOR-84): the bounded one-shot retry fires here
+      // (throws-still-listed on the re-attempt too), so keep the suite fast.
+      retryPause: () => {},
       skipBranchHygiene: true,
     });
 
@@ -2484,6 +2492,7 @@ describe('executeCleanup — errored-yet-still-listed (FOR-73)', () => {
       remover,
       // A is still listed; B is genuinely gone from the list.
       stillListed: (p) => p === AGENT_PATH_A,
+      retryPause: () => {}, // zero-delay (FOR-84): A retries once (still listed).
       skipBranchHygiene: true,
     });
 
@@ -2507,6 +2516,7 @@ describe('executeCleanup — errored-yet-still-listed (FOR-73)', () => {
     const result = executeCleanup(plan, {
       remover,
       stillListed: () => true, // still listed → incomplete removal
+      retryPause: () => {}, // zero-delay (FOR-84): retries once, still listed.
       branchHygiene,
     });
 
@@ -2526,6 +2536,320 @@ describe('executeCleanup — errored-yet-still-listed (FOR-73)', () => {
 
     expect(result.errors).toHaveLength(1);
     expect(result.erroredStillListed).toHaveLength(0);
+  });
+});
+
+// ─── 17c. executeCleanup — bounded retry before classifying (FOR-84 — W22-F1) ─
+//
+// The two INCOMPLETE ENOTEMPTY-family outcomes — `deregisteredNotDeleted` (a
+// non-throwing return whose directory survives the on-disk re-check) and
+// `erroredStillListed` (a throwing removal git still lists) — had become the
+// per-wave normal case, driven by a TRANSIENT OS race (Finder re-dropping
+// `.DS_Store` mid-removal, Spotlight, a stale LSP). A transient race wants a
+// bounded RETRY, not a force flag: `executeCleanup` now gives every ENOTEMPTY-
+// family entry exactly ONE re-attempt — re-purge the allowlisted junk, pause
+// (injectable; zero-delay in specs), retry the removal, re-probe — BEFORE
+// classifying. A removal that only succeeds via the retry is `removed` with an
+// additive `retried: true` marker; whatever survives the retry keeps today's
+// classification and never reaches branch hygiene. The retry is bounded at one,
+// never a loop; a genuine failure (throw + not still listed) never enters it.
+
+describe('executeCleanup — bounded retry (FOR-84)', () => {
+  const NOOP_PAUSE = () => {};
+
+  const cleanA: WorktreeEntry = {
+    path: AGENT_PATH_A,
+    branch: 'wave/FOR-84-a',
+    head: 'a'.repeat(40),
+    dirty: false,
+  };
+  const cleanB: WorktreeEntry = {
+    path: AGENT_PATH_B,
+    branch: 'wave/FOR-84-b',
+    head: 'b'.repeat(40),
+    dirty: false,
+  };
+
+  /** A remover that THROWS on its first N calls, then succeeds — models a race that clears. */
+  function throwThenSucceedRemover(throwTimes: number): {
+    remover: WorktreeRemover;
+    removeSpy: ReturnType<typeof vi.fn>;
+  } {
+    let calls = 0;
+    const removeSpy = vi.fn((path: string) => {
+      calls += 1;
+      if (calls <= throwTimes) {
+        throw new Error(`ENOTEMPTY: directory not empty, rmdir '${path}'`);
+      }
+    });
+    return { remover: { remove: removeSpy }, removeSpy };
+  }
+
+  it('deregisteredNotDeleted on the first attempt, then GONE on the retry → removed with retried:true', () => {
+    const { remover, removeSpy } = fakeRemover(); // never throws
+    const plan = { selected: [cleanA], skipped: [] };
+    // Dir survives the first probe, is gone after the retry's re-purge.
+    let probes = 0;
+    const pathExists = () => {
+      probes += 1;
+      return probes === 1;
+    };
+    const purgeJunk = vi.fn();
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists,
+      purgeJunk,
+      retryPause: NOOP_PAUSE,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed).toHaveLength(1);
+    expect(result.removed[0].path).toBe(AGENT_PATH_A);
+    expect(result.removed[0].retried).toBe(true);
+    expect(result.deregisteredNotDeleted).toHaveLength(0);
+    // Exactly one re-attempt: two remover calls, one re-purge.
+    expect(removeSpy).toHaveBeenCalledTimes(2);
+    expect(purgeJunk).toHaveBeenCalledTimes(1);
+    expect(purgeJunk).toHaveBeenCalledWith(AGENT_PATH_A);
+  });
+
+  it('erroredStillListed on the first attempt, then succeeds on the retry → removed with retried:true', () => {
+    const { remover, removeSpy } = throwThenSucceedRemover(1); // throws once, then OK
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      stillListed: () => true, // first (throwing) attempt is still listed
+      pathExists: () => false, // second (succeeding) attempt is confirmed gone
+      retryPause: NOOP_PAUSE,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed).toHaveLength(1);
+    expect(result.removed[0].retried).toBe(true);
+    expect(result.erroredStillListed).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+    expect(removeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('a first-try removal is NOT retried and carries NO retried marker', () => {
+    const { remover, removeSpy } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+    const purgeJunk = vi.fn();
+    const retryPause = vi.fn();
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists: () => false, // confirmed gone on the first probe
+      purgeJunk,
+      retryPause,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed).toHaveLength(1);
+    expect(result.removed[0].retried).toBeUndefined();
+    // No retry machinery ran at all on the ordinary path.
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(purgeJunk).not.toHaveBeenCalled();
+    expect(retryPause).not.toHaveBeenCalled();
+  });
+
+  it('still deregisteredNotDeleted AFTER the retry → classified deregisteredNotDeleted, NO marker, bounded at ONE re-attempt', () => {
+    const { remover, removeSpy } = fakeRemover(); // never throws
+    const plan = { selected: [cleanA], skipped: [] };
+    const purgeJunk = vi.fn();
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists: () => true, // survives BOTH probes
+      purgeJunk,
+      retryPause: NOOP_PAUSE,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.removed).toHaveLength(0);
+    expect(result.deregisteredNotDeleted).toHaveLength(1);
+    expect(result.deregisteredNotDeleted[0].path).toBe(AGENT_PATH_A);
+    // The classified entry carries no marker (only removed entries do).
+    expect(result.deregisteredNotDeleted[0].retried).toBeUndefined();
+    // Bounded at ONE retry: exactly two removals, one re-purge — never a loop.
+    expect(removeSpy).toHaveBeenCalledTimes(2);
+    expect(purgeJunk).toHaveBeenCalledTimes(1);
+  });
+
+  it('still erroredStillListed AFTER the retry → classified erroredStillListed, bounded at ONE re-attempt', () => {
+    const { remover, removeSpy } = throwThenSucceedRemover(2); // throws on both attempts
+    const plan = { selected: [cleanA], skipped: [] };
+
+    const result = executeCleanup(plan, {
+      remover,
+      stillListed: () => true, // still listed after every throw
+      retryPause: NOOP_PAUSE,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    expect(result.erroredStillListed[0].path).toBe(AGENT_PATH_A);
+    expect(result.errors).toHaveLength(0);
+    expect(result.removed).toHaveLength(0);
+    // Bounded at ONE retry: exactly two removals, never a loop.
+    expect(removeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('a genuine failure (throw + NOT still listed) never enters the retry — first-try errors, no re-purge/pause', () => {
+    const { remover, removeSpy } = throwThenSucceedRemover(1);
+    const plan = { selected: [cleanA], skipped: [] };
+    const purgeJunk = vi.fn();
+    const retryPause = vi.fn();
+
+    const result = executeCleanup(plan, {
+      remover,
+      stillListed: () => false, // genuine failure — git no longer lists it
+      purgeJunk,
+      retryPause,
+      skipBranchHygiene: true,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].path).toBe(AGENT_PATH_A);
+    expect(result.erroredStillListed).toHaveLength(0);
+    // No retry for a genuine failure: one call, no re-purge, no pause.
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(purgeJunk).not.toHaveBeenCalled();
+    expect(retryPause).not.toHaveBeenCalled();
+  });
+
+  it('re-purges the allowlisted junk BEFORE the re-attempt (order: purge → pause → retry removal)', () => {
+    const order: string[] = [];
+    let calls = 0;
+    const remover: WorktreeRemover = {
+      remove: (path: string) => {
+        calls += 1;
+        order.push(`remove#${calls}`);
+        if (calls === 1) {
+          throw new Error(`ENOTEMPTY: directory not empty, rmdir '${path}'`);
+        }
+      },
+    };
+    const plan = { selected: [cleanA], skipped: [] };
+
+    executeCleanup(plan, {
+      remover,
+      stillListed: () => true,
+      pathExists: () => false,
+      purgeJunk: () => order.push('purge'),
+      retryPause: () => order.push('pause'),
+      skipBranchHygiene: true,
+    });
+
+    // First removal, then re-purge, then pause, then the single re-attempt.
+    expect(order).toEqual(['remove#1', 'purge', 'pause', 'remove#2']);
+  });
+
+  it('a retry-converted removal DOES reach local-branch hygiene (it is a clean removal)', () => {
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+    let probes = 0;
+    const pathExists = () => {
+      probes += 1;
+      return probes === 1; // survives first probe, gone after the retry
+    };
+    const deleteBranch = vi.fn();
+    const branchHygiene: BranchHygieneOps = {
+      listCheckedOutBranches: () => new Set<string>(),
+      isUpstreamGone: () => false,
+      isContainedInDefaultBranch: () => false,
+      probeRemoteRef: () => ({ status: 'gone' }) as RemoteRefProbeResult,
+      deleteBranch,
+    };
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists,
+      retryPause: NOOP_PAUSE,
+      branchHygiene,
+    });
+
+    expect(result.removed[0].retried).toBe(true);
+    // remote-ref-gone evidence → the wave/* branch is deleted for the converted removal.
+    expect(deleteBranch).toHaveBeenCalledWith('wave/FOR-84-a');
+    expect(result.branchesDeleted).toContain('wave/FOR-84-a');
+  });
+
+  it('an entry still incomplete after the retry is NEVER handed to local-branch hygiene', () => {
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+    const deleteBranch = vi.fn();
+    const branchHygiene: BranchHygieneOps = {
+      listCheckedOutBranches: () => new Set<string>(),
+      isUpstreamGone: () => true, // would delete if it ran
+      isContainedInDefaultBranch: () => false,
+      probeRemoteRef: () => ({ status: 'gone' }) as RemoteRefProbeResult,
+      deleteBranch,
+    };
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists: () => true, // survives both probes → stays incomplete
+      retryPause: NOOP_PAUSE,
+      branchHygiene,
+    });
+
+    expect(result.deregisteredNotDeleted).toHaveLength(1);
+    expect(result.branchesDeleted).toHaveLength(0);
+    expect(deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('splits a batch: one first-try removed (no marker), one retry-converted (retried:true)', () => {
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA, cleanB], skipped: [] };
+    // A: gone on the first probe (first-try). B: survives its first probe, gone after retry.
+    const seen = new Map<string, number>();
+    const pathExists = (p: string) => {
+      const n = (seen.get(p) ?? 0) + 1;
+      seen.set(p, n);
+      if (p === AGENT_PATH_A) return false; // first-try removed
+      return n === 1; // B: still-present first, gone on retry
+    };
+
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists,
+      retryPause: NOOP_PAUSE,
+      skipBranchHygiene: true,
+    });
+
+    const a = result.removed.find((w) => w.path === AGENT_PATH_A);
+    const b = result.removed.find((w) => w.path === AGENT_PATH_B);
+    expect(a?.retried).toBeUndefined();
+    expect(b?.retried).toBe(true);
+  });
+
+  it('the DEFAULT retryPause is a real (non-zero) pause on the retry path', () => {
+    // No injected retryPause → the module default (a short real synchronous
+    // pause) runs. A deregisteredNotDeleted first attempt forces the retry.
+    const { remover } = fakeRemover();
+    const plan = { selected: [cleanA], skipped: [] };
+    let probes = 0;
+    const pathExists = () => {
+      probes += 1;
+      return probes === 1; // retry then succeeds
+    };
+
+    const start = Date.now();
+    const result = executeCleanup(plan, {
+      remover,
+      pathExists,
+      // retryPause deliberately omitted — exercise the real default.
+      skipBranchHygiene: true,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(result.removed[0].retried).toBe(true);
+    // The default pause is ~250ms; assert a conservative lower bound so the
+    // check proves a real pause happened without being flaky under load.
+    expect(elapsed).toBeGreaterThanOrEqual(150);
   });
 });
 
