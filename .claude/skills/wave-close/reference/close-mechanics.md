@@ -309,7 +309,9 @@ fi
 # host-pr preflight is STORE-BLIND (no --config, no --branch): detect-host-routed,
 # reports the code host directly, so it answers on EVERY store kind (github,
 # linear, markdown) — the W10-F1 fix (the store-preflight reported these n/a on a
-# linear store). NODE_USE_ENV_PROXY=1 under a proxied sandbox.
+# linear store). Proxy flag: the tracked env block is the standing source for
+# NODE_USE_ENV_PROXY=1 under a proxied sandbox (Convention 1); prefix it
+# explicitly only where no tracked env block applies.
 {{wave-cli}} host-pr preflight   # { ok, verb:"preflight", host, checks:[{name,status,detail}] }
 # allow-auto-merge: FAIL only when OFF *and* required checks present (can't arm
 #   those rows → land via advisory order; already-clean still direct-merges);
