@@ -153,7 +153,28 @@ PR_URL=$({{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
 #   bumps the Plan-Table Iter cell + re-renders the sidecar-link cell to the
 #   <id>-2 reports/verdicts paths (observability-only, FOR-53 — the reconciler
 #   still reads the max-iter sidecar off disk, never this cell, per ADR-0024)
-#   then re-dispatch the same Worker at iteration 2 with changes-requested items appended
+
+# MANDATORY teardown, BEFORE the iteration-2 dispatch (W26-F1, docs/retros/
+# 2026-07-23-w25-followups-w26.md): the row's iteration-1 worktree still HOLDS
+# the wave branch's `git worktree` registration, and a second worktree cannot
+# check that branch out while the registration stands. Live occurrence: the
+# iteration-2 Worker found `wave/$ID-$ROW_SLUG` still registered to its
+# iteration-1 worktree and had to unregister it BY HAND before its own checkout
+# could proceed. Deregister it through the existing verb instead — never by
+# hand, never skipped:
+{{wave-cli}} worktree-cleanup --branches "wave/$ID-$ROW_SLUG"
+#   the scoped --branches escape hatch (cli.ts) — tears down ONLY this row's
+#   registered worktree; sibling rows' worktrees are untouched.
+
+#   then re-dispatch the same Worker at iteration 2 with changes-requested items
+#   appended. The iteration-2 brief's workspace setup is a TRACKING-FREE
+#   checkout of the now-free branch (workflow-driver.md `workerBrief()`,
+#   `issue.iteration > 1` branch) — fetch + `checkout -B <branch> FETCH_HEAD`
+#   (or the explicit iteration-1 head SHA), never a tracking form
+#   (`checkout -B <branch> origin/<branch>`), which writes upstream-tracking
+#   into the MAIN repo's shared .git/config — sandbox-write-denied for a
+#   worktree-isolated agent, and the exact second edge W26-F1 hit right behind
+#   the stale-registration one (recovered only by hand via `git symbolic-ref`).
 
 # 8. stop → flag needs-attention
 {{wave-cli}} issue-store flag "$ID" \

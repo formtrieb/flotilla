@@ -44,6 +44,15 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 
 Neither gap is flotilla's to close generically with a hardcoded command — the dependency dir, the install command, and the config's location are all **consumer-specific**. The mitigation is two per-row inputs the Coordinator supplies (`depsSetup` / `issueSpec` below), sourced from the consumer's own setup — `wave-setup`'s preconditions record exactly these two answers so the Coordinator has them ready at compose time instead of re-deriving them wave after wave.
 
+## Re-dispatch (iteration ≥ 2): teardown-before-dispatch + tracking-free checkout (W26-F1)
+
+A cap=1 re-dispatch (`route-verdict`'s `changes-requested` → `re-dispatched`, start-mechanics.md step 7d) sends the SAME Worker back onto the SAME branch — `wave/<id>-<slug>` already exists, carrying the iteration-1 commits, and the fresh iteration-2 worktree must land on it, not discard it. Two structural traps live here, both hit for the first time live in `2026-07-23-w25-followups-w26` (finding W26-F1):
+
+1. **The branch is still held by the iteration-1 worktree's own `git worktree` registration.** A checkout of the same branch name from a *second*, iteration-2 worktree fails against that registration. **The Coordinator tears it down BEFORE the iteration-2 dispatch fires** — `{{wave-cli}} worktree-cleanup --branches "wave/<id>-<slug>"` (the scoped `--branches` escape hatch, `cli.ts`) — see start-mechanics.md step 7d. Live occurrence: the iteration-2 Worker found the branch still registered to its iteration-1 worktree and had to unregister it by hand before its own checkout could proceed.
+2. **A tracking checkout writes to the shared `.git/config`.** `git checkout -B <branch> origin/<branch>` (or any checkout form that sets up upstream tracking) writes an upstream-tracking entry into the MAIN repo's `.git/config` — the one file every worktree shares — and that write is sandbox-write-denied for a worktree-isolated agent. The checkout half-applies (the branch switches; the config write is refused) and strands the agent mid-switch. **The iteration-2 workspace-setup brief below (`workerBrief()`'s `issue.iteration > 1` branch) uses a TRACKING-FREE form instead** — `git fetch origin <branch>` then `git checkout -B <branch> FETCH_HEAD` (or the explicit iteration-1 head SHA — `issue.iteration1HeadSha`, threaded from the iteration-1 `WorkerReport.commitShas`' last entry, for a head-verify) — which never touches the shared config. Live occurrence: a Worker's tracking checkout stranded it mid-switch; recovery was a manual `git symbolic-ref` (its working tree byte-verified first).
+
+Both are threaded into `workerBrief()` below: whenever `issue.iteration > 1` it renders a DIFFERENT `## Workspace setup` block (this doc's own §Re-dispatch workspace setup, inline in the script). The `issue.iteration === 1` rendering — the default, and the one the schema-drift spec's neighboring pins exercise — is unchanged.
+
 ## The script (paste into the Workflow tool)
 
 ```js
@@ -156,7 +165,13 @@ const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('
 
 // ── Per-row data — Coordinator fills this from the spine before invoking ──
 // Each: { id, slug, risk, iteration, model, anchorSha, coordinatorBranch,
-//         depsSetup, issueSpec, prTitle, closePhrase, reviewerHints, siblingBranches }
+//         depsSetup, issueSpec, prTitle, closePhrase, reviewerHints, siblingBranches,
+//         iteration1HeadSha? }
+// iteration1HeadSha is OPTIONAL and iteration>1-only (a re-dispatch, §Re-dispatch
+// above): the iteration-1 Worker's last commit SHA, read off the iteration-1
+// WorkerReport's `commitShas` (last entry) — the Coordinator already holds that
+// report when composing the re-dispatch (it is the same `report` in the routed
+// `{ id, risk, iteration, report, verdict }` tuple). Absent on iteration 1.
 const ISSUES = [
   {
     id: 'NN',
@@ -202,10 +217,9 @@ function assertAnchorSha(issue) {
 }
 ISSUES.forEach(assertAnchorSha)
 
-function workerBrief(issue) {
-  return `You are a Wave Worker executing issue #${issue.id} in an isolated worktree.
-
-## Workspace setup (do first)
+// The iteration-1 (default) workspace setup — UNCHANGED, byte-for-byte, from
+// before the re-dispatch teardown/tracking-free-checkout fix (W26-F1).
+const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 1. \`pwd\` — confirm you are in a worktree (not the parent path).
 2. Anchor to the wave anchor SHA:
    \`\`\`bash
@@ -223,7 +237,55 @@ function workerBrief(issue) {
    step 3) has no binary to resolve — without this step first:
    \`\`\`bash
    ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
+   \`\`\``
+
+// The iteration≥2 (re-dispatch) workspace setup (W26-F1, §Re-dispatch above):
+// the wave branch ALREADY EXISTS, carrying the iteration-1 commits — this
+// worker continues on it, it does not re-anchor to anchorSha and branch fresh.
+// The checkout is TRACKING-FREE (fetch + checkout -B against FETCH_HEAD, or the
+// explicit iteration-1 head SHA) so it never writes upstream-tracking into the
+// shared .git/config of the main repo (sandbox-write-denied for a worktree-
+// isolated agent — a tracking checkout half-applies and strands the switch).
+// The Coordinator has already deregistered the iteration-1 worktree that held
+// this branch (start-mechanics.md step 7d), so the checkout below is never
+// blocked by a stale `git worktree` registration.
+const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) — RE-DISPATCH, iteration ${issue.iteration}
+1. \`pwd\` — confirm you are in a worktree (not the parent path).
+2. This is a re-dispatch: \`wave/${issue.id}-${issue.slug}\` ALREADY EXISTS,
+   carrying your iteration-1 commits — do not discard them, do not re-anchor to
+   the wave anchor SHA and branch fresh. Land on the existing branch with a
+   TRACKING-FREE checkout — never \`git checkout -B <branch> origin/<branch>\`,
+   which writes upstream-tracking into the SHARED .git/config of the MAIN repo
+   (sandbox-write-denied for a worktree-isolated agent; that form half-applies
+   and strands the switch mid-way — live occurrence W26-F1, recovered only by
+   hand via \`git symbolic-ref\`):
+   \`\`\`bash
+   git fetch origin wave/${issue.id}-${issue.slug} 2>&1 | tail -3
+   git checkout -B wave/${issue.id}-${issue.slug} FETCH_HEAD
+   git status --porcelain      # MUST be empty
+   git rev-parse HEAD          # MUST equal ${issue.iteration1HeadSha || 'the fetched branch tip (see step 2)'}
    \`\`\`
+   (The Coordinator already deregistered the iteration-1 worktree that held
+   this branch before this dispatch — start-mechanics.md step 7d — so this
+   checkout is never blocked by a stale worktree registration.)
+3. Install dependencies. A worktree checkout carries **tracked files only** — if
+   this consumer's dependency directory is gitignored (the ordinary case for a
+   lockfile-managed tree), it is **absent here, not merely un-installed**, and
+   the verify gate below cannot run at all — and the npx-free engine CLI the
+   terminator invokes (a local \`node_modules/.bin/tsx\` binary, see Termination
+   step 3) has no binary to resolve — without this step first:
+   \`\`\`bash
+   ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
+   \`\`\``
+
+function workerBrief(issue) {
+  const workspaceSetup = issue.iteration > 1
+    ? WORKSPACE_SETUP_REDISPATCH(issue)
+    : WORKSPACE_SETUP_ITER1(issue)
+
+  return `You are a Wave Worker executing issue #${issue.id} in an isolated worktree.
+
+${workspaceSetup}
 
 ## Task spec (embedded — not a tracker reference)
 The store config that would resolve a tracker id may itself be gitignored and
