@@ -705,6 +705,35 @@ describe('acFilesCoverageCheck — run-only ACs are gates, not change surfaces (
     ).toHaveLength(0);
   });
 
+  it('does NOT warn when an unrelated earlier wire(d) verb pairs with a later, unrelated run-only npm run mention (iteration-3 repro 1, W26-F3)', () => {
+    // Mirrors iteration-2 repro 1, but for the `wire(d) into/in` pattern:
+    // "Wired into" here is the change-verb clause for the retry-handler
+    // change, not for the npm run mention that follows in a separate
+    // clause. An unbounded word-gap wrongly paired the two.
+    const acBody = `
+- [ ] Wired into the retry handler for the empty-input case; npm run test stays green.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['src/index.ts']), acBody);
+    expect(
+      warns.filter((w) => w.suggestions.includes('package.json')),
+    ).toHaveLength(0);
+  });
+
+  it('does NOT warn when a wire(d) verb is followed by run-only npm mentions many words later in the same bullet (iteration-3 repro 2, W26-F3)', () => {
+    // Mirrors iteration-2 repro 2, but for the `wire(d) into/in` pattern:
+    // "Wired into the retry-path handler already reviewed" is the change
+    // clause; "npm test and npm run typecheck clean from tools/wave/" is
+    // the standard run-only verify-floor gate tacked on after a colon. The
+    // two must not pair up.
+    const acBody = `
+- [ ] Wired into the retry-path handler already reviewed: npm test and npm run typecheck clean from tools/wave/.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['src/index.ts']), acBody);
+    expect(
+      warns.filter((w) => w.suggestions.includes('package.json')),
+    ).toHaveLength(0);
+  });
+
   it('full gate: the standard verify-floor AC passes ac-files-coverage warn-free with package.json absent from Files:', () => {
     const source = [
       '# 82 — Verify-floor AC gate test',
