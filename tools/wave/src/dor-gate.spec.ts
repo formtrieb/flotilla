@@ -615,6 +615,94 @@ describe('acFilesCoverageCheck — Refinement 1: npm-script → package.json war
   });
 });
 
+// ─── W25-F3: run-only gate ACs vs. change ACs ─────────────────────────────────
+
+describe('acFilesCoverageCheck — run-only ACs are gates, not change surfaces (W25-F3)', () => {
+  it('does NOT warn on the standard verify-floor AC (npm test / npm run typecheck, no change-verb)', () => {
+    // The literal wave-eligible verify-floor AC text — no repo file is a
+    // change target, `package.json` is never touched by running the scripts.
+    const acBody = `
+- [ ] Engine floor green: npm test and npm run typecheck clean from tools/wave/.
+`;
+    const warns = acFilesCoverageCheck(
+      '',
+      makeHeader(['tools/wave/src/dor-gate.ts', 'tools/wave/src/dor-gate.spec.ts']),
+      acBody,
+    );
+    expect(warns).toHaveLength(0);
+  });
+
+  it('does NOT warn on a bare `npm run <script>` mention with no change-verb', () => {
+    const acBody = `
+- [ ] \`npm run lint\` passes clean.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['src/index.ts']), acBody);
+    expect(
+      warns.filter((w) => w.suggestions.includes('package.json')),
+    ).toHaveLength(0);
+  });
+
+  it('does NOT warn on a bare `npx`/CLI invocation with no change-verb', () => {
+    const acBody = `
+- [ ] \`npx tsc --noEmit\` reports zero errors.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['src/index.ts']), acBody);
+    expect(
+      warns.filter((w) => w.suggestions.includes('package.json')),
+    ).toHaveLength(0);
+  });
+
+  it('still warns (change class, byte-for-byte unchanged) when a change-verb pairs npm run with the script', () => {
+    // Regression guard: the two pre-existing Refinement-1 "warns" tests above
+    // (wire(d) into npm run <name>) must keep firing — this is the class the
+    // heuristic exists for, distinct from the run-only class above.
+    const acBody = `
+- [ ] New hook wired into \`npm run precommit\`.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['scripts/hook.sh']), acBody);
+    expect(warns.some((w) => w.suggestions.includes('package.json'))).toBe(true);
+  });
+
+  it('boundary: run-only command + uncovered changed file in the same bullet — file half still warns, package.json half does not', () => {
+    const acBody = `
+- [ ] \`npm run typecheck\` passes and \`src/new-thing.ts\` implements the parser.
+`;
+    const warns = acFilesCoverageCheck('', makeHeader(['src/other.ts']), acBody);
+    // No package.json warn — the npm run mention is run-only, no change-verb attached.
+    expect(
+      warns.filter((w) => w.suggestions.includes('package.json')),
+    ).toHaveLength(0);
+    // But the concrete changed file is still uncovered — the file half keeps warning.
+    expect(warns.some((w) => w.suggestions.includes('src/new-thing.ts'))).toBe(
+      true,
+    );
+  });
+
+  it('full gate: the standard verify-floor AC passes ac-files-coverage warn-free with package.json absent from Files:', () => {
+    const source = [
+      '# 82 — Verify-floor AC gate test',
+      '',
+      '**Status:** ready-for-agent',
+      '**Risk:** mechanical',
+      '**Worker:** background',
+      '**Files:**',
+      '- tools/wave/src/dor-gate.ts',
+      '- tools/wave/src/dor-gate.spec.ts',
+      '**Blocked by:** none',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- [ ] Engine floor green: npm test and npm run typecheck clean from tools/wave/.',
+    ].join('\n');
+
+    const issuePath = writeIssue('gate6-verify-floor', '82-verify-floor.md', source);
+    const result = validateIssue({ repoRoot: root, issuePath, source });
+
+    const gate6 = result.gates.find((g) => g.name === 'ac-files-coverage');
+    expect(gate6).toMatchObject({ status: 'pass' });
+  });
+});
+
 // ─── Refinement 2: basename↔fullpath false-positive fix ───────────────────────
 
 describe('acFilesCoverageCheck — Refinement 2: basename↔fullpath false-positive', () => {
