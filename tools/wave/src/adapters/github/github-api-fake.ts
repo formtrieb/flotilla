@@ -13,6 +13,7 @@ import type {
   CreateIssueInput,
   ClosingPrState,
   RequiredChecksInfo,
+  RulesetChecksInfo,
 } from './github-api';
 import {
   AutoMergeUnavailableError,
@@ -176,6 +177,19 @@ export class InMemoryGitHubApi implements GitHubApi {
     contexts: ['ci/test'],
     detail: 'fake: required checks present',
   };
+  /**
+   * Effective-rules read substrate (2026-07-23 gate-arm gap). Held independently
+   * of {@link requiredChecks}: the fake exists to make the seam implementable and
+   * the CLI drivable, not to re-implement the real ruleset-vs-legacy MERGE (that
+   * lives in `mergeRequiredChecks` / RealGitHubApi and is tested there). Default
+   * `readable:false` = "no effective-rules answer configured" — a spec that drives
+   * the ruleset path calls {@link setRulesetRequiredChecks}.
+   */
+  private rulesetChecks: RulesetChecksInfo = {
+    readable: false,
+    contexts: [],
+    detail: 'fake: effective-rules not configured',
+  };
 
   /** Test affordance: register the PR the host knows for a branch. */
   setPrForBranch(branch: string, status: PrLandingStatus): void {
@@ -194,6 +208,11 @@ export class InMemoryGitHubApi implements GitHubApi {
   /** Test affordance: set what the required-checks probe reports. */
   setRequiredChecks(info: RequiredChecksInfo): void {
     this.requiredChecks = info;
+  }
+
+  /** Test affordance: set what the effective-rules read reports (2026-07-23 gate-arm gap). */
+  setRulesetRequiredChecks(info: RulesetChecksInfo): void {
+    this.rulesetChecks = info;
   }
 
   /** Test affordance: which PRs were armed, and how. */
@@ -255,6 +274,10 @@ export class InMemoryGitHubApi implements GitHubApi {
 
   async getRequiredChecks(): Promise<RequiredChecksInfo> {
     return this.requiredChecks;
+  }
+
+  async getRulesetRequiredChecks(): Promise<RulesetChecksInfo> {
+    return this.rulesetChecks;
   }
 
   private mutate(number: number, fn: (i: GhIssue) => void): void {

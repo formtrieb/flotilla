@@ -37,6 +37,30 @@ describe('InMemoryGitHubApi PR-merge preflight (FOR-12)', () => {
   });
 });
 
+describe('InMemoryGitHubApi effective-rules read (2026-07-23 gate-arm gap)', () => {
+  it('getRulesetRequiredChecks defaults to readable:false (no effective-rules answer configured)', async () => {
+    expect(await new InMemoryGitHubApi().getRulesetRequiredChecks()).toMatchObject({ readable: false, contexts: [] });
+  });
+
+  it('setRulesetRequiredChecks drives the ruleset-carrying-repo path — held independently of setRequiredChecks', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setRulesetRequiredChecks({
+      readable: true,
+      contexts: ['Engine Tests (vitest)', 'Engine Typecheck (tsc)'],
+      detail: 'ruleset carries two checks',
+    });
+    expect(await api.getRulesetRequiredChecks()).toMatchObject({
+      readable: true,
+      contexts: ['Engine Tests (vitest)', 'Engine Typecheck (tsc)'],
+    });
+    // The two required-checks affordances are independent (the fake mirrors the
+    // seam; the real ruleset-vs-legacy MERGE lives in RealGitHubApi, tested there).
+    api.setRequiredChecks({ state: 'absent', contexts: [], detail: 'legacy none' });
+    expect(await api.getRequiredChecks()).toMatchObject({ state: 'absent' });
+    expect(await api.getRulesetRequiredChecks()).toMatchObject({ readable: true, contexts: ['Engine Tests (vitest)', 'Engine Typecheck (tsc)'] });
+  });
+});
+
 describe('InMemoryGitHubApi deleteBranch (consumer KW-F6)', () => {
   it('records the deleted branch', async () => {
     const api = new InMemoryGitHubApi();

@@ -524,69 +524,181 @@ describe('RealGitHubApi', () => {
     });
   });
 
-  describe('getRequiredChecks (ADR-0023 report-only probe)', () => {
-    it('resolves the default branch, then reports present + the contexts', async () => {
-      const { api, http } = makeApi((req) => {
-        if (req.url === 'https://api.github.com/repos/example-org/example-repo') {
-          return { status: 200, json: { default_branch: 'main' } };
-        }
-        expect(req.url).toBe('https://api.github.com/repos/example-org/example-repo/branches/main/protection/required_status_checks');
-        return { status: 200, json: { contexts: ['ci/test', 'ci/lint'] } };
+  // A `GET /rules/branches/{branch}` response body carrying the given contexts as
+  // one `required_status_checks` rule (plus an unrelated rule, to prove filtering).
+  function rulesPayload(contexts: string[]): unknown {
+    return [
+      { type: 'commit_message_pattern', ruleset_source_type: 'Repository', ruleset_id: 7, parameters: { pattern: 'x' } },
+      {
+        type: 'required_status_checks',
+        ruleset_source_type: 'Repository',
+        ruleset_id: 42,
+        parameters: {
+          strict_required_status_checks_policy: false,
+          required_status_checks: contexts.map((c) => ({ context: c, integration_id: 15368 })),
+        },
+      },
+    ];
+  }
+
+  // Route the three GETs getRequiredChecks issues: the repo GET (default branch),
+  // the legacy branch-protection GET, and the effective-rules GET.
+  function routed(opts: {
+    defaultBranch?: string;
+    legacy: GitHubHttpResponse;
+    rules: GitHubHttpResponse;
+  }): (req: GitHubHttpRequest) => GitHubHttpResponse {
+    return (req) => {
+      if (/\/rules\/branches\//.test(req.url)) return opts.rules;
+      if (/\/protection\/required_status_checks$/.test(req.url)) return opts.legacy;
+      return { status: 200, json: { default_branch: opts.defaultBranch ?? 'main' } };
+    };
+  }
+
+  describe('getRulesetRequiredChecks (effective-rules seam read — 2026-07-23 gate-arm gap)', () => {
+    it('reads /rules/branches/{b} and extracts the required_status_checks contexts; needs only a read token', async () => {
+      const { api, http } = makeApi((req) =>
+        req.url.endsWith('/example-repo')
+          ? { status: 200, json: { default_branch: 'main' } }
+          : { status: 200, json: rulesPayload(['Engine Tests (vitest)', 'Engine Typecheck (tsc)']) },
+      );
+      expect(await api.getRulesetRequiredChecks()).toMatchObject({
+        readable: true,
+        contexts: ['Engine Tests (vitest)', 'Engine Typecheck (tsc)'],
       });
-      expect(await api.getRequiredChecks()).toMatchObject({ state: 'present', contexts: ['ci/test', 'ci/lint'] });
-      expect(http.requests).toHaveLength(2);
+      expect(http.requests.some((r) => r.url.endsWith('/rules/branches/main'))).toBe(true);
     });
 
-    it('reads the newer checks[] shape as well as the legacy contexts[]', async () => {
+    it('a 200 with no required_status_checks rule → readable, empty (an AUTHORITATIVE "none")', async () => {
       const { api } = makeApi((req) =>
         req.url.endsWith('/example-repo')
           ? { status: 200, json: { default_branch: 'main' } }
-          : { status: 200, json: { checks: [{ context: 'build' }, { context: 'e2e' }] } },
+          : { status: 200, json: [{ type: 'pull_request', parameters: {} }] },
+      );
+      expect(await api.getRulesetRequiredChecks()).toMatchObject({ readable: true, contexts: [] });
+    });
+
+    it('aggregates + de-duplicates contexts across MULTIPLE required_status_checks rules', async () => {
+      const { api } = makeApi((req) =>
+        req.url.endsWith('/example-repo')
+          ? { status: 200, json: { default_branch: 'main' } }
+          : {
+              status: 200,
+              json: [
+                { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'a' }, { context: 'b' }] } },
+                { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'b' }, { context: 'c' }] } },
+              ],
+            },
+      );
+      expect(await api.getRulesetRequiredChecks()).toMatchObject({ readable: true, contexts: ['a', 'b', 'c'] });
+    });
+
+    it('a non-200 → readable:false (no evidence), and a transport failure NEVER throws', async () => {
+      const { api } = makeApi((req) =>
+        req.url.endsWith('/example-repo') ? { status: 200, json: { default_branch: 'main' } } : { status: 404, json: {} },
+      );
+      expect(await api.getRulesetRequiredChecks()).toMatchObject({ readable: false, contexts: [] });
+      const { api: api2 } = makeApi(() => {
+        throw new Error('network down');
+      });
+      expect(await api2.getRulesetRequiredChecks()).toMatchObject({ readable: false });
+    });
+  });
+
+  describe('getRequiredChecks (ruleset-aware, effective-rules + legacy merge — 2026-07-23 gate-arm gap)', () => {
+    it('resolves the default branch, then reports present + the contexts (legacy + rules aggregate the same)', async () => {
+      const { api, http } = makeApi(
+        routed({
+          legacy: { status: 200, json: { contexts: ['ci/test', 'ci/lint'] } },
+          rules: { status: 200, json: rulesPayload(['ci/test', 'ci/lint']) },
+        }),
+      );
+      // present, and the merged contexts are DE-DUPLICATED (the rules endpoint
+      // aggregates classic branch protection, so both reads carry the same two).
+      expect(await api.getRequiredChecks()).toMatchObject({ state: 'present', contexts: ['ci/test', 'ci/lint'] });
+      expect(http.requests).toHaveLength(3); // repo (default branch) + legacy + rules
+    });
+
+    it('AC1: required checks live ONLY in an active ruleset (no legacy protection) → present, names the contexts', async () => {
+      const { api } = makeApi(
+        routed({
+          legacy: { status: 404, json: { message: 'Branch not protected' } },
+          rules: { status: 200, json: rulesPayload(['Engine Tests (vitest)', 'Engine Typecheck (tsc)']) },
+        }),
+      );
+      const info = await api.getRequiredChecks();
+      expect(info.state).toBe('present');
+      expect(info.contexts).toEqual(['Engine Tests (vitest)', 'Engine Typecheck (tsc)']);
+      expect(info.detail).toContain('Engine Tests (vitest)'); // names the found contexts
+    });
+
+    it('AC2: legacy protection 403s (no admin) but a ruleset carries checks → present, NEVER the admin-403 unknown', async () => {
+      const { api } = makeApi(
+        routed({
+          legacy: { status: 403, json: { message: 'Must have admin rights to Repository.' } },
+          rules: { status: 200, json: rulesPayload(['build']) },
+        }),
+      );
+      // The effective-rules endpoint needs no admin: the 403-degradation is gone.
+      expect(await api.getRequiredChecks()).toMatchObject({ state: 'present', contexts: ['build'] });
+    });
+
+    it('AC3: required checks live ONLY in legacy branch protection (rules endpoint carries none) → present, unchanged', async () => {
+      const { api } = makeApi(
+        routed({
+          legacy: { status: 200, json: { contexts: ['ci/test', 'ci/lint'] } },
+          rules: { status: 200, json: [] }, // readable, but no required_status_checks rule
+        }),
+      );
+      // Either source finding checks → present: the legacy read alone still answers.
+      expect(await api.getRequiredChecks()).toMatchObject({ state: 'present', contexts: ['ci/test', 'ci/lint'] });
+    });
+
+    it('AC3: still reads the newer legacy checks[] shape, merged', async () => {
+      const { api } = makeApi(
+        routed({
+          legacy: { status: 200, json: { checks: [{ context: 'build' }, { context: 'e2e' }] } },
+          rules: { status: 200, json: [] },
+        }),
       );
       expect(await api.getRequiredChecks()).toMatchObject({ state: 'present', contexts: ['build', 'e2e'] });
     });
 
-    it('an explicit branch skips the default-branch lookup', async () => {
-      const { api, http } = makeApi(() => ({ status: 200, json: { contexts: ['x'] } }));
-      await api.getRequiredChecks('release');
-      expect(http.requests).toHaveLength(1);
-      expect(http.requests[0].url).toContain('/branches/release/protection/');
-    });
-
-    it('404 (branch not protected) → absent — the no-CI repo, which KEEPS --auto', async () => {
-      const { api } = makeApi((req) =>
-        req.url.endsWith('/example-repo')
-          ? { status: 200, json: { default_branch: 'main' } }
-          : { status: 404, json: { message: 'Branch not protected' } },
+    it('no checks in EITHER source (legacy 404 + rules readable-but-empty) → absent (the no-CI repo, KEEPS --auto)', async () => {
+      const { api } = makeApi(
+        routed({
+          legacy: { status: 404, json: { message: 'Branch not protected' } },
+          rules: { status: 200, json: [] },
+        }),
       );
       expect(await api.getRequiredChecks()).toMatchObject({ state: 'absent', contexts: [] });
     });
 
-    it('an empty contexts list → absent', async () => {
-      const { api } = makeApi((req) =>
-        req.url.endsWith('/example-repo')
-          ? { status: 200, json: { default_branch: 'main' } }
-          : { status: 200, json: { contexts: [] } },
+    it('BOTH reads blind (legacy 403 + rules read fails) → unknown — the residual advisory case, NEVER a throw', async () => {
+      const { api } = makeApi(
+        routed({
+          legacy: { status: 403, json: { message: 'Must have admin rights to Repository.' } },
+          rules: { status: 500, json: null },
+        }),
       );
-      expect(await api.getRequiredChecks()).toMatchObject({ state: 'absent' });
+      expect(await api.getRequiredChecks()).toMatchObject({ state: 'unknown', contexts: [] });
     });
 
-    it('403 (probe needs admin) → unknown, NEVER a throw', async () => {
-      const { api } = makeApi((req) =>
-        req.url.endsWith('/example-repo')
-          ? { status: 200, json: { default_branch: 'main' } }
-          : { status: 403, json: { message: 'Must have admin rights to Repository.' } },
+    it('an explicit branch skips the default-branch lookup and probes BOTH endpoints against it', async () => {
+      const { api, http } = makeApi(
+        routed({ legacy: { status: 404, json: {} }, rules: { status: 200, json: rulesPayload(['x']) } }),
       );
-      expect(await api.getRequiredChecks()).toMatchObject({ state: 'unknown' });
+      await api.getRequiredChecks('release');
+      expect(http.requests).toHaveLength(2); // legacy + rules, NO repo (default-branch) GET
+      expect(http.requests.some((r) => r.url.includes('/branches/release/protection/'))).toBe(true);
+      expect(http.requests.some((r) => r.url.endsWith('/rules/branches/release'))).toBe(true);
     });
 
-    it('NEVER throws — it is report-only, so even a 500 or a dead repo GET degrades to unknown', async () => {
-      const { api } = makeApi(() => ({ status: 500, json: null }));
-      expect(await api.getRequiredChecks()).toMatchObject({ state: 'unknown' });
-      const { api: api2 } = makeApi(() => {
+    it('NEVER throws — a dead repo GET (default-branch resolve) degrades to unknown', async () => {
+      const { api } = makeApi(() => {
         throw new Error('network down');
       });
-      expect(await api2.getRequiredChecks()).toMatchObject({ state: 'unknown' });
+      expect(await api.getRequiredChecks()).toMatchObject({ state: 'unknown' });
     });
   });
 });
