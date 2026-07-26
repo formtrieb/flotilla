@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runResume, type ResumeDeps } from './resume-cli';
+// The router, imported ONLY to pin that `{{wave-cli}} resume` reaches THIS
+// module's runner (issue #77). Every assertion using it stays on the
+// missing-flag path, so no disk/git is ever touched from here.
+import { main } from './cli';
 import { spineStoreFromSource } from './spine-store';
 import type { ResumeInputs } from './resume';
 import type { SidecarIndex } from './sidecar';
@@ -144,6 +148,55 @@ describe('runResume — CLI shell over the pure resume() reconciler', () => {
       const code = runResume(REQUIRED, deps);
       expect(code).toBe(1);
       expect(err).toHaveBeenCalled();
+    } finally {
+      err.mockRestore();
+    }
+  });
+});
+
+// ─── one runner behind both spellings (FOR-11 → issue #77) ───────────────────
+//
+// `resume` is now reachable as `{{wave-cli}} resume` (the canonical spelling)
+// AND, as a retained alias, as `npx tsx tools/wave/src/resume-cli.ts …`. FOR-11
+// had removed the router case precisely to kill a two-entrypoint ambiguity
+// (docs/retros/2026-07-15-wire-contract.md, P-12); what keeps that ambiguity
+// from returning is that the router does not re-implement anything — it calls
+// `runResume` below. These specs pin both halves of that: the router really
+// lands here, and this runner's own messages stay entrypoint-agnostic so one
+// message is correct for both spellings.
+
+describe('resume — one runner, two spellings (issue #77)', () => {
+  it('the missing-flag usage names no module/entrypoint, so it reads correctly from either spelling', () => {
+    let stderrBuf = '';
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderrBuf += String(c);
+      return true;
+    });
+    try {
+      expect(runResume(['--spine', '/x', '--reports', '/r'], fakeDeps())).toBe(2);
+      expect(stderrBuf).toMatch(/usage: resume --spine/);
+      // A hardcoded entrypoint here would be wrong for whichever caller it does
+      // not name — the whole reason the alias arrangement is safe.
+      expect(stderrBuf).not.toMatch(/resume-cli\.ts/);
+      expect(stderrBuf).not.toMatch(/cli\.ts/);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('`{{wave-cli}} resume` reaches THIS runner — a missing flag surfaces its usage, not an unknown-subcommand error', () => {
+    let stderrBuf = '';
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderrBuf += String(c);
+      return true;
+    });
+    try {
+      // `--verdicts` is absent, so the router hands off and this module's own
+      // missing-flag guard answers — before any disk or git access.
+      const code = main(['resume', '--spine', '/x', '--reports', '/r']);
+      expect(code).toBe(2);
+      expect(stderrBuf).toMatch(/--spine, --reports and --verdicts are required/);
+      expect(stderrBuf).not.toMatch(/unknown subcommand/);
     } finally {
       err.mockRestore();
     }

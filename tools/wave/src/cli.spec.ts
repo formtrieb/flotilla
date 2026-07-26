@@ -37,6 +37,13 @@ import type { IssueView } from './contract';
 // (FOR-11 AC2) — never to duplicate a hand-maintained list in this spec.
 import { runSpine } from './spine-cli';
 import { runIssueStore } from './issue-store-cli';
+// Imported to DERIVE the expected router output from the standalone runners
+// themselves (issue #77) — the router-vs-standalone parity assertions below
+// compare against what these actually produce, never against a transcribed copy.
+import { runResume } from './resume-cli';
+import { runStorePreflight } from './cli-store';
+import { LinearIssuesStore } from './adapters/linear/linear-issues-store';
+import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
 
 // Mock node:child_process so files-drift integration tests can control the
 // git diff output without spawning a real git process. The mock is applied
@@ -1536,21 +1543,96 @@ describe('P7.1 router wiring — spine', () => {
     main(['spine']);
     expect(stderrBuf).not.toMatch(/unknown subcommand/);
   });
+
+  // issue #77 — the standalone `spine-cli.ts` path is collapsed ONTO this case:
+  // that module's direct-run block now forwards to `main(['spine', …])` instead
+  // of dispatching a second time, so the router case is the engine's one and
+  // only spine dispatch path. This pins that it really executes ops (not just
+  // that the token is recognised) and that it is byte-identical to calling the
+  // runner directly — the equivalence the collapsed alias relies on.
+  it('executes a real op, byte-identically to calling runSpine directly', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-spine-'));
+    const path = join(dir, 'WAVE.md');
+    writeFileSync(
+      path,
+      ['# Wave 2026-07-26 — spine route', '', '**Status:** draft', ''].join('\n'),
+      'utf-8',
+    );
+
+    const routerCode = main(['spine', 'read', path]);
+    const routerOut = stdoutBuf;
+
+    stdoutBuf = '';
+    const directCode = runSpine(['read', path]);
+
+    expect(routerCode).toBe(0);
+    expect(routerCode).toBe(directCode);
+    expect(routerOut).toBe(stdoutBuf);
+    expect(routerOut).toContain('# Wave 2026-07-26 — spine route');
+  });
 });
 
-// ─── resume entrypoint duplication resolved (FOR-11) ──────────────────────────
+// ─── resume as a router subcommand (FOR-11 → issue #77) ──────────────────────
 //
-// The reconciler has its OWN separate entrypoint, `resume-cli.ts` — it is not
-// a `cli.ts` subcommand (and was never meant to be one; the wave-resume skill
-// has always documented it that way). It used to ALSO be reachable as
-// `cli.ts resume`, which was the two-entrypoint confusion the live-gate retro
-// flagged (docs/retros/2026-07-15-wire-contract.md, P-12). These specs pin the
-// resolution: `main(['resume', ...])` is now an ordinary unknown subcommand
-// (not silently routed to a runner), and the usage text points operators at
-// the one canonical entrypoint instead.
+// History matters for reading these specs. FOR-11 DELETED the `resume` router
+// case: the reconciler was reachable both here and as `resume-cli.ts`, and the
+// live-gate retro (docs/retros/2026-07-15-wire-contract.md, P-12) flagged that
+// as a "which one is canonical?" trust gap. Issue #77 reinstates the case for a
+// reason FOR-11 could not have had: the engine is being packaged behind a single
+// npm `bin`, so a verb not reachable as `{{wave-cli}} <sub>` is not shippable.
+//
+// The ambiguity P-12 objected to does not return, and these specs are what pin
+// that: the router case is not a second implementation but a call into
+// `runResume` — the very function `resume-cli.ts`'s own direct-run block calls.
+// So the parity assertions below DERIVE their expectation by running that
+// standalone runner and comparing, rather than transcribing an expected shape.
+//
+// Hermeticity: `node:child_process` is mocked at module scope (execFileSync →
+// ''), so the reconciler's `git worktree list` / branch-delete shell-outs return
+// empty and the run never touches a real repo.
 
-describe('resume entrypoint — cli.ts has no "resume" subcommand (FOR-11)', () => {
-  it('"resume" is not in the unknown-subcommand available list', () => {
+/** A minimal valid WAVE.md spine with two rows, written to a fresh temp dir.
+ *  Row `01` is `planned` (→ decision 'redispatch'), row `09` is `pr-created`
+ *  (→ terminal 'keep') — the same fixture shape resume-cli.spec.ts uses. */
+function writeResumeSpine(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'cli-resume-'));
+  const path = join(dir, 'WAVE.md');
+  writeFileSync(
+    path,
+    [
+      '# Wave 2026-07-26 — router test',
+      '',
+      '**Status:** in-flight',
+      '',
+      '## Plan-Table',
+      '',
+      '| ID  | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+      '| --- | ----- | ------ | ---- | -------- | -- | ----- | ---- | ------------------ |',
+      '| 01 | T 01 | background | mechanical | quick-verify | — | planned | 1 | — |',
+      '| 09 | T 09 | background | mechanical | quick-verify | — | pr-created | 1 | — |',
+      '',
+      '## PR-Log',
+      '',
+      '| Created | ID | PR | Closes | Merged | Notes |',
+      '| ------- | -- | -- | ------ | ------ | ----- |',
+      '| — | — | — | — | — | _(none)_ |',
+      '',
+      '## Resume-Metadata',
+      '',
+      '```yaml',
+      'dispatch-log:',
+      '  - "01 → agent a01 (sonnet)  branch wave-orch/01-thing"',
+      '  - "09 → agent a09 (sonnet)  branch wave-orch/09-thing"',
+      '```',
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+  return path;
+}
+
+describe('router wiring — resume (issue #77)', () => {
+  it('"resume" IS in the unknown-subcommand available list', () => {
     const code = main(['frobnicate-xyz']);
     expect(code).toBe(2);
     // `main(['frobnicate-xyz'])` hits the unknown-subcommand branch (a single
@@ -1565,19 +1647,198 @@ describe('resume entrypoint — cli.ts has no "resume" subcommand (FOR-11)', () 
       .slice(availableLine!.indexOf('available:') + 'available:'.length)
       .split(',')
       .map((s) => s.trim());
-    expect(list).not.toContain('resume');
+    expect(list).toContain('resume');
   });
 
-  it('main(["resume", ...]) is routed as an UNKNOWN subcommand (exit 2), not to a runner', () => {
-    const code = main(['resume', '--spine', 'whatever']);
+  it('main(["resume"]) hits the router zero-arg guard (exit 2), NOT unknown-subcommand', () => {
+    const code = main(['resume']);
     expect(code).toBe(2);
-    expect(stderrBuf).toMatch(/unknown subcommand: resume/);
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
   });
 
-  it('the top-level usage points to resume-cli.ts as the separate canonical entrypoint', () => {
+  it('a missing required flag reaches runResume\'s OWN usage (exit 2) — proof of routing, not of an unknown verb', () => {
+    // `--verdicts` is absent: the message is resume-cli's own missing-flag
+    // usage, which the top-level router usage never prints.
+    const code = main(['resume', '--spine', '/x', '--reports', '/r']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/--spine, --reports and --verdicts are required/);
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+  });
+
+  it('runs the real reconcile: exit 0 and the ResumeResult + cleanup JSON on stdout', () => {
+    const spine = writeResumeSpine();
+    const code = main([
+      'resume',
+      '--spine', spine,
+      '--reports', join(tmpdir(), 'cli-resume-absent-reports'),
+      '--verdicts', join(tmpdir(), 'cli-resume-absent-verdicts'),
+      '--repo-root', root,
+    ]);
+
+    expect(code).toBe(0);
+    const result = JSON.parse(stdoutBuf) as {
+      rows: { id: string; decision: string }[];
+      fatals: unknown[];
+      cleanup: { branch: string }[];
+    };
+    expect(result.rows).toHaveLength(2);
+    expect(result).toHaveProperty('fatals');
+    // The `planned` row reconciles to a redispatch, so crash-cleanup ran for it
+    // (and only it) BEFORE the result was printed — the FOR-10 handback order.
+    expect(result.cleanup).toHaveLength(1);
+    expect(result.cleanup[0].branch).toBe('wave-orch/01-thing');
+  });
+
+  it('produces byte-identical stdout and the same exit code as the standalone resume-cli runner', () => {
+    const spine = writeResumeSpine();
+    const args = [
+      '--spine', spine,
+      '--reports', join(tmpdir(), 'cli-resume-absent-reports'),
+      '--verdicts', join(tmpdir(), 'cli-resume-absent-verdicts'),
+      '--repo-root', root,
+    ];
+
+    const routerCode = main(['resume', ...args]);
+    const routerOut = stdoutBuf;
+
+    stdoutBuf = '';
+    // The direct-module alias's runner, called exactly as its own direct-run
+    // block calls it (real disk-backed defaultDeps).
+    const standaloneCode = runResume(args);
+
+    expect(routerCode).toBe(standaloneCode);
+    expect(routerOut).toBe(stdoutBuf);
+  });
+
+  it('an unreadable spine is a clean domain failure (exit 1), same as the standalone entrypoint', () => {
+    const code = main([
+      'resume',
+      '--spine', join(tmpdir(), 'cli-resume-no-such-spine.md'),
+      '--reports', '/r',
+      '--verdicts', '/v',
+      '--repo-root', root,
+    ]);
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/error:/);
+  });
+
+  it('the top-level usage lists resume as a subcommand and names resume-cli.ts only as an alias', () => {
     main([]);
+    expect(stderrBuf).toMatch(/wave-validate resume --spine/);
     expect(stderrBuf).toMatch(/resume-cli\.ts/);
-    expect(stderrBuf).toMatch(/separate entrypoint/i);
+    expect(stderrBuf).toMatch(/alias/i);
+  });
+});
+
+// ─── store-preflight as a router subcommand (issue #77) ──────────────────────
+//
+// The tracker-precondition probe used to be reachable ONLY as its own runnable
+// module (`cli-store.ts preflight`). It is now `{{wave-cli}} store-preflight`.
+// Like `issue-store`/`host-pr` it is ASYNC, so `mainAsync` must intercept it
+// before the sync `main()` — and, unlike those two, before the router's zero-arg
+// guard as well, because a BARE `store-preflight` is a legal invocation that
+// probes against the default `wave.config.json`.
+
+/** Write a linear-store wave.config.json to a fresh temp dir; returns its path. */
+function writeLinearConfig(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'cli-preflight-'));
+  const path = join(dir, 'wave.config.json');
+  writeFileSync(path, JSON.stringify({ store: { kind: 'linear', team: 'EX' } }), 'utf8');
+  return path;
+}
+
+describe('router wiring — store-preflight (issue #77)', () => {
+  it('"store-preflight" IS in the unknown-subcommand available list', () => {
+    main(['frobnicate-xyz']);
+    const availableLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('available:'));
+    expect(availableLine).toBeDefined();
+    const list = availableLine!
+      .slice(availableLine!.indexOf('available:') + 'available:'.length)
+      .split(',')
+      .map((s) => s.trim());
+    expect(list).toContain('store-preflight');
+  });
+
+  it('runs the probe through the injected store: exit 0 and the StorePreflightReport on stdout', async () => {
+    const config = writeLinearConfig();
+    const store = new LinearIssuesStore({ api: new InMemoryLinearApi() });
+
+    const code = await mainAsync(['store-preflight', '--config', config], store);
+
+    expect(code).toBe(0);
+    const report = JSON.parse(stdoutBuf) as { ok: boolean; storeKind: string };
+    expect(report.ok).toBe(true);
+    expect(report.storeKind).toBe('linear');
+  });
+
+  it('produces byte-identical stdout and the same exit code as `cli-store.ts preflight`', async () => {
+    const config = writeLinearConfig();
+
+    const routerCode = await mainAsync(
+      ['store-preflight', '--config', config],
+      new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+    );
+    const routerOut = stdoutBuf;
+
+    stdoutBuf = '';
+    // The direct-module alias's runner, called exactly as its own direct-run
+    // block calls it — the `preflight` op token leads the args there.
+    const standaloneCode = await runStorePreflight(
+      ['preflight', '--config', config],
+      new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+    );
+
+    expect(routerCode).toBe(standaloneCode);
+    expect(routerOut).toBe(stdoutBuf);
+  });
+
+  it('a failing precondition still exits 1 (loud) through the router', async () => {
+    const config = writeLinearConfig();
+    const api = new InMemoryLinearApi();
+    // A fresh team missing "In Review" — the state map names a state it lacks.
+    api.setStateCatalog([
+      { name: 'Triage', type: 'triage' },
+      { name: 'Backlog', type: 'backlog' },
+      { name: 'Todo', type: 'unstarted' },
+      { name: 'In Progress', type: 'started' },
+      { name: 'Done', type: 'completed' },
+      { name: 'Canceled', type: 'canceled' },
+    ]);
+
+    const code = await mainAsync(
+      ['store-preflight', '--config', config],
+      new LinearIssuesStore({ api }),
+    );
+
+    expect(code).toBe(1);
+    expect(JSON.parse(stdoutBuf).ok).toBe(false);
+    expect(stdoutBuf).toContain('In Review');
+  });
+
+  it('an unreadable --config is a usage error (exit 2), same as the standalone entrypoint', async () => {
+    const code = await mainAsync([
+      'store-preflight',
+      '--config',
+      join(mkdtempSync(join(tmpdir(), 'cli-preflight-')), 'does-not-exist.json'),
+    ]);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/error:/);
+  });
+
+  it('a BARE `store-preflight` bypasses the router zero-arg guard and reaches the runner', async () => {
+    // The zero-arg guard's tell is printUsage()'s "available subcommands:" line;
+    // the runner never prints it. Whichever way the ambient default
+    // wave.config.json resolves, the guard must not have fired.
+    await mainAsync(['store-preflight']);
+    expect(stderrBuf).not.toMatch(/available subcommands:/);
+  });
+
+  it('the sync main(["store-preflight", ...]) refuses with exit 2 and an async hint', () => {
+    const code = main(['store-preflight', '--config', '/x.json']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/async/i);
   });
 });
 

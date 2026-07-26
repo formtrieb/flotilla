@@ -12,6 +12,8 @@
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
  *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>]
  *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]
+ *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports <dir> --verdicts <dir> [...]
+ *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *
  * Subcommands:
  *   dor          Run the DOR-Gate validator (default when no subcommand is given).
@@ -142,6 +144,32 @@
  *   0 — printed (with or without a verdict found)
  *   2 — usage (missing <verdictsDir>/<id>)
  *
+ * resume (issue #77 — the whole engine surface is one `<sub>` idiom) — the
+ * store-free wave reconciler. Thin router to {@link runResume} (resume-cli.ts),
+ * the SAME function that file's own direct-run block calls, so the router
+ * spelling and the retained `npx tsx tools/wave/src/resume-cli.ts …` alias share
+ * one implementation, one JSON output shape (`{ ...ResumeResult, cleanup }`) and
+ * one set of exit codes. It stays on the SYNC path: resume resolves no
+ * `IssueStore` — it reads only the spine, live worktrees and on-disk sidecars.
+ * Exit codes:
+ *   0 — success (ResumeResult + cleanup[] JSON on stdout)
+ *   1 — domain failure during assembly/resume
+ *   2 — missing required flag (--spine / --reports / --verdicts)
+ *
+ * store-preflight (issue #77) — the tracker-precondition probe `wave-setup`
+ * runs. ASYNC (it resolves a store and talks to the tracker API seam), so
+ * `mainAsync` intercepts it BEFORE the sync `main()` router — and before the
+ * router's zero-arg guard, since a BARE `store-preflight` is legal and probes
+ * against the default `wave.config.json`. Thin router to
+ * {@link runStorePreflightSubcommand} (cli-store.ts), which only prepends the
+ * `preflight` op token before delegating to the one runner the retained
+ * `npx tsx tools/wave/src/cli-store.ts preflight …` alias also calls. Reports
+ * TRACKER facts only — code-host posture is `host-pr preflight` (ADR-0023).
+ * Exit codes:
+ *   0 — every precondition passes (or is not-applicable)
+ *   1 — a precondition FAILED loudly, or the probe/store-resolution threw
+ *   2 — usage error, or an unreadable/invalid config
+ *
  * render-verdict (FOR-16 — the PR body carries the reviewer-verdict summary) —
  * the single-owner engine render of the human-facing `## Reviewer verdict`
  * PR-body section from the FINAL (max-iter valid) ReviewerVerdict sidecar for
@@ -196,19 +224,32 @@ import {
 } from './route-cli';
 import { findScratchRoot } from './find-repo-root';
 import { flag, printJson } from './cli-utils';
-import { resolveStore } from './cli-store';
+import { resolveStore, runStorePreflightSubcommand } from './cli-store';
+import { runResume } from './resume-cli';
 import type { IssueStore } from './adapters/issue-store';
 import { readSidecars, type SidecarReader } from './sidecar';
 import { metAcIndexes, renderVerdictSection } from './reviewer-verdict-schema';
 
-// NOTE (FOR-11): `resume` is deliberately NOT in this list. The reconciler has
-// its OWN separate entrypoint, `resume-cli.ts` (`npx tsx tools/wave/src/resume-cli.ts
-// --spine <path> --reports <dir> --verdicts <dir> ...`) — it is store-free and
-// was never meant to be a `{{wave-cli}}` subverb (the wave-resume skill has
-// always documented it this way). It used to ALSO be reachable as `cli.ts
-// resume`, which was the two-entrypoint confusion flagged at the live gate
-// (docs/retros/2026-07-15-wire-contract.md, P-12) — that duplicate routing is
-// removed here so `resume-cli.ts` is the one canonical entrypoint.
+// NOTE (FOR-11 → issue #77): `resume` and `store-preflight` ARE in this list now.
+//
+// FOR-11 had removed the `resume` case because the reconciler was reachable both
+// here and as `resume-cli.ts`, with nothing saying which was canonical — the
+// two-entrypoint confusion the live gate flagged
+// (docs/retros/2026-07-15-wire-contract.md, P-12). Issue #77 resolves the same
+// gap the other way round, for a reason FOR-11 could not have: the engine is
+// being packaged behind a SINGLE npm `bin`, so a verb that is not reachable as
+// `{{wave-cli}} <sub>` is not shippable at all. This router is now the canonical
+// spelling for the whole engine surface.
+//
+// P-12's actual objection — ambiguity — does not come back, because neither of
+// these cases is a second implementation: `resume` calls `runResume`
+// (resume-cli.ts) and `store-preflight` calls `runStorePreflightSubcommand`
+// (cli-store.ts), the exact functions those modules' own direct-run blocks call.
+// Those direct-module forms survive as documented ALIASES only because live
+// skill call-sites still spell them that way (rewriting those docs is Workstream
+// 2 of docs/plans/2026-07-26-plugin-beta-ship-plan.md); they route to one
+// implementation with one output shape and one set of exit codes, so they cannot
+// drift from the router.
 const KNOWN_SUBCOMMANDS = [
   'dor',
   'files-drift',
@@ -222,6 +263,8 @@ const KNOWN_SUBCOMMANDS = [
   'issue-store',
   'spine',
   'config',
+  'resume',
+  'store-preflight',
   'route-verdict',
   'route-outcome',
   'validate-report',
@@ -285,6 +328,8 @@ function printUsage(): void {
       '  wave-validate issue-store <op> [...args] [--config <path>]',
       '  wave-validate spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status> <spine-path> [...args]',
       '  wave-validate config validate <path>',
+      '  wave-validate resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
+      '  wave-validate store-preflight [--config <path>]',
       '  wave-validate route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>',
       '  wave-validate route-outcome --outcome <o> --state <s>',
       '  wave-validate validate-report <file>',
@@ -296,8 +341,12 @@ function printUsage(): void {
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
       '',
-      '  resume is a SEPARATE entrypoint, not a subcommand of this CLI — run:',
-      '  npx tsx tools/wave/src/resume-cli.ts --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
+      '  Every engine verb is reachable as a subcommand of THIS CLI. The direct',
+      '  module invocations below still work as aliases and route to the very',
+      '  same runners — prefer the subcommand form listed above:',
+      '    npx tsx tools/wave/src/resume-cli.ts ...            -> the `resume` subcommand',
+      '    npx tsx tools/wave/src/cli-store.ts preflight ...   -> the `store-preflight` subcommand',
+      '    npx tsx tools/wave/src/spine-cli.ts <op> ...        -> the `spine` subcommand',
       '',
     ].join('\n'),
   );
@@ -1038,6 +1087,15 @@ export function main(argv: string[] = process.argv.slice(2)): number {
         return runConfig(rest);
       case 'spine':
         return runSpine(rest);
+      case 'resume':
+        // issue #77 — the store-free reconciler as a router subcommand. A thin
+        // router to resume-cli.ts's `runResume` (with its real disk-backed
+        // `defaultDeps`), i.e. byte-for-byte what the retained
+        // `npx tsx tools/wave/src/resume-cli.ts …` alias runs: same JSON on
+        // stdout, same 0/1/2 exit codes, same missing-flag usage. It belongs on
+        // the SYNC path — unlike `dor --id` / `issue-store` it resolves no
+        // IssueStore (it reads the spine, worktrees and sidecars only).
+        return runResume(rest);
       case 'route-verdict':
         return runRouteVerdict(rest);
       case 'route-outcome':
@@ -1068,6 +1126,14 @@ export function main(argv: string[] = process.argv.slice(2)): number {
         // `mainAsync` intercepts it first. Reaching here = a direct sync call.
         process.stderr.write(
           'error: host-pr is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
+        );
+        return 2;
+      case 'store-preflight':
+        // Same as `issue-store`/`host-pr`: the store-preflight resolves a store
+        // and probes the tracker API seam, so it is async and `mainAsync`
+        // intercepts it first. Reaching here = a direct sync call.
+        process.stderr.write(
+          'error: store-preflight is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
         );
         return 2;
     }
@@ -1112,6 +1178,16 @@ export async function mainAsync(
     // It takes no IssueStore: landing talks to the code HOST, not the tracker.
     if (argv[0] === 'host-pr') {
       return await runHostPr(argv.slice(1));
+    }
+    // `store-preflight` (issue #77) resolves a store and probes the tracker API
+    // seam, so it is async — same interception as issue-store. Intercepting it
+    // HERE also (deliberately) bypasses `main()`'s zero-arg guard: a bare
+    // `store-preflight` with no flags is a legal invocation that probes against
+    // the default `wave.config.json`, exactly as a bare `cli-store.ts preflight`
+    // does. The shim only prepends the `preflight` op token — one runner, so the
+    // router spelling and the direct-module alias cannot drift.
+    if (argv[0] === 'store-preflight') {
+      return await runStorePreflightSubcommand(argv.slice(1), injected);
     }
     // `dor --id <id>` is the store-backed (async) form; bare `dor <path>...`
     // stays in the sync `main()`. The `--id` flag is the disambiguator (ADR-0014).

@@ -2,14 +2,35 @@
 /**
  * resume-cli.ts — the I/O shell around the PURE resume() reconciler (ADR-0002).
  *
- * **This is the ONE canonical entrypoint for resume** (FOR-11). It used to
- * also be reachable as `cli.ts resume`, which the live-gate retro flagged as
- * a two-entrypoint trust gap (docs/retros/2026-07-15-wire-contract.md, P-12:
- * "which one is canonical?"). `cli.ts` no longer routes a `resume` subcommand
- * at all — this file, invoked directly via `npx tsx tools/wave/src/resume-cli.ts
- * ...`, is the only way in. The `wave-resume` skill has always documented it
- * this way (it is store-free — it never touches the tracker, unlike every
- * `cli.ts` subcommand).
+ * ── Which entrypoint is canonical (FOR-11 → issue #77) ───────────────────────
+ *
+ * The live-gate retro (docs/retros/2026-07-15-wire-contract.md, P-12) flagged a
+ * genuine trust gap: `resume` was reachable BOTH as `cli.ts resume` and as this
+ * module, with nothing saying which one was authoritative. FOR-11 resolved that
+ * by deleting the router case, making this file the only way in.
+ *
+ * Issue #77 resolves it the OTHER way, and for a reason FOR-11 could not have:
+ * the engine is being packaged behind a single npm `bin`, so every verb must be
+ * reachable as `{{wave-cli}} <sub>` or it is not shippable. The router case is
+ * back — and is now the CANONICAL spelling:
+ *
+ *   {{wave-cli}} resume --spine <path> --reports <dir> --verdicts <dir> …
+ *
+ * The two-entrypoint AMBIGUITY P-12 objected to does not return, because there
+ * is only one runner: `cli.ts`'s `resume` case calls {@link runResume} below —
+ * the very function this module's direct-run block calls. One implementation,
+ * one output shape, one set of exit codes; the router spelling is simply the
+ * one an operator should reach for.
+ *
+ * The direct-module form is KEPT as an alias rather than deleted: the
+ * `wave-resume` skill still spells it `npx tsx tools/wave/src/resume-cli.ts …`
+ * at six call-sites, and rewriting those docs is a separate, out-of-scope slice
+ * (docs/plans/2026-07-26-plugin-beta-ship-plan.md, Workstream 2).
+ *
+ * Store-freeness is unchanged by the move: `resume` reads only the spine,
+ * worktrees and sidecars — it never touches the tracker, and unlike `dor --id`
+ * or `issue-store` it resolves no `IssueStore`, so it stays on the SYNC `main()`
+ * router path.
  *
  * When a wave Coordinator is killed mid-wave, `resume` reconstructs state from
  * the three durable homes — the spine, live git worktrees, and on-disk sidecars
@@ -39,8 +60,8 @@
  * `cleanupCrashedRowForRedispatch`/`cleanupRedispatchRows` for the mechanics
  * (dirty-worktree work-preservation refusal, idempotency).
  *
- * Usage:
- *   npx tsx tools/wave/src/resume-cli.ts \
+ * Usage (canonical router spelling — the alias below takes the same flags):
+ *   {{wave-cli}} resume \
  *     --spine    <path>  \  WAVE.md spine
  *     --reports  <dir>   \  sidecar reports dir
  *     --verdicts <dir>   \  sidecar verdicts dir
@@ -130,6 +151,12 @@ export const defaultDeps: ResumeDeps = {
   // `defaultRedispatchCleanupOps(repoRoot)` (real git) when omitted.
 };
 
+/**
+ * The missing-flag usage. Its wording is entrypoint-agnostic (`resume …`, not
+ * `resume-cli.ts …`) so it reads correctly whether the caller reached this
+ * runner through the canonical `{{wave-cli}} resume` router case or through the
+ * retained direct-module alias — one runner, one message.
+ */
 function printUsage(): void {
   process.stderr.write(
     [
@@ -188,7 +215,10 @@ export function runResume(args: string[], deps: ResumeDeps = defaultDeps): numbe
   }
 }
 
-// Only execute when run directly (not when imported by tests).
+// Only execute when run directly (not when imported by tests). Retained as an
+// ALIAS for the canonical `{{wave-cli}} resume` router case (issue #77) — the
+// `wave-resume` skill still spells it this way. Both spellings land on the same
+// `runResume(args, defaultDeps)` call, so they cannot drift.
 if (require.main === module) {
   process.exit(runResume(process.argv.slice(2)));
 }

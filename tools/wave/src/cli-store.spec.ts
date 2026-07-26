@@ -34,7 +34,12 @@ vi.mock('./adapters/linear/linear-api-factory', () => ({
 }));
 
 // resolveStore is imported AFTER the mocks above so it picks up the mocked factories.
-const { resolveStore, preflightStore, runStorePreflight } = await import('./cli-store');
+const { resolveStore, preflightStore, runStorePreflight, runStorePreflightSubcommand } =
+  await import('./cli-store');
+// The router, imported the same way (it pulls in cli-store, so it must see the
+// same mocked factories). Used only to pin the `store-preflight` subcommand's
+// wiring back to THIS module (issue #77).
+const { main, mainAsync } = await import('./cli');
 
 function writeConfig(dir: string, json: unknown): string {
   const path = join(dir, 'wave.config.json');
@@ -295,5 +300,96 @@ describe('runStorePreflight (FOR-12) — the CLI verb wave-setup runs', () => {
     const code = await runStorePreflight(['preflight', '--config', '/nonexistent/does-not-exist.json']);
     expect(code).toBe(2);
     expect(stderr).toMatch(/error:/);
+  });
+
+  // ── the `{{wave-cli}} store-preflight` router spelling (issue #77) ──────────
+  //
+  // The probe used to be reachable ONLY as this runnable module. It is now also
+  // a `cli.ts` subcommand, so the whole engine surface speaks one
+  // `{{wave-cli}} <sub>` idiom (the precondition for a single npm `bin`). The
+  // subcommand is NOT a second implementation: `runStorePreflightSubcommand`
+  // only prepends the `preflight` op token this module's arg shape expects and
+  // delegates to `runStorePreflight`. These specs pin that equivalence at both
+  // ends — the shim itself, and the router case actually reaching it — so the
+  // retained direct-module alias can never drift from the subcommand.
+
+  describe('runStorePreflightSubcommand — the router-facing spelling', () => {
+    it('is byte-identical to `preflight`-prefixed args on the happy path (exit 0, same report)', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+
+      const shimCode = await runStorePreflightSubcommand(
+        ['--config', path],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+      const shimOut = stdout;
+
+      stdout = '';
+      const standaloneCode = await runStorePreflight(
+        ['preflight', '--config', path],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      expect(shimCode).toBe(0);
+      expect(shimCode).toBe(standaloneCode);
+      expect(shimOut).toBe(stdout);
+    });
+
+    it('carries the loud exit 1 through unchanged when a configured state is missing', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+      const api = new InMemoryLinearApi();
+      api.setStateCatalog(FRESH_TEAM_MISSING_IN_REVIEW);
+
+      const code = await runStorePreflightSubcommand(
+        ['--config', path],
+        new LinearIssuesStore({ api }),
+      );
+
+      expect(code).toBe(1);
+      expect(JSON.parse(stdout).ok).toBe(false);
+      expect(stdout).toContain('In Review');
+    });
+
+    it('carries the usage exit 2 through unchanged when the config is unreadable', async () => {
+      const code = await runStorePreflightSubcommand([
+        '--config',
+        '/nonexistent/does-not-exist.json',
+      ]);
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/error:/);
+    });
+
+    it('takes no op token of its own — a bare arg list is a legal default-config probe, not an unknown-op error', async () => {
+      // The tell of the standalone arg shape leaking through would be
+      // `runStorePreflight`'s unknown-op message. It must never appear: the
+      // subcommand NAME is the op.
+      await runStorePreflightSubcommand(['--config', '/nonexistent/does-not-exist.json']);
+      expect(stderr).not.toMatch(/only "preflight"/);
+    });
+  });
+
+  describe('router wiring — `{{wave-cli}} store-preflight` reaches this module', () => {
+    it('mainAsync(["store-preflight", ...]) runs the probe and returns its exit code', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+
+      const code = await mainAsync(
+        ['store-preflight', '--config', path],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      expect(code).toBe(0);
+      const report = JSON.parse(stdout);
+      expect(report.storeKind).toBe('linear');
+      expect(stderr).not.toMatch(/unknown subcommand/);
+    });
+
+    it('the sync main() refuses the async verb with an exit 2 hint rather than silently skipping the probe', () => {
+      const code = main(['store-preflight', '--config', '/x.json']);
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/async/i);
+      expect(stdout).toBe('');
+    });
   });
 });
