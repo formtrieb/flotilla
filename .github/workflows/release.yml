@@ -1,0 +1,119 @@
+# Release — publish the engine to the public npm registry via npm trusted publishing.
+#
+# TWO STRINGS ARE MATCHED LITERALLY BY THE REGISTRY, and neither is validated when
+# the trusted publisher is saved — a mismatch surfaces only when a real release is
+# already halfway out the door:
+#
+#   1. THE FILENAME OF THIS WORKFLOW.  The trusted publisher on npmjs.com must be
+#      configured with the exact string
+#
+#          release.yml
+#
+#      Renaming or moving this file silently breaks publishing until the registry
+#      side is edited to match. If you rename it, edit the trusted publisher first.
+#
+#   2. THE REPOSITORY URL IN THE PACKAGE MANIFEST.  `repository.url` in
+#      tools/wave/package.json is `git+https://github.com/formtrieb/flotilla.git`.
+#      Provenance is refused if the manifest does not point at the repository this
+#      workflow runs in, so that field and this repository must stay in step.
+#
+# THERE IS NO REGISTRY CREDENTIAL IN THIS FILE — not as a secret, not as an env var,
+# not as a fallback, and not behind a condition. The registry mints a short-lived
+# credential for this workflow through the OIDC exchange that `id-token: write`
+# enables below. A token path added "just in case" would defeat the entire reason
+# this workflow exists, and would outlive the reason it was added. Don't.
+#
+# Configuring the trusted publisher on the registry is a human action in an account
+# this repository cannot reach; cutting a release is a separate act. This workflow is
+# only the steady-state automation for every release after the first.
+name: Release
+
+on:
+  # DELIBERATE TRIGGERS ONLY. A publish is irreversible — a version number can never
+  # be reused — so there is intentionally NO `push:` trigger of any kind, and in
+  # particular none on the default branch: merging a PR to `main` must never cut a
+  # release. Both routes below require an explicit human act.
+  release:
+    types: [published] # normal route: a human publishes a GitHub Release
+  workflow_dispatch: # manual route: re-run after a transient registry failure
+
+permissions:
+  contents: read # checkout only
+  id-token: write # REQUIRED — without it the OIDC exchange cannot happen at all
+
+jobs:
+  publish:
+    name: Publish engine (npm trusted publishing)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The package does not live at the repository root. Every step below — the
+        # two gates and the publish itself — runs from the package directory.
+        working-directory: tools/wave
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Same Node line the verify workflow pins, so the gates re-run below on the
+          # toolchain they gate against.
+          node-version: "22"
+
+          # WHY `registry-url` IS SET even though this workflow holds no token: the
+          # registry's own documented workflow example for trusted publishing sets it to
+          # the public registry AND sets no auth environment variable on the publish
+          # step — exactly the combination that looks broken from the outside, because
+          # the action writes an .npmrc auth stanza referencing a token that will never
+          # exist here. The vendor publishes that as the working configuration. Nobody
+          # can execute this path before the first real release, so the vendor's
+          # documented example is the strongest evidence available, and departing from
+          # it is the risky direction rather than the cautious one. Do not delete this
+          # on the reasoning that an unused auth stanza must be harmful.
+          registry-url: "https://registry.npmjs.org"
+
+          # DEPENDENCY CACHING IS DELIBERATELY OFF — do not switch it on for speed.
+          # The vendor's example disables it too, on the stated ground that caching must
+          # never be used in a release build. That is a supply-chain property, not a
+          # performance preference: a stale or poisoned cache can put dependency content
+          # into the artifact this job publishes that differs from what a clean `npm ci`
+          # resolves, and provenance on this package is a claim about precisely that
+          # artifact. A release job runs rarely; the seconds a cache saves are worth
+          # nothing against the property it costs. (The verify workflow does cache — it
+          # runs on every push and publishes nothing.)
+
+      - name: Install an npm new enough for trusted publishing
+        # THE TRAP THIS STEP EXISTS FOR — do not "simplify" it away.
+        # Trusted publishing requires npm >= 11.5.1. The Node line pinned above
+        # bundles npm 10.9.8, which is BELOW that floor. A release workflow that
+        # inherits whatever npm the Node line happens to ship looks correct, passes
+        # review, and then fails at the publish step of a real release — the worst
+        # possible moment to find out. The floor is therefore stated explicitly here
+        # rather than implied by the Node version.
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "Engine gate: tests (vitest)"
+        run: npm test
+
+      - name: "Engine gate: typecheck (tsc)"
+        # Both gates run before the publish step, in this job, so a red suite or a
+        # type error stops the release instead of shipping.
+        run: npm run typecheck
+
+      - name: Publish to npm
+        # No flags and no environment. `--provenance` is deliberately absent: for a
+        # public repository publishing a public package the registry attaches
+        # provenance by itself. No token is read here — npm performs the OIDC
+        # exchange on its own using the identity token permission granted above.
+        #
+        # The MISSING auth environment variable is the other half of the `registry-url`
+        # note above, and is just as deliberate: the vendor's documented example sets
+        # the registry URL and gives the publish step no `NODE_AUTH_TOKEN`. Adding one
+        # here would be the token path this whole workflow exists to avoid.
+        run: npm publish
