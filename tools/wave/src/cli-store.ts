@@ -18,6 +18,21 @@
  * instead of merely asserting they hold. The probe is pure over the seam —
  * testable against the in-memory fakes with no network.
  *
+ * ── Router unification (issue #77) ────────────────────────────────────────────
+ * The probe is now ALSO reachable as a `cli.ts` router subcommand,
+ * `{{wave-cli}} store-preflight [--config <path>]`, so the whole engine surface
+ * speaks one `{{wave-cli}} <sub>` idiom (the precondition for a single npm
+ * `bin`). That route is NOT a second implementation: it goes through
+ * {@link runStorePreflightSubcommand}, a one-line shim that prepends the
+ * `preflight` op token and delegates to {@link runStorePreflight} — one runner,
+ * two spellings, identical output and exit codes.
+ *
+ * The direct-module entrypoint below is deliberately KEPT as an alias rather
+ * than deleted: existing `wave-setup` call-sites still spell it
+ * `npx tsx tools/wave/src/cli-store.ts preflight …`, and rewriting those skill
+ * docs is a separate, out-of-scope slice (see
+ * docs/plans/2026-07-26-plugin-beta-ship-plan.md, Workstream 2).
+ *
  * Store-preflight is TRACKER FACTS ONLY. The three code-host posture checks it
  * used to carry (`pr-merge-token`, `allow-auto-merge`, `required-checks`) moved
  * to `host-pr preflight` under the ADR-0023 amendment's single-owner discipline:
@@ -238,7 +253,33 @@ export async function runStorePreflight(args: string[], injected?: IssueStore): 
   }
 }
 
-// Only execute when this file is run directly (not when imported for resolveStore).
+/**
+ * The router-facing spelling of the store-preflight (issue #77):
+ * `{{wave-cli}} store-preflight [--config <path>]`.
+ *
+ * The standalone module form carries the op as `args[0]` (`cli-store.ts
+ * preflight …`); as a router subcommand the SUBCOMMAND NAME already is the op,
+ * so this shim prepends the `preflight` token and delegates to
+ * {@link runStorePreflight}. There is exactly one runner, one probe and one set
+ * of exit codes (0 all preconditions pass/n-a; 1 a precondition FAILED loudly or
+ * the probe threw; 2 usage error or unreadable/invalid config) — this adds no
+ * logic of its own, so the two spellings can never drift.
+ *
+ * Note the arg-shape consequence: a BARE `{{wave-cli}} store-preflight` (no
+ * flags) is legal and probes against the default `wave.config.json`, exactly as
+ * a bare `cli-store.ts preflight` does. `cli.ts` therefore intercepts this
+ * subcommand in `mainAsync` BEFORE the router's zero-arg guard.
+ */
+export function runStorePreflightSubcommand(
+  args: string[],
+  injected?: IssueStore,
+): Promise<number> {
+  return runStorePreflight(['preflight', ...args], injected);
+}
+
+// Only execute when this file is run directly (not when imported for
+// resolveStore). Retained as an ALIAS for `{{wave-cli}} store-preflight`
+// (issue #77) — the existing `wave-setup` call-sites still spell it this way.
 if (require.main === module) {
   runStorePreflight(process.argv.slice(2))
     .then((c) => process.exit(c))

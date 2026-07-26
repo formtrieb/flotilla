@@ -8,13 +8,22 @@
  * it calls the byte-preserving `wave-md-rw` writer directly against the file.
  * The CLI adds no spine logic of its own — the spine parser (wave-md-rw) validates.
  *
- * Usage:
- *   npx tsx tools/wave/src/spine-cli.ts read <spine-path>
- *   npx tsx tools/wave/src/spine-cli.ts set-row-state <spine-path> <id> <state>
- *   npx tsx tools/wave/src/spine-cli.ts set-row-iter <spine-path> <id> <n>
- *   npx tsx tools/wave/src/spine-cli.ts set-row-pr <spine-path> <id> <pr-cell>
- *   npx tsx tools/wave/src/spine-cli.ts set-branch <spine-path> <id> <branch> [--model <m>]
- *   npx tsx tools/wave/src/spine-cli.ts replace-closed-by <spine-path> <body-file>
+ * ── One entrypoint (issue #77) ────────────────────────────────────────────────
+ * `cli.ts` has always ALSO routed `spine` here, which left two ways to reach the
+ * same runner. The standalone path is now COLLAPSED onto the router case: the
+ * direct-run block at the bottom of this file no longer dispatches on its own —
+ * it forwards `process.argv` to `cli.ts`'s `main(['spine', …])`, which routes
+ * straight back to {@link runSpine}. So `npx tsx tools/wave/src/spine-cli.ts
+ * <op> …` survives as a documented ALIAS (the `wave-close` mechanics still spell
+ * it that way) while there is exactly ONE dispatch path in the engine.
+ *
+ * Usage (canonical router spelling — the alias takes the same ops/args):
+ *   {{wave-cli}} spine read <spine-path>
+ *   {{wave-cli}} spine set-row-state <spine-path> <id> <state>
+ *   {{wave-cli}} spine set-row-iter <spine-path> <id> <n>
+ *   {{wave-cli}} spine set-row-pr <spine-path> <id> <pr-cell>
+ *   {{wave-cli}} spine set-branch <spine-path> <id> <branch> [--model <m>]
+ *   {{wave-cli}} spine replace-closed-by <spine-path> <body-file>
  *
  * Ops:
  *   read              Print the current spine source to stdout (+ trailing \n).
@@ -269,6 +278,19 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
 }
 
 // Only execute when run directly (not when imported by tests).
+//
+// COLLAPSED onto the router (issue #77): rather than dispatching a second time
+// here, the direct-module invocation is forwarded to `cli.ts`'s `spine` case —
+// which routes straight back to `runSpine` above. `npx tsx
+// tools/wave/src/spine-cli.ts <op> …` therefore stays a working ALIAS for
+// `{{wave-cli}} spine <op> …` (the `wave-close` mechanics still document it),
+// with exactly one dispatch path in the engine instead of two.
+//
+// `require` (not a static `import`) on purpose: `cli.ts` imports THIS module for
+// its `spine` case, so a top-level import would be a load-order cycle. This line
+// runs only when this file is the process entrypoint, after its own exports are
+// fully initialised, so the require resolves a complete module either way.
 if (require.main === module) {
-  process.exit(runSpine(process.argv.slice(2)));
+  const { main } = require('./cli') as typeof import('./cli');
+  process.exit(main(['spine', ...process.argv.slice(2)]));
 }

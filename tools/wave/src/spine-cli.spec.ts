@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runSpine } from './spine-cli';
+// The router, imported to pin that its `spine` case is the ONE dispatch path
+// this module's ops now flow through (issue #77).
+import { main } from './cli';
 import { readSpine } from './wave-md-rw';
 
 const FIXTURE = readFileSync(
@@ -301,5 +305,95 @@ _(none yet)_
       expect(code).toBe(1);
       expect(stderrSpy).toHaveBeenCalled();
     });
+  });
+});
+
+// ─── the standalone path, collapsed onto the router (issue #77) ──────────────
+//
+// `cli.ts` has always ALSO routed `spine` to `runSpine`, which left two ways
+// into one runner. The direct-run block at the bottom of spine-cli.ts no longer
+// dispatches on its own: it forwards `process.argv` to `main(['spine', …])`, so
+// there is exactly ONE dispatch path in the engine and `npx tsx
+// tools/wave/src/spine-cli.ts <op> …` survives as a documented alias (the
+// `wave-close` mechanics still spell it that way).
+//
+// That forwarding lives inside `require.main === module`, which no in-process
+// spec can execute — so the alias is covered here by actually SPAWNING the
+// module, the only way to prove the collapsed path still works end to end.
+
+describe('spine-cli — the direct-module invocation is collapsed onto the router `spine` case', () => {
+  const TSX = join(__dirname, '..', 'node_modules', '.bin', 'tsx');
+  const SPINE_CLI = join(__dirname, 'spine-cli.ts');
+
+  /** Spawn `tsx spine-cli.ts <args>`; returns stdout/stderr/exit code. */
+  function runAlias(args: string[]): { code: number; stdout: string; stderr: string } {
+    try {
+      const stdout = execFileSync(TSX, [SPINE_CLI, ...args], {
+        encoding: 'utf-8',
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return { code: 0, stdout, stderr: '' };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string; stderr?: string };
+      return {
+        code: typeof e.status === 'number' ? e.status : 1,
+        stdout: e.stdout ?? '',
+        stderr: e.stderr ?? '',
+      };
+    }
+  }
+
+  it('a `read` through the alias still prints the spine and exits 0', () => {
+    const path = writeTmpSpine();
+    const { code, stdout } = runAlias(['read', path]);
+    expect(code).toBe(0);
+    expect(stdout).toContain('## Plan-Table');
+    expect(stdout).toContain('Wave 2026-06-06 — test');
+  });
+
+  it('a mutating op through the alias still writes to disk and exits 0', () => {
+    const path = writeTmpSpine();
+    const { code } = runAlias(['set-row-state', path, ROW_ID, NEW_STATE]);
+    expect(code).toBe(0);
+    const after = readFileSync(path, 'utf-8');
+    expect(after).toMatch(/\| dispatched \|/);
+    // Surrounding sections are byte-preserved — the forwarding changed the
+    // dispatch path, not the byte-preserving writer behind it.
+    expect(after).toContain('## Resume-Metadata');
+    expect(after).toContain('branch wave-orch/01-thing');
+  });
+
+  it('an unknown op through the alias still reports spine-cli\'s own dispatch table and exits 2', () => {
+    const path = writeTmpSpine();
+    const { code, stderr } = runAlias(['frobnicate', path]);
+    expect(code).toBe(2);
+    // The forwarding hands the op to `runSpine`, so the message is this
+    // module's `default:` case — never the router's unknown-SUBCOMMAND error.
+    expect(stderr).toMatch(/unknown op: frobnicate/);
+    expect(stderr).not.toMatch(/unknown subcommand/);
+  });
+
+  it('the router case it forwards to is byte-identical to calling runSpine in-process', () => {
+    const path = writeTmpSpine();
+    let out = '';
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((c: unknown) => {
+      out += String(c);
+      return true;
+    });
+    try {
+      const routerCode = main(['spine', 'read', path]);
+      const routerOut = out;
+
+      out = '';
+      const directCode = runSpine(['read', path]);
+
+      expect(routerCode).toBe(0);
+      expect(routerCode).toBe(directCode);
+      expect(routerOut).toBe(out);
+      expect(routerOut).toContain('## Plan-Table');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
