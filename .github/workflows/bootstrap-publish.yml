@@ -1,0 +1,145 @@
+# ─────────────────────────────────────────────────────────────────────────────────
+# SINGLE-USE WORKFLOW. IT IS FINISHED THE MOMENT IT SUCCEEDS ONCE — THEN DELETE IT.
+# ─────────────────────────────────────────────────────────────────────────────────
+#
+# WHY IT EXISTS. The registry cannot attach a trusted publisher to a package that does
+# not exist yet, and it offers no way to reserve a name. So exactly one publish has to
+# reach the registry by another route — a credential — and after that every release
+# runs tokenless through `release.yml`. This file is that one route, and nothing else.
+#
+# WHY IT IS A SEPARATE FILE. A credential path merged into the permanent release
+# workflow would survive as a fallback long after the reason for it disappeared, and a
+# fallback that never gets used is exactly the kind of thing that is still there years
+# later. `release.yml` therefore holds no secret, no auth environment variable and no
+# credential of any kind — do not "fix" it by copying anything from here. The two files
+# look contradictory on purpose: that one is the OIDC path, this one is the token path.
+#
+# THE THREE ACTIONS THAT RETIRE THIS WORKFLOW. Do all three as soon as the first run is
+# green. Retiring it is part of the job, not an optional tidy-up:
+#
+#   1. CONFIGURE THE TRUSTED PUBLISHER on npmjs.com, now that the package exists:
+#      npmjs.com → @formtrieb/flotilla-engine → Settings → Trusted Publisher →
+#      GitHub Actions, organization/repository `formtrieb/flotilla`, workflow filename
+#      `release.yml` (that literal string is matched by the registry — see the header
+#      of release.yml). From then on releases publish with no credential at all.
+#
+#   2. REVOKE THE CREDENTIAL AND DELETE THE SECRET — both halves, not one:
+#      revoke the access token on npmjs.com → Access Tokens, and delete the
+#      `NPM_TOKEN` repository secret under this repository's
+#      Settings → Secrets and variables → Actions.
+#
+#   3. DELETE THIS FILE (`.github/workflows/bootstrap-publish.yml`).
+#
+# Leaving any of the three in place keeps a long-lived publish credential alive for a
+# repository that no longer needs one. A workflow whose entire justification is being
+# temporary needs its expiry written into it, or it is still here in a year.
+name: Bootstrap publish (single use — delete after first success)
+
+on:
+  # MANUAL START ONLY. This is the single most important property of this file.
+  # `workflow_dispatch` is the ONLY trigger, and no other may ever be added here:
+  # no `push`, no tag filter, no `release`, no `schedule`, no `workflow_run`.
+  #
+  # A publish is irreversible — a published version can never be replaced, only
+  # superseded — so an automatic trigger on a workflow whose whole job is an
+  # irreversible publish is a footgun. The human who starts this run is also the one
+  # who has just decided the artifact is ready; that judgement is the trigger.
+  workflow_dispatch:
+
+permissions:
+  contents: read # checkout only
+  id-token: write # REQUIRED FOR PROVENANCE — see the publish step. Not OIDC-only.
+
+jobs:
+  bootstrap-publish:
+    name: Create the package on the registry (one time)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The package does not live at the repository root. Every step below — both
+        # gates and the publish itself — runs from the package directory.
+        working-directory: tools/wave
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Same Node line the verify and release workflows pin, so the gates re-run
+          # below on the toolchain they gate against.
+          node-version: "22"
+
+          # `registry-url` makes the action write the .npmrc auth stanza that resolves
+          # NODE_AUTH_TOKEN on the publish step. On THIS file that stanza is load
+          # bearing — unlike in release.yml, a real credential is supplied below.
+          registry-url: "https://registry.npmjs.org"
+
+          # DEPENDENCY CACHING IS DELIBERATELY OFF — no `cache:` input, and do not add
+          # one for speed. The vendor's own example turns it off explicitly for a
+          # publishing workflow. That is a supply-chain property, not a performance
+          # preference: a stale or poisoned cache can put dependency content into the
+          # artifact this job publishes that differs from what a clean `npm ci`
+          # resolves, and the provenance attached below is a claim about precisely
+          # that artifact. This job runs exactly once; the seconds are worth nothing.
+
+          # NO npm UPGRADE STEP HERE, and its absence is deliberate rather than an
+          # oversight against release.yml, which does install npm >= 11.5.1. That
+          # floor is a *trusted publishing* requirement and does not apply on the
+          # token path. `--provenance` requires npm >= 9.5.0; the Node line pinned
+          # above bundles npm 10.9.x, which clears it.
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "Engine gate: tests (vitest)"
+        run: npm test
+
+      - name: "Engine gate: typecheck (tsc)"
+        # BOTH GATES RUN BEFORE THE PUBLISH STEP, in this job, sequentially. Steps in a
+        # job stop at the first failure, so a red suite or a type error means the
+        # publish step below never starts — it does not run alongside them, and there
+        # is no `continue-on-error` or `if:` anywhere that could let it through.
+        run: npm run typecheck
+
+      - name: Publish to npm (first ever publish of this package)
+        # THE CREDENTIAL IS READ HERE AND NOWHERE ELSE — from the repository secret
+        # `NPM_TOKEN`, exposed to this one step only, never echoed, never passed as a
+        # command-line flag.
+        #
+        # REQUIRED SCOPE AND LEAST-PRIVILEGE SHAPE OF THAT CREDENTIAL:
+        #   • A GRANULAR ACCESS TOKEN on npmjs.com — not a classic token, which is
+        #     account-wide read/write over every package the account owns.
+        #   • Packages and scopes: "Read and write", limited to the SCOPE `@formtrieb`.
+        #     Scope rather than package because the package does not exist yet and so
+        #     cannot be selected by name — that is the whole reason this file exists.
+        #   • Organizations: "No access". Nothing else needs to be granted.
+        #   • Expiration: the shortest the registry offers. The token only has to
+        #     outlive one run, and step 2 of the header revokes it immediately after.
+        #   • It must be a token class that publishes non-interactively: a workflow
+        #     cannot answer a 2FA one-time-password prompt.
+        # For as long as it lives this token can write every package in the scope —
+        # which is exactly why revoking it is part of the job and not a tidy-up.
+        #
+        # BOTH FLAGS ARE REQUIRED AND NEITHER IS OPTIONAL:
+        #   --provenance : on the token path provenance is NOT automatic (the registry
+        #                  attaches it by itself only for trusted publishing, which is
+        #                  why release.yml correctly omits this flag). Without it the
+        #                  artifact that establishes this package ships with no
+        #                  attestation — and it cannot be replaced afterwards, only
+        #                  superseded. Provenance also needs `id-token: write` above,
+        #                  even here, and needs `repository.url` in
+        #                  tools/wave/package.json to point at this repository.
+        #   --access public : a first-ever publish of a SCOPED package defaults to
+        #                  restricted. Without it this either fails or silently lands a
+        #                  private package. package.json also carries
+        #                  publishConfig.access=public; the flag states it at the one
+        #                  moment the default would otherwise bite.
+        #
+        # NO `--tag` IS PASSED, so this lands under `latest`, which is what a bare
+        # `npx @formtrieb/flotilla-engine` resolves. npm does not infer a dist-tag from
+        # a prerelease version string; publishing this only under `beta` would leave
+        # the package without a `latest` and break that command.
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
