@@ -65,8 +65,13 @@ rejected as less uniform.
       `engines.node`.
 - [ ] Move `tsx` from `devDependencies` → `dependencies` (raw-TS runtime needs it).
 - [ ] Prove `npx @formtrieb/flotilla-engine dor …` runs from a clean temp dir (npx cold-installs).
-- [ ] **Publish.** *External blocker:* needs an npm account that owns/can claim the
-      `@flotilla` scope + an `NPM_TOKEN`. Confirm scope availability before coding this.
+- [x] **Publish — route settled, and it is not a token.** The scope is `@formtrieb`, already
+      owned by the intended account and already carrying published packages, so the original
+      "confirm availability" blocker is closed. Publishing goes through **npm trusted
+      publishing**: the registry mints a short-lived credential for a workflow it has been
+      told to trust, so no long-lived `NPM_TOKEN` exists to leak or rotate, and provenance is
+      attached automatically for a public repo publishing a public package. The remaining
+      human action is registry-side configuration, not a secret handed to CI.
 
 **Files:** `tools/wave/package.json`, `tools/wave/src/cli.ts`, new `tools/wave/bin/*`,
 maybe `tools/wave/src/{cli-store,resume-cli,spine-cli}.ts`.
@@ -176,8 +181,14 @@ the best possible launch story.
 
 ## Open questions / external blockers
 
-1. **npm `@flotilla` scope** — is it available/claimable under the intended npm account? This
-   gates W1's publish step and should be checked before W1 starts.
+1. ~~**npm `@flotilla` scope** — available/claimable?~~ **Resolved, and the answer changed the
+   name.** The package is `@formtrieb/flotilla-engine`: `formtrieb` is the owner in every
+   namespace (npm scope, plugin marketplace, GitHub org) and `flotilla` is the product in every
+   namespace. The old spelling made `flotilla` the *scope* — i.e. the owner — while the same
+   word means the *product* on the plugin side; one term, two meanings. The scope is owned
+   already, five public packages sit under it, and the `<product>-<part>` shape of their names
+   is what `flotilla-engine` follows. Unscoped `flotilla` is taken on npm by someone else,
+   which is a second reason the old scope was the wrong bet.
 2. **Plugin ↔ project-skills double-registration** in the self-dogfooding repo (W3) — resolve
    empirically before committing the manifest layout.
 3. **Marketplace name** — pick the identifier users type in `flotilla@<name>` (e.g.
