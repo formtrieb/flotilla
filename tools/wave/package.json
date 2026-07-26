@@ -1,5 +1,5 @@
 {
-  "name": "@flotilla/wave-engine",
+  "name": "@formtrieb/flotilla-engine",
   "version": "0.1.0-beta.0",
   "description": "Wave-orchestration engine for flotilla — conflict/parallelism reasoning, DoR gating, merge order, and tracker-agnostic issue stores.",
   "license": "Apache-2.0",
@@ -11,7 +11,7 @@
   "type": "commonjs",
   "main": "./src/index.ts",
   "bin": {
-    "wave-engine": "./bin/wave-engine.js"
+    "flotilla-engine": "./bin/flotilla-engine.js"
   },
   "files": [
     "src",

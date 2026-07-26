@@ -7,7 +7,7 @@
   },
   "permissions": {
     "allow": [
-      "Bash(npx @flotilla/wave-engine:*)",
+      "Bash(npx @formtrieb/flotilla-engine:*)",
       "Bash(npx tsx tools/wave/src/cli.ts:*)",
       "Bash(npx tsx src/cli.ts:*)",
       "Bash(npx tsx src/issue-store-cli.ts:*)",
@@ -18,7 +18,7 @@
       "Bash(./node_modules/.bin/tsx src/cross-wave-cli.ts:*)",
       "Bash(tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
       "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
-      "Bash(NODE_USE_ENV_PROXY=1 npx @flotilla/wave-engine:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine:*)",
       "Bash(NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 npx tsx src/cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 npx tsx src/issue-store-cli.ts:*)",

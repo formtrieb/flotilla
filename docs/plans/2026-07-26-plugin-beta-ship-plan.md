@@ -9,8 +9,8 @@ declared file scope, so the whole plan can be dogfooded as a flotilla wave.
 
 ## Locked decisions
 
-- **Engine ships as an npm package** — `@flotilla/wave-engine`, and `{{wave-cli}}` resolves
-  to `npx @flotilla/wave-engine <subcommand>` (chosen over bundling the engine inside the
+- **Engine ships as an npm package** — `@formtrieb/flotilla-engine`, and `{{wave-cli}}` resolves
+  to `npx @formtrieb/flotilla-engine <subcommand>` (chosen over bundling the engine inside the
   plugin dir). Rationale: `npx` resolves the engine's runtime deps (`fast-glob`,
   `micromatch`, `tsx`) itself, so the plugin sidesteps both the `${CLAUDE_PLUGIN_ROOT}`
   path-pinning *and* the "a plugin install runs no `npm install`" bootstrap problem. The
@@ -37,7 +37,7 @@ plugin" as *future tracks, not built* — this plan builds the plugin track.
 
 ---
 
-## Workstream 1 — Engine → publishable npm package `@flotilla/wave-engine`
+## Workstream 1 — Engine → publishable npm package `@formtrieb/flotilla-engine`
 
 **Why first:** everything else references the resolved CLI. Critical path.
 
@@ -51,7 +51,7 @@ the `cli.ts` router. Direct module invocations exist that the npm `bin` must als
 | `spine-cli.ts` | 1× | router *has* a `spine` case (redundant path) |
 
 Decision for the package: **fold the direct-invoked modules in as router subcommands**
-(`store-preflight`, `resume`) so the entire surface is `npx @flotilla/wave-engine <sub>` —
+(`store-preflight`, `resume`) so the entire surface is `npx @formtrieb/flotilla-engine <sub>` —
 consistent with the existing `{{wave-cli}} <sub>` idiom. Alternative (multiple `bin`s) is
 rejected as less uniform.
 
@@ -64,7 +64,7 @@ rejected as less uniform.
       `files` whitelist, `publishConfig.access: public`, `license`, `repository`,
       `engines.node`.
 - [ ] Move `tsx` from `devDependencies` → `dependencies` (raw-TS runtime needs it).
-- [ ] Prove `npx @flotilla/wave-engine dor …` runs from a clean temp dir (npx cold-installs).
+- [ ] Prove `npx @formtrieb/flotilla-engine dor …` runs from a clean temp dir (npx cold-installs).
 - [ ] **Publish.** *External blocker:* needs an npm account that owns/can claim the
       `@flotilla` scope + an `NPM_TOKEN`. Confirm scope availability before coding this.
 
@@ -80,12 +80,12 @@ definition* and the handful of direct-module invocations do.
 **Tasks**
 - [ ] Update the resolution definition (`.claude/skills/README.md`,
       `.claude/skills/wave-setup/reference/setup-mechanics.md`) from
-      `npx tsx tools/wave/src/cli.ts` → `npx @flotilla/wave-engine`.
+      `npx tsx tools/wave/src/cli.ts` → `npx @formtrieb/flotilla-engine`.
 - [ ] Rewrite the direct `npx tsx tools/wave/src/{cli-store,resume-cli}.ts` invocations in
       the setup/resume mechanics to the new subcommand form.
 - [ ] Update the tracked permission allowlist in `.claude/settings.json` **and** the
       allowlist `wave-setup` scaffolds — from the `tools/wave/src/cli.ts` forms to
-      `npx @flotilla/wave-engine`. (Per the plugin spec, allowlists cannot live in the
+      `npx @formtrieb/flotilla-engine`. (Per the plugin spec, allowlists cannot live in the
       plugin manifest — this stays a consumer-side `wave-setup` concern, which it already is.)
 
 **Files:** `.claude/skills/README.md`, `.claude/skills/wave-setup/reference/setup-mechanics.md`,

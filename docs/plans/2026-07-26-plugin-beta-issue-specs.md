@@ -55,7 +55,7 @@ precisely below so the conflict-map keeps them in separate lanes.
 **Files:** `tools/wave/src/cli.ts`, `tools/wave/src/cli.spec.ts`, `tools/wave/src/cli-store.ts`, `tools/wave/src/cli-store.spec.ts`, `tools/wave/src/resume-cli.ts`, `tools/wave/src/resume-cli.spec.ts`, `tools/wave/src/spine-cli.ts`, `tools/wave/src/spine-cli.spec.ts`
 
 The skills reach the engine through direct module invocations that the future `npx
-@flotilla/wave-engine <sub>` bin can't expose: `cli-store.ts preflight` (store-preflight, 3
+@formtrieb/flotilla-engine <sub>` bin can't expose: `cli-store.ts preflight` (store-preflight, 3
 call-sites), `resume-cli.ts` (resume, 6 call-sites, **no `resume` case in the router**), and
 `spine-cli.ts` (redundant with the existing `spine` router case). Fold them into the `cli.ts`
 router as first-class subcommands (`store-preflight`, `resume`; collapse the redundant spine
@@ -86,8 +86,8 @@ path) so the whole engine surface is one `{{wave-cli}} <sub>` idiom.
 **Risk** public-API-change · **Worker** background-heavy · **Blocked by** none
 **Files:** `tools/wave/package.json`, `tools/wave/package-lock.json`, `tools/wave/bin/wave-engine.js`
 
-Turn `tools/wave` into `@flotilla/wave-engine`, publishable and runnable as
-`npx @flotilla/wave-engine`. Drop `private: true`, set `version: 0.1.0-beta.0`, add a `bin`
+Turn `tools/wave` into `@formtrieb/flotilla-engine`, publishable and runnable as
+`npx @formtrieb/flotilla-engine`. Drop `private: true`, set `version: 0.1.0-beta.0`, add a `bin`
 shim that runs `tsx` over `cli.ts` (preserves the charter's *no build step*), a `files`
 whitelist, `publishConfig.access: public`, `license`, `repository`, `engines.node`. Move `tsx`
 from `devDependencies` → `dependencies` (raw-TS runtime needs it). The actual `npm publish` is a
@@ -95,7 +95,7 @@ human release step (needs the `@flotilla` scope + `NPM_TOKEN`).
 
 ```json
 {
-  "title": "Make the wave engine a publishable npm package (@flotilla/wave-engine)",
+  "title": "Make the wave engine a publishable npm package (@formtrieb/flotilla-engine)",
   "filingHint": "engine-npm-package",
   "risk": "public-API-change",
   "worker": "background-heavy",
@@ -104,12 +104,12 @@ human release step (needs the `@flotilla` scope + `NPM_TOKEN`).
   "acceptanceCriteria": [
     { "text": "`package.json` drops `private`, sets `version: 0.1.0-beta.0`, adds `bin`, `files`, `publishConfig.access: public`, `license`, `repository`, `engines.node`", "checked": false },
     { "text": "`tsx` is a runtime `dependency`; `npm run typecheck` and `npm test` still clean", "checked": false },
-    { "text": "In a clean temp dir, `npx @flotilla/wave-engine dor --help` (or an offline subcommand) runs via the bin shim with no build step", "checked": false },
+    { "text": "In a clean temp dir, `npx @formtrieb/flotilla-engine dor --help` (or an offline subcommand) runs via the bin shim with no build step", "checked": false },
     { "text": "`npm pack` produces a tarball containing only the whitelisted `files` (src + bin + lockfile), verified by inspection", "checked": false },
     { "text": "Publish to npm is documented as the human release step (scope `@flotilla` + `NPM_TOKEN`); not part of the code change", "checked": false }
   ],
   "bodySections": [
-    { "heading": "What to build", "markdown": "Package the engine for `npx @flotilla/wave-engine` distribution: manifest metadata, a `tsx`-based `bin` shim (no build step), a `files` whitelist, and `tsx` promoted to a runtime dependency. Prove it runs from a cold `npx` install. The `npm publish` itself is a gated human release action, called out but not automated here." }
+    { "heading": "What to build", "markdown": "Package the engine for `npx @formtrieb/flotilla-engine` distribution: manifest metadata, a `tsx`-based `bin` shim (no build step), a `files` whitelist, and `tsx` promoted to a runtime dependency. Prove it runs from a cold `npx` install. The `npm publish` itself is a gated human release action, called out but not automated here." }
   ]
 }
 ```
@@ -120,7 +120,7 @@ human release step (needs the `@flotilla` scope + `NPM_TOKEN`).
 **Files:** `.claude/skills/README.md`, `.claude/skills/wave-setup/reference/setup-mechanics.md`, `.claude/skills/wave-resume/reference/resume-mechanics.md`, `.claude/settings.json`
 
 Repoint the `{{wave-cli}}` *resolution definition* (not the 21 placeholder call-sites) from
-`npx tsx tools/wave/src/cli.ts` to `npx @flotilla/wave-engine`, and rewrite the direct
+`npx tsx tools/wave/src/cli.ts` to `npx @formtrieb/flotilla-engine`, and rewrite the direct
 `tools/wave/src/{cli-store,resume-cli}.ts` invocations to the new subcommand form. Update the
 tracked AFK permission allowlist in `.claude/settings.json` **and** the allowlist `wave-setup`
 scaffolds accordingly (the plugin spec forbids shipping allowlists in the manifest — this stays
@@ -128,16 +128,16 @@ a `wave-setup`/consumer concern).
 
 ```json
 {
-  "title": "Pin {{wave-cli}} resolution and the AFK allowlist to @flotilla/wave-engine",
+  "title": "Pin {{wave-cli}} resolution and the AFK allowlist to @formtrieb/flotilla-engine",
   "filingHint": "wave-cli-resolution-pin",
   "risk": "isolated-refactor",
   "worker": "background",
   "files": [".claude/skills/README.md", ".claude/skills/wave-setup/reference/setup-mechanics.md", ".claude/skills/wave-resume/reference/resume-mechanics.md", ".claude/settings.json"],
   "blockedBy": "none",
   "acceptanceCriteria": [
-    { "text": "The `{{wave-cli}}` resolution definition names `npx @flotilla/wave-engine` in README + setup-mechanics", "checked": false },
+    { "text": "The `{{wave-cli}}` resolution definition names `npx @formtrieb/flotilla-engine` in README + setup-mechanics", "checked": false },
     { "text": "The direct `npx tsx tools/wave/src/{cli-store,resume-cli}.ts` invocations are rewritten to the unified subcommand form (`store-preflight` / `resume`)", "checked": false },
-    { "text": "`.claude/settings.json` allowlist entries cover `npx @flotilla/wave-engine` (both prefix-free and `NODE_USE_ENV_PROXY=1` forms); the old `tools/wave/src/cli.ts` forms are removed or retained only as fallback", "checked": false },
+    { "text": "`.claude/settings.json` allowlist entries cover `npx @formtrieb/flotilla-engine` (both prefix-free and `NODE_USE_ENV_PROXY=1` forms); the old `tools/wave/src/cli.ts` forms are removed or retained only as fallback", "checked": false },
     { "text": "The allowlist `wave-setup` scaffolds is updated to match", "checked": false }
   ],
   "bodySections": [
@@ -245,7 +245,7 @@ marketplace and the plugin it lists via a `./` source). Smoke-test the install f
 **Files:** `docs/retros/2026-07-27-github-live-gate.md`
 
 CHARTER's named live proof: file a small real wave (≥2 issues) on `formtrieb/flotilla` using the
-**installed plugin + published `@flotilla/wave-engine`**, GitHub-Issues store, and run
+**installed plugin + published `@formtrieb/flotilla-engine`**, GitHub-Issues store, and run
 `wave-setup → plan → create → start → close` end to end, landing the PRs. Capture it as a retro.
 HITL because it needs a human driving a real wave with unrestricted egress + a real PAT.
 
@@ -276,7 +276,7 @@ HITL because it needs a human driving a real wave with unrestricted egress + a r
 **Files:** `README.md`, `docs/ONBOARDING.md`
 
 Replace the "plugin not built / vendor-copy only" language with real install instructions
-(`/plugin marketplace add …` → `/plugin install …`; `npx @flotilla/wave-engine` as the engine),
+(`/plugin marketplace add …` → `/plugin install …`; `npx @formtrieb/flotilla-engine` as the engine),
 add a visible **Beta** banner, and keep vendor-copy documented as the fallback path.
 
 ```json
@@ -288,7 +288,7 @@ add a visible **Beta** banner, and keep vendor-copy documented as the fallback p
   "files": ["README.md", "docs/ONBOARDING.md"],
   "blockedBy": "none",
   "acceptanceCriteria": [
-    { "text": "README + ONBOARDING document the plugin install flow and `npx @flotilla/wave-engine` as the primary adoption path", "checked": false },
+    { "text": "README + ONBOARDING document the plugin install flow and `npx @formtrieb/flotilla-engine` as the primary adoption path", "checked": false },
     { "text": "The 'not built / vendor-copy only' framing is removed; vendor-copy remains documented as a fallback", "checked": false },
     { "text": "A clear Beta banner/status is present", "checked": false }
   ],
