@@ -16,7 +16,9 @@
   "files": [
     "src",
     "bin",
-    "package-lock.json"
+    "package-lock.json",
+    "LICENSE",
+    "README.md"
   ],
   "engines": {
     "node": ">=20.11.0"
