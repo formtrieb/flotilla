@@ -4,18 +4,18 @@ The engine-CLI plumbing for the resume reconcile. The skill body owns the **judg
 
 > **The CLI is the source of truth for shapes.** The JSON below are worked examples — if one disagrees with the CLI, the CLI wins.
 
-## `{{wave-cli}}` resolution + the `resume-cli` entrypoint split
+## `{{wave-cli}}` resolution + the `resume` subcommand
 
-In-repo, `{{wave-cli}}` is `npx tsx tools/wave/src/cli.ts <verb>` — used here for `spine read` and the `issue-store` verbs (`read-closing`/`transition`/`flag`). `issue-store` verbs need the store config: append `--config <path>` **after** the op, or run from a dir with `wave.config.json`. The store (`markdown` or `github`) is selected there — you never name a tracker.
+The canonical resolution `{{wave-cli}}` names is `npx @flotilla/wave-engine <verb>` — the published npm package. (This repo is simultaneously the plugin source and a dogfood consumer of its own skills, so its own tracked allowlist additionally keeps the vendored `npx tsx tools/wave/src/cli.ts` / local-binary forms as a fallback; both reach the identical router.) Used here for `spine read` and the `issue-store` verbs (`read-closing`/`transition`/`flag`). `issue-store` verbs need the store config: append `--config <path>` **after** the op, or run from a dir with `wave.config.json`. The store (`markdown` or `github`) is selected there — you never name a tracker.
 
-**The reconciler is a SEPARATE entrypoint**, not a `cli.ts` subcommand: `npx tsx tools/wave/src/resume-cli.ts …`. It is store-free — it reads only the spine + worktrees + sidecars, never the tracker. Do **not** invoke it as `{{wave-cli}} resume`; there is no such subverb.
+**The reconciler is a `{{wave-cli}} resume` subcommand** — issue #77 folded the once-separate `resume-cli.ts` entrypoint into the router (same disk-backed reconciler, same JSON on stdout, same exit codes; only the invocation spelling changed). It is store-free — it reads only the spine + worktrees + sidecars, never the tracker.
 
 ## Commands
 
 | Call | Purpose / shape |
 |---|---|
 | `{{wave-cli}} spine read <spine-path>` | the WAL authority — read FIRST (raw spine markdown on stdout) |
-| `npx tsx tools/wave/src/resume-cli.ts --spine <p> --reports <d> --verdicts <d> [--repo-root <d>] [--marker <m>] [--force]` | `{ rows, fatals, cleanup }` JSON (separate entrypoint) |
+| `{{wave-cli}} resume --spine <p> --reports <d> --verdicts <d> [--repo-root <d>] [--marker <m>] [--force]` | `{ rows, fatals, cleanup }` JSON |
 | `{{wave-cli}} issue-store read-closing <id>` | `ClosingState` — the 4th, skill-only done-reconcile input (tracker-attachment tier of the evidence hierarchy) |
 | `{{wave-cli}} host-pr status --branch <b>` | host-evidence tier (ADR-0023): `{ state: "open"\|"merged"\|"closed-unmerged"\|"none", url? }` — consulted when `read-closing` cannot see a merge on a no-integration workspace. No `--config` (talks to the code host, not the tracker). |
 | `{{wave-cli}} verdict-acked <verdictsDir> <id>` | (FOR-17) the single-owner derivation of `close`'s `--acked` indexes: `{ "acked": [0, 2], "iter": 2\|null, "corrupt": 0 }`. Reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` out of `<verdictsDir>` and returns the 0-based `acVerification` indexes marked `met` — partial/not-met/deferred excluded. Max-iter means a changes-requested → re-dispatch cycle's answer is always the LATEST verdict. No verdict sidecar (or only a corrupt one) → `{ acked: [], iter: null, corrupt: N }`, never a failure — the tick is cosmetic (ADR-0004). |
@@ -23,7 +23,7 @@ In-repo, `{{wave-cli}}` is `npx tsx tools/wave/src/cli.ts <verb>` — used here 
 | `{{wave-cli}} issue-store transition <id> <queued\|in-flight\|in-review>` | idempotent coarse re-projection |
 | `{{wave-cli}} issue-store flag <id> --kind <recoverable-stop\|terminal-failure> --question "<q>" --option "<o>" [--option "<o>"]` | flag a fatal / closed-unmerged → needs-attention |
 
-## `resume-cli` flags
+## `{{wave-cli}} resume` flags
 
 | Flag | Required | Meaning |
 |---|---|---|
@@ -99,9 +99,9 @@ VERDICTS=".flotilla/waves/$SLUG/verdicts"
 # 1. Spine first (WAL authority)
 {{wave-cli}} spine read "$SPINE"
 
-# 2-4. Reconcile (resume-cli — separate entrypoint — enumerates worktrees + reads sidecars itself)
+# 2-4. Reconcile ({{wave-cli}} resume — enumerates worktrees + reads sidecars itself)
 #      Crash-cleanup for every redispatch row runs INSIDE this call, before it prints (FOR-10).
-npx tsx tools/wave/src/resume-cli.ts \
+{{wave-cli}} resume \
   --spine "$SPINE" --reports "$REPORTS" --verdicts "$VERDICTS" --repo-root "$REPO" > result.json
 # clean spine, no sidecars, no worktree → rows[0]: { decision: "redispatch", coarse: "queued" }, fatals: []
 # a corrupt report sidecar → rows[0]: { decision: "needs-attention" }, fatals: [{ id, reason: "corrupt sidecar(s): report@1" }]
@@ -109,7 +109,7 @@ npx tsx tools/wave/src/resume-cli.ts \
 # the time result.json is written; cleanup[0]: { branch, worktreeRemoved: true, branchDeleted: true, blockedByDirty: false }
 # that SAME worktree but dirty (uncommitted changes) → left untouched; cleanup[0].blockedByDirty: true — surface
 # `worktreePath` to a human; only re-run with --force after explicit confirmation:
-#   npx tsx tools/wave/src/resume-cli.ts --spine "$SPINE" --reports "$REPORTS" --verdicts "$VERDICTS" \
+#   {{wave-cli}} resume --spine "$SPINE" --reports "$REPORTS" --verdicts "$VERDICTS" \
 #     --repo-root "$REPO" --force > result.json
 
 # 5. Done-reconcile each in-review row — evidence hierarchy (ADR-0023):
@@ -149,7 +149,7 @@ ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("f
 
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
-| `resume-cli` | `{ rows, fatals, cleanup }` on stdout | domain failure during assembly/resume | missing `--spine`/`--reports`/`--verdicts` |
+| `{{wave-cli}} resume` | `{ rows, fatals, cleanup }` on stdout | domain failure during assembly/resume | missing `--spine`/`--reports`/`--verdicts` |
 | `spine read` | spine source on stdout | bad path / parse | usage |
 | `read-closing` | `ClosingState` | issue not found | usage |
 | `verdict-acked` | `{ acked, iter, corrupt }` printed (found or not found — an absent/corrupt verdict is not a failure) | — | missing `<verdictsDir>`/`<id>` |
@@ -157,7 +157,7 @@ ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("f
 | `transition` | written (idempotent) | invalid transition / not found | usage |
 | `flag` | written | issue not found | bad `--kind` |
 
-(`resume-cli` returns exit 0 even when `fatals[]` is non-empty — a corrupt sidecar is a *routed* outcome, not a CLI failure; the fatals surface in the JSON, not the exit code. Same for `cleanup[]`: a `blockedByDirty: true` entry is a routed outcome, not a failure — `resume-cli` never fails the whole run over one dirty worktree it correctly refused to touch.)
+(`{{wave-cli}} resume` returns exit 0 even when `fatals[]` is non-empty — a corrupt sidecar is a *routed* outcome, not a CLI failure; the fatals surface in the JSON, not the exit code. Same for `cleanup[]`: a `blockedByDirty: true` entry is a routed outcome, not a failure — it never fails the whole run over one dirty worktree it correctly refused to touch.)
 
 ## Why disk beats the spine
 

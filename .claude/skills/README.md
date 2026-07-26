@@ -21,8 +21,13 @@ Each `<skill>/SKILL.md` reaches the engine in one of two ways:
    ```
 
    Each SKILL.md writes the engine invocation as the token **`{{wave-cli}}`** so
-   it stays portable. Your setup pins how it resolves; **in-repo that is
-   `npx tsx tools/wave/src/cli.ts`** (a published plugin pins it via `wave-setup`).
+   it stays portable. The canonical resolution is **`npx @flotilla/wave-engine
+   <subcommand>`** — the published npm package `wave-setup` scaffolds onto the
+   consumer's own allowlist, so a plugin consumer never needs a vendored
+   `tools/wave` path. (This repo is simultaneously the plugin source and a
+   dogfood consumer of its own skills, so its own tracked allowlist additionally
+   keeps the vendored `npx tsx tools/wave/src/cli.ts` / local-binary forms as a
+   fallback — both reach the identical router.)
    The router (`tools/wave/src/cli.ts`) dispatches to the per-subcommand runner
    and returns a JSON result + a meaningful exit code. Subcommands:
    `dor`, `files-drift`, `merge-order`, `closed-by`, `detect-host`,

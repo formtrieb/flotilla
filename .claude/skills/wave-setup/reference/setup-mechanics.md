@@ -6,7 +6,7 @@ The engine-CLI plumbing for authoring and validating `wave.config.json`. The ski
 
 ## `{{wave-cli}}` resolution
 
-The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx tools/wave/src/cli.ts`. `config validate` does **not** need the store config — it *is* the config check, so it takes the path directly. For other commands that need the store config, place `--config` **after** the subcommand and its op (e.g. `issue-store create --input f.json --config c.json`), never before the subcommand.
+The wave engine CLI. The canonical resolution is **`npx @flotilla/wave-engine`** — the published npm package; scaffold it as the primary allowlist entry for every consumer (see the allowlist scaffold below), so a plugin consumer never needs a vendored `tools/wave` path. This repo is simultaneously the plugin source and a dogfood consumer of its own skills, so its own tracked allowlist additionally keeps the vendored `npx tsx tools/wave/src/cli.ts` / local-binary forms as a fallback — both invoke the identical router. `config validate` does **not** need the store config — it *is* the config check, so it takes the path directly. For other commands that need the store config, place `--config` **after** the subcommand and its op (e.g. `issue-store create --input f.json --config c.json`), never before the subcommand.
 
 ## Commands
 
@@ -25,14 +25,14 @@ The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx t
 
 On exit 1, read the error, fix the named field in the JSON, and re-run. Do not pass the config to downstream skills until you get exit 0.
 
-## Store-preflight (`cli-store preflight`) — tracker facts
+## Store-preflight (`store-preflight`) — tracker facts
 
 `config validate` proves the JSON parses; **the store-preflight proves the live TRACKER preconditions hold** (FOR-12). It probes them *for real* through the engine's existing API seam — no separate integration script. The code-host posture (merge token, allow-auto-merge, required-checks) is a **separate owner** — see the host-preflight section below (ADR-0023 amendment: one fact, one owner).
 
-> **Different entrypoint.** The preflight is its own runnable module, **not** a `{{wave-cli}}` (`cli.ts`) subcommand — invoke `tools/wave/src/cli-store.ts` directly:
+> **Unified subcommand form.** `store-preflight` is a `{{wave-cli}}` (`cli.ts` router) subcommand — issue #77 folded the once-separate `cli-store.ts` entrypoint into the router, so invoke it exactly like every other engine op:
 >
 > ```bash
-> npx tsx tools/wave/src/cli-store.ts preflight --config wave.config.json
+> {{wave-cli}} store-preflight [--config wave.config.json]
 > ```
 >
 > `--config` selects the store config (default `wave.config.json`). Like the other store-touching verbs, this one builds the real store — a `github` config needs `GITHUB_TOKEN`, a `linear` config needs `LINEAR_API_KEY`, in the ambient env. On Node ≥ 24 under a proxied sandbox this needs `NODE_USE_ENV_PROXY=1` so the raw-fetch adapters honour the harness proxy — the tracked env block below is the standing source for that flag once it's scaffolded; prefix it explicitly (dogfood in the sandbox) only where no tracked env block applies yet.
@@ -59,7 +59,7 @@ The report is JSON on stdout:
 }
 ```
 
-### Exit codes for `cli-store preflight`
+### Exit codes for `store-preflight`
 
 | Code | Meaning |
 |---|---|
@@ -270,8 +270,8 @@ Exit 0 means the engine will accept it. Any other exit code means there is a pro
 Then, once `config validate` passes, prove the live **tracker** preconditions (integration, state catalog) with the store-preflight, and the live **code-host** posture (merge token, allow-auto-merge, required-checks) with the host-preflight:
 
 ```bash
-npx tsx tools/wave/src/cli-store.ts preflight --config wave.config.json   # tracker facts
-{{wave-cli}} host-pr preflight                                            # code-host posture (store-blind)
+{{wave-cli}} store-preflight --config wave.config.json   # tracker facts
+{{wave-cli}} host-pr preflight                            # code-host posture (store-blind)
 ```
 
 Exit 0 from each means every check passed / is `not-applicable` / is `advisory`/`unknown`. On exit 1, the failing check's `detail` names the exact gap — fix it in Linear/GitHub or the config and re-run. Only after `config validate` **and both preflights** exit 0 is the config ready for `wave-plan`/`wave-create`.
@@ -282,7 +282,7 @@ The SKILL.md "Scaffolding the tracked permission allowlist and env block" precon
 
 > **The env block, first — the structural fix.** A consumer pattern proven live (the second consumer's tracked settings, observed 2026-07-22): set `NODE_USE_ENV_PROXY=1` in the tracked `env` block and every engine-CLI invocation in the repo inherits it — no per-call prefix, no way to forget it. The raw-fetch adapters need this under a proxied sandbox (wave-shared Convention 1); baking the flag only into allowlist entries instead is fragile in two directions from a single miss — an un-prefixed call silently drops the proxy (a false-`unreachable`/mis-authenticated failure) *and* fails the allowlist's literal prefix match at the same time, hitting the permission gate mid-wave.
 >
-> **Both engine-CLI invocation forms, deliberately doubled on the allowlist.** With the env block in place the per-call `NODE_USE_ENV_PROXY=1` prefix is *redundant* for every in-repo invocation, so the allowlist names the **prefix-free** forms (both binary styles) as the primary path. The **env-prefixed** forms stay on the allowlist too — they remain valid for existing briefs written before the env block existed and for cross-repo habits that still type the prefix — so neither invocation style hits the gate. The driver's `WAVE_CLI` defaults to the npx-free local binary (`./tools/wave/node_modules/.bin/tsx …`) to dodge the shared-npm-cache-lock `ECOMPROMISED` deaths under fan-out (consumer retro KW-F7), with `npx tsx …` as the documented fallback — so the allowlist names **both** binary styles, each with and without the prefix. Naming only the `npx` form is the exact KW-F3 miss that briefed Workers onto a gated path.
+> **Both engine-CLI invocation forms, deliberately doubled on the allowlist.** With the env block in place the per-call `NODE_USE_ENV_PROXY=1` prefix is *redundant* for every in-repo invocation, so the allowlist names the **prefix-free** forms (both binary styles) as the primary path. The **env-prefixed** forms stay on the allowlist too — they remain valid for existing briefs written before the env block existed and for cross-repo habits that still type the prefix — so neither invocation style hits the gate. The driver's `WAVE_CLI` defaults to the npx-free local binary (`./tools/wave/node_modules/.bin/tsx …`) to dodge the shared-npm-cache-lock `ECOMPROMISED` deaths under fan-out (consumer retro KW-F7), with **`npx @flotilla/wave-engine …`** — the published npm package — as the documented fallback, so the allowlist names **both** binary styles, each with and without the prefix. Naming only one of the two is the exact KW-F3 miss that briefed Workers onto a gated path. A consumer that still vendors `tools/wave` locally (this repo included, since it is simultaneously the plugin source and a dogfood consumer of its own skills) additionally keeps the legacy `npx tsx tools/wave/src/cli.ts` forms on the allowlist as a further fallback — a fresh plugin consumer with no vendored copy omits those two entries entirely.
 
 ```json
 {
@@ -293,6 +293,8 @@ The SKILL.md "Scaffolding the tracked permission allowlist and env block" precon
     "allow": [
       "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(npx @flotilla/wave-engine:*)",
+      "Bash(NODE_USE_ENV_PROXY=1 npx @flotilla/wave-engine:*)",
       "Bash(npx tsx tools/wave/src/cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts:*)",
       "Bash(git worktree:*)",
@@ -328,7 +330,7 @@ The SKILL.md "Scaffolding the tracked permission allowlist and env block" precon
 ```
 
 - **`env` block** — sets `NODE_USE_ENV_PROXY: "1"` for every command the harness runs in this repo (Bash and the engine CLI alike). This is the recommended mode for every consumer under a proxied sandbox; it makes the per-call prefix on the allowlist entries below redundant, not required — see the rationale above.
-- **Engine-CLI invocation forms** — the first four allowlist entries: the npx-free local binary and the `npx` fallback, each named **prefix-free** (the form every in-repo call now resolves to, thanks to the env block) **and** env-prefixed (kept for backwards compatibility with existing briefs and cross-repo habits). If this consumer runs the engine from a different repo-relative path, scaffold that prefix instead — the invariant is *both invocation forms for both binary styles*, not this exact path.
+- **Engine-CLI invocation forms** — the first four allowlist entries: the npx-free local binary and the `npx @flotilla/wave-engine` package form, each named **prefix-free** (the form every in-repo call now resolves to, thanks to the env block) **and** env-prefixed (kept for backwards compatibility with existing briefs and cross-repo habits). The npm package is the canonical resolution for `{{wave-cli}}` — a fresh plugin consumer needs only these four entries, no vendored `tools/wave` path. The trailing two `npx tsx tools/wave/src/cli.ts` entries (prefix-free + env-prefixed) are a **fallback for a consumer that still vendors `tools/wave` locally** (this repo included, dogfooding its own skills pre-publish) — omit them entirely once the consumer has no such vendored copy. If this consumer runs the engine from a different repo-relative path, scaffold that prefix instead — the invariant is *both invocation forms for both binary styles*, not this exact path.
 - **Worker git verbs** — `worktree/fetch/checkout/branch/add/commit/reset/push`: the workspace-setup and termination surface (anchor, branch, stage, commit, push) every Worker and Reviewer runs.
 - **Deps installer** — the last entry is a placeholder: replace `npm ci` with the consumer's actual `depsSetup` command(s) (`composer install`, `npm ci --prefix tools/wave`, …). It is the **first** Worker step and installs the local `tsx` binary the npx-free `WAVE_CLI` resolves against, so it must be allowlisted too.
 - **`deny` block — the secret-echo structural anchor (wave-shared Convention 8, FOR-81).** Three live occurrences of the same class — a Worker's flawed `${VAR:-no}` echo, a Worker's `printenv` whole-environment dump, then a Reviewer's `cat` of the gitignored `.claude/settings.local.json` while hunting a config precedent — each found a vector the previous prose hardening hadn't named. A brief clause depends on an agent having read and internalized it; a `permissions.deny` entry does not. These entries block the `Read` tool, and — as far as the permission syntax can express it — Bash's read-shaped command forms (`cat`/`less`/`more`/`head`/`tail`), against the two file classes every consumer's harness can hold live credentials in: the gitignored local settings file and any `.env`-class file. Scaffold this **identically** to flotilla's own tracked `.claude/settings.json` — the vector is universal, not consumer-specific, so there is no per-consumer judgment to exercise here (unlike the allow-list, which does vary by the consumer's own engine-invocation path). The brief clause (wave-start's `workerBrief()` policy clause 5) stays in place as defense-in-depth on top of this anchor, not a replacement for it.
