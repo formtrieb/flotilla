@@ -1,0 +1,24 @@
+{
+  "name": "flotilla",
+  "version": "0.1.0-beta.0",
+  "description": "Portable, Claude-Code-native wave-orchestration toolkit: plan a batch of independently-grabbable issues, dispatch parallel AFK agents in isolated worktrees, review each, land via PRs.",
+  "author": {
+    "name": "formtrieb"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "wave-orchestration",
+    "multi-agent",
+    "issue-tracker",
+    "github-issues",
+    "linear",
+    "afk-agents",
+    "code-review"
+  ],
+  "skills": [
+    "./.claude/skills"
+  ],
+  "agents": [
+    "./.claude/agents/wave-reviewer.md"
+  ]
+}
