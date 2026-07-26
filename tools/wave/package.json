@@ -15,8 +15,9 @@
   },
   "files": [
     "src",
+    "!src/**/*.spec.ts",
+    "!src/__fixtures__",
     "bin",
-    "package-lock.json",
     "LICENSE",
     "README.md"
   ],
