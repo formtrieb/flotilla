@@ -314,30 +314,30 @@ function printUsage(): void {
   process.stderr.write(
     [
       'usage:',
-      '  wave-validate <issue-path> [<issue-path> ...]',
-      '  wave-validate dor <issue-path> [<issue-path> ...]',
-      '  wave-validate dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
-      '  wave-validate files-drift <issue-path> <sha-range>',
-      '  wave-validate merge-order <wave-md-path>',
-      '  wave-validate closed-by <closed-by-line>',
-      '  wave-validate detect-host <remote-url>',
-      '  wave-validate worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]',
-      '  wave-validate conflict-map <issue-path> [<issue-path> ...]',
-      '  wave-validate conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
-      '  wave-validate cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
-      '  wave-validate issue-store <op> [...args] [--config <path>]',
-      '  wave-validate spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status> <spine-path> [...args]',
-      '  wave-validate config validate <path>',
-      '  wave-validate resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
-      '  wave-validate store-preflight [--config <path>]',
-      '  wave-validate route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>',
-      '  wave-validate route-outcome --outcome <o> --state <s>',
-      '  wave-validate validate-report <file>',
-      '  wave-validate validate-verdict <file>',
-      '  wave-validate write-report <json-file> --dir <reportsDir> --id <id> --iter <n>',
-      '  wave-validate write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>',
-      '  wave-validate verdict-acked <verdictsDir> <id>',
-      '  wave-validate render-verdict <verdictsDir> <id> --anchor <sha>',
+      '  flotilla-engine <issue-path> [<issue-path> ...]',
+      '  flotilla-engine dor <issue-path> [<issue-path> ...]',
+      '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
+      '  flotilla-engine files-drift <issue-path> <sha-range>',
+      '  flotilla-engine merge-order <wave-md-path>',
+      '  flotilla-engine closed-by <closed-by-line>',
+      '  flotilla-engine detect-host <remote-url>',
+      '  flotilla-engine worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]',
+      '  flotilla-engine conflict-map <issue-path> [<issue-path> ...]',
+      '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
+      '  flotilla-engine cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
+      '  flotilla-engine issue-store <op> [...args] [--config <path>]',
+      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status> <spine-path> [...args]',
+      '  flotilla-engine config validate <path>',
+      '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
+      '  flotilla-engine store-preflight [--config <path>]',
+      '  flotilla-engine route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>',
+      '  flotilla-engine route-outcome --outcome <o> --state <s>',
+      '  flotilla-engine validate-report <file>',
+      '  flotilla-engine validate-verdict <file>',
+      '  flotilla-engine write-report <json-file> --dir <reportsDir> --id <id> --iter <n>',
+      '  flotilla-engine write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>',
+      '  flotilla-engine verdict-acked <verdictsDir> <id>',
+      '  flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>',
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
       '',
@@ -478,7 +478,7 @@ function runFilesDrift(args: string[]): number {
     process.stderr.write(
       [
         'error: files-drift requires two arguments',
-        'usage: wave-validate files-drift <issue-path> <sha-range>',
+        'usage: flotilla-engine files-drift <issue-path> <sha-range>',
         '',
       ].join('\n'),
     );
@@ -565,7 +565,7 @@ function runMergeOrder(
     process.stderr.write(
       [
         'error: merge-order requires one argument',
-        'usage: wave-validate merge-order <wave-md-path>',
+        'usage: flotilla-engine merge-order <wave-md-path>',
         '',
       ].join('\n'),
     );
@@ -603,7 +603,7 @@ function runClosedBy(args: string[]): number {
     process.stderr.write(
       [
         'error: closed-by requires one argument',
-        'usage: wave-validate closed-by <closed-by-line>',
+        'usage: flotilla-engine closed-by <closed-by-line>',
         '',
       ].join('\n'),
     );
@@ -631,7 +631,7 @@ function runDetectHost(args: string[]): number {
     process.stderr.write(
       [
         'error: detect-host requires one argument',
-        'usage: wave-validate detect-host <remote-url>',
+        'usage: flotilla-engine detect-host <remote-url>',
         '',
       ].join('\n'),
     );
@@ -798,7 +798,7 @@ function runWorktreeCleanup(args: string[]): number {
       process.stderr.write(
         [
           `error: worktree-cleanup: unknown flag ${a}`,
-          'usage: wave-validate worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--config <path>]',
+          'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--config <path>]',
           '',
         ].join('\n'),
       );
@@ -955,7 +955,7 @@ function runVerdictAcked(args: string[]): number {
     process.stderr.write(
       [
         'error: verdict-acked requires <verdictsDir> <id>',
-        'usage: wave-validate verdict-acked <verdictsDir> <id>',
+        'usage: flotilla-engine verdict-acked <verdictsDir> <id>',
         '',
       ].join('\n'),
     );
@@ -1006,7 +1006,7 @@ function runRenderVerdict(args: string[]): number {
     process.stderr.write(
       [
         'error: render-verdict requires <verdictsDir> <id> --anchor <sha>',
-        'usage: wave-validate render-verdict <verdictsDir> <id> --anchor <sha>',
+        'usage: flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>',
         '',
       ].join('\n'),
     );

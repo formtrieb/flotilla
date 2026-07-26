@@ -1724,7 +1724,7 @@ describe('router wiring — resume (issue #77)', () => {
 
   it('the top-level usage lists resume as a subcommand and names resume-cli.ts only as an alias', () => {
     main([]);
-    expect(stderrBuf).toMatch(/wave-validate resume --spine/);
+    expect(stderrBuf).toMatch(/flotilla-engine resume --spine/);
     expect(stderrBuf).toMatch(/resume-cli\.ts/);
     expect(stderrBuf).toMatch(/alias/i);
   });
@@ -2140,7 +2140,7 @@ describe('FOR-11 — top-level usage derives from the real dispatch tables', () 
     main([]);
     const spineUsageLine = stderrBuf
       .split('\n')
-      .find((l) => l.includes('wave-validate spine '));
+      .find((l) => l.includes('flotilla-engine spine '));
     expect(spineUsageLine).toBeDefined();
     for (const op of realOps) {
       expect(spineUsageLine).toContain(op);
