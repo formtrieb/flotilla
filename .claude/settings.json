@@ -2,6 +2,9 @@
   "env": {
     "NODE_USE_ENV_PROXY": "1"
   },
+  "enabledPlugins": {
+    "flotilla@formtrieb": false
+  },
   "permissions": {
     "allow": [
       "Bash(npx tsx tools/wave/src/cli.ts:*)",
