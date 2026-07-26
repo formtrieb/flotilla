@@ -91,7 +91,7 @@ Turn `tools/wave` into `@formtrieb/flotilla-engine`, publishable and runnable as
 shim that runs `tsx` over `cli.ts` (preserves the charter's *no build step*), a `files`
 whitelist, `publishConfig.access: public`, `license`, `repository`, `engines.node`. Move `tsx`
 from `devDependencies` → `dependencies` (raw-TS runtime needs it). The actual `npm publish` is a
-human release step (needs the `@flotilla` scope + `NPM_TOKEN`).
+human release step. (Superseded: the scope is `@formtrieb`, already owned, and publishing runs through trusted publishing from CI — there is no `NPM_TOKEN`.)
 
 ```json
 {
@@ -106,7 +106,7 @@ human release step (needs the `@flotilla` scope + `NPM_TOKEN`).
     { "text": "`tsx` is a runtime `dependency`; `npm run typecheck` and `npm test` still clean", "checked": false },
     { "text": "In a clean temp dir, `npx @formtrieb/flotilla-engine dor --help` (or an offline subcommand) runs via the bin shim with no build step", "checked": false },
     { "text": "`npm pack` produces a tarball containing only the whitelisted `files` (src + bin + lockfile), verified by inspection", "checked": false },
-    { "text": "Publish to npm is documented as the human release step (scope `@flotilla` + `NPM_TOKEN`); not part of the code change", "checked": false }
+    { "text": "Publish to npm is documented as the human release step; not part of the code change", "checked": false }
   ],
   "bodySections": [
     { "heading": "What to build", "markdown": "Package the engine for `npx @formtrieb/flotilla-engine` distribution: manifest metadata, a `tsx`-based `bin` shim (no build step), a `files` whitelist, and `tsx` promoted to a runtime dependency. Prove it runs from a cold `npx` install. The `npm publish` itself is a gated human release action, called out but not automated here." }
