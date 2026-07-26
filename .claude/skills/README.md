@@ -21,7 +21,7 @@ Each `<skill>/SKILL.md` reaches the engine in one of two ways:
    ```
 
    Each SKILL.md writes the engine invocation as the token **`{{wave-cli}}`** so
-   it stays portable. The canonical resolution is **`npx @flotilla/wave-engine
+   it stays portable. The canonical resolution is **`npx @formtrieb/flotilla-engine
    <subcommand>`** — the published npm package `wave-setup` scaffolds onto the
    consumer's own allowlist, so a plugin consumer never needs a vendored
    `tools/wave` path. (This repo is simultaneously the plugin source and a

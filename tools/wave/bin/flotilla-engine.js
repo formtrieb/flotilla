@@ -2,8 +2,8 @@
 'use strict';
 
 /**
- * `wave-engine` bin shim — the published entrypoint for
- * `npx @flotilla/wave-engine <subcommand> [...]`.
+ * `flotilla-engine` bin shim — the published entrypoint for
+ * `npx @formtrieb/flotilla-engine <subcommand> [...]`.
  *
  * The charter's "engine ships raw TS, no build step" rule (CLAUDE.md,
  * CHARTER §4) means the package contains `src/*.ts` and nothing compiled.
@@ -19,7 +19,7 @@
  *
  * The shim deliberately adds NO surface of its own — no flags, no `--version`,
  * no argv rewriting. Every token after the bin name reaches the router
- * verbatim, so `npx @flotilla/wave-engine dor <path>` and the in-repo
+ * verbatim, so `npx @formtrieb/flotilla-engine dor <path>` and the in-repo
  * `tsx tools/wave/src/cli.ts dor <path>` are the same invocation.
  */
 
@@ -29,7 +29,7 @@ try {
   require('tsx/cjs');
 } catch (err) {
   process.stderr.write(
-    'error: @flotilla/wave-engine could not load its TypeScript runtime ' +
+    'error: @formtrieb/flotilla-engine could not load its TypeScript runtime ' +
       "('tsx'). It is a runtime dependency of this package — reinstall the " +
       'package (or run `npm install` in its directory) and retry.\n' +
       `cause: ${(err && err.message) || String(err)}\n`,

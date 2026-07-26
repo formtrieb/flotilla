@@ -28,7 +28,7 @@ notice is retained (reproduced at the end of this file).
 
 **What changed at seed (mechanical, build-only — no logic touched):**
 - Replaced the Nx/Vite build with a standalone toolchain: `package.json`
-  (`@flotilla/wave-engine`, plain `vitest`/`tsc` scripts), `tsconfig.json`
+  (`@formtrieb/flotilla-engine`, plain `vitest`/`tsc` scripts), `tsconfig.json`
   (the Ur's package-scope path aliases dropped, no `experimentalDecorators`), `vitest.config.ts`
   (no `nxViteTsPaths` plugin).
 - Trimmed the `gate-runner` re-export from `src/index.ts` (replaced with a pointer note).
