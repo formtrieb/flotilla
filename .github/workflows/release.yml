@@ -52,10 +52,10 @@ jobs:
         working-directory: tools/wave
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           # Same Node line the verify workflow pins, so the gates re-run below on the
           # toolchain they gate against.
@@ -71,17 +71,32 @@ jobs:
           # documented example is the strongest evidence available, and departing from
           # it is the risky direction rather than the cautious one. Do not delete this
           # on the reasoning that an unused auth stanza must be harmful.
+          #
+          # That example is now published formally, and this step is pinned to the
+          # action major it pins: actions/setup-node, docs/advanced-usage.md,
+          # "Publishing to npm with Trusted Publisher (OIDC)". Read it before changing
+          # anything in this block.
           registry-url: "https://registry.npmjs.org"
 
           # DEPENDENCY CACHING IS DELIBERATELY OFF — do not switch it on for speed.
-          # The vendor's example disables it too, on the stated ground that caching must
-          # never be used in a release build. That is a supply-chain property, not a
-          # performance preference: a stale or poisoned cache can put dependency content
-          # into the artifact this job publishes that differs from what a clean `npm ci`
-          # resolves, and provenance on this package is a claim about precisely that
-          # artifact. A release job runs rarely; the seconds a cache saves are worth
-          # nothing against the property it costs. (The verify workflow does cache — it
-          # runs on every push and publishes nothing.)
+          # This input is the vendor's own instruction for a trusted-publishing job,
+          # and the ground it gives is a supply-chain property rather than a
+          # performance preference. Two distinct costs, both paid by this job alone:
+          # a poisoned cache can expose credentials — including the OIDC token this
+          # workflow's entire security model rests on — to attacker-controlled code;
+          # and it can put dependency content into the published artifact that differs
+          # from what a clean `npm ci` resolves, which is precisely what provenance on
+          # this package claims. A release job runs rarely; the seconds a cache saves
+          # are worth nothing against either. (The verify workflow does cache — it runs
+          # on every push and publishes nothing, so neither cost applies to it.)
+          #
+          # WHY THIS IS STATED RATHER THAN LEFT TO THE DEFAULT: from setup-node v5 on,
+          # npm caching switches itself ON whenever package.json names npm through
+          # `packageManager` or `devEngines.packageManager`. tools/wave/package.json
+          # names neither today, so silence would happen to be correct — right up until
+          # someone adds that field for an unrelated reason and silently turns caching
+          # on in the release build. Saying it holds either way.
+          package-manager-cache: false
 
       - name: Install an npm new enough for trusted publishing
         # THE TRAP THIS STEP EXISTS FOR — do not "simplify" it away.
