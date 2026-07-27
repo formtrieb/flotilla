@@ -2,6 +2,8 @@
 
 > **Portable, Claude-Code-native wave-orchestration toolkit.** Plan a batch of independently-grabbable issues, dispatch parallel AFK agents in isolated worktrees, review each with a schema-validated verdict, land via PRs — with cross-wave **conflict/parallelism reasoning** as the universal core.
 
+**Status: beta** — `0.1.0-beta.0`. The orchestration is not new; it has been driving flotilla's own development across thirty-plus live waves. What is new is that it is installable by someone else. The distribution is what carries the beta label, and [CHANGELOG.md](CHANGELOG.md) names precisely which parts of it have not been proven yet.
+
 ## What flotilla is
 
 flotilla turns a backlog of tracker issues into a **wave**: a batch of independently-grabbable work items that a Coordinator plans, then dispatches to parallel AFK (away-from-keyboard) agents, each isolated in its own git worktree. Every agent's work is reviewed by a second, universal Reviewer agent before anything lands — the review returns a schema-validated verdict, not free prose, so routing to approve / request-changes / stop is deterministic rather than inferred. Landing happens via pull requests against a protected default branch; nothing is ever pushed directly to it.
@@ -30,9 +32,24 @@ flotilla is two layers: a pure engine that is already harness-agnostic, and adap
 
 ## Getting started
 
-Adopting flotilla in your own repo (or your own project inside this one) starts with **[docs/ONBOARDING.md](docs/ONBOARDING.md)** — the vendor-copy adoption path, the preconditions checklist (tracker choice, host integration, protected-main, env keys), and what's on the roadmap versus what's built today.
+flotilla installs as two pieces: the **skills** as a Claude Code plugin, and the **engine** from the public npm registry. In Claude Code, inside the repo you want to run waves in:
 
-Contributing to flotilla itself? Start with [CLAUDE.md](CLAUDE.md).
+```
+/plugin marketplace add formtrieb/flotilla
+/plugin install flotilla@formtrieb
+```
+
+Then run the `wave-setup` skill. It interviews you on your tracker, your eligibility labels, and your verify commands, writes `wave.config.json`, and scaffolds the permission allowlist a wave needs to run unattended.
+
+You do not install the engine separately. The skills resolve it as `npx @formtrieb/flotilla-engine`, which requires nothing in your repo and no vendored copy:
+
+```bash
+npx @formtrieb/flotilla-engine        # prints the verb list
+```
+
+The full path — what `wave-setup` asks you, the preconditions that fail silently if skipped, and the vendor-copy fallback for repos that cannot install a plugin — is **[docs/ONBOARDING.md](docs/ONBOARDING.md)**.
+
+Contributing to flotilla itself? Start with [CLAUDE.md](CLAUDE.md). Cutting a release? [docs/RELEASING.md](docs/RELEASING.md).
 
 ## License & provenance
 
