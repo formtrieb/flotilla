@@ -46,6 +46,11 @@ const WORKFLOW_DRIVER_MD = join(
   '../../../.claude/skills/wave-start/reference/workflow-driver.md',
 );
 
+const START_MECHANICS_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-start/reference/start-mechanics.md',
+);
+
 const DRIVER_WORKER_REPORT_ANCHOR =
   '// ── inlined from wave-shared (copy of WORKER_REPORT_SCHEMA) ──';
 
@@ -333,5 +338,240 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
     expect(regressed).not.toEqual(driverMd); // both replacements actually matched
     expect(hasUnquotedInterpolation(regressed, 'cd ${REPO_ROOT}')).toBe(true);
     expect(hasUnquotedInterpolation(regressed, '--dir ${dir}')).toBe(true);
+  });
+});
+
+describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FIELDS assertion (FOR-139)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  /**
+   * Finds `openCh` at or after `fromIdx` and walks bracket depth to the
+   * matching `closeCh`, returning the balanced substring (inclusive of both
+   * delimiters). Shares the brace-walking idea `extractInlinedSchema` above
+   * uses for object literals, generalized to any single delimiter pair so it
+   * can also pull a `[...]` array literal or a `{...}` function body.
+   */
+  function extractBalanced(
+    md: string,
+    fromIdx: number,
+    openCh: string,
+    closeCh: string,
+  ): string {
+    const openIdx = md.indexOf(openCh, fromIdx);
+    if (openIdx < 0) {
+      throw new Error(`no "${openCh}" found at/after index ${fromIdx} in workflow-driver.md`);
+    }
+    let depth = 0;
+    for (let i = openIdx; i < md.length; i++) {
+      const ch = md[i];
+      if (ch === openCh) depth++;
+      else if (ch === closeCh) {
+        depth--;
+        if (depth === 0) return md.slice(openIdx, i + 1);
+      }
+    }
+    throw new Error(`unbalanced ${openCh}/${closeCh} starting at index ${openIdx} in workflow-driver.md`);
+  }
+
+  /**
+   * Loads the CURRENT compose-time assertion (REQUIRED_ROW_FIELDS,
+   * isMissingField, assertRequiredRowFields) straight out of the shipped
+   * workflow-driver.md source, the same eval-the-literal approach the
+   * schema-drift tests above use for the `*_SCHEMA` literals — the driver has
+   * no importable module (it is pasted into a Workflow `script` sandbox with
+   * no filesystem/import). A rename or reshape of any of the three
+   * declarations fails this extraction loudly rather than silently testing a
+   * stale copy hard-coded into this spec.
+   */
+  function loadAssertionModule(md: string): {
+    REQUIRED_ROW_FIELDS: string[];
+    isMissingField: (value: unknown) => boolean;
+    assertRequiredRowFields: (issue: Record<string, unknown>) => void;
+  } {
+    const constNeedle = 'const REQUIRED_ROW_FIELDS = ';
+    const constIdx = md.indexOf(constNeedle);
+    if (constIdx < 0) {
+      throw new Error('const REQUIRED_ROW_FIELDS = [...] not found in workflow-driver.md');
+    }
+    const constSrc = extractBalanced(md, constIdx + constNeedle.length, '[', ']');
+
+    const missingNeedle = 'function isMissingField(value) ';
+    const missingIdx = md.indexOf(missingNeedle, constIdx);
+    if (missingIdx < 0) {
+      throw new Error('function isMissingField(value) {...} not found in workflow-driver.md');
+    }
+    const missingSrc = extractBalanced(md, missingIdx + missingNeedle.length, '{', '}');
+
+    const assertNeedle = 'function assertRequiredRowFields(issue) ';
+    const assertIdx = md.indexOf(assertNeedle, missingIdx);
+    if (assertIdx < 0) {
+      throw new Error('function assertRequiredRowFields(issue) {...} not found in workflow-driver.md');
+    }
+    const assertSrc = extractBalanced(md, assertIdx + assertNeedle.length, '{', '}');
+
+    const src = `
+      const REQUIRED_ROW_FIELDS = ${constSrc};
+      function isMissingField(value) ${missingSrc}
+      function assertRequiredRowFields(issue) ${assertSrc}
+      return { REQUIRED_ROW_FIELDS, isMissingField, assertRequiredRowFields };
+    `;
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    return Function(src)();
+  }
+
+  /** A row with every REQUIRED_ROW_FIELDS entry present and valid. */
+  const VALID_ROW: Record<string, unknown> = {
+    id: '42',
+    slug: 'demo-slug',
+    branch: 'wave/42-demo-slug',
+    risk: 'mechanical',
+    model: 'sonnet',
+    anchorSha: 'deadbeefcafe',
+    coordinatorBranch: 'feat/demo',
+    issueSpec: 'Do the thing.',
+    prTitle: 'fix: do the thing',
+    closePhrase: 'Closes #42',
+    siblingBranches: '(none — last in-flight issue)',
+  };
+
+  it('AC1/AC3 — REQUIRED_ROW_FIELDS names more than just anchorSha, in one place', () => {
+    const { REQUIRED_ROW_FIELDS } = loadAssertionModule(driverMd);
+    expect(REQUIRED_ROW_FIELDS).toEqual(expect.arrayContaining(['anchorSha', 'branch']));
+    // The original W2-F1 fix covered exactly one field; this must cover more.
+    expect(REQUIRED_ROW_FIELDS.length).toBeGreaterThan(1);
+    // Every field this test's own VALID_ROW carries is exactly what the
+    // extracted list requires — keeps the fixture and the source in lockstep.
+    expect(new Set(REQUIRED_ROW_FIELDS)).toEqual(new Set(Object.keys(VALID_ROW)));
+  });
+
+  it('a fully-populated row passes without throwing', () => {
+    const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+    expect(() => assertRequiredRowFields({ ...VALID_ROW })).not.toThrow();
+  });
+
+  it.each(Object.keys(VALID_ROW))(
+    'AC1 — a row with an ABSENT %s throws, naming both the row id and the field',
+    (field) => {
+      const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+      const row = { ...VALID_ROW };
+      delete row[field];
+      expect(() => assertRequiredRowFields(row)).toThrow(new RegExp(field));
+      if (field !== 'id') {
+        // the row's own id must still be named in the thrown message
+        expect(() => assertRequiredRowFields(row)).toThrow(/42/);
+      }
+    },
+  );
+
+  it.each(Object.keys(VALID_ROW))(
+    'AC2 — a row with the literal string "undefined" for %s throws (the template-renders-a-missing-property shape)',
+    (field) => {
+      const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+      const row = { ...VALID_ROW, [field]: 'undefined' };
+      expect(() => assertRequiredRowFields(row)).toThrow(new RegExp(field));
+    },
+  );
+
+  it.each(Object.keys(VALID_ROW))(
+    'AC2 — a row with an empty/whitespace-only %s throws',
+    (field) => {
+      const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+      const row = { ...VALID_ROW, [field]: '   ' };
+      expect(() => assertRequiredRowFields(row)).toThrow(new RegExp(field));
+    },
+  );
+
+  it('AC4 — negative control: the OLD single-field assertion (anchorSha only) does NOT catch a missing branch/slug/etc, while the new one does', () => {
+    // A literal snapshot of the pre-fix assertion this generalizes past
+    // (FOR-139's predecessor, itself W2-F1's fix): it validated ONLY
+    // anchorSha. This is the exact evidence the acceptance criteria asks
+    // for — the new test table above must be seen to FAIL against this
+    // narrower assertion, not merely pass against assertRequiredRowFields.
+    function assertAnchorShaOnly(issue: Record<string, unknown>): void {
+      const a = issue.anchorSha;
+      if (a === undefined || a === null || a === 'undefined' || String(a).trim() === '') {
+        throw new Error(
+          `wave-start: row ${issue.id} has no valid anchorSha (got ${JSON.stringify(a)}) — wire anchorSha into ISSUES before dispatch`,
+        );
+      }
+    }
+
+    const rowMissingBranch = { ...VALID_ROW };
+    delete rowMissingBranch.branch;
+    // The single-field assertion is silent about the missing branch (this is
+    // the assertion the test table above would have run against, pre-fix —
+    // it must NOT throw here, or this negative control proves nothing).
+    expect(() => assertAnchorShaOnly(rowMissingBranch)).not.toThrow();
+
+    const rowMissingSlug = { ...VALID_ROW };
+    delete rowMissingSlug.slug;
+    expect(() => assertAnchorShaOnly(rowMissingSlug)).not.toThrow();
+
+    const rowMissingPrTitle = { ...VALID_ROW };
+    delete rowMissingPrTitle.prTitle;
+    expect(() => assertAnchorShaOnly(rowMissingPrTitle)).not.toThrow();
+
+    // ...while the new, generalized assertion catches each and names the field.
+    const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+    expect(() => assertRequiredRowFields(rowMissingBranch)).toThrow(/branch/);
+    expect(() => assertRequiredRowFields(rowMissingSlug)).toThrow(/slug/);
+    expect(() => assertRequiredRowFields(rowMissingPrTitle)).toThrow(/prTitle/);
+  });
+
+  it('negative control — loadAssertionModule fails loud if the assertion is renamed/removed', () => {
+    expect(() => loadAssertionModule('# no assertion here\n')).toThrow(
+      /REQUIRED_ROW_FIELDS.*not found/,
+    );
+  });
+});
+
+describe('skill-schema-drift — issue.branch matches the Coordinator spine set-branch formula (FOR-139, AC5)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const mechanicsMd = readFileSync(START_MECHANICS_MD, 'utf-8');
+
+  /**
+   * Counts CODE occurrences of the raw `wave/${issue.id}-${issue.slug}`
+   * reconstruction, deliberately excluding `//`-comment lines (which may
+   * legitimately mention the shape in prose, e.g. this fix's own rationale
+   * comments) — only a live call site re-building the branch name instead of
+   * reading `issue.branch` should count.
+   */
+  function countRawBranchReconstructions(md: string): number {
+    const needle = 'wave/${issue.id}-${issue.slug}';
+    return md
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .filter((line) => line.includes(needle)).length;
+  }
+
+  it('the driver derives issue.branch exactly once, as wave/${issue.id}-${issue.slug}', () => {
+    expect(driverMd).toContain('issue.branch = `wave/${issue.id}-${issue.slug}`');
+  });
+
+  it('every brief call site reads issue.branch — none re-interpolates wave/${issue.id}-${issue.slug} on its own', () => {
+    // Only the single derivation assignment (real code, not a comment) may
+    // still construct the branch name from its parts; the Worker's
+    // checkout/push/host-pr-create and the Reviewer's stated target must all
+    // read the one derived value instead, so the four call sites the FOR-139
+    // recurrence hit (plus the reviewer's diff-range mention) cannot diverge
+    // from each other.
+    expect(countRawBranchReconstructions(driverMd)).toBe(1);
+  });
+
+  it("the Coordinator's spine set-branch call (start-mechanics.md step 5) uses the identical wave/<id>-<slug> shape", () => {
+    expect(mechanicsMd).toContain('"wave/$ID-$ROW_SLUG"');
+  });
+
+  it('negative control — countRawBranchReconstructions would catch a re-introduced inline branch build', () => {
+    // If a future edit re-introduced `wave/${issue.id}-${issue.slug}` at a
+    // call site instead of reading `issue.branch`, this count would rise
+    // above 1 and the assertion above would fail — proving the count is not
+    // vacuously 1 regardless of content.
+    const regressed = driverMd.replace(
+      '3. \\`git checkout -b ${issue.branch}\\`',
+      '3. \\`git checkout -b wave/${issue.id}-${issue.slug}\\`',
+    );
+    expect(regressed).not.toEqual(driverMd); // the replace actually matched
+    expect(countRawBranchReconstructions(regressed)).toBe(2);
   });
 });
