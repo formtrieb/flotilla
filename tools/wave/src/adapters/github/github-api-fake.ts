@@ -83,6 +83,25 @@ export class InMemoryGitHubApi implements GitHubApi {
     });
   }
 
+  /**
+   * Store-preflight substrate (issue #131): the repo's label REGISTRY, distinct
+   * from any issue's own label list. Defaults empty (an unconfigured repo has NO
+   * labels created) — a spec that wants the healthy path calls
+   * {@link setRepoLabels} explicitly, same stance as setClosingPr/
+   * setRequiredChecks: not part of GitHubApi's own consumer-visible behavior,
+   * reached through the store's injected `api` field.
+   */
+  private repoLabels: string[] = [];
+
+  async listLabels(): Promise<string[]> {
+    return [...this.repoLabels];
+  }
+
+  /** Test affordance (issue #131): set the repo's label registry. */
+  setRepoLabels(labels: string[]): void {
+    this.repoLabels = [...labels];
+  }
+
   async addComment(number: number, body: string): Promise<void> {
     if (!this.issues.has(number)) {
       throw new Error(`GitHub issue not found: #${number}`);
