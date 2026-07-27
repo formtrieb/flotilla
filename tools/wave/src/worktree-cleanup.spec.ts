@@ -164,6 +164,8 @@ import {
   executeOrphanSweep,
   sweepOrphanWorktrees,
   sweepOrphanBranches,
+  planOrphanBranchSweep,
+  executeOrphanBranchSweep,
   defaultOrphanBranchSweepOps,
   type WorktreeEntry,
   type WorktreeRemover,
@@ -174,6 +176,7 @@ import {
   type OrphanDir,
   type OrphanRemover,
   type OrphanBranchSweepOps,
+  type OrphanBranchSweepPlan,
 } from './worktree-cleanup';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -1774,6 +1777,87 @@ describe('listAgentWorktrees — toplevel-guarded orphan classification (FOR-59)
     realGit(['add', '.claude/settings.json'], worktreePath);
     realGit(['commit', '-q', '-m', 'track settings'], worktreePath);
     writeFileSync(join(worktreePath, '.claude', 'settings.json'), '{"env":{"X":"1"}}', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(false);
+  });
+
+  // ── issue #142: harness-denied-path DELETIONS widen dirtyAllJunk ──────────
+  //
+  // The live shape: a sandboxed harness denies git write access to specific
+  // repository paths, so a fresh agent-worktree checkout cannot materialize
+  // the tracked files there — `git status` reports every one of them
+  // DELETED, nothing else divergent, before the dispatched agent has touched
+  // anything. Modeled here as closely as a hermetic fixture can: commit the
+  // files, then `rmSync` them directly (never `git rm`) — the exact
+  // "tracked, unstaged deletion" shape a denied write produces, regardless of
+  // what actually denied the write.
+
+  it('AC1/AC3 (issue #142): tracked files under harness-denied paths (.claude/agents, .claude/skills) reported DELETED — the exact observed harness-checkout shape — classifies dirtyAllJunk:true, making the worktree removable', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_harness-denied-deletion');
+    mkdirSync(join(worktreePath, '.claude', 'agents'), { recursive: true });
+    mkdirSync(join(worktreePath, '.claude', 'skills', 'wave-plan'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'),
+      'agent config, committed',
+      'utf-8',
+    );
+    writeFileSync(
+      join(worktreePath, '.claude', 'skills', 'wave-plan', 'SKILL.md'),
+      '# a skill, committed',
+      'utf-8',
+    );
+    realGit(
+      ['add', '.claude/agents/wave-reviewer.md', '.claude/skills/wave-plan/SKILL.md'],
+      worktreePath,
+    );
+    realGit(['commit', '-q', '-m', 'track harness-denied paths'], worktreePath);
+
+    // The harness never materializes these on checkout — modeled here as a
+    // plain, unstaged deletion from disk: the index still holds the exact
+    // committed blob, nothing was ever `git rm`'d.
+    rmSync(join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'), { force: true });
+    rmSync(join(worktreePath, '.claude', 'skills', 'wave-plan', 'SKILL.md'), { force: true });
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(true);
+  });
+
+  // AC2/AC3's sibling: the recognition above is keyed on the PATH being a
+  // fixed, narrow harness-denied allowlist — never on a blanket "a deletion
+  // never counts as work" rule. A deleted file OUTSIDE that allowlist (an
+  // ordinary tracked source file) must still block removal.
+  it('AC2/AC3 (issue #142): a deleted SOURCE file (outside any harness-denied path) still blocks removal — dirtyAllJunk:false', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_source-deletion-blocks');
+    writeFileSync(join(worktreePath, 'src-file.ts'), 'export const x = 1;\n', 'utf-8');
+    realGit(['add', 'src-file.ts'], worktreePath);
+    realGit(['commit', '-q', '-m', 'track a source file'], worktreePath);
+
+    rmSync(join(worktreePath, 'src-file.ts'), { force: true });
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(false);
+  });
+
+  // A MODIFICATION (never a deletion) under a harness-denied path is real
+  // task work in this dogfood repo (`.claude/skills/` holds flotilla's own
+  // product content) — the deletion-only gate must not swallow this shape.
+  it('a MODIFIED (not deleted) tracked file under a harness-denied path (.claude/agents) is still NOT disposable — dirtyAllJunk:false', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_agents-modified');
+    mkdirSync(join(worktreePath, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'), 'v1', 'utf-8');
+    realGit(['add', '.claude/agents/wave-reviewer.md'], worktreePath);
+    realGit(['commit', '-q', '-m', 'track agents/'], worktreePath);
+    writeFileSync(join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'), 'v2', 'utf-8');
 
     const result = listAgentWorktrees(mainRoot);
 
@@ -3391,6 +3475,126 @@ describe('sweepOrphanBranches — standalone orphaned-branch sweep (FOR-72)', ()
     expect(deleteSpy).not.toHaveBeenCalledWith('wave/FOR-live');
     expect(deleteSpy).not.toHaveBeenCalledWith('worktree-wf_live-9');
     expect(result.branchHygieneSkipped).toEqual([]);
+  });
+});
+
+// ─── 20b. planOrphanBranchSweep / executeOrphanBranchSweep — the previewable
+//     split (issue #142) ───────────────────────────────────────────────────
+//
+// sweepOrphanBranches computed-and-deleted in one pass, so a `--dry-run`
+// caller had no pure half to call — the branch sweep's preview reported
+// nothing selected, and the very next real run deleted six branches with no
+// preceding preview of that outcome. These tests prove
+// planOrphanBranchSweep is a genuine, side-effect-free preview of EXACTLY
+// what executeOrphanBranchSweep then does.
+describe('planOrphanBranchSweep / executeOrphanBranchSweep — the previewable split (issue #142)', () => {
+  function fakeOps(opts?: {
+    localBranches?: string[];
+    currentBranch?: string | null;
+    checkedOut?: Set<string>;
+    liveWorktreeBasenames?: Set<string>;
+    remoteGone?: Set<string>;
+    remoteProbeFailedFor?: Map<string, string>;
+  }): { ops: OrphanBranchSweepOps; deleteSpy: ReturnType<typeof vi.fn> } {
+    const deleteSpy = vi.fn();
+    const ops: OrphanBranchSweepOps = {
+      listLocalBranches: () => opts?.localBranches ?? [],
+      currentBranch: () => opts?.currentBranch ?? null,
+      listCheckedOutBranches: () => opts?.checkedOut ?? new Set<string>(),
+      listLiveWorktreeBasenames: () => opts?.liveWorktreeBasenames ?? new Set<string>(),
+      probeRemoteRef: (b: string): RemoteRefProbeResult => {
+        if (opts?.remoteGone?.has(b)) return { status: 'gone' };
+        const fail = opts?.remoteProbeFailedFor?.get(b);
+        if (fail !== undefined) return { status: 'probe-failed', reason: fail };
+        return { status: 'present' };
+      },
+      deleteBranch: deleteSpy,
+    };
+    return { ops, deleteSpy };
+  }
+
+  it('planOrphanBranchSweep computes the toDelete set WITHOUT calling deleteBranch at all', () => {
+    const { ops, deleteSpy } = fakeOps({
+      localBranches: ['main', 'wave/FOR-142-gone', 'worktree-wf_orphan-1'],
+      currentBranch: 'main',
+      remoteGone: new Set(['wave/FOR-142-gone']),
+      liveWorktreeBasenames: new Set<string>(),
+    });
+
+    const plan = planOrphanBranchSweep({ ops });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(plan.toDelete.sort()).toEqual(['wave/FOR-142-gone', 'worktree-wf_orphan-1'].sort());
+    expect(plan.branchHygieneSkipped).toEqual([]);
+  });
+
+  it('planOrphanBranchSweep still records a probe-failed branch in branchHygieneSkipped, never in toDelete', () => {
+    const { ops, deleteSpy } = fakeOps({
+      localBranches: ['wave/FOR-142-flaky'],
+      remoteProbeFailedFor: new Map([['wave/FOR-142-flaky', 'network error']]),
+    });
+
+    const plan = planOrphanBranchSweep({ ops });
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(plan.toDelete).toEqual([]);
+    expect(plan.branchHygieneSkipped).toEqual([
+      { branch: 'wave/FOR-142-flaky', reason: 'branch-probe-failed', detail: 'network error' },
+    ]);
+  });
+
+  it("executeOrphanBranchSweep deletes EXACTLY the plan's toDelete set and passes branchHygieneSkipped through unchanged", () => {
+    const { ops, deleteSpy } = fakeOps();
+    const plan: OrphanBranchSweepPlan = {
+      toDelete: ['wave/FOR-142-a', 'worktree-wf_orphan-2'],
+      branchHygieneSkipped: [
+        { branch: 'wave/FOR-142-flaky', reason: 'branch-probe-failed', detail: 'x' },
+      ],
+    };
+
+    const result = executeOrphanBranchSweep(plan, { ops });
+
+    expect(deleteSpy).toHaveBeenCalledTimes(2);
+    expect(deleteSpy).toHaveBeenCalledWith('wave/FOR-142-a');
+    expect(deleteSpy).toHaveBeenCalledWith('worktree-wf_orphan-2');
+    expect(result.branchesDeleted).toEqual(['wave/FOR-142-a', 'worktree-wf_orphan-2']);
+    expect(result.branchHygieneSkipped).toBe(plan.branchHygieneSkipped);
+  });
+
+  it('an EMPTY plan (nothing eligible) deletes nothing — idempotent no-op', () => {
+    const { ops, deleteSpy } = fakeOps();
+    const result = executeOrphanBranchSweep({ toDelete: [], branchHygieneSkipped: [] }, { ops });
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchesDeleted).toEqual([]);
+  });
+
+  it('the preview IS the outcome: planOrphanBranchSweep then executeOrphanBranchSweep deletes exactly what sweepOrphanBranches would, given the same scenario', () => {
+    const scenario = {
+      localBranches: [
+        'main',
+        'wave/FOR-live',
+        'wave/FOR-gone',
+        'worktree-wf_orphan-3',
+        'worktree-wf_live-1',
+      ],
+      currentBranch: 'main',
+      checkedOut: new Set(['main', 'wave/FOR-live']),
+      liveWorktreeBasenames: new Set(['wf_live-1']),
+      remoteGone: new Set(['wave/FOR-gone']),
+    };
+
+    const { ops: opsForPreview } = fakeOps(scenario);
+    const plan = planOrphanBranchSweep({ ops: opsForPreview });
+    const previewResult = executeOrphanBranchSweep(plan, { ops: opsForPreview });
+
+    const { ops: opsForDirect } = fakeOps(scenario);
+    const directResult = sweepOrphanBranches({ ops: opsForDirect });
+
+    expect(previewResult.branchesDeleted.sort()).toEqual(directResult.branchesDeleted.sort());
+    expect(previewResult.branchHygieneSkipped).toEqual(directResult.branchHygieneSkipped);
+    expect(previewResult.branchesDeleted.sort()).toEqual(
+      ['wave/FOR-gone', 'worktree-wf_orphan-3'].sort(),
+    );
   });
 });
 

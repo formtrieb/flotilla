@@ -383,6 +383,36 @@
  * to {@link sweepOrphanBranches}'s signals, {@link planCleanup}'s
  * dirty-worktree safety invariant, or any other exported behaviour in this
  * file was needed.
+ *
+ * ── harness-denied-path deletions widen `dirtyAllJunk`, never the invariant
+ *    itself (issue #142) ────────────────────────────────────────────────────
+ *
+ * Under a sandboxed harness, some repository paths are write-denied. A fresh
+ * agent worktree's checkout cannot materialize the tracked files under those
+ * paths, so `git status` reports every one of them as deleted — 29 in the
+ * observed case, all under the harness's own configuration and skills
+ * directories — before the dispatched agent has done anything at all. Every
+ * such worktree was permanently unremovable: `git worktree remove` refuses a
+ * dirty tree, and this module deliberately carries NO force path (see the
+ * FOR-84 section above) — correct as a rule, wrong as an outcome here, since
+ * nothing about this shape is uncommitted WORK. The content is not merely
+ * similar to what is committed; it is IDENTICAL, because nothing happened to
+ * it — it is simply the one thing a denied write can produce: absence.
+ *
+ * {@link HARNESS_DENIED_DIRS} / {@link HARNESS_DENIED_FILES} name that narrow
+ * shape, and {@link isDisposableStatusPath} gates them on the DELETED status
+ * code specifically — never on a blanket "deletions don't count" rule, which
+ * would just as happily wave through a genuinely deleted SOURCE file. A
+ * deletion anywhere outside this fixed, exact-path allowlist still blocks
+ * removal exactly as before (a regression test proves it); so does a
+ * MODIFICATION under any of these same harness-owned paths, since this repo
+ * dogfoods itself and `.claude/skills/`/`.claude/agents/` hold flotilla's own
+ * product content, not merely harness config — only the bare, unstaged
+ * deletion shape a denied write actually produces is ever in scope. This
+ * widens {@link WorktreeEntry.dirtyAllJunk} (already-existing junk
+ * classification from issue #111); it does not touch the dirty-worktree
+ * safety invariant itself, {@link planCleanup}'s dirty-skip, or any other
+ * exported behaviour in this file.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -1572,39 +1602,52 @@ export interface OrphanBranchSweepOptions {
 }
 
 /**
- * Sweep orphaned LOCAL branches (FOR-72) — the standalone path, requiring NO
- * worktree-removal event in the same run. See the section doc comment above
- * for the full accumulation writeup and the two signals.
+ * The orphaned-branch sweep's PLAN (issue #142) — every branch that WOULD be
+ * force-deleted by {@link executeOrphanBranchSweep}, computed with ZERO
+ * mutating calls (`ops.deleteBranch` is never invoked while building this).
+ *
+ * This is the read/write split {@link sweepOrphanBranches} itself lacked: the
+ * CLI's `--dry-run` could preview the registered-worktree plan and the
+ * orphan-DIRECTORY plan (both already pure `plan*` functions), but the
+ * orphan-BRANCH sweep computed-and-deleted in one pass, so a preview had
+ * nothing to call — `--dry-run --orphans` reported nothing selected, and the
+ * very next real run deleted six branches with no preceding preview of that
+ * outcome. `planOrphanBranchSweep` is that missing pure half.
+ */
+export interface OrphanBranchSweepPlan {
+  /** Local branches this sweep would force-delete (0+ entries). */
+  toDelete: string[];
+  /** Same shape/meaning as {@link OrphanBranchSweepResult.branchHygieneSkipped}. */
+  branchHygieneSkipped: BranchHygieneSkip[];
+}
+
+/**
+ * Compute the {@link OrphanBranchSweepPlan} against an already-resolved
+ * {@link OrphanBranchSweepOps} — the shared core both
+ * {@link planOrphanBranchSweep} and {@link sweepOrphanBranches} build on, so
+ * the two signals + safety floor exist in exactly one place. Read-only:
+ * `ops.deleteBranch` is never called here.
  *
  * For every local branch, in order:
  *   1. Safety floor — the current branch and any branch checked out in a live
- *      worktree are skipped outright (never probed, never deleted).
- *   2. A `worktree-wf_*` branch is force-deleted iff its worktree (basename =
- *      the branch name minus the `worktree-` prefix) is neither registered nor
- *      on disk — otherwise the worktree is still live and the branch is left
- *      alone.
- *   3. A `wave/*` branch is force-deleted iff its remote ref is authoritatively
- *      `gone`; a `probe-failed` result is recorded in `branchHygieneSkipped`
- *      (never deleted); a `present` result is left alone silently.
+ *      worktree are skipped outright (never probed, never planned).
+ *   2. A `worktree-wf_*` branch is planned for deletion iff its worktree
+ *      (basename = the branch name minus the `worktree-` prefix) is neither
+ *      registered nor on disk — otherwise the worktree is still live and the
+ *      branch is left alone.
+ *   3. A `wave/*` branch is planned for deletion iff its remote ref is
+ *      authoritatively `gone`; a `probe-failed` result is recorded in
+ *      `branchHygieneSkipped` (never planned); a `present` result is left
+ *      alone silently.
  *   4. A branch matching neither shape is never touched.
- *
- * Idempotent: a re-run after everything is swept finds no eligible branch and
- * returns empty arrays. Best-effort: `deleteBranch` is idempotent by contract,
- * so a branch that vanished between listing and deletion is a no-op.
  */
-export function sweepOrphanBranches(
-  opts: OrphanBranchSweepOptions = {},
-): OrphanBranchSweepResult {
-  const repoRoot = opts.repoRoot ?? process.cwd();
-  const markers = normalizeMarkers(opts.agentPathMarker);
-  const ops = opts.ops ?? defaultOrphanBranchSweepOps(repoRoot, markers);
-
+function computeOrphanBranchSweepPlan(ops: OrphanBranchSweepOps): OrphanBranchSweepPlan {
   const localBranches = ops.listLocalBranches();
   const current = ops.currentBranch();
   const checkedOut = ops.listCheckedOutBranches();
   const liveWorktreeBasenames = ops.listLiveWorktreeBasenames();
 
-  const branchesDeleted: string[] = [];
+  const toDelete: string[] = [];
   const branchHygieneSkipped: BranchHygieneSkip[] = [];
 
   for (const branch of localBranches) {
@@ -1623,8 +1666,7 @@ export function sweepOrphanBranches(
     if (/^worktree-wf_/.test(branch)) {
       const worktreeBasename = branch.slice('worktree-'.length);
       if (!liveWorktreeBasenames.has(worktreeBasename)) {
-        ops.deleteBranch(branch);
-        branchesDeleted.push(branch);
+        toDelete.push(branch);
       }
       // Worktree still live (registered or on disk) → leave the branch alone.
       continue;
@@ -1635,8 +1677,7 @@ export function sweepOrphanBranches(
     if (branch.startsWith('wave/')) {
       const probe = ops.probeRemoteRef(branch);
       if (probe.status === 'gone') {
-        ops.deleteBranch(branch);
-        branchesDeleted.push(branch);
+        toDelete.push(branch);
       } else if (probe.status === 'probe-failed') {
         branchHygieneSkipped.push({
           branch,
@@ -1652,7 +1693,77 @@ export function sweepOrphanBranches(
     // Matches neither signal → never touched.
   }
 
-  return { branchesDeleted, branchHygieneSkipped };
+  return { toDelete, branchHygieneSkipped };
+}
+
+/**
+ * Build the orphaned-branch sweep plan (issue #142) WITHOUT deleting
+ * anything — the previewable half `--dry-run --orphans` needs. Resolves the
+ * same {@link OrphanBranchSweepOps} seam {@link sweepOrphanBranches} does
+ * (defaulting to {@link defaultOrphanBranchSweepOps}), so a caller passing no
+ * `ops` override previews against real git exactly like the real sweep reads
+ * it — only the mutating `deleteBranch` call is withheld.
+ */
+export function planOrphanBranchSweep(
+  opts: OrphanBranchSweepOptions = {},
+): OrphanBranchSweepPlan {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const markers = normalizeMarkers(opts.agentPathMarker);
+  const ops = opts.ops ?? defaultOrphanBranchSweepOps(repoRoot, markers);
+  return computeOrphanBranchSweepPlan(ops);
+}
+
+/**
+ * Execute an already-computed {@link OrphanBranchSweepPlan}: force-delete
+ * every branch in `plan.toDelete`, via the SAME {@link OrphanBranchSweepOps}
+ * seam (so a caller that built the plan with an explicit `ops` override, e.g.
+ * a test double, executes against that identical double — never a second,
+ * independently-defaulted instance).
+ */
+export function executeOrphanBranchSweep(
+  plan: OrphanBranchSweepPlan,
+  opts: OrphanBranchSweepOptions = {},
+): OrphanBranchSweepResult {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const markers = normalizeMarkers(opts.agentPathMarker);
+  const ops = opts.ops ?? defaultOrphanBranchSweepOps(repoRoot, markers);
+
+  const branchesDeleted: string[] = [];
+  for (const branch of plan.toDelete) {
+    ops.deleteBranch(branch);
+    branchesDeleted.push(branch);
+  }
+  return { branchesDeleted, branchHygieneSkipped: plan.branchHygieneSkipped };
+}
+
+/**
+ * Sweep orphaned LOCAL branches (FOR-72) — the standalone path, requiring NO
+ * worktree-removal event in the same run. See the section doc comment above
+ * for the full accumulation writeup and the two signals.
+ *
+ * Plan-then-execute in one call (issue #142): resolves the {@link
+ * OrphanBranchSweepOps} seam exactly once, builds the plan against it
+ * ({@link computeOrphanBranchSweepPlan} — see that function for the full
+ * per-branch rule ordering), then executes it against the SAME `ops`
+ * instance. A caller that wants to preview first calls
+ * {@link planOrphanBranchSweep} (identical plan, zero deletions), inspects
+ * `toDelete`, and only then calls {@link executeOrphanBranchSweep} — or keeps
+ * calling this single-shot convenience wrapper when no preview step is
+ * needed, unchanged from before this split.
+ *
+ * Idempotent: a re-run after everything is swept finds no eligible branch and
+ * returns empty arrays. Best-effort: `deleteBranch` is idempotent by contract,
+ * so a branch that vanished between listing and deletion is a no-op.
+ */
+export function sweepOrphanBranches(
+  opts: OrphanBranchSweepOptions = {},
+): OrphanBranchSweepResult {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const markers = normalizeMarkers(opts.agentPathMarker);
+  const ops = opts.ops ?? defaultOrphanBranchSweepOps(repoRoot, markers);
+
+  const plan = computeOrphanBranchSweepPlan(ops);
+  return executeOrphanBranchSweep(plan, { ops });
 }
 
 /**
@@ -2450,6 +2561,55 @@ const HARNESS_INJECTED_DIRS: readonly string[] = [
   '.claude/worktrees',
 ];
 
+/**
+ * Harness-owned paths whose DELETION (only — never a modification or an
+ * addition) is disposable residue rather than work (issue #142).
+ *
+ * The failure mode: under a sandboxed harness, some repository paths are
+ * write-denied. A fresh agent-worktree checkout cannot materialize the files
+ * under those paths, so `git status` reports every tracked file there as
+ * deleted — before the dispatched agent has touched anything at all. The
+ * file is not missing because someone removed it; it is missing because the
+ * checkout that should have written it was refused. Restoring it is a
+ * content no-op — the index still holds the exact committed blob — so there
+ * is nothing here to protect.
+ *
+ * This is deliberately narrower than a path check alone. {@link
+ * isDisposableStatusPath} gates this set on the DELETED-in-worktree status
+ * code specifically (` D` — unstaged: index unchanged, worktree missing).
+ * A MODIFICATION under any of these same paths is a Worker actually editing
+ * harness-adjacent config/skill content as real task work (this repo
+ * dogfoods itself: `.claude/skills/` and `.claude/agents/` hold flotilla's
+ * own product content, not just harness config) — that must keep blocking
+ * removal exactly as before (see the existing "MODIFIED tracked file under
+ * .claude/ is NOT disposable" test). Only a bare, unstaged DELETION — the
+ * one shape a denied write can actually produce — is ever in scope, and
+ * `isStatusExclusivelyDisposable` still requires EVERY other divergent path
+ * in the same worktree to independently qualify as disposable too, so a
+ * single genuinely-dirty file anywhere still blocks the whole worktree.
+ *
+ * Fixed, exact paths only (no glob) — the same discipline as
+ * {@link JUNK_DIR_NAMES} and {@link HARNESS_INJECTED_DIRS}: a new one is
+ * added here having been looked at, never implied by a wildcard.
+ */
+const HARNESS_DENIED_DIRS: readonly string[] = [
+  '.claude/agents',
+  '.claude/commands',
+  '.claude/hooks',
+  '.claude/output-styles',
+  '.claude/routines',
+  '.claude/skills',
+  '.claude/workflows',
+];
+
+const HARNESS_DENIED_FILES = new Set<string>([
+  '.claude/settings.json',
+  '.claude/launch.json',
+  '.claude/loop.md',
+  '.claude/scheduled_tasks.json',
+  '.mcp.json',
+]);
+
 /** True when `relPath` is exactly `dir` or sits underneath it (segment-exact). */
 function isUnderDir(relPath: string, dir: string): boolean {
   return relPath === dir || relPath.startsWith(`${dir}/`);
@@ -2457,19 +2617,35 @@ function isUnderDir(relPath: string, dir: string): boolean {
 
 /**
  * Whether one `git status --porcelain` path is disposable residue rather than
- * uncommitted work (issue #111) — a harness-written file named exactly, or
- * Finder debris recognized wherever it sits.
+ * uncommitted work (issue #111, extended by #142) — a harness-written file
+ * named exactly, Finder debris recognized wherever it sits, or (status code
+ * ` D` only) a tracked file under a harness-denied path.
+ *
+ * `statusCode` is the porcelain line's two-character XY prefix (e.g. `' M'`,
+ * `'??'`, `' D'`) — passed through unparsed so the deletion-only carve-out
+ * above can key on it exactly, without this function re-deriving it.
  *
  * Anything unrecognized is real. A path this returns `false` for keeps its
  * worktree skipped, which is the safe direction for every case not thought of
  * here.
  */
-function isDisposableStatusPath(relPath: string): boolean {
+function isDisposableStatusPath(statusCode: string, relPath: string): boolean {
   if (HARNESS_INJECTED_PATHS.has(relPath)) return true;
   if (HARNESS_INJECTED_DIRS.some((dir) => isUnderDir(relPath, dir))) return true;
   const segments = relPath.split('/').filter((s) => s.length > 0);
   const basename = segments[segments.length - 1];
-  return basename !== undefined && isFinderJunkName(basename);
+  if (basename !== undefined && isFinderJunkName(basename)) return true;
+
+  // issue #142: an UNSTAGED deletion (index unchanged, worktree missing) under
+  // a harness-denied path is environment residue, not work — see
+  // HARNESS_DENIED_DIRS/HARNESS_DENIED_FILES above. Any other status code
+  // (modification, addition, a staged deletion) falls through to `false`.
+  if (statusCode === ' D') {
+    if (HARNESS_DENIED_FILES.has(relPath)) return true;
+    if (HARNESS_DENIED_DIRS.some((dir) => isUnderDir(relPath, dir))) return true;
+  }
+
+  return false;
 }
 
 /**
@@ -2495,7 +2671,7 @@ function isStatusExclusivelyDisposable(porcelain: string): boolean {
     const path = line.slice(3);
     if (path.startsWith('"')) return false;
     if (path.includes(' -> ')) return false;
-    return isDisposableStatusPath(path);
+    return isDisposableStatusPath(line.slice(0, 2), path);
   });
 }
 

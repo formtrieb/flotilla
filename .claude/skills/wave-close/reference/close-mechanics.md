@@ -97,10 +97,21 @@ T=$(mktemp -d)
 #   "orphans": { "removed": [...], "skipped": [...], "errors": [...] } }
 #
 # NOTE — --dry-run previews the registered-worktree plan AND the orphan-
-# DIRECTORY plan; it does NOT preview the orphan-BRANCH sweep (branches are
-# only ever swept on the real, non-dry-run call — cli.ts). The preview above
-# is therefore not a complete picture of what the execute call will do to
-# branches; that asymmetry is expected, not a bug to chase.
+# DIRECTORY plan; it does NOT YET preview the orphan-BRANCH sweep (branches
+# are still only ever swept on the real, non-dry-run call — cli.ts). This is
+# a tracked gap (issue #142), not an accepted asymmetry — a dry-run that
+# reports nothing selected, immediately followed by a real run that deletes
+# six branches, is exactly the "preview that doesn't preview" a preview
+# exists to prevent. worktree-cleanup.ts now ships the pure half this needs:
+# `planOrphanBranchSweep` computes the exact branch set
+# `executeOrphanBranchSweep` would then delete, with ZERO `deleteBranch`
+# calls of its own — `sweepOrphanBranches` (what the real run still calls)
+# is now that same plan followed immediately by that same execute, so the
+# two are provably in sync. cli.ts's `--dry-run` branch has not yet been
+# wired to call the plan half. Until that wiring lands, the preview above is
+# NOT a complete picture of what the execute call will do to branches —
+# treat it as silent on branches specifically, never as evidence the
+# following real call will delete none.
 #
 # Reading the result — `0/0/0` on removed/skipped/errors is evidence ONLY that
 # nothing was REGISTERED for this wave to plan against; it is NOT evidence
@@ -122,6 +133,24 @@ T=$(mktemp -d)
 #
 # Read the STRUCTURAL classes, not just `errors` — each is a distinct incomplete
 # outcome an operator must act on differently (all non-empty values force exit 1):
+#   - A worktree whose ONLY divergence is a set of tracked files under a
+#     harness-denied path (e.g. `.claude/skills/`, `.claude/agents/`) reported
+#     DELETED — nothing else divergent — is no longer a `skipped` dead end
+#     (issue #142). A sandboxed harness can deny a fresh checkout write access
+#     to those paths, so `git status` reports every file there as deleted
+#     before the dispatched agent ever touched anything; the content is not
+#     merely similar to what is committed, it is IDENTICAL (nothing happened
+#     to it — absence is the one thing a denied write can produce). The
+#     engine now classifies exactly that shape as disposable and removes the
+#     worktree on an ordinary call — no manual step, no special flag. Before
+#     this fix every such worktree was a PERMANENT `skipped` entry
+#     (`reason: 'dirty'`): the engine deliberately carries no force path (the
+#     dirty-worktree safety invariant), so re-running reproduced the
+#     identical refusal every time — the cause (the sandbox's write-deny)
+#     never changes between runs. If this class still appears on an older
+#     engine build, re-running will NOT resolve it; pull the fixed engine
+#     first, THEN re-run — the classification fix is what closes this gap,
+#     not the retry.
 #   - deregisteredNotDeleted — removal returned WITHOUT throwing, yet the
 #     directory is verified still on disk (git already forgot the worktree, so it
 #     is absent from `git worktree list`). A Finder/editor-host race left the
@@ -129,14 +158,21 @@ T=$(mktemp -d)
 #   - erroredStillListed (FOR-73 — W18-F1) — removal THREW, and `git worktree
 #     list` STILL lists the worktree afterwards, as `prunable`, with its
 #     directory on disk. This is the prune/retry case, NOT a defect: the worktree
-#     is intact and fully registered, nothing was half-torn-down. → re-run
-#     `worktree-cleanup` (idempotent), or `git worktree prune` + `rm -rf` the
-#     directory — removing that directory under the harness worktree root
-#     typically needs the sandbox disabled, since the harness write-deny on
-#     those paths otherwise swallows the removal silently (the command exits 0
-#     but the directory is still on disk). A genuine failure (removal threw AND
-#     the worktree is gone from the list) stays in `errors` — never reclassified
-#     here.
+#     is intact and fully registered, nothing was half-torn-down. A re-run of
+#     `worktree-cleanup` (idempotent) only helps when the obstruction was
+#     TRANSIENT — a Finder/editor-host race; the engine already gives every
+#     removal exactly one bounded retry internally for exactly this (FOR-84).
+#     When the cause is instead the sandboxed harness itself denying the
+#     delete (not merely the original checkout-write, issue #142 above) — a
+#     DETERMINISTIC cause, not a transient one — a bare re-run reproduces the
+#     IDENTICAL refusal every time; re-running cleanup is not what resolves
+#     this case. What actually resolves it: `git worktree prune` + `rm -rf`
+#     the directory, WITH THE SANDBOX DISABLED for that command — removing a
+#     directory under the harness worktree root typically needs this, since
+#     the harness write-deny on those paths otherwise swallows the removal
+#     silently (the command exits 0 but the directory is still on disk). A
+#     genuine failure (removal threw AND the worktree is gone from the list)
+#     stays in `errors` — never reclassified here.
 # Verify on disk, e.g.:
 ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
 # Cross-check any survivor against `errors` / `deregisteredNotDeleted` /
