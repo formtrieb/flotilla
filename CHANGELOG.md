@@ -88,8 +88,10 @@ Stated plainly, because a beta that hides this is worth less than one that does 
   and published package** has not been run yet ([#83](https://github.com/formtrieb/flotilla/issues/83)).
   Every wave to date drove the adapter from an in-repo checkout. The adapter itself is
   exercised; the install path in front of it is not.
-- `README.md` and `docs/ONBOARDING.md` still describe the vendor-copy adoption path and
-  not the plugin install ([#84](https://github.com/formtrieb/flotilla/issues/84)).
+- ~~`README.md` and `docs/ONBOARDING.md` still describe the vendor-copy adoption path and
+  not the plugin install~~ — rewritten after this release
+  ([#84](https://github.com/formtrieb/flotilla/issues/84)). Note that the published
+  `0.1.0-beta.0` tarball still carries the older `README.md`; the repository does not.
 - Cross-skill references are still by bare name, which is not what plugin distribution
   namespaces them to ([#81](https://github.com/formtrieb/flotilla/issues/81)).
 - Automatic worktree cleanup skips any worktree the agent harness has written into,
