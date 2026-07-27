@@ -249,3 +249,89 @@ describe('skill-schema-drift — the driver-facing schema literal is boundary-sa
     ).not.toThrow();
   });
 });
+
+describe('skill-schema-drift — workflow-driver.md WAVE_CLI defaults to the published package (FOR-122, DA-F1)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  /**
+   * Extract the `const WAVE_CLI = '...'` value verbatim. Throws (rather than
+   * returning undefined) if the constant is missing, so a renamed/reshaped
+   * constant fails loud instead of silently passing every assertion below.
+   */
+  function extractWaveCliConst(md: string): string {
+    const m = md.match(/^const WAVE_CLI = '([^']*)'$/m);
+    if (!m) {
+      throw new Error("const WAVE_CLI = '...' not found in workflow-driver.md");
+    }
+    return m[1];
+  }
+
+  it("WAVE_CLI's default resolves the published npm package, not the vendored tools/wave path", () => {
+    const value = extractWaveCliConst(driverMd);
+    expect(value).toContain('npx @formtrieb/flotilla-engine');
+    expect(value).not.toContain('tools/wave/node_modules');
+    expect(value).not.toContain('tools/wave/src/cli.ts');
+  });
+
+  it('the vendored tools/wave/node_modules form remains documented as the fallback', () => {
+    // Belt-and-braces: the assertion above pins the live DEFAULT; this pins
+    // that the fallback text wasn't deleted outright along with it (AC 1).
+    expect(driverMd).toMatch(/tools\/wave\/node_modules\/\.bin\/tsx/);
+    expect(driverMd).toMatch(/documented\s+\*{0,2}fallback\*{0,2}/i);
+  });
+
+  it('negative control — extractWaveCliConst would catch a reverted (vendored-default) constant', () => {
+    // The exact live regression (DA-F1): WAVE_CLI reverted to the vendored
+    // local-binary form, which resolves to nothing for a plugin consumer with
+    // no in-repo tools/wave checkout. If this stopped catching the revert,
+    // that regression would again ship silently past this spec.
+    const regressed = driverMd.replace(
+      "const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine'",
+      "const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts'",
+    );
+    expect(regressed).not.toEqual(driverMd); // the replace actually matched something
+    const value = extractWaveCliConst(regressed);
+    expect(value).toContain('tools/wave/node_modules');
+  });
+});
+
+describe('skill-schema-drift — workflow-driver.md path constants are shell-quoted (FOR-122, DA-F2)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  /**
+   * True iff the bare, UNQUOTED interpolation form (`cd ${NAME}`, `--dir
+   * ${name}`) is present anywhere in the source. A quoted form (`cd
+   * "${NAME}"`) does NOT contain this exact substring, because the `"`
+   * character sits between the literal prefix and the `${` — so this is a
+   * precise discriminator between the two forms, not a fuzzy heuristic.
+   */
+  function hasUnquotedInterpolation(md: string, needle: string): boolean {
+    return md.includes(needle);
+  }
+
+  it('the Scribe brief cd interpolates REPO_ROOT shell-quoted', () => {
+    expect(hasUnquotedInterpolation(driverMd, 'cd ${REPO_ROOT}')).toBe(false);
+    expect(driverMd).toContain('cd "${REPO_ROOT}"');
+  });
+
+  it('the Scribe brief --dir interpolates the sidecar dir shell-quoted', () => {
+    expect(hasUnquotedInterpolation(driverMd, '--dir ${dir}')).toBe(false);
+    expect(driverMd).toContain('--dir "${dir}"');
+  });
+
+  it('negative control — hasUnquotedInterpolation actually detects the unquoted form (would have failed pre-fix, DA-F2)', () => {
+    // The exact live regression (DA-F2): this repo's own checkout path
+    // contains a space and a typographic en-dash; `cd ${REPO_ROOT}` (no
+    // quotes) breaks on it silently — the Scribe stage logs loud and passes
+    // its payload through rather than failing the wave, so the sidecar stops
+    // being written durably at exactly the moment ADR-0024 exists to
+    // guarantee it is. If this detector stopped firing on the unquoted form,
+    // that regression could reappear and this spec would not catch it.
+    const regressed = driverMd
+      .replace('cd "${REPO_ROOT}"', 'cd ${REPO_ROOT}')
+      .replace('--dir "${dir}"', '--dir ${dir}');
+    expect(regressed).not.toEqual(driverMd); // both replacements actually matched
+    expect(hasUnquotedInterpolation(regressed, 'cd ${REPO_ROOT}')).toBe(true);
+    expect(hasUnquotedInterpolation(regressed, '--dir ${dir}')).toBe(true);
+  });
+});
