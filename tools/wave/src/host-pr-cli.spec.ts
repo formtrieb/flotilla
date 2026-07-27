@@ -301,15 +301,82 @@ describe('host-pr merge --delete-branch (consumer KW-F6 — remote branch hygien
     });
   });
 
-  it('--delete-branch on arm is a usage error (exit 2) — arm defers the merge, it deletes no branch', async () => {
+  it('--delete-branch on status is a usage error (exit 2) — status never lands anything to delete a branch from', async () => {
     const { host, calls } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(
+      ['status', '--branch', 'b', '--remote', GITHUB_REMOTE, '--delete-branch'],
+      host,
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--delete-branch is only supported by 'arm' and 'merge'/);
+    expect(calls).not.toContain('deleteBranch:b');
+  });
+});
+
+describe('host-pr arm --delete-branch (issue #140 — reaching the engine capability landed in #132)', () => {
+  // These tests drive the flag through the CLI ENTRYPOINT (`runHostPr`) down to
+  // the `armPullRequest` engine call — the wiring under test here is the CLI's
+  // routing of `--delete-branch` onto `arm`, not the arm decision logic itself
+  // (that is host-pr.spec.ts's job, already covered there).
+
+  it('a clean PR merges immediately AND deletes the head branch, reported structurally, exit 0', async () => {
+    const { host, calls } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(
+      ['arm', '--branch', 'wave/FOR-140-x', '--remote', GITHUB_REMOTE, '--delete-branch'],
+      host,
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      ok: true,
+      verb: 'arm',
+      outcome: 'merged',
+      branchDeletion: { branch: 'wave/FOR-140-x', deleted: true },
+    });
+    expect(calls).toEqual([
+      'getPrStatus:wave/FOR-140-x',
+      'mergePullRequest:42:squash',
+      'deleteBranch:wave/FOR-140-x',
+    ]);
+  });
+
+  it('a blocked PR only ARMS (auto-merge enabled, merge deferred to the host) — no delete call, and the reason records the deferral', async () => {
+    const { host, calls } = fakeHost({ status: openPr('blocked') });
     const code = await runHostPr(
       ['arm', '--branch', 'b', '--remote', GITHUB_REMOTE, '--delete-branch'],
       host,
     );
-    expect(code).toBe(2);
-    expect(stderr).toMatch(/--delete-branch is only supported by 'merge'/);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'armed' });
+    expect(String(out().reason)).toMatch(/DEFERRED/);
+    expect(calls).toEqual(['getPrStatus:b', 'enableAutoMerge:42:squash']);
     expect(calls).not.toContain('deleteBranch:b');
+  });
+
+  it('without the flag, arming a clean PR is byte-identical — no branchDeletion key, no delete call', async () => {
+    const { host, calls } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    expect(code).toBe(0);
+    expect('branchDeletion' in out()).toBe(false);
+    expect(calls).not.toContain('deleteBranch:b');
+  });
+
+  it('a FAILED deletion after an immediate arm-merge stays exit 0 + outcome merged (degradation, not failure)', async () => {
+    const { host } = fakeHost({
+      status: openPr('clean'),
+      onDeleteBranch: () => {
+        throw new Error('Reference does not exist');
+      },
+    });
+    const code = await runHostPr(
+      ['arm', '--branch', 'b', '--remote', GITHUB_REMOTE, '--delete-branch'],
+      host,
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      ok: true,
+      outcome: 'merged',
+      branchDeletion: { branch: 'b', deleted: false, error: 'Reference does not exist' },
+    });
   });
 });
 

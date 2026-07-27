@@ -24,12 +24,21 @@
  *                  re-dispatch onto the same branch never opens a second PR. This
  *                  is the ADR-0019 cross-host Basic-auth seam (`HttpProbe` +
  *                  `Creds`), NOT the ADR-0023 `LandingHost` seam.
- *   arm          → `armPullRequest`  (host-pr.ts owns the arm intent)
+ *   arm          → `armPullRequest` (host-pr.ts owns the arm intent). `--delete-branch`
+ *                  (consumer KW-F6, threaded onto arm's own merge call-sites, #140)
+ *                  deletes the head branch when the arm decision resolves to an
+ *                  IMMEDIATE merge (a `clean` PR, or a refused-arm controlled
+ *                  degrade) — best-effort, reported on `branchDeletion`, never an
+ *                  arm failure. When the decision instead ARMS (auto-merge
+ *                  enabled, the host completes the merge later, out of process)
+ *                  there is no synchronous merge to delete after — nothing is
+ *                  deleted at this call, and the `armed` outcome's `reason` says
+ *                  so explicitly rather than staying silent about it.
  *   merge        → `mergePullRequestNow`. `--delete-branch` (consumer KW-F6)
  *                  deletes the PR's remote head branch after a successful merge
  *                  through `LandingHost.deleteBranch`; a failed delete is a
  *                  structural `branchDeletion` degradation, never a merge
- *                  failure. Merge-only — `arm` defers the merge to the host.
+ *                  failure. `arm` accepts the same flag independently — see above.
  *   status       → `LandingHost.getPrStatus`
  *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
  *                  the three code-host checks (pr-merge-token, allow-auto-merge,
@@ -113,19 +122,24 @@ function usage(message: string): number {
       // tracker, so there is no store to build and no wave.config.json to read.
       `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
       `         create: --branch <branch> --title <title> --body <body>   (the PR body carries the store-kind close phrase)`,
-      `         arm | status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
+      `         arm: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
       `         merge: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
+      `         status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
       `         preflight: (no --branch — a repo-level probe)`,
       '',
       '  create    Open the PR for --branch idempotently (find-before-create): an existing OPEN PR on the',
       '            branch is reused (no duplicate) and its title/body updated to --title/--body, a missing',
       '            one is created. Requires --title and --body.',
       '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
-      '            already clean → direct merge. Idempotent.',
+      '            already clean → direct merge. Idempotent. With --delete-branch, deletes the head branch',
+      '            on the decision paths that merge IMMEDIATELY (clean, or a refused-arm controlled degrade)',
+      '            — best-effort, reported in `branchDeletion`, never an arm failure. When the decision instead',
+      '            ARMS (auto-merge enabled, the host merges later out of process), nothing is deleted at this',
+      '            call — the deferral is recorded explicitly in the armed outcome\'s `reason`.',
       '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
       '            With --delete-branch, deletes the PR head branch after a successful merge (branch hygiene,',
       '            consumer KW-F6) — best-effort: a failed delete is reported in `branchDeletion`, never a merge',
-      '            failure. --delete-branch is merge-only (arm defers the merge to the host, so it deletes nothing).',
+      '            failure. `arm` accepts the same flag with its own (partially deferred) semantics — see above.',
       '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url).',
       '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
       '            Store-blind (no --config, no --branch) — identical on every store kind (ADR-0023 amendment).',
@@ -206,17 +220,19 @@ export async function runHostPr(
     method = (rawMethod as MergeMethod) ?? DEFAULT_MERGE_METHOD;
   }
 
-  // `--delete-branch` is a MERGE-only branch-hygiene flag (consumer KW-F6): on a
+  // `--delete-branch` is a branch-hygiene flag (consumer KW-F6): on a
   // successful `merge` it deletes the PR's remote head branch through the host
-  // API. It is deliberately NOT wired to `arm` — arm DEFERS the merge to the host
-  // (auto-merge lands it later, out of band), so there is no synchronous
-  // post-merge moment here to delete the branch in; repo-level "automatically
-  // delete head branches" is the arm-path story. Reject it on any other verb
-  // rather than silently ignore it (the arm-delete footgun).
+  // API. `arm` accepts it too (issue #140, wiring the engine's own
+  // `ArmOptions.deleteBranch`, landed in #132): threaded through only on the
+  // decision paths that resolve to an IMMEDIATE merge (a `clean` PR, or a
+  // refused-arm controlled degrade) — `armPullRequest` itself defers the
+  // deletion (and says so in `reason`) when the decision instead ARMS and
+  // hands the merge to the host. Reject it on any other verb rather than
+  // silently ignore it (the arm-delete footgun).
   const deleteBranch = args.includes('--delete-branch');
-  if (deleteBranch && verb !== 'merge') {
+  if (deleteBranch && verb !== 'merge' && verb !== 'arm') {
     return usage(
-      `--delete-branch is only supported by 'merge' (a post-merge branch-hygiene step); '${verb}' does not delete branches`,
+      `--delete-branch is only supported by 'arm' and 'merge' (branch-hygiene steps); '${verb}' does not delete branches`,
     );
   }
 
@@ -427,7 +443,7 @@ async function dispatch(
 
   const outcome =
     verb === 'arm'
-      ? await armPullRequest(host, branch, method)
+      ? await armPullRequest(host, branch, method, { deleteBranch })
       : await mergePullRequestNow(host, branch, method, { deleteBranch });
 
   const ok = outcome.outcome === 'merged' || outcome.outcome === 'armed' || outcome.outcome === 'already-merged';
