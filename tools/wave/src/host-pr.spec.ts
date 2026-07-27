@@ -1076,14 +1076,126 @@ describe('mergePullRequestNow — --delete-branch (consumer KW-F6)', () => {
     expect(calls).toEqual(['getPrStatus:b', 'mergePullRequest:42:rebase', 'deleteBranch:b']);
   });
 
-  it('arm NEVER deletes the branch — --delete-branch is a merge-verb-only concern', async () => {
-    // A clean PR arms into a DIRECT merge (same `merge` helper), yet arm threads
-    // no delete option, so the branch is untouched and no branchDeletion appears.
+  it('without opts.deleteBranch, arm still never deletes — unchanged default behaviour', async () => {
+    // A clean PR arms into a DIRECT merge (same `merge` helper), yet without the
+    // flag, the branch stays untouched and no branchDeletion key appears.
     const { host, calls } = fakeLandingHost({ status: openPr('clean') });
     const out = await armPullRequest(host, 'b');
     expect(out).toMatchObject({ outcome: 'merged' });
     expect('branchDeletion' in out).toBe(false);
     expect(calls).not.toContain('deleteBranch:b');
+  });
+});
+
+// ─── arm --delete-branch (FOR-66-class reproduction — issue #126) ────────────
+//
+// The FOR-66 fix (KW-F6) was wired ONLY onto `mergePullRequestNow` (the block
+// above): `armPullRequest`'s OWN three merge call-sites (the `clean` decision,
+// the `clean-status` recovery, the `not-allowed` controlled-degrade) never
+// carried a delete option at all — so a landing that went through `arm` and
+// bottomed out in one of those direct merges NEVER deleted the branch, no
+// matter the repo's "Automatically delete head branches" setting. This is the
+// consumer's live reproduction: three `outcome: merged` rows landed through
+// `arm`, and all three head branches (remote AND local) survived. These specs
+// drive exactly that route — an arm call that resolves to an immediate merge —
+// rather than merely asserting the intent.
+
+describe('armPullRequest — --delete-branch (FOR-66-class reproduction, issue #126)', () => {
+  it('a CLEAN PR armed with --delete-branch merges directly AND deletes the branch — parity with the merge verb', async () => {
+    const { host, calls } = fakeLandingHost({ status: openPr('clean') });
+    const out = await armPullRequest(host, 'wave/FOR-66-arm', DEFAULT_MERGE_METHOD, {
+      deleteBranch: true,
+    });
+    expect(out).toMatchObject({
+      outcome: 'merged',
+      prNumber: 42,
+      branchDeletion: { branch: 'wave/FOR-66-arm', deleted: true },
+    });
+    // Deletion happens strictly AFTER the merge, same ordering as the merge verb.
+    expect(calls).toEqual([
+      'getPrStatus:wave/FOR-66-arm',
+      'mergePullRequest:42:squash',
+      'deleteBranch:wave/FOR-66-arm',
+    ]);
+  });
+
+  it('the clean-status recovery (SPIKE 2) deletes the branch too, when requested', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('unknown'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
+      },
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, {
+      sleep: instantSleep,
+      deleteBranch: true,
+    });
+    expect(out).toMatchObject({
+      outcome: 'merged',
+      branchDeletion: { branch: 'b', deleted: true },
+    });
+    expect(calls).toContain('deleteBranch:b');
+  });
+
+  it('the not-allowed controlled-degrade (zero pending required checks) deletes the branch too, when requested', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'The repository does not permit auto-merge');
+      },
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    expect(out).toMatchObject({
+      outcome: 'merged',
+      branchDeletion: { branch: 'b', deleted: true },
+    });
+    expect(calls).toContain('deleteBranch:b');
+  });
+
+  it('a FAILED branch deletion after an arm-driven merge is a reported degradation, NOT a merge failure', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('clean'),
+      onDeleteBranch: () => {
+        throw new Error('Reference does not exist');
+      },
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    expect(out).toMatchObject({
+      outcome: 'merged',
+      branchDeletion: { branch: 'b', deleted: false, error: 'Reference does not exist' },
+    });
+    expect(calls).toContain('deleteBranch:b');
+  });
+
+  it('a merge the host DECLINES during arm never attempts a branch delete', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: openPr('clean'),
+      onMerge: () => ({ merged: false }),
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    expect(out).toMatchObject({ outcome: 'refused' });
+    expect(calls).not.toContain('deleteBranch:b');
+  });
+
+  it('a TRUE arm (outcome `armed`, enable-auto-merge accepted) never deletes synchronously — the merge has not happened yet', async () => {
+    const { host, calls } = fakeLandingHost({ status: openPr('blocked') });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    expect(out).toMatchObject({ outcome: 'armed', prNumber: 42 });
+    expect('branchDeletion' in out).toBe(false);
+    expect(calls).not.toContain('deleteBranch:b');
+    // The reason DISCLOSES the deferral — this is where the close skill's
+    // checked step can point when the branch is still present after an arm.
+    expect((out as { reason: string }).reason).toMatch(/deferred/i);
+    expect((out as { reason: string }).reason).toMatch(/Automatically delete head branches/i);
+  });
+
+  it('a TRUE arm without --delete-branch carries the ORIGINAL reason, unchanged (byte-identical when the flag is absent)', async () => {
+    const { host } = fakeLandingHost({ status: openPr('blocked') });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({
+      outcome: 'armed',
+      reason: 'A required check or review is still pending — arm the PR to land itself once it passes.',
+    });
   });
 });
 

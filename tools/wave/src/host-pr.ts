@@ -722,9 +722,12 @@ export type LandingOutcome =
       reason: string;
       /**
        * The `--delete-branch` outcome (consumer KW-F6). Present ONLY when the
-       * `merge` verb was asked to delete the head branch — absent otherwise, so a
-       * merge without the flag is byte-identical. A `deleted:false` here is a
-       * reported degradation, never a merge failure (this stays `merged`).
+       * landing call — the `merge` verb, OR `arm` when its decision resolved to
+       * an immediate merge — was asked to delete the head branch ({@link
+       * MergeOptions.deleteBranch} / {@link ArmOptions.deleteBranch}); absent
+       * otherwise, so a landing without the flag is byte-identical. A
+       * `deleted:false` here is a reported degradation, never a merge failure
+       * (this stays `merged`).
        */
       branchDeletion?: BranchDeletionResult;
     }
@@ -808,6 +811,30 @@ export interface ArmOptions {
   recomputeRetries?: number;
   /** Delay per retry, in ms. Default 250. */
   recomputeRetryDelayMs?: number;
+  /**
+   * After the arm decision resolves to an IMMEDIATE merge — the PR was already
+   * `clean`, or a refusal degrades to a direct merge (SPIKE 2 / the controlled
+   * degrade) — delete the PR's remote head branch through the host API, the
+   * same `--delete-branch` hygiene step {@link MergeOptions.deleteBranch} gives
+   * the `merge` verb (consumer KW-F6), now threaded onto arm's OWN merge
+   * call-sites too.
+   *
+   * This closes the reproduction of the FOR-66 class on the `arm` route: the
+   * original fix was wired ONLY onto {@link mergePullRequestNow} — every merge
+   * performed *inside* {@link armPullRequest} (the `clean` decision, the
+   * `clean-status` recovery, and the `not-allowed` controlled-degrade) never
+   * carried a delete option at all, so those branches survived even with the
+   * repo's "Automatically delete head branches" setting ON.
+   *
+   * When the decision instead resolves to `enable-auto-merge` (outcome
+   * `armed`), there is no synchronous merge here to delete after — the host
+   * completes that merge later, out of process — so nothing is deleted at
+   * this call; the `armed` outcome's `reason` says so explicitly whenever this
+   * flag is set, so the close skill's checked step has a concrete place to
+   * point at instead of assuming deletion already happened. Off by default: an
+   * arm without it is byte-identical to before.
+   */
+  deleteBranch?: boolean;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -861,6 +888,25 @@ function hasNoPendingRequiredCheck(mergeability: PrMergeability): boolean {
 }
 
 /**
+ * Append a deferred-deletion note to an `armed` outcome's reason when the
+ * caller asked for `--delete-branch` (ADR-0023 amendment / FOR-66-class
+ * reproduction fix). `armed` means the merge itself has not happened yet — the
+ * host completes it later, out of process — so there is nothing to delete
+ * from synchronously here. Recording that in the reason (rather than staying
+ * silent) is what lets the close skill's checked step point at WHY the branch
+ * is still present instead of assuming the request was honoured.
+ */
+function armedReason(reason: string, deleteBranchRequested: boolean): string {
+  if (!deleteBranchRequested) return reason;
+  return (
+    `${reason} Branch deletion was requested but is DEFERRED: arm only enables auto-merge here — the ` +
+    `PR is not merged yet, so there is no synchronous point to delete the branch from. Once the host ` +
+    `completes the merge, deletion depends on the repo's "Automatically delete head branches" setting ` +
+    `(Settings → General → Pull Requests) — flotilla cannot delete it from this call.`
+  );
+}
+
+/**
  * Land a branch's PR by the ADR-0023 arm intent: probe → decide → act.
  *
  * Idempotent and re-entrant, because `wave-close` is: an already-merged PR is a
@@ -895,18 +941,30 @@ export async function armPullRequest(
   // An open PR with no reported mergeability is `unknown`, NEVER `clean`.
   const mergeability = status.mergeability ?? 'unknown';
   const decision = decideArmAction(mergeability);
+  // Only an IMMEDIATE merge (below) has a synchronous post-merge moment to
+  // delete from — thread the same head branch every merge() call site inside
+  // this function shares (FOR-66-class fix, now on the arm route too).
+  const deleteBranchOf = opts.deleteBranch === true ? branch : undefined;
 
   if (decision.action === 'refuse') {
     return { outcome: 'refused', prNumber, prUrl: status.url, reason: decision.reason };
   }
 
   if (decision.action === 'merge') {
-    return merge(host, prNumber, status.url, method, decision.reason);
+    return merge(host, prNumber, status.url, method, decision.reason, deleteBranchOf);
   }
 
   try {
     await host.enableAutoMerge(prNumber, method);
-    return { outcome: 'armed', prNumber, prUrl: status.url, reason: decision.reason };
+    // `armed` DEFERS the actual merge to the host — there is no synchronous
+    // moment here to delete the branch from, so a requested deletion is
+    // recorded as deferred (never silently dropped) rather than attempted.
+    return {
+      outcome: 'armed',
+      prNumber,
+      prUrl: status.url,
+      reason: armedReason(decision.reason, opts.deleteBranch === true),
+    };
   } catch (err) {
     if (err instanceof AutoMergeUnavailableError && err.reason === 'clean-status') {
       // SPIKE 2 (ADR-0023): the host says the PR is already clean — the arm was
@@ -919,6 +977,7 @@ export async function armPullRequest(
         status.url,
         method,
         `Host rejected the arm: the PR is already clean (nothing pending) — merged directly instead. [${err.message}]`,
+        deleteBranchOf,
       );
     }
     if (err instanceof AutoMergeUnavailableError && err.reason === 'not-allowed') {
@@ -934,6 +993,7 @@ export async function armPullRequest(
           status.url,
           method,
           `Host rejected the arm: this repository does not permit auto-merge, and no required check is pending — merged directly instead (controlled degrade). [${err.message}]`,
+          deleteBranchOf,
         );
       }
       // Deliberately NOT a merge fallback: a required check IS reported
@@ -959,10 +1019,17 @@ export interface MergeOptions {
    * host API (`host-pr merge --delete-branch`, consumer KW-F6 — remote branch
    * hygiene at landing). Off by default: a merge without it is byte-identical to
    * before. A deletion failure is reported structurally on the `merged` outcome
-   * ({@link BranchDeletionResult}), never a merge failure. Deliberately scoped to
-   * the `merge` verb — `arm` DEFERS the merge to the host (auto-merge lands it
-   * out of band, so there is no synchronous post-merge moment here to delete in;
-   * repo-level "automatically delete head branches" is the arm-path story).
+   * ({@link BranchDeletionResult}), never a merge failure.
+   *
+   * `arm` has its OWN, independently-set equivalent — {@link ArmOptions.deleteBranch}
+   * — because arm is not always a deferral: when its decision resolves to an
+   * immediate merge (a `clean` PR, or a refused-arm controlled degrade), it now
+   * takes the exact same delete-after-merge action this verb does. Only when
+   * arm truly DEFERS (outcome `armed`, auto-merge enabled and the actual merge
+   * happens later, out of process) is there no synchronous post-merge moment
+   * here to delete in — that leg still relies on the repo-level "Automatically
+   * delete head branches" setting to finish the job once the host's own merge
+   * lands.
    */
   deleteBranch?: boolean;
 }
@@ -1033,11 +1100,16 @@ function terminalStatus(status: PrLandingStatus, branch: string): LandingOutcome
  * Perform the merge write + normalise a declined merge into `refused`.
  *
  * `deleteBranchOf`, when given, is the head branch to delete AFTER a successful
- * merge (`host-pr merge --delete-branch`, consumer KW-F6). It is threaded only
- * by {@link mergePullRequestNow} — {@link armPullRequest}'s three merge call-sites
- * omit it, so the arm path never deletes and stays byte-identical. The deletion
- * is best-effort: a failure is captured on `branchDeletion` (a reported
- * degradation), never propagated, so the merge result never flips to a failure.
+ * merge (`host-pr merge --delete-branch`, consumer KW-F6). Every caller that can
+ * reach an IMMEDIATE merge threads it: {@link mergePullRequestNow} (the `merge`
+ * verb) and all three of {@link armPullRequest}'s own merge call-sites (the
+ * `clean` decision, the `clean-status` recovery, and the `not-allowed`
+ * controlled-degrade) — this is the fix for the FOR-66-class reproduction on
+ * the `arm` route, where those three call-sites previously omitted it
+ * unconditionally, so a landing through `arm` never deleted the branch even
+ * when the caller asked. The deletion is best-effort: a failure is captured on
+ * `branchDeletion` (a reported degradation), never propagated, so the merge
+ * result never flips to a failure.
  */
 async function merge(
   host: LandingHost,
