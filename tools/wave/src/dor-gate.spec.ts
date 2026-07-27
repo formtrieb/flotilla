@@ -922,6 +922,214 @@ describe('validateIssue — literal-files-exist advisory (gate 7)', () => {
   });
 });
 
+// ─── Gate 8: verify-profile-coverage advisory check (FOR-127) ────────────────
+
+describe('validateIssue — verify-profile-coverage advisory (gate 8)', () => {
+  it('defers when no verify config is supplied to this call (capability gap, not a claim about the row)', () => {
+    const issuePath = writeIssue(
+      'verify-coverage-feature',
+      '70-no-verify-config.md',
+      ISSUE_FIXTURE_BODY(
+        [
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- apps/web/src/thing.ts',
+          '**Blocked by:** none',
+        ].join('\n'),
+      ),
+    );
+    const result = validateIssue({
+      repoRoot: root,
+      issuePath,
+      source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+    });
+    expect(result.overall).toBe('PASS');
+    const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+    expect(gate8).toMatchObject({ status: 'deferred' });
+  });
+
+  it('does NOT warn (AC4) when the consumer has zero verify profiles configured at all — a legitimately doc-only row', () => {
+    const issuePath = writeIssue(
+      'verify-coverage-feature',
+      '71-doc-only-no-profiles.md',
+      ISSUE_FIXTURE_BODY(
+        [
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- docs/some-doc.md',
+          '**Blocked by:** none',
+        ].join('\n'),
+      ),
+    );
+    const result = validateIssue({
+      repoRoot: root,
+      issuePath,
+      source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+      verify: { profiles: [] },
+    });
+    expect(result.overall).toBe('PASS');
+    const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+    expect(gate8).toMatchObject({ status: 'pass' });
+  });
+
+  it('passes when the row\'s declared files match a configured verify profile', () => {
+    writeRealFile('apps/web/src/matched-thing.ts');
+    const issuePath = writeIssue(
+      'verify-coverage-feature',
+      '72-matched.md',
+      ISSUE_FIXTURE_BODY(
+        [
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- apps/web/src/matched-thing.ts',
+          '**Blocked by:** none',
+        ].join('\n'),
+      ),
+    );
+    const result = validateIssue({
+      repoRoot: root,
+      issuePath,
+      source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+      verify: {
+        profiles: [
+          { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+          { name: 'cms', appliesTo: ['cms/**'], commands: [{ command: 'composer test' }] },
+        ],
+      },
+    });
+    expect(result.overall).toBe('PASS');
+    const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+    expect(gate8).toMatchObject({ status: 'pass' });
+  });
+
+  it('warns (does not fail) when the row\'s declared files match no configured verify profile — the #83-shaped bug this gate exists to close', () => {
+    writeRealFile('apps/ios/src/only-ios-thing.ts');
+    const issuePath = writeIssue(
+      'verify-coverage-feature',
+      '73-unmatched.md',
+      ISSUE_FIXTURE_BODY(
+        [
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- apps/ios/src/only-ios-thing.ts',
+          '**Blocked by:** none',
+        ].join('\n'),
+      ),
+    );
+    const result = validateIssue({
+      repoRoot: root,
+      issuePath,
+      source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+      verify: {
+        profiles: [
+          { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+          { name: 'cms', appliesTo: ['cms/**'], commands: [{ command: 'composer test' }] },
+          { name: 'android', appliesTo: ['apps/android/**'], commands: [{ command: 'gradle test' }] },
+        ],
+      },
+    });
+    // Advisory only — never fails overall, and the row stays dispatchable (AC2).
+    expect(result.overall).toBe('PASS');
+    const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+    expect(gate8).toMatchObject({ status: 'warn' });
+    expect(gate8?.reason).toContain('apps/ios/src/only-ios-thing.ts');
+    expect(gate8?.reason).toMatch(/web, cms, android/);
+  });
+
+  it('resolves a glob Files: entry against the repo tree before testing profile coverage', () => {
+    writeRealFile('apps/web/src/glob-a.ts');
+    writeRealFile('apps/web/src/glob-b.ts');
+    const issuePath = writeIssue(
+      'verify-coverage-feature',
+      '74-glob-matched.md',
+      ISSUE_FIXTURE_BODY(
+        [
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- apps/web/src/*.ts',
+          '**Blocked by:** none',
+        ].join('\n'),
+      ),
+    );
+    const result = validateIssue({
+      repoRoot: root,
+      issuePath,
+      source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+      verify: {
+        profiles: [
+          { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+        ],
+      },
+    });
+    const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+    expect(gate8).toMatchObject({ status: 'pass' });
+  });
+});
+
+describe('validateIssueView — verify-profile-coverage advisory (gate 8, structured path)', () => {
+  it('defers when verify is absent even though a repoRoot is supplied', () => {
+    const result = validateIssueView(buildView({ files: ['apps/web/src/x.ts'] }), {
+      repoRoot: root,
+    });
+    expect(gate(result, 'verify-profile-coverage').status).toBe('deferred');
+  });
+
+  it('defers when verify is supplied but repoRoot is absent — cannot expand globs to determine overlap', () => {
+    const result = validateIssueView(buildView({ files: ['apps/web/src/x.ts'] }), {
+      verify: {
+        profiles: [{ name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] }],
+      },
+    });
+    expect(gate(result, 'verify-profile-coverage').status).toBe('deferred');
+  });
+
+  it('does NOT warn when the consumer configured zero verify profiles at all (AC4)', () => {
+    const result = validateIssueView(buildView({ files: ['docs/only-a-doc.md'] }), {
+      repoRoot: root,
+      verify: { profiles: [] },
+    });
+    expect(gate(result, 'verify-profile-coverage').status).toBe('pass');
+  });
+
+  it('warns when files+repoRoot+verify are all present and no profile matches', () => {
+    writeRealFile('apps/ios/src/only-ios.ts');
+    const result = validateIssueView(
+      buildView({ files: ['apps/ios/src/only-ios.ts'] }),
+      {
+        repoRoot: root,
+        verify: {
+          profiles: [
+            { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+          ],
+        },
+      },
+    );
+    expect(gate(result, 'verify-profile-coverage').status).toBe('warn');
+    expect(result.overall).toBe('PASS');
+  });
+
+  it('passes when files+repoRoot+verify are all present and a profile matches', () => {
+    writeRealFile('apps/web/src/matched-view.ts');
+    const result = validateIssueView(
+      buildView({ files: ['apps/web/src/matched-view.ts'] }),
+      {
+        repoRoot: root,
+        verify: {
+          profiles: [
+            { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+          ],
+        },
+      },
+    );
+    expect(gate(result, 'verify-profile-coverage').status).toBe('pass');
+  });
+});
+
 describe('extractAcBody', () => {
   it('returns null when no AC section exists', () => {
     expect(extractAcBody('# Title\n\nNo AC here.')).toBeNull();
@@ -1084,7 +1292,7 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
     expect(result.overall).toBe('PASS');
   });
 
-  it('emits all seven canonical gates in the same order as the file path (no silent omission)', () => {
+  it('emits all eight canonical gates in the same order as the file path (no silent omission)', () => {
     const names = validateIssueView(buildView()).gates.map((g) => g.name);
 
     expect(names).toEqual([
@@ -1095,6 +1303,7 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
       'blocked-by-chain-resolves',
       'ac-files-coverage',
       'literal-files-exist',
+      'verify-profile-coverage',
     ]);
   });
 

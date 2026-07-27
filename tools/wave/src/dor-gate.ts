@@ -10,6 +10,12 @@
  *   4. Risk-class consistent with file count (warn-only)
  *   5. `Blocked by:` chain resolves to issues that exist
  *   6. AC bodies do not mention file paths absent from `Files:` header (warn-only)
+ *   7. Literal `Files:` entries exist on disk (advisory warn-only)
+ *   8. Declared `Files:` intersect at least one configured verify profile's
+ *      `appliesTo` (advisory warn-only) — see {@link checkVerifyProfileCoverage}.
+ *      A row whose files match no profile is not wrong (some work has no
+ *      automated gate) but it must be *stated*, not silently equivalent to a
+ *      fully verify-backed approve (FOR-127).
  *
  * Pure function modulo two side-effects: file-glob expansion (`fastGlob`) and
  * blocked-by file-existence check (`statSync`). Both honor the `repoRoot`
@@ -46,6 +52,7 @@ import {
   type ParseError,
 } from './header-parser';
 import { validateHeaderBlock, type IssueView, type WaveSchema } from './contract';
+import { verifyCommands, type VerifyConfig } from './verify';
 
 /**
  * `'deferred'` (ADR-0014): a gate that cannot run in the current context because
@@ -88,6 +95,16 @@ export interface ValidateOptions {
   issuePath: string;
   /** Issue body source. Required (the caller already read the file). */
   source: string;
+  /**
+   * Optional consumer verify profiles (`wave.config.json`'s `verify`, ADR-0016).
+   * Drives Gate 8 ({@link checkVerifyProfileCoverage}). Absent → the gate
+   * `defer`s rather than silently passing or spamming a warn — distinct from a
+   * consumer that legitimately configured zero profiles (`{ profiles: [] }`),
+   * which is a real "no automated gate anywhere" state and stays a quiet pass
+   * (AC4 — the check is about a profile existing and not matching, not about
+   * the absence of profiles).
+   */
+  verify?: VerifyConfig;
 }
 
 /**
@@ -128,6 +145,11 @@ export function validateIssue(opts: ValidateOptions): DorResult {
   // Gate 7 — Literal Files: entries exist on disk (advisory warn-only)
   gates.push(checkLiteralFilesExistence(header, opts.repoRoot));
 
+  // Gate 8 — Files intersect at least one configured verify profile (advisory warn-only)
+  gates.push(
+    checkVerifyProfileCoverage(header.files, opts.verify, opts.repoRoot),
+  );
+
   const failed = gates.some((g) => g.status === 'fail');
   return {
     overall: failed ? 'FAIL' : 'PASS',
@@ -145,6 +167,12 @@ export interface ValidateViewOptions {
    * it; when absent they `defer` (capability-conditional — ADR-0014).
    */
   repoRoot?: string;
+  /**
+   * Optional consumer verify profiles (`wave.config.json`'s `verify`, ADR-0016).
+   * Drives Gate 8 ({@link checkVerifyProfileCoverage}). See {@link ValidateOptions.verify}
+   * for the absent-vs-zero-profiles distinction (AC4).
+   */
+  verify?: VerifyConfig;
 }
 
 const DEFER_NO_WORKTREE =
@@ -214,6 +242,9 @@ export function validateIssueView(
       ? checkLiteralFilesExistence({ files: view.files }, repoRoot)
       : { name: 'literal-files-exist', status: 'deferred', reason: DEFER_NO_WORKTREE },
   );
+
+  // Gate 8 — Files intersect at least one configured verify profile (advisory warn-only)
+  gates.push(checkVerifyProfileCoverage(view.files, opts.verify, repoRoot));
 
   const failed = gates.some((g) => g.status === 'fail');
   return { overall: failed ? 'FAIL' : 'PASS', gates };
@@ -749,6 +780,108 @@ function checkLiteralFilesExistence(
     };
   }
   return { name: 'literal-files-exist', status: 'pass' };
+}
+
+// ─── Gate 8: Files intersect at least one verify profile (advisory warn-only) ─
+
+/**
+ * Emitted when this call received no verify config to check against at all —
+ * distinct from a consumer that legitimately configured zero profiles (AC4:
+ * "not about the absence of profiles"). The caller simply did not supply
+ * `verify`, so this gate cannot compute anything here and must not guess.
+ */
+const DEFER_NO_VERIFY_CONFIG =
+  'No verify config supplied to this check — pass the consumer wave.config.json `verify` profiles to enable Gate 8.';
+
+/**
+ * Expand a `Files:` entry list the same way Gate 2 ({@link checkFilesGlobs})
+ * does: a glob entry expands via `fastGlob` against `repoRoot` (matches only —
+ * a zero-match glob contributes nothing here; Gate 2 already warns on that
+ * separately), a literal entry passes through as-is because it may be a
+ * net-new file the issue will create (same tolerance as Gates 2 and 7).
+ */
+function resolveDeclaredFiles(
+  files: readonly string[],
+  repoRoot: string,
+): string[] {
+  const out: string[] = [];
+  for (const entry of files) {
+    if (isLikelyGlob(entry)) {
+      const matches = fastGlob.sync(entry, {
+        cwd: repoRoot,
+        dot: true,
+        onlyFiles: false,
+      });
+      out.push(...matches);
+    } else {
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * Gate 8 — a row whose declared `Files:` intersect no configured verify
+ * profile's `appliesTo` currently lands `approve` with nothing compiled or
+ * tested (the defect this gate exists to surface — see issue FOR-127). This is
+ * cheap to detect: the declared files are known at DoR time and the verify
+ * profiles' `appliesTo` globs are in the config; reusing {@link verifyCommands}
+ * — the EXACT selection logic the Worker/Reviewer verify re-run will use —
+ * guarantees "this gate passes" implies "verifyCommands would actually select
+ * at least one command", not a parallel, potentially-drifting reimplementation.
+ *
+ * Advisory only (AC2): a row with no automated gate is not necessarily wrong —
+ * some work genuinely has none — so this WARNs, it never FAILs. A row must
+ * stay dispatchable either way; what changes is that the gap is now *stated*
+ * instead of silently indistinguishable from a fully verify-backed approve.
+ *
+ * Three-way ADR-0014 capability classification, mirroring Gates 2/7:
+ *   - `verify` absent from this call        → `'deferred'` (this invocation
+ *     was not given the consumer's verify config at all — a capability gap,
+ *     not evidence of anything about the row).
+ *   - `verify.profiles` present but EMPTY   → `'pass'`, silently (AC4): a
+ *     consumer with no verify profile configured at all must not be spammed —
+ *     this check is about a profile existing and NOT matching, not about the
+ *     absence of profiles.
+ *   - `repoRoot` absent (structured/`validateIssueView` path only) → `'deferred'`
+ *     (working-tree gate: `Files:`/`appliesTo` globs cannot be expanded to
+ *     determine overlap without a checkout).
+ *   - otherwise: expand the row's declared files (same policy as Gate 2) and
+ *     ask `verifyCommands` whether any profile would fire on them.
+ */
+function checkVerifyProfileCoverage(
+  files: readonly string[],
+  verify: VerifyConfig | undefined,
+  repoRoot: string | undefined,
+): GateResult {
+  const name = 'verify-profile-coverage';
+  if (verify === undefined) {
+    return { name, status: 'deferred', reason: DEFER_NO_VERIFY_CONFIG };
+  }
+  if (verify.profiles.length === 0) {
+    return { name, status: 'pass' };
+  }
+  if (repoRoot === undefined) {
+    return { name, status: 'deferred', reason: DEFER_NO_WORKTREE };
+  }
+
+  const resolved = resolveDeclaredFiles(files, repoRoot);
+  const commands = verifyCommands(resolved, verify);
+  if (commands.length > 0) {
+    return { name, status: 'pass' };
+  }
+
+  const profileNames = verify.profiles.map((p) => p.name).join(', ');
+  return {
+    name,
+    status: 'warn',
+    reason:
+      `Declared files (${files.join(', ')}) match no configured verify profile ` +
+      `(${profileNames}) — this row has no automated build/test gate behind it. ` +
+      `An approve here is inspection-only, not verify-backed: state that ` +
+      `explicitly in the Worker/Reviewer brief rather than letting it read the ` +
+      `same as a row a full verify run actually backed.`,
+  };
 }
 
 export { resolve, dirname };
