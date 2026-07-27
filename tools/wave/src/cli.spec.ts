@@ -1335,6 +1335,254 @@ describe('worktree-cleanup subcommand — --orphans sweep (FOR-67)', () => {
   });
 });
 
+// ─── Form 8f: worktree-cleanup — the branch-scoping flag FAILS CLOSED and
+//             reads the spine through the real reader (issue #141) ────────────
+//
+// Two defects, measured on a live wave, both landing here:
+//
+//  1. `resolveBranchFilter` read the spine via merge-order's `parseWaveSpine`,
+//     which re-keys branches from row ids to canonical issueIds through the
+//     `.scratch` footnote → issue-file bridge. A tracker-backed wave has no
+//     such tree, so the re-key map was empty and EVERY branch was dropped — for
+//     conventionally-named branches too. It now reads through
+//     `readSpine` + `requireBranchesByIssueId` (wave-md-rw), which keys by the
+//     row id verbatim.
+//
+//  2. It ended `return filter.size > 0 ? filter : undefined`, and `undefined`
+//     downstream means NO filter. So a flag whose entire purpose is to narrow
+//     scope silently widened to everything: a command asked to clean one wave's
+//     worktrees would clean every agent worktree in the repo, tearing down a
+//     sibling wave mid-flight. It must refuse instead — and that is the
+//     load-bearing half, since ANY future path leaving the set empty produces
+//     the same widening.
+describe('worktree-cleanup --wave — reads the spine through the real reader (issue #141)', () => {
+  let waveRepo: string;
+
+  /** Write a tracker-backed spine (bare ids, NO `.scratch` footnotes) with the given dispatch-log. */
+  function writeSpine(entries: string[]): string {
+    const path = join(waveRepo, 'WAVE.md');
+    writeFileSync(
+      path,
+      [
+        '# Wave 2026-07-27 — scoping',
+        '',
+        '**Status:** in-flight',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| 131 | Alpha | background | mechanical | universal | — | dispatched | 1 | — |',
+        '| 132 | Beta | background | mechanical | universal | — | dispatched | 1 | — |',
+        '',
+        '## Resume-Metadata',
+        '',
+        '```yaml',
+        'dispatch-log:',
+        ...entries.map((e) => `  - "${e}"`),
+        '```',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    return path;
+  }
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    waveRepo = mkdtempSync(join(tmpdir(), 'wave-cli-141-'));
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      rmSync(waveRepo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('derives the scope from a tracker-backed spine — the shape parseWaveSpine returned {} for', () => {
+    const spine = writeSpine([
+      '131 → agent wf_aaa (sonnet) branch wave/131-alpha',
+      '132 → agent wf_bbb (sonnet) branch wave/132-beta',
+    ]);
+    const code = main(['worktree-cleanup', waveRepo, '--wave', spine]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as { branchFilter?: string[] };
+    expect(parsed.branchFilter).toEqual(['wave/131-alpha', 'wave/132-beta']);
+  });
+
+  it('derives the scope from branches named OUTSIDE the convention too', () => {
+    const spine = writeSpine([
+      '131 → agent wf_aaa (sonnet) branch w28/131-alpha',
+      '132 → agent wf_bbb (sonnet) branch feature/132-beta',
+    ]);
+    const code = main(['worktree-cleanup', waveRepo, '--wave', spine]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as { branchFilter?: string[] };
+    expect(parsed.branchFilter).toEqual(['feature/132-beta', 'w28/131-alpha']);
+  });
+});
+
+describe('worktree-cleanup --wave — an unresolvable scope REFUSES, never widens (issue #141)', () => {
+  let waveRepo: string;
+  const SIBLING_WORKTREE = '/repo/.claude/worktrees/wf_sibling-wave';
+  const SIBLING_BRANCH = 'wave/999-sibling-in-flight';
+
+  /**
+   * Drive `git worktree list` to report ONE clean, registered agent worktree
+   * that belongs to a DIFFERENT wave. It is the only candidate on the table, so
+   * "did the fail-open fire?" reduces to "was it selected?".
+   */
+  function driveSiblingWorktree(): void {
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'worktree' && cmdArgs[1] === 'list') {
+        return `worktree ${SIBLING_WORKTREE}\nHEAD ${'a'.repeat(40)}\nbranch refs/heads/${SIBLING_BRANCH}\n`;
+      }
+      if (cmdArgs[0] === 'rev-parse') return `${SIBLING_WORKTREE}\n`;
+      if (cmdArgs[0] === 'status') return ''; // clean → eligible for removal
+      return '';
+    });
+  }
+
+  /** A spine whose dispatch-log has entries but records no branch on any of them. */
+  function writeBranchlessSpine(): string {
+    const path = join(waveRepo, 'WAVE.md');
+    writeFileSync(
+      path,
+      [
+        '# Wave 2026-07-27 — branchless',
+        '',
+        '**Status:** in-flight',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| 131 | Alpha | background | mechanical | universal | — | dispatched | 1 | — |',
+        '',
+        '## Resume-Metadata',
+        '',
+        '```yaml',
+        'dispatch-log:',
+        '  - "131 → agent wf_aaa (sonnet) dispatched"',
+        '```',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    return path;
+  }
+
+  beforeEach(() => {
+    waveRepo = mkdtempSync(join(tmpdir(), 'wave-cli-141-closed-'));
+    driveSiblingWorktree();
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      rmSync(waveRepo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('a spine yielding NO branch exits 2 and does NOT select a sibling wave\'s worktree — the fail-open case', () => {
+    const code = main([
+      'worktree-cleanup',
+      waveRepo,
+      '--wave',
+      writeBranchlessSpine(),
+    ]);
+    // Pre-fix: the empty set became `undefined` → no filter → the sibling's
+    // worktree was the sole selection of an unscoped global GC, and the run
+    // exited 0 having removed it.
+    expect(code).toBe(2);
+    expect(stdoutBuf).toBe('');
+    expect(stdoutBuf).not.toContain(SIBLING_WORKTREE);
+    expect(stdoutBuf).not.toContain(SIBLING_BRANCH);
+  });
+
+  it('says WHY it refused — the scope was unresolvable, not that nothing matched', () => {
+    main(['worktree-cleanup', waveRepo, '--wave', writeBranchlessSpine()]);
+    expect(stderrBuf).toMatch(/no branch/i);
+    expect(stderrBuf).toMatch(/refusing/i);
+    // The underlying reader diagnostic is preserved through the wrap.
+    expect(stderrBuf).toMatch(/no branch could be recovered/);
+  });
+
+  it('never issues a `git worktree remove` when the scope is unresolvable', () => {
+    main(['worktree-cleanup', waveRepo, '--wave', writeBranchlessSpine()]);
+    const removeCalled = vi
+      .mocked(execFileSync)
+      .mock.calls.some(
+        (c) =>
+          Array.isArray(c[1]) &&
+          (c[1] as string[])[0] === 'worktree' &&
+          (c[1] as string[])[1] === 'remove',
+      );
+    expect(removeCalled).toBe(false);
+  });
+
+  it('--dry-run does not soften the refusal — an unresolvable scope is exit 2, not an empty preview', () => {
+    const code = main([
+      'worktree-cleanup',
+      waveRepo,
+      '--dry-run',
+      '--wave',
+      writeBranchlessSpine(),
+    ]);
+    expect(code).toBe(2);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('--branches with only empty values refuses too — the fail-open was never spine-specific', () => {
+    const code = main(['worktree-cleanup', waveRepo, '--branches', ' , ,']);
+    expect(code).toBe(2);
+    expect(stdoutBuf).toBe('');
+    expect(stderrBuf).toMatch(/refusing/i);
+  });
+
+  it('a resolvable --branches scope still runs normally and excludes the out-of-scope sibling', () => {
+    // The narrowing path itself is unaffected: a real scope selects nothing here
+    // because the only candidate belongs to another wave.
+    const code = main([
+      'worktree-cleanup',
+      waveRepo,
+      '--branches',
+      'wave/131-alpha',
+    ]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      branchFilter: string[];
+      removed: unknown[];
+      skipped: unknown[];
+    };
+    expect(parsed.branchFilter).toEqual(['wave/131-alpha']);
+    expect(parsed.removed).toEqual([]);
+    expect(parsed.skipped).toEqual([]);
+  });
+
+  it('with NO scoping flag the global-GC path is untouched — the sibling IS selected (the behaviour that must stay opt-out)', () => {
+    // The counterpart assertion: fail-closed changes the SCOPED path only. An
+    // unscoped invocation is still a deliberate global GC, and this pins that
+    // the refusal did not leak into it.
+    const code = main(['worktree-cleanup', waveRepo]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      branchFilter?: string[];
+      removed: Array<{ path: string }>;
+    };
+    expect(parsed.branchFilter).toBeUndefined();
+    expect(parsed.removed.map((w) => w.path)).toEqual([SIBLING_WORKTREE]);
+  });
+});
+
 // ─── Form 8c: worktree-cleanup — --orphans folds the standalone orphaned-BRANCH
 //             sweep into branchesDeleted / branchHygieneSkipped (FOR-72) ───────
 //

@@ -11,11 +11,20 @@ import {
   upsertDispatchLogEntry,
   upsertDispatchLogModel,
   branchesByIssueId,
+  requireBranchesByIssueId,
   ROW_STATES,
   setFrontmatterStatus,
   SPINE_STATUSES,
 } from './wave-md-rw';
 import { ISSUE_STATES } from './stop-condition-state-machine';
+// Imported to drive the REAL resume join (issue #141 AC6) against an
+// out-of-convention branch name — the join lives in resume.ts but reads its
+// branches from THIS module's `branchesByIssueId`, so the coupling under test
+// is this file's. Nothing in resume.ts is modified by that issue; the test only
+// pins that the join still finds a worktree when the branch is named freely.
+import { resume } from './resume';
+import type { WorktreeEntry } from './worktree-cleanup';
+import type { SidecarIndex } from './sidecar';
 
 // ─── Golden fixture — a real-shape WAVE.md spine ──────────────────────────────
 //
@@ -1045,5 +1054,242 @@ describe('pipe-hardening — every writer cell escapes, the WAL parser fails lou
       '| 2026-07-10 | 54 | [x](https://h) | #54 | yes | note | extra |', '',
     ].join('\n');
     expect(() => readSpine(corrupt)).toThrow(/PR-Log/);
+  });
+});
+
+// ─── issue #141: the dispatch-log parse-back is the writer's inverse ─────────
+//
+// Measured on a live wave whose Workers were dispatched on branch names outside
+// the `wave/` convention: the dispatch-log recorded all six branches, and the
+// parse-back returned `{}` — not a partial result, nothing. The reader keyed off
+// a `wave/` | `wave-orch/` PREFIX; the writer accepts any ref and enforces no
+// convention, so the two were never a round-trip. The reader now anchors on the
+// writer's own `branch <ref>` keyword instead (the same way `model <id>` is
+// read), which is convention-blind by construction.
+
+/** A tracker-backed spine (bare-number ids, no footnotes) with the given dispatch-log entries. */
+function spineWithDispatchLog(entries: string[]): string {
+  return [
+    '# Wave 2026-07-27 — free-form-branches',
+    '',
+    '**Status:** in-flight',
+    '',
+    '## Plan-Table',
+    '',
+    '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+    '|---|---|---|---|---|---|---|---|---|',
+    '| 131 | Alpha | background | mechanical | universal | — | dispatched | 1 | — |',
+    '| 132 | Beta | background | mechanical | universal | — | dispatched | 1 | — |',
+    '',
+    '## Resume-Metadata',
+    '',
+    '```yaml',
+    'dispatch-log:',
+    ...entries.map((e) => `  - "${e}"`),
+    '```',
+    '',
+  ].join('\n');
+}
+
+describe('dispatch-log branch parse-back — any ref name round-trips (issue #141)', () => {
+  it('recovers branches that follow NO naming convention — the exact shape that yielded {} on a live wave', () => {
+    const spine = readSpine(
+      spineWithDispatchLog([
+        '131 → agent wf_aaa (sonnet) branch w28/131-alpha',
+        '132 → agent wf_bbb (sonnet) branch feature/132-beta',
+      ]),
+    );
+    expect(branchesByIssueId(spine)).toEqual({
+      '131': 'w28/131-alpha',
+      '132': 'feature/132-beta',
+    });
+  });
+
+  it('recovers a ref with no slash at all — the writer never required one', () => {
+    const spine = readSpine(
+      spineWithDispatchLog(['131 → agent wf_aaa branch hotfix_131']),
+    );
+    expect(branchesByIssueId(spine)['131']).toBe('hotfix_131');
+  });
+
+  it('resolves the Plan-Table row branch from a free-form ref too, not just the accessor', () => {
+    const spine = readSpine(
+      spineWithDispatchLog(['131 → agent wf_aaa branch w28/131-alpha']),
+    );
+    expect(spine.planTable.find((r) => r.id === '131')?.branch).toBe(
+      'w28/131-alpha',
+    );
+  });
+
+  it('round-trips through the WRITER for a ref outside the convention — write → read → same string', () => {
+    // The property the pair must have: whatever `upsertDispatchLogEntry`
+    // accepts, `readSpine` gives back. Drive it through the real writer rather
+    // than a hand-authored fixture, so a future writer change cannot drift.
+    for (const branch of [
+      'w28/131-alpha',
+      'feature/131-alpha',
+      'hotfix_131',
+      'users/at/131-alpha',
+      'wave/131-alpha',
+    ]) {
+      const written = upsertDispatchLogEntry(
+        spineWithDispatchLog(['131 → agent wf_aaa dispatched']),
+        '131',
+        branch,
+      );
+      expect(branchesByIssueId(readSpine(written))['131']).toBe(branch);
+    }
+  });
+
+  it('replacing a free-form branch is still in-place (line count unchanged) and idempotent', () => {
+    const base = spineWithDispatchLog(['131 → agent wf_aaa dispatched']);
+    const a = upsertDispatchLogEntry(base, '131', 'w28/131-alpha');
+    const b = upsertDispatchLogEntry(a, '131', 'w28/131-alpha-corrected');
+    expect(b.split('\n')).toHaveLength(a.split('\n').length);
+    expect(branchesByIssueId(readSpine(b))['131']).toBe('w28/131-alpha-corrected');
+    expect(upsertDispatchLogEntry(b, '131', 'w28/131-alpha-corrected')).toBe(b);
+  });
+
+  it('a model token written alongside a free-form branch disturbs neither', () => {
+    let src = spineWithDispatchLog(['131 → agent wf_aaa dispatched']);
+    src = upsertDispatchLogEntry(src, '131', 'w28/131-alpha');
+    src = upsertDispatchLogModel(src, '131', 'claude-opus-5');
+    const entry = readSpine(src).dispatchLog.find((e) => e.id === '131');
+    expect(entry?.branch).toBe('w28/131-alpha');
+    expect(entry?.model).toBe('claude-opus-5');
+  });
+
+  it('still recovers a LEGACY entry that names a wave-orch ref with no `branch` keyword', () => {
+    const spine = readSpine(
+      spineWithDispatchLog(['131 → agent wf_aaa wave-orch/131-alpha']),
+    );
+    expect(branchesByIssueId(spine)['131']).toBe('wave-orch/131-alpha');
+  });
+
+  it('does NOT mistake a prose reference to another row for a branch (no `branch` keyword, no slug tail)', () => {
+    // The SPINE fixture's held row: `… stacked on wave-orch/54 once #54 …`.
+    const spine = readSpine(
+      spineWithDispatchLog([
+        '131 → L2, held: stacked on wave-orch/54 once #54 reports in',
+      ]),
+    );
+    expect(spine.dispatchLog[0].branch).toBeNull();
+    expect(branchesByIssueId(spine)).toEqual({});
+  });
+});
+
+describe('requireBranchesByIssueId — the empty map is never handed back ambiguously (issue #141)', () => {
+  it('throws when the dispatch-log HAS entries but yields no branch', () => {
+    // SPINE_NO_BRANCHES: two `… dispatched` entries, neither recording a branch.
+    // The lenient accessor answers `{}` — indistinguishable from a wave that was
+    // never dispatched, and that ambiguity is what three consumers degraded on.
+    const spine = readSpine(SPINE_NO_BRANCHES);
+    expect(branchesByIssueId(spine)).toEqual({});
+    expect(() => requireBranchesByIssueId(spine)).toThrow(
+      /no branch could be recovered/,
+    );
+  });
+
+  it('names the entry count and quotes the unparsed entries, so the failure is diagnosable', () => {
+    const spine = readSpine(SPINE_NO_BRANCHES);
+    let message = '';
+    try {
+      requireBranchesByIssueId(spine);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('2 entries');
+    expect(message).toContain('83 → agent wf_abc123 (sonnet) dispatched');
+  });
+
+  it('does NOT throw for a genuinely un-dispatched wave (no dispatch-log entries at all)', () => {
+    // A freshly-rendered spine has a scaffolded but EMPTY dispatch-log. `{}` is
+    // the honest answer there — there is nothing to disagree about.
+    const rendered = renderSpine(
+      { slug: 'fresh', description: 'd', coordinator: 'c', model: 'm', created: '2026-07-27', lastUpdated: '2026-07-27' },
+      [{ id: '1', title: 'First', worker: 'background', risk: 'mechanical' }],
+      { issues: [], cells: [] },
+      'PASS',
+    );
+    const spine = readSpine(rendered);
+    expect(spine.dispatchLog).toHaveLength(0);
+    expect(requireBranchesByIssueId(spine)).toEqual({});
+  });
+
+  it('does NOT throw when at least one entry yields a branch (partial recovery is a real state)', () => {
+    const spine = readSpine(
+      spineWithDispatchLog([
+        '131 → agent wf_aaa branch w28/131-alpha',
+        '132 → agent wf_bbb dispatched',
+      ]),
+    );
+    expect(requireBranchesByIssueId(spine)).toEqual({ '131': 'w28/131-alpha' });
+  });
+
+  it('returns exactly what the lenient accessor returns whenever it does not throw', () => {
+    const spine = readSpine(
+      spineWithDispatchLog(['131 → agent wf_aaa branch feature/131-alpha']),
+    );
+    expect(requireBranchesByIssueId(spine)).toEqual(branchesByIssueId(spine));
+  });
+});
+
+// ─── issue #141 AC6: the resume join, driven with an out-of-convention ref ────
+//
+// This is the third consumer of the empty map, and the most expensive failure:
+// resume finds no branches, concludes nothing was dispatched, and re-dispatches
+// rows whose work is already committed — the precise failure ADR-0021 exists to
+// close. `resume()` joins its worktrees to rows via `branchesByIssueId` (it
+// imports it from this module), so the branch-name shape that produced `{}` on
+// the live wave is exactly what this drives.
+
+/** A SidecarIndex with nothing on disk — no report, no verdict, no corruption. */
+const NO_SIDECARS: SidecarIndex = {
+  reportFor: () => null,
+  verdictFor: () => null,
+  corruptFor: () => [],
+};
+
+describe('resume join — a branch named outside the convention still joins its worktree (issue #141)', () => {
+  const OFF_CONVENTION = 'w28/131-alpha';
+
+  const spineSource = spineWithDispatchLog([
+    `131 → agent wf_aaa (sonnet) branch ${OFF_CONVENTION}`,
+    '132 → agent wf_bbb (sonnet) branch feature/132-beta',
+  ]);
+
+  const worktree = (branch: string): WorktreeEntry => ({
+    path: `/repo/.claude/worktrees/wf_${branch.replace(/\W/g, '_')}`,
+    branch,
+    head: 'abc1234',
+    dirty: false,
+  });
+
+  it('adopts the live worktree instead of re-dispatching work that is already committed', () => {
+    const result = resume({
+      spine: readSpine(spineSource),
+      worktrees: [worktree(OFF_CONVENTION), worktree('feature/132-beta')],
+      sidecars: NO_SIDECARS,
+    });
+
+    const row131 = result.rows.find((r) => r.id === '131');
+    expect(row131?.branch).toBe(OFF_CONVENTION);
+    expect(row131?.worktree?.branch).toBe(OFF_CONVENTION);
+    // Pre-fix the branch map was {}, so `branch` was null, no worktree could be
+    // matched, and a `dispatched` row fell to PRE_LANDING → 'redispatch'.
+    expect(row131?.decision).toBe('adopt');
+    expect(result.rows.map((r) => r.decision)).toEqual(['adopt', 'adopt']);
+  });
+
+  it('every row recovers a non-null branch — none falls back to the null-branch path', () => {
+    const result = resume({
+      spine: readSpine(spineSource),
+      worktrees: [],
+      sidecars: NO_SIDECARS,
+    });
+    expect(result.rows.map((r) => r.branch)).toEqual([
+      OFF_CONVENTION,
+      'feature/132-beta',
+    ]);
   });
 });

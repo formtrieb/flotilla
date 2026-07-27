@@ -101,7 +101,7 @@ export interface PlanTableRow {
   prCell: string;
   /** Href extracted from the PR cell, or `null`. */
   prUrl: string | null;
-  /** `wave-orch/<NN>-…` branch when resolvable from the spine, else `null`. */
+  /** The branch when resolvable from the spine (any ref name), else `null`. */
   branch: string | null;
   state: RowState | string;
   /** The `Iter` column as a number when numeric, else the raw string. */
@@ -130,7 +130,11 @@ export interface DispatchLogEntry {
   raw: string;
   /** Issue NN parsed from the entry head (`08 → …` → `08`), or `null`. */
   id: string | null;
-  /** `wave-orch/<NN>-…` branch parsed from the entry, or `null`. */
+  /**
+   * Branch parsed from the entry's `branch <ref>` token, or `null`. Any ref
+   * name is recovered — the reader is the writer's inverse and the writer
+   * enforces no naming convention (issue #141).
+   */
   branch: string | null;
   /**
    * Actually-dispatched model id parsed from a `model <id>` token (ADR-0012),
@@ -460,16 +464,30 @@ const DISPATCH_ITEM = /^\s*-\s+"(.*)"\s*$/;
 // (ADR-0021): flotilla ids are `DES-21`/`FOR-5` (Linear) or a GitHub number, not
 // just the Ur's numeric `NN` — so capture any non-whitespace run, not `\d+`.
 const DISPATCH_HEAD = /^\s*(\S+?)\s*(?:→|->)/;
-// The recorded branch. flotilla dispatches on `wave/<id>-<slug>` (id may be
-// alphanumeric, e.g. `wave/DES-21-…`); the Ur used `wave-orch/<NN>-…`. Match
-// BOTH prefixes so a real flotilla branch is recovered by branchesByIssueId —
-// without this the ADR-0021 write path records a branch resume() can't read
-// back (silent redispatch, the very failure ADR-0021 closes). The post-slash
-// `…-…` (a hyphen with a slug after it) is load-bearing: it distinguishes a
-// real branch (`wave-orch/54-wave-md-rw`) from a bare prose reference to
-// another row's prefix (`… stacked on wave-orch/54 once …`), which must stay
-// unmatched — both real prefixes' branches always carry the `<id>-<slug>` tail.
-const BRANCH_REF = /\b(wave(?:-orch)?\/[^\s")]*-[^\s")]+)/;
+// The recorded branch, read the way the WRITER wrote it: a structured
+// `branch <ref>` token, exactly as MODEL_REF reads `model <id>`.
+//
+// This is the reader/writer inverse property (issue #141).
+// `upsertDispatchLogEntry` accepts ANY ref string — it never validates a naming
+// convention — so a reader that recognises only SOME refs is not its inverse.
+// The previous form here anchored on a `wave/` | `wave-orch/` PREFIX, which
+// meant a wave dispatched on any other branch name round-tripped to `{}`: not a
+// partial result, nothing at all. And an empty map is indistinguishable from an
+// un-dispatched wave, so every consumer of it degraded silently — the
+// worktree-cleanup scoping filter widening to "every worktree in the repo"
+// being the dangerous one. Anchoring on the writer's own keyword makes the pair
+// a true round-trip for any ref, and keeps the value class format-blind (the
+// engine constrains a branch name no more than it constrains a model id).
+const BRANCH_REF = /\bbranch\s+([^\s")]+)/;
+// Legacy fallback for a pre-keyword entry that names a `wave/…` / `wave-orch/…`
+// ref with no `branch` token (hand-written Ur-era spines). Consulted only when
+// BRANCH_REF finds nothing, so a keyword-bearing entry is never re-parsed by
+// convention. The post-slash `…-…` (a hyphen with a slug after it) is
+// load-bearing HERE: with no keyword to anchor on, it is the only thing that
+// distinguishes a real branch (`wave-orch/54-wave-md-rw`) from a bare prose
+// reference to another row's prefix (`… stacked on wave-orch/54 once …`),
+// which must stay unmatched.
+const LEGACY_BRANCH_REF = /\b(wave(?:-orch)?\/[^\s")]*-[^\s")]+)/;
 // A structured `model <id>` token (ADR-0012). The literal keyword + whitespace
 // is required, so `(sonnet)` and substrings like `remodel` are NOT matched. The
 // value class stays format-blind — the engine never constrains a model id
@@ -503,7 +521,7 @@ function readDispatchLog(lines: string[]): DispatchLogEntry[] {
     if (!m) continue;
     const raw = m[1];
     const headMatch = DISPATCH_HEAD.exec(raw);
-    const branchMatch = BRANCH_REF.exec(raw);
+    const branchMatch = BRANCH_REF.exec(raw) ?? LEGACY_BRANCH_REF.exec(raw);
     const modelMatch = MODEL_REF.exec(raw);
     out.push({
       raw,
@@ -1003,6 +1021,49 @@ export function branchesByIssueId(spine: Spine): Record<string, string> {
 }
 
 /**
+ * {@link branchesByIssueId}, but it REFUSES to hand back an ambiguous empty map.
+ *
+ * The lenient accessor returns `{}` for two situations a caller cannot tell
+ * apart: a wave that was never dispatched (no dispatch-log entries — genuinely
+ * no branches to recover) and a wave that WAS dispatched but whose branches the
+ * reader failed to recover. Issue #141 measured the second on a live wave: all
+ * six branches were recorded, the parse-back returned `{}`, and three consumers
+ * degraded — each quietly and each differently — because none of them could see
+ * the difference.
+ *
+ * So: a spine whose dispatch-log HAS entries yet yields NO branch throws here.
+ * That is the exact inconsistency (a dispatched wave with nothing recoverable),
+ * and the throw is what makes it observable instead of a silent `{}`.
+ *
+ * Use this from any caller whose correctness depends on the branches — the
+ * `--wave` worktree-cleanup scoping filter is the first: for it, an empty set is
+ * not "nothing to clean" but "clean everything", so the ambiguity is a
+ * parallel-safety hazard. Callers for whom an empty map is a legitimate,
+ * harmless answer (a `renderSpine`-fresh spine has no dispatch-log at all)
+ * should keep using {@link branchesByIssueId}.
+ *
+ * @throws when `spine.dispatchLog` is non-empty and no branch was recovered.
+ */
+export function requireBranchesByIssueId(spine: Spine): Record<string, string> {
+  const out = branchesByIssueId(spine);
+  if (Object.keys(out).length > 0 || spine.dispatchLog.length === 0) return out;
+  // Quote a couple of the offending entries: the operator needs to see the
+  // shape the reader could not parse, not just that it failed.
+  const sample = spine.dispatchLog
+    .slice(0, 3)
+    .map((e) => `"${e.raw}"`)
+    .join('; ');
+  throw new Error(
+    `dispatch-log records ${spine.dispatchLog.length} entr${
+      spine.dispatchLog.length === 1 ? 'y' : 'ies'
+    } but no branch could be recovered from any of them. ` +
+      'A dispatched wave with no recoverable branch is indistinguishable from an ' +
+      'un-dispatched one, so this refuses rather than returning an empty map. ' +
+      `Entries seen: ${sample}`,
+  );
+}
+
+/**
  * A single `key → value` token recorded inside a dispatch-log entry's quoted
  * raw text. Both `branch` and `model` are such tokens (ADR-0012 for `model`).
  */
@@ -1101,10 +1162,15 @@ function upsertDispatchLogToken(
 }
 
 /**
- * Record (or update) the `wave-orch/*` branch name for issue `id` in the spine's
- * dispatch-log — the durable per-issue branch record that `branchesByIssueId`
- * reads back to power `--wave`-scoped worktree-cleanup. See
+ * Record (or update) the branch name for issue `id` in the spine's dispatch-log
+ * — the durable per-issue branch record that {@link branchesByIssueId} reads
+ * back to power `--wave`-scoped worktree-cleanup and the resume join. See
  * {@link upsertDispatchLogToken} for the replace/append/new-entry behaviour.
+ *
+ * `branch` is written verbatim: this writer constrains no naming convention,
+ * and since issue #141 neither does the reader. (One cosmetic note: replacing a
+ * token written with irregular inner spacing — `branch  <ref>` — normalises it
+ * to a single space, since the whole token is re-emitted.)
  */
 export function upsertDispatchLogEntry(
   source: string,
@@ -1113,7 +1179,11 @@ export function upsertDispatchLogEntry(
 ): string {
   return upsertDispatchLogToken(source, id, {
     matchRe: BRANCH_REF,
-    replacement: branch,
+    // BRANCH_REF now spans the whole `branch <ref>` token (it is keyword-
+    // anchored, like MODEL_REF), so the replacement must re-emit the keyword —
+    // replacing with the bare ref would eat the `branch ` the reader anchors on.
+    // Identical to `append`, exactly as upsertDispatchLogModel's pair is.
+    replacement: `branch ${branch}`,
     append: `branch ${branch}`,
   });
 }

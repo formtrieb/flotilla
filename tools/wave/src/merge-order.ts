@@ -85,14 +85,21 @@ export interface MergeOrderResult {
    */
   notInPlay: PR[];
   /**
-   * Advisory warnings collected while resolving branches. Currently the only
-   * source is the `.scratch` NN-glob fallback (`resolveExactOrGlob`) firing on
-   * the MarkdownFs/Ur path — a real risk (Wave 2026-06-03 §L3: a stale
-   * same-NN branch can shadow the real one). Always `[]` on the
-   * spine-self-contained path, which never consults the glob (FOR-15 AC3) —
-   * its Plan-Table `id` already IS the join key and its `branch` is already
-   * resolved by `readSpine` from the dispatch-log, so the glob has nothing to
-   * add and no meaning (there is no `wave-orch/<NN>-*` convention to probe).
+   * Advisory warnings collected while resolving branches. Two sources, one per
+   * path:
+   *
+   * - MarkdownFs/Ur path: the `.scratch` NN-glob fallback
+   *   (`resolveExactOrGlob`) firing — a real risk (Wave 2026-06-03 §L3: a stale
+   *   same-NN branch can shadow the real one). The spine-self-contained path
+   *   never consults that glob (FOR-15 AC3) — its Plan-Table `id` already IS the
+   *   join key and its `branch` is already resolved by `readSpine` from the
+   *   dispatch-log, so the glob has nothing to add and no meaning.
+   *
+   * - Spine-self-contained path (issue #141): an IN-PLAY row whose branch could
+   *   not be recovered. This is the distinction between "could not resolve" and
+   *   "genuinely has none" — the latter is {@link notInPlay}. Without it a
+   *   wave-wide resolution failure emitted `"branch": null` for every row inside
+   *   an order whose `reason` still read as authoritative.
    */
   warnings: string[];
 }
@@ -328,13 +335,18 @@ function resolveExactOrGlob(
  * (e.g. a pre-ADR-0021 spine) still counts as in-play — branch/PR are only
  * corroborating signals for a `planned` row, not a substitute for the state.
  *
+ * That in-play-but-branchless row is the case issue #141 makes visible: it stays
+ * in the order (correctly — it IS in play), but its `null` branch is now also
+ * reported as a `warnings` entry, so a caller can distinguish it from the
+ * `notInPlay` row that genuinely has no branch. Third element of the return.
+ *
  * @param source Raw spine file CONTENT (not a path) — passed directly to `readSpine`.
  */
 function buildSpinePrs(
   source: string,
   conflictMap: ConflictMap,
   branchesByIssueId: Record<string, string>,
-): { prs: PR[]; notInPlay: PR[] } {
+): { prs: PR[]; notInPlay: PR[]; warnings: string[] } {
   const spine = readSpine(source);
   const footprint = new Map<string, Set<string>>();
   for (const cell of conflictMap.cells) {
@@ -346,6 +358,7 @@ function buildSpinePrs(
   }
   const prs: PR[] = [];
   const notInPlay: PR[] = [];
+  const warnings: string[] = [];
   for (const row of spine.planTable) {
     const issueId = row.id.trim();
     if (!issueId) continue;
@@ -364,10 +377,27 @@ function buildSpinePrs(
     if (neverDispatched) {
       notInPlay.push(pr);
     } else {
+      // A row that IS in play but whose branch is `null` is NOT the same thing
+      // as a row that genuinely has no branch — the latter is `notInPlay`
+      // above, reported separately. This one was dispatched (its state says so,
+      // or it already has a PR) and its branch simply could not be recovered
+      // from the spine. Left unannounced, it rides into `algorithmic` as a
+      // `"branch": null` entry inside an order the `reason` still describes
+      // confidently — an advisory that reads as authoritative while naming
+      // nothing to merge (issue #141, observed on a live wave for EVERY row).
+      // Say so instead: the null is now accompanied, and a caller can tell the
+      // two cases apart.
+      if (branch === null) {
+        warnings.push(
+          `${issueId}: in play (state "${row.state}") but no branch could be recovered from the spine — ` +
+            'the merge order below cannot name a ref for this row. ' +
+            'Check the dispatch-log recorded a `branch <ref>` token for it.',
+        );
+      }
       prs.push(pr);
     }
   }
-  return { prs, notInPlay };
+  return { prs, notInPlay, warnings };
 }
 
 /**
@@ -1043,15 +1073,30 @@ function extractSpineBranches(
   const spine = readSpine(source);
   const out: Record<string, string> = {};
 
+  // Re-key a spine id to the canonical issueId, falling back to the id VERBATIM
+  // when no footnote bridge exists for it (issue #141).
+  //
+  // The re-key is a `.scratch`-only affordance: `nnToIssueId` is built from
+  // `issuePaths`, which a tracker-backed wave (GitHub/Linear — no `.scratch`
+  // tree, no issue-file footnotes) does not have, so it is EMPTY there. Without
+  // the fallback every branch was dropped on the re-key and this returned `{}`
+  // for such a wave — measured, and true of conventionally-named branches too,
+  // so it was never about naming. The verbatim id is the right key in exactly
+  // that case: `buildSpinePrs` keys its PRs by `row.id` verbatim, so the map
+  // joins its PR set directly. A `.scratch` spine is unaffected (its ids DO
+  // resolve, so the fallback never fires and the canonical keys are unchanged).
+  const keyFor = (id: string): string =>
+    nnToIssueId.get(normaliseNn(id)) ?? id.trim();
+
   // Plan-Table first (lower precedence), then dispatch-log (overwrites).
   for (const row of spine.planTable) {
     if (!row.branch) continue;
-    const issueId = nnToIssueId.get(normaliseNn(row.id));
+    const issueId = keyFor(row.id);
     if (issueId) out[issueId] = row.branch;
   }
   for (const entry of spine.dispatchLog) {
     if (!entry.id || !entry.branch) continue;
-    const issueId = nnToIssueId.get(normaliseNn(entry.id));
+    const issueId = keyFor(entry.id);
     if (issueId) out[issueId] = entry.branch;
   }
 
@@ -1129,6 +1174,13 @@ export function computeMergeOrderFromSpine(
   // directly; `git` is still needed below, for `orderPrs`'s stacked-branch
   // ancestry probe over the (correctly-resolved) branches.
   const spineConflictMap = readSpine(source).conflictMap;
-  const { prs, notInPlay } = buildSpinePrs(source, spineConflictMap, branches);
-  return orderPrs(prs, spineConflictMap, git, { notInPlay });
+  const { prs, notInPlay, warnings } = buildSpinePrs(
+    source,
+    spineConflictMap,
+    branches,
+  );
+  // Thread the warnings through (issue #141) — without this the
+  // could-not-recover signal is computed and then dropped, which is how a
+  // wave-wide branch-resolution failure surfaced as a confident order.
+  return orderPrs(prs, spineConflictMap, git, { notInPlay, warnings });
 }
