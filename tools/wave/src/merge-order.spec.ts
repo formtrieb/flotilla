@@ -1622,3 +1622,190 @@ describe('computeMergeOrderFromSpine — FOR-15 AC3: no .scratch NN-glob warning
     expect(resolveBranchCalls).toBe(0);
   });
 });
+
+// ─── issue #141: parseWaveSpine on a tracker-backed spine ────────────────────
+//
+// `extractSpineBranches` re-keys branches from the spine's row ids to canonical
+// issueIds through the `.scratch` footnote → issue-file bridge. A tracker-backed
+// wave (GitHub/Linear) has no `.scratch` tree and no footnotes, so that bridge
+// is EMPTY and every branch was dropped on the re-key — `{}` for the whole wave,
+// measured, and true of conventionally-named branches too. That was never about
+// naming; it is a second, independent defect from the reader's convention
+// coupling. The verbatim row id is now the fallback key, which is also exactly
+// the key `buildSpinePrs` uses for its PRs.
+
+describe('parseWaveSpine — branches survive on a spine with no .scratch footnotes (issue #141)', () => {
+  /** A tracker-backed spine: bare-number ids, no footnotes, no issue files on disk. */
+  function trackerSpine(entries: string[]): string {
+    return [
+      '# Wave 2026-07-27 — tracker-backed',
+      '',
+      '**Status:** in-flight',
+      '',
+      '## Plan-Table',
+      '',
+      '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+      '|---|---|---|---|---|---|---|---|---|',
+      '| 131 | Alpha | background | mechanical | universal | — | dispatched | 1 | — |',
+      '| 132 | Beta | background | mechanical | universal | — | dispatched | 1 | — |',
+      '',
+      '## Resume-Metadata',
+      '',
+      '```yaml',
+      'dispatch-log:',
+      ...entries.map((e) => `  - "${e}"`),
+      '```',
+      '',
+    ].join('\n');
+  }
+
+  it('recovers conventionally-named branches keyed by the row id verbatim', () => {
+    const parsed = parseWaveSpine(
+      trackerSpine([
+        '131 → agent wf_aaa branch wave/131-alpha',
+        '132 → agent wf_bbb branch wave/132-beta',
+      ]),
+      tmpdir(),
+    );
+    // Pre-fix this was `{}` — for these NAMES, which follow the convention.
+    expect(parsed.branchesByIssueId).toEqual({
+      '131': 'wave/131-alpha',
+      '132': 'wave/132-beta',
+    });
+  });
+
+  it('recovers branches named outside the convention as well (both defects, one spine)', () => {
+    const parsed = parseWaveSpine(
+      trackerSpine([
+        '131 → agent wf_aaa branch w28/131-alpha',
+        '132 → agent wf_bbb branch feature/132-beta',
+      ]),
+      tmpdir(),
+    );
+    expect(parsed.branchesByIssueId).toEqual({
+      '131': 'w28/131-alpha',
+      '132': 'feature/132-beta',
+    });
+  });
+
+  it('a spine with no dispatch-log still yields an empty map (the honest empty case is preserved)', () => {
+    const parsed = parseWaveSpine(trackerSpine([]), tmpdir());
+    expect(parsed.branchesByIssueId).toEqual({});
+  });
+});
+
+// ─── issue #141: "could not recover" vs "genuinely has none" ─────────────────
+//
+// The observed advisory emitted `"branch": null` for every row while still
+// returning a confident order and `"reason": "All branches disjoint"` — an
+// advisory that reads as authoritative while naming nothing to merge. The two
+// cases must be distinguishable: a never-dispatched row is `notInPlay` (it
+// genuinely has no branch); an in-play row whose branch could not be recovered
+// stays in the order but is now reported in `warnings`.
+
+describe('computeMergeOrderFromSpine — an unrecoverable branch is distinguished from having none (issue #141)', () => {
+  it('warns for an in-play row whose branch could not be recovered, while notInPlay stays empty', () => {
+    const roster: SpineRosterRow[] = [
+      { id: 'FOR-60', title: 'dispatched, branch unrecoverable', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      forFifteenMeta('for141-warn'),
+      roster,
+      { issues: ['FOR-60'], cells: [] },
+      'PASS',
+    );
+    source = setRowState(source, 'FOR-60', 'dispatched');
+    // No dispatch-log branch recorded → in play (state says so), branch null.
+    const { dir, path } = writeSpineFile(source);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    expect(ids(result.algorithmic)).toEqual(['FOR-60']);
+    expect(result.algorithmic[0].branch).toBeNull();
+    // The distinction: it is NOT notInPlay (it was dispatched), and the null is
+    // no longer silent.
+    expect(result.notInPlay).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('FOR-60');
+    expect(result.warnings[0]).toMatch(/no branch could be recovered/);
+  });
+
+  it('a never-dispatched row is notInPlay and produces NO warning — it genuinely has no branch', () => {
+    const roster: SpineRosterRow[] = [
+      { id: 'FOR-61', title: 'never dispatched', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    const source = renderSpine(
+      forFifteenMeta('for141-notinplay'),
+      roster,
+      { issues: ['FOR-61'], cells: [] },
+      'PASS',
+    );
+    const { dir, path } = writeSpineFile(source);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    expect(ids(result.notInPlay)).toEqual(['FOR-61']);
+    expect(result.algorithmic).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('the wave-wide case: every row null-branched yields one warning per row, not a silently confident order', () => {
+    // The exact observed shape — a whole wave whose branches did not parse back.
+    const roster: SpineRosterRow[] = [
+      { id: 'FOR-70', title: 'a', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'FOR-71', title: 'b', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'FOR-72', title: 'c', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      forFifteenMeta('for141-wavewide'),
+      roster,
+      { issues: ['FOR-70', 'FOR-71', 'FOR-72'], cells: [] },
+      'PASS',
+    );
+    for (const id of ['FOR-70', 'FOR-71', 'FOR-72']) {
+      source = setRowState(source, id, 'dispatched');
+    }
+    const { dir, path } = writeSpineFile(source);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    expect(result.algorithmic.every((p) => p.branch === null)).toBe(true);
+    // The `reason` is still the disjoint one-liner — which is why it must not be
+    // the only thing a reader sees.
+    expect(result.reason).toMatch(/disjoint/i);
+    expect(result.warnings).toHaveLength(3);
+    expect(result.warnings.map((w) => w.split(':')[0])).toEqual([
+      'FOR-70',
+      'FOR-71',
+      'FOR-72',
+    ]);
+  });
+
+  it('a fully-recovered wave warns about nothing — the signal is not noise', () => {
+    const roster: SpineRosterRow[] = [
+      { id: 'FOR-80', title: 'a', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'FOR-81', title: 'b', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      forFifteenMeta('for141-clean'),
+      roster,
+      { issues: ['FOR-80', 'FOR-81'], cells: [] },
+      'PASS',
+    );
+    for (const id of ['FOR-80', 'FOR-81']) {
+      source = setRowState(source, id, 'dispatched');
+      // Deliberately off-convention names: the reader must recover these too.
+      source = upsertDispatchLogEntry(source, id, `w28/${id}-slice`);
+    }
+    const { dir, path } = writeSpineFile(source);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    expect(result.algorithmic.map((p) => p.branch)).toEqual([
+      'w28/FOR-80-slice',
+      'w28/FOR-81-slice',
+    ]);
+    expect(result.warnings).toEqual([]);
+    expect(result.notInPlay).toEqual([]);
+  });
+});

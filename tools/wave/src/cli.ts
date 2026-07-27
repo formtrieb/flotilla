@@ -71,14 +71,21 @@
  *                    Optional branch-scoped filter (issue #77 — parallel-wave safety):
  *                      --wave <spine-path>  Read the WAVE.md spine and derive the
  *                                           branch set from its Plan-Table / dispatch-log
- *                                           (via parseWaveSpine → branchesByIssueId).
- *                                           Only worktrees whose branch is in that set
- *                                           are selected. Parallel-safe: sibling waves'
+ *                                           (via readSpine → requireBranchesByIssueId —
+ *                                           the spine reader, which recovers a branch
+ *                                           under ANY ref name; issue #141). Only
+ *                                           worktrees whose branch is in that set are
+ *                                           selected. Parallel-safe: sibling waves'
  *                                           worktrees are never removed.
  *                      --branches <b1,b2>   Escape-hatch: a comma-separated list of
  *                                           branch names to restrict selection to.
  *                                           Prefer --wave; use --branches when no spine
  *                                           is available or for scripted overrides.
+ *                    Either flag FAILS CLOSED (issue #141): if no branch can be
+ *                    resolved the verb exits 2 having removed nothing, rather
+ *                    than degrading to an unscoped sweep of every agent worktree
+ *                    in the repo. A flag whose only job is to narrow must never
+ *                    silently widen.
  *                    Without either flag the original global-GC behaviour is used
  *                    (all pushed-and-clean agent worktrees are selected). This is
  *                    still correct for single-wave / serial closes.
@@ -188,15 +195,15 @@
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
+import { resolve, join } from 'node:path';
 import { validateIssue, validateIssueView, type DorResult } from './dor-gate';
 import { detectDrift, type DriftResult } from './files-drift';
 import {
   computeMergeOrderFromSpine,
-  parseWaveSpine,
   type MergeOrderResult,
   type ComputeMergeOrderOptions,
 } from './merge-order';
+import { readSpine, requireBranchesByIssueId } from './wave-md-rw';
 import { classifyClosedBy, needsPin } from './closed-by';
 import { detectHost } from './host-pr';
 import { runHostPr } from './host-pr-cli';
@@ -536,8 +543,11 @@ function renderMergeOrder(result: MergeOrderResult): string {
       hasOverride: result.override !== null,
       // FOR-15: rows never dispatched (no branch, no PR) — excluded above,
       // listed here instead of silently dropped — and advisory warnings from
-      // branch resolution (currently only the `.scratch` NN-glob fallback;
-      // always empty on a spine-self-contained wave — see MergeOrderResult).
+      // branch resolution: the `.scratch` NN-glob fallback on the MarkdownFs
+      // path, and (issue #141) an in-play row whose branch could not be
+      // recovered on the spine-self-contained path. The two keys are what let a
+      // reader tell "genuinely has no branch" (notInPlay) from "I could not
+      // find its branch" (warnings) — see MergeOrderResult.
       notInPlay: result.notInPlay.map(projectPr),
       warnings: result.warnings,
     },
@@ -644,18 +654,39 @@ function runDetectHost(args: string[]): number {
 
 /**
  * Derive the branch filter set for `worktree-cleanup` from the `--wave` or
- * `--branches` flags. Returns `undefined` when neither flag is supplied (global
- * GC — the original behaviour).
+ * `--branches` flags. Returns `undefined` ONLY when neither flag is supplied
+ * (global GC — the original behaviour). When either flag IS supplied it returns
+ * a non-empty set or throws; it never returns `undefined`.
  *
- * `--wave <spine-path>` reads the WAVE.md spine via `parseWaveSpine` and
- * extracts the unique branch names from the `branchesByIssueId` map. This is the
- * preferred form: the caller passes a spine, not a hand-maintained list.
+ * `--wave <spine-path>` reads the WAVE.md spine through the spine reader
+ * (`readSpine` + `requireBranchesByIssueId` in wave-md-rw.ts — the same reader
+ * that resolves `PlanTableRow.branch` and that the resume join uses) and takes
+ * the unique branch names off it. This is the preferred form: the caller passes
+ * a spine, not a hand-maintained list.
+ *
+ * It deliberately does NOT go through `merge-order.ts`'s `parseWaveSpine`, which
+ * is where it used to. That reader re-keys branches from the spine's row ids to
+ * canonical issueIds via the `.scratch` footnote → issue-file bridge, so on a
+ * tracker-backed wave — no `.scratch` tree, no footnotes, therefore no NN→issueId
+ * map — every branch was dropped on the re-key and it returned `{}` for
+ * conventionally- and unconventionally-named branches alike (issue #141;
+ * measured, not inferred). `readSpine` keys by the row id verbatim, so nothing
+ * is dropped.
  *
  * `--branches <b1,b2,...>` is the escape hatch: a caller-supplied comma-separated
  * list of branch names. Used when no spine is available or for scripted overrides.
  *
  * When both are supplied, `--wave` wins (it is the authoritative source); the
  * `--branches` value is merged in as an additive supplement.
+ *
+ * FAIL CLOSED (issue #141) — the load-bearing property. This function's ONE job
+ * is to NARROW the cleanup scope, so it must never widen it. It used to end
+ * `return filter.size > 0 ? filter : undefined`, and `undefined` downstream means
+ * *no filter*: a command asked to clean exactly one wave's worktrees would clean
+ * EVERY agent worktree in the repository, tearing down any sibling wave in
+ * flight. That is the parallel-safety property the flag exists to provide,
+ * inverted — and it is independent of any one parse bug, since ANY path that
+ * leaves the set empty produces it. An empty filter is now an error.
  */
 function resolveBranchFilter(
   args: string[],
@@ -683,16 +714,36 @@ function resolveBranchFilter(
 
   if (waveSpinePath !== null) {
     const absSpine = resolve(repoRoot, waveSpinePath);
+    let source: string;
     try {
-      const source = readFileSync(absSpine, 'utf-8');
-      const { branchesByIssueId } = parseWaveSpine(source, dirname(absSpine));
-      for (const branch of Object.values(branchesByIssueId)) {
-        if (branch) filter.add(branch);
-      }
+      source = readFileSync(absSpine, 'utf-8');
     } catch (err) {
       // Propagate as a usage error — the spine must be readable.
       throw new Error(
         `--wave: could not read spine "${absSpine}": ${(err as Error).message}`,
+        { cause: err },
+      );
+    }
+    try {
+      // requireBranchesByIssueId, not the lenient accessor: a spine that
+      // records dispatch-log entries yet yields no branch is a reader/writer
+      // disagreement, and swallowing it here is precisely how the scoping flag
+      // came to sweep a sibling wave's worktrees.
+      for (const branch of Object.values(
+        requireBranchesByIssueId(readSpine(source)),
+      )) {
+        if (branch) filter.add(branch);
+      }
+    } catch (err) {
+      // Same refusal the empty-set guard below issues, reached earlier: the
+      // reader itself already knows the spine is inconsistent. Both routes must
+      // read alike — an operator should never have to tell "I could not scope"
+      // from "nothing was in scope".
+      throw new Error(
+        `--wave: no branch scope could be derived from spine "${absSpine}" — ` +
+          'refusing to fall back to an unscoped cleanup, which would select every ' +
+          'agent worktree in the repository (including any sibling wave still in ' +
+          `flight). Reader said: ${(err as Error).message}`,
         { cause: err },
       );
     }
@@ -705,7 +756,20 @@ function resolveBranchFilter(
     }
   }
 
-  return filter.size > 0 ? filter : undefined;
+  // Fail closed. A scoping flag WAS supplied (we returned `undefined` above
+  // otherwise), so reaching here with an empty set means we cannot say which
+  // worktrees are in scope — and `undefined` would answer that question with
+  // "all of them". Refuse instead; the caller turns this into exit 2 having
+  // removed nothing.
+  if (filter.size === 0) {
+    throw new Error(
+      'branch scoping was requested but no branch could be resolved — refusing to ' +
+        'fall back to an unscoped cleanup, which would select every agent worktree ' +
+        'in the repository (including any sibling wave still in flight). ' +
+        'Pass --branches <b1,b2> explicitly if you know the scope.',
+    );
+  }
+  return filter;
 }
 
 /**
@@ -721,9 +785,11 @@ function resolveBranchFilter(
  *
  * Optional branch-scoped filter (issue #77 — parallel-wave safety):
  *   --wave <spine-path>   Derive the branch set from the spine's Plan-Table /
- *                         dispatch-log (parseWaveSpine → branchesByIssueId).
+ *                         dispatch-log (readSpine → requireBranchesByIssueId).
  *                         Only worktrees on those branches are selected.
  *   --branches <b1,b2>    Escape-hatch: comma-separated branch list.
+ * Either flag fails closed (issue #141): an unresolvable scope is exit 2 with
+ * nothing removed, never a fallback to the unscoped sweep.
  * Without either flag, the original global-GC behaviour applies (all
  * pushed-and-clean agent worktrees are selected — correct for serial closes).
  *
