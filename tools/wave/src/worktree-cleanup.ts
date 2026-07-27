@@ -348,6 +348,41 @@
  * directory containing a real `.git` entry as all-junk, so it never reaches
  * removal in the first place — this fix only ever changes what happens
  * *inside* an already-selected `WorktreeEntry`'s physical removal.
+ *
+ * ── `0/0/0` closes while orphaned branches piled up — a doc-trigger defect,
+ *    NOT a signal defect (a close-review finding) ─────────────────────────────
+ *
+ * Four consecutive `wave-close` runs reported worktree cleanup as
+ * `removed:0, skipped:0, errors:0` while 12 `worktree-wf_*` and 13 merged
+ * `wave/*` local branches accumulated, with `git worktree list` showing no
+ * worktrees at all. This was first read as a dirty-classification defect
+ * (issue #111); the real cause is upstream of anything in this module: the
+ * agent harness removes its own worktree as soon as it is done with it, so by
+ * the time `wave-close` runs there is nothing left to register — `0/0/0` is
+ * an honest report that {@link planCleanup} received no entries, not evidence
+ * that nothing needed cleaning.
+ *
+ * The standalone sweep this scenario needs already existed — {@link
+ * sweepOrphanBranches} (reachable as `worktree-cleanup --orphans`) requires NO
+ * worktree-removal event in the same run, and its two signals (a `wave/*`
+ * branch with a confirmed-gone remote ref, a `worktree-wf_*` branch whose
+ * worktree is neither registered nor on disk) are exactly the evidence this
+ * accumulation left behind. **Its logic was never at fault.** What was at
+ * fault was the wave-close skill's own documented invocation of it
+ * (`.claude/skills/wave-close/reference/close-mechanics.md`): the sweep was
+ * introduced by the sentence "after any manual removal ... run the standalone
+ * orphan sweep" — a trigger written for the ENOTEMPTY-fallback case (hand
+ * force-removing a stuck worktree). That trigger is never satisfied when the
+ * harness has already fully removed the worktree before `wave-close` starts —
+ * the now-ordinary case, not the exception the sentence was written for — so
+ * `--orphans` was invoked on paper but never actually reached in the closes
+ * that hit this. The fix (this same slice) rewrote the wave-close docs to
+ * pass `--orphans` unconditionally on every phase-3 call and again after
+ * phase 4a's pull (that second call is what catches a wave's OWN just-merged
+ * `wave/*` branches, since phase 3 runs before phase 4's merge) — no change
+ * to {@link sweepOrphanBranches}'s signals, {@link planCleanup}'s
+ * dirty-worktree safety invariant, or any other exported behaviour in this
+ * file was needed.
  */
 
 import { execFileSync } from 'node:child_process';
