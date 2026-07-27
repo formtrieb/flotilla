@@ -19,7 +19,7 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 | `{{wave-cli}} closed-by "<closed-by-line>"` | `{ "class": "real-pr"\|"pre-fill"\|"placeholder"\|"sha"\|"prose"\|"empty", "needsPin": true\|false }` |
 | `{{wave-cli}} detect-host "<remote-url>"` | `{ "host": "github"\|"bitbucket"\|"unknown", "workspace": "…", "repo": "…" }` |
 | `{{wave-cli}} merge-order <wave-file>` | `{ "algorithmic": [branch, …], "override": [branch, …]\|null, "hasOverride": boolean, "reason": "…" }` |
-| `{{wave-cli}} worktree-cleanup [--dry-run] --wave <wave-file>` | `{ "removed": [], "skipped": [], "errors": [] }` |
+| `{{wave-cli}} worktree-cleanup [--dry-run] --wave <wave-file> --orphans` | `{ "removed": [], "skipped": [], "errors": [], "branchesDeleted": [], "branchHygieneSkipped": [], "orphans": {...} }` — always pass `--orphans`; a `0/0/0` `removed/skipped/errors` triple is not evidence of "nothing to do" on its own, check `branchesDeleted`/`orphans` in the same payload (close-review finding) |
 | `{{wave-cli}} issue-store flag <id> --kind <recoverable-stop\|terminal-failure> --question "<q>" --option "<o>" [--option "<o>"]` | set needs-attention (orthogonal to the rung) |
 | `{{wave-cli}} issue-store clear-flag <id>` | clear needs-attention |
 | `{{wave-cli}} host-pr arm --branch <b> [--remote <url>] [--method <squash\|merge\|rebase>]` | `--auto` landing (ADR-0023): `{ ok, verb:"arm", host, branch, method, outcome:"armed"\|"merged"\|"already-merged"\|"refused"\|"no-pr", prNumber?, prUrl?, reason }`. Decides per PR: checks pending → enable auto-merge (GraphQL); already clean → direct merge (REST). Idempotent. Detect-host-routed; **no `--config`** (talks to the code host, not the tracker). |
@@ -73,11 +73,47 @@ T=$(mktemp -d)
 # silently aborted the remote delete too — W3-F3 / W4-F11) no longer applies on
 # the wired path. Cleanup still runs here for the worktrees themselves; the
 # remote-branch hygiene is now the merge step's own job (`branchDeletion`).
-{{wave-cli}} worktree-cleanup --dry-run --wave "$WAVE"   # preview
-{{wave-cli}} worktree-cleanup --wave "$WAVE"             # execute
+#
+# --orphans rides ALONG with the ordinary --wave call, unconditionally, every
+# time (close-review finding). A prior version of this doc introduced the
+# standalone orphaned-branch sweep only as a follow-up "after a manual
+# removal" (the ENOTEMPTY-fallback case — hand-force-removing a stuck
+# worktree). But the agent harness removing its own worktree BEFORE wave-close
+# ever starts is the ORDINARY case now, not that exception: when it has
+# already happened, `git worktree list` shows nothing for it, the --wave call
+# correctly reports `0/0/0` (nothing was registered for `planCleanup` to see),
+# no manual removal is ever needed — and a sweep gated on "a manual removal
+# happened" never runs. Four consecutive closes reported `0/0/0` while
+# worktree-wf_* and merged wave/* local branches piled up, because that one
+# documented call site was never reached — not because sweepOrphanBranches's
+# two signals (remote-ref-gone, worktree-gone) failed to recognize them. Pass
+# --orphans here unconditionally; it is a no-op when there is genuinely
+# nothing to sweep.
+{{wave-cli}} worktree-cleanup --dry-run --wave "$WAVE" --orphans   # preview
+{{wave-cli}} worktree-cleanup --wave "$WAVE" --orphans             # execute
 # { "removed": [...], "skipped": [...], "errors": [...],
 #   "deregisteredNotDeleted": [...], "erroredStillListed": [...],
-#   "branchesDeleted": [...], "branchHygieneSkipped": [...] }
+#   "branchesDeleted": [...], "branchHygieneSkipped": [...],
+#   "orphans": { "removed": [...], "skipped": [...], "errors": [...] } }
+#
+# NOTE — --dry-run previews the registered-worktree plan AND the orphan-
+# DIRECTORY plan; it does NOT preview the orphan-BRANCH sweep (branches are
+# only ever swept on the real, non-dry-run call — cli.ts). The preview above
+# is therefore not a complete picture of what the execute call will do to
+# branches; that asymmetry is expected, not a bug to chase.
+#
+# Reading the result — `0/0/0` on removed/skipped/errors is evidence ONLY that
+# nothing was REGISTERED for this wave to plan against; it is NOT evidence
+# there was nothing to clean. Read branchesDeleted / branchHygieneSkipped /
+# orphans from the SAME payload before reporting "nothing to do":
+#   - every field above empty (incl. branchesDeleted, orphans.removed) →
+#     genuinely nothing to do.
+#   - removed/skipped/errors empty BUT branchesDeleted and/or orphans.removed
+#     non-empty → the harness had already removed the worktree(s); THIS run's
+#     orphan sweep is what caught the leftover branches/directories. Report
+#     this distinctly (e.g. "no worktrees registered for this wave — swept N
+#     orphaned branch(es) / M orphaned dir(s)"), never as a bare "0/0/0,
+#     nothing to do".
 #
 # A clean `git worktree list` afterwards is NOT proof the directories are gone:
 # git can deregister a worktree from its list while still failing to delete the
@@ -105,15 +141,9 @@ T=$(mktemp -d)
 ls .claude/worktrees/ 2>/dev/null   # (or wherever this repo's worktrees live)
 # Cross-check any survivor against `errors` / `deregisteredNotDeleted` /
 # `erroredStillListed`; remove confirmed orphans by hand (`rm -rf`, sandbox
-# disabled if the harness denies the path).
-#
-# After any manual removal (and again after the phase-4a pull), run the
-# standalone orphan sweep — it covers what the per-removal hygiene misses when
-# no removal event ever fired: orphaned DIRECTORIES under the worktrees root,
-# local wave branches whose remote ref is gone, and Workflow-driver worktree
-# base branches whose worktree no longer exists. Deletions/skips are structural
-# (`branchesDeleted` / `branchHygieneSkipped` / `orphans`), never silent:
-{{wave-cli}} worktree-cleanup --orphans
+# disabled if the harness denies the path), then re-run the combined command
+# above (idempotent) so any manual removal's branch/dir residue folds into the
+# same structural report.
 
 # ─────────────────────────────────────────────────────────────
 # 4. Advisory merge-order (print only — not written to spine) — the merge
@@ -220,6 +250,14 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 # Safe here because a wave-close checkout has no local edits by design (every
 # change this wave made already landed through its own PR). Confirm
 # `git rev-parse HEAD` matches the merged tip before moving on to phase 5.
+
+# Re-run the orphan sweep here too, UNCONDITIONALLY, before phase 5 — phase 3
+# ran BEFORE phase 4's merge, so THIS wave's own wave/* branches only became
+# remote-ref-gone once the merge just landed; the phase-3 sweep could not have
+# caught them yet. This is what actually catches this close's own residue, not
+# only debris predating it. Run it every time, not only when the phase-4a
+# self-repair check above found a hit:
+{{wave-cli}} worktree-cleanup --orphans
 
 # ─────────────────────────────────────────────────────────────
 # 5. done-reconcile + needs-attention for stuck rows
