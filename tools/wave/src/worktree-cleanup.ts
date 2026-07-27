@@ -400,6 +400,25 @@ export interface WorktreeEntry {
    */
   orphanAllJunk?: boolean;
   /**
+   * Present only when `dirty` is true on a STILL-REGISTERED worktree: whether
+   * everything git reports as uncommitted is EXCLUSIVELY allowlisted
+   * editor/harness/Finder junk — the same `FINDER_JUNK_NAMES` ∪
+   * `JUNK_DIR_NAMES` allowlist {@link orphanAllJunk} classifies an orphan
+   * directory against, applied to the paths in `git status --porcelain`
+   * rather than to a directory scan (issue #111).
+   *
+   * The two must be read the same way, because they answer the same question
+   * about the same set of names — an orphan directory holding nothing but
+   * `.claude/` was already selected for removal, while a registered worktree
+   * dirty with nothing but `.claude/` was skipped as if it held work. That
+   * asymmetry is what this field closes.
+   *
+   * Absent/`false` keeps the pre-#111 behaviour exactly: a dirty worktree is
+   * skipped. Populated only by `listAgentWorktrees`'s probe — never by
+   * `parseWorktreeList` alone (pure text parsing, no filesystem access).
+   */
+  dirtyAllJunk?: boolean;
+  /**
    * Present only on an entry `planCleanup` places into
    * `CleanupPlan.skipped` / `CleanupResult.skipped` (FOR-59) — names the
    * machine-readable skip cause. Absent on a `selected` entry, and absent
@@ -780,7 +799,13 @@ export function planCleanup(
       continue;
     }
 
-    if (wt.dirty) {
+    // A registered worktree dirty with NOTHING BUT allowlisted junk is
+    // disposable, not precious (issue #111). The orphan branch above already
+    // reaches that conclusion from the same allowlist; before this, the
+    // registered path never asked the question — the `dirty` flag alone ended
+    // it, so the harness's own injected files made every worktree it had run
+    // in permanently unremovable. Absent `dirtyAllJunk` keeps the old answer.
+    if (wt.dirty && !wt.dirtyAllJunk) {
       skipped.push({ ...wt, reason: 'dirty' });
     } else {
       selected.push(wt);
@@ -817,10 +842,11 @@ export function listAgentWorktrees(
   // exists: an unguarded `git status --porcelain` silently leaks an
   // ancestor repository's status for a deregistered/prunable directory).
   return entries.map((entry) => {
-    // Porcelain already reported dirty — trust it outright, no further
-    // probing needed (byte-for-byte the pre-FOR-59 short-circuit).
-    if (entry.dirty) return entry;
-
+    // The probe now runs for an already-dirty entry too (issue #111). Porcelain's
+    // `dirty` line answers WHETHER the worktree is dirty; it never says WHAT is
+    // dirty, and that second question is the one `dirtyAllJunk` needs. The old
+    // short-circuit returned before ever asking it, which is why a worktree the
+    // harness had written into stayed unremovable for as long as it existed.
     const probe = probeWorktreeGitState(entry.path);
     if (probe.orphan) {
       return {
@@ -830,7 +856,14 @@ export function listAgentWorktrees(
         orphanAllJunk: isDirExclusivelyJunk(entry.path),
       };
     }
-    return { ...entry, dirty: probe.dirty };
+    // Either source reporting dirty means dirty — porcelain's line stays
+    // authoritative, so no worktree becomes removable that was not before.
+    // The disposability verdict comes only from a status the probe actually
+    // read: if porcelain called it dirty and the probe could not confirm it,
+    // there is nothing to classify and the entry stays skipped.
+    const dirty = entry.dirty || probe.dirty;
+    if (!dirty) return { ...entry, dirty: false };
+    return { ...entry, dirty: true, dirtyAllJunk: probe.dirty && probe.dirtyAllJunk };
   });
 }
 
@@ -2341,6 +2374,96 @@ function isJunkDirName(name: string): boolean {
   return JUNK_DIR_NAMES.has(name);
 }
 
+/**
+ * Files the agent harness itself writes INTO a dispatched worktree, named
+ * exactly (issue #111). Repo-relative, `/`-separated — the form `git status
+ * --porcelain` reports.
+ *
+ * WHY THIS IS NOT {@link JUNK_DIR_NAMES}, even though `.claude` appears in
+ * both. That set marks a whole subtree as one opaque disposable unit, which is
+ * correct where it is used: {@link isDirExclusivelyJunk} classifies an ORPHAN
+ * directory, and a directory scan there cannot tell leftover debris from work
+ * — every file looks equally real, so treating `.claude/` as opaque is what
+ * makes the check usable at all.
+ *
+ * The dirty path has better information and must use it. `git status` reports
+ * exactly which paths are uncommitted, and in THIS repository `.claude/skills/`
+ * is where the skills live — an uncommitted change there is a Worker's work,
+ * not harness residue. Reusing the coarse rule here would classify it as junk
+ * and remove the worktree holding it. So the dirty path names the harness's
+ * own files individually and treats everything else under `.claude/` as real,
+ * which is the conservative direction and the only safe one.
+ *
+ * Same discipline as the two sets above: exact names, never a prefix or glob.
+ * A new harness file gets added here deliberately, having been looked at.
+ */
+const HARNESS_INJECTED_PATHS = new Set<string>(['.claude/settings.local.json']);
+
+/**
+ * Harness-written DIRECTORIES, named exactly, whose contents are residue by
+ * construction (issue #111). Repo-relative, no trailing slash.
+ *
+ * These are not guessed. They are the paths this repository's own `.gitignore`
+ * and the conventional global excludes already declare as harness artifacts —
+ * the same names, read from where they were already written down. `.claude/`
+ * itself is deliberately NOT here: it holds `settings.json`, `skills/`, and
+ * `agents/`, which are tracked work.
+ */
+const HARNESS_INJECTED_DIRS: readonly string[] = [
+  '.claude/.cc-writes',
+  '.claude/projects',
+  '.claude/worktrees',
+];
+
+/** True when `relPath` is exactly `dir` or sits underneath it (segment-exact). */
+function isUnderDir(relPath: string, dir: string): boolean {
+  return relPath === dir || relPath.startsWith(`${dir}/`);
+}
+
+/**
+ * Whether one `git status --porcelain` path is disposable residue rather than
+ * uncommitted work (issue #111) — a harness-written file named exactly, or
+ * Finder debris recognized wherever it sits.
+ *
+ * Anything unrecognized is real. A path this returns `false` for keeps its
+ * worktree skipped, which is the safe direction for every case not thought of
+ * here.
+ */
+function isDisposableStatusPath(relPath: string): boolean {
+  if (HARNESS_INJECTED_PATHS.has(relPath)) return true;
+  if (HARNESS_INJECTED_DIRS.some((dir) => isUnderDir(relPath, dir))) return true;
+  const segments = relPath.split('/').filter((s) => s.length > 0);
+  const basename = segments[segments.length - 1];
+  return basename !== undefined && isFinderJunkName(basename);
+}
+
+/**
+ * Whether EVERY path in a `git status --porcelain` block is disposable
+ * ({@link isDisposableStatusPath}) — the classification behind
+ * {@link WorktreeEntry.dirtyAllJunk}.
+ *
+ * Empty output is NOT all-junk here: an empty status means the worktree is not
+ * dirty at all, and this answers a question only asked of a dirty one. The
+ * caller gates on that, and returning `false` keeps this total on its own.
+ *
+ * Two shapes are refused outright rather than parsed, both toward skipping:
+ * a C-quoted path (git quotes non-ASCII and control characters; harness and
+ * Finder residue is neither, so a quoted path is something else), and a
+ * rename/copy entry, whose `old -> new` form means a tracked file moved —
+ * that is work by definition.
+ */
+function isStatusExclusivelyDisposable(porcelain: string): boolean {
+  const lines = porcelain.split('\n').filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return false;
+
+  return lines.every((line) => {
+    const path = line.slice(3);
+    if (path.startsWith('"')) return false;
+    if (path.includes(' -> ')) return false;
+    return isDisposableStatusPath(path);
+  });
+}
+
 /** True when `err` is a Node errno exception with `code === 'ENOTEMPTY'`. */
 function isEnotempty(err: unknown): boolean {
   return (
@@ -2545,6 +2668,7 @@ function realpathForCompare(p: string): string {
  */
 function probeWorktreeGitState(worktreePath: string): {
   dirty: boolean;
+  dirtyAllJunk: boolean;
   orphan: boolean;
 } {
   const toplevel = resolveGitToplevel(worktreePath);
@@ -2553,20 +2677,30 @@ function probeWorktreeGitState(worktreePath: string): {
     realpathForCompare(toplevel) === realpathForCompare(worktreePath);
 
   if (!selfScoped) {
-    return { dirty: false, orphan: true };
+    return { dirty: false, dirtyAllJunk: false, orphan: true };
   }
 
   try {
-    const out = execFileSync('git', ['status', '--porcelain'], {
+    // `--untracked-files=all` so an untracked DIRECTORY is never collapsed to
+    // a single `?? .claude/` line (issue #111). The collapsed form names a
+    // directory and says nothing about what is inside it, which is unusable
+    // for a per-path disposability check — and the collapse happens exactly
+    // where it hurts, in a consumer repo whose `.claude/` is untracked whole.
+    const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
       cwd: worktreePath,
       encoding: 'utf-8',
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return { dirty: out.trim().length > 0, orphan: false };
+    const dirty = out.trim().length > 0;
+    return {
+      dirty,
+      dirtyAllJunk: dirty && isStatusExclusivelyDisposable(out),
+      orphan: false,
+    };
   } catch {
     // If git status fails (e.g. path no longer exists), treat as not dirty
     // (the worktree is stale/gone — removal would be a no-op anyway).
-    return { dirty: false, orphan: false };
+    return { dirty: false, dirtyAllJunk: false, orphan: false };
   }
 }

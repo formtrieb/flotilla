@@ -1702,6 +1702,85 @@ describe('listAgentWorktrees — toplevel-guarded orphan classification (FOR-59)
     expect(result[0].dirty).toBe(false);
     expect(result[0].orphan).toBeFalsy();
   });
+
+  /**
+   * A consumer repo that has NOT gitignored the harness's own files — which is
+   * the default, since nothing tells a consumer to (issue #111). This repo does
+   * ignore them, so the defect is invisible here; pinning `core.excludesFile`
+   * to nothing keeps the fixture from inheriting whatever the developer's
+   * global excludes happen to say, which is what made this bug hard to see.
+   */
+  function makeConsumerWorktree(name: string): { mainRoot: string; worktreePath: string } {
+    const made = makeMainWithWorktree(name);
+    realGit(['config', 'core.excludesFile', '/dev/null'], made.mainRoot);
+    return made;
+  }
+
+  it('a registered worktree dirty with ONLY harness-written files reports dirty:true AND dirtyAllJunk:true', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_junk-only');
+    mkdirSync(join(worktreePath, '.claude'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, '.claude', 'settings.local.json'),
+      '{"permissions":{}}',
+      'utf-8',
+    );
+    writeFileSync(join(worktreePath, '.DS_Store'), 'finder', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(true);
+  });
+
+  it('a registered worktree dirty with a real file ALONGSIDE harness files reports dirtyAllJunk:false', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_junk-plus-real');
+    mkdirSync(join(worktreePath, '.claude'), { recursive: true });
+    writeFileSync(join(worktreePath, '.claude', 'settings.local.json'), '{}', 'utf-8');
+    writeFileSync(join(worktreePath, 'uncommitted.txt'), 'wip', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(false);
+  });
+
+  // The safety boundary this fix must not cross. flotilla's own skills live
+  // under `.claude/skills/`, so an uncommitted change there is a Worker's work.
+  // The orphan classifier treats all of `.claude/` as one disposable unit; the
+  // dirty classifier must not, or removing the worktree destroys the work.
+  it('uncommitted work under .claude/skills/ is NOT disposable — dirtyAllJunk:false', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_skill-edit');
+    mkdirSync(join(worktreePath, '.claude', 'skills', 'wave-plan'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, '.claude', 'skills', 'wave-plan', 'SKILL.md'),
+      '# a skill a Worker is midway through writing',
+      'utf-8',
+    );
+    writeFileSync(join(worktreePath, '.claude', 'settings.local.json'), '{}', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(false);
+  });
+
+  it('a MODIFIED tracked file under .claude/ is NOT disposable — dirtyAllJunk:false', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_tracked-settings');
+    mkdirSync(join(worktreePath, '.claude'), { recursive: true });
+    writeFileSync(join(worktreePath, '.claude', 'settings.json'), '{"env":{}}', 'utf-8');
+    realGit(['add', '.claude/settings.json'], worktreePath);
+    realGit(['commit', '-q', '-m', 'track settings'], worktreePath);
+    writeFileSync(join(worktreePath, '.claude', 'settings.json'), '{"env":{"X":"1"}}', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(false);
+  });
 });
 
 // ─── 13. planCleanup — orphan-dir routing + skip reasons (FOR-59) ────────────
@@ -1798,6 +1877,23 @@ describe('planCleanup — orphan-dir routing + skip reasons (FOR-59)', () => {
   it('orphan routing is keyed on `orphan`/`orphanAllJunk`, not on the (untrusted) `dirty` flag — orphan+allJunk selects regardless', () => {
     const plan = planCleanup([{ ...baseOrphan, dirty: false, orphan: true, orphanAllJunk: true }]);
     expect(plan.selected).toHaveLength(1);
+  });
+});
+
+// ─── 13b. planCleanup — junk-only dirt on a REGISTERED worktree (issue #111) ──
+
+describe('planCleanup — junk-only dirt on a registered worktree (issue #111)', () => {
+  const registered: WorktreeEntry = {
+    path: '/repo/.claude/worktrees/wf_harness-touched',
+    branch: 'wave/111-junk-only',
+    head: 'dddd1234dddd1234dddd1234dddd1234dddd1234',
+    dirty: true,
+  };
+
+  it('a registered worktree dirty with NOTHING BUT allowlisted junk is SELECTED, not skipped', () => {
+    const plan = planCleanup([{ ...registered, dirtyAllJunk: true }]);
+    expect(plan.selected).toHaveLength(1);
+    expect(plan.skipped).toHaveLength(0);
   });
 });
 
