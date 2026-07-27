@@ -100,6 +100,25 @@ Each check's `status` is one of `pass` / `fail` / `advisory` / `unknown` (the sh
 
 On exit 1 from a `fail`, apply the fix the `detail` names (grant the token write access; tick "Allow auto-merge") and re-run. A no-CI repo where `allow-auto-merge` is `advisory` is a valid `--auto` consumer — it does not block.
 
+## GitHub token permissions
+
+Neither preflight substitutes for checking scope up front — `store-preflight`/`host-pr preflight` probe *some* of the calls below, but a token that fails elsewhere (a labeling call, a `git push` touching a workflow file) still breaks mid-wave rather than at setup. This table is the engine's actual HTTP call surface (`real-github-api.ts`, `host-pr.ts`) mapped to what each form of token needs — check a token against it before a wave, don't infer scope from folklore.
+
+| Engine call | Used by | Classic PAT scope | Fine-grained permission |
+|---|---|---|---|
+| `GET/POST /repos/{o}/{r}/issues`, `PATCH /issues/{n}` | store: read, create, transition, close | `repo` | Issues: Read and write |
+| `POST/DELETE /issues/{n}/labels` | coarse-status projection, needs-attention flag | `repo` | Issues: Read and write |
+| `GET/POST /issues/{n}/comments` | closing probe, scribe | `repo` | Issues: Read and write |
+| `GET/POST /repos/{o}/{r}/pulls`, `PATCH /pulls/{n}` | `host-pr` open / read | `repo` | Pull requests: Read and write |
+| `PUT /repos/{o}/{r}/pulls/{n}/merge`, the auto-merge arm mutation | `host-pr` merge / arm | `repo` | Pull requests: Read and write, **and** Contents: Read and write (writing the merge commit to the protected branch) |
+| `DELETE /repos/{o}/{r}/git/refs/heads/{branch}` | branch cleanup after landing | `repo` | Contents: Read and write |
+| `GET /repos/{o}/{r}` | `allow-auto-merge` posture read, default-branch resolve, `canMergePullRequests` | `repo` (or `public_repo` on a public repo) | Metadata: Read (the mandatory baseline every fine-grained token carries) |
+| `GET /repos/{o}/{r}/rules/branches/{branch}` | required-checks posture read | `repo` | No single documented fine-grained permission name for this endpoint at the time of writing — treat "the token can read the repo's effective rules" as the bar, not a specific checkbox. This is why the engine never blocks on it: `getRulesetRequiredChecks` is throw-free by contract and degrades to `unknown` (never `fail`) on any read failure, including a token that can't see it. |
+
+**`repo` (classic) covers every row above in one scope.** A fine-grained PAT does not bundle the same way — GitHub splits `repo` into separate repository permissions, so a fine-grained setup needs **`Issues`, `Pull requests`, and `Contents`, each Read and write**, named individually. Granting only the one the arm mutation needs (`Pull requests`) is the exact way a fine-grained token passes `store-preflight` (which never labels an issue) and then fails the first `addLabel`/`removeLabel` call mid-wave.
+
+**One more gate that is not an engine API call at all: `workflow` scope (classic) / `Workflows: Read and write` (fine-grained) — only if a wave will touch `.github/workflows/**`.** This is not a GitHub REST/GraphQL permission the engine's HTTP calls exercise; it is enforced by GitHub directly on the `git push` itself, refusing a pushed commit that adds or modifies a workflow file unless the token carries it — independent of every scope above being correct. Nothing in `store-preflight`/`host-pr preflight` probes this (it is a push-time git-protocol check, not an API read), so a wave that plans to touch workflow files needs this checked by hand, against the wave's own declared Files globs, before dispatch — this is exactly the gap that STOPped a wave at the push step once already (issue-tracked as W23).
+
 ## `WaveConfig` fields
 
 | Field | Required | Shape |
