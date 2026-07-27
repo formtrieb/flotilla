@@ -32,7 +32,7 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 1. **Embed per-row data in the script body** as `const ISSUES = [...]` — the Workflow `args` channel does not reliably deliver a large nested payload. Never depend on external `args` for structured input.
 2. **Compose briefs in-script** via a helper that string-interpolates the structured fields — a function field cannot survive JSON serialization through `args`.
 3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`.
-4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute), `WAVE_CLI` (repo-relative **and npx-free** — the local `node_modules/.bin/tsx` binary, not `npx tsx`; see its comment below for the shared-npm-cache-lock reason and the `npx` fallback), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts`), just as you fill `depsSetup`. `WAVE_CLI` is deliberately **repo-relative, not absolute**: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe therefore hits the permission gate mid-wave and breaks AFK dispatch. This is proven practice, not a proposal — the wave dispatching this very script already runs this exact repo-relative form as its live probe. A Worker's worktree needs no extra step for this to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
+4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute, and **shell-quoted** wherever it is interpolated into a brief — see its own note below), `WAVE_CLI` (defaults to the **published npm package**, `npx @formtrieb/flotilla-engine` — a bare command with **no path in it at all**; see its comment below for the vendored fallback and the rationale this default now supports), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts` — likewise shell-quoted wherever interpolated), just as you fill `depsSetup`. `WAVE_CLI`'s bare-command form satisfies the **repo-relative, not absolute** constraint better than any path-bearing alternative: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry, and a bare npm-package invocation carries **no path whatsoever**, so it can never regress into one. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe therefore hits the permission gate mid-wave and breaks AFK dispatch. The **vendored local-binary form** (`./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts`) remains the documented **fallback** for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish) — it is repo-relative too, just not path-free. A Worker's worktree needs no extra step for either form to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by shell-quoted `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
 5. **Never backslash-escape an apostrophe inside a single-quoted JS string when composing a brief.** Composed brief text (`reviewerHints`, `issueSpec`, `prTitle`, and any other free-form field interpolated into the script body) is natural language and will routinely contain apostrophes — a `\'` inside a `'...'`-delimited literal parses fine to the human eye but is exactly the kind of thing to get wrong under compose pressure. Use a double-quoted string for that literal, or rephrase to drop the apostrophe. **Observed failure shape (W17-F1):** the first Workflow launch of a wave failed at the script parser — not at any `agent()` call — because a composed `reviewerHint` carried a backslash-escaped apostrophe inside a single-quoted string; the parser's error pointed at the escaped quote. Cost was zero (no agent had started, no state was touched), but the whole compose round was lost and had to be redone.
 
 ## A worktree carries tracked files only (FOR-32, W4-F4)
@@ -113,36 +113,59 @@ const SCRIBE_RESULT_SCHEMA = {
 // ── Scribe compose-time constants (Coordinator-filled, like depsSetup) ──
 // REPO_ROOT is the one ABSOLUTE-by-necessity constant: Scribes run in the
 // session cwd (no worktree isolation), so their brief `cd`s here first
-// (step 1, below) before any WAVE_CLI call.
+// (step 1, below) before any WAVE_CLI call. It is interpolated SHELL-QUOTED
+// wherever it reaches a brief — always shell-quoted, never bare — because
+// an absolute repo path is precisely where spaces and non-ASCII characters
+// live, and an unquoted `cd` breaks silently on one: the Scribe stage logs
+// loud and passes its payload through rather than failing the wave (ADR-0024
+// exists so the sidecar becomes durable the moment the work does; an
+// unquoted REPO_ROOT quietly reopens exactly that window). Live-verified
+// against a checkout path containing both a space and a typographic en-dash
+// (this repo's own worktree path) — the unquoted form fails the `cd` outright
+// (`cd: ...: No such file or directory`) and silently stays in the prior cwd;
+// the quoted form succeeds.
 const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
-// WAVE_CLI is REPO-RELATIVE, not absolute — the tracked `.claude/settings.json`
-// permission allowlist a dispatched agent inherits can only match
-// repo-relative invocation prefixes; an absolute form would embed a machine-
-// and client-specific path a public repo's tracked settings must never carry.
-// Worker AND Reviewer worktrees carry tracked files only (see "A worktree
-// carries tracked files only" above) — that tracked allowlist is the ONLY
-// permission source they inherit, so an absolute-form engine call from a
-// Worker's termination step or a Scribe hits the permission gate mid-wave and
-// breaks AFK dispatch. Proven practice, not a proposal: the wave dispatching
-// this very script already runs this exact repo-relative form as its live
-// probe. A Worker's worktree needs no `cd` for this to resolve — its
-// post-checkout cwd already IS a repo-relative root; a Scribe gets the same
-// guarantee via the REPO_ROOT `cd` above.
+// WAVE_CLI defaults to the PUBLISHED NPM PACKAGE — `npx @formtrieb/flotilla-engine`
+// — a bare command with NO PATH IN IT AT ALL. That is not merely permitted by
+// the repo-relative-not-absolute constraint below, it satisfies it BETTER than
+// any path-bearing alternative: a bare npm-package invocation can never
+// regress into an absolute, machine-specific form, because it carries no path
+// to begin with. The tracked `.claude/settings.json` permission allowlist a
+// dispatched agent inherits can only match REPO-RELATIVE invocation prefixes —
+// an absolute form would embed a machine- and client-specific path a public
+// repo's tracked settings must never carry. Worker AND Reviewer worktrees
+// carry tracked files only (see "A worktree carries tracked files only"
+// above) — that tracked allowlist is the ONLY permission source they inherit,
+// so an absolute-form engine call from a Worker's termination step or a
+// Scribe hits the permission gate mid-wave and breaks AFK dispatch.
 //
-// It also defaults to the npx-FREE LOCAL BINARY (`./tools/wave/node_modules/
-// .bin/tsx …`), NOT `npx tsx …`. Under agent fan-out, parallel `npx`
-// invocations contend on the one shared npm cache lock and intermittently die
-// with ECOMPROMISED — three live hits on the first Linear consumer wave (a
-// Scribe verdict-write, a Worker `host-pr` call, and a coordinator-side
-// transition; consumer retro KW-F7). The local binary resolves tsx off the
-// worktree's own tracked tree and never touches that shared lock. `npx tsx
-// tools/wave/src/cli.ts` stays the DOCUMENTED FALLBACK for a context where the
-// local binary is genuinely absent (a one-off call outside a wave, deps never
-// installed) — the tracked allowlist wave-setup scaffolds names BOTH prefixes,
-// so either resolves without hitting the permission gate. depsSetup (Worker
-// step 4, the FIRST step) installs that local binary, so it exists before the
-// terminator's WAVE_CLI call — keep depsSetup first for this reason as well as
-// the verify-gate one.
+// The VENDORED LOCAL BINARY form (`./tools/wave/node_modules/.bin/tsx
+// tools/wave/src/cli.ts`) is the documented FALLBACK for a consumer that
+// still vendors `tools/wave` locally (this repo included, dogfooding its own
+// skills pre-publish) — swap WAVE_CLI to that form for such a consumer; both
+// invoke the identical router, and wave-setup's allowlist scaffold names both
+// binary styles either way. A plugin consumer installing flotilla via the
+// marketplace has NEITHER a vendored `tools/wave` NOR its local `tsx` binary —
+// against the old vendored default, every Worker termination step and every
+// Scribe call resolved to nothing (live: DA-F1, 2026-07-27-plugin-consumer-w1)
+// — hence the npm form is the DEFAULT here, not the fallback.
+//
+// A parallel-`npx`-contends-on-the-shared-npm-cache-lock concern
+// (`ECOMPROMISED`) motivated the earlier vendored default (first Linear
+// consumer wave, retro KW-F7: a Scribe verdict-write, a Worker `host-pr`
+// call, and a coordinator-side transition all died this way). Live
+// counter-evidence since: the first plugin-consumer wave ran 12 agents, up to
+// 3 concurrently on `npx` calls (Worker terminators + Scribes), with ZERO
+// `ECOMPROMISED` hits (retro 2026-07-27-plugin-consumer-w1, DA-F1) — the
+// contention is not as reliable as the earlier finding suggested, or depends
+// on a condition absent there. Either way it is not reason enough to default
+// a plugin consumer — who has no vendored fallback to fall back to — onto an
+// invocation that resolves to nothing. A consumer that hits it for real still
+// has the vendored form available as the documented fallback. depsSetup
+// (Worker step 4, the FIRST step) installs the vendored local binary for a
+// consumer using that fallback form, so it exists before the terminator's
+// WAVE_CLI call if the Coordinator has swapped to it — keep depsSetup first
+// for this reason as well as the verify-gate one.
 //
 // WAVE_CLI also carries an explicit NODE_USE_ENV_PROXY=1 prefix (wave-shared
 // Convention 1's raw-fetch-vs-proxied-sandbox fix). The tracked settings `env`
@@ -155,9 +178,11 @@ const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // run, or a harness without settings-env support) — the driver has no way to
 // know which posture a given consumer is in, so it keeps the belt-and-braces
 // form rather than assume the block is present.
-const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts'
+const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine'
 // REPORTS_DIR / VERDICTS_DIR stay ABSOLUTE regardless — sidecar dirs are
-// addressed independent of whatever cwd the Scribe's REPO_ROOT `cd` leaves it in.
+// addressed independent of whatever cwd the Scribe's REPO_ROOT `cd` leaves it
+// in. Like REPO_ROOT, both are interpolated SHELL-QUOTED wherever they reach a
+// brief (the Scribe's `--dir "${dir}"` call, below) for the same reason.
 const REPORTS_DIR = '<absolute .flotilla/waves/<slug>/reports>'
 const VERDICTS_DIR = '<absolute .flotilla/waves/<slug>/verdicts>'
 
@@ -232,9 +257,10 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 4. Install dependencies. A worktree checkout carries **tracked files only** — if
    this consumer's dependency directory is gitignored (the ordinary case for a
    lockfile-managed tree), it is **absent here, not merely un-installed**, and
-   the verify gate below cannot run at all — and the npx-free engine CLI the
-   terminator invokes (a local \`node_modules/.bin/tsx\` binary, see Termination
-   step 3) has no binary to resolve — without this step first:
+   the verify gate below cannot run at all — and, for a consumer whose
+   Coordinator has swapped WAVE_CLI to the vendored fallback, the terminator's
+   engine CLI call (a local \`node_modules/.bin/tsx\` binary, see Termination
+   step 3) has no binary to resolve either — without this step first:
    \`\`\`bash
    ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
    \`\`\``
@@ -271,9 +297,10 @@ const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) —
 3. Install dependencies. A worktree checkout carries **tracked files only** — if
    this consumer's dependency directory is gitignored (the ordinary case for a
    lockfile-managed tree), it is **absent here, not merely un-installed**, and
-   the verify gate below cannot run at all — and the npx-free engine CLI the
-   terminator invokes (a local \`node_modules/.bin/tsx\` binary, see Termination
-   step 3) has no binary to resolve — without this step first:
+   the verify gate below cannot run at all — and, for a consumer whose
+   Coordinator has swapped WAVE_CLI to the vendored fallback, the terminator's
+   engine CLI call (a local \`node_modules/.bin/tsx\` binary, see Termination
+   step 3) has no binary to resolve either — without this step first:
    \`\`\`bash
    ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
    \`\`\``
@@ -317,9 +344,12 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 2. \`git push origin wave/${issue.id}-${issue.slug}\` (never \`-u\`, never to default).
 3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused, never duplicated — and its title/body are re-written to the \`--title\`/\`--body\` you pass** (\`updated: true\` in the JSON discloses it), so the body you compose reliably lands on the live PR (last-writer-wins). Compose a PR body whose last line is the store-kind close phrase, then run:
    \`\`\`bash
-   # WAVE_CLI is repo-relative; it resolves here because a worktree checkout
-   # is a full copy of tracked files, and step 4 above (depsSetup) already
-   # installed the local tsx binary this invocation needs.
+   # WAVE_CLI's default (the published npm package) is a bare command with no
+   # path in it — it resolves independent of this worktree's own checkout.
+   # (If the Coordinator swapped WAVE_CLI to the vendored fallback for a
+   # consumer that still vendors tools/wave, it resolves here too: a worktree
+   # checkout is a full copy of tracked files, and step 4 above, depsSetup,
+   # already installed the local tsx binary that form needs.)
    ${WAVE_CLI} host-pr create \\
      --branch wave/${issue.id}-${issue.slug} \\
      --title "${issue.prTitle}" \\
@@ -409,12 +439,15 @@ function scribeBrief(kind, issue, iter, payload) {
   const verb = kind === 'report' ? 'write-report' : 'write-verdict'
   return `You are a Wave Scribe. Persist one ${kind} sidecar THROUGH THE ENGINE — do not reformat, re-type, or "fix" anything in the payload.
 
-1. \`cd ${REPO_ROOT}\` — the compose-time absolute repo root. WAVE_CLI below is
-   repo-relative (tracked-settings permission match, see Authoring constraints
-   #4); this cd guarantees it resolves regardless of your starting cwd.
+1. \`cd "${REPO_ROOT}"\` — the compose-time absolute repo root, SHELL-QUOTED
+   (a checkout path may contain a space or a non-ASCII character — this
+   repo's own does — and an unquoted \`cd\` breaks on one, silently, taking
+   the sidecar write down with it). WAVE_CLI below is repo-relative
+   (tracked-settings permission match, see Authoring constraints #4); this cd
+   guarantees it resolves regardless of your starting cwd.
 2. Write this EXACT JSON to a temp file, byte-for-byte via a heredoc (no edits):
 ${JSON.stringify(payload)}
-3. Run:  ${WAVE_CLI} ${verb} <that-temp-file> --dir ${dir} --id ${issue.id} --iter ${iter}
+3. Run:  ${WAVE_CLI} ${verb} <that-temp-file> --dir "${dir}" --id ${issue.id} --iter ${iter}
    (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload / id mismatch; exit 2 → usage/unreadable)
 4. If the exit code is non-zero, retry the SAME command ONCE, byte-identical.
 Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure> }.`
