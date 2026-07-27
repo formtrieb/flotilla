@@ -69,8 +69,17 @@ HELD_IDS=$(node -e '
 #   ^ durable branch home (ADR-0021): resume() joins worktrees to rows by this
 #     branch via branchesByIssueId. WITHOUT it, resume redispatches committed
 #     rows and discards their work. Record it BEFORE the worktree/Worker exists,
-#     and it MUST byte-match wave/${issue.id}-${issue.slug} in workflow-driver.md
-#     (line 99/118) or the join fails.
+#     and it MUST byte-match `issue.branch` in workflow-driver.md — NOT a line
+#     number (those go stale the moment the script is edited; FOR-139 dropped
+#     the last such reference for exactly that reason). workflow-driver.md
+#     derives issue.branch exactly ONCE, immediately after ISSUES, from the
+#     SAME formula (`wave/<id>-<slug>`) applied to the SAME id+slug this step
+#     binds as $ID/$ROW_SLUG — see that derivation's own comment for the full
+#     rationale. The two values are demonstrably the same because both read
+#     off one roster row, not because the two files happen to agree today;
+#     workflow-driver.md's REQUIRED_ROW_FIELDS additionally refuses to let
+#     either half of that row be missing/blank/"undefined" before any brief
+#     is composed.
 {{wave-cli}} issue-store transition "$ID" in-flight                     # coarse rung, second
 
 # 6. Dispatch — compose + run the Workflow script (workflow-driver.md), ISSUES

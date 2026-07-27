@@ -34,6 +34,7 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`.
 4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute, and **shell-quoted** wherever it is interpolated into a brief — see its own note below), `WAVE_CLI` (defaults to the **published npm package**, `npx @formtrieb/flotilla-engine` — a bare command with **no path in it at all**; see its comment below for the vendored fallback and the rationale this default now supports), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts` — likewise shell-quoted wherever interpolated), just as you fill `depsSetup`. `WAVE_CLI`'s bare-command form satisfies the **repo-relative, not absolute** constraint better than any path-bearing alternative: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry, and a bare npm-package invocation carries **no path whatsoever**, so it can never regress into one. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe therefore hits the permission gate mid-wave and breaks AFK dispatch. The **vendored local-binary form** (`./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts`) remains the documented **fallback** for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish) — it is repo-relative too, just not path-free. A Worker's worktree needs no extra step for either form to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by shell-quoted `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
 5. **Never backslash-escape an apostrophe inside a single-quoted JS string when composing a brief.** Composed brief text (`reviewerHints`, `issueSpec`, `prTitle`, and any other free-form field interpolated into the script body) is natural language and will routinely contain apostrophes — a `\'` inside a `'...'`-delimited literal parses fine to the human eye but is exactly the kind of thing to get wrong under compose pressure. Use a double-quoted string for that literal, or rephrase to drop the apostrophe. **Observed failure shape (W17-F1):** the first Workflow launch of a wave failed at the script parser — not at any `agent()` call — because a composed `reviewerHint` carried a backslash-escaped apostrophe inside a single-quoted string; the parser's error pointed at the escaped quote. Cost was zero (no agent had started, no state was touched), but the whole compose round was lost and had to be redone.
+6. **Check a composed row against `REQUIRED_ROW_FIELDS`, not against a re-derived reading of every brief.** The full set of scalar fields the briefs below interpolate is named in exactly one place — the `REQUIRED_ROW_FIELDS` array right before `assertRequiredRowFields` — so a Coordinator wiring a new row never has to grep every `workerBrief`/`reviewerBrief` for `${issue.*}` to find out what it must supply. A field added to a brief but not to that array is exactly how the narrow `assertAnchorSha` (anchorSha-only) predecessor of this assertion missed `branch` one wave-generation later.
 
 ## A worktree carries tracked files only (FOR-32, W4-F4)
 
@@ -192,6 +193,12 @@ const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('
 // Each: { id, slug, risk, iteration, model, anchorSha, coordinatorBranch,
 //         depsSetup, issueSpec, prTitle, closePhrase, reviewerHints, siblingBranches,
 //         iteration1HeadSha? }
+// `branch` is NOT authored here — it is DERIVED, once, immediately below (see
+// its own comment) from `id` + `slug`, the same two fields already in this
+// list. Never add a hand-authored `branch:` to a row literal; the derivation
+// step overwrites it regardless, and a hand-authored value is exactly the
+// "Coordinator sets it, forgets to wire it into the array the driver reads"
+// shape this whole assertion exists to make impossible.
 // iteration1HeadSha is OPTIONAL and iteration>1-only (a re-dispatch, §Re-dispatch
 // above): the iteration-1 Worker's last commit SHA, read off the iteration-1
 // WorkerReport's `commitShas` (last entry) — the Coordinator already holds that
@@ -228,22 +235,87 @@ const ISSUES = [
   },
 ]
 
-// ── Compose-time anchor assertion (W2-F1) — run BEFORE any agent() fan-out ──
-// A missing/empty/stringified-"undefined" anchorSha must fail loud here, at the
-// cheapest point, naming the offending row id — not silently interpolate into a
-// brief and surface late as a spurious Reviewer questions-blocking (as it did in
-// the 2026-07-16-hardening-w2 live wave: ANCHOR was defined but never wired into
-// ISSUES, so every brief carried the literal string "undefined").
-function assertAnchorSha(issue) {
-  const a = issue.anchorSha
-  if (a === undefined || a === null || a === 'undefined' || String(a).trim() === '') {
-    throw new Error(`wave-start: row ${issue.id} has no valid anchorSha (got ${JSON.stringify(a)}) — wire anchorSha into ISSUES before dispatch`)
+// ── Derive the row's own branch name ONCE (AC5, FOR-139) ──
+// Every call site below — the Worker's `git checkout -b`, its `git push
+// origin`, its `host-pr create --branch`, and the Reviewer's stated review
+// target — reads `issue.branch`; none of them re-interpolates
+// `wave/${issue.id}-${issue.slug}` separately. A DERIVED value cannot
+// silently diverge from the id/slug it derives from the way a hand-authored
+// SECOND field could — which is exactly the shape a live recurrence took: a
+// Coordinator set `branch` on its own row objects and never copied it into
+// the array the driver reads, so `${issue.branch}` rendered the literal
+// string "undefined" at all five of its call sites (the four here plus the
+// sibling-branch list every Reviewer uses for merge-tree prediction). Six
+// Workers each invented their own branch name rather than create one
+// literally called `undefined`; three Reviewers correctly halted at input
+// validation; the spine's dispatch log recorded six branches that never
+// existed. This formula MUST byte-match the Coordinator's own `spine
+// set-branch "$SPINE" "$ID" "wave/$ID-$ROW_SLUG"` call (start-mechanics.md
+// step 5) — same id, same slug, same `wave/<id>-<slug>` shape — because
+// $ID/$ROW_SLUG there are bound from the SAME roster row that fills
+// issue.id/issue.slug here (start-mechanics.md's own note on that line).
+// Demonstrably the same value, not merely conventionally the same: both
+// read off one roster row, and REQUIRED_ROW_FIELDS below refuses to let
+// either half of that row be missing/blank/"undefined".
+ISSUES.forEach((issue) => { issue.branch = `wave/${issue.id}-${issue.slug}` })
+
+// ── Compose-time required-field assertion — run BEFORE any agent() fan-out ──
+// Generalizes the original W2-F1 fix, which validated ONLY anchorSha: the
+// anchor SHA was defined as a constant but never wired into the per-row
+// objects, so every brief interpolated the literal string "undefined" as its
+// diff base. The IDENTICAL failure recurred one wave-generation later, on
+// `branch` instead (see the derivation comment above), with a WIDER blast
+// radius. A guard shaped like `assert(oneNamedField)` does not generalize by
+// being read; it generalizes by covering the set. REQUIRED_ROW_FIELDS below
+// IS that set, named in exactly ONE place a Coordinator can check a composed
+// row against — instead of leaving the set to be inferred by reading every
+// brief for its `${issue.*}` interpolations (Authoring constraint #6 above).
+//
+// Deliberately EXCLUDED, with reasons (not merely forgotten):
+//   - depsSetup, iteration1HeadSha — legitimately optional; both briefs
+//     guard their interpolation with `|| <fallback text>` already.
+//   - reviewerHints — an array, not a scalar. An EMPTY array is valid ("no
+//     hints yet" — `j()` already renders it as `- none`); a naive
+//     string-emptiness check would wrongly reject that valid empty case
+//     (`String([]) === ''`), so it is out of scope for this assertion.
+//   - iteration — a number compared (`issue.iteration > 1`), not rendered
+//     into text on the path that would ever see it; an absent value
+//     misroutes to the iteration-1 branch rather than rendering "undefined",
+//     a different failure shape from the one this assertion targets.
+const REQUIRED_ROW_FIELDS = [
+  'id', 'slug', 'branch', 'risk', 'model', 'anchorSha', 'coordinatorBranch',
+  'issueSpec', 'prTitle', 'closePhrase', 'siblingBranches',
+]
+
+// A template renders a missing/undefined property as the LITERAL STRING
+// "undefined" — never a thrown error, never a blank interpolation. Both live
+// occurrences (W2-F1's anchorSha, and the branch recurrence above) took
+// exactly this shape. An absent key is therefore not the only failure shape
+// worth rejecting: the literal "undefined" and an empty/whitespace-only
+// string are the two others a template can silently produce, and each must
+// fail exactly as loud as an absent key.
+function isMissingField(value) {
+  return (
+    value === undefined ||
+    value === null ||
+    value === 'undefined' ||
+    String(value).trim() === ''
+  )
+}
+
+function assertRequiredRowFields(issue) {
+  for (const field of REQUIRED_ROW_FIELDS) {
+    if (isMissingField(issue[field])) {
+      throw new Error(`wave-start: row ${issue.id} has no valid ${field} (got ${JSON.stringify(issue[field])}) — wire ${field} into ISSUES before dispatch`)
+    }
   }
 }
-ISSUES.forEach(assertAnchorSha)
+ISSUES.forEach(assertRequiredRowFields)
 
-// The iteration-1 (default) workspace setup — UNCHANGED, byte-for-byte, from
-// before the re-dispatch teardown/tracking-free-checkout fix (W26-F1).
+// The iteration-1 (default) workspace setup — unchanged from before the
+// re-dispatch teardown/tracking-free-checkout fix (W26-F1) except for its
+// checkout target, which now reads the derived `issue.branch` (FOR-139)
+// rather than re-interpolating `wave/${issue.id}-${issue.slug}` inline.
 const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 1. \`pwd\` — confirm you are in a worktree (not the parent path).
 2. Anchor to the wave anchor SHA:
@@ -253,7 +325,7 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    git status --porcelain      # MUST be empty
    git rev-parse HEAD          # MUST equal ${issue.anchorSha}
    \`\`\`
-3. \`git checkout -b wave/${issue.id}-${issue.slug}\`
+3. \`git checkout -b ${issue.branch}\`
 4. Install dependencies. A worktree checkout carries **tracked files only** — if
    this consumer's dependency directory is gitignored (the ordinary case for a
    lockfile-managed tree), it is **absent here, not merely un-installed**, and
@@ -277,7 +349,7 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 // blocked by a stale `git worktree` registration.
 const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) — RE-DISPATCH, iteration ${issue.iteration}
 1. \`pwd\` — confirm you are in a worktree (not the parent path).
-2. This is a re-dispatch: \`wave/${issue.id}-${issue.slug}\` ALREADY EXISTS,
+2. This is a re-dispatch: \`${issue.branch}\` ALREADY EXISTS,
    carrying your iteration-1 commits — do not discard them, do not re-anchor to
    the wave anchor SHA and branch fresh. Land on the existing branch with a
    TRACKING-FREE checkout — never \`git checkout -B <branch> origin/<branch>\`,
@@ -286,8 +358,8 @@ const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) —
    and strands the switch mid-way — live occurrence W26-F1, recovered only by
    hand via \`git symbolic-ref\`):
    \`\`\`bash
-   git fetch origin wave/${issue.id}-${issue.slug} 2>&1 | tail -3
-   git checkout -B wave/${issue.id}-${issue.slug} FETCH_HEAD
+   git fetch origin ${issue.branch} 2>&1 | tail -3
+   git checkout -B ${issue.branch} FETCH_HEAD
    git status --porcelain      # MUST be empty
    git rev-parse HEAD          # MUST equal ${issue.iteration1HeadSha || 'the fetched branch tip (see step 2)'}
    \`\`\`
@@ -341,7 +413,7 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 
 ## Termination
 1. Commit all work in one commit.
-2. \`git push origin wave/${issue.id}-${issue.slug}\` (never \`-u\`, never to default).
+2. \`git push origin ${issue.branch}\` (never \`-u\`, never to default).
 3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused, never duplicated — and its title/body are re-written to the \`--title\`/\`--body\` you pass** (\`updated: true\` in the JSON discloses it), so the body you compose reliably lands on the live PR (last-writer-wins). Compose a PR body whose last line is the store-kind close phrase, then run:
    \`\`\`bash
    # WAVE_CLI's default (the published npm package) is a bare command with no
@@ -351,7 +423,7 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
    # checkout is a full copy of tracked files, and step 4 above, depsSetup,
    # already installed the local tsx binary that form needs.)
    ${WAVE_CLI} host-pr create \\
-     --branch wave/${issue.id}-${issue.slug} \\
+     --branch ${issue.branch} \\
      --title "${issue.prTitle}" \\
      --body "<one-paragraph summary of what you changed>
 
@@ -368,15 +440,16 @@ tests, lint, conflictMarkers, judgmentCalls[], reviewerFocusItems[].
 ${j(issue.reviewerHints)}`
 }
 
-// reviewerBrief only ever reads `issue.anchorSha` off the same ISSUES row object
-// assertAnchorSha already validated — including on a re-dispatch (cap=1 Worker
-// re-run, or the bad-anchor Reviewer-only recovery below): there is no second
-// code path that could re-derive or re-interpolate an unasserted anchor.
+// reviewerBrief only ever reads `issue.anchorSha` / `issue.branch` off the same
+// ISSUES row object assertRequiredRowFields already validated — including on a
+// re-dispatch (cap=1 Worker re-run, or the bad-anchor Reviewer-only recovery
+// below): there is no second code path that could re-derive or re-interpolate
+// an unasserted anchor or branch.
 function reviewerBrief(issue, report) {
   return `You are the Wave Reviewer for issue #${issue.id} (${issue.slug}).
 
 ## What to review
-Branch: \`wave/${issue.id}-${issue.slug}\`
+Branch: \`${issue.branch}\`
 Risk class: \`${issue.risk}\`   (dispatch is universal — Risk does NOT gate whether you run)
 Wave anchor SHA (diff base — NOT main): \`${issue.anchorSha}\`
 Sibling in-flight branches: ${issue.siblingBranches}
@@ -411,7 +484,7 @@ ${j(report.reviewerFocusItems)}
 
 ## Your checks
 Run the wave-reviewer contract (see .claude/agents/wave-reviewer.md): re-run the verify
-commands + the floor checks against \`${issue.anchorSha}..wave/${issue.id}-${issue.slug}\`,
+commands + the floor checks against \`${issue.anchorSha}..${issue.branch}\`,
 per-AC met/partial/not-met with evidence (against the embedded spec above), sibling
 merge-tree prediction.
 
@@ -505,7 +578,7 @@ A single-row wave is a one-element `pipeline()` — identical routing, no fan-ou
 
 ## Recovery protocol — a bad-anchor first round (W2-F1)
 
-`assertAnchorSha` throwing at compose time is the fail-loud path for the *next* wave; it does nothing for a wave already dispatched before this assertion existed, or for any other source of a bad diff base a Reviewer catches downstream (e.g. a Coordinator hand-composed the brief outside this script). If a Reviewer verdict comes back `questions-blocking`/flags the diff base as malformed, and the Coordinator confirms the anchor interpolated into that round's briefs was wrong (missing, empty, or `"undefined"`):
+`assertRequiredRowFields` throwing at compose time is the fail-loud path for the *next* wave; it does nothing for a wave already dispatched before this assertion existed (or before it covered a given field), or for any other source of a bad diff base a Reviewer catches downstream (e.g. a Coordinator hand-composed the brief outside this script). If a Reviewer verdict comes back `questions-blocking`/flags the diff base as malformed, and the Coordinator confirms the anchor interpolated into that round's briefs was wrong (missing, empty, or `"undefined"`):
 
 1. **Re-dispatch the affected Reviewers only**, each with a corrected `issue.anchorSha` — call `reviewerBrief(issue, report)` again with the fixed `issue` object (or an inline `agent()` call carrying the same corrected value). Reuse the **same** Worker `report` / branch already produced; do not touch it. **Scribe the corrected verdict through `write-verdict` at the same `iter`** — last-writer-wins overwrites the bad-anchor verdict sidecar (the reader keeps max-iter either way); on this inline re-dispatch the Coordinator is its own Scribe (§Degenerate `n = 1`).
 2. **Do not re-dispatch the Worker.** The defect is Coordinator input (a bad brief), not branch content — the Worker's commits are unaffected by which SHA the *Reviewer* diffs against.
