@@ -211,6 +211,24 @@ export class RealGitHubApi implements GitHubApi {
     // 404 = label already absent → idempotent no-op (the GitHubApi contract).
   }
 
+  async listLabels(): Promise<string[]> {
+    // The repo's label REGISTRY (`GET /repos/{o}/{r}/labels`) — a distinct
+    // endpoint from the per-issue label lists above. PAGINATED like
+    // listOpenIssues; the store-preflight (issue #131) needs the full set, not
+    // just the first page, or a large label set would silently under-report.
+    const out: string[] = [];
+    for (let page = 1; ; page++) {
+      const res = await this.send('GET', `${this.base()}/labels?per_page=100&page=${page}`);
+      if (res.status !== 200) throw new GitHubApiError(res.status, 'listLabels');
+      const items = Array.isArray(res.json) ? (res.json as Record<string, unknown>[]) : [];
+      for (const it of items) {
+        if (typeof it.name === 'string') out.push(it.name);
+      }
+      if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
+    }
+    return out;
+  }
+
   async addComment(number: number, body: string): Promise<void> {
     const res = await this.send('POST', `${this.base()}/issues/${number}/comments`, { body });
     if (res.status !== 201) throw new GitHubApiError(res.status, 'addComment');

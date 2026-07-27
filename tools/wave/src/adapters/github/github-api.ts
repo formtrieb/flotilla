@@ -119,6 +119,17 @@ export interface GitHubApi extends LandingHost, LandingPosture {
   addLabel(number: number, label: string): Promise<void>;
   /** Remove a label (idempotent — no-op if absent). */
   removeLabel(number: number, label: string): Promise<void>;
+  /**
+   * The repository's label REGISTRY — every label defined on the repo
+   * (`GET /repos/{owner}/{repo}/labels`), NOT the per-issue label lists
+   * `getIssue`/`listOpenIssues` return. Backs the store-preflight `state-catalog`
+   * check's GitHub translation (issue #131): GitHub's claims ARE labels, which is
+   * exactly why they need verifying, not why the check should be skipped — every
+   * eligibility/`risk/*`/`worker/*`/`wave/*` label the wave will read or write
+   * must exist here before a wave dispatches against it, the same precondition
+   * `linearChecks` runs against the team's workflow-state catalog.
+   */
+  listLabels(): Promise<string[]>;
   /** Append a comment to an issue (NOT idempotent — each call adds one). Throws on an unknown number. */
   addComment(number: number, body: string): Promise<void>;
   /** All comments on an issue, oldest-first. Throws on an unknown number. */

@@ -137,15 +137,122 @@ describe('preflightStore (FOR-12) — probes TRACKER preconditions through the A
   // asserted absent below and covered for real in host-pr(-cli).spec.ts.
   const CODE_HOST_CHECKS = ['pr-merge-token', 'allow-auto-merge', 'required-checks'];
 
-  it('github: the tracker checks are both n/a (GitHub is its own host, claims are labels)', async () => {
-    const store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
+  it('github: tracker-host-integration is n/a (GitHub is its own host); state-catalog is a REAL check', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setRepoLabels([
+      'ready-for-agent',
+      'risk/mechanical',
+      'risk/isolated-refactor',
+      'risk/cross-feature-refactor',
+      'risk/public-API-change',
+      'worker/background',
+      'worker/background-heavy',
+      'worker/foreground',
+      'worker/HITL-required',
+      'wave/queued',
+      'wave/in-flight',
+      'wave/in-review',
+      'wave/needs-attention',
+    ]);
+    const store = new GitHubIssuesStore({ api });
     const report = await preflightStore({ store: { kind: 'github' } }, store);
 
     expect(report.ok).toBe(true);
     expect(report.storeKind).toBe('github');
     const by = statusByName(report.checks);
     expect(by['tracker-host-integration']).toBe('not-applicable'); // GitHub is its own host
-    expect(by['state-catalog']).toBe('not-applicable'); // GitHub claims are labels
+    expect(by['state-catalog']).toBe('pass'); // every wave label the repo needs already exists
+  });
+
+  // ── issue #131 — the GitHub state-catalog translation actually probes labels ──
+  //
+  // GitHub's claims ARE labels, which is exactly why there is something to
+  // verify (the prior behavior reported `not-applicable` and never looked).
+
+  it('github: an unconfigured repo (zero labels created) FAILS loudly rather than reporting n/a', async () => {
+    const store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() }); // default: no repo labels
+    const report = await preflightStore({ store: { kind: 'github' } }, store);
+
+    expect(report.ok).toBe(false);
+    expect(report.checks.find((c) => c.name === 'state-catalog')?.status).toBe('fail');
+  });
+
+  it('github: a missing label is named EXACTLY (copy-paste, not a hunt)', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setRepoLabels([
+      'ready-for-agent',
+      'risk/mechanical',
+      'risk/isolated-refactor',
+      'risk/cross-feature-refactor',
+      'risk/public-API-change',
+      'worker/background',
+      'worker/background-heavy',
+      'worker/foreground',
+      'worker/HITL-required',
+      'wave/queued',
+      'wave/in-flight',
+      // 'wave/in-review' and 'wave/needs-attention' deliberately absent
+    ]);
+    const store = new GitHubIssuesStore({ api });
+    const report = await preflightStore({ store: { kind: 'github' } }, store);
+
+    expect(report.ok).toBe(false);
+    const catalog = report.checks.find((c) => c.name === 'state-catalog');
+    expect(catalog?.status).toBe('fail');
+    expect(catalog?.detail).toContain('"wave/in-review"');
+    expect(catalog?.detail).toContain('"wave/needs-attention"');
+  });
+
+  it('github: follows a CONFIGURED eligibility label instead of the built-in default', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setRepoLabels([
+      'agent-ok', // the configured eligibility label, NOT the 'ready-for-agent' default
+      'risk/mechanical',
+      'risk/isolated-refactor',
+      'risk/cross-feature-refactor',
+      'risk/public-API-change',
+      'worker/background',
+      'worker/background-heavy',
+      'worker/foreground',
+      'worker/HITL-required',
+      'wave/queued',
+      'wave/in-flight',
+      'wave/in-review',
+      'wave/needs-attention',
+    ]);
+    const store = new GitHubIssuesStore({ api, eligibility: ['agent-ok'] });
+    const report = await preflightStore(
+      { store: { kind: 'github', eligibility: ['agent-ok'] } },
+      store,
+    );
+
+    expect(report.ok).toBe(true); // the default 'ready-for-agent' is NOT required here
+  });
+
+  it('github: a configured eligibility label that was never created is reported missing by its exact name', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setRepoLabels([
+      'risk/mechanical',
+      'risk/isolated-refactor',
+      'risk/cross-feature-refactor',
+      'risk/public-API-change',
+      'worker/background',
+      'worker/background-heavy',
+      'worker/foreground',
+      'worker/HITL-required',
+      'wave/queued',
+      'wave/in-flight',
+      'wave/in-review',
+      'wave/needs-attention',
+    ]); // 'agent-ok' never created
+    const store = new GitHubIssuesStore({ api, eligibility: ['agent-ok'] });
+    const report = await preflightStore(
+      { store: { kind: 'github', eligibility: ['agent-ok'] } },
+      store,
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.checks.find((c) => c.name === 'state-catalog')?.detail).toContain('"agent-ok"');
   });
 
   it('the CheckName union no longer carries the code-host checks — they moved to host-pr preflight (ADR-0023 amendment)', async () => {

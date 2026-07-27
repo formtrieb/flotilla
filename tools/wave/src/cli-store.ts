@@ -40,15 +40,18 @@
  * it store-blind on every store kind. See {@link preflightHost} in host-pr.ts.
  */
 
-import type { IssueStore } from './adapters/issue-store';
+import { DEFAULT_ELIGIBILITY, RUNG_PRECEDENCE, type IssueStore } from './adapters/issue-store';
 import { buildStore } from './store-factory';
-import { loadWaveConfig, type WaveConfig, type StoreConfig, type LinearStoreConfig } from './wave-config';
+import { loadWaveConfig, type WaveConfig, type StoreConfig, type GitHubStoreConfig, type LinearStoreConfig } from './wave-config';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
 import { createLinearApiFromEnv } from './adapters/linear/linear-api-factory';
 import type { CheckStatus } from './host-pr';
+import type { GitHubApi } from './adapters/github/github-api';
+import type { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import type { LinearApi } from './adapters/linear/linear-api';
 import type { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { DEFAULT_LINEAR_STATES, type LinearStateMap } from './adapters/linear/linear-issues-store';
+import { RISK_VALUES, WORKER_VALUES } from './header-parser';
 import { flag, printJson } from './cli-utils';
 
 export async function resolveStore(args: string[], injected?: IssueStore): Promise<IssueStore> {
@@ -96,8 +99,11 @@ export interface StorePreflightReport {
  * Probe the store's live TRACKER preconditions THROUGH its API seam. Each store
  * kind reports the tracker checks meaningful for it and marks the rest
  * `not-applicable`:
- *   - github → both n/a (GitHub is its own host, claims are labels — code-host
- *     posture is `host-pr preflight`'s concern now, ADR-0023 amendment);
+ *   - github → `tracker-host-integration` is n/a (GitHub is its own host —
+ *     code-host posture is `host-pr preflight`'s concern now, ADR-0023
+ *     amendment); `state-catalog` is a REAL check (issue #131): GitHub's claims
+ *     ARE labels, which is exactly why they need verifying, not why the check
+ *     should be skipped — see {@link githubChecks};
  *   - linear → the GitHub integration + the workflow-state catalog (ADR-0020);
  *   - markdown → all n/a (a local dev/dogfood store).
  * Pure over the seam — `store` may wrap an in-memory fake (test) or a real impl.
@@ -106,14 +112,49 @@ export async function preflightStore(config: WaveConfig, store: IssueStore): Pro
   const s = config.store;
   const checks =
     s.kind === 'github'
-      ? githubChecks()
+      ? await githubChecks((store as GitHubIssuesStore).api, s)
       : s.kind === 'linear'
         ? await linearChecks((store as LinearIssuesStore).api, s)
         : markdownChecks();
   return { ok: checks.every((c) => c.status !== 'fail'), storeKind: s.kind, checks };
 }
 
-function githubChecks(): PreflightCheck[] {
+/**
+ * The orthogonal needs-attention overlay label (ADR-0006) — mirrors
+ * `github-issues-store.ts`'s (unexported) `NEEDS_ATTENTION_LABEL`. Duplicated as
+ * a literal rather than imported: the string is ADR-pinned, not derived, and
+ * this module already reaches into that store only for its injected `api`.
+ */
+const GITHUB_NEEDS_ATTENTION_LABEL = 'wave/needs-attention';
+
+/**
+ * The exact label set a GitHub-store wave will read or write (issue #131),
+ * derived from config rather than hardcoded to the thirteen a fresh setup
+ * happens to need today:
+ *   - the configured eligibility OR-set (default {@link DEFAULT_ELIGIBILITY}) —
+ *     a consumer may legitimately rename this;
+ *   - the Risk/Worker vocabulary `GitHubIssuesStore` actually annotates with
+ *     ({@link RISK_VALUES}/{@link WORKER_VALUES} — the DEFAULT_WAVE_SCHEMA set.
+ *     GitHub has no per-store schema override yet, so this shared default IS
+ *     what will be read/written; the check follows it, not a copy of it);
+ *   - the four engine-written `wave/<rung>` claim labels: the three
+ *     `transition()` rungs ({@link RUNG_PRECEDENCE}) plus the orthogonal
+ *     needs-attention overlay — non-negotiable, the projection writes them.
+ */
+function requiredGitHubLabels(storeConfig: GitHubStoreConfig): string[] {
+  const eligibility = storeConfig.eligibility ?? DEFAULT_ELIGIBILITY;
+  const risk = RISK_VALUES.map((r) => `risk/${r}`);
+  const worker = WORKER_VALUES.map((w) => `worker/${w}`);
+  const waveRungs = [...RUNG_PRECEDENCE.map((r) => `wave/${r}`), GITHUB_NEEDS_ATTENTION_LABEL];
+  return [...new Set([...eligibility, ...risk, ...worker, ...waveRungs])];
+}
+
+async function githubChecks(api: GitHubApi, storeConfig: GitHubStoreConfig): Promise<PreflightCheck[]> {
+  const required = requiredGitHubLabels(storeConfig);
+  const existing = new Set(await api.listLabels());
+  const missing = required.filter((label) => !existing.has(label));
+  const labelsOk = missing.length === 0;
+
   return [
     {
       name: 'tracker-host-integration',
@@ -122,8 +163,10 @@ function githubChecks(): PreflightCheck[] {
     },
     {
       name: 'state-catalog',
-      status: 'not-applicable',
-      detail: 'GitHub claims are labels (wave/<rung>) — there is no workflow-state catalog to verify.',
+      status: labelsOk ? 'pass' : 'fail',
+      detail: labelsOk
+        ? 'GitHub claims are labels (eligibility, risk/*, worker/*, wave/* rungs) — every one the wave will read or write exists in the repository.'
+        : `GitHub claims are labels — which is exactly why they need verifying: the following are missing from the repository and must be created before running a wave: ${missing.map((m) => `"${m}"`).join(', ')}.`,
     },
   ];
 }
