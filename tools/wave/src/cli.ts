@@ -65,8 +65,11 @@
  *                    branches whose worktree is no longer registered or on disk.
  *                    Those deletions/skips fold into branchesDeleted /
  *                    branchHygieneSkipped. The current branch and any checked-out
- *                    branch are never deleted. (Real run only — --dry-run
- *                    previews the orphan DIRECTORY plan, not branches.)
+ *                    branch are never deleted. `--dry-run` now previews this
+ *                    branch plan too, under `orphanBranches` (issue #148) — the
+ *                    same `planOrphanBranchSweep` the real run executes, so a
+ *                    preview that reports nothing selected is no longer followed
+ *                    by a real run that deletes branches it never showed.
  *
  *                    Optional branch-scoped filter (issue #77 — parallel-wave safety):
  *                      --wave <spine-path>  Read the WAVE.md spine and derive the
@@ -214,7 +217,8 @@ import {
   listOrphanDirs,
   planOrphanSweep,
   executeOrphanSweep,
-  sweepOrphanBranches,
+  planOrphanBranchSweep,
+  executeOrphanBranchSweep,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
@@ -809,6 +813,19 @@ function resolveBranchFilter(
  *                         deletions/skips ride the existing branchesDeleted /
  *                         branchHygieneSkipped fields.
  *
+ * Preview/execute share ONE plan (issue #148): the orphan-branch half used to
+ * be reachable only through `sweepOrphanBranches`, a single-shot plan-and-
+ * delete the real run called and `--dry-run` never called at all — so
+ * `--orphans --dry-run` reported nothing for branches, and the very next real
+ * run could delete several with no preceding preview of that outcome. Both
+ * paths now call the SAME `planOrphanBranchSweep`: `--dry-run` reports its
+ * `toDelete`/`branchHygieneSkipped` under the new `orphanBranches` key and
+ * deletes nothing; the real run recomputes that identical plan (necessarily
+ * AFTER the orphan-DIRECTORY sweep below has run — a `worktree-wf_*` branch
+ * only reads as eligible once its orphan worktree directory is actually gone
+ * from disk) and executes EXACTLY it via `executeOrphanBranchSweep`, never a
+ * second, independently-deciding derivation.
+ *
  * Uniform-wrapper tolerance (FOR-87 — W25-F2): a Coordinator wrapper appends
  * `--config <path>` to every store-adjacent verb invocation uniformly — the
  * documented pattern every OTHER verb already tolerates. `worktree-cleanup` had
@@ -825,7 +842,10 @@ function resolveBranchFilter(
  * class), erroredStillListed (FOR-73 — a throwing removal git still lists as
  * prunable), branchesDeleted, branchHygieneSkipped (both of which, with
  * --orphans, fold in the standalone orphaned-branch sweep — FOR-72), and (with
- * --orphans) orphans.
+ * --orphans) orphans. `--dry-run --orphans` additionally prints
+ * `orphanBranches: { toDelete, branchHygieneSkipped }` (issue #148) — the
+ * branch-sweep preview the real run's branchesDeleted/branchHygieneSkipped
+ * then fulfils.
  *
  * Idempotent: a re-run after everything is cleaned reports an empty plan and
  * exits 0 (nothing selected → nothing removed).
@@ -890,6 +910,18 @@ function runWorktreeCleanup(args: string[]): number {
     const orphanPlan = orphans ? planOrphanSweep(listOrphanDirs(repoRoot)) : null;
 
     if (dryRun) {
+      // Orphan-BRANCH preview (issue #148): planOrphanBranchSweep is the SAME
+      // pure function the real run below executes via executeOrphanBranchSweep
+      // — no separate, independently-deciding preview logic. Nothing is
+      // deleted by a dry run, so this reads current on-disk state; the real
+      // run recomputes this identical call AFTER physically removing orphan
+      // directories first (see the comment below the real-run's own call),
+      // so this preview reflects the branch sweep as it stands right now, one
+      // directory-removal step short of the run it precedes — still the fix
+      // for "dry-run shows nothing, real run deletes six": the branches a
+      // remote-ref-gone or already-orphaned worktree-wf_* signal would sweep
+      // are now named here instead of nowhere.
+      const orphanBranchPlan = orphans ? planOrphanBranchSweep({ repoRoot }) : null;
       process.stdout.write(
         JSON.stringify(
           {
@@ -904,6 +936,14 @@ function runWorktreeCleanup(args: string[]): number {
                   orphans: {
                     selected: orphanPlan.selected,
                     skipped: orphanPlan.skipped,
+                  },
+                }
+              : {}),
+            ...(orphanBranchPlan !== null
+              ? {
+                  orphanBranches: {
+                    toDelete: orphanBranchPlan.toDelete,
+                    branchHygieneSkipped: orphanBranchPlan.branchHygieneSkipped,
                   },
                 }
               : {}),
@@ -929,7 +969,18 @@ function runWorktreeCleanup(args: string[]): number {
     // eligible (its worktree is now gone from disk). Its deletions/skips ride
     // the EXISTING branchesDeleted / branchHygieneSkipped fields below, so the
     // whole sweep stays observable in one summary.
-    const orphanBranchResult = orphans ? sweepOrphanBranches({ repoRoot }) : null;
+    //
+    // Plan-then-execute explicitly (issue #148), mirroring the orphan-DIR
+    // pair above and the --dry-run preview: planOrphanBranchSweep computes
+    // the plan the SAME way the preview does, and executeOrphanBranchSweep
+    // then executes EXACTLY that plan object — never the opaque single-shot
+    // `sweepOrphanBranches`, whose internal plan a caller could not see or
+    // share with a preview.
+    const orphanBranchPlan = orphans ? planOrphanBranchSweep({ repoRoot }) : null;
+    const orphanBranchResult =
+      orphanBranchPlan !== null
+        ? executeOrphanBranchSweep(orphanBranchPlan, { repoRoot })
+        : null;
     const branchesDeleted =
       orphanBranchResult !== null
         ? [...result.branchesDeleted, ...orphanBranchResult.branchesDeleted]
