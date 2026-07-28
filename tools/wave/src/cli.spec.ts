@@ -49,7 +49,17 @@ import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
 // git diff output without spawning a real git process. The mock is applied
 // to the whole module; tests that do NOT call files-drift are unaffected
 // because they never reach getChangedFilesFromGit.
-vi.mock('node:child_process', () => ({
+//
+// ONLY `execFileSync` is replaced — everything else is spread through from the
+// real module (ADR-0029): the credential seam spawns its lookup with
+// `spawnSync`, and the router specs for `credential-probe` below drive that
+// through the REAL shell on purpose. A wholesale `() => ({ execFileSync })`
+// factory left `spawnSync` undefined, which would make the negative control
+// fail for the wrong reason — a missing binding, not a broken lookup. No engine
+// module uses any other `node:child_process` export (execFileSync + spawnSync
+// are the complete set), so nothing else changes behaviour here.
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
   execFileSync: vi.fn(() => ''),
 }));
 
@@ -2952,5 +2962,132 @@ describe('render-verdict subcommand', () => {
 
   it('a bare "render-verdict" (zero args) also exits 2, via the generic zero-rest usage guard', () => {
     expect(main(['render-verdict'])).toBe(2);
+  });
+});
+
+// ─── credential-probe subcommand routing (ADR-0029) ─────────────────────────
+//
+// The value-free auth probe is SYNC (its lookup spawn is `spawnSync`) and
+// resolves no store, so — unlike issue-store / host-pr / store-preflight — it
+// belongs on the plain `main()` path. These specs pin exactly that wire plus the
+// end-to-end reach into the real runner; the probe's own behaviour (precedence,
+// discovery, containment) lives in credential-probe-cli.spec.ts.
+//
+// Every case here drives a FIXTURE credential variable (`EXAMPLE_TOKEN`) set on
+// `process.env` and removed again — never `GITHUB_TOKEN` / `GITHUB_TOKEN_CMD`.
+// A spec that reached the developer's real `_CMD` would fire a real credential
+// lookup on every test run, which is the opposite of what this verb is for.
+
+/**
+ * A REAL lookup command whose secret lives in a temp FILE rather than in the
+ * command string. The probe names the configured command by design (it is the
+ * pointer, and naming it is the whole point of ADR-0029's indirection), so a
+ * sentinel spelled inside the command would appear in the output legitimately
+ * and make the containment assertion vacuous.
+ */
+function fixtureSecretLookup(): string {
+  const file = join(mkdtempSync(join(tmpdir(), 'cli-probe-secret-')), 'secret');
+  writeFileSync(file, 'SENTINEL-A-FIXTURE-SECRET-VALUE', 'utf-8');
+  return `cat '${file}'`;
+}
+
+/** Run `fn` with the fixture credential env applied, then restore process.env exactly. */
+function withFixtureCredentialEnv(
+  vars: Record<string, string>,
+  fn: () => number,
+): number {
+  const saved = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(vars)) {
+    saved.set(k, process.env[k]);
+    process.env[k] = v;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+describe('credential-probe subcommand routing (ADR-0029)', () => {
+  it('"credential-probe" IS in the unknown-subcommand available list', () => {
+    main(['frobnicate-xyz']);
+    const availableLine = stderrBuf.split('\n').find((l) => l.includes('available:'));
+    expect(availableLine).toBeDefined();
+    const list = availableLine!
+      .slice(availableLine!.indexOf('available:') + 'available:'.length)
+      .split(',')
+      .map((s) => s.trim());
+    expect(list).toContain('credential-probe');
+  });
+
+  it('main(["credential-probe"]) hits the router zero-arg guard (exit 2), NOT unknown-subcommand', () => {
+    expect(main(['credential-probe'])).toBe(2);
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+  });
+
+  it('reaches the runner\'s OWN usage (exit 2) on a missing selection — proof of routing, not of an unknown verb', () => {
+    // `--config` alone carries no selection: the message is credential-probe's
+    // own, which the top-level router usage never prints.
+    const code = main(['credential-probe', '--config', '/x.json']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/credential-probe requires a selection: --all or --var/);
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+  });
+
+  it('the top-level usage lists credential-probe with both selection forms', () => {
+    main([]);
+    expect(stderrBuf).toMatch(/flotilla-engine credential-probe \(--all \| --var <VAR>/);
+  });
+
+  it('end-to-end through main(): a REAL resolving lookup exits 0 and prints no secret', () => {
+    const code = withFixtureCredentialEnv(
+      { EXAMPLE_TOKEN_CMD: fixtureSecretLookup() },
+      () => main(['credential-probe', '--var', 'EXAMPLE_TOKEN']),
+    );
+    expect(code).toBe(0);
+    const report = JSON.parse(stdoutBuf) as {
+      ok: boolean;
+      probed: { variable: string; resolved: boolean }[];
+    };
+    expect(report.ok).toBe(true);
+    expect(report.probed[0]).toMatchObject({ variable: 'EXAMPLE_TOKEN', resolved: true });
+    expect(stdoutBuf + stderrBuf).not.toContain('SENTINEL-A-FIXTURE-SECRET-VALUE');
+  });
+
+  it('NEGATIVE CONTROL (Convention 11): a deliberately broken configured command drives main() to exit 1, value-free', () => {
+    // The whole verb, end to end, through the real router, the real resolver
+    // and the real shell — with the one thing the probe exists to catch
+    // genuinely broken: a lookup binary that does not exist.
+    const broken = 'flotilla-no-such-lookup-binary-0029 --field token';
+    const code = withFixtureCredentialEnv(
+      { EXAMPLE_TOKEN_CMD: broken, EXAMPLE_TOKEN: 'SENTINEL-AMBIENT-VALUE' },
+      () => main(['credential-probe', '--var', 'EXAMPLE_TOKEN']),
+    );
+
+    expect(code).toBe(1);
+    const report = JSON.parse(stdoutBuf) as {
+      ok: boolean;
+      failed: string[];
+      probed: { failure: string; command: string }[];
+    };
+    expect(report.ok).toBe(false);
+    expect(report.failed).toEqual(['EXAMPLE_TOKEN']);
+    expect(report.probed[0].failure).toBe('lookup-exit'); // sh: command not found → 127
+    expect(report.probed[0].command).toBe(broken);
+    expect(stderrBuf).toMatch(/credential-probe: 1 of 1 credential\(s\) failed to resolve/);
+    // It did NOT quietly fall back to the ambient value.
+    expect(stdoutBuf + stderrBuf).not.toContain('SENTINEL-AMBIENT-VALUE');
+  });
+
+  it('RESTORED: repairing the same command turns the very same invocation green (exit 0)', () => {
+    const code = withFixtureCredentialEnv(
+      { EXAMPLE_TOKEN_CMD: fixtureSecretLookup() },
+      () => main(['credential-probe', '--var', 'EXAMPLE_TOKEN']),
+    );
+    expect(code).toBe(0);
+    expect((JSON.parse(stdoutBuf) as { ok: boolean }).ok).toBe(true);
   });
 });

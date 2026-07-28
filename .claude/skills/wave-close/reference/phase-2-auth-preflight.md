@@ -23,5 +23,15 @@ Detect the host:
 > ```
 >
 > **`${VAR:-no}` is a trap, not a presence test.** `${VAR:-fallback}` substitutes **the value** whenever the variable *is* set — the fallback branch fires only when it is *absent* — so the expression that reads as a yes/no check prints the live credential on precisely the machine that has one. `${VAR:+yes}${VAR:-no}` is the same trap wearing a disguise: the `:+` half really does print `yes`, so the output starts out looking right, and the `:-` half appends the key behind it. Also: no `printenv`, no bare `env`/`set`, and no read of a gitignored settings or `.env`-class file — the `permissions.deny` anchor blocks reading those files, but it cannot reach an already-exported environment variable. **Two of this class's six live occurrences were Coordinators running exactly this kind of check at exactly this kind of preflight step**, each costing a credential rotation (wave-shared Convention 8).
+>
+> **Presence is not resolvability — probe it (ADR-0029).** On a consumer that adopted the credential indirection the environment holds a **lookup command** (`<VAR>_CMD`), not the secret, so the presence form above is legitimately empty on a fully working machine. Run the engine's value-free probe alongside it, here in the interactive session, before any host write:
+>
+> ```bash
+> {{wave-cli}} credential-probe --all    # exit 0 = every configured credential resolves
+> ```
+>
+> It runs each configured `<VAR>_CMD` through the one engine resolver and prints only the variable name, the configured command (a pointer), and a typed failure — **never the secret, never the lookup's stdout or stderr**. Exit 0 → proceed. Exit 1 → STOP with the actionable message, exactly as a 401 does: `(blocking) credential lookup failed — <VAR> did not resolve; fix the lookup, then re-run wave-close`. `probed: []` plus a `note` means nothing is configured on this machine — expected on an ambient-token consumer, not a failure. Add `--var <VAR>` to assert one specific credential (an out-of-tree adapter's, or one you require to be configured).
+>
+> **Never run the `_CMD` value yourself to "check that it works".** Its stdout **is** the secret — executing it is the exact leak the indirection removes, and the probe verb exists so you never have to (wave-shared Convention 8, ADR-0029).
 
 > **Landing verbs vs. the creation verb (ADR-0023).** The three **landing** verbs `host-pr arm | merge | status` are shipped — `--auto` (phase 4b) and the phase-5 done-reconcile fallback use them, and each builds the host adapter from `$GITHUB_TOKEN` with its own construction-time preflight. The **creation** verb `host-pr create` (the find-before-create PR pinning that moved Closed-by placeholders off the `gh` path) is **also shipped** (ADR-0023 decision 3) — but PR creation rides the **Worker terminator**, which calls it directly; wave-close itself never creates a PR, only lands one. `detect-host` runs now regardless.

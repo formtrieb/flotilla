@@ -14,6 +14,7 @@
  *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]
  *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports <dir> --verdicts <dir> [...]
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
+ *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
  *
  * Subcommands:
  *   dor          Run the DOR-Gate validator (default when no subcommand is given).
@@ -180,6 +181,25 @@
  *   1 — a precondition FAILED loudly, or the probe/store-resolution threw
  *   2 — usage error, or an unreadable/invalid config
  *
+ * credential-probe (ADR-0029 — the value-free auth preflight probe) — answers
+ * "can every configured credential be resolved right now?" by running each
+ * configured `<VAR>_CMD` through the ONE credential resolver and reporting by
+ * exit code plus a value-free JSON summary. It replaces neither presence check
+ * nor guesswork with a stronger form of either: after ADR-0029 the environment
+ * carries the POINTER, so `[ -n "$GITHUB_TOKEN" ]` can be empty on a perfectly
+ * configured machine, and running the `_CMD` value by hand is the one thing
+ * Convention 8 forbids outright (its stdout IS the secret). Sync — the lookup
+ * spawn is `spawnSync` — so it stays on the `main()` path. `--all` probes every
+ * CONFIGURED credential the engine's own adapters read; `--var <VAR>` names one
+ * explicitly (an out-of-tree adapter's credential, or an assertion that a
+ * specific one MUST resolve — where not-configured is itself a failure). Wired
+ * into wave-start step 4 and wave-close phase 2, where an AFK-hostile prompt
+ * fires in the interactive session instead of mid-wave. See
+ * credential-probe-cli.ts. Exit codes:
+ *   0 — every probed credential resolved (or --all found none configured)
+ *   1 — at least one probed credential failed to resolve
+ *   2 — usage (no selection, unknown flag, stray positional)
+ *
  * render-verdict (FOR-16 — the PR body carries the reviewer-verdict summary) —
  * the single-owner engine render of the human-facing `## Reviewer verdict`
  * PR-body section from the FINAL (max-iter valid) ReviewerVerdict sidecar for
@@ -225,6 +245,7 @@ import { runCrossWave } from './cross-wave-cli';
 import { runIssueStore } from './issue-store-cli';
 import { runSpine } from './spine-cli';
 import { runConfig } from './config-cli';
+import { runCredentialProbe } from './credential-probe-cli';
 import {
   runRouteVerdict,
   runRouteOutcome,
@@ -276,6 +297,7 @@ const KNOWN_SUBCOMMANDS = [
   'config',
   'resume',
   'store-preflight',
+  'credential-probe',
   'route-verdict',
   'route-outcome',
   'validate-report',
@@ -347,6 +369,7 @@ function printUsage(): void {
       '  flotilla-engine config validate <path>',
       '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
       '  flotilla-engine store-preflight [--config <path>]',
+      '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret',
       '  flotilla-engine route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>',
       '  flotilla-engine route-outcome --outcome <o> --state <s>',
       '  flotilla-engine validate-report <file>',
@@ -1210,6 +1233,14 @@ export function main(argv: string[] = process.argv.slice(2)): number {
         return runConfig(rest);
       case 'spine':
         return runSpine(rest);
+      case 'credential-probe':
+        // ADR-0029 — the value-free auth preflight probe. SYNC: the lookup
+        // spawn is `spawnSync`, and it resolves no store, so it belongs here
+        // rather than behind `mainAsync`'s async interceptions. A bare
+        // `credential-probe` never reaches this case — the zero-arg guard above
+        // prints usage first — and the runner has its own no-selection usage
+        // path for `credential-probe --config x`.
+        return runCredentialProbe(rest);
       case 'resume':
         // issue #77 — the store-free reconciler as a router subcommand. A thin
         // router to resume-cli.ts's `runResume` (with its real disk-backed

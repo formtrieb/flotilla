@@ -87,6 +87,16 @@ Verify host write-auth **once**, up-front, so a dead token surfaces as a single 
 > ```
 >
 > **Do not reach for `${VAR:-no}`.** `${VAR:-fallback}` substitutes **the value** whenever the variable *is* set — the fallback branch fires only when it is *absent* — so an expression shaped like a yes/no test prints the live credential on exactly the machine that has one. The compound `${VAR:+yes}${VAR:-no}` is the same trap in disguise: the `:+` half genuinely prints `yes`, so the output starts out looking correct, and the `:-` half appends the key right behind it. Likewise no `printenv`, no bare `env`/`set`, and no read of a gitignored settings or `.env`-class file. **Two of this class's six live occurrences were Coordinators running exactly this check at exactly this step**, each costing a credential rotation — the form is written out here, rather than cited, because a pointer is not read at the moment someone types a check (wave-shared Convention 8).
+>
+> **Then probe resolvability, not just presence — the AFK gate (ADR-0029).** On a consumer that adopted the credential indirection, the environment carries a **lookup command** (`<VAR>_CMD`), not the secret: the presence form above is legitimately empty on a perfectly configured machine, and a keychain or session-auth prompt would otherwise fire **mid-wave**, inside an AFK Worker that cannot answer it. Run the engine's value-free probe here, in the interactive session, before the flip:
+>
+> ```bash
+> {{wave-cli}} credential-probe --all    # exit 0 = every configured credential resolves
+> ```
+>
+> It runs each configured `<VAR>_CMD` through the one engine resolver and prints only the variable name, the configured command (a pointer), and a typed failure — **never the secret, never the lookup's stdout or stderr**. Exit 0 → proceed. Exit 1 → STOP **before the flip**, same as a failed host auth: `(blocking) credential lookup failed — <VAR> did not resolve; fix the lookup, then re-run wave-start`. `probed: []` with a `note` means nothing is configured on this machine — expected on an ambient-token or markdown-store consumer, so read it alongside the presence form rather than as a failure. Add `--var <VAR>` to assert a specific credential (an out-of-tree store adapter's, or one you *require* to be configured — there, unconfigured is itself a failure).
+>
+> **Never run the `_CMD` value yourself to "check that it works".** Its stdout **is** the secret, so executing it is the exact leak the indirection removes — the probe verb exists so you never have to (wave-shared Convention 8, ADR-0029).
 
 ### 5. Mark each row in-flight (WAL: spine first)
 
