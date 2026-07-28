@@ -31,21 +31,38 @@ Run this after every merge in the advisory order, before starting phase 5, regar
 
 ```bash
 git fetch origin main
+
+# Know before you run it, not after: does the incoming diff touch a harness
+# write-denied path? Checking first turns the mid-apply failure below into an
+# advance warning instead of something to diagnose afterwards:
+git diff --name-only HEAD origin/main | grep -E '^\.claude/(skills/|settings\.json$)' \
+  && echo "WARNING: this pull touches a harness write-denied path — disable the sandbox for the commands below, or expect a half-applied, HEAD-frozen result"
+
 git pull --ff-only origin main
 git rev-parse HEAD   # MUST equal the merged main tip — do not trust exit code or git status alone
 ```
 
-**Sandbox precondition — disable the sandbox for this pull whenever this wave's rows touch anything under `.claude/skills/`.** The sandbox denies writes under `.claude/skills/**`; a fast-forward that includes a skill-file change stops mid-apply with `error: unable to unlink old '.claude/skills/<path>': Operation not permitted`. Everything outside the denied paths (e.g. `tools/wave/src/**`) still lands — only the skill files don't.
+**Sandbox precondition — disable the sandbox for this pull whenever this wave's rows touch anything under `.claude/skills/**`, or `.claude/settings.json`.** The sandbox denies writes to both, unconditionally: a fast-forward that includes a skill-file change OR a `.claude/settings.json` change stops mid-apply with `error: unable to unlink old '.claude/skills/<path>': Operation not permitted` (or the same error naming `.claude/settings.json`). Everything outside the denied paths (e.g. `tools/wave/src/**`) still lands — only the denied path doesn't. (`.claude/settings.local.json` is gitignored in this repo — never part of any commit, so it cannot itself fail a pull this way — but the identical harness rule denies writing it directly, so never hand-edit it from an agent either.)
 
-**Half-applied-pull symptom — nothing flags this as broken.** The result is a mixed working tree: some tracked files carry the merged content, the skill files do not, and **HEAD stays frozen on the pre-merge SHA** — no `MERGE_HEAD`, no lock file, no non-zero exit code past the failed unlink, and a plain `git status` reads like an ordinary set of pending local changes, not a corrupted pull. **Do not infer success from the pull's exit code or from `git status` being quiet** — the only reliable check is `git rev-parse HEAD` against the merged tip, as above.
+**Why this deny exists, and why it never goes away.** This is not a rule in either file's own content, and nothing this repo's or the operator's own config declares — it is a fixed entry in the harness's OWN sandbox write-deny list, enforced underneath whatever the tracked config says. It is deliberate: an agent that could rewrite its own permission file could grant itself permissions, so the harness refuses agent-initiated writes to the file that grants permissions, full stop. An operator who greps their own `.claude/settings.json` looking for the rule behind `Operation not permitted` finds nothing — the denial is not theirs to configure or remove. And the collision is permanent, not a bug a future change removes: flotilla requires `.claude/settings.json` to be *tracked* (FOR-16/54–57 — a worktree checkout carries tracked files only, and the dispatched Worker's inherited permission allowlist has to be one of them), so the one file the toolkit must keep in git is exactly the file the harness must refuse to let an agent write. Every pull, merge, checkout, or reset across a commit that touches it walks into this, every time, by design.
 
-**Resolution:** re-run as a hard reset with the sandbox disabled —
+**Half-applied-pull symptom — nothing flags this as broken.** Whichever denied path is in play, the shape is the same: **`HEAD` stays frozen on the pre-merge SHA** (the fast-forward never gets past the failed unlink); the denied file itself is left behind on disk holding only its pre-merge content — an untracked-in-effect copy the merge could never overwrite, invisible to git's own bookkeeping since it still matches what HEAD already claims; and a plain `git status` reads like an ordinary, unremarkable set of pending local changes elsewhere in the diff (or perfectly clean, if nothing else in the wave landed either) — never as a corrupted pull. No `MERGE_HEAD`, no lock file, no exit-code signal beyond the one `unable to unlink` line already scrolled past. **Do not infer success from the pull's exit code or from `git status` being quiet** — the only reliable check is `git rev-parse HEAD` against the merged tip, as above.
+
+**Resolution:** before discarding anything, confirm — do not assume — that the leftover file really is just the untouched pre-merge content the write-deny prevented from updating:
 
 ```bash
-git reset --hard origin/main   # sandbox disabled: needs write access under .claude/skills/
+git show HEAD:.claude/settings.json | diff - .claude/settings.json
 ```
 
-— safe here because a wave-close checkout has no local edits by design (every change this wave made already landed through its own PR). Confirm `git rev-parse HEAD` matches the merged tip, then proceed to phase 5 — it now reconciles against the same engine the wave just changed, not the one from before it.
+No output → byte-identical to what's already committed; the reset below discards nothing real. Any output → **STOP** and hand it to a human before proceeding — something diverged that the write-deny alone does not explain.
+
+Then re-run as a hard reset with the sandbox disabled —
+
+```bash
+git reset --hard origin/main   # sandbox disabled: needs write access under .claude/skills/ and .claude/settings.json
+```
+
+— safe here because a wave-close checkout has no local edits by design (every change this wave made already landed through its own PR) and the comparison above already confirmed nothing real would be lost. Confirm `git rev-parse HEAD` matches the merged tip, then proceed to phase 5 — it now reconciles against the same engine the wave just changed, not the one from before it.
 
 **Re-run `{{wave-cli}} worktree-cleanup --orphans` here too, unconditionally, before phase 5.** Phase 3 ran *before* phase 4's merge, so this wave's own `wave/*` branches only became remote-ref-gone once THIS close's own merges landed — the phase-3 sweep could not have caught them yet. This second call is what does; run it every time, not only when phase 4a's self-repair check found a hit.
 
@@ -53,4 +70,6 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 
 - **Reconciling before the pull completes (W5-F3).** Phase 5 probes with whatever engine is on disk; if this wave's own rows touched that machinery, an un-pulled or half-pulled checkout reconciles against the *pre-merge* code — the exact conditions that would flag correctly-merged rows as `recoverable-stop` (W4-F1). Pull to the merged `main` tip (verified via `git rev-parse HEAD`, not the pull's exit code) before starting phase 5 — see "4a" above.
 - **Relying on memory of the W4-F1 retro instead of running the phase-4a detection step.** Whether *this* wave is a self-repair case is not something to eyeball from having read a prior operating note — diff each dispatch-log branch against `main` and grep it against the engine-surface list in phase 4a. The pull happens either way, but the detection step is what tells you (and the close summary) whether this run was the load-bearing case.
-- **Trusting a `git pull`/`git reset` that touched `.claude/skills/` without checking `HEAD`.** The sandbox can deny the skill-file half of a fast-forward while the rest applies silently — no error past the failed unlink, `git status` reads as ordinary pending changes, and `HEAD` stays on the pre-merge SHA. Disable the sandbox for that pull whenever this wave's rows touch `.claude/skills/**`, and confirm `git rev-parse HEAD` against the merged tip before trusting the checkout.
+- **Trusting a `git pull`/`git reset` that touched `.claude/skills/**` or `.claude/settings.json` without checking `HEAD`.** The sandbox can deny the denied-path half of a fast-forward while the rest applies silently — no error past the failed unlink, `git status` reads as ordinary pending changes, and `HEAD` stays on the pre-merge SHA. This is a harness-level deny, not something either file's content or the operator's own config controls, and it never goes away since flotilla must keep `.claude/settings.json` tracked. Disable the sandbox for that pull whenever this wave's rows touch `.claude/skills/**` or `.claude/settings.json`, and confirm `git rev-parse HEAD` against the merged tip before trusting the checkout.
+- **Running the pull blind, then diagnosing the `unable to unlink` failure after the fact.** `git diff --name-only HEAD origin/main | grep -E '^\.claude/(skills/|settings\.json$)'` against the incoming diff, run BEFORE the pull, tells you in advance whether to disable the sandbox — don't wait for the mid-apply error to find out.
+- **Discarding the leftover denied-path file without comparing it to what's committed first.** The write-deny can only leave the file unchanged (byte-identical to what `HEAD` already claims) or, if something else touched it, genuinely different. Compare with `git show HEAD:<path> | diff - <path>` before any `reset --hard` or manual removal — never assume the leftover copy is safe to discard.

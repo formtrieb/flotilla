@@ -134,8 +134,13 @@ T=$(mktemp -d)
 # Read the STRUCTURAL classes, not just `errors` — each is a distinct incomplete
 # outcome an operator must act on differently (all non-empty values force exit 1):
 #   - A worktree whose ONLY divergence is a set of tracked files under a
-#     harness-denied path (e.g. `.claude/skills/`, `.claude/agents/`) reported
-#     DELETED — nothing else divergent — is no longer a `skipped` dead end
+#     harness-denied path (e.g. `.claude/skills/**`, `.claude/agents/`,
+#     `.claude/settings.json` — fixed entries in the harness's OWN write-deny
+#     list, not anything this repo's or the operator's own config declares;
+#     its untracked sibling `.claude/settings.local.json` is denied the same
+#     way but is gitignored, so it is never part of a checkout's tracked-file
+#     set and cannot show up here) reported DELETED — nothing else
+#     divergent — is no longer a `skipped` dead end
 #     (issue #142). A sandboxed harness can deny a fresh checkout write access
 #     to those paths, so `git status` reports every file there as deleted
 #     before the dispatched agent ever touched anything; the content is not
@@ -263,28 +268,65 @@ done
 # gate that skips the pull. Run this after every merge in the advisory order,
 # before starting phase 5, every time — not only when the check above hits:
 git fetch origin main
+
+# Know before you run it, not after: does the incoming diff touch a harness
+# write-denied path? Checking first turns the mid-apply failure below into an
+# advance warning instead of something to diagnose afterwards:
+git diff --name-only HEAD origin/main | grep -E '^\.claude/(skills/|settings\.json$)' \
+  && echo "WARNING: this pull touches a harness write-denied path — disable the sandbox for the commands below, or expect a half-applied, HEAD-frozen result"
+
 git pull --ff-only origin main
 git rev-parse HEAD   # MUST equal the merged main tip — trust nothing else
 
 # Sandbox precondition: disable the sandbox for this pull whenever this wave's
-# rows touch anything under `.claude/skills/`. The sandbox denies writes there,
-# so a fast-forward touching skill files stops mid-apply with:
+# rows touch anything under `.claude/skills/**`, or `.claude/settings.json`.
+# The sandbox denies writes to BOTH, unconditionally, so a fast-forward
+# touching either stops mid-apply with:
 #   error: unable to unlink old '.claude/skills/<path>': Operation not permitted
+#   error: unable to unlink old '.claude/settings.json': Operation not permitted
 # Everything outside the denied paths (e.g. tools/wave/src/**) still lands —
-# only the skill files don't.
+# only the denied path doesn't. (`.claude/settings.local.json` is gitignored
+# in this repo — never part of a commit, so it cannot itself fail a pull this
+# way — but the identical harness rule denies writing it directly, so never
+# hand-edit it from an agent either.)
 #
-# Half-applied-pull symptom (nothing flags this as broken): a mixed working
-# tree — some tracked files carry the merged content, skill files do not, and
-# HEAD stays frozen on the pre-merge SHA. No MERGE_HEAD, no lock file, no
-# non-zero exit code past the failed unlink, and a plain `git status` reads
-# like ordinary pending local changes, not a corrupted pull. Do NOT infer
-# success from the pull's exit code or from `git status` being quiet — the
-# only reliable check is `git rev-parse HEAD` against the merged tip, above.
+# Why this deny exists, and why it never goes away: it is not a rule in
+# either file's own content, and nothing this repo's or the operator's own
+# config declares — it is a fixed entry in the harness's OWN sandbox
+# write-deny list, deliberate (an agent that could rewrite its own permission
+# file could grant itself permissions). And it is permanent, not a bug some
+# future change removes: flotilla requires `.claude/settings.json` to be
+# TRACKED (FOR-16/54-57 — a worktree checkout carries tracked files only, and
+# the dispatched Worker's inherited permission allowlist has to be one of
+# them), so the one file the toolkit must keep in git is exactly the file the
+# harness must refuse to let an agent write. Every pull/merge/checkout/reset
+# across a commit that touches it walks into this, every time, by design.
 #
-# Resolution — re-run as a hard reset with the sandbox disabled:
-git reset --hard origin/main   # sandbox disabled: needs write access under .claude/skills/
+# Half-applied-pull symptom (nothing flags this as broken): whichever denied
+# path is in play, the shape is the same — HEAD stays frozen on the pre-merge
+# SHA, the denied file itself is left behind on disk holding only its
+# pre-merge content (an untracked-in-effect copy the merge could never
+# overwrite — invisible to git's own bookkeeping since it still matches what
+# HEAD already claims), and a plain `git status` reads like ordinary pending
+# local changes elsewhere in the diff (or perfectly clean, if nothing else in
+# the wave landed either) — never as a corrupted pull. No MERGE_HEAD, no lock
+# file, no non-zero exit code beyond the one `unable to unlink` line already
+# scrolled past. Do NOT infer success from the pull's exit code or from
+# `git status` being quiet — the only reliable check is `git rev-parse HEAD`
+# against the merged tip, above.
+#
+# Resolution — before discarding anything, confirm (do not assume) the
+# leftover file is byte-identical to what's already committed:
+git show HEAD:.claude/settings.json | diff - .claude/settings.json
+# No output → safe, it's exactly the already-committed content; the reset
+# below discards nothing real. Any output → STOP, hand it to a human — that
+# is a real divergence the write-deny alone does not explain.
+#
+# Then re-run as a hard reset with the sandbox disabled:
+git reset --hard origin/main   # sandbox disabled: needs write access under .claude/skills/ and .claude/settings.json
 # Safe here because a wave-close checkout has no local edits by design (every
-# change this wave made already landed through its own PR). Confirm
+# change this wave made already landed through its own PR) and the comparison
+# above already confirmed nothing real would be lost. Confirm
 # `git rev-parse HEAD` matches the merged tip before moving on to phase 5.
 
 # Re-run the orphan sweep here too, UNCONDITIONALLY, before phase 5 — phase 3
