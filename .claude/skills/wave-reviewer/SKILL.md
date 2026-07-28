@@ -43,3 +43,7 @@ The Wave Reviewer is the **agent** (`.claude/agents/wave-reviewer.md`) `wave-sta
 - **Promoting a sibling conflict to changes-requested.** It is always advisory.
 - **Expecting a `briefProfile` field.** It was removed in P7.4 — `additionalProperties: false` rejects it now.
 - **Requiring a verify profile to exist.** If `wave.config.verify` is absent, note the absence and proceed; do not STOP or treat it as a gap.
+
+## Related
+
+This skill is documentation-only for the Reviewer role and does not itself load `wave-shared` by name — it carries no such reference to namespace. The by-name composition finding (whether an unscoped skill load resolves under an installed plugin) lives in [`wave-shared`'s own note](../wave-shared/SKILL.md). The sibling namespacing question for *this* skill is the Reviewer's `agentType: 'wave-reviewer'` dispatch value used in the Workflow driver (`wave-start/reference/workflow-driver.md`) — already found, empirically, to require the plugin-namespaced form (`docs/retros/2026-07-27-plugin-consumer-w1.md`, finding DA-F3) — but that driver file sits outside this slice's declared Files scope.
