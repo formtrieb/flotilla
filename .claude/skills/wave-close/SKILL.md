@@ -5,7 +5,7 @@ description: Use when finishing a wave's host-side work — recompute the adviso
 
 # wave-close
 
-The operational terminator for a wave: confirm every row has reached `in-review`, clean up the wave's agent worktrees **before** anything merges (a worktree or a plain branch-checkout both silently break `--delete-branch`), recompute and **print** the advisory merge order (read-only — no parser-consumed section is mutated) so the human merges each PR and then verifies branch deletion as its own checked step, **land each merged row `done`** via the done-reconcile (the existing `issue-store close` verb) — **ticking the reviewer-met ACs it carries** (`--acked`, derived per-row from the FINAL Reviewer verdict via the engine's `verdict-acked` verb, FOR-17) — flag any closed-unmerged or stuck rows, and archive the spine to `_archive/`.
+The operational terminator for a wave: confirm every row has reached `in-review`, clean up the wave's agent worktrees **before** anything merges (a worktree or a plain branch-checkout both silently break `--delete-branch`), recompute and **print** the advisory merge order (read-only — no parser-consumed section is mutated) so the human merges each PR and then verifies branch deletion as its own checked step, **land each merged row `done`** via the done-reconcile (the existing `issue-store close` verb) — **ticking the reviewer-met ACs it carries** (`--acked`, derived per-row from the FINAL Reviewer verdict via the engine's `verdict-acked` verb, FOR-17) — flag any closed-unmerged or stuck rows, **gate the archive on every disclosure carrying a disposition** (a fail-closed engine check read by exit code alone, ADR-0027), and archive the spine to `_archive/`.
 
 Load **wave-shared** by name first — `/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin (wave-shared's own [plugin-namespaced by-name loads](../wave-shared/SKILL.md) note has the finding) — it owns the auth-preflight / atomic-spine conventions this skill obeys.
 
@@ -70,7 +70,7 @@ Probe each terminal row's closing state via the evidence hierarchy, then land it
 
 ### 6. Archive (the last phase — terminal-only, idempotent, layout-aware)
 
-Once every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
+A fail-closed disclosure gate runs first: `spine check-disclosures` blocks on any `open` entry, and every open disclosure the wave surfaced must carry a disposition — one of exactly `resolved-in-slice | scope-extension | filed:<id> | dropped:<reason>` — before the archive proceeds (ADR-0027). Once that gate is clear and every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
 
 ## Common Mistakes
 
