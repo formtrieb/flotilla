@@ -31,17 +31,17 @@ Read two checks:
 
 **The probe is advisory — the arm outcome is the ground truth.** `host-pr preflight` informs the confirm; it never gates it. On any `unknown`, state "posture unknown — the arm outcome decides" and proceed: `host-pr arm`'s per-PR outcome (`merged` vs `armed` vs `refused`, below) is the authority a static probe cannot be (a behind/recomputing race is not probeable).
 
-**Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`):
+**Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`), **requesting branch deletion** the same way phase 4's `host-pr merge --delete-branch` does (consumer KW-F6) — `arm` threads the identical `--delete-branch` flag, so a landing driven through this skill actually deletes the head branch on the paths that merge immediately:
 
 ```bash
-{{wave-cli}} host-pr arm --branch <wave-branch>   # detect-host-routed; NO --config (landing talks to the code host, not the tracker)
-# → { ok, verb: "arm", host, branch, method: "squash", outcome, prNumber?, prUrl?, reason }
+{{wave-cli}} host-pr arm --branch <wave-branch> --delete-branch   # detect-host-routed; NO --config (landing talks to the code host, not the tracker)
+# → { ok, verb: "arm", host, branch, method: "squash", outcome, prNumber?, prUrl?, reason, branchDeletion? }
 ```
 
-`host-pr arm` itself decides the mechanism per PR — **checks pending → enable auto-merge** (GraphQL); **already clean → direct merge now** (REST). Read the `outcome`:
+`host-pr arm` itself decides the mechanism per PR — **checks pending → enable auto-merge** (GraphQL); **already clean → direct merge now** (REST). Read the `outcome`, and — with `--delete-branch` — what to expect of the branch per outcome:
 
-- `armed` — auto-merge enabled; the PR lands itself when its checks pass. Nothing more this run.
-- `merged` — the PR was already clean and merged immediately (the no-required-checks / all-green case).
+- `armed` — auto-merge enabled; the PR lands itself when its checks pass. Nothing more this run. **Branch deletion is DEFERRED**: `arm` has no synchronous merge moment to delete from yet, so the request is recorded in `reason` rather than acted on — no `branchDeletion` key is present. Once the host completes the merge server-side, deletion depends on the repo's "Automatically delete head branches" setting (Settings → General → Pull Requests); flotilla cannot delete it from this call.
+- `merged` — the PR was already clean and merged immediately (the no-required-checks / all-green case). **Branch deletion happens synchronously** here: the response carries `branchDeletion: { branch, deleted, error? }`. A failed delete is a reported degradation (`deleted:false`), never an arm failure.
 - `already-merged` — idempotent no-op (a prior run armed/merged it). Safe on every re-run.
 - `refused` — the host declined (branch behind `main`, `allow-auto-merge` OFF, or not mergeable). **Flag `recoverable-stop`** with the returned `reason`:
   ```bash
@@ -64,3 +64,4 @@ Because `host-pr arm` may merge a clean PR **immediately** — possibly one of t
 - **Re-gating risk at landing.** Arming eligibility is mechanical — `approve` + no `needs-attention` flag + open PR + order-free. There is **no** second risk gate: the `public-API-change` human STOP already fired at verdict routing (G3). Do not re-ask.
 - **Watching or polling after `--auto` arms.** Arm-and-exit (ADR-0023): the host completes merges server-side; a re-run reconciles late merges. An armed PR whose checks later fail surfaces on the next `wave-close`/`wave-resume` touch, not live — do not build a watch loop.
 - **Letting a headless `--auto` self-confirm.** The per-wave confirm is a human click; headless `--auto` STOPs unless `--pre-authorized` was passed (the only headless bypass, ADR-0023). Never auto-answer the confirm.
+- **Assuming `--delete-branch` deleted the branch on an `armed` outcome.** Only an immediate `merged` outcome deletes synchronously (`branchDeletion` in the response); `armed` defers the merge itself to the host, so deletion is recorded as deferred in `reason`, not acted on. Reading `armed` as "branch gone" is wrong until the host's own auto-delete setting (or a later reconcile) catches up.

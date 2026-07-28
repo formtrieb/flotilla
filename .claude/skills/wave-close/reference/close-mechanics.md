@@ -22,9 +22,9 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 | `{{wave-cli}} worktree-cleanup [--dry-run] --wave <wave-file> --orphans` | `{ "removed": [], "skipped": [], "errors": [], "branchesDeleted": [], "branchHygieneSkipped": [], "orphans": {...} }` — always pass `--orphans`; a `0/0/0` `removed/skipped/errors` triple is not evidence of "nothing to do" on its own, check `branchesDeleted`/`orphans` in the same payload (close-review finding) |
 | `{{wave-cli}} issue-store flag <id> --kind <recoverable-stop\|terminal-failure> --question "<q>" --option "<o>" [--option "<o>"]` | set needs-attention (orthogonal to the rung) |
 | `{{wave-cli}} issue-store clear-flag <id>` | clear needs-attention |
-| `{{wave-cli}} host-pr arm --branch <b> [--remote <url>] [--method <squash\|merge\|rebase>]` | `--auto` landing (ADR-0023): `{ ok, verb:"arm", host, branch, method, outcome:"armed"\|"merged"\|"already-merged"\|"refused"\|"no-pr", prNumber?, prUrl?, reason }`. Decides per PR: checks pending → enable auto-merge (GraphQL); already clean → direct merge (REST). Idempotent. Detect-host-routed; **no `--config`** (talks to the code host, not the tracker). |
+| `{{wave-cli}} host-pr arm --branch <b> [--remote <url>] [--method <squash\|merge\|rebase>] [--delete-branch]` | `--auto` landing (ADR-0023): `{ ok, verb:"arm", host, branch, method, outcome:"armed"\|"merged"\|"already-merged"\|"refused"\|"no-pr", prNumber?, prUrl?, reason, branchDeletion? }`. Decides per PR: checks pending → enable auto-merge (GraphQL); already clean → direct merge (REST). Idempotent. Detect-host-routed; **no `--config`** (talks to the code host, not the tracker). `arm` threads the same `--delete-branch` flag as `merge` (consumer KW-F6): an immediate `merged` outcome deletes the head branch synchronously and reports it under `branchDeletion:{ branch, deleted, error? }`; a deferred `armed` outcome has no synchronous merge moment to delete from, so the deferral is recorded in `reason` instead and no `branchDeletion` key is present. |
 | `{{wave-cli}} host-pr status --branch <b> [--remote <url>]` | done-reconcile host-evidence probe: `{ ok, verb:"status", host, branch, state:"open"\|"merged"\|"closed-unmerged"\|"none", url?, number? }`. `none` is a valid answer (no PR), not a failure. |
-| `{{wave-cli}} host-pr merge --branch <b> [--method …] [--delete-branch]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`, plus — with `--delete-branch` (consumer KW-F6) — it deletes the PR's **remote** head branch through the host API after a successful merge and reports the outcome under `branchDeletion:{ branch, deleted, error? }`. A failed delete is a reported degradation (`deleted:false`), **never** a merge failure (exit stays 0). Merge-only: `arm` defers the merge to the host, so it deletes nothing. |
+| `{{wave-cli}} host-pr merge --branch <b> [--method …] [--delete-branch]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`, plus — with `--delete-branch` (consumer KW-F6) — it deletes the PR's **remote** head branch through the host API after a successful merge and reports the outcome under `branchDeletion:{ branch, deleted, error? }`. A failed delete is a reported degradation (`deleted:false`), **never** a merge failure (exit stays 0). `arm` threads the identical flag (row above) — its immediate-merge outcome deletes the same way; only its deferred `armed` outcome cannot delete synchronously. |
 | `{{wave-cli}} host-pr preflight [--remote <url>]` | code-host posture probe for the `--auto` confirm (ADR-0023 amendment): `{ ok, verb:"preflight", host, checks:[{name,status,detail}] }` for `pr-merge-token` / `allow-auto-merge` / `required-checks`. **Store-blind** — detect-host-routed, **no `--config`**, **no `--branch`** (required checks read against the default branch) — so it answers on **every** store kind, unlike the store-preflight it replaced here. `status` may be `pass`/`fail`/`advisory`/`unknown`; only `fail` blocks. |
 | any command, no args | usage |
 
@@ -404,10 +404,25 @@ fi
 # ── On CONFIRM: arm each ORDER-FREE, eligible row through the host seam. ──
 # Eligibility is mechanical: verdict=approve, NO needs-attention flag, open PR,
 # order-free. NO risk re-gate (G3 already fired at verdict routing).
-{{wave-cli}} host-pr arm --branch "$BRANCH"   # detect-host-routed; NO --config
-# { ok, verb:"arm", outcome, prNumber?, prUrl?, reason }
+# --delete-branch requests branch hygiene the same way phase 4's `merge
+# --delete-branch` does (consumer KW-F6) — arm threads the identical flag, so
+# a landing driven through this skill actually deletes the head branch on the
+# paths that merge immediately.
+{{wave-cli}} host-pr arm --branch "$BRANCH" --delete-branch   # detect-host-routed; NO --config
+# { ok, verb:"arm", outcome, prNumber?, prUrl?, reason, branchDeletion? }
 #   outcome=armed         → auto-merge enabled; lands itself when checks pass.
-#   outcome=merged        → was already clean; merged immediately.
+#                           Deletion is DEFERRED: arm has no synchronous merge
+#                           moment to delete from yet, so the request is
+#                           recorded in `reason`, not acted on — no
+#                           `branchDeletion` key is present. Once the host
+#                           completes the merge, deletion depends on the
+#                           repo's "Automatically delete head branches"
+#                           setting (Settings → General → Pull Requests).
+#   outcome=merged        → was already clean; merged immediately. Deletion
+#                           happens SYNCHRONOUSLY: `branchDeletion:{ branch,
+#                           deleted, error? }` reports the outcome; a failed
+#                           delete is a reported degradation, never an arm
+#                           failure.
 #   outcome=already-merged→ idempotent no-op (a prior run did it). Re-run-safe.
 #   outcome=refused       → branch behind main / allow-auto-merge OFF / not
 #                           mergeable → flag recoverable-stop with the reason:
@@ -442,7 +457,7 @@ fi
 | `close` | closing facts recorded (done-reconcile / FOR-13 fallback) | issue not found (store threw) | usage (missing `<id>`/`<prUrl>`) |
 | `flag` / `clear-flag` | written | issue not found | usage (bad `--kind`) |
 | `spine read` | raw source on stdout | file not found / parse error | usage |
-| `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) — incl. a `merge --delete-branch` whose deletion FAILED (`branchDeletion.deleted:false` is a reported degradation, not a merge failure) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage (incl. `--delete-branch` on a non-`merge` verb) |
+| `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) — incl. a `--delete-branch` request whose deletion FAILED on either verb (`branchDeletion.deleted:false` is a reported degradation, not a merge/arm failure) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage (incl. `--delete-branch` on a verb other than `arm`/`merge`) |
 | `host-pr status` | probe answered (read `state`; `none` is a valid answer) | host error | usage |
 | `host-pr preflight` | no check `fail`ed (checks may be `advisory`/`unknown`) | a check `fail`ed, no adapter (`adapter-not-implemented`), or host error / missing token | usage |
 
