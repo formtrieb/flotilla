@@ -22,3 +22,15 @@ The Ur had two AC anti-fabrication signals: **(1)** worker-side `countTickedAcs(
 ## Consequences
 
 - Touches three separately-phased modules: P3 (`close` AC post-condition), P6 (the gate source), P7 (the worker brief). The P2–P3 adapter-conformance suite asserts `close`'s AC post-condition (`ackedACs[]` = reviewer-`met` set).
+
+## Amendment 2026-07-28 — `met` on an outcome-phrased AC requires outcome-exercising evidence
+
+Live occurrence (#142 AC1 → #150): the AC read *"a worktree … **is removable** by the engine"*; the Reviewer verified — truthfully, with exact lines and a pre-fix red run — that `planCleanup` *selects* the worktree, and marked `met`. No evidence ever removed a worktree and asserted the directory gone; the missing `--force` sat exactly in the unexercised half, and the live gate caught it minutes after merge (`erroredStillListed: 5`, byte-identical to pre-fix). The verdict was ground-truth and wrong: every cited fact true, the claimed outcome nonexistent. The fix raises the evidence bar for `met`; the verdict stays the ground truth.
+
+- **The per-AC vocabulary is four-valued:** `met · partial · not-met · deferred` (`AC_STATUS_VALUES` gained `deferred` before this amendment; this text now matches the schema). Only an unambiguous `met` earns the cosmetic tick (`metAcIndexes`).
+- **An AC phrased as an outcome is `met` only on evidence that exercises the outcome** — a slice test, or the Reviewer's own probe, that *performs* the thing and asserts the result. Evidence confined to the layer the diff touched cannot carry `met`, however precise.
+- **The Reviewer holds a probe license:** it stays code-read-only, but it may execute temp-scoped experiments to exercise an outcome itself (precedent: the FOR-120 Reviewer's independent control experiment). A failing probe is `not-met` — under this rule, #142 AC1 is caught in iteration 1 (scratch worktree + deleted file + engine removal → fails without `--force`), not at the live gate.
+- **An outcome unreachable from the review environment** (merge-gated, prod-gated, human-gated) is `deferred` — or `partial` when parts of the criterion are exercised — with the unexercised outcome named in `evidence` and mirrored in `reviewerFocusItems`. That mirror makes it a **Disclosure** ([ADR-0027](0027-disclosures-are-spine-captured-at-routing-and-dispositioned-before-archive.md)): captured at routing, dispositioned before archive (`dropped: <exercised live at close, green>` for the common case; `filed:<id>` on a red live probe).
+- **No schema, driver, or engine change** — the rule is Reviewer-contract prose (`wave-reviewer` skill + the reviewer brief).
+
+Rejected alternative: qualifying outcome-ACs down at slicing time so layer evidence suffices. The AC was *right* — the live gate caught #150 only because the AC promised the outcome; weakening the promise makes the same wrong verdict formally correct and hides the failure entirely.

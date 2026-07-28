@@ -46,7 +46,7 @@ _Avoid_: epic-link, forward-link (we never write PRD→issue links — they are 
 One batch of independently-grabbable issues dispatched as parallel workers in isolated worktrees, reviewed, and landed via PRs.
 
 **Spine**:
-The durable, repo-local `WAVE.md` markdown that holds the wave's orchestration state (plan-table, conflict-map, dispatch-log, PR-log). It is branch-local and the source of truth for resume; it never lands on `main`.
+The durable, repo-local `WAVE.md` markdown that holds the wave's orchestration state (plan-table, conflict-map, dispatch-log, PR-log, disclosures). It is branch-local and the source of truth for resume; it never lands on `main`.
 _Avoid_: manifest, state file, ledger.
 
 **Coordinator**:
@@ -65,6 +65,14 @@ _Avoid_: log, output file.
 **Scribe**:
 The cheap dispatch-loop stage that persists an agent's schema-validated return as a **Sidecar** immediately at agent-return — before any Coordinator routing — by invoking the engine's write verb with the already-validated payload. A Scribe writes the durable record; it never re-derives, re-types, or judges content. Its failure is loud but never discards the in-band return.
 _Avoid_: logger, archiver.
+
+**Disclosure**:
+A gap an agent surfaced instead of silently absorbing — a Convention-9 wiring gap, a Convention-10 runtime residue, or a same-shaped finding from the **Reviewer** or the **Coordinator**'s own routing — recorded as an entry in the **Spine**'s Disclosures section at verdict-routing, through paired engine verbs (never hand-formatted, ADR-0027). The disclosure *channel* stays prose (`judgmentCalls`, mirrored in `reviewerFocusItems`); the spine entry is what makes the gap durable and countable. Every Disclosure carries a **Disposition**.
+_Avoid_: ledger (reserved for the tracker-side claim projection), finding (the retro's word — a Disclosure lives in-wave).
+
+**Disposition (of a Disclosure)**:
+The human-decided resolution a **Disclosure** must reach before the wave archives: `resolved-in-slice · scope-extension · filed:<id> · dropped:<reason>` — `open` until decided, and `wave-close` refuses the Archive phase while any Disclosure is `open` (ADR-0027). `filed` records *existence*, not wave-readiness: a bare tracker issue with a provenance line, decorated later via `to-issues`. Deliberately the same word as the row dispositions (park, abandon): a scripted, human-decided exit for an exception — never automatic.
+_Avoid_: resolution (vague), auto-file (rejected — the write is human-decided; only the *enforcement* is mechanical).
 
 **Amend**:
 The intent-shaped change of an issue's *authored content* — its title and its free-prose body sections — through the **IssueStore**, upsert-by-heading, everything unmodeled preserved. Deliberately narrow: the modeled surfaces each keep their own verb (the wave Header-Block fields → decorate/annotate, triage state and comments → the Triage facet, claims → the ledger), so an amend can never silently clobber a managed list. A full re-scope is the *composition* amend + annotate, not one call.
@@ -164,7 +172,8 @@ _Avoid_: the consumer's clear name (client-confidential).
 - A **Wave** plans many **IssueView**s into a **Spine**; the **Coordinator** dispatches one **Worker** per issue and one **Reviewer** per worker.
 - Every **Fine state** projects to exactly one **Coarse state** rung — except the claim-releasing `parked`, which projects to *no claim* (executed as an idempotent unclaim; ADR-0022); the **Spine** holds fine state, the tracker holds the coarse projection.
 - The **Coarse state** projection is **one-way**: the **Spine** (+ **Sidecar**s + worktree) is authoritative and the tracker is healed *from* it, never read *into* it (ADR-0002).
-- An issue's acceptance criteria are verified by the **Reviewer**'s schema-validated `acVerification[]` (per-AC met/partial/not-met + evidence) — that is the AC ground-truth; the tracker checklist is cosmetic (ADR-0004).
+- An issue's acceptance criteria are verified by the **Reviewer**'s schema-validated `acVerification[]` (per-AC met/partial/not-met/deferred + evidence) — that is the AC ground-truth; the tracker checklist is cosmetic. An outcome-phrased AC is `met` only on outcome-exercising evidence; an outcome unreachable from review is `deferred` and becomes a **Disclosure** (ADR-0004 Amendment 2026-07-28, ADR-0027).
+- A **Worker**/**Reviewer** disclosure becomes a **Disclosure** in the **Spine** at verdict-routing; `wave-close` archives only when every **Disclosure**'s **Disposition** is terminal — existence is gated mechanically, quality stays human (ADR-0027).
 - A **PRD** is sliced by `to-issues` into many grabbable **IssueView**s, each carrying a **Parent** backlink to it; the PRD's *consumed* status is derived from those backlinks, never written — the same derive-don't-write discipline as the **Coarse state** bookends.
 - **Arming** hands an approved row's merge to the code host; landing evidence flows back through the done-reconcile hierarchy **tracker attachment > host PR state > nothing** (ADR-0023).
 
