@@ -26,7 +26,7 @@ import {
   afterEach,
 } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, mainAsync, runDorById, findRepoRoot } from './cli';
@@ -1674,6 +1674,159 @@ describe('worktree-cleanup subcommand — --orphans folds the orphaned-branch sw
       .mocked(execFileSync)
       .mock.calls.some((c) => Array.isArray(c[1]) && (c[1] as string[])[0] === 'for-each-ref');
     expect(forEachRefCalled).toBe(false);
+  });
+});
+
+// ─── Form 8c-bis: worktree-cleanup — --dry-run previews the orphan-BRANCH
+//             sweep too, against a REAL repo (issue #148) ───────────────────
+//
+// The live defect: `worktree-cleanup --orphans --dry-run` reported nothing
+// selected/nothing to delete because the CLI's --dry-run branch never called
+// planOrphanBranchSweep at all; the real run seconds later, against an
+// unchanged repo, deleted six branches with no preceding preview of that
+// outcome. Form 8c above drives the branch sweep through the module-level
+// execFileSync FIXTURE; this block drives it through a REAL git repository
+// (via `vi.importActual`, mirroring worktree-cleanup.spec.ts's own real
+// git/fs end-to-end coverage of sweepOrphanBranches for FOR-72) — the live
+// case was a real repository, not a fixture, so the regression test is too.
+// Type-erasing cast to reach vitest's mock methods on the mocked
+// `execFileSync` — mirrors worktree-cleanup.spec.ts's own `asExecFileSyncMock`.
+// `execFileSync`'s real type is a complex overload set; this block's tests
+// only need the mock-control surface, so this narrows to exactly that rather
+// than fighting the overloads with an `unknown[]`-returning delegate.
+function asExecFileSyncMock(fn: typeof execFileSync): {
+  mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+} {
+  return fn as unknown as {
+    mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+  };
+}
+
+describe('worktree-cleanup subcommand — --dry-run previews the orphan-branch sweep against a real repo (issue #148)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  function localBranches(mainRoot: string): Set<string> {
+    const out = realExecFileSync(
+      'git',
+      ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'],
+      { cwd: mainRoot, encoding: 'utf-8' },
+    ) as string;
+    return new Set(
+      out
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0),
+    );
+  }
+
+  // A real repo with a `wave/*` branch never pushed (so its remote ref is
+  // authoritatively gone — a real bare `origin.git` makes `git ls-remote
+  // --exit-code` return exit 2, not a transport failure) and an unrelated
+  // branch that matches neither sweep signal.
+  function buildRepoWithSweepableBranch(prefix: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    tempRoots.push(root);
+
+    const originPath = join(root, 'origin.git');
+    realGit(['init', '-q', '--bare', originPath], root);
+
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    realGit(['branch', '-M', 'main'], mainRoot); // deterministic current branch
+    realGit(['remote', 'add', 'origin', originPath], mainRoot);
+
+    realGit(['branch', 'wave/FOR-148-gone'], mainRoot); // sweepable
+    realGit(['branch', 'feature/keep'], mainRoot); // neither signal
+
+    return mainRoot;
+  }
+
+  it('--orphans --dry-run names the sweepable branch under orphanBranches.toDelete and deletes nothing', () => {
+    const mainRoot = buildRepoWithSweepableBranch('wave-cli-for148-dryrun-');
+    expect(localBranches(mainRoot)).toContain('wave/FOR-148-gone');
+
+    const code = main(['worktree-cleanup', mainRoot, '--orphans', '--dry-run']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      dryRun: boolean;
+      orphanBranches: { toDelete: string[]; branchHygieneSkipped: unknown[] };
+    };
+    expect(parsed.dryRun).toBe(true);
+    expect(parsed.orphanBranches.toDelete).toEqual(['wave/FOR-148-gone']);
+    expect(parsed.orphanBranches.branchHygieneSkipped).toEqual([]);
+
+    // Dry-run: nothing was actually deleted.
+    const after = localBranches(mainRoot);
+    expect(after.has('wave/FOR-148-gone')).toBe(true);
+    expect(after.has('feature/keep')).toBe(true);
+    expect(after.has('main')).toBe(true);
+  });
+
+  it('the real run (seconds later, unchanged repo) deletes exactly the branch the dry-run named — preview and execution share one plan', () => {
+    const mainRoot = buildRepoWithSweepableBranch('wave-cli-for148-real-');
+
+    const previewCode = main(['worktree-cleanup', mainRoot, '--orphans', '--dry-run']);
+    expect(previewCode).toBe(0);
+    const preview = JSON.parse(stdoutBuf) as { orphanBranches: { toDelete: string[] } };
+    expect(preview.orphanBranches.toDelete).toEqual(['wave/FOR-148-gone']);
+
+    // Two separate `main()` calls, exactly like an operator's two separate
+    // CLI invocations (dry-run, then — seconds later — the real run).
+    stdoutBuf = '';
+    const realCode = main(['worktree-cleanup', mainRoot, '--orphans']);
+    expect(realCode).toBe(0);
+    const real = JSON.parse(stdoutBuf) as { branchesDeleted: string[] };
+    expect(real.branchesDeleted).toEqual(preview.orphanBranches.toDelete);
+
+    const after = localBranches(mainRoot);
+    expect(after.has('wave/FOR-148-gone')).toBe(false); // actually deleted
+    expect(after.has('feature/keep')).toBe(true); // preserved
+    expect(after.has('main')).toBe(true); // current branch, preserved
+  });
+
+  it('without --orphans, --dry-run carries no orphanBranches key at all (scoping untouched)', () => {
+    const mainRoot = buildRepoWithSweepableBranch('wave-cli-for148-noorphans-');
+    const code = main(['worktree-cleanup', mainRoot, '--dry-run']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as Record<string, unknown>;
+    expect('orphanBranches' in parsed).toBe(false);
   });
 });
 
