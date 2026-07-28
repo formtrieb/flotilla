@@ -58,6 +58,10 @@ A background agent that executes one issue in its own isolated `/tmp` worktree a
 **Reviewer**:
 The independent agent that re-runs the verify gate and judges a worker's output, returning a schema-validated verdict.
 
+**Documented-Form Comparison**:
+The **Reviewer**'s required substitute evidence for a row whose core path is unreachable from the review environment: a complete divergence list against the mechanism's authoritative documented form (vendor doc, spec), from sources the Reviewer read in its own dispatch — never the Worker's restatement — reported as its own verdict outcome and never an automatic verdict flip (deliberate, commented departures survive review). Triggered by the deferred valve on the core path's ACs, or earlier by an issue AC or a Worker declaration (ADR-0030).
+_Avoid_: docs check (too vague), vendor parity (a divergence is reported, not forbidden).
+
 **Sidecar**:
 A worker's durable on-disk artifact (its report, the reviewer's verdict). The spine is the flat file `.flotilla/waves/<slug>.md`; the sidecars live in the sibling subdir `.flotilla/waves/<slug>/reports/` and `.flotilla/waves/<slug>/verdicts/`. The resume flow derives those dirs from the spine path **by convention** (no stored `sidecarRoot` field). Filename and format are engine-owned (written and read by paired engine verbs, never hand-formatted); a sidecar is written by a **Scribe** the moment the work it records exists. Together with the worktree's committed work it is authoritative for resume — "disk beats a non-landed spine flip".
 _Avoid_: log, output file.
@@ -182,7 +186,7 @@ _Avoid_: the consumer's clear name (client-confidential).
 - A **Wave** plans many **IssueView**s into a **Spine**; the **Coordinator** dispatches one **Worker** per issue and one **Reviewer** per worker.
 - Every **Fine state** projects to exactly one **Coarse state** rung — except the claim-releasing `parked`, which projects to *no claim* (executed as an idempotent unclaim; ADR-0022); the **Spine** holds fine state, the tracker holds the coarse projection.
 - The **Coarse state** projection is **one-way**: the **Spine** (+ **Sidecar**s + worktree) is authoritative and the tracker is healed *from* it, never read *into* it (ADR-0002).
-- An issue's acceptance criteria are verified by the **Reviewer**'s schema-validated `acVerification[]` (per-AC met/partial/not-met/deferred + evidence) — that is the AC ground-truth; the tracker checklist is cosmetic. An outcome-phrased AC is `met` only on outcome-exercising evidence; an outcome unreachable from review is `deferred` and becomes a **Disclosure** (ADR-0004 Amendment 2026-07-28, ADR-0027).
+- An issue's acceptance criteria are verified by the **Reviewer**'s schema-validated `acVerification[]` (per-AC met/partial/not-met/deferred + evidence) — that is the AC ground-truth; the tracker checklist is cosmetic. An outcome-phrased AC is `met` only on outcome-exercising evidence; an outcome unreachable from review is `deferred` and becomes a **Disclosure** (ADR-0004 Amendment 2026-07-28, ADR-0027). A `deferred` core path additionally requires the Reviewer's **Documented-Form Comparison** (ADR-0030).
 - A **Worker**/**Reviewer** disclosure becomes a **Disclosure** in the **Spine** at verdict-routing; `wave-close` archives only when every **Disclosure**'s **Disposition** is terminal — existence is gated mechanically, quality stays human (ADR-0027).
 - A **PRD** is sliced by `to-issues` into many grabbable **IssueView**s, each carrying a **Parent** backlink to it; the PRD's *consumed* status is derived from those backlinks, never written — the same derive-don't-write discipline as the **Coarse state** bookends.
 - **Arming** hands an approved row's merge to the code host; landing evidence flows back through the done-reconcile hierarchy **tracker attachment > host PR state > nothing** (ADR-0023).
