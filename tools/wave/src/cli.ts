@@ -337,7 +337,13 @@ function printUsage(): void {
       '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
       '  flotilla-engine cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
       '  flotilla-engine issue-store <op> [...args] [--config <path>]',
-      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status> <spine-path> [...args]',
+      // This ONE line must name every op spine-cli's own dispatch table reports
+      // — cli.spec.ts's FOR-11 guard reads the first `flotilla-engine spine `
+      // line and asserts each real op appears in it. Detail lines may follow.
+      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures> <spine-path> [...args]',
+      '    spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>   # ADR-0027: capture at verdict-routing',
+      '    spine set-disposition <spine-path> <disclosure-ref> <resolved-in-slice|scope-extension|filed:ID|dropped:REASON>',
+      '    spine check-disclosures <spine-path>   # fail-closed archive gate: exit != 0 iff an `open` disclosure remains',
       '  flotilla-engine config validate <path>',
       '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
       '  flotilla-engine store-preflight [--config <path>]',
