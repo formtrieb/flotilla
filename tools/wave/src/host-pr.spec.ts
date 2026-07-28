@@ -10,13 +10,17 @@
  * `detectHost` is a pure parser and needs no seam at all.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { runHostPr } from './host-pr-cli';
 import {
   detectHost,
   verifyAuth,
   findOpenPr,
   findOpenPrRef,
   updateOpenPr,
+  findClosePhrase,
+  hasClosePhrase,
+  closePhraseLossReason,
   createPr,
   decideArmAction,
   armPullRequest,
@@ -434,6 +438,303 @@ describe('updateOpenPr', () => {
     );
     expect(r).toEqual({ url: 'x', updated: false });
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ─── The close-phrase guard (issue #125) ─────────────────────────────────────
+//
+// The reuse is last-writer-wins by design, and must stay that way — a cap=1
+// re-dispatch's freshly composed render has to land on the PR the first Worker
+// opened. The guard protects the ONE property whose loss is silent: the
+// store-kind close phrase. A rewrite that drops it produces a PR that merges
+// normally and a row that never reaches `done` — nothing anywhere fails.
+
+describe('findClosePhrase / hasClosePhrase', () => {
+  it('finds the github store-kind phrase', () => {
+    expect(findClosePhrase('Summary.\n\nCloses #42')).toBe('Closes #42');
+    expect(hasClosePhrase('Closes #42')).toBe(true);
+  });
+
+  it('finds the linear store-kind phrase', () => {
+    expect(findClosePhrase('Summary.\n\nFixes EX-16')).toBe('Fixes EX-16');
+  });
+
+  it('is case-insensitive and accepts every closing keyword both trackers act on', () => {
+    for (const phrase of ['closes #7', 'CLOSED #7', 'fix #7', 'fixes EX-7', 'Resolved EX-7', 'Closes: #7']) {
+      expect(hasClosePhrase(`body\n\n${phrase}`)).toBe(true);
+    }
+  });
+
+  it('accepts the full issue-URL form GitHub also honours', () => {
+    expect(hasClosePhrase('Closes https://github.com/acme/w/issues/42')).toBe(true);
+  });
+
+  it('a body with no phrase — including the exploratory one-word body that caused this — carries none', () => {
+    expect(findClosePhrase('probe')).toBeNull();
+    expect(hasClosePhrase('')).toBe(false);
+    expect(hasClosePhrase('Summary line.\n\n## Reviewer verdict\napprove')).toBe(false);
+  });
+
+  it('a BARE id is not a close phrase — the keyword is what makes it one', () => {
+    // The mention footgun (Convention 4's flip side) is a different concern; the
+    // guard must not read every sighting of an id as a close phrase.
+    expect(hasClosePhrase('EX-16 was the row this builds on')).toBe(false);
+    expect(hasClosePhrase('see #42 for context')).toBe(false);
+  });
+
+  // ── Coincidental prose must never read as a reference ─────────────────────
+  //
+  // A hyphenated technical token is structurally INDISTINGUISHABLE from a Linear
+  // reference (`UTF-8` and `EX-8` are the same shape), so the matcher is anchored
+  // to the line instead: every real phrase is composed as a standalone line, and
+  // prose never is. These fixtures are the falsification of that claim — the
+  // first is verbatim the bypass a Reviewer reproduced against the unanchored
+  // matcher, where `resolves UTF-8` matched as if it were a tracker reference.
+
+  it('a mid-sentence keyword + hyphenated technical token is NOT a close phrase', () => {
+    expect(
+      hasClosePhrase(
+        'This resolves UTF-8 encoding edge cases in the parser body, no real close phrase here.',
+      ),
+    ).toBe(false);
+    expect(hasClosePhrase('closes UTF-8 handling gap')).toBe(false);
+    expect(hasClosePhrase('fixes ISO-8601 parsing')).toBe(false);
+    expect(hasClosePhrase('Summary.\n\nThis fixes SHA-256 digest drift in the signer.')).toBe(false);
+    expect(hasClosePhrase('- resolves RFC-3339 timestamps for the audit log')).toBe(false);
+  });
+
+  it('a lowercase hyphenated token is not a team reference — the team key must be UPPERCASE', () => {
+    // The old matcher carried an `i` flag over the whole pattern, which let a
+    // lowercase `utf-8` satisfy the uppercase team-key class.
+    expect(hasClosePhrase('fixes utf-8')).toBe(false);
+    expect(hasClosePhrase('closes iso-8601')).toBe(false);
+  });
+
+  it('a reference is token-bounded — never the head of a longer hyphenated token', () => {
+    expect(hasClosePhrase('Fixes ISO-8601-2019')).toBe(false);
+    expect(hasClosePhrase('Fixes EX-16-rc1')).toBe(false);
+    expect(hasClosePhrase('Closes #42-draft')).toBe(false);
+  });
+
+  it('the phrase must OWN its line — a phrase buried mid-sentence is not detected', () => {
+    expect(hasClosePhrase('Summary of the work. Closes #42 as part of the batch.')).toBe(false);
+    // …and the same phrase on its own line is.
+    expect(hasClosePhrase('Summary of the work.\n\nCloses #42')).toBe(true);
+  });
+
+  it('still accepts the real composed forms — indent, list marker, CRLF, trailing punctuation', () => {
+    expect(findClosePhrase('Summary.\r\n\r\nCloses #42\r\n')).toBe('Closes #42');
+    expect(findClosePhrase('Summary.\n\n  Fixes EX-16\n')).toBe('Fixes EX-16');
+    expect(findClosePhrase('Summary.\n\n- Fixes EX-16')).toBe('Fixes EX-16');
+    expect(findClosePhrase('Summary.\n\nCloses #42.')).toBe('Closes #42');
+  });
+});
+
+describe('closePhraseLossReason (the refusal predicate)', () => {
+  const withPhrase = 'Summary.\n\n## Reviewer verdict\napprove\n\nFixes EX-1';
+  const withoutPhrase = 'probe';
+
+  it('REFUSES a rewrite that would drop the live body\'s phrase, and names the phrase at risk', () => {
+    const reason = closePhraseLossReason(withPhrase, withoutPhrase);
+    expect(reason).not.toBeNull();
+    expect(reason).toContain('Fixes EX-1');
+    // It must say WHY, and point at the read-only verb + the override.
+    expect(reason).toMatch(/done/);
+    expect(reason).toContain('host-pr status');
+    expect(reason).toContain('--allow-close-phrase-loss');
+  });
+
+  it('ALLOWS the legitimate re-dispatch — a freshly composed render carrying the phrase', () => {
+    expect(closePhraseLossReason(withPhrase, 'New render.\n\nFixes EX-1')).toBeNull();
+  });
+
+  it('ALLOWS a replacement carrying a DIFFERENT phrase — presence is the property, not identity', () => {
+    expect(closePhraseLossReason('old\n\nFixes EX-1', 'new\n\nCloses #9')).toBeNull();
+  });
+
+  it('ALLOWS when the live body carries no phrase — there is nothing to lose', () => {
+    expect(closePhraseLossReason('just prose', withoutPhrase)).toBeNull();
+    expect(closePhraseLossReason('', withoutPhrase)).toBeNull();
+  });
+
+  it('ALLOWS when the live body was not readable — absence of evidence is never a finding', () => {
+    expect(closePhraseLossReason(undefined, withoutPhrase)).toBeNull();
+  });
+
+  it('REFUSES a prose replacement whose only keyword sighting is coincidental (the reviewed bypass)', () => {
+    // Verbatim the probe that slipped past the unanchored matcher: `resolves
+    // UTF-8` was read as a genuine reference, so the phrase-less body was let
+    // through and would have clobbered a live `Fixes EX-125`.
+    const reason = closePhraseLossReason(
+      'Worker summary.\n\nFixes EX-125',
+      'This resolves UTF-8 encoding edge cases in the parser body, no real close phrase here.',
+    );
+    expect(reason).not.toBeNull();
+    expect(reason).toContain('Fixes EX-125');
+  });
+
+  it('REFUSES the other coincidental-prose replacements too', () => {
+    for (const prose of [
+      'closes UTF-8 handling gap',
+      'fixes ISO-8601 parsing',
+      'This fixes SHA-256 digest drift in the signer.',
+    ]) {
+      expect(closePhraseLossReason(withPhrase, prose)).not.toBeNull();
+    }
+  });
+
+  it('still ALLOWS both genuine store-kind forms as the replacement', () => {
+    expect(closePhraseLossReason(withPhrase, 'Re-dispatch render.\n\nCloses #125')).toBeNull();
+    expect(closePhraseLossReason(withPhrase, 'Re-dispatch render.\n\nFixes EX-125')).toBeNull();
+  });
+});
+
+describe('updateOpenPr — the close-phrase guard', () => {
+  const live = 'Worker summary.\n\nCloses #125';
+  const ref = { url: 'https://github.com/acme/w/pull/9', number: 9, body: live };
+
+  it('REFUSES the phrase-dropping rewrite and issues NO request at all (the clobber never happens)', async () => {
+    const { http, calls } = fakeProbe([[isPatch, { status: 200, json: {} }]]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      ref,
+      { title: 'probe', body: 'probe' },
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r.updated).toBe(false);
+    expect(r.refused).toBe(true);
+    expect(r.url).toBe(ref.url);
+    expect(r.reason).toContain('Closes #125');
+    // NEGATIVE CONTROL for the guard itself: the refusal is worth nothing if the
+    // PATCH still went out. Zero requests is the whole claim.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('the legitimate re-dispatch rewrite is BYTE-IDENTICAL to before the guard existed', async () => {
+    const { http, calls } = fakeProbe([[isPatch, { status: 200, json: {} }]]);
+    const composed = 'Fresh render.\n\n## Reviewer verdict\napprove\n\nCloses #125';
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      ref,
+      { title: 'Composed title', body: composed },
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: ref.url, updated: true });
+    expect(r.refused).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].body ?? '{}')).toEqual({ title: 'Composed title', body: composed });
+  });
+
+  it('allowClosePhraseLoss overrides the refusal — the deliberate overwrite path still exists', async () => {
+    const { http, calls } = fakeProbe([[isPatch, { status: 200, json: {} }]]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      ref,
+      { title: 'probe', body: 'probe' },
+      { workspace: 'acme', repo: 'w' },
+      { http, allowClosePhraseLoss: true },
+    );
+    expect(r).toEqual({ url: ref.url, updated: true });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a live body with no phrase is rewritten freely — the guard is about LOSS, not about requiring a phrase', async () => {
+    const { http, calls } = fakeProbe([[isPatch, { status: 200, json: {} }]]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      { url: ref.url, number: 9, body: 'a draft body, no phrase' },
+      { title: 't', body: 'still no phrase' },
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: ref.url, updated: true });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('an UNREADABLE live body never refuses — reuse keeps working on any response that omits it', async () => {
+    const { http, calls } = fakeProbe([[isPatch, { status: 200, json: {} }]]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      { url: ref.url, number: 9 }, // no `body` key at all
+      { title: 'probe', body: 'probe' },
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r).toEqual({ url: ref.url, updated: true });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('the refusal outranks an unaddressable ref — it is a verdict on the CALL, not on the ref', async () => {
+    const { http, calls } = fakeProbe([]);
+    const r = await updateOpenPr(
+      'github',
+      { auth: 'u:t' },
+      { url: ref.url, body: live }, // no number → nothing to PATCH either way
+      { title: 'probe', body: 'probe' },
+      { workspace: 'acme', repo: 'w' },
+      { http },
+    );
+    expect(r.refused).toBe(true);
+    expect(r.updated).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('guards the Bitbucket path identically (one owner, both hosts)', async () => {
+    const { http, calls } = fakeProbe([[isPut, { status: 200, json: {} }]]);
+    const r = await updateOpenPr(
+      'bitbucket',
+      { auth: 'u:p' },
+      { url: 'https://bitbucket.org/ws/repo/pull-requests/7', number: 7, body: 'x\n\nFixes EX-1' },
+      { title: 'probe', body: 'probe' },
+      { workspace: 'ws', repo: 'repo' },
+      { http },
+    );
+    expect(r.refused).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('findOpenPrRef — the live body the guard grades against', () => {
+  it('surfaces the GitHub PR body alongside url + number', async () => {
+    const { http } = fakeProbe([
+      [isGet, { status: 200, json: [{ html_url: 'https://github.com/acme/w/pull/9', number: 9, body: 'live\n\nCloses #9' }] }],
+    ]);
+    const r = await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http });
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', number: 9, body: 'live\n\nCloses #9' });
+  });
+
+  it('surfaces the Bitbucket `description` as the body', async () => {
+    const { http } = fakeProbe([
+      [
+        isGet,
+        {
+          status: 200,
+          json: {
+            values: [
+              { id: 7, description: 'live\n\nFixes EX-1', links: { html: { href: 'https://bitbucket.org/ws/repo/pull-requests/7' } } },
+            ],
+          },
+        },
+      ],
+    ]);
+    const r = await findOpenPrRef('bitbucket', { auth: 'u:p' }, 'b', { workspace: 'ws', repo: 'repo' }, { http });
+    expect(r).toEqual({ url: 'https://bitbucket.org/ws/repo/pull-requests/7', number: 7, body: 'live\n\nFixes EX-1' });
+  });
+
+  it('a null / absent body leaves the key ABSENT — unreadable, not known-empty', async () => {
+    const { http } = fakeProbe([
+      [isGet, { status: 200, json: [{ html_url: 'https://github.com/acme/w/pull/9', number: 9, body: null }] }],
+    ]);
+    const r = await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http });
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', number: 9 });
+    expect(r && 'body' in r).toBe(false);
   });
 });
 
@@ -1422,5 +1723,228 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     );
     expect(report.ok).toBe(true);
     expect(report.checks.map((c) => c.status).sort()).toEqual(['pass', 'unknown', 'unknown']);
+  });
+});
+
+// ─── The guard, DRIVEN through the `host-pr create` verb (issue #125 AC3) ────
+//
+// The specs above assert the predicate; these DRIVE the real verb, from argv to
+// exit code, against a live-shaped GitHub list response — the same route the
+// exploratory `--title probe --body probe` call took when it overwrote a real
+// PR (docs/retros/2026-07-27-plugin-consumer-w1.md, DA-F6).
+//
+// They live here rather than in host-pr-cli.spec.ts because this row's declared
+// Files globs cover host-pr.spec.ts and not that file; the seam under test is
+// host-pr.ts's guard either way.
+
+describe('host-pr create — the close-phrase guard, driven end-to-end', () => {
+  const GITHUB_REMOTE = 'git@github.com:example-org/example-repo.git';
+  const ENV = { GITHUB_TOKEN: 'test-token' } as NodeJS.ProcessEnv;
+  const PR_URL = 'https://github.com/example-org/example-repo/pull/4';
+  /** The live PR body, exactly as a Worker's terminator would have left it. */
+  const LIVE_BODY = 'Worker summary.\n\n## Reviewer verdict\napprove\n\nCloses #4';
+
+  /** A probe that answers the find with ONE open PR carrying `LIVE_BODY`. */
+  function livePrProbe(): { http: HttpProbe; requests: HttpRequest[] } {
+    const requests: HttpRequest[] = [];
+    const http: HttpProbe = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        requests.push(req);
+        if (req.method === 'GET') {
+          return { status: 200, json: [{ html_url: PR_URL, number: 4, body: LIVE_BODY }] };
+        }
+        if (req.method === 'PATCH') return { status: 200, json: {} };
+        throw new Error(`unexpected ${req.method} — create must never POST when a PR is open`);
+      },
+    };
+    return { http, requests };
+  }
+
+  let stdout = '';
+  let stderr = '';
+
+  beforeEach(() => {
+    stdout = '';
+    stderr = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((c: unknown) => {
+      stdout += String(c);
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderr += String(c);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const out = (): Record<string, unknown> => JSON.parse(stdout);
+
+  it('a phrase-less reuse is REFUSED — exit 1, outcome reuse-refused, and the live PR is never written', async () => {
+    const { http, requests } = livePrProbe();
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/4-x', '--title', 'probe', '--body', 'probe', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({
+      ok: false,
+      verb: 'create',
+      outcome: 'reuse-refused',
+      updated: false,
+      url: PR_URL,
+    });
+    // It says WHY — on stderr and in the payload — naming the phrase at risk.
+    expect(stderr).toContain('Closes #4');
+    expect(String(out().reason)).toContain('host-pr status');
+    // The claim that matters: the find happened, the WRITE did not.
+    expect(requests.map((r) => r.method)).toEqual(['GET']);
+  });
+
+  it('a PROSE reuse whose keyword sighting is coincidental is REFUSED too — driven, not asserted', async () => {
+    // The reviewed bypass, driven through the real CLI against a live PR body:
+    // `resolves UTF-8` used to satisfy the matcher, so this body was written.
+    const { http, requests } = livePrProbe();
+    const code = await runHostPr(
+      [
+        'create',
+        '--branch',
+        'wave/4-x',
+        '--title',
+        'probe',
+        '--body',
+        'This resolves UTF-8 encoding edge cases in the parser body, no real close phrase here.',
+        '--remote',
+        GITHUB_REMOTE,
+      ],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, outcome: 'reuse-refused', updated: false, url: PR_URL });
+    expect(stderr).toContain('Closes #4');
+    expect(requests.map((r) => r.method)).toEqual(['GET']);
+  });
+
+  it('a linear-form render (TEAM-N) passes the guard just as the github form does', async () => {
+    const requests: HttpRequest[] = [];
+    const http: HttpProbe = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        requests.push(req);
+        if (req.method === 'GET') {
+          return { status: 200, json: [{ html_url: PR_URL, number: 4, body: 'Worker summary.\n\nFixes EX-125' }] };
+        }
+        return { status: 200, json: {} };
+      },
+    };
+    const composed = 'Re-dispatch summary.\n\n## Reviewer verdict\napprove\n\nFixes EX-125';
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/4-x', '--title', 'Composed title', '--body', composed, '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'reused', updated: true, url: PR_URL });
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
+    const patched = requests.find((r) => r.method === 'PATCH');
+    expect(JSON.parse(patched?.body ?? '{}')).toEqual({ title: 'Composed title', body: composed });
+  });
+
+  it('the same reuse WITH the close phrase passes untouched — exit 0, reused, the composed body PATCHed verbatim', async () => {
+    const { http, requests } = livePrProbe();
+    const composed = 'Re-dispatch summary.\n\n## Reviewer verdict\napprove\n\nCloses #4';
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/4-x', '--title', 'Composed title', '--body', composed, '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'reused', updated: true, url: PR_URL });
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
+    const patched = requests.find((r) => r.method === 'PATCH');
+    expect(JSON.parse(patched?.body ?? '{}')).toEqual({ title: 'Composed title', body: composed });
+  });
+
+  it('--allow-close-phrase-loss performs the deliberate overwrite — exit 0, reused, PATCH sent', async () => {
+    const { http, requests } = livePrProbe();
+    const code = await runHostPr(
+      [
+        'create',
+        '--branch',
+        'wave/4-x',
+        '--title',
+        'probe',
+        '--body',
+        'probe',
+        '--allow-close-phrase-loss',
+        '--remote',
+        GITHUB_REMOTE,
+      ],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'reused', updated: true });
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
+  });
+
+  it('a live PR whose body carries NO phrase is still rewritten — the guard adds no new requirement', async () => {
+    const requests: HttpRequest[] = [];
+    const http: HttpProbe = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        requests.push(req);
+        if (req.method === 'GET') return { status: 200, json: [{ html_url: PR_URL, number: 4, body: 'draft' }] };
+        return { status: 200, json: {} };
+      },
+    };
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/4-x', '--title', 't', '--body', 'still no phrase', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'reused', updated: true });
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
+  });
+
+  it('creating a FIRST PR is untouched by the guard — nothing exists to lose a phrase from', async () => {
+    const requests: HttpRequest[] = [];
+    const http: HttpProbe = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        requests.push(req);
+        if (req.method === 'GET') return { status: 200, json: [] };
+        return { status: 201, json: { html_url: PR_URL } };
+      },
+    };
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/4-x', '--title', 'probe', '--body', 'probe', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'created', url: PR_URL });
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'POST']);
+  });
+
+  it('--allow-close-phrase-loss on a landing verb is a usage error (exit 2), never silently ignored', async () => {
+    const code = await runHostPr(['status', '--branch', 'b', '--allow-close-phrase-loss', '--remote', GITHUB_REMOTE]);
+    expect(code).toBe(2);
+    expect(stderr).toContain('--allow-close-phrase-loss');
+  });
+
+  it("create's help names the rewrite, the refusal, and the read-only alternative", async () => {
+    const code = await runHostPr([]);
+    expect(code).toBe(2);
+    expect(stderr).toContain('RE-WRITES');
+    expect(stderr).toContain('reuse-refused');
+    expect(stderr).toMatch(/read-only `status` verb/);
   });
 });

@@ -17,11 +17,18 @@
  *                  (the Bitbucket pilot implements the seam and inherits them).
  *   create       → `findOpenPrRef` then `createPr` (host-pr.ts owns the
  *                  find-before-create idempotency): an existing open PR for the
- *                  branch is REUSED — and its title/body are re-written to the
+ *                  branch is REUSED — and its title/body are RE-WRITTEN to the
  *                  passed values via `updateOpenPr` (PATCH), so the terminator's
  *                  composed render lands on a Worker-opened PR (`updated:true`
- *                  discloses it) — a missing one is created. Idempotent — a cap=1
- *                  re-dispatch onto the same branch never opens a second PR. This
+ *                  discloses it) — a missing one is created. Idempotent about
+ *                  CREATION only — a cap=1 re-dispatch onto the same branch never
+ *                  opens a second PR — and emphatically NOT read-only about
+ *                  CONTENT: running it twice with different arguments changes the
+ *                  live PR twice. Callers who only want to know whether a branch
+ *                  has a PR belong on the read-only `status` verb. The one rewrite
+ *                  `create` refuses (exit 1, `outcome: "reuse-refused"`) is one
+ *                  that would drop the close phrase the live body carries;
+ *                  `--allow-close-phrase-loss` is the deliberate override. This
  *                  is the ADR-0019 cross-host Basic-auth seam (`HttpProbe` +
  *                  `Creds`), NOT the ADR-0023 `LandingHost` seam.
  *   arm          → `armPullRequest` (host-pr.ts owns the arm intent). `--delete-branch`
@@ -53,9 +60,11 @@
  *       answered — read `state` for the answer, which may legitimately be `none`;
  *       `preflight`: every check passed / advisory / unknown — read `checks`).
  *   1 — the op did not land the row (`create`: the PR-create failed —
- *       `outcome: "create-failed"` with a `fallbackPrefillUrl`; `arm`/`merge`:
- *       `no-pr`, `refused`; `preflight`: a check `fail`ed — read `checks`), the
- *       host has no adapter (`code: "adapter-not-implemented"`), or the host errored.
+ *       `outcome: "create-failed"` with a `fallbackPrefillUrl` — or the reuse was
+ *       refused by the close-phrase guard — `outcome: "reuse-refused"` with a
+ *       `reason`; `arm`/`merge`: `no-pr`, `refused`; `preflight`: a check `fail`ed
+ *       — read `checks`), the host has no adapter
+ *       (`code: "adapter-not-implemented"`), or the host errored.
  *   2 — usage error.
  *
  * stdout is ALWAYS a single JSON object carrying `ok` + the outcome, so the
@@ -121,15 +130,22 @@ function usage(message: string): number {
       // NB: deliberately NO --config. host-pr talks to the code HOST, not the
       // tracker, so there is no store to build and no wave.config.json to read.
       `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
-      `         create: --branch <branch> --title <title> --body <body>   (the PR body carries the store-kind close phrase)`,
+      `         create: --branch <branch> --title <title> --body <body> [--base <branch>] [--allow-close-phrase-loss]`,
+      `                 (a WRITE: the PR body carries the store-kind close phrase, and a reuse rewrites both fields)`,
       `         arm: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
       `         merge: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
       `         status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
       `         preflight: (no --branch — a repo-level probe)`,
       '',
-      '  create    Open the PR for --branch idempotently (find-before-create): an existing OPEN PR on the',
-      '            branch is reused (no duplicate) and its title/body updated to --title/--body, a missing',
-      '            one is created. Requires --title and --body.',
+      '  create    Open the PR for --branch (find-before-create): an existing OPEN PR on the branch is reused',
+      '            (never duplicated) and a missing one is created. Requires --title and --body.',
+      '            NOT a read-only probe. "Idempotent" describes CREATION only: reuse RE-WRITES the live PR\'s',
+      '            title AND body to the --title/--body you pass (last-writer-wins), so running this twice with',
+      '            different arguments changes the PR twice. To ask whether a branch already has a PR without',
+      '            touching it, use the read-only `status` verb instead.',
+      '            A reuse that would drop the close phrase the live body carries — replacing it with a body',
+      '            that has none — is REFUSED (exit 1, outcome reuse-refused, with a reason) rather than',
+      '            silently merging a PR that closes nothing; --allow-close-phrase-loss overrides it.',
       '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
       '            already clean → direct merge. Idempotent. With --delete-branch, deletes the head branch',
       '            on the decision paths that merge IMMEDIATELY (clean, or a refused-arm controlled degrade)',
@@ -146,6 +162,8 @@ function usage(message: string): number {
       '',
       '  --remote defaults to `git remote get-url origin`.',
       `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
+      '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
+      '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
       '  create + preflight read GITHUB_TOKEN from the environment (never printed).',
       '',
     ].join('\n'),
@@ -187,6 +205,18 @@ export async function runHostPr(
   const branch = flag(args, '--branch');
   if (verb !== 'preflight' && (branch === undefined || branch.length === 0)) {
     return usage('--branch <branch> is required');
+  }
+
+  // `--allow-close-phrase-loss` is create's deliberate-overwrite override: it
+  // permits the ONE reuse rewrite the guard refuses (dropping the close phrase
+  // the live PR body carries). Rejected on every other verb rather than silently
+  // ignored — the same discipline `--delete-branch` gets below, and for the same
+  // reason: a flag that looks accepted but does nothing is a footgun.
+  const allowClosePhraseLoss = args.includes('--allow-close-phrase-loss');
+  if (allowClosePhraseLoss && verb !== 'create') {
+    return usage(
+      `--allow-close-phrase-loss is only supported by 'create' (it governs the reuse rewrite); '${verb}' never rewrites a PR body`,
+    );
   }
 
   // `create`'s own required flags are decided here, before any host build or
@@ -258,7 +288,15 @@ export async function runHostPr(
 
   // ── create: the ADR-0019 find-before-create seam (HttpProbe/Creds). ──
   if (verb === 'create') {
-    return runCreate(info, branch as string, title as string, body as string, base, deps);
+    return runCreate(
+      info,
+      branch as string,
+      title as string,
+      body as string,
+      base,
+      allowClosePhraseLoss,
+      deps,
+    );
   }
 
   // ── arm | merge | status: build the LandingHost adapter + run the verb. ──
@@ -287,6 +325,13 @@ export async function runHostPr(
  * created (exit 0, `outcome: "created"`); a create failure returns the pre-fill
  * fallback signal (exit 1, `outcome: "create-failed"` with `fallbackPrefillUrl`).
  *
+ * The one reuse that does NOT proceed is the one whose damage would be silent: a
+ * rewrite that drops the close phrase the live PR body carries (exit 1,
+ * `outcome: "reuse-refused"` with a `reason`, and no write at all). It is a
+ * refusal precisely because the alternative — a PR that merges normally while
+ * closing nothing — leaves the wave looking finished with one row quietly open.
+ * `allowClosePhraseLoss` is the deliberate override.
+ *
  * The GitHub token comes from the env (never printed); its absence fails loud
  * (exit 1), mirroring `createGitHubApiFromEnv`. The Basic-auth credential is
  * `x-access-token:<token>` — the GitHub form host-pr.ts's `HttpProbe` documents.
@@ -297,6 +342,7 @@ async function runCreate(
   title: string,
   body: string,
   base: string,
+  allowClosePhraseLoss: boolean,
   deps: HostPrDeps,
 ): Promise<number> {
   const env = deps.env ?? process.env;
@@ -311,6 +357,8 @@ async function runCreate(
 
   const creds: Creds = { auth: `x-access-token:${token}` };
   const opts = deps.http ? { http: deps.http } : {};
+  // Only the reuse-time update reads the guard override; find/create ignore it.
+  const updateOpts = { ...opts, allowClosePhraseLoss };
 
   try {
     // find-before-create: a re-run (or a cap=1 re-dispatch onto the same branch)
@@ -322,7 +370,35 @@ async function runCreate(
       // authoritative final body) lands on a Worker-opened PR instead of being
       // silently discarded. Best-effort — a declined update still re-pins the
       // URL (`updated:false`), never a duplicate, never a wave-abort.
-      const update = await updateOpenPr(info.host, creds, existing, { title, body }, info, opts);
+      const update = await updateOpenPr(
+        info.host,
+        creds,
+        existing,
+        { title, body },
+        info,
+        updateOpts,
+      );
+      if (update.refused === true) {
+        // The close-phrase guard stopped the rewrite BEFORE any write: the live
+        // body carries a phrase this body would have dropped. Loud + typed, not
+        // a silent success — the whole point is that the damage is undetectable
+        // afterwards. The PR's URL is still reported (it genuinely is this
+        // branch's PR), but `ok:false` + exit 1 keep it out of a success path.
+        process.stderr.write(`error: ${update.reason}\n`);
+        printJson({
+          ok: false,
+          verb: 'create',
+          host: info.host,
+          branch,
+          outcome: 'reuse-refused',
+          // Unchanged meaning: the live PR body/title were NOT re-written.
+          updated: false,
+          error: update.reason,
+          reason: update.reason,
+          ...alignedPrRef({ url: update.url }),
+        });
+        return 1;
+      }
       printJson({
         ok: true,
         verb: 'create',

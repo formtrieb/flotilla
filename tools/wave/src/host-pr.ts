@@ -10,10 +10,13 @@
  *     (Finding L1: a mid-flight 401 becomes an up-front warning).
  *   - `findOpenPr(host, creds, branch)` — idempotency: query open PRs on the
  *     source branch BEFORE creating, so a re-run never opens a duplicate.
- *     `findOpenPrRef` is the richer form that also surfaces the PR number.
+ *     `findOpenPrRef` is the richer form that also surfaces the PR number AND
+ *     the PR's current body (the evidence the close-phrase guard below needs).
  *   - `updateOpenPr(host, creds, ref, {title, body})` — on reuse, re-write the
  *     open PR's title/body to the passed values (PATCH/PUT through the same
- *     seam) so the terminator's composed render lands on a Worker-opened PR.
+ *     seam) so the terminator's composed render lands on a Worker-opened PR —
+ *     UNLESS that rewrite would drop a close phrase the live body carries
+ *     (`closePhraseLossReason`, the one property the reuse must not lose).
  *   - `createPr(host, creds, {...})` — 201 → real URL; 401/failure → the
  *     pre-fill fallback signal (a returned value, never a throw).
  *
@@ -288,18 +291,32 @@ export interface OpenPrRef {
   url: string;
   /** The PR's host-local number, when the list body carried one. */
   number?: number;
+  /**
+   * The PR's CURRENT description, when the list response carried one. Read only
+   * so the reuse can compare what is already on the PR against what it is about
+   * to write ({@link closePhraseLossReason}) — nothing else consumes it.
+   *
+   * Three-valued on purpose, the same evidence-vs-absence distinction the
+   * closing probe draws (W2-F1c): a string — INCLUDING `''` — is EVIDENCE of
+   * what the live PR says; `undefined` means the body was not readable here (an
+   * older/partial list shape, a host that omits it), which is absence of
+   * evidence and therefore never a finding. The guard refuses only on evidence.
+   */
+  body?: string;
 }
 
 /**
  * Query the host for an OPEN PR whose source branch is `branch`. Returns the
- * PR's `{ url, number? }` on a hit, or `null` on a miss (no open PR, or a
+ * PR's `{ url, number?, body? }` on a hit, or `null` on a miss (no open PR, or a
  * non-200 query — a query failure is treated as "no known open PR" so the caller
  * proceeds to create; the create step has its own failure handling).
  *
  * This is the richer form behind {@link findOpenPr}: it additionally surfaces
  * the PR number so the reuse path can PATCH the open PR's title/body to the
  * passed values (the terminator's composition is the authoritative final render;
- * see {@link updateOpenPr}) instead of silently discarding them.
+ * see {@link updateOpenPr}) instead of silently discarding them — and the PR's
+ * CURRENT body, which is the evidence {@link closePhraseLossReason} grades that
+ * rewrite against.
  */
 export async function findOpenPrRef(
   host: Host,
@@ -343,6 +360,118 @@ export async function findOpenPr(
   return ref?.url ?? null;
 }
 
+// ─── The close-phrase guard (the one property a reuse must not lose) ─────────
+//
+// `create`'s reuse is last-writer-wins, and that is deliberate: a cap=1
+// re-dispatch must land its freshly composed render on the PR the first Worker
+// already opened. What made it a hazard is WHAT lives in that body — the
+// store-kind close phrase (`Closes #N` / `Fixes TEAM-NN`, wave-shared
+// Convention 4). A rewrite that drops it does not fail anywhere: the PR merges
+// normally and the row simply never reaches `done`. One exploratory
+// `--title probe --body probe` call reproduced exactly that on a live PR
+// (docs/retros/2026-07-27-plugin-consumer-w1.md, DA-F6).
+//
+// So the guard is deliberately narrow — it protects the ONE property whose loss
+// is silent, and nothing else. Everything the reuse legitimately rewrites (the
+// verdict render, the summary, the title) stays last-writer-wins.
+
+/**
+ * The closing keywords a tracker acts on (`Closes`, `CLOSED`, `fix`, `Resolved`,
+ * …), spelled with per-character classes rather than carried on an `i` flag.
+ * The flag is unusable here because it would apply to the WHOLE pattern, and the
+ * Linear reference form below is only tellable from prose by its team key being
+ * genuinely UPPERCASE — under `i`, a lowercase `utf-8` reads as a team reference.
+ */
+const CLOSE_KEYWORD = String.raw`(?:[Cc][Ll][Oo][Ss][Ee][SsDd]?|[Ff][Ii][Xx](?:[Ee][SsDd])?|[Rr][Ee][Ss][Oo][Ll][Vv][Ee][SsDd]?)`;
+
+/**
+ * The reference shapes a tracker actually resolves: `#42` (GitHub), `TEAM-16`
+ * (Linear — uppercase team key, no `_`, which is not a legal team-key char), or
+ * a full issue URL. The trailing `(?![\w-])` makes the reference TOKEN-BOUNDED:
+ * it must be a whole token, never the head of a longer hyphenated one, so
+ * `ISO-8601-2019` or `EX-16-rc1` can never be read as a reference.
+ */
+const ISSUE_REF = String.raw`(?:#\d+|[A-Z][A-Z0-9]{0,9}-\d+|https?:\/\/\S+\/issues\/\d+)(?![\w-])`;
+
+/**
+ * A store-kind close phrase, on a line it OWNS: nothing before it but optional
+ * indent or a list marker, nothing after it but optional sentence punctuation.
+ * Tolerant of the `Closes: #42` colon form and of a `\r` line ending (GitHub
+ * hands back CRLF bodies). This is presence detection for the guard below — NOT
+ * a parser: it never needs to say WHICH issue closes, only whether a body
+ * carries a closing phrase at all.
+ *
+ * The own-line anchoring is what keeps coincidental prose out, and it is the
+ * only thing that can: a mid-sentence `…resolves UTF-8 encoding edge cases…` is
+ * STRUCTURALLY identical to a genuine `Fixes EX-8` — keyword, space, uppercase
+ * token, hyphen, digits — so no amount of shape-matching on the reference alone
+ * separates them. What separates them is that every real phrase is composed as a
+ * standalone line (wave-shared Convention 4, the `wave-start` terminator, the
+ * Worker brief) and prose never is. A body that buries its phrase mid-sentence
+ * is therefore not protected — which is the safe direction: the guard declines
+ * to fire rather than refusing a legitimate rewrite it misread.
+ */
+const CLOSE_PHRASE_RE = new RegExp(
+  String.raw`^[ \t]*(?:[-*+][ \t]+)?(` +
+    CLOSE_KEYWORD +
+    String.raw`[ \t]*:?[ \t]+` +
+    ISSUE_REF +
+    String.raw`)[ \t\r]*[.,;:!?)\]}]*[ \t\r]*$`,
+  'm',
+);
+
+/**
+ * The first store-kind close phrase in `body`, verbatim, or `null` when it
+ * carries none. Pure — no I/O, safe on any string (including `''`).
+ */
+export function findClosePhrase(body: string): string | null {
+  const m = CLOSE_PHRASE_RE.exec(body ?? '');
+  return m === null ? null : m[1].trim();
+}
+
+/** Whether `body` carries a store-kind close phrase at all. */
+export function hasClosePhrase(body: string): boolean {
+  return findClosePhrase(body) !== null;
+}
+
+/**
+ * Grade a reuse rewrite: `null` = allowed, a string = the REASON to refuse.
+ *
+ * Refuses on exactly one input — the live body carries a close phrase and the
+ * replacement carries none — because that is the only rewrite whose damage is
+ * silent. Every other combination passes untouched:
+ *
+ *   - `existingBody === undefined` (not readable) → allow. Absence of evidence
+ *     is never a finding here (the W2-F1c discipline): refusing on a body we
+ *     could not read would break reuse on any host/response that omits it.
+ *   - the live body carries NO phrase → allow. There is nothing to lose, and
+ *     `create` has never required the caller to supply one on this path.
+ *   - the replacement carries a phrase → allow. This is the legitimate
+ *     re-dispatch: a freshly composed render always carries one, so the guard
+ *     costs the behaviour it protects exactly nothing.
+ *
+ * Presence, not identity: a replacement that carries a DIFFERENT phrase passes.
+ * A re-dispatch legitimately recomposes its row's phrase, and refusing a changed
+ * one would reject correct work to catch a case that has never occurred — where
+ * the loss case has occurred, live, on a real PR.
+ */
+export function closePhraseLossReason(
+  existingBody: string | undefined,
+  nextBody: string,
+): string | null {
+  if (existingBody === undefined) return null;
+  const existing = findClosePhrase(existingBody);
+  if (existing === null) return null;
+  if (hasClosePhrase(nextBody)) return null;
+  return (
+    `Refused: the open PR's body carries the close phrase "${existing}", and the body passed here carries none. ` +
+    `Rewriting it would leave a PR that merges normally while closing nothing — the row silently never reaches ` +
+    `\`done\` (wave-shared Convention 4). Pass a body that carries the store-kind close phrase; if you only wanted ` +
+    `to know whether this branch already has a PR, use the READ-ONLY \`host-pr status\` verb (\`create\` is a write ` +
+    `— its reuse rewrites title and body). To overwrite deliberately anyway, re-run with --allow-close-phrase-loss.`
+  );
+}
+
 // ─── updateOpenPr (reuse-time body/title re-render) ──────────────────────────
 
 /** The authored fields a reuse re-writes onto the open PR. */
@@ -363,6 +492,29 @@ export interface PrUpdateFields {
 export interface UpdateOpenPrResult {
   url: string;
   updated: boolean;
+  /**
+   * Present (and `true`) ONLY when the close-phrase guard REFUSED the rewrite —
+   * the live body carries a close phrase the passed body would have dropped.
+   * Distinguishes "the rewrite did not happen because it must not" from the
+   * pre-existing `updated:false` cases ("nothing to address" / "the host
+   * declined"), which stay exactly what they were. Absent on every other path,
+   * so a caller reading only `updated` reads the same truth it always did.
+   */
+  refused?: boolean;
+  /** Why the guard refused. Present iff `refused` is. */
+  reason?: string;
+}
+
+/** Options for {@link updateOpenPr} — the network seam plus the guard override. */
+export interface UpdateOpenPrOptions extends HostOptions {
+  /**
+   * Permit a rewrite that DROPS the close phrase the live PR body carries — the
+   * deliberate-overwrite escape hatch the guard is refused-by-default without.
+   * Off by default, and never set by the terminator: a composed render always
+   * carries its phrase, so the only caller that needs this is a human who has
+   * decided to replace a PR body wholesale.
+   */
+  allowClosePhraseLoss?: boolean;
 }
 
 /**
@@ -377,6 +529,14 @@ export interface UpdateOpenPrResult {
  * decline all resolve to `{ url: ref.url, updated: false }` rather than throwing,
  * so a title/body edit the host refuses never aborts the wave — the reuse still
  * re-pins the same open PR.
+ *
+ * ONE rewrite is refused rather than performed: one that would drop a close
+ * phrase the live body carries (see {@link closePhraseLossReason}) — a silent
+ * failure the wave cannot detect afterwards. It resolves to
+ * `{ url, updated:false, refused:true, reason }` and issues NO request at all;
+ * `opts.allowClosePhraseLoss` is the deliberate override. The refusal is graded
+ * BEFORE the host/number checks precisely because it is a verdict on the CALL,
+ * not on whether this particular ref happened to be addressable.
  */
 export async function updateOpenPr(
   host: Host,
@@ -384,8 +544,14 @@ export async function updateOpenPr(
   ref: OpenPrRef,
   fields: PrUpdateFields,
   info: Pick<HostInfo, 'workspace' | 'repo'>,
-  opts: HostOptions = {},
+  opts: UpdateOpenPrOptions = {},
 ): Promise<UpdateOpenPrResult> {
+  const loss =
+    opts.allowClosePhraseLoss === true ? null : closePhraseLossReason(ref.body, fields.body);
+  if (loss !== null) {
+    return { url: ref.url, updated: false, refused: true, reason: loss };
+  }
+
   const full: HostInfo = { host, workspace: info.workspace, repo: info.repo };
   const api = apiFor(full);
   // No adapter, or no number to address the update to → re-pin the URL only.
@@ -1492,12 +1658,18 @@ function bbHref(json: unknown): string | null {
   return typeof href === 'string' && href.length > 0 ? href : null;
 }
 
-/** Pull `{ url, number? }` from a Bitbucket PR object (`links.html.href` + `id`). */
+/**
+ * Pull `{ url, number?, body? }` from a Bitbucket PR object (`links.html.href` +
+ * `id` + `description`). A non-string `description` (absent, or `null`) leaves
+ * `body` ABSENT — "not readable", never a known-empty body.
+ */
 function bbRef(json: unknown): OpenPrRef | null {
   const url = bbHref(json);
   if (url === null) return null;
-  const id = (json as Record<string, unknown>).id;
-  return typeof id === 'number' ? { url, number: id } : { url };
+  const obj = json as Record<string, unknown>;
+  const id = obj.id;
+  const base: OpenPrRef = typeof id === 'number' ? { url, number: id } : { url };
+  return typeof obj.description === 'string' ? { ...base, body: obj.description } : base;
 }
 
 // ─── GitHub API shape ────────────────────────────────────────────────────────
@@ -1540,12 +1712,20 @@ function ghHtmlUrl(json: unknown): string | null {
   return typeof href === 'string' && href.length > 0 ? href : null;
 }
 
-/** Pull `{ url, number? }` from a GitHub PR object (`html_url` + `number`). */
+/**
+ * Pull `{ url, number?, body? }` from a GitHub PR object (`html_url` + `number` +
+ * `body`). GitHub sends `body: null` for an empty description — a non-string
+ * leaves `body` ABSENT ("not readable"), which the guard treats as no evidence.
+ * That is the safe direction: an empty live body carries no close phrase to
+ * lose either way, so both readings allow the rewrite.
+ */
 function ghRef(json: unknown): OpenPrRef | null {
   const url = ghHtmlUrl(json);
   if (url === null) return null;
-  const number = (json as Record<string, unknown>).number;
-  return typeof number === 'number' ? { url, number } : { url };
+  const obj = json as Record<string, unknown>;
+  const number = obj.number;
+  const base: OpenPrRef = typeof number === 'number' ? { url, number } : { url };
+  return typeof obj.body === 'string' ? { ...base, body: obj.body } : base;
 }
 
 // ─── Default network probe (real side-effect, isolated here) ─────────────────
