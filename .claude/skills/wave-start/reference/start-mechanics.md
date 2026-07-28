@@ -86,8 +86,13 @@ HELD_IDS=$(node -e '
 #    built from the non-HELD rows only (HELD_IDS excluded from the array).
 #    The driver's Scribe stages persist each sidecar AT AGENT-RETURN via
 #    write-report/write-verdict (ADR-0024) — nothing is written bundled in step 9.
+#    Per row, decide whether the slice SHIPS A NEW CHECK (wave-shared Convention
+#    11) and, if so, name that check in the row's `reviewerHints` — the clause
+#    itself needs no per-row wiring (it ships in every brief as workerBrief()
+#    policy clause 9). See "Convention 11 at compose + routing" below.
 
 # 7. Route each returned tuple (see below) — incl. the sidecar existence check (7.0)
+#    and, for a new-check row, the Convention 11 falsification read (below)
 
 # 9. Report-only. Sidecars are ALREADY on disk (Scribe stages in step 6; any
 #    missing one written at 7.0). No bundled write here — that was the P-1 kill
@@ -219,6 +224,43 @@ The public-API `approve` STOPs (it never silently fast-paths to the auto-PR) and
 ## `riskClass` for `route-verdict`
 
 Read it **off the typed `ReviewerVerdict`** (`verdict.riskClass`), never from the spine row or by eye — the verb forwards it to `verdictToEvent`, which bifurcates the `approve` branch (a `public-API-change` approve STOPs for human confirm). Omitting/garbling it is the G3 bug the typed return + this verb structurally prevent.
+
+## Convention 11 at compose + routing — a row whose slice ships a NEW check
+
+`wave-shared` Convention 11 binds the **Worker**: a slice introducing a new check
+(a test, an assertion, a guard, a smoke probe, a lint rule, a CI gate, a preflight,
+a validator) demonstrates that check failing on the input it exists to catch, and
+reports the demonstration — or reports, in the same channel, that it could not
+falsify it and why. Two **Coordinator** duties bracket that, one at compose and one
+at routing. A row whose slice ships no new check has nothing to do here — the
+majority case, deliberately.
+
+**At compose (step 6).** Decide per row whether it is in the class. The two mechanical
+questions are the convention's — does a pass/fail check exist after the diff, and is
+its failing condition new with this slice; *"is the falsification worth it"* is
+deliberately **not** one of them (an expensive falsification belongs in the row's
+disclosure, not outside the class). For an in-class row, name the check in that row's
+`reviewerHints`, e.g.
+
+```
+reviewerHints: ['Confirm the new <check> was demonstrated FAILING on the input it exists to catch, not only passing.'],
+```
+
+so the Reviewer runs a directed check instead of having to infer the duty. The clause
+itself is already in every brief (`workerBrief()` policy clause 9, workflow-driver.md)
+— do not re-state it per row.
+
+**At routing (step 7).** The falsification note arrives as prose in
+`report.judgmentCalls`, mirrored into `report.reviewerFocusItems` — the same channel
+Conventions 9 and 10 use, already rendered verbatim into the Reviewer brief and
+already on disk in the report sidecar (step 6's Scribe, ADR-0024). **Read it; never
+route off it** — routing reads typed fields only (Convention 2). Three cases:
+
+| What the report carries | Coordinator action |
+|---|---|
+| A falsification note — check named, break named, observed failing output, restored | Nothing extra; route as usual. |
+| An explicit "could not falsify, and here is why" | A **disclosure**, exactly like a Convention 9 wiring gap: it needs a disposition before archive (ADR-0027). Carry it to `wave-close`. A `deferred`/`partial` on the matching AC in the verdict is the Reviewer half of the same fact (ADR-0004 Amendment). |
+| An in-class row with neither | Read the verdict's `acVerification` for the matching AC first — the Reviewer's own probe (ADR-0004 Amendment) may have exercised the outcome instead. If both are silent, it is a disclosure of the same kind: the durable fact worth keeping is *"this check has never been observed failing"*, not *"a paragraph is missing"*. Do not synthesize the evidence yourself, and do not STOP the row for it. |
 
 ## STOP-reason → flag kind
 

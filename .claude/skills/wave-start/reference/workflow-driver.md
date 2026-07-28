@@ -407,6 +407,7 @@ ${issue.issueSpec}
 6. MENTION DISCIPLINE: the PR title and body must not contain ANY bare tracker id except the single close phrase (\`${issue.closePhrase}\`, Termination step 3 below) — reference ADR numbers or doc slugs instead.
 7. WIRING DISCLOSURE (wave-shared Convention 9): if your slice introduces a new verb, subcommand, or exported interface, name the consuming call-site(s) that now invoke it in your report — or explicitly disclose under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) that the wiring lies outside your declared Files globs, so the Coordinator can grant a scope extension or plan the wiring before the review round.
 8. RUNTIME RESIDUE (wave-shared Convention 10): if your slice starts any runtime resource — a compose project, a container, a background server, anything holding a port, a volume, or a network — tear it down before termination, or explicitly disclose the surviving resource under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) so the Coordinator can clean up after landing.
+9. PROVE THE CHECK CAN FAIL (wave-shared Convention 11): if your slice introduces a NEW check — a test, an assertion, a guard, a smoke probe, a lint rule, a CI gate, a preflight, a validator — break the thing that check exists to catch, run the check, and observe its own FAIL state; then restore the original state and re-verify green. Report the falsification under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`): which check, what you broke, the observed failing output verbatim, and that you restored it. A green check is compatible with "the check works" AND "the check cannot fail", and no acceptance criterion distinguishes them. Two mechanical questions decide whether you are in this class — does a pass/fail check exist after your diff, and is its failing condition new with this slice — and "is the falsification worth the time" is deliberately NOT one of them: an expensive falsification belongs in the disclosure, not outside the class. A check observed only as \`deferred\`/\`skipped\` has NOT been proven to fail (it has been proven not to run) — that is a failed falsification attempt, not a demonstration. If you could not falsify it, say so in the same channel with the reason and what input WOULD falsify it — "could not falsify, and here is why" is a legitimate reported outcome; silence and an unevidenced claim are not. A slice that only changes behaviour already covered by EXISTING checks is not in this class.
 
 ## Verification gates (run the consumer's verify profile — from wave.config.json verify)
 Run the commands the VerifyGate selects for your changed files; report exact counts.
@@ -487,6 +488,20 @@ Run the wave-reviewer contract (see .claude/agents/wave-reviewer.md): re-run the
 commands + the floor checks against \`${issue.anchorSha}..${issue.branch}\`,
 per-AC met/partial/not-met with evidence (against the embedded spec above), sibling
 merge-tree prediction.
+
+**If this slice ships a NEW check** — a test, an assertion, a guard, a smoke probe, a
+lint rule, a CI gate, a preflight, a validator — the Worker owed a falsification note
+(wave-shared Convention 11): which check, what was broken, the observed failing output,
+and confirmation that the original state was restored. It arrives in the Judgment calls /
+Reviewer focus items above. Read it and check it against the diff. Two things it is not:
+a note that reports only a green check has not falsified anything, and a check observed
+only as \`deferred\`/\`skipped\` has been proven not to run, not proven able to fail.
+An explicit "could not falsify, and here is why" is a legitimate Worker outcome — treat
+it as a disclosure to carry forward, never as a defect to request changes over. Its
+TOTAL absence on a slice that ships a new check is a finding: say so under
+\`reviewerFocusItems\` rather than filling the gap silently yourself. And an AC phrased
+as an outcome ("the check exists", "the guard is enforced") earns \`met\` only on
+outcome-exercising evidence — the Worker's falsification, or your own probe.
 
 ## Evidence discipline (mention footgun — wave-shared Convention 4)
 Your \`acVerification[].evidence\` and \`reviewerFocusItems[]\` are folded verbatim into
