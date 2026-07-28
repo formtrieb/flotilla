@@ -44,6 +44,30 @@ One JSON per slice. The store assigns each an **opaque id** (`<slug>#NN` for mar
 {{wave-cli}} issue-store create --input <slice.json>   # prints the opaque id
 ```
 
+### Bare create — the undecorated filing path (ADR-0027)
+
+The wave Header-Block fields (`risk`, `worker`, `files`, `blockedBy`, `acceptanceCriteria`) are optional **as a group**: supply all five for the normal slicing path above, or **none of them** to file a **bare** issue — title + `filingHint` + `bodySections` only:
+
+```json
+{
+  "title": "Gate 8 ships inert",
+  "filingHint": "gate-8-ships-inert",
+  "bodySections": [
+    { "heading": "Gap", "markdown": "the verify config is never threaded through." },
+    { "heading": "Provenance", "markdown": "wave hardening, row 3, iteration 1." }
+  ]
+}
+```
+
+This is the vehicle behind an ADR-0027 Disclosure's `filed:<id>` disposition — existence now, wave-readiness later via `decorate` mode below.
+
+**Fail-loud rules** (the CLI validates the input as a whole before any write, so a rejected input files nothing):
+
+- A **half-written Header-Block** — some of the five fields present, some not — is a usage error (exit 2), naming the missing fields. An absent Header-Block and a broken one are different claims; only the first is a bare issue.
+- A bare input (no Header-Block) that still carries a **decoration-only stowaway** — `unblocks`, `parent`, or `estimatedWallclock` — is rejected the same way: those fields only make sense alongside a Header-Block.
+
+A bare issue is **not wave-eligible until decorated**: `create` stamps no eligibility marker and no `risk/*`/`worker/*` label for it, so it never shows up in the wave-ready pool on its own. Decorate it via `annotate` (below) when it is ready to be sliced into a wave.
+
 ### Two-pass id resolution
 
 Publish **blockers first** so a dependent's `blockedBy` can name real ids. The skill resolves refs; the store only validates their format.
@@ -59,17 +83,28 @@ Publish **blockers first** so a dependent's `blockedBy` can name real ids. The s
 
 ## `decorate` mode — `AnnotatePatch`
 
-For an already-filed, triage-ready issue lacking the Header-Block. Supply **only the missing wave fields** — `risk`, `worker`, `files`, and `parent` if it is a PRD slice. The patch is additive and surgical (omitted fields and unmodeled sections untouched).
+For an already-filed issue lacking the Header-Block — a triage-ready issue, **or a bare issue** from the `create` path above. Supply **only the missing wave fields**: `risk`, `worker`, `files`, `parent` (if it is a PRD slice), and — on the bare-to-decorated path specifically — `acceptanceCriteria` (a bare issue has no AC section to begin with) and any additional `bodySections` prose the decorate step wants to add. The patch is additive and surgical (omitted fields and unmodeled sections untouched); `files` and `acceptanceCriteria` each *replace* the modeled section when supplied, `bodySections` are appended verbatim.
 
 ```json
-{ "risk": "isolated-refactor", "worker": "background", "files": ["src/a.ts", "src/a.spec.ts"], "parent": "412" }
+{
+  "risk": "isolated-refactor",
+  "worker": "background",
+  "files": ["src/a.ts", "src/a.spec.ts"],
+  "acceptanceCriteria": [{ "text": "the gap is closed", "checked": false }],
+  "parent": "412"
+}
 ```
 
 ```bash
 {{wave-cli}} issue-store annotate <id> --patch <patch.json>
 ```
 
-The target must already carry `Blocked by` (the patch cannot add it). If it has none, it is not actually triage-ready — add it out-of-band first, or treat the issue as a fresh `create`.
+`blockedBy` is deliberately **not** part of `AnnotatePatch` — dependency structure is out-of-band. What that means for a target's `Blocked by` depends on the store, and it is *not* a "must already carry it" requirement:
+
+- **GitHub / Linear** — `Blocked by` is a `##` body section; an **absent** one reads as `none` (no blockers) on read, the same as an explicit `none`. A bare issue decorated via `annotate` (risk/worker/files/acceptanceCriteria) becomes a fully readable, DoR-checkable `IssueView` with `blockedBy: 'none'` — no out-of-band step needed just to make it readable.
+- **MarkdownFs** — `Blocked by` is a required `**Blocked by:**` header line, not a section with an absence-means-none default; the header parser rejects a read while it is missing. Since `annotate` cannot write it, a bare MarkdownFs issue stays unreadable after decorate until that line is added out-of-band (or the issue is filed decorated via `create` in the first place).
+
+Either way, decorating an issue does not by itself grant wave-eligibility (the eligibility marker/label is a separate, consumer-owned step) — decorate makes the issue *readable and DoR-checkable*, eligibility is what a wave-planning step stamps on top.
 
 ## Self-check — `dor` and `conflict-map`
 
