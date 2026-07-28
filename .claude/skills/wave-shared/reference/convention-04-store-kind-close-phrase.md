@@ -17,6 +17,8 @@ Read `store.kind` off the consumer's `wave.config.json` (the same file `{{wave-c
 
 **The one rewrite `create` refuses.** Because the close phrase lives in that body, a rewrite that drops it is the expensive silent failure: the PR merges normally, the row never reaches `done`, and the wave looks finished with one issue quietly open. So a reuse whose passed body carries **no** close phrase, over a live PR body that **does**, is **refused** — exit 1, `outcome: reuse-refused`, a `reason` naming the phrase at risk, and **no write at all**. A legitimate re-dispatch is unaffected (a composed render always carries its phrase), and `--allow-close-phrase-loss` is the deliberate override for a human replacing a PR body wholesale. The check is presence, not identity: a body carrying a *different* phrase passes, and a live body that was never readable is never refused on (absence of evidence is not a finding).
 
+**Compose the phrase on its own line — that is what the guard recognizes.** A hyphenated technical token is structurally identical to a Linear reference (`resolves UTF-8` has the same shape as `Fixes EX-8`), so the guard tells a real phrase from coincidental prose by the one thing that actually differs: a real phrase owns its line, and prose never does. A phrase buried mid-sentence (`Summary of the work. Closes #42 as part of the batch.`) is therefore **not** recognized and **not** protected — the guard declines to fire rather than risk refusing a legitimate rewrite it misread.
+
 The `--body` you pass carries the store-kind close phrase above, verbatim, and per the mention-footgun below it is the **only** tracker id the title or body may contain:
 
 ```bash

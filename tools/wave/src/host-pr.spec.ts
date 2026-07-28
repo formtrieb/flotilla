@@ -481,6 +481,53 @@ describe('findClosePhrase / hasClosePhrase', () => {
     expect(hasClosePhrase('EX-16 was the row this builds on')).toBe(false);
     expect(hasClosePhrase('see #42 for context')).toBe(false);
   });
+
+  // ── Coincidental prose must never read as a reference ─────────────────────
+  //
+  // A hyphenated technical token is structurally INDISTINGUISHABLE from a Linear
+  // reference (`UTF-8` and `EX-8` are the same shape), so the matcher is anchored
+  // to the line instead: every real phrase is composed as a standalone line, and
+  // prose never is. These fixtures are the falsification of that claim — the
+  // first is verbatim the bypass a Reviewer reproduced against the unanchored
+  // matcher, where `resolves UTF-8` matched as if it were a tracker reference.
+
+  it('a mid-sentence keyword + hyphenated technical token is NOT a close phrase', () => {
+    expect(
+      hasClosePhrase(
+        'This resolves UTF-8 encoding edge cases in the parser body, no real close phrase here.',
+      ),
+    ).toBe(false);
+    expect(hasClosePhrase('closes UTF-8 handling gap')).toBe(false);
+    expect(hasClosePhrase('fixes ISO-8601 parsing')).toBe(false);
+    expect(hasClosePhrase('Summary.\n\nThis fixes SHA-256 digest drift in the signer.')).toBe(false);
+    expect(hasClosePhrase('- resolves RFC-3339 timestamps for the audit log')).toBe(false);
+  });
+
+  it('a lowercase hyphenated token is not a team reference — the team key must be UPPERCASE', () => {
+    // The old matcher carried an `i` flag over the whole pattern, which let a
+    // lowercase `utf-8` satisfy the uppercase team-key class.
+    expect(hasClosePhrase('fixes utf-8')).toBe(false);
+    expect(hasClosePhrase('closes iso-8601')).toBe(false);
+  });
+
+  it('a reference is token-bounded — never the head of a longer hyphenated token', () => {
+    expect(hasClosePhrase('Fixes ISO-8601-2019')).toBe(false);
+    expect(hasClosePhrase('Fixes EX-16-rc1')).toBe(false);
+    expect(hasClosePhrase('Closes #42-draft')).toBe(false);
+  });
+
+  it('the phrase must OWN its line — a phrase buried mid-sentence is not detected', () => {
+    expect(hasClosePhrase('Summary of the work. Closes #42 as part of the batch.')).toBe(false);
+    // …and the same phrase on its own line is.
+    expect(hasClosePhrase('Summary of the work.\n\nCloses #42')).toBe(true);
+  });
+
+  it('still accepts the real composed forms — indent, list marker, CRLF, trailing punctuation', () => {
+    expect(findClosePhrase('Summary.\r\n\r\nCloses #42\r\n')).toBe('Closes #42');
+    expect(findClosePhrase('Summary.\n\n  Fixes EX-16\n')).toBe('Fixes EX-16');
+    expect(findClosePhrase('Summary.\n\n- Fixes EX-16')).toBe('Fixes EX-16');
+    expect(findClosePhrase('Summary.\n\nCloses #42.')).toBe('Closes #42');
+  });
 });
 
 describe('closePhraseLossReason (the refusal predicate)', () => {
@@ -512,6 +559,33 @@ describe('closePhraseLossReason (the refusal predicate)', () => {
 
   it('ALLOWS when the live body was not readable — absence of evidence is never a finding', () => {
     expect(closePhraseLossReason(undefined, withoutPhrase)).toBeNull();
+  });
+
+  it('REFUSES a prose replacement whose only keyword sighting is coincidental (the reviewed bypass)', () => {
+    // Verbatim the probe that slipped past the unanchored matcher: `resolves
+    // UTF-8` was read as a genuine reference, so the phrase-less body was let
+    // through and would have clobbered a live `Fixes EX-125`.
+    const reason = closePhraseLossReason(
+      'Worker summary.\n\nFixes EX-125',
+      'This resolves UTF-8 encoding edge cases in the parser body, no real close phrase here.',
+    );
+    expect(reason).not.toBeNull();
+    expect(reason).toContain('Fixes EX-125');
+  });
+
+  it('REFUSES the other coincidental-prose replacements too', () => {
+    for (const prose of [
+      'closes UTF-8 handling gap',
+      'fixes ISO-8601 parsing',
+      'This fixes SHA-256 digest drift in the signer.',
+    ]) {
+      expect(closePhraseLossReason(withPhrase, prose)).not.toBeNull();
+    }
+  });
+
+  it('still ALLOWS both genuine store-kind forms as the replacement', () => {
+    expect(closePhraseLossReason(withPhrase, 'Re-dispatch render.\n\nCloses #125')).toBeNull();
+    expect(closePhraseLossReason(withPhrase, 'Re-dispatch render.\n\nFixes EX-125')).toBeNull();
   });
 });
 
@@ -1729,6 +1803,57 @@ describe('host-pr create — the close-phrase guard, driven end-to-end', () => {
     expect(String(out().reason)).toContain('host-pr status');
     // The claim that matters: the find happened, the WRITE did not.
     expect(requests.map((r) => r.method)).toEqual(['GET']);
+  });
+
+  it('a PROSE reuse whose keyword sighting is coincidental is REFUSED too — driven, not asserted', async () => {
+    // The reviewed bypass, driven through the real CLI against a live PR body:
+    // `resolves UTF-8` used to satisfy the matcher, so this body was written.
+    const { http, requests } = livePrProbe();
+    const code = await runHostPr(
+      [
+        'create',
+        '--branch',
+        'wave/4-x',
+        '--title',
+        'probe',
+        '--body',
+        'This resolves UTF-8 encoding edge cases in the parser body, no real close phrase here.',
+        '--remote',
+        GITHUB_REMOTE,
+      ],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, outcome: 'reuse-refused', updated: false, url: PR_URL });
+    expect(stderr).toContain('Closes #4');
+    expect(requests.map((r) => r.method)).toEqual(['GET']);
+  });
+
+  it('a linear-form render (TEAM-N) passes the guard just as the github form does', async () => {
+    const requests: HttpRequest[] = [];
+    const http: HttpProbe = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        requests.push(req);
+        if (req.method === 'GET') {
+          return { status: 200, json: [{ html_url: PR_URL, number: 4, body: 'Worker summary.\n\nFixes EX-125' }] };
+        }
+        return { status: 200, json: {} };
+      },
+    };
+    const composed = 'Re-dispatch summary.\n\n## Reviewer verdict\napprove\n\nFixes EX-125';
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/4-x', '--title', 'Composed title', '--body', composed, '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'reused', updated: true, url: PR_URL });
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
+    const patched = requests.find((r) => r.method === 'PATCH');
+    expect(JSON.parse(patched?.body ?? '{}')).toEqual({ title: 'Composed title', body: composed });
   });
 
   it('the same reuse WITH the close phrase passes untouched — exit 0, reused, the composed body PATCHed verbatim', async () => {

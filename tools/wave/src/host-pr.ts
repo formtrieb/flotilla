@@ -376,14 +376,49 @@ export async function findOpenPr(
 // verdict render, the summary, the title) stays last-writer-wins.
 
 /**
- * The closing keywords a tracker acts on, followed by an issue reference:
- * `#42` (GitHub), `TEAM-16` (Linear), or a full issue URL. Case-insensitive,
- * and tolerant of the `Closes: #42` colon form. This is presence detection for
- * the guard below — NOT a parser: it never needs to say WHICH issue closes, only
- * whether a body carries a closing phrase at all.
+ * The closing keywords a tracker acts on (`Closes`, `CLOSED`, `fix`, `Resolved`,
+ * …), spelled with per-character classes rather than carried on an `i` flag.
+ * The flag is unusable here because it would apply to the WHOLE pattern, and the
+ * Linear reference form below is only tellable from prose by its team key being
+ * genuinely UPPERCASE — under `i`, a lowercase `utf-8` reads as a team reference.
  */
-const CLOSE_PHRASE_RE =
-  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+(?:#\d+|[A-Z][A-Z0-9_]{0,9}-\d+|https?:\/\/\S+\/issues\/\d+)/i;
+const CLOSE_KEYWORD = String.raw`(?:[Cc][Ll][Oo][Ss][Ee][SsDd]?|[Ff][Ii][Xx](?:[Ee][SsDd])?|[Rr][Ee][Ss][Oo][Ll][Vv][Ee][SsDd]?)`;
+
+/**
+ * The reference shapes a tracker actually resolves: `#42` (GitHub), `TEAM-16`
+ * (Linear — uppercase team key, no `_`, which is not a legal team-key char), or
+ * a full issue URL. The trailing `(?![\w-])` makes the reference TOKEN-BOUNDED:
+ * it must be a whole token, never the head of a longer hyphenated one, so
+ * `ISO-8601-2019` or `EX-16-rc1` can never be read as a reference.
+ */
+const ISSUE_REF = String.raw`(?:#\d+|[A-Z][A-Z0-9]{0,9}-\d+|https?:\/\/\S+\/issues\/\d+)(?![\w-])`;
+
+/**
+ * A store-kind close phrase, on a line it OWNS: nothing before it but optional
+ * indent or a list marker, nothing after it but optional sentence punctuation.
+ * Tolerant of the `Closes: #42` colon form and of a `\r` line ending (GitHub
+ * hands back CRLF bodies). This is presence detection for the guard below — NOT
+ * a parser: it never needs to say WHICH issue closes, only whether a body
+ * carries a closing phrase at all.
+ *
+ * The own-line anchoring is what keeps coincidental prose out, and it is the
+ * only thing that can: a mid-sentence `…resolves UTF-8 encoding edge cases…` is
+ * STRUCTURALLY identical to a genuine `Fixes EX-8` — keyword, space, uppercase
+ * token, hyphen, digits — so no amount of shape-matching on the reference alone
+ * separates them. What separates them is that every real phrase is composed as a
+ * standalone line (wave-shared Convention 4, the `wave-start` terminator, the
+ * Worker brief) and prose never is. A body that buries its phrase mid-sentence
+ * is therefore not protected — which is the safe direction: the guard declines
+ * to fire rather than refusing a legitimate rewrite it misread.
+ */
+const CLOSE_PHRASE_RE = new RegExp(
+  String.raw`^[ \t]*(?:[-*+][ \t]+)?(` +
+    CLOSE_KEYWORD +
+    String.raw`[ \t]*:?[ \t]+` +
+    ISSUE_REF +
+    String.raw`)[ \t\r]*[.,;:!?)\]}]*[ \t\r]*$`,
+  'm',
+);
 
 /**
  * The first store-kind close phrase in `body`, verbatim, or `null` when it
@@ -391,7 +426,7 @@ const CLOSE_PHRASE_RE =
  */
 export function findClosePhrase(body: string): string | null {
   const m = CLOSE_PHRASE_RE.exec(body ?? '');
-  return m === null ? null : m[0].trim();
+  return m === null ? null : m[1].trim();
 }
 
 /** Whether `body` carries a store-kind close phrase at all. */
