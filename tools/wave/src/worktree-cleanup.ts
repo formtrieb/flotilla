@@ -282,6 +282,19 @@
  *     the one retry is genuinely stuck and stays a deliberate operator step,
  *     with the dirty-worktree safety invariant at the top of this file intact.
  *
+ *     THIS DECISION STANDS — and it answers a **permission** obstruction: the
+ *     removal WAS attempted and the OS refused the bytes. Do not read it as an
+ *     answer to a **classification** obstruction, where no removal is ever
+ *     attempted because the content was judged real in the first place (a
+ *     consumer's `.build/` inside an orphan directory: the operator's own
+ *     `rm -rf` there SUCCEEDS, so no permission was ever missing). The two
+ *     look alike from the operator's seat — both end in a manual `rm -rf` —
+ *     and they are not the same gap. The classification one is closed by the
+ *     consumer-declared disposable set documented in the next section (issue
+ *     #115), never by force: force would answer a question nobody asked while
+ *     giving up a safety property that is doing real work. They are named
+ *     apart here so the next reader does not re-litigate one as the other.
+ *
  *   • The retry is bounded at ONE. The race this closes is transient — a single
  *     re-attempt after a re-purge + pause is enough to clear it — so a second
  *     attempt buys nothing a first did not, while an unbounded loop would turn
@@ -413,6 +426,72 @@
  * classification from issue #111); it does not touch the dirty-worktree
  * safety invariant itself, {@link planCleanup}'s dirty-skip, or any other
  * exported behaviour in this file.
+ *
+ * ── the disposable set is DECLARABLE, because only the consumer knows what
+ *    their build output is called (issue #115) ────────────────────────────────
+ *
+ * A consumer running this toolkit on a Swift codebase reported the same manual
+ * cleanup three times in a single wave: every Worker left a `.build/` directory
+ * behind, the harness deregistered the worktree, the physical directory
+ * survived, and {@link planCleanup} refused it with
+ * `reason: 'orphan-with-real-files'`. Each time the resolution was a hand
+ * `rm -rf` with the sandbox disabled, then a `git worktree prune`.
+ *
+ * The obstruction here is the CLASSIFICATION, not a permission — see the
+ * "NO force flag" bullet above, which stays exactly as it was and is about the
+ * other gap. Nothing was ever refused by the OS; the removal was simply never
+ * attempted, because a raw directory scan looked at `.build/` and could only
+ * conclude "real files".
+ *
+ * What was actually missing is that the disposable set was HARDCODED.
+ * {@link FINDER_JUNK_NAMES} and {@link JUNK_DIR_NAMES} know `.DS_Store`,
+ * `.vscode` and `.claude` — the junk THIS repo's own harness and editors
+ * produce. A consumer's toolchain produces its own, equally disposable output
+ * (`.build` for Swift, `target` for Rust/Maven, `node_modules`, `__pycache__`),
+ * and there was no way to say so. {@link normalizeDisposableNames} + the
+ * `disposableNames` option on {@link CleanupOptions} /
+ * {@link OrphanSweepOptions} / {@link listAgentWorktrees} /
+ * {@link listOrphanDirs} (fed from the wave config's `cleanup.disposableNames`
+ * key) close that: a consumer declares the names, and they are UNIONED with the
+ * built-in sets — never a replacement, so the Finder/editor/harness debris this
+ * module already recognizes keeps being recognized.
+ *
+ * FOUR deliberate boundaries, each of which is what keeps this from becoming
+ * the force flag by another route:
+ *
+ *   • EXACT NAMES ONLY, validated ({@link normalizeDisposableNames}). A glob is
+ *     REJECTED, loudly, rather than honoured — a bare `.*` would also match
+ *     `.git`, which is precisely the failure the fixed built-in lists exist to
+ *     prevent. So are path separators (a declared name is one directory entry
+ *     name, matched at any depth — never a path), `.`/`..`, and `.git` itself.
+ *     A consumer declaring `.build` is making a specific claim about a specific
+ *     name; that is a different act from asking for force, and the validator is
+ *     what keeps it different.
+ *
+ *   • UNION, NEVER REPLACEMENT — an absent/empty declaration leaves every
+ *     classification and purge in this file byte-identical to before.
+ *
+ *   • It reaches the DIRECTORY-SCAN side only: {@link isDirExclusivelyJunk}
+ *     (the orphan classifier behind {@link WorktreeEntry.orphanAllJunk} and
+ *     {@link OrphanDir.allJunk}) and its purge counterpart
+ *     {@link removeAllowlistedJunk}. It deliberately does NOT widen the
+ *     `git status`-driven dirty classification ({@link isDisposableStatusPath},
+ *     {@link WorktreeEntry.dirtyAllJunk}) — the asymmetry is intentional and is
+ *     the same "the dirty path has better information and must use it"
+ *     reasoning {@link HARNESS_INJECTED_PATHS} already records. `git status`
+ *     honours `.gitignore`, and build output is gitignored by construction, so
+ *     on a still-REGISTERED worktree a `.build/` never appears in status at all
+ *     — the worktree reads clean, is selected, and its build directory is torn
+ *     down with it. Only the orphan path, a filesystem scan with no gitignore
+ *     knowledge, cannot tell build output from work; that is the one place the
+ *     declaration is needed, and the one place it is honoured.
+ *
+ *   • The dirty-worktree safety invariant at the top of this file is untouched.
+ *     A declared name never makes a DIRTY registered worktree removable, never
+ *     widens the harness-denied-deletion carve-out (issue #142), and never
+ *     changes how an incomplete removal is classified
+ *     ({@link CleanupResult.deregisteredNotDeleted} /
+ *     {@link CleanupResult.erroredStillListed}).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -696,6 +775,25 @@ export interface CleanupOptions {
    * (first-attempt-succeeds) path.
    */
   retryPause?: () => void;
+  /**
+   * Consumer-declared disposable directory/file names (issue #115) — the wave
+   * config's `cleanup.disposableNames` key, threaded in here. UNIONED with the
+   * built-in {@link FINDER_JUNK_NAMES} / {@link JUNK_DIR_NAMES} allowlists,
+   * never a replacement; absent or empty leaves every classification and purge
+   * byte-identical to before.
+   *
+   * Exact entry names only, matched at any depth — a glob, a path, `.`/`..` or
+   * `.git` is REJECTED by {@link normalizeDisposableNames} (which every
+   * consumer of this option runs it through) rather than honoured. See the
+   * file-level "the disposable set is DECLARABLE" doc section for why this is a
+   * classification fix and emphatically not a force flag.
+   *
+   * Reaches the default {@link WorktreeRemover} (its physical-delete junk
+   * purge) and the default {@link CleanupOptions.purgeJunk} re-purge. An
+   * INJECTED `remover`/`purgeJunk` is used exactly as given — the caller
+   * supplying the seam owns its allowlist.
+   */
+  disposableNames?: readonly string[];
 }
 
 // ─── Core ─────────────────────────────────────────────────────────────────────
@@ -892,11 +990,18 @@ export function planCleanup(
  * @param agentPathMarker Substring(s) that identify auto-managed worktrees.
  *   Defaults to {@link DEFAULT_AGENT_PATH_MARKERS} (`agent-` + `wf_` prefixes).
  *   Accepts a single string for backward-compatibility.
+ * @param disposableNames Consumer-declared disposable entry names (issue #115),
+ *   unioned into the ORPHAN content classification below — see
+ *   {@link CleanupOptions.disposableNames}. Absent/empty leaves the result
+ *   byte-identical. Deliberately does NOT reach the `git status`-driven
+ *   `dirtyAllJunk` classification (see the file-level doc section).
  */
 export function listAgentWorktrees(
   repoRoot = process.cwd(),
   agentPathMarker: string | readonly string[] = DEFAULT_AGENT_PATH_MARKERS,
+  disposableNames?: readonly string[],
 ): WorktreeEntry[] {
+  const declared = toDisposableSet(disposableNames);
   const raw = shellGit(['worktree', 'list', '--porcelain'], repoRoot);
 
   const entries = parseWorktreeList(raw, agentPathMarker);
@@ -918,7 +1023,7 @@ export function listAgentWorktrees(
         ...entry,
         dirty: false,
         orphan: true,
-        orphanAllJunk: isDirExclusivelyJunk(entry.path),
+        orphanAllJunk: isDirExclusivelyJunk(entry.path, declared),
       };
     }
     // Either source reporting dirty means dirty — porcelain's line stays
@@ -948,9 +1053,14 @@ export function listAgentWorktrees(
  * dirty-detection fallback with zero duplicated shelling logic.
  *
  * @param repoRoot Absolute path to the repository root. Defaults to `process.cwd()`.
+ * @param disposableNames Consumer-declared disposable entry names (issue #115),
+ *   forwarded verbatim to {@link listAgentWorktrees}.
  */
-export function listAllWorktrees(repoRoot = process.cwd()): WorktreeEntry[] {
-  return listAgentWorktrees(repoRoot, ['']);
+export function listAllWorktrees(
+  repoRoot = process.cwd(),
+  disposableNames?: readonly string[],
+): WorktreeEntry[] {
+  return listAgentWorktrees(repoRoot, [''], disposableNames);
 }
 
 /**
@@ -967,11 +1077,16 @@ export function executeCleanup(
   opts: CleanupOptions = {},
 ): CleanupResult {
   const repoRoot = opts.repoRoot ?? process.cwd();
-  const remover = opts.remover ?? defaultWorktreeRemover(repoRoot);
+  // Consumer-declared disposable names (issue #115): they reach the DEFAULT
+  // remover + the DEFAULT retry re-purge only. An injected `remover`/`purgeJunk`
+  // is used exactly as given — the caller supplying the seam owns its allowlist.
+  const declared = toDisposableSet(opts.disposableNames);
+  const remover = opts.remover ?? defaultWorktreeRemover(repoRoot, opts.disposableNames);
   const pathExists = opts.pathExists ?? existsSync;
   const stillListed = opts.stillListed ?? defaultStillListedProbe(repoRoot);
   const purgeJunk =
-    opts.purgeJunk ?? ((p: string) => void removeAllowlistedJunk(nodePath.resolve(p)));
+    opts.purgeJunk ??
+    ((p: string) => void removeAllowlistedJunk(nodePath.resolve(p), declared));
   const retryPause = opts.retryPause ?? defaultRetryPause;
   const hygieneEnabled = opts.skipBranchHygiene !== true;
   const branchHygiene = hygieneEnabled
@@ -1230,7 +1345,7 @@ export function cleanAgentWorktrees(opts: CleanupOptions = {}): CleanupResult {
   const repoRoot = opts.repoRoot ?? process.cwd();
   const agentPathMarker = opts.agentPathMarker ?? DEFAULT_AGENT_PATH_MARKERS;
 
-  const worktrees = listAgentWorktrees(repoRoot, agentPathMarker);
+  const worktrees = listAgentWorktrees(repoRoot, agentPathMarker, opts.disposableNames);
   const plan = planCleanup(worktrees, opts.branchFilter);
   return executeCleanup(plan, opts);
 }
@@ -1335,6 +1450,15 @@ export interface OrphanSweepOptions {
    * as a silent success). Defaults to `fs.existsSync`.
    */
   pathExists?: (path: string) => boolean;
+  /**
+   * Consumer-declared disposable directory/file names (issue #115) — the same
+   * option, with the same union-never-replace semantics and the same
+   * {@link normalizeDisposableNames} validation, as
+   * {@link CleanupOptions.disposableNames}. Reaches this sweep's classifier
+   * ({@link listOrphanDirs} via {@link sweepOrphanWorktrees}) and the default
+   * {@link OrphanRemover}'s junk purge.
+   */
+  disposableNames?: readonly string[];
 }
 
 /**
@@ -1375,13 +1499,19 @@ function registeredWorktreePaths(repoRoot: string): Set<string> {
  * (report-only).
  *
  * @param repoRoot Absolute repo root. Defaults to `process.cwd()`.
- * @param opts Marker allowlist override (defaults to {@link DEFAULT_AGENT_PATH_MARKERS}).
+ * @param opts Marker allowlist override (defaults to {@link DEFAULT_AGENT_PATH_MARKERS}),
+ *   plus the consumer-declared disposable entry names (issue #115) unioned into
+ *   the `allJunk` classification — see {@link OrphanSweepOptions.disposableNames}.
  */
 export function listOrphanDirs(
   repoRoot = process.cwd(),
-  opts: { agentPathMarker?: string | readonly string[] } = {},
+  opts: {
+    agentPathMarker?: string | readonly string[];
+    disposableNames?: readonly string[];
+  } = {},
 ): OrphanDir[] {
   const markers = normalizeMarkers(opts.agentPathMarker);
+  const declared = toDisposableSet(opts.disposableNames);
   const roots = worktreesRootsFromMarkers(markers);
   const registered = registeredWorktreePaths(repoRoot);
 
@@ -1407,7 +1537,10 @@ export function listOrphanDirs(
       // Not a recognized auto-managed prefix → a human scratch dir; never swept.
       if (!isRecognizedWorktree(fullPath, markers)) continue;
 
-      orphans.push({ path: fullPath, allJunk: isDirExclusivelyJunk(fullPath) });
+      orphans.push({
+        path: fullPath,
+        allJunk: isDirExclusivelyJunk(fullPath, declared),
+      });
     }
   }
 
@@ -1446,7 +1579,7 @@ export function executeOrphanSweep(
   plan: OrphanSweepPlan,
   opts: OrphanSweepOptions = {},
 ): OrphanSweepResult {
-  const remover = opts.remover ?? defaultOrphanRemover();
+  const remover = opts.remover ?? defaultOrphanRemover(opts.disposableNames);
   const pathExists = opts.pathExists ?? existsSync;
 
   const removed: OrphanDir[] = [];
@@ -1479,7 +1612,10 @@ export function executeOrphanSweep(
  */
 export function sweepOrphanWorktrees(opts: OrphanSweepOptions = {}): OrphanSweepResult {
   const repoRoot = opts.repoRoot ?? process.cwd();
-  const orphans = listOrphanDirs(repoRoot, { agentPathMarker: opts.agentPathMarker });
+  const orphans = listOrphanDirs(repoRoot, {
+    agentPathMarker: opts.agentPathMarker,
+    disposableNames: opts.disposableNames,
+  });
   const plan = planOrphanSweep(orphans);
   return executeOrphanSweep(plan, opts);
 }
@@ -1490,10 +1626,15 @@ export function sweepOrphanWorktrees(opts: OrphanSweepOptions = {}): OrphanSweep
  * `git worktree remove` step: an orphan directory carries no git registration
  * to deregister — see the orphan-sweep section doc above.
  */
-export function defaultOrphanRemover(): OrphanRemover {
+export function defaultOrphanRemover(
+  disposableNames?: readonly string[],
+): OrphanRemover {
+  // Consumer-declared disposable names (issue #115) — see
+  // {@link OrphanSweepOptions.disposableNames}.
+  const declared = toDisposableSet(disposableNames);
   return {
     remove(dirPath: string): void {
-      physicallyDeleteWithJunkPurge(nodePath.resolve(dirPath));
+      physicallyDeleteWithJunkPurge(nodePath.resolve(dirPath), declared);
     },
   };
 }
@@ -2306,7 +2447,14 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
  * no `--force` needed, since removal is not gated on a dirty-tree check for
  * a directory that no longer exists.
  */
-export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
+export function defaultWorktreeRemover(
+  repoRoot: string,
+  disposableNames?: readonly string[],
+): WorktreeRemover {
+  // Consumer-declared disposable names (issue #115), unioned into the junk
+  // purge both physical-delete paths below share. Validated here so an invalid
+  // declaration throws at construction, never mid-removal.
+  const declared = toDisposableSet(disposableNames);
   return {
     remove(worktreePath: string): void {
       // `git worktree remove`/`prune` require an absolute path or
@@ -2329,7 +2477,7 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
       // the ordinary path below; this branch never fabricates a `removed`
       // outcome.
       if (existsSync(abs) && !existsSync(nodePath.join(abs, '.git'))) {
-        physicallyDeleteWithJunkPurge(abs);
+        physicallyDeleteWithJunkPurge(abs, declared);
         execFileSync('git', ['worktree', 'prune'], {
           cwd: repoRoot,
           encoding: 'utf-8',
@@ -2342,7 +2490,7 @@ export function defaultWorktreeRemover(repoRoot: string): WorktreeRemover {
       // Ordinary path — `.git` present (or the directory doesn't exist at
       // all, in which case there is nothing to preserve either way).
       // Step 1 — physical deletion, `.git` deleted LAST (FOR-86).
-      physicallyDeleteGitLast(abs);
+      physicallyDeleteGitLast(abs, declared);
       // Step 2 — deregister. Reached only if step 1 fully succeeded.
       execFileSync('git', ['worktree', 'remove', abs], {
         cwd: repoRoot,
@@ -2393,8 +2541,15 @@ export function defaultStillListedProbe(
  * parent directory" phase of {@link physicallyDeleteGitLast}'s ordinary,
  * `.git`-last path.
  */
-function physicallyDeleteWithJunkPurge(abs: string): void {
-  runWithEnotemptyRetry(abs, () => rmSync(abs, { recursive: true, force: true }));
+function physicallyDeleteWithJunkPurge(
+  abs: string,
+  declared: ReadonlySet<string> = EMPTY_DISPOSABLE_SET,
+): void {
+  runWithEnotemptyRetry(
+    abs,
+    () => rmSync(abs, { recursive: true, force: true }),
+    declared,
+  );
 }
 
 /**
@@ -2411,13 +2566,17 @@ function physicallyDeleteWithJunkPurge(abs: string): void {
  * {@link physicallyDeleteWithJunkPurge} performs, AND each of
  * {@link physicallyDeleteGitLast}'s two ordered phases (FOR-86).
  */
-function runWithEnotemptyRetry(junkScanRoot: string, deleteStep: () => void): void {
+function runWithEnotemptyRetry(
+  junkScanRoot: string,
+  deleteStep: () => void,
+  declared: ReadonlySet<string> = EMPTY_DISPOSABLE_SET,
+): void {
   try {
     deleteStep();
   } catch (err) {
     if (!isEnotempty(err)) throw err;
 
-    const junkRemoved = removeAllowlistedJunk(junkScanRoot);
+    const junkRemoved = removeAllowlistedJunk(junkScanRoot, declared);
     if (junkRemoved === 0) throw err;
 
     try {
@@ -2452,7 +2611,10 @@ function runWithEnotemptyRetry(junkScanRoot: string, deleteStep: () => void): vo
  * A directory that doesn't exist at all (already fully removed) is a no-op,
  * mirroring `rmSync`'s own `force: true` idempotence.
  */
-function physicallyDeleteGitLast(abs: string): void {
+function physicallyDeleteGitLast(
+  abs: string,
+  declared: ReadonlySet<string> = EMPTY_DISPOSABLE_SET,
+): void {
   let entries: Dirent[];
   try {
     entries = readdirSync(abs, { withFileTypes: true });
@@ -2463,18 +2625,26 @@ function physicallyDeleteGitLast(abs: string): void {
   const nonGitEntries = entries.filter((e) => e.name !== '.git');
 
   // Phase 1 — everything except `.git`.
-  runWithEnotemptyRetry(abs, () => {
-    for (const entry of nonGitEntries) {
-      rmSync(nodePath.join(abs, entry.name), { recursive: true, force: true });
-    }
-  });
+  runWithEnotemptyRetry(
+    abs,
+    () => {
+      for (const entry of nonGitEntries) {
+        rmSync(nodePath.join(abs, entry.name), { recursive: true, force: true });
+      }
+    },
+    declared,
+  );
 
   // Phase 2 — `.git` LAST (a single atomic unlink; see doc comment above).
   const gitPath = nodePath.join(abs, '.git');
-  runWithEnotemptyRetry(abs, () => rmSync(gitPath, { recursive: true, force: true }));
+  runWithEnotemptyRetry(
+    abs,
+    () => rmSync(gitPath, { recursive: true, force: true }),
+    declared,
+  );
 
   // Phase 3 — the now-empty parent directory itself.
-  physicallyDeleteWithJunkPurge(abs);
+  physicallyDeleteWithJunkPurge(abs, declared);
 }
 
 /**
@@ -2518,6 +2688,113 @@ const JUNK_DIR_NAMES = new Set<string>(['.vscode', '.claude']);
 
 function isJunkDirName(name: string): boolean {
   return JUNK_DIR_NAMES.has(name);
+}
+
+// ─── Consumer-declared disposable names (issue #115) ──────────────────────────
+
+/**
+ * Characters that make a string a PATTERN rather than a name. A declared
+ * disposable name carrying any of these is refused outright — the whole point
+ * of the two fixed built-in allowlists above is that no wildcard exists which
+ * could sweep in `.git`, and a consumer-supplied `.*` would do exactly that.
+ */
+const DISPOSABLE_NAME_PATTERN_CHARS = /[*?[\]{}!]/;
+
+/**
+ * Names that can never be declared disposable, whatever a consumer writes.
+ * `.git` is the one the fixed-list discipline exists to protect; `.`/`..` are
+ * not entry names at all but traversal into the worktree itself / its parent.
+ */
+const DISPOSABLE_NAME_RESERVED = new Set<string>(['.git', '.', '..']);
+
+/** The shared "nothing declared" set — the byte-identical-to-before default. */
+const EMPTY_DISPOSABLE_SET: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Validate + normalize a consumer-declared disposable-name list (issue #115 —
+ * see the file-level "the disposable set is DECLARABLE" doc section).
+ *
+ * This is the single rule for what a declared name may be, enforced at BOTH
+ * enforcement points: `loadWaveConfig` runs it when reading the wave config's
+ * `cleanup.disposableNames` key (so a bad declaration fails loud at
+ * `config validate` time, never silently at cleanup time), and every engine
+ * entry point that accepts a `disposableNames` option runs it again on the way
+ * in (so a direct API caller gets the identical refusal).
+ *
+ * Accepted: a bare entry name, matched at any depth — `.build`, `target`,
+ * `node_modules`, `__pycache__`. Surrounding whitespace is trimmed; duplicates
+ * collapse, first occurrence wins.
+ *
+ * REFUSED, by throwing:
+ *   - anything that is not an array of strings;
+ *   - an empty/whitespace-only name;
+ *   - a glob/pattern (`*`, `?`, `[`, `]`, `{`, `}`, `!`) — a wildcard is the
+ *     one shape that could match `.git`, so it is rejected rather than
+ *     honoured;
+ *   - a path (`/` or `\`) — a declaration names ONE directory entry, not a
+ *     location;
+ *   - `.git`, `.` or `..`.
+ *
+ * `undefined`/`null` normalize to `[]` (nothing declared), which is what keeps
+ * an absent config a no-op.
+ *
+ * @param value The raw config/API value, unvalidated.
+ * @param label How to name the offending field in a thrown message — callers
+ *   pass their own path (e.g. `wave config "cleanup.disposableNames"`) so the
+ *   error points at where the bad value was written.
+ */
+export function normalizeDisposableNames(
+  value: unknown,
+  label = 'disposableNames',
+): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of exact names`);
+  }
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < value.length; i++) {
+    const raw: unknown = value[i];
+    if (typeof raw !== 'string') {
+      throw new Error(`${label}[${i}] must be a string`);
+    }
+    const name = raw.trim();
+    if (name.length === 0) {
+      throw new Error(`${label}[${i}] must be a non-empty name`);
+    }
+    if (DISPOSABLE_NAME_PATTERN_CHARS.test(name)) {
+      throw new Error(
+        `${label}[${i}] ${JSON.stringify(raw)} is a pattern, not a name — only exact names are accepted (a wildcard such as ".*" would also match ".git")`,
+      );
+    }
+    if (name.includes('/') || name.includes('\\')) {
+      throw new Error(
+        `${label}[${i}] ${JSON.stringify(raw)} must be a bare entry name, not a path — a declared name is matched at any depth`,
+      );
+    }
+    if (DISPOSABLE_NAME_RESERVED.has(name)) {
+      throw new Error(`${label}[${i}] ${JSON.stringify(raw)} is never disposable`);
+    }
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+
+  return out;
+}
+
+/**
+ * Build the lookup set the classifiers/purge consult, running the declaration
+ * through {@link normalizeDisposableNames} first so an invalid name can never
+ * reach a filesystem decision. An absent/empty declaration returns the shared
+ * {@link EMPTY_DISPOSABLE_SET}, which every union check below short-circuits
+ * to a plain "no" — the byte-identical-to-before path.
+ */
+function toDisposableSet(names: readonly string[] | undefined): ReadonlySet<string> {
+  if (names === undefined || names.length === 0) return EMPTY_DISPOSABLE_SET;
+  return new Set<string>(normalizeDisposableNames(names));
 }
 
 /**
@@ -2691,20 +2968,29 @@ function isEnotempty(err: unknown): boolean {
  * junk-shaped (>0 → worth retrying) or something else entirely (0 →
  * propagate the original error, never mask a real obstruction).
  *
- * Two allowlist tiers:
+ * Three allowlist tiers:
  *   - {@link FINDER_JUNK_NAMES} / the AppleDouble pattern — individual junk
  *     FILE names, recognized at any depth (nested `.DS_Store` included).
  *   - {@link JUNK_DIR_NAMES} — whole directory trees (`.vscode/`, `.claude/`)
  *     purged as one allowlisted unit the moment the directory's own name
  *     matches, at any depth, without recursing into it to check individual
  *     file names first.
+ *   - `declared` — the consumer's own disposable names (issue #115), UNIONED
+ *     with both tiers above rather than replacing either. A declared name is
+ *     treated exactly like its built-in counterpart: as a directory it is a
+ *     whole-subtree purge unit, as a file it is a single unlink, both at any
+ *     depth. Empty (the default) leaves this function byte-identical to
+ *     before.
  *
  * Best-effort: an unreadable/already-gone directory, or a junk entry that
  * itself fails to delete, does not throw here — it simply isn't counted, and
  * the retry `rmSync` back in {@link defaultWorktreeRemover} is what surfaces
  * any real obstruction that remains.
  */
-function removeAllowlistedJunk(dir: string): number {
+function removeAllowlistedJunk(
+  dir: string,
+  declared: ReadonlySet<string> = EMPTY_DISPOSABLE_SET,
+): number {
   let removed = 0;
 
   function readEntries() {
@@ -2720,9 +3006,10 @@ function removeAllowlistedJunk(dir: string): number {
   for (const entry of entries) {
     const entryPath = nodePath.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (isJunkDirName(entry.name)) {
-        // Whole allowlisted editor/harness directory tree (FOR-56): purge it
-        // as a single unit rather than recursing name-by-name into it.
+      if (isJunkDirName(entry.name) || declared.has(entry.name)) {
+        // Whole allowlisted editor/harness directory tree (FOR-56), or a
+        // consumer-declared build-output directory (issue #115): purge it as a
+        // single unit rather than recursing name-by-name into it.
         try {
           rmSync(entryPath, { recursive: true, force: true });
           removed += 1;
@@ -2732,10 +3019,10 @@ function removeAllowlistedJunk(dir: string): number {
         }
         continue;
       }
-      removed += removeAllowlistedJunk(entryPath);
+      removed += removeAllowlistedJunk(entryPath, declared);
       continue;
     }
-    if (isFinderJunkName(entry.name)) {
+    if (isFinderJunkName(entry.name) || declared.has(entry.name)) {
       try {
         rmSync(entryPath, { force: true });
         removed += 1;
@@ -2762,8 +3049,17 @@ function removeAllowlistedJunk(dir: string): number {
  *
  * An unreadable or already-gone directory counts as vacuously all-junk
  * (`true`) — there is nothing real left to lose.
+ *
+ * `declared` is the consumer's own disposable-name set (issue #115), UNIONED
+ * with both built-in tiers and read exactly the way {@link removeAllowlistedJunk}
+ * reads it — the classifier and the purge must agree on what "junk" means, or a
+ * directory selected here would not actually be purged there. Empty (the
+ * default) leaves this function byte-identical to before.
  */
-function isDirExclusivelyJunk(dir: string): boolean {
+function isDirExclusivelyJunk(
+  dir: string,
+  declared: ReadonlySet<string> = EMPTY_DISPOSABLE_SET,
+): boolean {
   let entries: Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -2773,11 +3069,11 @@ function isDirExclusivelyJunk(dir: string): boolean {
 
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (isJunkDirName(entry.name)) continue;
-      if (!isDirExclusivelyJunk(nodePath.join(dir, entry.name))) return false;
+      if (isJunkDirName(entry.name) || declared.has(entry.name)) continue;
+      if (!isDirExclusivelyJunk(nodePath.join(dir, entry.name), declared)) return false;
       continue;
     }
-    if (!isFinderJunkName(entry.name)) return false;
+    if (!isFinderJunkName(entry.name) && !declared.has(entry.name)) return false;
   }
   return true;
 }

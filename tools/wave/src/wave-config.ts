@@ -9,6 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import type { VerifyConfig } from './verify';
+import { normalizeDisposableNames } from './worktree-cleanup';
 
 export interface MarkdownStoreConfig {
   kind: 'markdown';
@@ -52,16 +53,49 @@ export interface LinearStoreConfig {
 
 export type StoreConfig = MarkdownStoreConfig | GitHubStoreConfig | LinearStoreConfig;
 
+/**
+ * Optional worktree-cleanup options (issue #115). Everything here is additive:
+ * omit the whole `cleanup` key and cleanup behaves exactly as it did before it
+ * existed.
+ */
+export interface CleanupConfig {
+  /**
+   * Extra directory/file names this consumer's own toolchain leaves inside an
+   * agent worktree and considers disposable — `.build` (Swift), `target`
+   * (Rust/Maven), `node_modules`, `__pycache__`, …
+   *
+   * The engine's built-in disposable set knows only the junk flotilla's own
+   * harness and editors produce, so an orphaned worktree directory holding
+   * nothing but a consumer's build output is refused as
+   * `orphan-with-real-files` and has to be removed by hand. Declaring the names
+   * here closes that: they are UNIONED with the built-in set, never a
+   * replacement.
+   *
+   * EXACT entry names only, matched at any depth. A glob/pattern, a path, `.`,
+   * `..` or `.git` is rejected at load time rather than honoured — a wildcard
+   * such as `.*` would also match `.git`, which is the exact failure the fixed
+   * built-in list exists to prevent.
+   */
+  disposableNames?: string[];
+}
+
 export interface WaveConfig {
   store: StoreConfig;
   /** Optional inline verify profile (ADR-0016). No DEFAULT_VERIFY — verify is purely consumer config. */
   verify?: VerifyConfig;
+  /** Optional worktree-cleanup options (issue #115) — omit entirely for today's behaviour. */
+  cleanup?: CleanupConfig;
 }
 
 /**
  * Read + JSON-parse a wave config file. Throws with a clear message if the
  * `store` object is missing/null, or if `store.kind` is not a known
  * discriminant, so the consumer never receives a config it cannot act on.
+ *
+ * `cleanup.disposableNames` (issue #115) is validated here too, through the
+ * engine's own {@link normalizeDisposableNames} — the SAME rule the cleanup
+ * module applies when the names reach it — so a glob or a path fails loud at
+ * `config validate` time rather than silently at cleanup time.
  */
 export function loadWaveConfig(path: string): WaveConfig {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;
@@ -86,5 +120,20 @@ export function loadWaveConfig(path: string): WaveConfig {
       throw new Error('wave config "verify" must have a "profiles" array');
     }
   }
+
+  // issue #115 — the consumer-declared disposable set. Absent `cleanup` is the
+  // default and is validated as nothing; a present one must be an object, and
+  // its `disposableNames` must survive the engine's own exact-names rule.
+  const cleanup = (raw as { cleanup?: unknown }).cleanup;
+  if (cleanup !== undefined) {
+    if (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup)) {
+      throw new Error('wave config "cleanup" must be an object');
+    }
+    normalizeDisposableNames(
+      (cleanup as { disposableNames?: unknown }).disposableNames,
+      'wave config "cleanup.disposableNames"',
+    );
+  }
+
   return raw as WaveConfig;
 }
