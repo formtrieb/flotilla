@@ -11,7 +11,13 @@ Read `store.kind` off the consumer's `wave.config.json` (the same file `{{wave-c
 
 `linear`'s Linear-GitHub-integration precondition (installed + connected to the code repo) must already hold for this to work at all — `wave-setup`'s Linear operational-preconditions checklist confirms it before the store is ever configured.
 
-**Opening the PR goes through the engine — `{{wave-cli}} host-pr create`, never `gh pr create`.** The PR-open is the ADR-0023 last mile: every host write goes through the engine host seam, and `create` is that verb (`gh`'s creds are sandbox-denied and its TLS fought the proxy MITM cert in every live run — creation only ever worked sandbox-off). It is **find-before-create idempotent**: an OPEN PR already on the branch is reused (`outcome: reused`) **and its title/body are re-written to the `--title`/`--body` you pass** (`updated: true` discloses it), a missing one is created (`outcome: created`) — so a cap=1 re-dispatch onto the same branch never opens a duplicate, yet the render you compose still reliably lands on the live PR (last-writer-wins; the render is written once at PR-open). The `--body` you pass carries the store-kind close phrase above, verbatim, and per the mention-footgun below it is the **only** tracker id the title or body may contain:
+**Opening the PR goes through the engine — `{{wave-cli}} host-pr create`, never `gh pr create`.** The PR-open is the ADR-0023 last mile: every host write goes through the engine host seam, and `create` is that verb (`gh`'s creds are sandbox-denied and its TLS fought the proxy MITM cert in every live run — creation only ever worked sandbox-off). It is **find-before-create idempotent about *creation***: an OPEN PR already on the branch is reused (`outcome: reused`) rather than duplicated, a missing one is created (`outcome: created`) — so a cap=1 re-dispatch onto the same branch never opens a second PR.
+
+> ⚠️ **`create` is a WRITE, and reuse REWRITES the PR's title and body.** "Idempotent" here covers creation only; it says nothing about content. A reuse re-writes the live PR's title **and** body to the `--title`/`--body` you pass (`updated: true` discloses it) — last-writer-wins, which is exactly what the terminator needs so a re-dispatch's freshly composed render reaches the live PR. It also means **running `create` twice with different arguments changes the PR twice.** A live consumer wave lost a real PR's title and body to a single exploratory `--title probe --body probe` call (docs/retros/2026-07-27-plugin-consumer-w1.md, DA-F6). **To find out whether a branch already has a PR, use the read-only `{{wave-cli}} host-pr status --branch <branch>` verb** — never `create`. `status` reports `state` (`open` | `merged` | `closed-unmerged` | `none`), `url`, `number`, and `mergeability`, and writes nothing.
+
+**The one rewrite `create` refuses.** Because the close phrase lives in that body, a rewrite that drops it is the expensive silent failure: the PR merges normally, the row never reaches `done`, and the wave looks finished with one issue quietly open. So a reuse whose passed body carries **no** close phrase, over a live PR body that **does**, is **refused** — exit 1, `outcome: reuse-refused`, a `reason` naming the phrase at risk, and **no write at all**. A legitimate re-dispatch is unaffected (a composed render always carries its phrase), and `--allow-close-phrase-loss` is the deliberate override for a human replacing a PR body wholesale. The check is presence, not identity: a body carrying a *different* phrase passes, and a live body that was never readable is never refused on (absence of evidence is not a finding).
+
+The `--body` you pass carries the store-kind close phrase above, verbatim, and per the mention-footgun below it is the **only** tracker id the title or body may contain:
 
 ```bash
 {{wave-cli}} host-pr create --branch <branch> --title "<title, no bare tracker id>" \
@@ -19,9 +25,16 @@ Read `store.kind` off the consumer's `wave.config.json` (the same file `{{wave-c
 
 <the store-kind close phrase, on its own line — e.g. Fixes EX-16>"
 # exit 0 → stdout JSON carries .url (outcome: created | reused) — pin that as the row's PR URL.
+# exit 1 + outcome: reuse-refused → the body you passed would have dropped the live PR's close
+#   phrase; nothing was written. Fix the body (or pass --allow-close-phrase-loss deliberately).
 # create reads GITHUB_TOKEN from the environment (never printed); github-only in M1,
 # bitbucket/unknown fail loud + typed like the landing verbs.
+
+# Read-only alternative — use THIS to ask whether a branch already has a PR:
+{{wave-cli}} host-pr status --branch <branch>
 ```
+
+**Recorded decision — the guard is sufficient; there is no `--no-update` reuse form.** The obvious alternative was a non-rewriting reuse (re-pin the URL, leave the content alone) as the general-case default or an opt-in flag. It is deliberately *not* shipped: (1) the terminator's rewrite is load-bearing — a reuse that skipped the update is precisely the W13-F1 defect the update-on-reuse slice fixed, where a Worker-opened PR never received the verdict render; (2) the case a `--no-update` flag would serve — "does this branch have a PR?" — is already answered, read-only and completely, by `host-pr status`, so the flag would add a second way to do the same thing with a write verb; and (3) the actual damage was never "the body changed", it was "the close phrase vanished", which is exactly what the guard refuses. Revisit only if a caller appears that must reuse a PR *and* must not touch its content *and* cannot use `status` — none exists today.
 
 ### The flip side — a bare mention is also an action
 
