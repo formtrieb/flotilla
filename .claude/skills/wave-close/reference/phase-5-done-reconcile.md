@@ -20,9 +20,13 @@ Probe each terminal row's closing state, then either **land it `done`** (a merge
 ```bash
 {{wave-cli}} issue-store read-closing <id>   # → { state: "open"|"merged"|"closed-unmerged"|"closed-unknown", prUrl? }
 
-# merged → derive --acked from the FINAL verdict, THEN close (see above):
-{{wave-cli}} verdict-acked "$VERDICTS" <id>              # → { acked: [...], iter, corrupt }
-{{wave-cli}} issue-store close <id> <prUrl> --acked 0,2  # --acked = the comma-joined `acked` array; omit/empty if []
+# merged → derive --acked from the FINAL verdict, THEN close (see above). The
+# CLI prints the acked/iter/corrupt object as JSON on stdout; extract just the
+# comma-joined acked array before passing it through (never hand-parse
+# acVerification[] instead of using this verb's output):
+ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" <id>)   # → { "acked": [...], "iter": ..., "corrupt": ... }
+ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf-8")).acked.join(","))')
+{{wave-cli}} issue-store close <id> <prUrl> --acked "$ACKED"  # $ACKED may be "" (nothing met / no verdict yet)
 
 # closed-unmerged (a PR was FOUND and it did not merge) → flag recoverable-stop
 {{wave-cli}} issue-store flag <id> \
