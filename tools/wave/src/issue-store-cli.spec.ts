@@ -300,6 +300,82 @@ describe('issue-store-cli', () => {
     expect(await runIssueStore(['amend', id, '--patch', patchPath], store)).toBe(1);
   });
 
+  // ── bare create (ADR-0027 — the `filed:` disposition through the CLI) ───────
+  //
+  // The disposition step files a BARE issue inline: title, gap description,
+  // provenance line — no eligibility marker, no Header-Block. This is the verb
+  // the Coordinator invokes, so the CLI must accept the bare shape end-to-end
+  // (previously it could not, and bare finding-issues went out through the host
+  // CLI instead, outside the engine seam).
+  function writeJson(prefix: string, value: unknown): string {
+    const p = join(mkdtempSync(join(tmpdir(), prefix)), 'input.json');
+    writeFileSync(p, JSON.stringify(value), 'utf-8');
+    return p;
+  }
+
+  const BARE_INPUT = {
+    title: 'Gate 8 ships inert',
+    filingHint: 'gate-8-ships-inert',
+    bodySections: [
+      { heading: 'Gap', markdown: 'the verify config is never threaded through.' },
+      { heading: 'Provenance', markdown: 'wave hardening, row 3, iteration 1.' },
+    ],
+  };
+
+  it('create accepts a BARE input (title + filingHint + bodySections) and files it undecorated', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(
+      ['create', '--input', writeJson('is-bare-', BARE_INPUT)],
+      store,
+    );
+    expect(code).toBe(0);
+    const id = captured.trim();
+    expect(id.length).toBeGreaterThan(0);
+
+    // the authored content landed…
+    const triage = await store.readTriage(id);
+    expect(triage.title).toBe('Gate 8 ships inert');
+    expect(triage.body).toContain('the verify config is never threaded through.');
+    expect(triage.body).toContain('wave hardening, row 3, iteration 1.');
+
+    // …and nothing else did: no eligibility stamp (absent from listOpen), no
+    // Header-Block, no acceptance-criteria checklist fabricated from nothing.
+    captured = '';
+    await runIssueStore(['listOpen'], store);
+    expect((JSON.parse(captured) as IssueView[]).map((v) => v.id)).not.toContain(id);
+    expect(triage.body).not.toMatch(/^##\s+Acceptance criteria\s*$/im);
+    expect(triage.body).not.toMatch(/^\*\*Risk:\*\*/m);
+  });
+
+  it('read on a bare issue is a domain failure (exit 1) — never a fabricated empty view', async () => {
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeJson('is-bare2-', BARE_INPUT)], store);
+    const id = captured.trim();
+
+    const code = await runIssueStore(['read', id], store);
+    expect(code).toBe(1);
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('create with a HALF-WRITTEN Header-Block is a usage error (exit 2) and files nothing', async () => {
+    const store = tmpStore();
+    // risk supplied, the rest of the block missing — neither bare nor decorated.
+    const p = writeJson('is-partial-', {
+      title: 'Half a header',
+      filingHint: 'half-a-header',
+      risk: 'mechanical',
+    });
+    expect(await runIssueStore(['create', '--input', p], store)).toBe(2);
+    expect(errSpy).toHaveBeenCalled();
+
+    captured = '';
+    await runIssueStore(['listOpen'], store);
+    expect(JSON.parse(captured) as IssueView[]).toHaveLength(0);
+    captured = '';
+    await runIssueStore(['listClaimed'], store);
+    expect(JSON.parse(captured) as IssueView[]).toHaveLength(0);
+  });
+
   it('read of a nonexistent id returns 1 (store threw, domain failure) and writes stderr', async () => {
     const store = tmpStore();
     const code = await runIssueStore(['read', 'nonexistent#99'], store);

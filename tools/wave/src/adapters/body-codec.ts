@@ -97,6 +97,40 @@ export function serializeBody(input: BodyInput): string {
   return parts.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
+/**
+ * Compose a **BARE** issue body (ADR-0027's `filed:` disposition): the free
+ * `bodySections` (gap description, provenance line) and nothing else — no
+ * `## Files` / `## Blocked by` / `## Acceptance criteria`, no `**Parent:**` /
+ * `**Estimated wallclock:**` metadata. The counterpart of
+ * {@link serializeBody}, kept as its own function rather than a flag on it so
+ * the decorated composition above stays byte-for-byte untouched.
+ *
+ * Returns `''` for no sections — a legitimately empty body (a bare issue can be
+ * title-only), not an error.
+ *
+ * Keeps {@link serializeBody}'s reserved-heading guard: a bare issue that
+ * carried a `## Files` (or AC/Blocked-by/Unblocks) prose section would *read
+ * back* as a partly-decorated one, which is exactly the absent-vs-broken
+ * confusion the bare path exists to avoid. Fail-fast at write instead.
+ */
+export function serializeBareBody(
+  bodySections: { heading: string; markdown: string }[] = [],
+): string {
+  const parts: string[] = [];
+  for (const s of bodySections) {
+    if (RESERVED_SECTIONS.includes(s.heading.trim().toLowerCase())) {
+      throw new Error(
+        `bodySections heading "${s.heading}" collides with a managed section ` +
+          `(${RESERVED_SECTIONS.join(', ')}); a BARE issue carries no Header-Block ` +
+          `section — rename it, or file a decorated issue instead.`,
+      );
+    }
+    parts.push(`## ${s.heading}`, '', s.markdown.trimEnd(), '');
+  }
+  if (parts.length === 0) return '';
+  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+}
+
 /** Parse a stored body back into its fields. Throws on a missing required section. */
 export function parseBody(body: string): ParsedBody {
   const files = parseList(sectionBody(body, 'Files'));

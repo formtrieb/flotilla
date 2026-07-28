@@ -132,6 +132,140 @@ export function runIssueStoreConformance(
       expect(view.acceptanceCriteria.every((a) => a.checked === false)).toBe(true);
     });
 
+    // ── bare create (ADR-0027 — the `filed:` disposition) ─────────────────
+    //
+    // A BARE issue is title + gap description + provenance line, deliberately
+    // WITHOUT an eligibility marker and WITHOUT a Header-Block: existence and
+    // wave-readiness are separate steps, and readiness comes later through
+    // decorate-mode. Until this existed the one sanctioned write path forced
+    // decoration at filing time, so bare finding-issues were filed through the
+    // host CLI, outside the engine seam.
+    //
+    // The read-back rides `readTriage()` (title + raw body) exactly as the amend
+    // cases do — a bare issue has no `IssueView` to project, so the suite must
+    // observe it through the one contract facet that carries raw authored
+    // content. Zero suite-shape concession: identical assertions on all three
+    // stores, none of them naming a label, a section, or a file path.
+
+    /** A bare CreateInput: only the three fields the bare path accepts. */
+    function bareInput(h: ConformanceHarness): CreateInput {
+      const base = h.baseInput({
+        title: 'Gate 8 ships inert',
+        filingHint: 'gate-8-ships-inert',
+      });
+      return {
+        title: base.title,
+        filingHint: base.filingHint,
+        bodySections: [
+          { heading: 'Gap', markdown: 'the verify config is never threaded through.' },
+          { heading: 'Provenance', markdown: 'wave hardening, row 3, iteration 1.' },
+        ],
+      };
+    }
+
+    it('create() files a BARE issue from title + filingHint + bodySections alone', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(bareInput(h));
+      expect(typeof id).toBe('string');
+      expect(id.length).toBeGreaterThan(0);
+
+      const triage = await store.readTriage(id);
+      expect(triage.title).toBe('Gate 8 ships inert');
+      expect(triage.body).toContain('the verify config is never threaded through.');
+      expect(triage.body).toContain('wave hardening, row 3, iteration 1.');
+    });
+
+    it('a BARE issue fabricates nothing — no Header-Block section, no acceptance-criteria checklist', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(bareInput(h));
+      const body = (await store.readTriage(id)).body;
+
+      // none of the managed sections/lines the decorated path writes exist here.
+      expect(countHeading(body, 'Acceptance criteria')).toBe(0);
+      expect(countHeading(body, 'Files')).toBe(0);
+      expect(countHeading(body, 'Blocked by')).toBe(0);
+      expect(countHeading(body, 'Unblocks')).toBe(0);
+      // and no empty AC checklist invented from nothing.
+      expect(body).not.toMatch(/^\s*-\s+\[[ xX]\]/m);
+      // the MarkdownFs-shaped header lines are absent too (a no-op on the other
+      // two stores, which never wrote them — the assertion is store-agnostic).
+      expect(body).not.toMatch(/^\*\*Risk:\*\*/m);
+      expect(body).not.toMatch(/^\*\*Worker:\*\*/m);
+      expect(body).not.toMatch(/^\*\*Files:\*\*/m);
+    });
+
+    it('a BARE issue is NOT wave-eligible: absent from listOpen and from listClaimed', async () => {
+      const { h, store } = await fresh();
+      const decorated = await store.create(h.baseInput({ title: 'a real slice' }));
+      const bare = await store.create(bareInput(h));
+
+      const open = (await store.listOpen('wave-ready')).map((v) => v.id);
+      expect(open).toContain(decorated); // the eligible one still surfaces
+      expect(open).not.toContain(bare); // …the bare one never does
+      expect((await store.listClaimed()).map((v) => v.id)).not.toContain(bare);
+    });
+
+    it('read() on a BARE issue fails honestly — no IssueView invented from an absent Header-Block', async () => {
+      // The wave fields are ABSENT, not empty. A store that answered with a
+      // zero-filled IssueView would make a bare issue look DoR-checkable; the
+      // honest outcome is a loud read failure until `annotate` decorates it.
+      const { h, store } = await fresh();
+      const id = await store.create(bareInput(h));
+      await expect(store.read(id)).rejects.toThrow();
+    });
+
+    it('create() rejects a HALF-WRITTEN Header-Block and files nothing (absent ≠ broken)', async () => {
+      const { h, store } = await fresh();
+      const before = (await store.listOpen('wave-ready')).length;
+      const base = h.baseInput();
+
+      // each partial shape is a caller bug, never "a bare issue with extras".
+      for (const partial of [
+        { risk: base.risk },
+        { risk: base.risk, worker: base.worker },
+        { files: base.files, acceptanceCriteria: base.acceptanceCriteria },
+        { blockedBy: base.blockedBy },
+      ]) {
+        await expect(
+          store.create({ title: base.title, filingHint: base.filingHint, ...partial }),
+        ).rejects.toThrow(/header-block/i);
+      }
+
+      // no-partial-application: not one of the rejected creates filed anything.
+      expect((await store.listOpen('wave-ready')).length).toBe(before);
+    });
+
+    it('create() rejects decoration-only fields on an otherwise-bare input', async () => {
+      const { h, store } = await fresh();
+      const base = h.baseInput();
+      for (const stowaway of [
+        { unblocks: [{ issue: 7 }] },
+        { parent: 'some-prd-id' },
+        { estimatedWallclock: '45m' },
+      ]) {
+        await expect(
+          store.create({ title: base.title, filingHint: base.filingHint, ...stowaway }),
+        ).rejects.toThrow(/bare/i);
+      }
+    });
+
+    it('create() rejects a BARE bodySection whose heading would forge a Header-Block section', async () => {
+      // A bare issue carrying a `## Files` prose section would READ BACK as a
+      // partly-decorated one — the exact absent-vs-broken confusion the bare
+      // path exists to avoid. Fail-fast at write, on every store.
+      const { h, store } = await fresh();
+      const base = h.baseInput();
+      for (const reserved of ['Files', 'Blocked by', 'Unblocks', 'Acceptance criteria']) {
+        await expect(
+          store.create({
+            title: base.title,
+            filingHint: base.filingHint,
+            bodySections: [{ heading: reserved, markdown: 'forged' }],
+          }),
+        ).rejects.toThrow(/managed section/i);
+      }
+    });
+
     // ── annotate (ADR-0010 decorate write-path) ───────────────────────────
     it('annotate() lands risk/worker/files/AC and preserves unmodeled content', async () => {
       const { h, store } = await fresh();

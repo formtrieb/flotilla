@@ -28,6 +28,7 @@ import { DEFAULT_TRIAGE_SCHEMA } from '../../contract';
 import {
   DEFAULT_ELIGIBILITY,
   RUNG_PRECEDENCE,
+  classifyCreateInput,
   validateAmendPatch,
   type IssueStore,
   type CreateInput,
@@ -44,6 +45,7 @@ import {
 import type { GitHubApi, GhIssue } from './github-api';
 import {
   serializeBody,
+  serializeBareBody,
   parseBody,
   upsertLine,
   tickAcs,
@@ -84,26 +86,46 @@ export class GitHubIssuesStore implements IssueStore {
   }
 
   async create(input: CreateInput): Promise<string> {
+    // Whole-input validation FIRST (ADR-0027): a half-written Header-Block
+    // throws before the createIssue call, so a rejected create files nothing.
+    const shape = classifyCreateInput(input);
+
+    if (shape.kind === 'bare') {
+      // ADR-0027 bare filing: the free prose (gap description, provenance line)
+      // and NOTHING else — no `## Files`/`## Blocked by`/`## Acceptance criteria`
+      // sections, and NO labels at all: no eligibility token (so `listOpen`
+      // never surfaces it) and no `risk/*`/`worker/*` stamp. `read()` on it
+      // throws (parseBody finds no `## Files`), which is the honest outcome —
+      // the wave fields are absent, not empty.
+      const { number } = await this.api.createIssue({
+        title: input.title,
+        body: serializeBareBody(input.bodySections),
+        labels: [],
+      });
+      return String(number);
+    }
+
+    const decorated = shape.input;
     const body = serializeBody({
-      files: input.files,
-      blockedBy: input.blockedBy,
-      ...(input.unblocks !== undefined ? { unblocks: input.unblocks } : {}),
-      ...(input.parent !== undefined ? { parent: input.parent } : {}),
-      acceptanceCriteria: input.acceptanceCriteria,
-      ...(input.estimatedWallclock !== undefined
-        ? { estimatedWallclock: input.estimatedWallclock }
+      files: decorated.files,
+      blockedBy: decorated.blockedBy,
+      ...(decorated.unblocks !== undefined ? { unblocks: decorated.unblocks } : {}),
+      ...(decorated.parent !== undefined ? { parent: decorated.parent } : {}),
+      acceptanceCriteria: decorated.acceptanceCriteria,
+      ...(decorated.estimatedWallclock !== undefined
+        ? { estimatedWallclock: decorated.estimatedWallclock }
         : {}),
-      ...(input.bodySections !== undefined
-        ? { bodySections: input.bodySections }
+      ...(decorated.bodySections !== undefined
+        ? { bodySections: decorated.bodySections }
         : {}),
     });
     const labels = [
       this.eligibility[0],
-      `risk/${input.risk}`,
-      `worker/${input.worker}`,
+      `risk/${decorated.risk}`,
+      `worker/${decorated.worker}`,
     ];
     const { number } = await this.api.createIssue({
-      title: input.title,
+      title: decorated.title,
       body,
       labels,
     });
