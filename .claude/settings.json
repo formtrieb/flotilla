@@ -1,7 +1,9 @@
 {
-  "env": {
-    "NODE_USE_ENV_PROXY": "1"
-  },
+  "env":{
+    "LINEAR_API_KEY_CMD": "security find-generic-password -a $USER -s flotilla-linear-key -w",
+    "GITHUB_TOKEN_CMD": "security find-generic-password -a $USER -s flotilla-github-token -w",
+     "NODE_USE_ENV_PROXY": "1"
+  }, 
   "enabledPlugins": {
     "flotilla@formtrieb": false
   },
@@ -46,7 +48,9 @@
       "Bash(less .env:*)",
       "Bash(more .env:*)",
       "Bash(head .env:*)",
-      "Bash(tail .env:*)"
+      "Bash(tail .env:*)",
+      "Bash(security find-generic-password -a $USER -s flotilla-github-token -w:*)",
+      "Bash(security find-generic-password -a $USER -s flotilla-linear-key -w:*)"
     ]
   }
 }
