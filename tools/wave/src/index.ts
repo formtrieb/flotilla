@@ -211,6 +211,26 @@ export {
   type ResolveCredentialOptions,
 } from './credential-resolver';
 
+// The value-free credential PROBE (ADR-0029) — the resolver's paired question
+// ("can this be resolved right now?") rather than its answer. Consumed by the
+// `credential-probe` CLI verb, which the two Coordinator auth preflights
+// (wave-start step 4, wave-close phase 2) run before dispatch; exported so an
+// out-of-tree adapter can probe its own `<VAR>_CMD` pair with the same
+// containment instead of shelling the lookup out by hand (Convention 8).
+export {
+  runCredentialProbe,
+  probeCredential,
+  probeCredentials,
+  discoverConfiguredCredentials,
+  configuredLookupCommand,
+  KNOWN_CREDENTIAL_VARIABLES,
+  type CredentialProbeFailure,
+  type CredentialProbeOutcome,
+  type CredentialProbeReport,
+  type CredentialProbeOptions,
+  type CredentialSource,
+} from './credential-probe-cli';
+
 export {
   DEFAULT_AGENT_PATH_MARKERS,
   parseWorktreeList,
