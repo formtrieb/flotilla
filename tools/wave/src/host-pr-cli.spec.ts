@@ -710,6 +710,107 @@ describe('host-pr create — usage + credential guards', () => {
   });
 });
 
+// ─── host-pr create + preflight resolve through the ONE seam (ADR-0029) ──────
+//
+// Both credential edges of this runner obtain their token from the shared
+// credential resolver, not from a lookup of their own. The proofs are the two
+// halves that a per-edge `env.GITHUB_TOKEN` read could never produce: a token
+// that came out of a lookup COMMAND reaching the Basic-auth header, and a
+// BROKEN lookup command failing loud while a perfectly good ambient token sits
+// right there unused.
+
+describe('host-pr — credential resolution through the engine seam (ADR-0029)', () => {
+  it('create: a configured GITHUB_TOKEN_CMD resolves and its stdout becomes the Basic-auth credential', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: () => ({ status: 201, json: { html_url: NEW_PR } }),
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-9', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: { GITHUB_TOKEN_CMD: 'echo tok-from-the-lookup' } as NodeJS.ProcessEnv },
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'created', url: NEW_PR });
+    // The header carries the LOOKUP's stdout — only the shared resolver produces this.
+    expect(requests.map((r) => r.auth)).toEqual([
+      'x-access-token:tok-from-the-lookup',
+      'x-access-token:tok-from-the-lookup',
+    ]);
+  });
+
+  it('create: a configured command WINS over a set ambient GITHUB_TOKEN', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: () => ({ status: 201, json: { html_url: NEW_PR } }),
+    });
+    await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-9', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: { GITHUB_TOKEN: 'ambient-tok', GITHUB_TOKEN_CMD: 'echo tok-from-the-lookup' } as NodeJS.ProcessEnv },
+    );
+    expect(requests[0].auth).toBe('x-access-token:tok-from-the-lookup');
+    expect(stdout + stderr).not.toContain('ambient-tok');
+  });
+
+  it('create: an empty GITHUB_TOKEN_CMD counts as not configured — the ambient token applies (the CI escape hatch)', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: () => ({ status: 201, json: { html_url: NEW_PR } }),
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-9', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: { GITHUB_TOKEN: 'ambient-tok', GITHUB_TOKEN_CMD: '' } as NodeJS.ProcessEnv },
+    );
+    expect(code).toBe(0);
+    expect(requests[0].auth).toBe('x-access-token:ambient-tok');
+  });
+
+  it('create: a BROKEN lookup command → exit 1, the command named, no network, no fallback to the ambient token', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-9', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: { GITHUB_TOKEN: 'ambient-tok', GITHUB_TOKEN_CMD: 'exit 9' } as NodeJS.ProcessEnv },
+    );
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, verb: 'create' });
+    expect(String(out().error)).toContain('exit 9');
+    expect(requests).toEqual([]);
+    // The loud failure is the point: the good ambient token was NOT used, and
+    // neither it nor any lookup output reached a stream.
+    expect(stdout + stderr).not.toContain('ambient-tok');
+  });
+
+  it('create: a lookup that prints NOTHING → exit 1 (an empty secret is a failure, not a fallback)', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-9', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: { GITHUB_TOKEN: 'ambient-tok', GITHUB_TOKEN_CMD: 'true' } as NodeJS.ProcessEnv },
+    );
+    expect(code).toBe(1);
+    expect(String(out().error)).toMatch(/printed no secret/);
+    expect(requests).toEqual([]);
+    expect(stdout + stderr).not.toContain('ambient-tok');
+  });
+
+  it('preflight: a BROKEN lookup command fails loud with the command named (the posture reader resolves through the seam too)', async () => {
+    // No injected posture → the real construction path, which builds the posture
+    // reader from the resolved credential. The resolver refuses BEFORE any
+    // network, so this stays hermetic.
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: { GITHUB_TOKEN: 'ambient-tok', GITHUB_TOKEN_CMD: 'exit 9' } as NodeJS.ProcessEnv,
+    });
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, verb: 'preflight' });
+    expect(String(out().error)).toContain('exit 9');
+    expect(String(out().error)).toContain('GITHUB_TOKEN_CMD');
+    expect(stdout + stderr).not.toContain('ambient-tok');
+  });
+});
+
 // ─── Aligned url/number field names across every verb (FOR-54) ───────────────
 //
 // The CONTRACT the skills parse. Every verb result must expose the PR URL under

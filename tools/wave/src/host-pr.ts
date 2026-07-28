@@ -1339,7 +1339,7 @@ async function deleteHeadBranch(host: LandingHost, branch: string): Promise<Bran
 // adapter, no new skills).
 
 /**
- * The repo's "Allow auto-merge" setting, as the ambient token can OBSERVE it.
+ * The repo's "Allow auto-merge" setting, as the resolved token can OBSERVE it.
  * `unknown` is a first-class answer, not a failure: GitHub hides the setting
  * below maintain/admin, and an external consumer token must never NEED admin
  * (ADR-0023 amendment — the `closed-unknown` lesson applied at the settings
@@ -1351,7 +1351,7 @@ export type AutoMergeSetting = 'on' | 'off' | 'unknown';
  * The presence of required status checks on a branch (ADR-0023). REPORT-ONLY: a
  * repo with none is a valid `--auto` consumer (a clean PR direct-merges), so this
  * never hard-FAILs, and `unknown` is first-class — the branch-protection read
- * needs admin the ambient token may lack. Host-neutral: GitHub and the Bitbucket
+ * needs admin the resolved token may lack. Host-neutral: GitHub and the Bitbucket
  * pilot both produce this shape (it lived on the GitHub adapter before the
  * ADR-0023 amendment re-homed the posture concern to the host seam).
  */
@@ -1453,7 +1453,7 @@ export function mergeRequiredChecks(
  */
 export interface LandingPosture {
   /**
-   * Whether the ambient token can MERGE pull requests on the bound repo — write
+   * Whether the resolved token can MERGE pull requests on the bound repo — write
    * (push) access or higher. Surfaces a read-only token LOUDLY up-front rather
    * than mid-wave at merge time.
    */
@@ -1527,9 +1527,12 @@ function prMergeTokenCheck(canMerge: boolean): HostPreflightCheck {
   return {
     name: 'pr-merge-token',
     status: canMerge ? 'pass' : 'fail',
+    // NB "the resolved GITHUB_TOKEN", never "the ambient" one (ADR-0029): after
+    // the lookup-command indirection the credential usually is NOT an ambient
+    // variable, and a posture text that said so would be simply false.
     detail: canMerge
-      ? 'The ambient GITHUB_TOKEN has write access — it can merge PRs on the bound repo.'
-      : 'The ambient GITHUB_TOKEN lacks write (push) access — it CANNOT merge PRs on the bound repo. Grant it write (push) access before landing a wave.',
+      ? 'The resolved GITHUB_TOKEN has write access — it can merge PRs on the bound repo.'
+      : 'The resolved GITHUB_TOKEN lacks write (push) access — it CANNOT merge PRs on the bound repo. Grant it write (push) access before landing a wave.',
   };
 }
 

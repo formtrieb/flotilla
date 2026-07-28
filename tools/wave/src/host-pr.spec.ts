@@ -1657,6 +1657,19 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
       expect(c.detail).toMatch(/write/i);
       expect(report.ok).toBe(false);
     });
+
+    // ADR-0029: after the lookup-command indirection the credential is usually
+    // NOT an ambient variable, so a posture text calling it "ambient" would be
+    // simply false. It still names the VARIABLE — that is the operator's handle
+    // on it, whichever of the two paths supplied it.
+    it('never describes the token as "ambient" (ADR-0029), on either verdict', async () => {
+      for (const canMerge of [true, false]) {
+        const report = await preflightHost('github', fakePosture({ canMerge }));
+        const c = byName(report.checks)['pr-merge-token'];
+        expect(c.detail).not.toMatch(/ambient/i);
+        expect(c.detail).toContain('GITHUB_TOKEN');
+      }
+    });
   });
 
   describe('allow-auto-merge', () => {
@@ -1714,6 +1727,21 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
       expect(byName(report.checks)['required-checks'].status).toBe('unknown');
       expect(report.ok).toBe(true);
     });
+  });
+
+  it('NO posture detail anywhere calls the credential "ambient" (ADR-0029), across the whole grading matrix', async () => {
+    // Every combination the grader can emit — one sweep, so a future detail
+    // string cannot quietly re-introduce the word on a path nobody spot-checks.
+    for (const canMerge of [true, false]) {
+      for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
+        for (const required of [REQUIRED_PRESENT, REQUIRED_ABSENT, REQUIRED_UNKNOWN]) {
+          const report = await preflightHost('github', fakePosture({ canMerge, autoMerge, required }));
+          for (const check of report.checks) {
+            expect(check.detail).not.toMatch(/ambient/i);
+          }
+        }
+      }
+    }
   });
 
   it('unknown + advisory NEVER drag ok to false — only a fail blocks', async () => {
