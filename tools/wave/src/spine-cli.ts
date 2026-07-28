@@ -24,6 +24,9 @@
  *   {{wave-cli}} spine set-row-pr <spine-path> <id> <pr-cell>
  *   {{wave-cli}} spine set-branch <spine-path> <id> <branch> [--model <m>]
  *   {{wave-cli}} spine replace-closed-by <spine-path> <body-file>
+ *   {{wave-cli}} spine add-disclosure <spine-path> <row-id> --iter <n> --source <s> --text <t>
+ *   {{wave-cli}} spine set-disposition <spine-path> <disclosure-ref> <disposition>
+ *   {{wave-cli}} spine check-disclosures <spine-path>
  *
  * Ops:
  *   read              Print the current spine source to stdout (+ trailing \n).
@@ -51,14 +54,56 @@
  *                     then flush. The body lives in a file (not argv) so it can
  *                     carry newlines / a multi-line `## Closed-By` block.
  *
+ * ── Disclosures (ADR-0027) ────────────────────────────────────────────────────
+ *   add-disclosure    Capture one disclosure — a Convention-9 wiring gap, a
+ *                     Convention-10 runtime residue, or a same-shaped
+ *                     Reviewer/Coordinator finding — against <row-id> at
+ *                     disposition `open`, then flush. Materializes the
+ *                     `## Disclosures` section on a spine that predates it.
+ *                     Prints the created disclosure-ref (`<row-id>.<ordinal>`)
+ *                     to stdout AFTER the flush — that ref is what
+ *                     `set-disposition` addresses.
+ *   set-disposition   Set exactly one entry's disposition. The vocabulary is
+ *                     exactly `resolved-in-slice | scope-extension | filed:<id>
+ *                     | dropped:<reason>`; anything else (including `open`, the
+ *                     capture default) is refused loud with NOTHING written.
+ *   check-disclosures The fail-closed archive gate. Exits 0 iff no `open`
+ *                     disclosure remains, non-zero otherwise — `wave-close`
+ *                     reads the EXIT CODE, never this output's prose (ADR-0027
+ *                     rejects a grep-the-markdown gate explicitly). Non-mutating,
+ *                     and it needs its own exit code, so it is handled ahead of
+ *                     the generic store/apply/flush flow (which always returns 0).
+ *
+ * NOTE on WHERE the disclosure vocabularies are validated. `set-row-state` /
+ * `set-status` check their token HERE, at the CLI boundary, because their writer
+ * stamps any string verbatim into the spine — this is the only place a typo can
+ * be caught. The disclosure verbs are different: `spine-store.ts` OWNS the
+ * `## Disclosures` section and its constructors enforce their own invariants, so
+ * a bad `--source` / `<disposition>` / `<row-id>` throws in the DOMAIN and
+ * surfaces here as exit 1 — the check cannot be bypassed by reaching the store
+ * through another front end. Only shape errors argv alone can show (a missing
+ * flag, a non-integer `--iter`) are caught at this boundary as usage 2.
+ *
  * Exit codes:
- *   0 — success
- *   1 — domain failure: a spine mutator threw (bad row id, missing section)
+ *   0 — success (for `check-disclosures`: the archive gate is clear)
+ *   1 — domain failure: a spine mutator threw (bad row id, missing section,
+ *       out-of-vocabulary disclosure source/disposition, unknown disclosure-ref)
+ *       — or, for `check-disclosures`, at least one `open` disclosure remains.
+ *       Both are "not clear": the gate is fail-closed, so an unreadable or
+ *       corrupt spine blocks the archive exactly like an open disclosure does.
  *   2 — usage error (missing op/path/args, unknown op, bad state token, or a
- *       non-positive-integer `set-row-iter` <n>) or body-file read error
+ *       non-positive-integer `set-row-iter` / `add-disclosure --iter` <n>) or
+ *       body-file read error
  */
 
-import { createSpineStore, type SpineIo, defaultSpineIo } from './spine-store';
+import {
+  createSpineStore,
+  ensureDisclosuresSection,
+  DISPOSITION_VOCABULARY,
+  type SpineIo,
+  type DisclosureSource,
+  defaultSpineIo,
+} from './spine-store';
 import {
   ROW_STATES,
   SPINE_STATUSES,
@@ -82,9 +127,19 @@ function printUsage(): void {
       '  spine set-branch <spine-path> <id> <branch> [--model <m>]',
       '  spine replace-closed-by <spine-path> <body-file>',
       '  spine set-status <spine-path> <status>',
+      '  spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>',
+      `  spine set-disposition <spine-path> <disclosure-ref> <${DISPOSITION_VOCABULARY}>`,
+      '  spine check-disclosures <spine-path>',
       '',
     ].join('\n'),
   );
+}
+
+/** Value of a `--flag <value>` pair, or `undefined` when absent/valueless. */
+function flagValue(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  if (i === -1) return undefined;
+  return args[i + 1];
 }
 
 export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number {
@@ -106,7 +161,17 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       process.stderr.write(`error: could not read/parse payload "${payloadFile}": ${(err as Error).message}\n`);
       return 2;
     }
-    const source = renderSpine(payload.meta, payload.roster, payload.conflict, payload.dorCheck);
+    // ADR-0027: every freshly created wave carries the `## Disclosures` section
+    // from birth, so the routing-time capture verb never has to grow one and the
+    // archive gate always has a section to count. Composed here rather than
+    // inside `renderSpine` because `wave-md-rw.ts` is outside this slice's
+    // declared Files — `ensureDisclosuresSection` is idempotent, so folding the
+    // call into `renderSpine` later is a pure move, not a behaviour change.
+    // `spine create` is the ONLY path that produces a real wave's spine, so
+    // every wave gets the section either way.
+    const source = ensureDisclosuresSection(
+      renderSpine(payload.meta, payload.roster, payload.conflict, payload.dorCheck),
+    );
     io.write(outPath, source);
     return 0;
   }
@@ -150,12 +215,54 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
   }
 
+  // `check-disclosures` is the fail-closed archive gate (ADR-0027). It mutates
+  // nothing and — unlike every op below — its RESULT is the exit code, which the
+  // generic flow (always 0 on success) cannot express. So it is handled here,
+  // alongside `set-row-iter`, ahead of that flow.
+  //
+  // Fail-closed in both directions: an open disclosure blocks the archive, and so
+  // does a spine that cannot be read or parsed. `wave-close` branches on this
+  // code alone — it never reads the prose below (ADR-0027 rejected the
+  // grep-the-markdown gate: the #141 class).
+  if (op === 'check-disclosures') {
+    try {
+      const store = createSpineStore(path, io);
+      const open = store.openDisclosures();
+      const total = store.disclosures().length;
+      if (open.length === 0) {
+        process.stdout.write(
+          `disclosures: 0 open of ${total} — archive gate CLEAR\n`,
+        );
+        return 0;
+      }
+      process.stdout.write(
+        [
+          `disclosures: ${open.length} open of ${total} — archive gate BLOCKED (ADR-0027)`,
+          ...open.map(
+            (d) =>
+              `  ${d.ref}  row ${d.rowId}  iter ${d.iter}  (${d.source})  ${d.text}`,
+          ),
+          `disposition each: spine set-disposition ${path} <ref> <${DISPOSITION_VOCABULARY}>`,
+          '',
+        ].join('\n'),
+      );
+      return 1;
+    } catch (err) {
+      process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
+      return 1;
+    }
+  }
+
   // ── Arg-presence + token validation FIRST (all usage errors → 2). These run
   // before the try/catch so a usage 2 is never reclassified as a domain 1. The
   // `apply` closure carries the validated mutation into the single try/catch
   // below, where any spine-mutator throw (bad row id, missing section) becomes a
   // clean domain-failure exit 1 — never an uncaught stack trace.
   let apply: (store: ReturnType<typeof createSpineStore>) => void;
+
+  // `add-disclosure` reports the ref it minted — captured here and printed only
+  // AFTER the flush succeeds, so stdout never advertises a ref that never landed.
+  let createdRef: string | null = null;
 
   switch (op) {
     case 'read': {
@@ -256,9 +363,61 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       break;
     }
 
+    case 'add-disclosure': {
+      const rowId = args[2];
+      const iterRaw = flagValue(args, '--iter');
+      const sourceRaw = flagValue(args, '--source');
+      const text = flagValue(args, '--text');
+      // A `--`-prefixed token in the positional slot means <row-id> was OMITTED
+      // and the first flag slid into its place — a usage error, not a domain
+      // one ("no Plan-Table row with id --iter" would be a baffling exit 1).
+      if (
+        !rowId ||
+        rowId.startsWith('--') ||
+        iterRaw === undefined ||
+        sourceRaw === undefined ||
+        text === undefined
+      ) {
+        printUsage();
+        return 2;
+      }
+      const iter = Number(iterRaw);
+      if (!Number.isInteger(iter) || iter < 1) {
+        process.stderr.write(
+          `error: invalid --iter "${iterRaw}"; expected a positive integer\n`,
+        );
+        return 2;
+      }
+      // `--source` / `--text` / `<row-id>` are NOT checked here — the store's
+      // constructor owns those invariants (see the NOTE in this file's header);
+      // an out-of-vocabulary source throws there and lands as exit 1.
+      apply = (store) => {
+        createdRef = store.addDisclosure({
+          rowId,
+          iter,
+          source: sourceRaw as DisclosureSource,
+          text,
+        }).ref;
+      };
+      break;
+    }
+
+    case 'set-disposition': {
+      const ref = args[2];
+      const disposition = args[3];
+      if (!ref || !disposition) {
+        printUsage();
+        return 2;
+      }
+      // The vocabulary check lives in the store and throws → exit 1 with the
+      // spine untouched (the throw happens before flush).
+      apply = (store) => store.setDisposition(ref, disposition);
+      break;
+    }
+
     default:
       process.stderr.write(
-        `unknown op: ${op}; available: create, read, set-row-state, set-row-iter, set-row-pr, set-branch, replace-closed-by, set-status\n`,
+        `unknown op: ${op}; available: create, read, set-row-state, set-row-iter, set-row-pr, set-branch, replace-closed-by, set-status, add-disclosure, set-disposition, check-disclosures\n`,
       );
       return 2;
   }
@@ -270,6 +429,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     apply(store);
     // `read` is non-mutating; flushing it is a harmless byte-identical no-op.
     if (op !== 'read') store.flush();
+    if (createdRef) process.stdout.write(createdRef + '\n');
     return 0;
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);

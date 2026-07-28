@@ -8,6 +8,7 @@ import { runSpine } from './spine-cli';
 // this module's ops now flow through (issue #77).
 import { main } from './cli';
 import { readSpine } from './wave-md-rw';
+import { readDisclosures } from './spine-store';
 
 const FIXTURE = readFileSync(
   join(__dirname, '__fixtures__/minimal-spine.md'),
@@ -305,6 +306,240 @@ _(none yet)_
       expect(code).toBe(1);
       expect(stderrSpy).toHaveBeenCalled();
     });
+  });
+
+  // ── Disclosures (ADR-0027) ────────────────────────────────────────────────
+  //
+  // The three verbs that make a disclosure durable: capture at routing
+  // (`add-disclosure`), the human-decided exit (`set-disposition`), and the
+  // fail-closed gate `wave-close` runs before Archive (`check-disclosures`).
+
+  describe('disclosures', () => {
+    /** All stdout written so far, joined. */
+    const printed = () =>
+      stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+
+    it('add-disclosure captures at `open`, prints the ref, and flushes to disk', () => {
+      const path = writeTmpSpine();
+      const code = runSpine([
+        'add-disclosure', path, ROW_ID,
+        '--iter', '1',
+        '--source', 'worker',
+        '--text', 'the consuming call-site lies outside the declared Files globs',
+      ]);
+      expect(code).toBe(0);
+      expect(printed().trim()).toBe('01.1');
+
+      const after = readFileSync(path, 'utf-8');
+      expect(after).toContain('## Disclosures');
+      expect(after).toContain(
+        '| 01.1 | 01 | 1 | worker | open | the consuming call-site lies outside the declared Files globs |',
+      );
+      // The fixture predates ADR-0027 — every section it already had survives.
+      expect(after).toContain('branch wave-orch/01-thing');
+      expect(readSpine(after).planTable[0].state).toBe('planned');
+    });
+
+    it('add-disclosure is source-neutral — worker, reviewer and coordinator land identically', () => {
+      const path = writeTmpSpine();
+      for (const source of ['worker', 'reviewer', 'coordinator']) {
+        expect(
+          runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', source, '--text', `${source} saw it`]),
+        ).toBe(0);
+      }
+      const after = readFileSync(path, 'utf-8');
+      expect(after).toMatch(/\| 01\.1 \| 01 \| 1 \| worker \| open \|/);
+      expect(after).toMatch(/\| 01\.2 \| 01 \| 1 \| reviewer \| open \|/);
+      expect(after).toMatch(/\| 01\.3 \| 01 \| 1 \| coordinator \| open \|/);
+    });
+
+    it('add-disclosure with a missing flag → usage 2, nothing written', () => {
+      const path = writeTmpSpine();
+      const before = readFileSync(path, 'utf-8');
+      expect(runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker'])).toBe(2);
+      expect(runSpine(['add-disclosure', path, ROW_ID, '--source', 'worker', '--text', 't'])).toBe(2);
+      expect(runSpine(['add-disclosure', path, '--iter', '1', '--source', 'worker', '--text', 't'])).toBe(2);
+      // `--text` present but valueless (last token) is still a usage error.
+      expect(runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text'])).toBe(2);
+      expect(readFileSync(path, 'utf-8')).toBe(before);
+    });
+
+    it('add-disclosure with a non-positive-integer --iter → usage 2 (fail loud)', () => {
+      const path = writeTmpSpine();
+      for (const bad of ['two', '0', '-1', '1.5']) {
+        expect(
+          runSpine(['add-disclosure', path, ROW_ID, '--iter', bad, '--source', 'worker', '--text', 't']),
+        ).toBe(2);
+      }
+      expect(readFileSync(path, 'utf-8')).not.toContain('## Disclosures');
+    });
+
+    it('add-disclosure with an unknown --source or row id → domain exit 1, nothing written', () => {
+      const path = writeTmpSpine();
+      const before = readFileSync(path, 'utf-8');
+      expect(
+        runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'nobody', '--text', 't']),
+      ).toBe(1);
+      expect(
+        runSpine(['add-disclosure', path, '99', '--iter', '1', '--source', 'worker', '--text', 't']),
+      ).toBe(1);
+      expect(stderrSpy).toHaveBeenCalled();
+      expect(readFileSync(path, 'utf-8')).toBe(before);
+    });
+
+    it('set-disposition updates exactly one entry', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '2', '--source', 'reviewer', '--text', 'gap B']);
+
+      expect(runSpine(['set-disposition', path, '01.1', 'filed:#158'])).toBe(0);
+
+      const after = readFileSync(path, 'utf-8');
+      expect(after).toContain('| 01.1 | 01 | 1 | worker | filed:#158 | gap A |');
+      expect(after).toContain('| 01.2 | 01 | 2 | reviewer | open | gap B |');
+    });
+
+    it('set-disposition refuses an unknown disposition LOUD — exit 1, nothing written', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+      const before = readFileSync(path, 'utf-8');
+
+      expect(runSpine(['set-disposition', path, '01.1', 'sorted-it-out'])).toBe(1);
+      // `open` is the capture default, not a decision — refused too.
+      expect(runSpine(['set-disposition', path, '01.1', 'open'])).toBe(1);
+      expect(stderrSpy).toHaveBeenCalled();
+      expect(readFileSync(path, 'utf-8')).toBe(before);
+      expect(readFileSync(path, 'utf-8')).not.toContain('sorted-it-out');
+    });
+
+    it('set-disposition on an unknown ref → domain exit 1; missing args → usage 2', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+      expect(runSpine(['set-disposition', path, '01.9', 'scope-extension'])).toBe(1);
+      expect(runSpine(['set-disposition', path, '01.1'])).toBe(2);
+      expect(runSpine(['set-disposition', path])).toBe(2);
+    });
+
+    // ── The fail-closed gate, proven to FAIL (Convention-11 spirit) ──────────
+    it('check-disclosures: green → add → RED → disposition → green again', () => {
+      const path = writeTmpSpine();
+
+      // A spine with no Disclosures section at all is already clear.
+      expect(runSpine(['check-disclosures', path])).toBe(0);
+      expect(printed()).toContain('archive gate CLEAR');
+      stdoutSpy.mockClear();
+
+      // Capture one disclosure — the gate must now BLOCK.
+      expect(
+        runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gate 8 ships inert']),
+      ).toBe(0);
+      stdoutSpy.mockClear();
+
+      expect(runSpine(['check-disclosures', path])).not.toBe(0);
+      const blocked = printed();
+      expect(blocked).toContain('archive gate BLOCKED');
+      expect(blocked).toContain('01.1');
+      expect(blocked).toContain('gate 8 ships inert');
+      stdoutSpy.mockClear();
+
+      // Disposition it — and the very same check flips green.
+      expect(runSpine(['set-disposition', path, '01.1', 'filed:#158'])).toBe(0);
+      expect(runSpine(['check-disclosures', path])).toBe(0);
+      expect(printed()).toContain('archive gate CLEAR');
+    });
+
+    it('check-disclosures stays RED while ANY entry is open, and `dropped:<reason>` clears it (the gate never judges quality)', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'reviewer', '--text', 'gap B']);
+
+      expect(runSpine(['set-disposition', path, '01.1', 'resolved-in-slice'])).toBe(0);
+      expect(runSpine(['check-disclosures', path])).not.toBe(0); // 01.2 still open
+
+      expect(runSpine(['set-disposition', path, '01.2', 'dropped:noise, not a gap'])).toBe(0);
+      expect(runSpine(['check-disclosures', path])).toBe(0);
+      expect(readFileSync(path, 'utf-8')).toContain('dropped:noise, not a gap');
+    });
+
+    it('check-disclosures is fail-CLOSED on an unreadable spine (never a silent green)', () => {
+      const code = runSpine(['check-disclosures', join(tmpdir(), 'no-such-spine-adr-0027.md')]);
+      expect(code).not.toBe(0);
+      expect(stderrSpy).toHaveBeenCalled();
+    });
+
+    it('check-disclosures with no path → usage 2', () => {
+      expect(runSpine(['check-disclosures'])).toBe(2);
+    });
+
+    it('create renders the Disclosures section into a FRESH spine (ADR-0027)', () => {
+      const writes: Record<string, string> = {};
+      const payload = JSON.stringify({
+        meta: { slug: 'demo', description: 'd', coordinator: 'at', model: 'Opus 4.8', created: '2026-07-28', lastUpdated: '2026-07-28 10:00' },
+        roster: [{ id: '156', title: 'T', worker: 'background', risk: 'public-API-change' }],
+        conflict: { issues: [], cells: [] },
+        dorCheck: 'all pass.',
+      });
+      const io = {
+        read: () => payload,
+        write: (p: string, c: string) => { writes[p] = c; },
+      };
+      expect(runSpine(['create', 'out/WAVE.md', 'payload.json'], io)).toBe(0);
+      const source = writes['out/WAVE.md'];
+      expect(source).toContain('## Disclosures');
+      expect(source).toContain('| Ref | Row | Iter | Source | Disposition | Text |');
+      // Still a fully-parseable spine, and the new section is empty (gate clear).
+      expect(readSpine(source).planTable).toHaveLength(1);
+      expect(readDisclosures(source)).toEqual([]);
+    });
+  });
+});
+
+// ─── Convention 9 wiring: the new verbs are reachable through the ROUTER ──────
+//
+// An engine-complete-but-CLI-unreachable landing is the exact class this repo
+// has hit before (the `arm --delete-branch` precedent). `cli.ts`'s `spine` case
+// forwards argv verbatim, so these specs pin the whole path — `main(['spine',
+// …])`, not `runSpine(…)` — end to end against a real file on disk.
+
+describe('cli.ts routes the disclosure verbs (ADR-0027 wiring)', () => {
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('add-disclosure → check (RED) → set-disposition → check (green), all via main([\'spine\', …])', () => {
+    const path = writeTmpSpine();
+
+    expect(main(['spine', 'add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'wiring gap'])).toBe(0);
+    expect(readFileSync(path, 'utf-8')).toContain('| 01.1 | 01 | 1 | worker | open | wiring gap |');
+
+    expect(main(['spine', 'check-disclosures', path])).not.toBe(0);
+    expect(main(['spine', 'set-disposition', path, '01.1', 'scope-extension'])).toBe(0);
+    expect(main(['spine', 'check-disclosures', path])).toBe(0);
+  });
+
+  it('the router surfaces the same exit codes as the direct runner', () => {
+    const path = writeTmpSpine();
+    expect(main(['spine', 'set-disposition', path, '01.1', 'nonsense'])).toBe(
+      runSpine(['set-disposition', path, '01.1', 'nonsense']),
+    );
+    expect(main(['spine', 'add-disclosure', path, ROW_ID, '--iter', 'x', '--source', 'worker', '--text', 't'])).toBe(2);
+    expect(stderrSpy).toHaveBeenCalled();
+  });
+
+  it('the router usage text advertises the three new ops', () => {
+    expect(main([])).toBe(2);
+    const usage = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(usage).toContain('spine add-disclosure');
+    expect(usage).toContain('spine set-disposition');
+    expect(usage).toContain('spine check-disclosures');
   });
 });
 
