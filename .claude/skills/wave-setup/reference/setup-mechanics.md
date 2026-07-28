@@ -35,7 +35,9 @@ On exit 1, read the error, fix the named field in the JSON, and re-run. Do not p
 > {{wave-cli}} store-preflight [--config wave.config.json]
 > ```
 >
-> `--config` selects the store config (default `wave.config.json`). Like the other store-touching verbs, this one builds the real store — a `github` config needs `GITHUB_TOKEN`, a `linear` config needs `LINEAR_API_KEY`, in the ambient env. On Node ≥ 24 under a proxied sandbox this needs `NODE_USE_ENV_PROXY=1` so the raw-fetch adapters honour the harness proxy — the tracked env block below is the standing source for that flag once it's scaffolded; prefix it explicitly (dogfood in the sandbox) only where no tracked env block applies yet.
+> `--config` selects the store config (default `wave.config.json`). Like the other store-touching verbs, this one builds the real store — a `github` config needs `GITHUB_TOKEN`, a `linear` config needs `LINEAR_API_KEY`, resolved through the engine's credential seam (`credential-resolver.ts`, ADR-0029): a configured `<VAR>_CMD` first, the ambient `<VAR>` otherwise. On Node ≥ 24 under a proxied sandbox this needs `NODE_USE_ENV_PROXY=1` so the raw-fetch adapters honour the harness proxy — the tracked env block below is the standing source for that flag once it's scaffolded; prefix it explicitly (dogfood in the sandbox) only where no tracked env block applies yet.
+>
+> **This resolution is also the credential live-gate.** Re-running `store-preflight` right after scaffolding a `<VAR>_CMD` entry ([Credential lookup-command scaffold](#credential-lookup-command-scaffold-adr-0029) below) proves the newly-wired lookup command resolves ahead of any stray ambient variable — nothing extra to run.
 
 ### What it checks (per store kind)
 
@@ -78,7 +80,7 @@ The code-host landing posture has its own owner, the host seam (ADR-0023 amendme
 # → { ok, verb: "preflight", host, checks: [ { name, status, detail }, … ] }
 ```
 
-It builds the posture reader from `$GITHUB_TOKEN` (the same construction-time token check as `host-pr arm|merge|status`); under a proxied sandbox the tracked env block below is the standing source for `NODE_USE_ENV_PROXY=1` — prefix it explicitly only where no tracked env block applies. `--remote <url>` overrides the detected remote (default `git remote get-url origin`). It takes **no `--branch`** — required checks are read against the repo's **default branch**.
+It builds the posture reader from `GITHUB_TOKEN` (the same construction-time token check as `host-pr arm|merge|status`), resolved through the same credential seam as the store preflight — a configured `GITHUB_TOKEN_CMD` first, the ambient `GITHUB_TOKEN` otherwise (ADR-0029), so re-running this after scaffolding the lookup command doubles as its live-gate too; under a proxied sandbox the tracked env block below is the standing source for `NODE_USE_ENV_PROXY=1` — prefix it explicitly only where no tracked env block applies. `--remote <url>` overrides the detected remote (default `git remote get-url origin`). It takes **no `--branch`** — required checks are read against the repo's **default branch**.
 
 ### What it checks (every store kind — code host only)
 
@@ -384,6 +386,8 @@ The SKILL.md "Scaffolding the tracked permission allowlist and env block" precon
 }
 ```
 
+> This scaffold is the AFK command-surface baseline every consumer gets. A consumer also adopting the credential lookup-command indirection (ADR-0029, the wave-setup default) merges a `<VAR>_CMD` entry into this same `env` block and its matching lookup-command prefix into this same `deny` array — see [Credential lookup-command scaffold](#credential-lookup-command-scaffold-adr-0029) below for the exact entries; nothing here needs to change to accommodate them, they just merge in.
+
 - **`env` block** — sets `NODE_USE_ENV_PROXY: "1"` for every command the harness runs in this repo (Bash and the engine CLI alike). This is the recommended mode for every consumer under a proxied sandbox; it makes the per-call prefix on the allowlist entries below redundant, not required — see the rationale above.
 - **Engine-CLI invocation forms** — the first four allowlist entries: the npx-free local binary and the `npx @formtrieb/flotilla-engine` package form, each named **prefix-free** (the form every in-repo call now resolves to, thanks to the env block) **and** env-prefixed (kept for backwards compatibility with existing briefs and cross-repo habits). The npm package is the canonical resolution for `{{wave-cli}}` — a fresh plugin consumer needs only these four entries, no vendored `tools/wave` path. The trailing two `npx tsx tools/wave/src/cli.ts` entries (prefix-free + env-prefixed) are a **fallback for a consumer that still vendors `tools/wave` locally** (this repo included, dogfooding its own skills pre-publish) — omit them entirely once the consumer has no such vendored copy. If this consumer runs the engine from a different repo-relative path, scaffold that prefix instead — the invariant is *both invocation forms for both binary styles*, not this exact path.
 - **Worker git verbs** — `worktree/fetch/checkout/branch/add/commit/reset/push`: the workspace-setup and termination surface (anchor, branch, stage, commit, push) every Worker and Reviewer runs.
@@ -409,3 +413,81 @@ Do **not** scaffold a `docker`-star entry into the tracked `excludedCommands`. A
   1. **Socket-free floor, always** — `docker compose config` (validates the compose file) and `bash -n` (syntax-checks scripts) need no daemon; run them unconditionally.
   2. **Live path only when reachable** — run the actual `docker` / `docker compose up` path **only when the docker socket happens to be reachable**.
   3. **Precise deferral disclosure otherwise** — when the socket is unreachable, the Worker names in its report exactly which checks were deferred, so the Reviewer reads a deferred-not-passed signal rather than a false green.
+
+## Credential lookup-command scaffold (ADR-0029)
+
+The three artifacts: the keychain item, the `<VAR>_CMD` env entry, and its matching `permissions.deny` anchor.
+
+The SKILL.md [Credentials](../SKILL.md#credentials) section owns the **judgment** (the two first-class paths, the live-gate vs. "ACL bind" framing, the AFK-incompatibility of per-invocation-confirmation resolvers, the direnv+keychain half-measure); this is the concrete scaffold. Like the AFK harness config above, it lands in the consumer repo's **tracked** `.claude/settings.json` — the same file, not a second one — because a dispatched Worker/Reviewer worktree carries tracked files only, and the `<VAR>_CMD` entry has to reach that worktree for the wave's own dispatched agents to resolve the credential, not only the operator's interactive session.
+
+Run this once per credential the consumer needs (`GITHUB_TOKEN` always; `LINEAR_API_KEY` too, for a `linear` store). macOS `security` is the worked example below — the same three-artifact shape applies to any platform-native secret store or session-authenticated CLI (`op`, …), substituting that tool's own create/read invocation.
+
+**1. The keychain item** (default ACL — no `-T` restriction, so later reads never prompt):
+
+```bash
+security add-generic-password -a $USER -s flotilla-github-token -w
+```
+
+**2. The `<VAR>_CMD` entry**, merged into the same `env` block as the proxy flag:
+
+```json
+{
+  "env": {
+    "NODE_USE_ENV_PROXY": "1",
+    "GITHUB_TOKEN_CMD": "security find-generic-password -a $USER -s flotilla-github-token -w"
+  }
+}
+```
+
+For a `linear` store, add `LINEAR_API_KEY_CMD` the same way, against its own keychain item:
+
+```json
+{
+  "env": {
+    "NODE_USE_ENV_PROXY": "1",
+    "GITHUB_TOKEN_CMD": "security find-generic-password -a $USER -s flotilla-github-token -w",
+    "LINEAR_API_KEY_CMD": "security find-generic-password -a $USER -s flotilla-linear-key -w"
+  }
+}
+```
+
+**3. The `permissions.deny` entry** — one per scaffolded `<VAR>_CMD`, the exact command string as the `Bash(...)` prefix, merged into the same `deny` array as the secret-echo anchor:
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Read(.claude/settings.local.json)",
+      "Read(**/.claude/settings.local.json)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Bash(cat .claude/settings.local.json:*)",
+      "Bash(less .claude/settings.local.json:*)",
+      "Bash(more .claude/settings.local.json:*)",
+      "Bash(head .claude/settings.local.json:*)",
+      "Bash(tail .claude/settings.local.json:*)",
+      "Bash(cat .env:*)",
+      "Bash(less .env:*)",
+      "Bash(more .env:*)",
+      "Bash(head .env:*)",
+      "Bash(tail .env:*)",
+      "Bash(security find-generic-password -a $USER -s flotilla-github-token -w:*)",
+      "Bash(security find-generic-password -a $USER -s flotilla-linear-key -w:*)"
+    ]
+  }
+}
+```
+
+The first block (`Read`/`cat`/`less`/`more`/`head`/`tail` against the gitignored settings/`.env` files) is the pre-existing secret-echo anchor (wave-shared Convention 8, FOR-81) — unchanged, universal, scaffolded identically for every consumer. The trailing two lines are the ADR-0029 addition: **per credential**, keyed to the exact command just written into that credential's `<VAR>_CMD` — this is what closes the residual vector (the environment now carries a pointer, so the leak class becomes "execute the lookup command directly," and this entry blocks the agent harness's own Bash tool from doing that). It anchors the direct form only — an `echo $(security …)` wrapper is out of scope here, left to the separate PreToolUse-hook candidate. It does not restrict the engine's own resolution: `credential-resolver.ts`'s `child_process` spawn runs *inside* an already-allowlisted CLI invocation (`store-preflight`, `host-pr`, a store verb), a different actor than an agent's Bash tool reaching for the command directly.
+
+**The live-gate.** Once all three exist, re-run `store-preflight` (or any engine call that constructs the store/host client — it resolves the credential as a side effect):
+
+```bash
+{{wave-cli}} store-preflight --config wave.config.json
+```
+
+A clean exit is the live-gate: the keychain item is readable, the `<VAR>_CMD` command is spelled correctly, and the engine's precedence resolves it ahead of any stray ambient variable. Read only the exit code — never execute the `<VAR>_CMD` value directly to "check" it; its stdout **is** the secret, and the engine's own resolution inside the preflight is the sanctioned check (SECRET-SAFE).
+
+**The ambient path stays legitimate — do not scaffold `<VAR>_CMD` for a credential that should stay ambient.** An ephemeral CI-style environment (a per-job-scoped token injected into a minutes-lived environment with no keychain) is a first-class destination by design (ADR-0029), not a gap to close — leave `<VAR>_CMD` unset there, or set it explicitly to `""` if a repo-wide `env` block would otherwise apply it. There is no deprecation horizon for this path.
