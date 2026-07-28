@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { serializeBody, parseBody, upsertLine, tickAcs, upsertSection } from './body-codec';
+import {
+  serializeBody,
+  serializeBareBody,
+  parseBody,
+  upsertLine,
+  tickAcs,
+  upsertSection,
+} from './body-codec';
 
 describe('body-codec round-trip', () => {
   it('serializes + parses files / blockedBy / unblocks / AC / wallclock', () => {
@@ -212,6 +219,65 @@ describe('body-codec blocked-by fail-loud (FOR-31 / W4-F2)', () => {
 });
 
 // ── upsertSection (the Amend facet's section writer, ADR-0025 / FOR-33) ───────
+describe('serializeBareBody (ADR-0027 — the undecorated filing body)', () => {
+  const SECTIONS = [
+    { heading: 'Gap', markdown: 'the verify config is never threaded through.' },
+    { heading: 'Provenance', markdown: 'wave hardening, row 3, iteration 1.' },
+  ];
+
+  it('emits ONLY the free prose sections — no managed section, no metadata line', () => {
+    const body = serializeBareBody(SECTIONS);
+    expect(body).toContain('## Gap');
+    expect(body).toContain('the verify config is never threaded through.');
+    expect(body).toContain('## Provenance');
+    for (const managed of ['Files', 'Blocked by', 'Unblocks', 'Acceptance criteria']) {
+      expect(body).not.toMatch(new RegExp(`^##\\s+${managed}\\s*$`, 'im'));
+    }
+    expect(body).not.toMatch(/^\*\*Parent:\*\*/m);
+    expect(body).not.toMatch(/^\*\*Estimated wallclock:\*\*/m);
+    expect(body).not.toMatch(/^\s*-\s+\[[ xX]\]/m); // no AC checklist fabricated
+  });
+
+  it('an empty / omitted section list yields an empty body, not an error', () => {
+    expect(serializeBareBody()).toBe('');
+    expect(serializeBareBody([])).toBe('');
+  });
+
+  it('throws on a heading that would forge a managed section', () => {
+    for (const reserved of ['Files', 'blocked BY', 'Unblocks', 'Acceptance Criteria']) {
+      expect(() => serializeBareBody([{ heading: reserved, markdown: 'x' }])).toThrow(
+        /managed section/i,
+      );
+    }
+  });
+
+  // Convention 11 negative control: making the header OPTIONAL at the write seam
+  // must not soften the READ seam. An ABSENT header and a PRESENT-but-BROKEN one
+  // are different claims and must still fail differently — the bare body reports
+  // the missing required section, a garbled `## Blocked by` still names the
+  // unparseable token. Neither may decode to a fabricated "no blockers".
+  it('stays fail-loud on read: an ABSENT header and a BROKEN header throw DIFFERENT, self-naming errors', () => {
+    const bare = serializeBareBody(SECTIONS);
+    expect(() => parseBody(bare)).toThrow(/## Files/);
+
+    const broken = [
+      '## Files',
+      '- src/a.ts',
+      '',
+      '## Blocked by',
+      'FOR-23',
+      '',
+      '## Acceptance criteria',
+      '- [ ] a',
+      '',
+    ].join('\n');
+    expect(() => parseBody(broken)).toThrow(/FOR-23/);
+    // …and the broken one is NOT read as the absent one (nor vice versa).
+    expect(() => parseBody(broken)).not.toThrow(/## Files/);
+    expect(() => parseBody(bare)).not.toThrow(/FOR-23/);
+  });
+});
+
 describe('upsertSection', () => {
   const withSection = serializeBody({
     files: ['a.ts'],

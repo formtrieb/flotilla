@@ -36,6 +36,7 @@ import type {
 import { DEFAULT_TRIAGE_SCHEMA } from '../contract';
 import {
   DEFAULT_ELIGIBILITY,
+  classifyCreateInput,
   validateAmendPatch,
   type IssueStore,
   type IssueStoreConformanceHooks,
@@ -50,7 +51,7 @@ import {
   type ClosingState,
   withTriageDisclaimer,
 } from './issue-store';
-import { upsertSection } from './body-codec';
+import { serializeBareBody, upsertSection } from './body-codec';
 
 const STATUS_FIELD = 'Status';
 const CLOSED_BY_FIELD = 'Closed-by';
@@ -128,31 +129,48 @@ export class MarkdownFsStore implements IssueStore {
 
   // ── create ──────────────────────────────────────────────────────────────
   async create(input: CreateInput): Promise<string> {
+    // Whole-input validation FIRST (ADR-0027): a half-written Header-Block
+    // throws before any directory is made, any NN is drawn, or anything is
+    // written — a rejected create files nothing.
+    const shape = classifyCreateInput(input);
+
     await mkdir(this.openDir, { recursive: true });
     const nn = await this.nextNN();
     const fileName = `${nn}-${input.filingHint}.md`;
 
+    if (shape.kind === 'bare') {
+      // ADR-0027 bare filing: the H1 plus the free prose (gap description,
+      // provenance line). NO `**Status:**` eligibility stamp — so `isEligible`
+      // reads false and `listOpen` never surfaces it — NO Header-Block, and NO
+      // `## Acceptance criteria` invented out of nothing.
+      const sections = serializeBareBody(input.bodySections);
+      const bare = `# ${nn} — ${input.title}\n` + (sections === '' ? '' : `\n${sections}`);
+      await writeFile(join(this.openDir, fileName), bare, 'utf-8');
+      return this.idFor(nn);
+    }
+
+    const decorated = shape.input;
     const header: HeaderBlock = {
-      risk: input.risk as HeaderBlock['risk'],
-      worker: input.worker as HeaderBlock['worker'],
-      files: input.files,
-      blockedBy: input.blockedBy,
-      ...(input.estimatedWallclock !== undefined
-        ? { estimatedWallclock: input.estimatedWallclock }
+      risk: decorated.risk as HeaderBlock['risk'],
+      worker: decorated.worker as HeaderBlock['worker'],
+      files: decorated.files,
+      blockedBy: decorated.blockedBy,
+      ...(decorated.estimatedWallclock !== undefined
+        ? { estimatedWallclock: decorated.estimatedWallclock }
         : {}),
-      ...(input.unblocks !== undefined ? { unblocks: input.unblocks } : {}),
-      ...(input.parent !== undefined ? { parent: input.parent } : {}),
+      ...(decorated.unblocks !== undefined ? { unblocks: decorated.unblocks } : {}),
+      ...(decorated.parent !== undefined ? { parent: decorated.parent } : {}),
     };
 
     const parts: string[] = [];
-    parts.push(`# ${nn} — ${input.title}`, '');
+    parts.push(`# ${nn} — ${decorated.title}`, '');
     parts.push(`**${STATUS_FIELD}:** ${this.eligibility[0]}`);
     parts.push(serializeHeaderBlock(header));
-    for (const section of input.bodySections ?? []) {
+    for (const section of decorated.bodySections ?? []) {
       parts.push('', `## ${section.heading}`, '', section.markdown.trimEnd());
     }
     parts.push('', '## Acceptance criteria', '');
-    for (const ac of input.acceptanceCriteria) {
+    for (const ac of decorated.acceptanceCriteria) {
       parts.push(`- [ ] ${ac.text}`);
     }
     const content = parts.join('\n').replace(/\n{3,}/g, '\n\n') + '\n';

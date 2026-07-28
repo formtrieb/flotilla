@@ -94,6 +94,26 @@ export const RUNG_PRECEDENCE: readonly ClaimRung[] = [
  * What the engine hands the store to mint a new issue. Deliberately NOT an
  * `IssueView`: an `IssueView` already has an `id` and a `status`, both of which
  * the store assigns.
+ *
+ * **Two shapes, one type (ADR-0027).** `create` serves two filing paths:
+ *
+ * - **decorated** — the `to-issues` slicing path. Every wave Header-Block field
+ *   (`risk`, `worker`, `files`, `blockedBy`, `acceptanceCriteria`) is supplied,
+ *   and the store stamps the eligibility marker: a wave-ready issue.
+ * - **bare** — ADR-0027's `filed:` disposition. Title, gap description and
+ *   provenance line only (the prose rides `bodySections`), **deliberately**
+ *   with no eligibility marker and no Header-Block: existence and wave-readiness
+ *   are separate steps, and readiness comes later through `to-issues`
+ *   decorate-mode ({@link IssueStore.annotate}) with the next wave's planning
+ *   context. Before this the sole sanctioned write path forced decoration at
+ *   filing time, so four bare finding-issues in one day were filed through the
+ *   host CLI, outside the engine seam.
+ *
+ * The five Header-Block fields are therefore optional **as a group**: present
+ * together (decorated) or absent together (bare). A PARTIAL set is neither — it
+ * is a half-written Header-Block, and {@link classifyCreateInput} rejects it
+ * before any adapter write. Absent and broken are different claims; only the
+ * first is a bare issue.
  */
 export interface CreateInput {
   /** Human-facing H1 title text (free prose). */
@@ -106,15 +126,19 @@ export interface CreateInput {
    * opaque (ADR-0001) and never reconstruct an id from this field.
    */
   filingHint: string;
-  risk: string; // config-governed vocab (validate via validateHeaderBlock)
-  worker: string; // config-governed vocab
-  files: string[]; // globs/paths, annotation-free
+  /** config-governed vocab (validate via validateHeaderBlock); omit for a BARE create. */
+  risk?: string;
+  /** config-governed vocab; omit for a BARE create. */
+  worker?: string;
+  /** globs/paths, annotation-free; omit for a BARE create. */
+  files?: string[];
   /**
    * Refs already resolved to real tracker ids. ADR-0001's two-pass create
    * (resolve intra-batch blockers first) is the **caller's** job — the store
-   * validates ref *format*, never ref *existence*.
+   * validates ref *format*, never ref *existence*. Omit for a BARE create;
+   * `'none'` is the explicit "no blockers" DECORATED value, not an omission.
    */
-  blockedBy: 'none' | IssueRef[];
+  blockedBy?: 'none' | IssueRef[];
   unblocks?: IssueRef[];
   /**
    * Backlink to the **PRD** this slice was sliced from (ADR-0011). The PRD's
@@ -124,11 +148,94 @@ export interface CreateInput {
    * match) — never a written PRD-side state.
    */
   parent?: string;
-  /** All `checked:false` at creation; serialized as `- [ ]` task-list items. */
-  acceptanceCriteria: { text: string; checked: boolean }[];
+  /**
+   * All `checked:false` at creation; serialized as `- [ ]` task-list items.
+   * Omit for a BARE create — a bare issue carries NO acceptance-criteria
+   * section, rather than an empty one fabricated from nothing.
+   */
+  acceptanceCriteria?: { text: string; checked: boolean }[];
   estimatedWallclock?: string;
   /** Free-prose body sections (Parent, What to build, …) written verbatim. */
   bodySections?: { heading: string; markdown: string }[];
+}
+
+/**
+ * The wave Header-Block fields on {@link CreateInput} — all-present (decorated)
+ * or all-absent (bare), never a partial set. See {@link classifyCreateInput}.
+ */
+export const HEADER_BLOCK_FIELDS = [
+  'risk',
+  'worker',
+  'files',
+  'blockedBy',
+  'acceptanceCriteria',
+] as const;
+
+/**
+ * Fields that only make sense ALONGSIDE a Header-Block: `unblocks` is a
+ * Header-Block ref list, `parent`/`estimatedWallclock` are managed metadata
+ * lines the bare body deliberately does not carry. Supplying one on an
+ * otherwise-bare input is the same half-written-header mistake as a partial
+ * {@link HEADER_BLOCK_FIELDS} set, so it is rejected the same way.
+ */
+const DECORATION_ONLY_FIELDS = ['unblocks', 'parent', 'estimatedWallclock'] as const;
+
+/** A {@link CreateInput} whose whole wave Header-Block is present (the decorated path). */
+export type DecoratedCreateInput = CreateInput &
+  Required<Pick<CreateInput, (typeof HEADER_BLOCK_FIELDS)[number]>>;
+
+/**
+ * The classified shape of a {@link CreateInput}. Discriminated so the adapter's
+ * decorated branch keeps working over a fully-typed input with no field-by-field
+ * casts — the narrowing lives in {@link classifyCreateInput} alone.
+ */
+export type CreateShape =
+  | { kind: 'bare' }
+  | { kind: 'decorated'; input: DecoratedCreateInput };
+
+/**
+ * Validate a {@link CreateInput} as a WHOLE and classify it — bare (ADR-0027's
+ * undecorated filing) vs decorated (the `to-issues` slicing path). Pure; every
+ * adapter calls it as the FIRST statement of `create()`, before any id is
+ * minted and before any write, so a rejected input files nothing (the
+ * {@link IssueStore.applyTriage} no-partial-application discipline).
+ *
+ * **Throws** on a PARTIAL Header-Block (some of {@link HEADER_BLOCK_FIELDS}
+ * supplied, some not) and on a bare input carrying a
+ * {@link DECORATION_ONLY_FIELDS} stowaway. Both are the same fail-loud stance
+ * the body-codec takes on a present-but-unparseable `## Blocked by`: an ABSENT
+ * Header-Block is a legitimate claim ("this is a bare issue"), a BROKEN one is
+ * not, and silently completing a half-written header would mint a wave-eligible
+ * issue out of a caller bug.
+ */
+export function classifyCreateInput(input: CreateInput): CreateShape {
+  const missing = HEADER_BLOCK_FIELDS.filter((f) => input[f] === undefined);
+
+  if (missing.length === 0) {
+    return { kind: 'decorated', input: input as DecoratedCreateInput };
+  }
+
+  if (missing.length === HEADER_BLOCK_FIELDS.length) {
+    const stowaways = DECORATION_ONLY_FIELDS.filter((f) => input[f] !== undefined);
+    if (stowaways.length > 0) {
+      throw new Error(
+        `create: a BARE issue carries no Header-Block, so it cannot carry ` +
+          `${stowaways.map((f) => `\`${f}\``).join(', ')} either. Either file it bare ` +
+          `(title + filingHint + bodySections only) and decorate it later via ` +
+          `\`annotate\`, or supply the full Header-Block ` +
+          `(${HEADER_BLOCK_FIELDS.join(', ')}) now.`,
+      );
+    }
+    return { kind: 'bare' };
+  }
+
+  throw new Error(
+    `create: the wave Header-Block is half-written — missing ` +
+      `${missing.map((f) => `\`${f}\``).join(', ')}. Supply the whole block ` +
+      `(${HEADER_BLOCK_FIELDS.join(', ')}) for a decorated issue, or NONE of it ` +
+      `for a bare one (ADR-0027) — an absent header and a broken header are ` +
+      `different claims.`,
+  );
 }
 
 /**
@@ -244,6 +351,19 @@ export interface IssueStore {
    * to the engine, later the spine plan-table row key). Pure write: the store
    * assigns the id + the initial coarse status (`available`); it does NOT
    * resolve intra-batch blockers.
+   *
+   * Serves both {@link CreateInput} shapes (ADR-0027). A **decorated** input
+   * files a wave-ready issue exactly as before: eligibility marker + the full
+   * Header-Block. A **bare** input files the title and the free-prose
+   * `bodySections` and NOTHING else — no eligibility marker (so `listOpen`
+   * never surfaces it), no Header-Block, and no acceptance-criteria section
+   * fabricated from nothing. A bare issue therefore has no projectable
+   * `IssueView`: {@link read} throws on it until `annotate` decorates it, which
+   * is the honest outcome — the wave fields are genuinely absent, not empty.
+   *
+   * Validates the WHOLE input via {@link classifyCreateInput} BEFORE minting an
+   * id or writing anything: a half-written Header-Block throws and files
+   * nothing.
    */
   create(input: CreateInput): Promise<string>;
 

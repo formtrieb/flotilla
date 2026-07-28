@@ -34,6 +34,7 @@ import { DEFAULT_TRIAGE_SCHEMA } from '../../contract';
 import {
   DEFAULT_ELIGIBILITY,
   RUNG_PRECEDENCE,
+  classifyCreateInput,
   validateAmendPatch,
   type IssueStore,
   type CreateInput,
@@ -50,6 +51,7 @@ import {
 import type { LinearApi, LinearIssue } from './linear-api';
 import {
   serializeBody,
+  serializeBareBody,
   parseBody,
   upsertLine,
   tickAcs,
@@ -172,26 +174,45 @@ export class LinearIssuesStore implements IssueStore {
   }
 
   async create(input: CreateInput): Promise<string> {
+    // Whole-input validation FIRST (ADR-0027): a half-written Header-Block
+    // throws before the createIssue call, so a rejected create files nothing.
+    const shape = classifyCreateInput(input);
+
+    if (shape.kind === 'bare') {
+      // ADR-0027 bare filing: the free prose (gap description, provenance line)
+      // and NOTHING else — no `## Files`/`## Blocked by`/`## Acceptance criteria`
+      // sections, and NO labels at all: no eligibility token (so `listOpen`
+      // never surfaces it) and no `risk/*`/`worker/*` stamp. No native
+      // blocked-by mirror either: a bare issue declares no dependencies.
+      const { identifier } = await this.api.createIssue({
+        title: input.title,
+        description: serializeBareBody(input.bodySections),
+        labels: [],
+      });
+      return identifier;
+    }
+
+    const decorated = shape.input;
     const description = serializeBody({
-      files: input.files,
-      blockedBy: input.blockedBy,
-      ...(input.unblocks !== undefined ? { unblocks: input.unblocks } : {}),
-      ...(input.parent !== undefined ? { parent: input.parent } : {}),
-      acceptanceCriteria: input.acceptanceCriteria,
-      ...(input.estimatedWallclock !== undefined
-        ? { estimatedWallclock: input.estimatedWallclock }
+      files: decorated.files,
+      blockedBy: decorated.blockedBy,
+      ...(decorated.unblocks !== undefined ? { unblocks: decorated.unblocks } : {}),
+      ...(decorated.parent !== undefined ? { parent: decorated.parent } : {}),
+      acceptanceCriteria: decorated.acceptanceCriteria,
+      ...(decorated.estimatedWallclock !== undefined
+        ? { estimatedWallclock: decorated.estimatedWallclock }
         : {}),
-      ...(input.bodySections !== undefined
-        ? { bodySections: input.bodySections }
+      ...(decorated.bodySections !== undefined
+        ? { bodySections: decorated.bodySections }
         : {}),
     });
     const labels = [
       this.eligibility[0],
-      `risk/${input.risk}`,
-      `worker/${input.worker}`,
+      `risk/${decorated.risk}`,
+      `worker/${decorated.worker}`,
     ];
     const { identifier } = await this.api.createIssue({
-      title: input.title,
+      title: decorated.title,
       description,
       labels,
     });
@@ -199,7 +220,7 @@ export class LinearIssuesStore implements IssueStore {
     // (ADR-0020 write half) so blocked rows carry a visible board relation, not
     // just a body line. Best-effort: the body-codec write above is the
     // authoritative one (ADR-0020), so a failed mirror never fails create().
-    await this.mirrorBlockedBy(identifier, input.blockedBy);
+    await this.mirrorBlockedBy(identifier, decorated.blockedBy);
     return identifier; // filingHint ignored — id is the opaque team identifier (ADR-0001/0020)
   }
 

@@ -14,6 +14,13 @@
  *
  * Ops (each maps 1:1 onto an IssueStore method):
  *   create   --input <CreateInput.json>            → prints the opaque id (plain text)
+ *              DECORATED (the to-issues path): the full Header-Block — risk, worker,
+ *              files, blockedBy, acceptanceCriteria — plus title/filingHint.
+ *              BARE (ADR-0027 `filed:`): title + filingHint + bodySections ONLY —
+ *              files an undecorated issue with no eligibility marker and no
+ *              Header-Block; wave-readiness comes later via `annotate` (decorate).
+ *              A half-written Header-Block is a usage error (exit 2), never a
+ *              silently-completed one.
  *   read     <id>                                  → prints the IssueView (JSON)
  *   parse-ref <id>                                 → prints the IssueRef {slug?, issue} (JSON)
  *   annotate <id> --patch <AnnotatePatch.json>     → decorates an existing issue (ADR-0010)
@@ -40,6 +47,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { classifyCreateInput } from './adapters/issue-store';
 import type {
   IssueStore,
   CreateInput,
@@ -116,6 +124,17 @@ export async function runIssueStore(
             `error: cannot read --input ${inputPath}: ${(err as Error).message}\n`,
           );
           return 2;
+        }
+        // Whole-input validation BEFORE the write (the same discipline as
+        // `amend`, and the same classifier the adapters run): a BARE input —
+        // title + filingHint + bodySections, no Header-Block (ADR-0027) — is
+        // accepted and files an undecorated issue; a HALF-WRITTEN Header-Block
+        // is a caller bug, so it is a usage error (exit 2) naming the missing
+        // fields, not a domain failure. Absent and broken are different claims.
+        try {
+          classifyCreateInput(input);
+        } catch (err) {
+          return usage((err as Error).message);
         }
         const id = await store.create(input);
         process.stdout.write(id + '\n');
