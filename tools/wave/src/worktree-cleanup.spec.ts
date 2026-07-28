@@ -149,6 +149,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { loadWaveConfig } from './wave-config';
 import {
   DEFAULT_AGENT_PATH_MARKERS,
   parseWorktreeList,
@@ -167,6 +168,7 @@ import {
   planOrphanBranchSweep,
   executeOrphanBranchSweep,
   defaultOrphanBranchSweepOps,
+  normalizeDisposableNames,
   type WorktreeEntry,
   type WorktreeRemover,
   type RedispatchCleanupOps,
@@ -4074,5 +4076,489 @@ describe('defaultWorktreeRemover — half-removed recovery (FOR-86)', () => {
     expect(result.erroredStillListed.map((e) => e.path)).toEqual([worktreePath]);
     // Directory genuinely still present — never silently reported as removed.
     expect(existsSync(worktreePath)).toBe(true);
+  });
+});
+
+// ─── 25. Consumer-declared disposable names (issue #115) ─────────────────────
+//
+// A consumer running this toolkit on a Swift codebase hit the same manual
+// cleanup three times in one wave: every Worker left a `.build/` directory
+// behind, the harness deregistered the worktree, the physical directory
+// survived, and the orphan classifier refused it with
+// `reason: 'orphan-with-real-files'` — resolved each time by a hand `rm -rf`
+// with the sandbox disabled.
+//
+// The obstruction is the CLASSIFICATION, not a permission: `FINDER_JUNK_NAMES`
+// and `JUNK_DIR_NAMES` know only the junk THIS repo's harness/editors produce,
+// and there was no way for a consumer to name their own. These tests pin the
+// declarable set — the validator that keeps it exact names (never a glob that
+// would also match `.git`), the union-never-replace semantics, the
+// absent-config byte-identity, and both negative controls: an UNDECLARED real
+// file still refuses removal, and a name is only honoured because it was
+// declared.
+
+describe('normalizeDisposableNames — the exact-names rule (issue #115)', () => {
+  it('accepts bare entry names, trimming surrounding whitespace and collapsing duplicates (first occurrence wins)', () => {
+    expect(
+      normalizeDisposableNames(['.build', '  target  ', 'node_modules', '.build']),
+    ).toEqual(['.build', 'target', 'node_modules']);
+  });
+
+  it('absent / null normalize to an empty list — the "nothing declared" default that keeps behaviour byte-identical', () => {
+    expect(normalizeDisposableNames(undefined)).toEqual([]);
+    expect(normalizeDisposableNames(null)).toEqual([]);
+    expect(normalizeDisposableNames([])).toEqual([]);
+  });
+
+  it('rejects a non-array value', () => {
+    expect(() => normalizeDisposableNames('.build')).toThrow(
+      /must be an array of exact names/,
+    );
+    expect(() => normalizeDisposableNames({ '.build': true })).toThrow(
+      /must be an array of exact names/,
+    );
+  });
+
+  it('rejects a non-string entry, naming its index', () => {
+    expect(() => normalizeDisposableNames(['.build', 7])).toThrow(
+      /disposableNames\[1\] must be a string/,
+    );
+  });
+
+  it('rejects an empty / whitespace-only entry', () => {
+    expect(() => normalizeDisposableNames([''])).toThrow(/must be a non-empty name/);
+    expect(() => normalizeDisposableNames(['   '])).toThrow(/must be a non-empty name/);
+  });
+
+  // AC3 — the load-bearing refusal. A pattern is rejected rather than honoured
+  // precisely because `.*` would also match `.git`, which is the failure the
+  // fixed built-in lists exist to prevent.
+  it.each(['.*', '*', '*.o', 'build?', '[Bb]uild', '{a,b}', '!keep', '**'])(
+    'rejects the pattern %j — only exact names are accepted',
+    (pattern) => {
+      expect(() => normalizeDisposableNames([pattern])).toThrow(
+        /is a pattern, not a name/,
+      );
+    },
+  );
+
+  it('the pattern refusal names ".git" in its message, so the reason is legible at the point of failure', () => {
+    expect(() => normalizeDisposableNames(['.*'])).toThrow(/\.git/);
+  });
+
+  it.each(['src/gen', './build', 'a\\b', '/abs/path'])(
+    'rejects the path %j — a declaration names ONE entry, matched at any depth',
+    (path) => {
+      expect(() => normalizeDisposableNames([path])).toThrow(
+        /must be a bare entry name, not a path/,
+      );
+    },
+  );
+
+  it.each(['.git', '.', '..'])('rejects the reserved name %j outright', (reserved) => {
+    expect(() => normalizeDisposableNames([reserved])).toThrow(/is never disposable/);
+  });
+
+  it('uses the caller-supplied label so the error points at where the bad value was written', () => {
+    expect(() =>
+      normalizeDisposableNames(['.*'], 'wave config "cleanup.disposableNames"'),
+    ).toThrow(/wave config "cleanup\.disposableNames"\[0\]/);
+  });
+});
+
+describe('loadWaveConfig — the cleanup.disposableNames key (issue #115)', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  /** Write a wave config JSON to a temp dir and return its path. */
+  function writeConfig(body: Record<string, unknown>): string {
+    const root = mkdtempSync(join(tmpdir(), 'wave-config-115-'));
+    tempRoots.push(root);
+    const path = join(root, 'wave.config.json');
+    writeFileSync(path, JSON.stringify(body), 'utf-8');
+    return path;
+  }
+
+  const STORE = { kind: 'github' as const };
+
+  it('accepts a declared list and round-trips it', () => {
+    const path = writeConfig({
+      store: STORE,
+      cleanup: { disposableNames: ['.build', 'target'] },
+    });
+    expect(loadWaveConfig(path).cleanup?.disposableNames).toEqual(['.build', 'target']);
+  });
+
+  it('an ABSENT cleanup key is valid and leaves `cleanup` undefined — today\'s config stays valid unchanged', () => {
+    const path = writeConfig({ store: STORE });
+    expect(loadWaveConfig(path).cleanup).toBeUndefined();
+  });
+
+  it('a cleanup object with no disposableNames is valid (nothing declared)', () => {
+    const path = writeConfig({ store: STORE, cleanup: {} });
+    expect(loadWaveConfig(path).cleanup?.disposableNames).toBeUndefined();
+  });
+
+  it('rejects a non-object cleanup value', () => {
+    const path = writeConfig({ store: STORE, cleanup: ['.build'] });
+    expect(() => loadWaveConfig(path)).toThrow(/"cleanup" must be an object/);
+  });
+
+  // AC3 at the OTHER enforcement point: a glob fails at `config validate`
+  // time, naming the key — never silently at cleanup time.
+  it('rejects a glob in disposableNames, naming the config key', () => {
+    const path = writeConfig({ store: STORE, cleanup: { disposableNames: ['.*'] } });
+    expect(() => loadWaveConfig(path)).toThrow(
+      /wave config "cleanup\.disposableNames"\[0\].*is a pattern, not a name/,
+    );
+  });
+
+  it('rejects ".git" in disposableNames', () => {
+    const path = writeConfig({ store: STORE, cleanup: { disposableNames: ['.git'] } });
+    expect(() => loadWaveConfig(path)).toThrow(/is never disposable/);
+  });
+});
+
+// The orphan classification the live incident actually hit, against REAL git +
+// REAL directories — the same fixture technique Sections 12/19 use.
+describe('orphan classification honours consumer-declared disposable names (issue #115)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  /** A real repo whose `.claude/worktrees/` holds unregistered leftover dirs. */
+  function makeRepo(): { mainRoot: string; worktreesRoot: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-115-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    const worktreesRoot = join(mainRoot, '.claude', 'worktrees');
+    mkdirSync(worktreesRoot, { recursive: true });
+    return { mainRoot, worktreesRoot };
+  }
+
+  /** The exact reported leftover: built-in junk plus a Swift `.build/` tree. */
+  function makeSwiftLeftover(worktreesRoot: string, name: string): string {
+    const dir = join(worktreesRoot, name);
+    mkdirSync(join(dir, '.build', 'arm64-apple-macosx', 'debug'), { recursive: true });
+    writeFileSync(
+      join(dir, '.build', 'arm64-apple-macosx', 'debug', 'Package.o'),
+      'object-code',
+      'utf-8',
+    );
+    writeFileSync(join(dir, '.build', 'manifest.db'), 'build-manifest', 'utf-8');
+    writeFileSync(join(dir, '.DS_Store'), 'finder-debris', 'utf-8');
+    return dir;
+  }
+
+  it('AC2: an orphan dir holding only built-in junk plus a DECLARED name classifies allJunk:true and is removed', () => {
+    const { mainRoot, worktreesRoot } = makeRepo();
+    const leftover = makeSwiftLeftover(worktreesRoot, 'wf_swift-consumer');
+
+    const found = listOrphanDirs(mainRoot, { disposableNames: ['.build'] });
+    expect(found.map((o) => o.path)).toEqual([leftover]);
+    expect(found[0].allJunk).toBe(true);
+
+    const result = sweepOrphanWorktrees({
+      repoRoot: mainRoot,
+      disposableNames: ['.build'],
+    });
+    expect(result.errors).toHaveLength(0);
+    expect(result.removed.map((o) => o.path)).toEqual([leftover]);
+    expect(existsSync(leftover)).toBe(false);
+  });
+
+  // The negative control for AC1's "absent config leaves behaviour
+  // byte-identical": the SAME fixture, with nothing declared, must still be
+  // refused exactly as it was before this slice existed. Without this, the
+  // test above could pass for reasons that have nothing to do with the
+  // declaration.
+  it('AC1 negative control: the SAME fixture with NOTHING declared still classifies allJunk:false and is skipped `orphan-with-real-files`', () => {
+    const { mainRoot, worktreesRoot } = makeRepo();
+    const leftover = makeSwiftLeftover(worktreesRoot, 'wf_swift-undeclared');
+
+    expect(listOrphanDirs(mainRoot)[0].allJunk).toBe(false);
+
+    const result = sweepOrphanWorktrees({ repoRoot: mainRoot });
+    expect(result.removed).toHaveLength(0);
+    expect(result.skipped.map((o) => o.path)).toEqual([leftover]);
+    expect(result.skipped[0].reason).toBe('orphan-with-real-files');
+    expect(existsSync(leftover)).toBe(true);
+  });
+
+  // The negative control for AC2's second half — Convention 11: the check must
+  // be provably able to fail. One UNDECLARED real file alongside the declared
+  // build output still refuses the whole directory.
+  it('AC2 negative control: one UNDECLARED real file alongside the declared build output still skips with `orphan-with-real-files`', () => {
+    const { mainRoot, worktreesRoot } = makeRepo();
+    const leftover = makeSwiftLeftover(worktreesRoot, 'wf_swift-plus-real');
+    writeFileSync(join(leftover, 'notes.txt'), 'uncommitted work', 'utf-8');
+
+    const found = listOrphanDirs(mainRoot, { disposableNames: ['.build'] });
+    expect(found[0].allJunk).toBe(false);
+
+    const result = sweepOrphanWorktrees({
+      repoRoot: mainRoot,
+      disposableNames: ['.build'],
+    });
+    expect(result.removed).toHaveLength(0);
+    expect(result.skipped[0].reason).toBe('orphan-with-real-files');
+    expect(existsSync(join(leftover, 'notes.txt'))).toBe(true);
+  });
+
+  it('a real file NESTED under an undeclared subdirectory still refuses the directory — the declaration widens nothing beyond the named entries', () => {
+    const { mainRoot, worktreesRoot } = makeRepo();
+    const leftover = makeSwiftLeftover(worktreesRoot, 'wf_swift-nested-real');
+    mkdirSync(join(leftover, 'Sources', 'App'), { recursive: true });
+    writeFileSync(join(leftover, 'Sources', 'App', 'main.swift'), 'print("hi")', 'utf-8');
+
+    expect(listOrphanDirs(mainRoot, { disposableNames: ['.build'] })[0].allJunk).toBe(
+      false,
+    );
+  });
+
+  it('the union is a UNION: built-in junk keeps classifying as junk when a consumer declares their own names', () => {
+    const { mainRoot, worktreesRoot } = makeRepo();
+    const dir = join(worktreesRoot, 'wf_union');
+    mkdirSync(join(dir, '.vscode'), { recursive: true });
+    writeFileSync(join(dir, '.vscode', 'settings.json'), '{}', 'utf-8');
+    mkdirSync(join(dir, 'target'), { recursive: true });
+    writeFileSync(join(dir, 'target', 'app.jar'), 'jar', 'utf-8');
+    writeFileSync(join(dir, '.DS_Store'), 'debris', 'utf-8');
+
+    expect(listOrphanDirs(mainRoot, { disposableNames: ['target'] })[0].allJunk).toBe(
+      true,
+    );
+  });
+
+  it('a declared name is honoured as a FILE name too, not only as a directory', () => {
+    const { mainRoot, worktreesRoot } = makeRepo();
+    const dir = join(worktreesRoot, 'wf_declared-file');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'compile_commands.json'), '[]', 'utf-8');
+
+    expect(listOrphanDirs(mainRoot)[0].allJunk).toBe(false);
+    expect(
+      listOrphanDirs(mainRoot, { disposableNames: ['compile_commands.json'] })[0]
+        .allJunk,
+    ).toBe(true);
+  });
+
+  it('an invalid declaration throws at the engine entry point too — a glob never reaches a filesystem decision', () => {
+    const { mainRoot, worktreesRoot } = makeRepo();
+    makeSwiftLeftover(worktreesRoot, 'wf_swift-glob-refused');
+
+    expect(() => listOrphanDirs(mainRoot, { disposableNames: ['.*'] })).toThrow(
+      /is a pattern, not a name/,
+    );
+    expect(() =>
+      sweepOrphanWorktrees({ repoRoot: mainRoot, disposableNames: ['.git'] }),
+    ).toThrow(/is never disposable/);
+  });
+
+  // The FOR-59 registered-but-deregistered orphan path (`orphanAllJunk`), the
+  // one `planCleanup` routes — same question, same answer, reached through
+  // `listAgentWorktrees` instead of the standalone sweep.
+  it('listAgentWorktrees → planCleanup: a DEREGISTERED worktree dir holding only build output is selected when declared, skipped when not', () => {
+    const { mainRoot } = makeRepo();
+    const relPath = join('.claude', 'worktrees', 'wf_swift-deregistered');
+    realGit(['worktree', 'add', '-q', relPath, '-b', 'wave/115-swift'], mainRoot);
+    const worktreePath = join(mainRoot, relPath);
+    // Deregister exactly the way the live incident did: drop the worktree's own
+    // `.git` pointer, leave the physical directory (and its build output).
+    rmSync(join(worktreePath, '.git'), { force: true });
+    mkdirSync(join(worktreePath, '.build', 'debug'), { recursive: true });
+    writeFileSync(join(worktreePath, '.build', 'debug', 'App.o'), 'obj', 'utf-8');
+
+    const undeclared = listAgentWorktrees(mainRoot);
+    expect(undeclared[0].orphan).toBe(true);
+    expect(undeclared[0].orphanAllJunk).toBe(false);
+    expect(planCleanup(undeclared).skipped[0].reason).toBe('orphan-with-real-files');
+
+    const declared = listAgentWorktrees(mainRoot, DEFAULT_AGENT_PATH_MARKERS, ['.build']);
+    expect(declared[0].orphanAllJunk).toBe(true);
+    expect(planCleanup(declared).selected.map((e) => e.path)).toEqual([worktreePath]);
+    expect(planCleanup(declared).skipped).toHaveLength(0);
+  });
+
+  // The invariant this slice must not cross, restated against a declared set:
+  // a DIRTY registered worktree is still never selected. The declaration
+  // reaches the directory-scan classifier only — never the `git status`-driven
+  // dirty decision.
+  it('the dirty-worktree safety invariant is untouched: a REGISTERED worktree dirty with real work is still skipped even with a declaration active', () => {
+    const { mainRoot } = makeRepo();
+    const relPath = join('.claude', 'worktrees', 'wf_swift-dirty');
+    realGit(['worktree', 'add', '-q', relPath, '-b', 'wave/115-dirty'], mainRoot);
+    const worktreePath = join(mainRoot, relPath);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    writeFileSync(join(worktreePath, 'uncommitted.swift'), 'let x = 1', 'utf-8');
+
+    const entries = listAgentWorktrees(mainRoot, DEFAULT_AGENT_PATH_MARKERS, ['.build']);
+    expect(entries[0].dirty).toBe(true);
+    expect(entries[0].dirtyAllJunk).toBeFalsy();
+    expect(planCleanup(entries).selected).toHaveLength(0);
+    expect(planCleanup(entries).skipped[0].reason).toBe('dirty');
+  });
+});
+
+// The purge side of the union: the ENOTEMPTY junk-purge-then-retry must count a
+// consumer-declared entry as junk, or a directory the classifier called
+// disposable would still fail to actually come off disk.
+describe('the junk purge honours consumer-declared names (issue #115)', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function makeTempWorktree(name: string): { root: string; worktreePath: string } {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-115-purge-'));
+    tempRoots.push(root);
+    const worktreePath = join(root, name);
+    mkdirSync(join(worktreePath, '.build'), { recursive: true });
+    writeFileSync(join(worktreePath, '.build', 'App.o'), 'obj', 'utf-8');
+    writeFileSync(join(worktreePath, '.git'), 'gitdir: ../fake-admin/wt\n', 'utf-8');
+    return { root, worktreePath };
+  }
+
+  it('a declared `.build` is purged on the ENOTEMPTY retry, so the removal completes', () => {
+    const { root, worktreePath } = makeTempWorktree('agent-declared-purge');
+
+    // The live race shape: the first physical delete throws ENOTEMPTY without
+    // having deleted anything.
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {
+      throw makeEnotempty(worktreePath);
+    });
+
+    const remover = defaultWorktreeRemover(root, ['.build']);
+    expect(() => remover.remove(worktreePath)).not.toThrow();
+    expect(existsSync(worktreePath)).toBe(false);
+  });
+
+  // Convention 11 negative control for the purge: the identical fixture with
+  // NOTHING declared finds zero junk, so the ORIGINAL error propagates
+  // unchanged — a real obstruction is still never masked as a junk retry.
+  it('negative control: the SAME fixture with nothing declared finds no junk and propagates the ORIGINAL ENOTEMPTY', () => {
+    const { root, worktreePath } = makeTempWorktree('agent-undeclared-purge');
+
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {
+      throw makeEnotempty(worktreePath);
+    });
+
+    const remover = defaultWorktreeRemover(root);
+    expect(() => remover.remove(worktreePath)).toThrow(/ENOTEMPTY/);
+    expect(existsSync(join(worktreePath, '.build', 'App.o'))).toBe(true);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('executeCleanup threads the declaration into the DEFAULT remover — an orphan of pure build output is removed end-to-end', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-cleanup-115-e2e-'));
+    tempRoots.push(root);
+    const orphanPath = join(root, 'wf_115-e2e');
+    mkdirSync(join(orphanPath, '.build'), { recursive: true });
+    writeFileSync(join(orphanPath, '.build', 'App.o'), 'obj', 'utf-8');
+
+    const entry: WorktreeEntry = {
+      path: orphanPath,
+      branch: 'wave/115-e2e',
+      head: 'b'.repeat(40),
+      dirty: false,
+      orphan: true,
+      orphanAllJunk: true,
+    };
+    const plan = planCleanup([entry]);
+    expect(plan.selected).toHaveLength(1);
+
+    const result = executeCleanup(plan, {
+      repoRoot: root,
+      disposableNames: ['.build'],
+      skipBranchHygiene: true,
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.removed).toHaveLength(1);
+    expect(existsSync(orphanPath)).toBe(false);
+  });
+
+  it('an INJECTED remover is used exactly as given — the declaration never overrides a caller-supplied seam', () => {
+    const { remover, removeSpy } = fakeRemover();
+    const entry: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/wf_injected',
+      branch: 'wave/115-injected',
+      head: 'c'.repeat(40),
+      dirty: false,
+    };
+
+    const result = executeCleanup(
+      { selected: [entry], skipped: [] },
+      {
+        remover,
+        disposableNames: ['.build'],
+        pathExists: () => false,
+        skipBranchHygiene: true,
+      },
+    );
+
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(result.removed).toHaveLength(1);
+    // No real git/fs work happened — the injected seam owns the removal.
+    expect(execFileSync).not.toHaveBeenCalled();
   });
 });

@@ -125,6 +125,7 @@ Neither preflight substitutes for checking scope up front — `store-preflight`/
 |---|---|---|
 | `store` | yes | `MarkdownStoreConfig`, `GitHubStoreConfig`, or `LinearStoreConfig` (see below) |
 | `verify` | no | `VerifyConfig` — omit entirely if the consumer has no build gate |
+| `cleanup` | no | `CleanupConfig` — omit entirely unless this consumer's toolchain leaves build output inside a worktree |
 
 ### `MarkdownStoreConfig`
 
@@ -190,6 +191,41 @@ Each `VerifyProfile`:
 | `commands` | yes | `{ cwd?: string; command: string }[]` — run in order; first non-zero exit halts |
 
 `cwd` is optional on each command; if absent, the command runs from the repo root.
+
+### `CleanupConfig`
+
+| Field | Required | Shape |
+|---|---|---|
+| `disposableNames` | no | `string[]` of **exact entry names** — extra directory/file names this consumer's toolchain leaves inside an agent worktree and considers disposable |
+
+**Ask this question during setup whenever the consumer's build writes into the working tree.** It is the same question as `verify`, one step later in the wave: `verify` asks what the build *runs*; `disposableNames` asks what the build *leaves behind*.
+
+Why it exists. When a wave finishes, worktree cleanup has to decide whether a leftover worktree directory holds work or debris. For a **still-registered** worktree that decision comes from `git status`, which honours `.gitignore` — gitignored build output never shows up, the worktree reads clean, and it is torn down with its build directory inside it. Nothing to configure there. But once the agent harness has already **deregistered** the worktree (the common case: the harness removes its own worktree as soon as its agent exits), all that is left is a physical directory, and the only way to classify it is to scan it. A scan knows nothing about `.gitignore` — it sees `.build/` and can only conclude "real files", so cleanup refuses the directory with `reason: orphan-with-real-files` and an operator has to `rm -rf` it by hand.
+
+The engine's built-in disposable set knows `.DS_Store`, `.vscode/`, `.claude/` — the junk *flotilla's own* harness and editors produce. Only the consumer knows what *their* toolchain's output is called. Declared names are **unioned** with the built-in set, never a replacement.
+
+| Toolchain | Typical value |
+|---|---|
+| Swift / SwiftPM | `".build"` |
+| Rust / Maven | `"target"` |
+| Node | `"node_modules"` |
+| Python | `"__pycache__"`, `".pytest_cache"` |
+| Go | `"vendor"` |
+
+**Exact names only — a glob is rejected, not honoured.** `config validate` fails on any of: a pattern (`*`, `?`, `[`, `]`, `{`, `}`, `!` — so `".*"` and `"*.o"` are both refused), a path (`"build/debug"`), `"."`, `".."`, or `".git"`. That refusal is the point: a wildcard broad enough to catch `".build"` is also broad enough to catch `".git"`, and destroying a worktree's `.git` is exactly the failure the fixed built-in list exists to prevent. A name is matched **at any depth** and as either a directory (whole subtree) or a file, so `".build"` covers a nested `Packages/Foo/.build/` too — which is why a name is all it needs, and a path is refused.
+
+```json
+{
+  "store": { "kind": "github" },
+  "cleanup": {
+    "disposableNames": [".build"]
+  }
+}
+```
+
+> **Do not declare speculatively.** Declaring a name is a claim that *anything* by that name inside a spent agent worktree is disposable. Declare what the consumer's build actually emits, and nothing else — an undeclared real file anywhere in the directory still (correctly) refuses removal, which is the behaviour you want back if a declaration ever turns out to be wrong.
+
+> **Note on reach.** `cleanup.disposableNames` is honoured by the engine's cleanup API (`cleanAgentWorktrees`, `executeCleanup`, `listAgentWorktrees`, `listOrphanDirs`, `sweepOrphanWorktrees` — all take a `disposableNames` option, which is where the config key is threaded). The `worktree-cleanup` **CLI verb** currently accepts `--config <path>` and discards it (a uniform-wrapper tolerance, not a read), so a `wave-close` run does not yet pick the key up from the config file on its own — that wiring lands separately. `config validate` already accepts and validates the key today, so a consumer can author it now.
 
 ## Example configs
 
