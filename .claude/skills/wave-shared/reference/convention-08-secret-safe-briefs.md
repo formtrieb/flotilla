@@ -1,0 +1,27 @@
+## Convention 8 — secret-safe briefs (never echo an environment variable's value)
+
+An agent's tool output is not ephemeral — it is the session transcript on disk, long-lived and read by humans and downstream agents alike. **A brief never causes an agent to echo an environment variable's VALUE into that output — not even with fallback syntax like `${VAR:-no}` — dump the whole environment, or read a gitignored settings/secrets file.** This applies to every brief the driver composes (Worker, Reviewer, Scribe alike), not just the ones that write to the tracker. Three vectors have fired live (below), each past whatever prose the previous occurrence had hardened:
+
+- **Fallback syntax is not safe.** `echo "${VAR:-no}"` still prints the live value whenever `VAR` is set — the fallback branch fires only when it is *absent*. There is no "just for diagnostics" form of `echo $VAR` that stays safe once the variable might hold a secret.
+- **Whole-environment dumps are not safe.** `printenv`, a bare `env`, a bare `set` — each prints every set variable, secrets included, regardless of which one the agent meant to check.
+- **Reading a gitignored settings/secrets file is not safe.** `cat .claude/settings.local.json`, any `.env`-class file, or any other read-shaped command (`less`, `head`, `tail`, …) against one — "just to check a config precedent" is not an exemption; the file's contents land in tool output the instant it is read, live credentials included.
+- **Check availability value-free.** The only sanctioned presence test is one that cannot leak the value:
+  ```bash
+  [ -n "$VAR" ] && echo set
+  ```
+  This prints the literal string `set` (or nothing) — never the token, never the whole environment, never a file's contents.
+- **The constraint is on tool output generally, not just brief prose.** A brief that itself never asks for `${VAR:-no}`, a `printenv`, or a `cat` of a gitignored settings file can still be defeated by an agent free-styling a diagnostic mid-task. Tool output must never contain a secret — full stop — whether it originates from brief-scripted bash or an agent's own improvised check.
+
+### The structural anchor — settings-deny (Convention 8 hardening, FOR-81)
+
+Each of the three live occurrences below found a vector the previous occurrence's prose hardening hadn't named — the class does not depend on which specific command an agent reaches for, so a fix that depends on an agent having read and internalized a clause was never going to hold structurally. The fix that does not: tracked **`permissions.deny`** entries in `.claude/settings.json` blocking the `Read` tool — and, as far as the permission syntax can express it, Bash's read-shaped command forms (`cat`, `less`, `head`, `tail`, `more`) — against the gitignored secret-bearing files themselves (`.claude/settings.local.json`, `.env`-class files). This is the **structural backstop**; the brief clause above (`workerBrief()`'s policy clause 5, `.claude/skills/wave-start/reference/workflow-driver.md`) stays as **defense-in-depth** on top of it — a deny rule blocks reads of the *named files*, while the brief clause is what discourages an agent from leaking a value through some other channel the deny rule doesn't cover (an already-exported shell variable, a value copied into a commit message, …). `wave-setup`'s tracked-settings scaffold (`.claude/skills/wave-setup/reference/setup-mechanics.md`) carries the identical deny entries for every consumer, so a fresh consumer repo inherits the anchor at bootstrap rather than only after its own live occurrence.
+
+### Live occurrences (evidence)
+
+Three, each a different vector past whichever prose clause the previous occurrence had hardened:
+
+- **2026-07-20, publication wave, finding W8-F1** (docs/retros/2026-07-20-publication-w8.md): a Worker checked host-token availability with a flawed `${VAR:-no}` diagnostic echo and printed the live `GITHUB_TOKEN` into its agent-visible tool output — i.e. into the session transcript on disk. The Worker self-disclosed it, the Reviewer escalated ("this review cannot verify or remediate"); nothing was committed and nothing left the machine, but the token was rotated as a precaution. Fix at the time: the fallback-syntax clause above.
+- **2026-07-22, runtime-residue-docs wave, finding W21-F1** (docs/retros/2026-07-22-runtime-residue-docs-w21.md): a Worker checked token availability with `printenv GITHUB_TOKEN` instead of the sanctioned value-free form — past the fallback-syntax clause, which never named a whole-environment dump. Self-disclosed, Reviewer-confirmed clean otherwise. Fix at the time: the whole-environment-dump clause above (proven clean on its very next live run, docs/retros/2026-07-22-annotate-decorate-fix-w22.md).
+- **2026-07-23, ci-verify-setup-env wave, finding W23-F1** (docs/retros/2026-07-23-ci-verify-setup-env-w23.md, doc slug `2026-07-23-ci-verify-setup-env`): a Reviewer ran `cat` on the gitignored `.claude/settings.local.json` while hunting a config precedent for an `env` block, printing live host-token and tracker-key credentials into the session transcript — past both prior clauses, since neither had named a file-read vector. This is the occurrence that triggered the standing decision ("file the structural ticket at the next occurrence"): **FOR-81**, the settings-deny anchor above, rather than a fourth prose clause alone.
+
+Each prose hardening closed only the vector it named; the settings-deny anchor is the first fix in this sequence that does not depend on an agent having read and internalized the clause.
