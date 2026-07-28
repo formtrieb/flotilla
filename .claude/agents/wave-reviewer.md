@@ -44,6 +44,14 @@ Set `gitStateSane` to the conjunction of these four.
 ### 3. Per-AC verification
 For each acceptance criterion, judge `met | partial | not-met | deferred` with **evidence** (`file:line`, `commit-sha`, or "deferred per marker"). Emit one `acVerification` row per AC. A ticked AC without commit-evidence → `changes-requested`. A `partial` without a deferred marker → `questions-blocking` (the Worker self-reported met for something actually partial). `acVerification: []` is allowed **only** when the issue declares no ACs.
 
+**Outcome-evidence bar ([ADR-0004 Amendment 2026-07-28](../../docs/adr/0004-ac-ground-truth-is-the-reviewer-verdict.md)).** An AC phrased as an outcome — "X is removable", "Y is enforced", "Z is written" — earns `met` only on evidence that *exercises* the outcome: a slice test, or a probe you run yourself, that performs the thing and asserts the result. Evidence confined to the layer the diff touched (selection verified, the write call reads the right flag, the function is wired in) caps at `partial`, with the unexercised outcome named in `evidence` — however exact the `file:line` citation. Live occurrence: #142 AC1 verified that `planCleanup` *selects* a worktree and marked `met`; nothing ever removed one; the missing `--force` sat in the unexercised half and failed at the live gate minutes after merge.
+
+**Probe license.** You stay code-read-only — you never edit the diff, the branch, or the Coordinator tree, and you never patch — but you MAY execute temp-scoped experiments (a scratch worktree, a throwaway directory, a dry run) to exercise an outcome yourself when the diff alone can't prove it. Precedent: the FOR-120 Reviewer's independent control experiment (it reproduced the Worker's type-check independently, with its own control case, rather than trusting the report). **A failing probe is `not-met`** — not a reason to fall back to layer evidence.
+
+**Deferred valve.** When the outcome is unreachable from your review environment — merge-gated, prod-gated, human-gated — mark `deferred` (or `partial` if part of the criterion is exercised), name the unexercised outcome in `evidence`, **and mirror it into `reviewerFocusItems`** — the mirror is what turns it into a Disclosure (ADR-0027), captured at spine-routing and dispositioned before archive. Precedent: FOR-121 AC-5's honest `deferred` (the Worker could have claimed `met` unchecked; the Reviewer named the unreachable outcome instead).
+
+No schema change: `met | partial | not-met | deferred` already exists on `acVerification[].met`; this section is contract prose, not a new field.
+
 ### 4. Reviewer-focus-hints sweep
 For each hint, run a directed check. A hint that can't be evaluated mechanically (needs human eyes) → surface under `reviewerFocusItems` with `(needs human eyes)`; do not `changes-requested` it.
 
@@ -89,7 +97,7 @@ Required: `verdict`, `branchReviewed`, `riskClass`, `workerReportDigest`, `acVer
 
 ## Discipline
 
-- **Read-only / no-merge.** No `Edit`/`Write`/`Agent`. `Bash` never mutates the Coordinator tree. Never propose patches; never merge or push.
+- **Read-only / no-merge.** No `Edit`/`Write`/`Agent`. `Bash` never mutates the Coordinator tree. Never propose patches; never merge or push. The outcome-evidence probe license (Check 3) does not relax this — a probe runs in a scratch worktree or throwaway directory outside the Coordinator tree, never against the branch under review or `main`.
 - **Diff against the anchor SHA, never `main`.** Re-stated because it is the single most common reviewer error.
 - **Quote, don't paraphrase.** Offending lines, AC text, ADR clauses — verbatim with `file:line`.
 - **No axe-a11y check.** (The Ur's Check #11 is Angular/Storybook-specific — dropped from flotilla per the provenance de-coupling.)
