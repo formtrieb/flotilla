@@ -152,6 +152,16 @@ _Avoid_: using it to answer landing-posture questions — that is the Host-Prefl
 The code-host posture probe (`host-pr preflight`, detect-host-routed, store-blind — no `--config`): allow-auto-merge, required-checks, merge-token capability, read through the landing seam on every store kind. `unknown` means "the token cannot see this setting" — absence of evidence, never blocking, never requiring admin rights. Advisory by design: the arm outcome remains the ground truth (ADR-0023 Amendment 2026-07-20).
 _Avoid_: treating a probe result as a landing guarantee (the behind/recomputing race is not probeable); conflating `unknown` with a visible OFF.
 
+### Auth
+
+**Lookup-Command**:
+The per-credential command string — configured as the `<VAR>_CMD` environment variable (`GITHUB_TOKEN_CMD`, `LINEAR_API_KEY_CMD`) in the tracked settings env block — whose stdout *is* the secret. A command contract, not a vendor integration: anything that prints the secret qualifies (OS keychain, `op`, `pass`, a script). Configured means authoritative — a failing Lookup-Command is a loud typed failure, never a silent fallback; an empty value means "not configured" (the ambient path applies). Executing a Lookup-Command outside the engine is a Convention-8 violation (ADR-0029).
+_Avoid_: token command (say which credential), credential helper (the code-host CLI's mechanism — a rejected option, not this seam).
+
+**Credential-Resolver**:
+The single engine seam that turns a credential need into a secret at construction time: the configured **Lookup-Command** first, the ambient environment variable when no command is configured — two first-class paths chosen by environment lifetime (long-lived interactive machines configure the command; ephemeral environments like CI stay ambient by design). Consumed by both tracker-store factories and the host-pr landing edge; resolves once per process; holds nothing at rest; its typed failure names the command and never carries its output (ADR-0029).
+_Avoid_: auth manager, secret store (it stores nothing), fallback (as the ambient path's name — it is the ephemeral-environment path, not a legacy).
+
 ### Provenance
 
 **Ur**:
