@@ -19,4 +19,20 @@ By 2026-07-28 the dominant planning constraint was a 7-row clique: `#81 · #116 
 
 - Sibling skills that quote a convention's *location* (rather than its number) need their references swept once in the split slice.
 - The seven clique issues' Files lists are stale after the split until re-decorated — re-decoration is part of the plan, not an afterthought.
-- `wave-close`'s split (stage 2) repeats the same pattern and inherits this ADR; the remaining known overlap after both stages is `#81 ∩ #129` on `wave-start/SKILL.md` (~2 minimum waves for the current backlog).
+- `wave-close`'s split (stage 2) repeats the same pattern and inherits this ADR; the remaining known overlap after both stages is `#81 ∩ #129` on `wave-start/SKILL.md` (~2 minimum waves for the current backlog). *(Corrected by the 2026-07-28 amendment below: this prediction missed the `close-mechanics.md` residual.)*
+
+## Amendment (2026-07-28) — stage 3: the mechanics file folds into the phase files it duplicates
+
+**The stage-2 Consequence under-predicted the residual.** The re-decorated conflict map measured a four-issue group on `wave-close/reference/close-mechanics.md` where this ADR predicted only `#81 ∩ #129` would remain. The cause is structural, not accidental co-location: `close-mechanics.md`'s "worked sequence" is itself phase-numbered (banner comments `1 … 6`, `4a`, `4b`) and **duplicates the phase files' content under a second roof** — the stage-2 split moved each phase's body (worked commands included) into `phase-N-*.md` while the walkthrough restated the same guidance per phase. Live-proven twice in one night: one issue had to declare three files for one sandbox-prose concern (phase-3 + phase-4a + the mechanics duplicate), and a Convention-9 disclosure hit the same stale dry-run note on both roofs.
+
+### Decision
+
+- **Fold, don't split further.** Each phase-numbered segment of the worked sequence (including the `--auto` 4b walkthrough) moves into its phase file and **merges with the near-duplicate prose already there** — a merge, not an append; no passage may state the same guidance twice within a file.
+- **A slim `close-mechanics.md` remains, same filename** (inbound links from Convention 7 and resume-mechanics keep resolving), holding only the genuinely cross-phase material: the `{{wave-cli}}` resolution, the Commands table, the **exit-code tables (deliberately central** — verbs like `worktree-cleanup` run in two phases; per-phase code fragments would re-create the duplication this fold removes**)**, the `ClosingState` / `NeedsAttentionPayload` shapes, and the Disclaimer. The ADR-0016 advisory-write-back note is phase-4-specific and moves to `phase-4-advisory-merge-order.md`.
+- **The fold follows the split.** A mechanics file folds **only** where its skill's phase content already lives in per-phase reference files — today that is `wave-close` alone. `start-mechanics`, `create-mechanics`, `resume-mechanics`, and `plan-mechanics` stay whole until their skills are ever split by the same measured-leverage rule; `workflow-driver.md` stays deliberately unsplit (consumer copy surface, DA-F1 — unchanged).
+- **Landing constraint, same as stages 1–2:** the fold slice conflicts with every open issue declaring `close-mechanics.md` by design; it lands first, alone, in a single-row wave; afterwards the remaining pair (`#123`, `#158`) gets a `to-issues` decorate pass. The stale-prose sweep issue shrinks to its Convention-8 half; the two known pre-fix claims inside wave-close docs (the `host-pr create`-is-staged claim, the dry-run-preview-gap note — each present on both roofs) become explicit ACs of the fold slice, resolved in the same pass that merges the passages.
+
+### Considered Options
+
+- **Per-phase mechanics files** (`mechanics-4a.md`, …) (rejected) — kills the clique but doubles the file count and keeps every duplicate alive.
+- **Accept the serialization** (rejected) — keeps the double-maintenance: every phase-content issue declares two files, and the stale-prose class (two roofs drifting apart) recurs indefinitely.
