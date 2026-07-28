@@ -194,6 +194,23 @@ export {
   type CreatePrResult,
 } from './host-pr';
 
+// The ONE credential seam (ADR-0029). Consumed inside the engine by
+// `adapters/github/github-api-factory`, `adapters/linear/linear-api-factory`,
+// and `host-pr-cli`'s create edge; exported so an out-of-tree store adapter
+// inherits the same precedence and the same loud failures instead of writing a
+// fourth lookup.
+export {
+  resolveCredential,
+  commandVariableFor,
+  defaultCredentialLookupSpawn,
+  CredentialResolutionError,
+  CREDENTIAL_LOOKUP_TIMEOUT_MS,
+  type CredentialFailure,
+  type CredentialLookupResult,
+  type CredentialLookupSpawn,
+  type ResolveCredentialOptions,
+} from './credential-resolver';
+
 export {
   DEFAULT_AGENT_PATH_MARKERS,
   parseWorktreeList,

@@ -52,7 +52,7 @@
  *                  required-checks). Store-BLIND (no `--config`, no `--branch`) —
  *                  identical on every store kind, because landing is always on the
  *                  code host (ADR-0023 amendment / W10-F1). Builds the posture
- *                  reader from `$GITHUB_TOKEN`, like arm/merge/status.
+ *                  reader from the resolved GitHub credential, like arm/merge/status.
  *
  * Exit codes:
  *   0 — the op succeeded (`create`: the PR was created or an open one reused;
@@ -101,6 +101,7 @@ import {
   type HttpProbe,
 } from './host-pr';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
+import { resolveCredential } from './credential-resolver';
 import { flag, printJson } from './cli-utils';
 
 const VERBS = ['create', 'arm', 'merge', 'status', 'preflight'] as const;
@@ -115,7 +116,11 @@ type Verb = (typeof VERBS)[number];
 export interface HostPrDeps {
   /** `create`: injectable network seam (tests). Defaults inside `findOpenPr`/`createPr`. */
   http?: HttpProbe;
-  /** `create` + `preflight`: environment to read GITHUB_TOKEN from. Defaults to `process.env`. */
+  /**
+   * `create` + `preflight`: the environment the GitHub credential is RESOLVED
+   * from (ADR-0029) — `GITHUB_TOKEN_CMD` (a lookup command) or `GITHUB_TOKEN`
+   * (ambient). Defaults to `process.env`.
+   */
   env?: NodeJS.ProcessEnv;
   /** `preflight`: a posture reader to probe (tests). Production builds a `GitHubApi` from the env. */
   posture?: LandingPosture;
@@ -164,7 +169,10 @@ function usage(message: string): number {
       `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
       '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
       '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
-      '  create + preflight read GITHUB_TOKEN from the environment (never printed).',
+      '  create + preflight resolve the GitHub credential through the engine credential seam (ADR-0029):',
+      '    GITHUB_TOKEN_CMD (a lookup command, run via the shell, 60s budget) wins over GITHUB_TOKEN.',
+      '    A configured command that fails is a loud typed error naming the command — never its output,',
+      '    never a fallback to GITHUB_TOKEN. The secret itself is never printed.',
       '',
     ].join('\n'),
   );
@@ -179,8 +187,8 @@ function usage(message: string): number {
  *   (`arm`/`merge`/`status`) in tests. It is used ONLY when the detected host is
  *   `github`: routing is the ROUTER's decision, never the caller's, so an
  *   injected adapter can never smuggle a non-GitHub wave onto the GitHub path.
- *   When absent, the GitHub adapter is built from the env (impure —
- *   `GITHUB_TOKEN` + a construction-time preflight). The `create` and `preflight`
+ *   When absent, the GitHub adapter is built from the env (impure — the
+ *   credential resolver + a construction-time preflight). The `create` and `preflight`
  *   verbs do not use this seam (`create` is on the ADR-0019 `HttpProbe`/`Creds`
  *   boundary; `preflight` reads the posture via `deps.posture`).
  * @param deps - impure inputs for `create` (network seam + env) and `preflight`
@@ -332,9 +340,12 @@ export async function runHostPr(
  * closing nothing — leaves the wave looking finished with one row quietly open.
  * `allowClosePhraseLoss` is the deliberate override.
  *
- * The GitHub token comes from the env (never printed); its absence fails loud
- * (exit 1), mirroring `createGitHubApiFromEnv`. The Basic-auth credential is
- * `x-access-token:<token>` — the GitHub form host-pr.ts's `HttpProbe` documents.
+ * The GitHub token is RESOLVED through the engine credential seam (ADR-0029) and
+ * never printed; every way that can fail — nothing configured, a lookup command
+ * that exits non-zero, times out, or prints nothing — fails loud (exit 1) with
+ * an error naming the command, mirroring `createGitHubApiFromEnv`. The Basic-auth
+ * credential is `x-access-token:<token>` — the GitHub form host-pr.ts's
+ * `HttpProbe` documents.
  */
 async function runCreate(
   info: HostInfo,
@@ -345,11 +356,18 @@ async function runCreate(
   allowClosePhraseLoss: boolean,
   deps: HostPrDeps,
 ): Promise<number> {
-  const env = deps.env ?? process.env;
-  const token = env.GITHUB_TOKEN;
-  if (token === undefined || token.length === 0) {
-    const message =
-      'GITHUB_TOKEN is required to open a PR through `host-pr create` (ADR-0019). Export it before running.';
+  // One resolver seam (ADR-0029): `GITHUB_TOKEN_CMD` (a lookup command) wins
+  // over an ambient `GITHUB_TOKEN`, and a configured command that fails is a
+  // typed LOUD error here — never a silent fallback to the ambient variable.
+  // Only `.message` is ever printed: it names the command, never its output.
+  let token: string;
+  try {
+    token = resolveCredential('GITHUB_TOKEN', {
+      env: deps.env,
+      purpose: 'open a PR through `host-pr create` (ADR-0019)',
+    });
+  } catch (err) {
+    const message = (err as Error).message ?? String(err);
     process.stderr.write(`error: ${message}\n`);
     printJson({ ok: false, verb: 'create', host: info.host, branch, error: message });
     return 1;
@@ -464,8 +482,9 @@ async function runCreate(
 /**
  * The `preflight` verb — the code-host posture probe (ADR-0023 amendment). It is
  * store-BLIND: no `--config`, no store, no `--branch`. It builds a posture reader
- * from `$GITHUB_TOKEN` (the same construction-time token preflight as
- * arm/merge/status), then grades the three code-host checks via `preflightHost`.
+ * from the RESOLVED GitHub credential (ADR-0029 — the same construction-time
+ * token preflight as arm/merge/status), then grades the three code-host checks
+ * via `preflightHost`.
  * Reports on every store kind identically — landing is always on the code host.
  *
  * Exit 0 = every check passed / advisory / unknown (a probe answer, not a block);

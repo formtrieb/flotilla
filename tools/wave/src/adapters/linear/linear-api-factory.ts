@@ -1,9 +1,16 @@
 /**
  * linear-api-factory.ts — the CLI-edge factory (ADR-0020, mirrors ADR-0019's
- * `github-api-factory.ts` pattern). It performs the impure wiring (read
- * LINEAR_API_KEY from the env) OUTSIDE `buildStore`, so the store factory stays
- * a pure assembler. A construction-time `Preflight` query fails a bad key
- * loudly up-front.
+ * `github-api-factory.ts` pattern). It performs the impure wiring (resolve the
+ * Linear credential) OUTSIDE `buildStore`, so the store factory stays a pure
+ * assembler. A construction-time `Preflight` query fails a bad key loudly
+ * up-front.
+ *
+ * The credential comes from the ONE engine-owned resolver (ADR-0029), never
+ * from a lookup copy of its own: `LINEAR_API_KEY_CMD` (a lookup command,
+ * spawned through the platform shell and bounded at 60 s) wins over an ambient
+ * `LINEAR_API_KEY`, and a configured command that fails is a typed loud error
+ * rather than a silent fallback to the ambient variable. The mechanical
+ * `<VAR>_CMD` naming is why this adapter needed no credential logic of its own.
  *
  * KEY DIFFERENCE from the GitHub factory: Linear's `team`/`project` come from
  * the CONSUMER'S CONFIG (`LinearStoreConfig.team`/`.project`), not a git
@@ -15,6 +22,7 @@
 
 import type { LinearApi } from './linear-api';
 import { RealLinearApi } from './real-linear-api';
+import { resolveCredential } from '../../credential-resolver';
 import type { LinearHttp } from './linear-http';
 
 export interface LinearApiFactoryOptions {
@@ -24,16 +32,19 @@ export interface LinearApiFactoryOptions {
   project?: string;
   /** Injectable network seam (tests). Defaults to defaultLinearHttp inside RealLinearApi. */
   http?: LinearHttp;
-  /** Environment to read LINEAR_API_KEY from. Defaults to process.env. */
+  /**
+   * Environment the credential is resolved from — `LINEAR_API_KEY_CMD` (a lookup
+   * command) or `LINEAR_API_KEY` (ambient). Defaults to process.env.
+   */
   env?: NodeJS.ProcessEnv;
 }
 
 export async function createLinearApiFromEnv(opts: LinearApiFactoryOptions): Promise<LinearApi> {
-  const env = opts.env ?? process.env;
-  const token = env.LINEAR_API_KEY;
-  if (!token) {
-    throw new Error('LINEAR_API_KEY is required to build a linear IssueStore (ADR-0020). Export it before running.');
-  }
+  // One resolver seam (ADR-0029) — the key is never read out of the env here.
+  const token = resolveCredential('LINEAR_API_KEY', {
+    env: opts.env,
+    purpose: 'build a linear IssueStore (ADR-0020)',
+  });
   const api = new RealLinearApi(opts.team, opts.project, token, opts.http);
   await api.preflight(); // fail a bad key now, not mid-wave
   return api;
