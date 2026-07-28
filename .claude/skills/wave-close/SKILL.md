@@ -9,14 +9,14 @@ The operational terminator for a wave: confirm every row has reached `in-review`
 
 Load **wave-shared** by name first — `/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin (wave-shared's own [plugin-namespaced by-name loads](../wave-shared/SKILL.md) note has the finding) — it owns the auth-preflight / atomic-spine conventions this skill obeys.
 
-Your job is the **judgment** — the terminality gate, deciding when a closed-unmerged PR or a stuck row becomes a `needs-attention` flag (and when a row with *no* merge evidence is merely reported, not flagged), and calling the archive at the right moment. The CLI plumbing (exact invocations, JSON shapes, exit codes, the worked sequence) lives in [reference/close-mechanics.md](reference/close-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
+Your job is the **judgment** — the terminality gate, deciding when a closed-unmerged PR or a stuck row becomes a `needs-attention` flag (and when a row with *no* merge evidence is merely reported, not flagged), and calling the archive at the right moment. Each phase's worked sequence — exact invocations, live-finding annotations, Common Mistakes — lives with that phase under [reference/](reference/); the pieces genuinely common to every phase (CLI resolution, the full command reference, exit-code tables, shared JSON shapes) live in [reference/close-mechanics.md](reference/close-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
 
 ## When to Use
 
 - Every Plan-Table row has reached `in-review` (the terminality gate below) and the Coordinator is ready to land.
 - A prior `wave-close` run was interrupted (token outage mid-flight) — every phase is a guarded no-op when its work is already done; run as many times as needed.
 
-Do **not** use this to dispatch (`wave-start`), to plan (`wave-plan`), or to merge `main` by hand. flotilla lands every change through a PR on protected `main` — there is **no fast-forward of `main`** here (the Ur's §7.1 branch-sync is gone). This skill recommends a merge order; the merge itself is either a human action (the default) or, with opt-in `--auto`, a **partial-arm** through the engine's `host-pr` verb — the order-free rows are armed server-side and the skill exits (ADR-0023). PR *creation* still rides the Worker terminator; moving it to the staged `host-pr create` verb is a later slice (ADR-0023 decision 3), out of scope here.
+Do **not** use this to dispatch (`wave-start`), to plan (`wave-plan`), or to merge `main` by hand. flotilla lands every change through a PR on protected `main` — there is **no fast-forward of `main`** here (the Ur's §7.1 branch-sync is gone). This skill recommends a merge order; the merge itself is either a human action (the default) or, with opt-in `--auto`, a **partial-arm** through the engine's `host-pr` verb — the order-free rows are armed server-side and the skill exits (ADR-0023). PR *creation* rides the Worker terminator, through the shipped `host-pr create` verb (ADR-0023 decision 3, find-before-create) — wave-close itself never creates a PR, only lands one, and that stays out of scope here.
 
 ## THE FLOTILLA BOUNDARY — protected main, PR-only, spine never edits main
 
@@ -78,11 +78,11 @@ Phase-specific mistakes live with their phase in [reference/](reference/). These
 
 - **Recording a held row as `abandoned`.** `abandoned` means "never"; a row held out of this wave for re-planning is `parked` ("later"). Recording it `abandoned` lies to the next planner and leaves the claim stuck on the board — this is the live-gate defect ADR-0022 exists to fix.
 - **Merging `main` or fast-forwarding.** wave-close recommends an order and, opt-in via `--auto`, arms the order-free rows through the engine `host-pr` seam (ADR-0023) — it never touches `main` directly. The Ur's §7.1 branch-sync is gone.
-- **Reaching for raw `gh` to arm/merge, or expecting a `host-pr create` verb.** The three **landing** verbs `host-pr arm | merge | status` are shipped and are the only host-write path (ADR-0023 — `gh` left the landing path entirely). The **creation** verb `host-pr create` is the *staged* half and is not yet a CLI verb; PR creation still rides the Worker terminator.
+- **Reaching for raw `gh` anywhere on the host path.** `gh` left the landing path entirely (ADR-0023): the shipped `host-pr` verbs (`create | arm | merge | status | preflight`) are the only host-write path. wave-close itself only ever calls the **landing/probe** ones (`arm`/`merge`/`status`/`preflight`) — PR **creation** rides the Worker terminator's own `host-pr create` call, not wave-close.
 
 ## Related
 
-- [reference/close-mechanics.md](reference/close-mechanics.md) — the worked CLI sequence, JSON shapes, exit codes.
+- [reference/close-mechanics.md](reference/close-mechanics.md) — the cross-phase remainder: CLI resolution, the full command reference, exit-code tables, and the JSON shapes shared across phases. Each phase's own worked sequence lives with that phase, not here.
 - [../wave-shared/SKILL.md](../wave-shared/SKILL.md) — auth-preflight / atomic-spine conventions this skill inherits.
 - [../wave-start/SKILL.md](../wave-start/SKILL.md) — the dispatch loop that brings rows to `in-review`, the precondition for wave-close.
 - [../wave-create/SKILL.md](../wave-create/SKILL.md) — materialises the spine this skill terminates.

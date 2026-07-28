@@ -13,8 +13,13 @@ mkdir -p ".flotilla/waves/_archive"   # unconditional — both branches' first-e
                                        # run needs the destination dir to exist
                                        # before the move; idempotent to re-run.
 
-if [ -f ".flotilla/waves/_archive/$SLUG.md" ] && [ ! -f ".flotilla/waves/$SLUG.md" ]; then
-  echo "already archived (no-op)"           # re-run: destination populated, source gone
+if [ -f ".flotilla/waves/_archive/$SLUG.md" ] && [ -d ".flotilla/waves/_archive/$SLUG/" ] \
+   && [ ! -f ".flotilla/waves/$SLUG.md" ]; then
+  echo "already archived (no-op)"           # re-run: BOTH halves of the destination
+                                             # populated (spine file + sidecar folder),
+                                             # source gone — check the folder too, not
+                                             # only the spine file, or a partially
+                                             # re-run archive reads as fully done
 elif git ls-files --error-unmatch ".flotilla/waves/$SLUG.md" >/dev/null 2>&1; then
   # Tracked: git mv preserves history and needs a commit.
   ARCHIVE_MODE="tracked (git mv + commit)"
@@ -28,8 +33,6 @@ else
   mv ".flotilla/waves/$SLUG/"     ".flotilla/waves/_archive/$SLUG/"
 fi
 ```
-
-(See [close-mechanics.md](close-mechanics.md) for the full worked version of this check, including the sidecar-folder half of the idempotency test.)
 
 Archive moves the spine **and** its sidecar folder together, side by side in `_archive/` — flat layout either way. **Never archive to `done/`** — there is no `done/` close ceremony in flotilla (that is an Ur binding). The tracked move is reversible with `git mv` back if the wave is accidentally closed early; the untracked move is reversible with a plain `mv` back (there is no commit to revert). Re-running never fails just because the move already happened — the idempotency check above runs before mode-detection, in either mode.
 
