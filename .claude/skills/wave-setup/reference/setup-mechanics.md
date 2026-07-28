@@ -422,7 +422,7 @@ The SKILL.md [Credentials](../SKILL.md#credentials) section owns the **judgment*
 
 Run this once per credential the consumer needs (`GITHUB_TOKEN` always; `LINEAR_API_KEY` too, for a `linear` store). macOS `security` is the worked example below — the same three-artifact shape applies to any platform-native secret store or session-authenticated CLI (`op`, …), substituting that tool's own create/read invocation.
 
-**1. The keychain item** (default ACL — no `-T` restriction, so later reads never prompt):
+**1. The keychain item.** The default ACL (no `-T` restriction) governs *steady-state* reads, not the very first one: the **first** value-read (`-w`) of a freshly created item prompts the operator once, interactively, for authorization — clicking **Always Allow** on that prompt (see the live-gate below) is what makes *every later* read promptless. An attribute-only read (`find-generic-password` without `-w`) never triggers this prompt, so it cannot stand in as a check that the value-read path is promptless.
 
 ```bash
 security add-generic-password -a $USER -s flotilla-github-token -w
@@ -482,12 +482,24 @@ For a `linear` store, add `LINEAR_API_KEY_CMD` the same way, against its own key
 
 The first block (`Read`/`cat`/`less`/`more`/`head`/`tail` against the gitignored settings/`.env` files) is the pre-existing secret-echo anchor (wave-shared Convention 8, FOR-81) — unchanged, universal, scaffolded identically for every consumer. The trailing two lines are the ADR-0029 addition: **per credential**, keyed to the exact command just written into that credential's `<VAR>_CMD` — this is what closes the residual vector (the environment now carries a pointer, so the leak class becomes "execute the lookup command directly," and this entry blocks the agent harness's own Bash tool from doing that). It anchors the direct form only — an `echo $(security …)` wrapper is out of scope here, left to the separate PreToolUse-hook candidate. It does not restrict the engine's own resolution: `credential-resolver.ts`'s `child_process` spawn runs *inside* an already-allowlisted CLI invocation (`store-preflight`, `host-pr`, a store verb), a different actor than an agent's Bash tool reaching for the command directly.
 
-**The live-gate.** Once all three exist, re-run `store-preflight` (or any engine call that constructs the store/host client — it resolves the credential as a side effect):
+**The live-gate — first-read Always-Allow click, then `store-preflight`.** Once all three artifacts exist, the operator does one interactive step **in their own terminal** (never through a dispatched Worker — this is a one-time human click, not something an AFK agent can or should resolve) to authorize the item's very first value-read, then confirms resolution through the engine:
 
-```bash
-{{wave-cli}} store-preflight --config wave.config.json
-```
+1. **Trigger the first read, value-free.** Run the exact `<VAR>_CMD` form with its output redirected away, so the secret is never displayed even once:
 
-A clean exit is the live-gate: the keychain item is readable, the `<VAR>_CMD` command is spelled correctly, and the engine's precedence resolves it ahead of any stray ambient variable. Read only the exit code — never execute the `<VAR>_CMD` value directly to "check" it; its stdout **is** the secret, and the engine's own resolution inside the preflight is the sanctioned check (SECRET-SAFE).
+   ```bash
+   security find-generic-password -a $USER -s flotilla-github-token -w > /dev/null
+   ```
+
+   **Expected shape, not a defect: this first run fails.** Before the macOS authorization dialog is answered, the command exits non-zero with nothing on stdout (observed live as lookup-exit 161, twice) — that value-free failure is the correct signal that the item isn't yet interactively authorized for value-reads, not a broken scaffold or a wrong service name. Re-running the same command is the way to make the dialog reappear if it was dismissed without a click.
+
+2. **Click Always Allow** on the system dialog when it appears — not the one-time "Allow", which leaves the *next* read prompting again. This is the step that flips the item from "prompts every value-read" to "reads promptless from here on."
+
+3. **Re-run `store-preflight`** (or any engine call that constructs the store/host client — it resolves the credential as a side effect):
+
+   ```bash
+   {{wave-cli}} store-preflight --config wave.config.json
+   ```
+
+A clean exit is the live-gate: the keychain item is readable and Always-Allowed, the `<VAR>_CMD` command is spelled correctly, and the engine's precedence resolves it ahead of any stray ambient variable. Read only the exit code — never execute the `<VAR>_CMD` value directly to "check" it; its stdout **is** the secret, and the engine's own resolution inside the preflight is the sanctioned check (SECRET-SAFE).
 
 **The ambient path stays legitimate — do not scaffold `<VAR>_CMD` for a credential that should stay ambient.** An ephemeral CI-style environment (a per-job-scoped token injected into a minutes-lived environment with no keychain) is a first-class destination by design (ADR-0029), not a gap to close — leave `<VAR>_CMD` unset there, or set it explicitly to `""` if a repo-wide `env` block would otherwise apply it. There is no deprecation horizon for this path.
