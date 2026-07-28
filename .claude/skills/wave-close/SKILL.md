@@ -38,305 +38,47 @@ Do not open PRs or archive for a wave that has unfinished rows.
 
 ## Procedure
 
+Each phase's full worked body — guards, worked command blocks, live-finding annotations, and that phase's own Common-Mistakes bullets — lives in its own file under [reference/](reference/), named by phase number. **Load every file in that directory, not a subset picked by name** — a sibling's "phase N" citation resolves to real prose only once the whole directory has been read. This loader deliberately does not enumerate what's in there: a new guard or a new live finding is a new edit to its one phase file, with zero edits to this file or to any sibling phase file required. The numbering below (`1`, `2`, `3`, `4`, `4a`, `4b`, `5`, `6`) is the stable identifier sibling skills cite (e.g. "wave-close phase 4b").
+
 ### 1. Load wave-shared + gate
 
-Load **wave-shared** first (auth-preflight and atomic-spine conventions).
-
-Read the spine: `{{wave-cli}} spine read <wave-file>`. Confirm the terminality gate (all rows terminal — `pr-created`, `approved`, `failed`, `abandoned`, or `parked`; none `dispatched`/`reviewing`/etc.).
-
-If a `<wave-file>` already lives under `.flotilla/waves/_archive/`, this is a re-run on an archived wave — phases 2–4 still run as idempotent no-ops and phase 5 reports `already archived`; do not STOP.
+Load wave-shared, read the spine, and confirm the terminality gate before doing anything else; a re-run on an already-archived wave is a guarded no-op past this point.
 
 ### 2. Auth preflight (skip when no host writes pending)
 
-**Guard:** if every row's `Closed-by:` already classifies as `real-pr` (`needsPin: false`), skip the network entirely — print `no host writes pending (no-op)`.
-
-Detect the host: `{{wave-cli}} detect-host "$(git remote get-url origin)"`. `host: unknown` → print `(advisory) unknown host — landing is manual; proceed with advisory-only` (do not STOP — the advisory path continues; the automated landing needs a `host-pr` adapter, which only `github` ships). Then verify auth before any write. On 401 → STOP with an actionable message: refresh the token and re-run.
-
-> **Landing verbs vs. the creation verb (ADR-0023).** The three **landing** verbs `host-pr arm | merge | status` are shipped — `--auto` (phase 4b) and the phase-5 done-reconcile fallback use them, and each builds the host adapter from `$GITHUB_TOKEN` with its own construction-time preflight. The **creation** verb `host-pr create` (the find-before-create PR pinning that would move Closed-by placeholders off the `gh` path) is the *staged* half (ADR-0023 decision 3) and is **not yet a CLI verb** — PR creation still rides the Worker terminator. `detect-host` runs now regardless.
+Skip the network entirely when every row's `Closed-by:` already classifies as a real PR; otherwise detect the host and verify auth before any write.
 
 ### 3. Worktree cleanup — BEFORE the merge
 
-**Why this phase moved ahead of the merge-order print (W3-F3 / W4-F11):** the merge itself is not a phase this skill runs — it is a host action the human takes once the advisory order is in hand (or, under `--auto`, one the host completes server-side after phase 4b arms the order-free rows). Whatever still holds a wave branch locally at that moment makes `--delete-branch` fail *locally*, and a failed local delete silently aborts the *remote* delete too, with the merge command still exiting 0. Two independent things have been observed holding a branch this way: **a worktree still checked out on it (W3-F3)** and, separately, **the branch simply being the current checkout with no worktree involved at all (W4-F11 — reproduced merging the very retro PR that first documented W3-F3)**. Running cleanup first removes the worktree cause before the human ever reaches the merge step. **It does not remove the other one** — a Coordinator (or human) merging from a branch checkout is still a live trap — which is why step 4 below treats branch deletion as a checked step regardless of phase order, not as something this reordering alone resolves.
-
-**Pass `--orphans` on the SAME call, every time — never as a conditional follow-up (close-review finding).** An earlier version of this phase treated the standalone orphaned-branch sweep (`sweepOrphanBranches`) as something to run only *after a manual worktree removal* — a trigger written for the ENOTEMPTY-fallback case (force-removing a worktree by hand). But the agent harness removing its own worktree **before wave-close ever starts** is the ordinary case now, not that exception. When it has already happened, `git worktree list` shows nothing for that worktree, `worktree-cleanup --wave <wave-file>` correctly reports `0/0/0` (nothing was registered for `planCleanup` to see), no manual removal is ever needed — and a sweep gated on "a manual removal happened" never runs. Four consecutive closes reported `0/0/0` while `worktree-wf_*` and merged `wave/*` local branches piled up, because that one documented call site was never reached — not because `sweepOrphanBranches`'s two signals (remote-ref-gone, worktree-gone) failed to recognize them. The fix is to always pass `--orphans`; it is a no-op when there is genuinely nothing to sweep.
-
-**Guard:** no agent worktrees remain for this wave → **still run the commands below.** `--orphans` operates independently of the `--wave` scope and of whether anything was registered — skipping the call outright because there is nothing to scope it to is exactly the gap that let branches accumulate silently. There is no case where phase 3 should be skipped entirely.
-
-```bash
-# Preview first — NOTE: --dry-run previews the wave-scoped worktree plan and
-# the orphan-DIRECTORY plan. It does NOT YET preview the orphan-BRANCH sweep
-# (branches are still only swept on a real, non-dry-run call — see cli.ts).
-# This is a tracked gap (issue #142), not an accepted asymmetry: the engine
-# now ships the pure half a preview needs (`planOrphanBranchSweep`), but the
-# CLI's `--dry-run` handler has not yet been wired to call it. Until it is,
-# treat `--dry-run --orphans` as silent specifically on branches — its
-# silence there is not evidence the following real call will delete none.
-{{wave-cli}} worktree-cleanup --dry-run --wave <wave-file> --orphans
-
-# Execute (only after the preview looks right)
-{{wave-cli}} worktree-cleanup --wave <wave-file> --orphans
-```
-
-The `--wave` flag scopes the registered-worktree removal to branches in this spine's dispatch-log — a parallel sibling wave's worktrees are silently excluded (the parallel-safe path). `--orphans` is **not** wave-scoped — it sweeps orphan directories and orphaned local branches (`wave/*` with a confirmed-gone remote ref, `worktree-wf_*` with no live worktree) repo-wide, which is safe by construction (its signals never touch a branch checked out anywhere live, or one with no merge evidence). Each removed / skipped / errored worktree is a line item in the JSON output `{ removed, skipped, errors }`; the orphan-branch sweep folds its findings into the SAME payload's `branchesDeleted` / `branchHygieneSkipped` fields, and the orphan-directory sweep reports under `orphans`. A **dirty worktree (uncommitted changes) is NEVER removed** — it appears in `skipped`.
-
-**A worktree dirtied ONLY by harness-denied-path deletions is no longer stuck (issue #142).** Under a sandboxed harness, a fresh agent-worktree checkout can be denied write access to specific tracked paths (commonly `.claude/skills/`, `.claude/agents/`, and neighboring harness-config paths) — `git status` then reports every file under those paths as deleted, before the dispatched agent ever touched anything. The engine now recognizes exactly that shape (tracked-under-a-harness-denied-path, DELETED, nothing else divergent) as disposable and removes the worktree on an ordinary `worktree-cleanup` call — no manual step needed. **If a worktree still will not remove after this fix has landed, do NOT just re-run cleanup and expect a different answer** — the underlying cause (the sandbox's write-deny) is deterministic, so an identical retry reproduces the identical result. Re-running only helps when the obstruction was transient (see `erroredStillListed` below, which already gets one bounded retry inside the engine); a worktree that is still stuck past that is a genuine sandbox denial on the *delete* itself, and the fix is the same manual step `erroredStillListed` names: `git worktree prune` + `rm -rf` the directory **with the sandbox disabled**. Report each line item clearly either way.
-
-**Reading the result: `0/0/0` on `removed`/`skipped`/`errors` is not evidence of "nothing to do."** It is evidence only that `planCleanup` received no registered worktrees for this wave to consider — the harness may have already removed them. Check `branchesDeleted` / `branchHygieneSkipped` / `orphans` in the **same** output before reporting a no-op:
-
-- Every field — `removed`, `skipped`, `errors`, `branchesDeleted`, `branchHygieneSkipped`, `orphans.removed`, `orphans.skipped` — empty → genuinely nothing to do. Report **"cleanup: nothing to do — no worktrees, no orphaned branches or directories."**
-- The worktree triple empty but `branchesDeleted` and/or `orphans.removed` non-empty → the harness had already removed the worktree(s), and this run's orphan sweep is what caught the leftover branches/directories. Report this distinctly, e.g. **"cleanup: no worktrees were registered for this wave (already removed) — swept N orphaned branch(es) [list] and M orphaned director(ies)."** This is a normal, non-alarming outcome — the residue was found and cleaned, not silently ignored.
-
-**A clean `git worktree list` is not evidence the directories are gone.** Git can **deregister** a worktree from its list while still failing to delete the on-disk directory (`Directory not empty` / `Operation not permitted`) — the JSON output can show `errors: N, removed: 0` for exactly the worktrees `git worktree list` no longer mentions. The result is an orphan directory **no tool reports on its own**: `worktree-cleanup` says it failed, `git worktree list` says there is nothing there, and the directory still sits in the repo (potentially still holding an editor/language-server indexing job). Verify on disk after cleanup — e.g. `ls .claude/worktrees/` (or wherever this repo's worktrees live) against the `errors` list — rather than trusting `git worktree list`'s silence. Removing a confirmed orphan may need the sandbox disabled (harness worktree paths are commonly write-denied).
+Clean up this wave's agent worktrees and sweep orphaned branches/directories — unconditionally, every time — so nothing still holds a wave branch locally by the time anyone reaches the merge step.
 
 ### 4. Advisory merge-order (print-only) — the merge happens here, verify branch deletion separately
 
-Recompute: `{{wave-cli}} merge-order <wave-file>` → `{ algorithmic, override, reason }`. The engine sources each issue's branch from the spine's dispatch-log (exact branches, not guesses). Print the result as a clear advisory block:
-
-```
---- Advisory Merge Order ---
-Reason: <reason>
-Order : <branch-1> → <branch-2> → <branch-3>
-(Override applied: yes/no)
----
-```
-
-`parked` rows are **excluded** from the order (ADR-0022) — no branch, no PR, nothing to merge. They fall out naturally (a parked row has no dispatch-log branch to source), so expect them absent; do not hand-add them.
-
-**This is advisory-only — the order is NOT written into the spine.** The `## Conflict-Map` section is parser-consumed (ADR-0016); `spine replace-closed-by` targets `## Closed-by`, not `## Conflict-Map`; there is no CLI verb to write an advisory merge-order into the parser-consumed section without corrupting the conflict-pair data. On the **default** path the human follows the printed order; under **`--auto`** the order-free rows arm themselves in phase 4b and this printed order becomes the overlapping tail's human playbook (never hand-merge those rows before checking phase 4b). When a fall-behind / stacked override is present, note it explicitly — the human must decide whether to rebase before merging (rebase-train automation is M2; wave-close only advises).
-
-**`gh pr merge --delete-branch`'s exit code is not evidence the branch was deleted.** It exits **0** whenever the merge itself succeeds, even when the local branch delete fails — and a failed local delete silently aborts the paired remote delete too, without changing the exit code or printing anything past the merge success. This was observed twice for two different reasons: the branch's local ref was still checked out inside a wave worktree (W3-F3, before this phase reorder), and — reproduced live, phase reorder notwithstanding — the branch simply being the *current* checkout with no worktree at all (W4-F11). Treat branch deletion as a **separate, checked step** after every merge in the advisory order: query the host for surviving `wave/*` (or this store's branch-naming convention) branches — e.g. `gh api repos/<owner>/<repo>/branches` or `git ls-remote --heads origin 'wave/*'` — and delete by hand (`git push origin --delete <branch>`) whatever is still there. Do this **regardless of whether phase 3's cleanup ran cleanly** — cleanup only removes the worktree cause, not the checked-out-branch cause.
-
-**Reconciled-merge verify — the checked step before a serialized lane's tail PR merges (KW-F4).** File-level conflict prediction is structurally blind to *semantic* cross-suite conflicts: two rows with **zero `Files` overlap** can still collide on the reconciled merge — a new test file meeting an API-wide change one row made, a success-path test decoding a response envelope another row changed. This is not hypothetical: it broke **27 test assertions** on the first Linear consumer wave's reconciled merge, past a green file-level conflict-map, and what caught all 27 was a human running the **consumer's full verify profile** on the reconciled merge before the tail PR landed — luck this step replaces with a gate. For every **serialized lane** in the advisory order — any chain of two or more branches that must merge in sequence (the overlapping tail; never the order-free rows) — after the lane's earlier PRs have merged and you have pulled `main` to reconcile (4a below), reconcile the tail branch locally onto that `main` and run the **consumer verify profile** (`wave.config.json`'s verify profile — the same commands the Worker and Reviewer ran per row) against it. **Merge the tail PR only once that verify is green.** A red run is a real landing conflict the file-level map could not see: fix it (rebase the tail, patch the break) *before* the tail merges, never after. Surface the reconciled-merge verify result (which lanes were re-verified, green/red) in the phase-6 close summary's next-human-steps.
+Recompute and print the advisory merge order, merge each PR through the engine host seam, and verify branch deletion as its own checked step — the merge command's exit code alone is never evidence the branch is gone.
 
 ### 4a. Self-repair check + pull to completion before you reconcile (W4-F1 / W5-F3)
 
-**Phase 5 probes with whatever engine is on disk right now.** `issue-store read-closing`, `issue-store close`, `merge-order`, `worktree-cleanup`, and the `host-pr` routing verbs all run against the **local checkout** — and that checkout sits at the wave anchor (the code from BEFORE the wave), not at whatever `main` becomes once this wave's PRs merge. If *this wave's own rows* changed any of that machinery, the fix is not live in phase 5 until the just-merged `main` has been pulled locally.
-
-**Detect it — mechanical, before phase 5 (not a retro operating note to remember).** Once the dispatch-log branches are in hand (phase 4), diff each against `main` and grep for the engine surface wave-close depends on:
-
-```bash
-# The files behind read-closing / close / flag / clear-flag (per-adapter +
-# CLI wiring), merge-order, worktree-cleanup, the host-pr routing verbs, and
-# the top-level CLI dispatch that routes to all of them. This also covers the
-# transport/factory/wiring layer one level below the store wrappers —
-# real-github-api.ts, github-api-factory.ts, real-linear-api.ts,
-# linear-api-factory.ts, cli-store.ts — because a probe-logic fix confined to
-# that layer (the FOR-23 / real-linear-api.ts precedent) would otherwise
-# evade this check:
-ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
-
-for BRANCH in <every wave branch from the dispatch-log>; do
-  HIT=$(git diff --name-only main...origin/"$BRANCH" | grep -E "$ENGINE_SURFACE")
-  [ -n "$HIT" ] && echo "SELF-REPAIR HAZARD: $BRANCH changes wave-close's own engine surface — $HIT"
-done
-```
-
-Any hit means this wave is a self-repair case: **note it in the close summary** and treat the sequence below as non-negotiable for this run, not merely advisable. A clean run (no hits) still runs the sequence — the check is early warning, not a gate that skips the pull.
-
-**Why the order is `merge → pull → reconcile`, never `merge → reconcile`.** Reconciling before the pull probes with the un-fixed, pre-wave code — and can flag correctly-landed rows. This is not hypothetical: it is the live **W4-F1 near-miss** — had phase 5 run before the pull, `read-closing` would have reported `closed-unmerged` for **all four** of that wave's already-merged rows (the fix those same rows shipped, `read-closing` itself, was not yet live in the local checkout), and the skill's own prescription would have flagged four correctly-landed rows `recoverable-stop` — exactly the damage class the fix existed to remove, inside the wave that removed it. Pulling first is what makes phase 5 reconcile against the engine the wave actually shipped, not the one it replaced.
-
-**merge (phase 4) → pull to completion (sandbox disabled if needed) → only then reconcile (phase 5).**
-
-Run this after every merge in the advisory order, before starting phase 5, regardless of whether the check above found a hit:
-
-```bash
-git fetch origin main
-git pull --ff-only origin main
-git rev-parse HEAD   # MUST equal the merged main tip — do not trust exit code or git status alone
-```
-
-**Sandbox precondition — disable the sandbox for this pull whenever this wave's rows touch anything under `.claude/skills/`.** The sandbox denies writes under `.claude/skills/**`; a fast-forward that includes a skill-file change stops mid-apply with `error: unable to unlink old '.claude/skills/<path>': Operation not permitted`. Everything outside the denied paths (e.g. `tools/wave/src/**`) still lands — only the skill files don't.
-
-**Half-applied-pull symptom — nothing flags this as broken.** The result is a mixed working tree: some tracked files carry the merged content, the skill files do not, and **HEAD stays frozen on the pre-merge SHA** — no `MERGE_HEAD`, no lock file, no non-zero exit code past the failed unlink, and a plain `git status` reads like an ordinary set of pending local changes, not a corrupted pull. **Do not infer success from the pull's exit code or from `git status` being quiet** — the only reliable check is `git rev-parse HEAD` against the merged tip, as above.
-
-**Resolution:** re-run as a hard reset with the sandbox disabled —
-
-```bash
-git reset --hard origin/main   # sandbox disabled: needs write access under .claude/skills/
-```
-
-— safe here because a wave-close checkout has no local edits by design (every change this wave made already landed through its own PR). Confirm `git rev-parse HEAD` matches the merged tip, then proceed to phase 5 — it now reconciles against the same engine the wave just changed, not the one from before it.
-
-**Re-run `{{wave-cli}} worktree-cleanup --orphans` here too, unconditionally, before phase 5.** Phase 3 ran *before* phase 4's merge, so this wave's own `wave/*` branches only became remote-ref-gone once THIS close's own merges landed — the phase-3 sweep could not have caught them yet. This second call is what does; run it every time, not only when phase 4a's self-repair check found a hit.
+Detect whether this wave's own rows changed the engine surface wave-close depends on, then pull `main` to a verified completion before phase 5 reconciles against it.
 
 ### 4b. `--auto` — partial-arm confirm + arm-and-exit (opt-in)
 
-**Skip this whole section unless the Coordinator was invoked as `wave-close --auto`.** The default path is phase 4's printed order followed by a human merge. `--auto` is opt-in with human-confirm as the default posture (ADR-0005/0023); it never merges `main`, never fast-forwards, and never watches. When it is set, do **not** hand-merge the order-free rows in phase 4 — arm them here instead.
-
-`--auto` is a **partial-arm**: the Coordinator presents **one confirm for this wave**, then hands exactly the **order-free** rows (those in *no* `## Conflict-Map` pair) to the engine's `host-pr arm` verb. The overlapping tail is **never armed** — its phase-4 advisory order stays the human playbook, so the ordered-landing strength survives automation.
-
-**One confirm per wave — a table, one line per terminal PR:**
-
-| Column | Source |
-|---|---|
-| **PR** | the row's PR URL (`read-closing`'s `prUrl`, or `{{wave-cli}} host-pr status --branch <branch>`'s `url`) |
-| **row** | issue id + wave branch (sourced from the spine dispatch-log) |
-| **verdict** | the Reviewer verdict (`approve` is the eligibility floor — below) |
-| **conflict prediction** | **order-free** (in no `## Conflict-Map` pair → *will arm*) or **overlapping** (named in a pair → *not armed*; follow the advisory order) |
-| **repo posture** | `host-pr preflight`'s `allow-auto-merge` + `required-checks` checks — the same on every store kind (below); on `unknown`, "posture unknown — the arm outcome decides" |
-
-Then **one** confirm for the whole wave. On confirm → arm the order-free rows. On decline → arm nothing; fall back to the printed advisory order.
-
-**Which rows arm — mechanical eligibility, no risk re-gate.** A row is armed iff **all** hold: Reviewer verdict is `approve`, it carries **no** `needs-attention` flag, it has an **open PR**, and it is **order-free** (in no `## Conflict-Map` pair, read from the spine section already in hand from phase 1). There is **no second risk gate at landing** — a `public-API-change` row already met its human STOP at verdict routing (the G3 guard in `route-verdict`); re-gating here would double-ask the same human. A row in any Conflict-Map pair is the overlapping tail: print it with the phase-4 advisory order, never arm it.
-
-**Repo posture (the confirm's last column) — probed, never dictated (ADR-0023 amendment).** Run the **host-preflight** — the code-host posture probe. It is **store-blind**: no `--config`, detect-host-routed, so it gives a **real** answer on **every** store kind (github, linear, *and* markdown), because landing always happens on the code host. This is the W10-F1 fix: the store-preflight used to report these `not-applicable` on a linear store, leaving the arm outcome as the only truth (under a proxied sandbox, the tracked `env` block is the standing source for the proxy flag — wave-shared Convention 1; prefix `NODE_USE_ENV_PROXY=1` explicitly only where no tracked env block applies):
-
-```bash
-{{wave-cli}} host-pr preflight   # detect-host-routed; NO --config → { ok, verb: "preflight", host, checks: [ { name, status, detail }, … ] }
-```
-
-Read two checks:
-
-- **`allow-auto-merge`** — the CI-repo precondition. `fail` (GitHub's default is OFF) *with required checks present* means a checks-pending PR **cannot** be armed; surface the check's `detail` (it names the exact fix) and land that row via the advisory order instead. `advisory` (OFF but no required checks) is fine — an already-clean PR direct-merges without it. `unknown` means the token cannot see the setting (below maintain/admin): never blocks, and the confirm says **"posture unknown — the arm outcome decides"**.
-- **`required-checks`** — **report-only**, never a blocker. `advisory` with an `absent` posture (no CI) is a valid `--auto` repo: the confirm must state **"no required checks — confirming means immediate merge"** (honest — the click merges now, backed by the Worker's verify run and the Reviewer's independent one). A `present` posture → the armed PRs land themselves once those checks pass. `unknown` (the branch-protection read needs admin the token lacks) → the confirm says so; the arm intent is decided per-PR anyway.
-
-**The probe is advisory — the arm outcome is the ground truth.** `host-pr preflight` informs the confirm; it never gates it. On any `unknown`, state "posture unknown — the arm outcome decides" and proceed: `host-pr arm`'s per-PR outcome (`merged` vs `armed` vs `refused`, below) is the authority a static probe cannot be (a behind/recomputing race is not probeable).
-
-**Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`):
-
-```bash
-{{wave-cli}} host-pr arm --branch <wave-branch>   # detect-host-routed; NO --config (landing talks to the code host, not the tracker)
-# → { ok, verb: "arm", host, branch, method: "squash", outcome, prNumber?, prUrl?, reason }
-```
-
-`host-pr arm` itself decides the mechanism per PR — **checks pending → enable auto-merge** (GraphQL); **already clean → direct merge now** (REST). Read the `outcome`:
-
-- `armed` — auto-merge enabled; the PR lands itself when its checks pass. Nothing more this run.
-- `merged` — the PR was already clean and merged immediately (the no-required-checks / all-green case).
-- `already-merged` — idempotent no-op (a prior run armed/merged it). Safe on every re-run.
-- `refused` — the host declined (branch behind `main`, `allow-auto-merge` OFF, or not mergeable). **Flag `recoverable-stop`** with the returned `reason`:
-  ```bash
-  {{wave-cli}} issue-store flag <id> --kind recoverable-stop \
-    --question "auto-merge could not arm — <reason>; rebase then re-run wave-close --auto, or merge by hand" \
-    --option rebase-and-retry --option merge-by-hand
-  ```
-  Rebase-train automation is M2 — `--auto` only arms; it does not rebase.
-- `no-pr` — no open PR for the branch (should not reach here — an open PR is an eligibility floor). Report it.
-
-**Arm-and-exit — no watch, no poll (ADR-0023).** After arming, do **not** wait for the armed PRs to merge. The host completes them server-side (this is exactly why arming was chosen — it survives a dead Coordinator). Proceed to phase 5 (done-reconcile) and phase 6 (archive) as on the default path, then exit. Whatever has not merged yet reconciles on the **next** `wave-close` / `wave-resume` touch (idempotent, archived spines included). **Accepted, documented latency:** an armed PR whose checks later *fail* is not watched — it surfaces only on that next touch, never live. State this; do not promise live monitoring.
-
-Because `host-pr arm` may merge a clean PR **immediately** — possibly one of this wave's own rows — re-run the phase-4a pull after arming, before phase 5: the same self-repair discipline (W5-F3), now for server-side merges, so phase 5 reconciles against the merged engine and not the pre-merge one.
-
-**Headless refuses `--auto` without explicit pre-authorization.** The per-wave confirm is a human click. A headless run (no human to answer it) must **never self-confirm**: `wave-close --auto` with no human present **STOPs** unless the explicit pre-authorization flag `--pre-authorized` was passed. `--pre-authorized` is the human's advance authorization and the **only** headless bypass of the confirm (ADR-0023). Without it, headless `--auto` prints `--auto needs a human to confirm the per-wave arm, or explicit --pre-authorized to proceed unattended` and stops before arming anything.
+Opt-in only: present one confirm for the wave, arm the order-free rows through `host-pr arm`, then exit without watching — the overlapping tail stays on the phase-4 advisory order.
 
 ### 5. Done-reconcile + needs-attention for stuck rows
 
-Probe each terminal row's closing state, then either **land it `done`** (a merged PR), **flag it** (a genuinely rejected PR / stuck row), or **report it** (no merge evidence either way).
-
-**Read the outcome as a claim about evidence, not as a verdict.** The probe reports what it *found*, and the four outcomes are not equally alarming. Only `closed-unmerged` means "a PR was rejected" — `closed-unknown` means "nothing was found", which is not the same thing and must never be auto-flagged.
-
-**Evidence hierarchy for a merge (ADR-0023): tracker attachment > host PR state > nothing.** `read-closing` (the tracker attachment) is the primary probe. When it **cannot see a merge** — `open` on a no-integration workspace where the tracker never attaches the PR, or `closed-unknown` where it found no PR either way — fall to the **host** for the evidence the tracker lacks: `{{wave-cli}} host-pr status --branch <branch>` answers "is the PR for this branch merged?" mechanically (`{ state: "open"|"merged"|"closed-unmerged"|"none", url? }`). Its `state` supplies the merge fact, and `issue-store close <id> <prUrl>` fires the FOR-13 `doneState` fallback on a `merged` answer — this **replaces the old out-of-band human-confirmation step** with a probe. Only when *both* the tracker and the host lack merge evidence is the answer "nothing" (report, leave `in-review`).
-
-**Skip `parked` rows entirely — do not probe them** (ADR-0022). A parked row has no branch and no PR, so `read-closing` has nothing to find; its claim was already released at park time. Report it under the parked rubric below and move on.
-
-**Deriving `--acked` before every `close` on a merged row (FOR-17 — the dead `--acked` wire, ADR-0004).** `issue-store close` has always accepted `--acked 0,2,3` to tick the reviewer-met ACs on the tracker for human visibility — no skill ever passed it. Whenever the probe below (directly or via a host fallback) confirms a row **merged**, derive the acked indexes from that row's FINAL Reviewer verdict through the single-owner engine verb **before** calling close — never parse `acVerification[]` by hand here:
-
-```bash
-{{wave-cli}} verdict-acked <verdictsDir> <id>
-# → { "acked": [0, 2], "iter": 2, "corrupt": 0 }
-```
-
-`<verdictsDir>` is `.flotilla/waves/<slug>/verdicts` — the same sidecar dir wave-start's Reviewer stage writes to (wave-shared Convention 5). The verb reads the **MAX-iter valid** verdict sidecar for the id, so after a changes-requested → re-dispatch cycle the answer always comes from the **latest** iteration, never a stale one. A missing or schema-invalid verdict sidecar is not a failure — `acked: []` (nothing to tick, `close` still lands the row `done`); this is COSMETIC ONLY (ADR-0004) — the tick is human-facing and is never re-read as gate input, so an empty `acked` never blocks the close. Close-time, not verdict-time, is the deliberate moment to apply it: ticking at approve would overstate an AC if the PR later closed unmerged, and this step only runs once a merge is confirmed.
-
-```bash
-{{wave-cli}} issue-store read-closing <id>   # → { state: "open"|"merged"|"closed-unmerged"|"closed-unknown", prUrl? }
-
-# merged → derive --acked from the FINAL verdict, THEN close (see above):
-{{wave-cli}} verdict-acked "$VERDICTS" <id>              # → { acked: [...], iter, corrupt }
-{{wave-cli}} issue-store close <id> <prUrl> --acked 0,2  # --acked = the comma-joined `acked` array; omit/empty if []
-
-# closed-unmerged (a PR was FOUND and it did not merge) → flag recoverable-stop
-{{wave-cli}} issue-store flag <id> \
-  --kind recoverable-stop \
-  --question "PR was closed without merging — reopen, re-dispatch, or abandon?" \
-  --option reopen --option re-dispatch --option abandon
-
-# closed-unknown → NO flag. Report it and ask the human. See the rubric below.
-```
-
-- **`merged` → land the row `done`** via the **done-reconcile**: derive `--acked` (above), then `{{wave-cli}} issue-store close <id> <prUrl> --acked <indexes>` (the `prUrl` is `readClosing`'s). This is the operational trigger that reaches `done` for a merged row — the wire the live gate found missing (F1) — and, with `--acked` wired, also the checklist tick the live gate found dead (FOR-17): the issue's AC checklist now reads as done for exactly what the Reviewer verified, partial/not-met ACs stay unticked. `close` is **idempotent no-op-or-reconcile**: on a native-integration tracker the merged PR already flipped the coarse projection, so `close` only records the closing PR + the cosmetic AC tick; a re-entrant wave-close re-run never double-posts (re-deriving `--acked` and re-ticking the same indexes is itself idempotent). Do **not** re-implement close — it is the existing `IssueStore.close()` verb. Then clear any stale flag: `{{wave-cli}} issue-store clear-flag <id>`.
-- **`closed-unmerged` → `recoverable-stop`** — the store **found a linked PR and it did not merge**: a genuinely rejected PR. It is NOT auto-moved back to `available`; doing so would let another wave re-grab the issue and redo deliberately-rejected work. The human dispositions it (reopen / re-dispatch from scratch / abandon).
-- **`closed-unknown` → consult the host, then report only if still unproven** — the row is closed but `read-closing` found **no PR evidence either way**. This is *absence of evidence*, not evidence of rejection, so never flag on it alone (auto-flagging here raised `recoverable-stop` on three genuinely-merged rows in the wave that found it — the exact false alarm this outcome exists to prevent). Fall to the host (evidence hierarchy): `{{wave-cli}} host-pr status --branch <branch>`. `state: merged` → the PR did land, the tracker just never attached it → derive `--acked` (above), then `{{wave-cli}} issue-store close <id> <prUrl> --acked <indexes>` (FOR-13 fallback), done. `state: closed-unmerged` → the host proves a real rejection → flag `closed-unmerged` (below). `state: open`/`none` → still no merge evidence anywhere → report **`closed-unknown — closed, but no merged-PR evidence found; confirm before landing`**, naming the id, and let the human say what happened. **Never guess** between merged and rejected — the host answer decides, and only a genuinely silent host falls back to the human.
-- **`open` → PR still in review; no flag** — the human merges it in the advisory order (or `--auto` armed it in phase 4b); a later re-run reconciles it. **No-integration workspace with `states.doneState` set (FOR-13):** the probe can **never** report `merged` (there is no tracker↔host integration to see the merge) — it stays `open` after the PR lands. Do **not** wait for an out-of-band human confirmation: consult the host directly — `{{wave-cli}} host-pr status --branch <branch>`. On `state: merged`, derive `--acked` (above) and land the row with the SAME `{{wave-cli}} issue-store close <id> <prUrl> --acked <indexes>` — on a store with `states.doneState` this fires the FOR-13 fallback (mapped done-state transition + a loud advisory), landing the ticket even without the integration. On `state: open`/`none`, the PR genuinely has not merged; leave the row `in-review` for the next touch. `close` is idempotent, so re-runs stay safe.
-- **`failed`/`abandoned`** rows were already flagged by `wave-start`; do not double-flag unless `readClosing` also returns `closed-unmerged`.
-- **`parked` → report, never flag** (ADR-0022). Report it as **`parked — released for re-planning`**, naming the issue id so the human can see what left the wave. Do **not** flag it, do **not** `close` it, do **not** `unclaim` it again (the claim was released at park time; re-running is harmless but pointless). The question a needs-attention flag would raise — "what should happen to this row?" — is already answered: it is coming back in a future wave, drawn fresh from the pool. Flagging it would be the exact false alarm the state exists to remove.
-
-The flag is **orthogonal to the coarse rung** — the row stays at its current rung (`in-review` / `failed` / `abandoned`); `read().status` gives `needs-attention` precedence in the projection, but the underlying rung is unchanged. A `done` row (closed PR) reads `done` regardless of any lingering flag (closed wins over the flag).
+Probe each terminal row's closing state via the evidence hierarchy, then land it `done`, flag it, or report it — never guessing between merged and rejected.
 
 ### 6. Archive (the last phase — terminal-only, idempotent, layout-aware)
 
-**Guard (terminal-only):** archive only when every row is finalised (no row `dispatched`/`reviewing`/etc.). If any row is still pending → do NOT archive; print `wave not yet terminal (skipped)`.
-
-**Guard (idempotent):** `<wave-file>` already under `.flotilla/waves/_archive/` → print `already archived (no-op)`.
-
-**A consumer's `.flotilla/` may or may not be git-tracked.** flotilla's own dogfood repo keeps it gitignored (toolkit, not consumer); most consumer repos track it (the spine is the durable WAL, so committing it enables resume from a fresh clone — see the setup convention in `wave-setup`). `git mv` fails outright on an ignored/untracked path, so the archive step **detects the spine's actual git-tracked status and picks the matching move, every time** — never assume from the consumer type or from what the last wave did. It also re-checks whether the move already happened, so a second run is a no-op rather than a failed move:
-
-```bash
-SLUG=<slug>   # e.g. 2026-06-19-foo
-
-mkdir -p ".flotilla/waves/_archive"   # unconditional — both branches' first-ever
-                                       # run needs the destination dir to exist
-                                       # before the move; idempotent to re-run.
-
-if [ -f ".flotilla/waves/_archive/$SLUG.md" ] && [ ! -f ".flotilla/waves/$SLUG.md" ]; then
-  echo "already archived (no-op)"           # re-run: destination populated, source gone
-elif git ls-files --error-unmatch ".flotilla/waves/$SLUG.md" >/dev/null 2>&1; then
-  # Tracked: git mv preserves history and needs a commit.
-  ARCHIVE_MODE="tracked (git mv + commit)"
-  git mv ".flotilla/waves/$SLUG.md"  ".flotilla/waves/_archive/$SLUG.md"
-  git mv ".flotilla/waves/$SLUG/"     ".flotilla/waves/_archive/$SLUG/"
-  git commit -m "chore(wave): archive $SLUG → _archive/ (operational close)"
-else
-  # Ignored/untracked: git mv would fail here; plain mv, no commit to make.
-  ARCHIVE_MODE="untracked/ignored (plain mv, no commit)"
-  mv ".flotilla/waves/$SLUG.md"  ".flotilla/waves/_archive/$SLUG.md"
-  mv ".flotilla/waves/$SLUG/"     ".flotilla/waves/_archive/$SLUG/"
-fi
-```
-
-(See [reference/close-mechanics.md](reference/close-mechanics.md) for the full worked version of this check, including the sidecar-folder half of the idempotency test.)
-
-Archive moves the spine **and** its sidecar folder together, side by side in `_archive/` — flat layout either way. **Never archive to `done/`** — there is no `done/` close ceremony in flotilla (that is an Ur binding). The tracked move is reversible with `git mv` back if the wave is accidentally closed early; the untracked move is reversible with a plain `mv` back (there is no commit to revert). Re-running never fails just because the move already happened — the idempotency check above runs before mode-detection, in either mode.
-
-**Durability consequence (report, don't decide):** an **untracked/ignored `.flotilla/`** means the wave's spine, sidecars, and archive exist **only on the machine that ran the wave** — a fresh clone (a teammate, CI, a new machine) has no wave history at all, only whatever landed in the actual PRs. A **tracked `.flotilla/`** carries that history along with the repo. This slice only makes the archive mechanics honest about whichever answer a consumer has already chosen (via `.gitignore`) — it does **not** recommend one default over the other. That recommendation (should `wave.config.json` / `.flotilla/waves/` be tracked by default for a new consumer) is explicitly deferred to the publication/onboarding PRD, where the wider "what does a new consumer see on `git clone`" question is decided.
-
-After archiving, print a close summary: wave slug, **which archive mode ran** (`tracked (git mv + commit)` or `untracked/ignored (plain mv, no commit)`), per-row final state, advisory merge order, any `needs-attention` flags, next human steps (merge PRs in the printed order).
+Once every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
 
 ## Common Mistakes
 
-- **Archiving before terminal.** The terminality gate (all rows `pr-created`/`approved`/`failed`/`abandoned`/`parked`) must hold. A row still `dispatched`/`reviewing` means the wave isn't done.
-- **Flagging — or probing — a `parked` row.** `parked` is terminal *and silent* (ADR-0022): the claim is already released and the disposition is already decided. Do not `read-closing` it (there is no PR to find, so the probe can say nothing useful — it reads `closed-unknown` at best), do not flag it, do not `close` it. Report `parked — released for re-planning` and move on.
+Phase-specific mistakes live with their phase in [reference/](reference/). These three are genuinely cross-phase:
+
 - **Recording a held row as `abandoned`.** `abandoned` means "never"; a row held out of this wave for re-planning is `parked` ("later"). Recording it `abandoned` lies to the next planner and leaves the claim stuck on the board — this is the live-gate defect ADR-0022 exists to fix.
-- **Writing the advisory order into `## Conflict-Map`.** The `## Conflict-Map` section is parser-consumed (ADR-0016); `spine replace-closed-by` targets `## Closed-by`, not this section. Print the merge-order advisory to stdout — do NOT edit the spine to record it.
-- **Leaving a `merged` row at `in-review` (only clearing its flag).** A merged PR must be landed `done` via `{{wave-cli}} issue-store close <id> <prUrl> --acked <indexes>` — that is the done-reconcile (F1). Clearing a stale flag alone does not reach `done`, and in a no-integration `states.doneState` workspace nothing else ever will.
-- **Re-implementing close.** `close` is the existing `IssueStore.close()` verb — idempotent no-op-or-reconcile, and the FOR-13 fallback lives inside it. Call the verb; never hand-roll a state transition or a "done" write in the skill.
-- **Calling `close` without `--acked` (FOR-17 — the dead wire).** `close` has always accepted `--acked 0,2,3`; every closed issue used to read "not done yet" on the tracker because no skill ever passed it. On every merged row, derive the indexes first via `{{wave-cli}} verdict-acked <verdictsDir> <id>` (the single-owner engine verb) and pass them straight through — never hand-parse `acVerification[]` in the skill, and never skip the flag because "it's optional".
-- **Deriving `--acked` at verdict-in instead of at close.** The tick fires at `close`, once a merge is confirmed — never earlier. An `approve` verdict whose PR later closes unmerged must never have ticked anything; deriving `--acked` any earlier than the merged-row close call would overstate what actually landed.
-- **Re-reading the AC tick as gate input anywhere.** The ADR-0004 boundary holds unconditionally: the tick `--acked` writes is cosmetic/human-facing only. No gate, probe, or later wave may read it back — `acVerification[]` on the Reviewer verdict stays the sole ground truth.
-- **Auto-moving `closed-unmerged` back to `available`.** A rejected PR re-grabbed by another wave redoes deliberately-rejected work. Flag it `recoverable-stop`; the human disposes.
-- **Treating `closed-unknown` as a rejected PR.** They are different claims: `closed-unmerged` means a PR was found and it did not merge; `closed-unknown` means nothing was found. Never flag `closed-unknown` on the tracker probe alone — consult `host-pr status` first (the evidence hierarchy): the host's `merged` lands it, its `closed-unmerged` is the only evidence that justifies a flag, and only a silent host (`open`/`none`) falls back to the human. Flagging on the bare tracker probe raises `recoverable-stop` on rows that are simply done — the live defect this outcome exists to fix.
-- **Skipping the `host-pr status` fallback in the done-reconcile.** On a no-integration workspace `read-closing` can never report `merged`, so a merged row sits `open` forever if you stop at the tracker probe. The evidence hierarchy (ADR-0023) is tracker attachment > host PR state > nothing: when the tracker can't see the merge, `host-pr status` supplies it and `close` fires the FOR-13 fallback. There is no out-of-band human-confirmation step any more.
-- **Archiving to `done/`.** flotilla archives to `_archive/`; there is no `done/` close ceremony.
-- **Assuming `.flotilla/` is (or isn't) git-tracked and always running `git mv`.** A gitignored/untracked spine makes `git mv` fail outright (P-11 — the first live wave hit this and hand-typed a plain `mv` as a manual workaround). Detect the actual tracked status of the spine file for *this* archive, every time — do not assume from the consumer type, and do not assume from what the previous wave's archive did.
-- **Removing a dirty worktree.** A worktree with uncommitted changes is reported and skipped, never removed.
-- **Re-running `worktree-cleanup` on a worktree stuck ONLY on harness-denied-path deletions, expecting a different answer on retry.** The cause (the sandbox's write-deny) is deterministic — an identical retry reproduces the identical result. The engine now classifies this exact shape as disposable (issue #142), so an ordinary run removes it; a worktree still stuck past that fix needs the sandbox disabled for a manual `git worktree prune` + `rm -rf`, not another bare retry.
-- **Reading `0/0/0` on `worktree-cleanup --wave` as "nothing to do."** It only means nothing was registered for `planCleanup` to consider — the harness commonly removes its own worktree before wave-close ever runs. Check `branchesDeleted` / `branchHygieneSkipped` / `orphans` from the SAME `--orphans` call before concluding there was no cleanup work; a non-empty result there while the worktree triple reads `0/0/0` is a distinct, reportable outcome, not a no-op.
-- **Gating the orphaned-branch sweep behind "a manual removal happened."** That trigger was written for the ENOTEMPTY-fallback (hand-removing a stuck worktree); the harness's own routine worktree removal never satisfies it, so a sweep gated this way silently never runs for the majority case. Pass `--orphans` on every phase-3 call unconditionally, and again after phase 4a's pull.
-- **Trusting `gh pr merge --delete-branch`'s exit 0 as proof the branch is gone (W3-F3 / W4-F11).** It exits 0 on merge success alone; a failed local delete (branch held by a worktree, or simply checked out) silently aborts the remote delete too, with no exit-code or log signal. Verify by querying the host for surviving `wave/*` branches after every merge — never assume from the merge command's success.
-- **Trusting a clean `git worktree list` as proof the directories are gone.** Git can deregister a worktree while failing to delete its on-disk directory, leaving an orphan `git worktree list` no longer reports. Verify on disk (list the worktree root) against `worktree-cleanup`'s `errors` array.
-- **Merging a serialized lane's tail PR without the reconciled-merge verify (KW-F4).** File-level conflict prediction cannot see semantic cross-suite conflicts — two zero-`Files`-overlap rows broke 27 test assertions on a reconciled merge, past a green conflict-map. Run the consumer verify profile on the reconciled tail (the same commands the Worker/Reviewer ran) before the tail PR merges; a green file-level conflict-map is never evidence the reconciled merge is green.
 - **Merging `main` or fast-forwarding.** wave-close recommends an order and, opt-in via `--auto`, arms the order-free rows through the engine `host-pr` seam (ADR-0023) — it never touches `main` directly. The Ur's §7.1 branch-sync is gone.
-- **Double-flagging `failed`/`abandoned` rows.** `wave-start` already flagged these. Only re-flag if `readClosing` also shows `closed-unmerged`.
-- **Running the archive before the needs-attention phase.** Flag stuck rows first; archive last.
-- **Treating `needs-attention` as a rung.** It is orthogonal — the row keeps its rung; the flag is the human signal layered on top.
-- **Arming an overlapping row, or hand-merging one before checking `--auto`.** Only **order-free** rows (in no `## Conflict-Map` pair) arm; the overlapping tail keeps the phase-4 advisory order as the human playbook (ADR-0023). Arming a predicted-overlap row is the exact loss partial-arm exists to prevent.
-- **Re-gating risk at landing.** Arming eligibility is mechanical — `approve` + no `needs-attention` flag + open PR + order-free. There is **no** second risk gate: the `public-API-change` human STOP already fired at verdict routing (G3). Do not re-ask.
-- **Watching or polling after `--auto` arms.** Arm-and-exit (ADR-0023): the host completes merges server-side; a re-run reconciles late merges. An armed PR whose checks later fail surfaces on the next `wave-close`/`wave-resume` touch, not live — do not build a watch loop.
-- **Letting a headless `--auto` self-confirm.** The per-wave confirm is a human click; headless `--auto` STOPs unless `--pre-authorized` was passed (the only headless bypass, ADR-0023). Never auto-answer the confirm.
 - **Reaching for raw `gh` to arm/merge, or expecting a `host-pr create` verb.** The three **landing** verbs `host-pr arm | merge | status` are shipped and are the only host-write path (ADR-0023 — `gh` left the landing path entirely). The **creation** verb `host-pr create` is the *staged* half and is not yet a CLI verb; PR creation still rides the Worker terminator.
-- **Reconciling before the pull completes (W5-F3).** Phase 5 probes with whatever engine is on disk; if this wave's own rows touched that machinery, an un-pulled or half-pulled checkout reconciles against the *pre-merge* code — the exact conditions that would flag correctly-merged rows as `recoverable-stop` (W4-F1). Pull to the merged `main` tip (verified via `git rev-parse HEAD`, not the pull's exit code) before starting phase 5 — see "4a" above.
-- **Relying on memory of the W4-F1 retro instead of running the phase-4a detection step.** Whether *this* wave is a self-repair case is not something to eyeball from having read a prior operating note — diff each dispatch-log branch against `main` and grep it against the engine-surface list in phase 4a. The pull happens either way, but the detection step is what tells you (and the close summary) whether this run was the load-bearing case.
-- **Trusting a `git pull`/`git reset` that touched `.claude/skills/` without checking `HEAD`.** The sandbox can deny the skill-file half of a fast-forward while the rest applies silently — no error past the failed unlink, `git status` reads as ordinary pending changes, and `HEAD` stays on the pre-merge SHA. Disable the sandbox for that pull whenever this wave's rows touch `.claude/skills/**`, and confirm `git rev-parse HEAD` against the merged tip before trusting the checkout.
 
 ## Related
 
