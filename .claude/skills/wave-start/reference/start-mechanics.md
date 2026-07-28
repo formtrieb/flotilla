@@ -91,12 +91,15 @@ HELD_IDS=$(node -e '
 #    itself needs no per-row wiring (it ships in every brief as workerBrief()
 #    policy clause 9). See "Convention 11 at compose + routing" below.
 
-# 7. Route each returned tuple (see below) — incl. the sidecar existence check (7.0)
-#    and, for a new-check row, the Convention 11 falsification read (below)
+# 7. Route each returned tuple (see below) — incl. the sidecar existence check (7.0),
+#    the disclosure capture (7.0a, ADR-0027 — every tuple, before the outcome/verdict
+#    branch), and, for a new-check row, the Convention 11 falsification read (below)
 
 # 9. Report-only. Sidecars are ALREADY on disk (Scribe stages in step 6; any
 #    missing one written at 7.0). No bundled write here — that was the P-1 kill
-#    window and is removed. Just print the spine path + per-row final state + PRs.
+#    window and is removed. Print the spine path + per-row final state + PRs,
+#    plus every disclosure this wave captured (7.0a) that is STILL open — see
+#    "Listing this wave's still-open disclosures" below.
 ```
 
 ## The in-flight row detector (step 2, verified)
@@ -124,6 +127,34 @@ REPORTS=".flotilla/waves/$SLUG/reports"; VERDICTS=".flotilla/waves/$SLUG/verdict
   {{wave-cli}} write-verdict "$T/verdict-$ID.json" --dir "$VERDICTS" --id "$ID" --iter "$ITER"
 #   write-* validates-then-writes: exit 1 = invalid payload / report.issue↔--id
 #   mismatch → NOTHING written (re-collect); exit 0 prints the absolute path.
+
+# 7.0a. Disclosure capture (ADR-0027) — for EVERY tuple, BEFORE the outcome/
+#       verdict branch below (7a-7c), source-neutral. Routing is the moment of
+#       maximum context: the report/verdict sidecars from 7.0 are already open
+#       to read the outcome, so read them here too — for a Convention 9 wiring
+#       gap, a Convention 10 runtime residue, a Convention 11 unfalsified
+#       check, or anything the Coordinator itself notices while routing. One
+#       add-disclosure call per disclosed item, --source matching who raised
+#       it — the verb is source-neutral, Worker/Reviewer/Coordinator land
+#       identically:
+{{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source worker \
+  --text "$(jq -r '.judgmentCalls[0]' "$T/report-$ID.json")"       # one call per disclosed item in report.judgmentCalls
+{{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source reviewer \
+  --text "$(jq -r '.reviewerFocusItems[0]' "$T/verdict-$ID.json")" # a Reviewer-raised item the Worker didn't already flag
+{{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source coordinator \
+  --text "<what you, the Coordinator, noticed routing this tuple>"
+#   Each call prints the created ref (`<row-id>.<ordinal>`, e.g. `01.1`) AFTER
+#   the flush — every entry starts `open`. If the disposition is already known
+#   AT THIS MOMENT — the gap resolved itself in-slice, or you're about to
+#   grant the scope extension it's asking for — set it right here, same
+#   routing pass:
+{{wave-cli}} spine set-disposition "$SPINE" "01.1" resolved-in-slice
+#   ^ or scope-extension | filed:<id> | dropped:<reason> — never `open` (the
+#   capture default, refused as a disposition by set-disposition itself, exit 1).
+#   Anything you can't dispose of now stays `open` and rides forward: step 9
+#   reports it (below), and wave-close's fail-closed archive gate (its own
+#   slice, ADR-0027) blocks Archive until every disclosure this wave captured
+#   carries a disposition other than `open`.
 
 # 7a. Worker-phase gate (state = dispatched on iter 1, re-dispatched on iter 2)
 WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
@@ -259,8 +290,28 @@ route off it** — routing reads typed fields only (Convention 2). Three cases:
 | What the report carries | Coordinator action |
 |---|---|
 | A falsification note — check named, break named, observed failing output, restored | Nothing extra; route as usual. |
-| An explicit "could not falsify, and here is why" | A **disclosure**, exactly like a Convention 9 wiring gap: it needs a disposition before archive (ADR-0027). Carry it to `wave-close`. A `deferred`/`partial` on the matching AC in the verdict is the Reviewer half of the same fact (ADR-0004 Amendment). |
-| An in-class row with neither | Read the verdict's `acVerification` for the matching AC first — the Reviewer's own probe (ADR-0004 Amendment) may have exercised the outcome instead. If both are silent, it is a disclosure of the same kind: the durable fact worth keeping is *"this check has never been observed failing"*, not *"a paragraph is missing"*. Do not synthesize the evidence yourself, and do not STOP the row for it. |
+| An explicit "could not falsify, and here is why" | A **disclosure**, exactly like a Convention 9 wiring gap: capture it at 7.0a (`spine add-disclosure … --source worker --text "<the note>"`) — it needs a disposition before archive (ADR-0027). A `deferred`/`partial` on the matching AC in the verdict is the Reviewer half of the same fact (ADR-0004 Amendment). |
+| An in-class row with neither | Read the verdict's `acVerification` for the matching AC first — the Reviewer's own probe (ADR-0004 Amendment) may have exercised the outcome instead. If both are silent, it is a disclosure of the same kind: capture it at 7.0a too (`--source coordinator`, since neither agent wrote it down) — the durable fact worth keeping is *"this check has never been observed failing"*, not *"a paragraph is missing"*. Do not synthesize the evidence yourself, and do not STOP the row for it. |
+
+## Listing this wave's still-open disclosures (step 9, ADR-0027)
+
+Step 9 is report-only (no write happens here — see Phase sequence above), but the
+report must name every disclosure this wave captured at 7.0a that has not yet
+reached a disposition. `check-disclosures` already prints exactly that shape, and
+is non-mutating, so step 9 reads it purely for its listing — the exit code is
+**advisory here, not a gate**; `wave-close` is the slice that turns this same verb
+into the fail-closed archive check (ADR-0027):
+
+```bash
+{{wave-cli}} spine check-disclosures "$SPINE"
+#   exit 0, "disclosures: 0 open of N — archive gate CLEAR"      → nothing to report
+#   exit 1, "disclosures: M open of N — archive gate BLOCKED",
+#     followed by one line per open entry: "  <ref>  row <id>  iter <n>  (<source>)  <text>"
+```
+
+Fold the BLOCKED listing verbatim into the step-9 report — this is the handover to
+`wave-close`: it names precisely what that gate will block on, not a vague "some
+disclosures are open."
 
 ## STOP-reason → flag kind
 
@@ -325,6 +376,13 @@ A `terminal-failure` row's eventual disposition is not always `abandoned` — st
 | `0` | spine flushed |
 | `1` | domain failure — `set-row-state`/`set-row-pr`: row id not in Plan-Table; `set-branch`: spine has no `dispatch-log:` key (`renderSpine` scaffolds it, so this means a hand-broken spine) |
 | `2` | usage error (missing args) or **invalid state token** (`set-row-state` validates against `ROW_STATES` at the CLI boundary → fail loud, exit 2); `set-branch` with `--model` but no value → 2 |
+
+### `spine add-disclosure` / `set-disposition` / `check-disclosures` (ADR-0027, step 7.0a + step 9)
+| Code | Meaning |
+|---|---|
+| `0` | `add-disclosure`: captured, ref printed after flush. `set-disposition`: one entry updated. `check-disclosures`: 0 `open` remain (archive gate CLEAR). |
+| `1` | domain failure — `add-disclosure`/`set-disposition`: unknown row id / `--source` / disclosure-ref / disposition token (including passing `open` back to `set-disposition` — refused, it is the capture default, not a decision). `check-disclosures`: at least one `open` disclosure remains (archive gate BLOCKED), or the spine could not be read/parsed (fail-closed). |
+| `2` | usage error — missing `<spine-path>`/`<row-id>`/`--iter`/`--source`/`--text` (`add-disclosure`) or `<disclosure-ref>`/`<disposition>` (`set-disposition`), or a non-positive-integer `--iter` |
 
 ## P8 hardening notes
 
