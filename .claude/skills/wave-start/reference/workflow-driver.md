@@ -512,15 +512,27 @@ function scribeBrief(kind, issue, iter, payload) {
   const verb = kind === 'report' ? 'write-report' : 'write-verdict'
   return `You are a Wave Scribe. Persist one ${kind} sidecar THROUGH THE ENGINE — do not reformat, re-type, or "fix" anything in the payload.
 
-1. \`cd "${REPO_ROOT}"\` — the compose-time absolute repo root, SHELL-QUOTED
+1. As its OWN Bash call — NEVER combined with step 3 into one compound command —
+   run \`cd "${REPO_ROOT}"\`: the compose-time absolute repo root, SHELL-QUOTED
    (a checkout path may contain a space or a non-ASCII character — this
    repo's own does — and an unquoted \`cd\` breaks on one, silently, taking
    the sidecar write down with it). WAVE_CLI below is repo-relative
    (tracked-settings permission match, see Authoring constraints #4); this cd
-   guarantees it resolves regardless of your starting cwd.
+   guarantees it resolves regardless of your starting cwd. WHY SEPARATE: the
+   working directory persists between your Bash calls, so splitting loses
+   nothing — but a compound command that STARTS WITH \`cd\` matches no
+   allowlist prefix. The tracked \`.claude/settings.json\` allowlist covers
+   the WAVE_CLI invocation exactly, but only as a command PREFIX; fusing the
+   \`cd\` onto the front of it changes the command's first token to \`cd\`, so
+   the rule never fires and the harness raises a permission dialog mid-AFK-
+   dispatch (same class as the \`env -u ... gh\` footgun that defeats a \`gh *\`
+   allowlist prefix, wave-shared Convention 1's KW-F6 sandbox-footgun note —
+   now observed on our own allowlist).
 2. Write this EXACT JSON to a temp file, byte-for-byte via a heredoc (no edits):
 ${JSON.stringify(payload)}
-3. Run:  ${WAVE_CLI} ${verb} <that-temp-file> --dir "${dir}" --id ${issue.id} --iter ${iter}
+3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
+   so it matches the allowlist prefix from token one — run:
+   ${WAVE_CLI} ${verb} <that-temp-file> --dir "${dir}" --id ${issue.id} --iter ${iter}
    (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload / id mismatch; exit 2 → usage/unreadable)
 4. If the exit code is non-zero, retry the SAME command ONCE, byte-identical.
 Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure> }.`
