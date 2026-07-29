@@ -7,6 +7,19 @@
   "enabledPlugins": {
     "flotilla@formtrieb": false
   },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/wave/hooks/echo-guard.cjs\""
+          }
+        ]
+      }
+   ]
+  },
   "permissions": {
     "allow": [
       "Bash(npx @formtrieb/flotilla-engine:*)",
@@ -30,7 +43,23 @@
       "Bash(NODE_USE_ENV_PROXY=1 ./node_modules/.bin/tsx src/issue-store-cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 ./node_modules/.bin/tsx src/cross-wave-cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
-      "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)"
+      "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(git merge-tree:*)",
+      "Bash(npx tsx tools/wave/src/resume-cli.ts:*)",
+      "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/resume-cli.ts:*)",
+      "Bash(npx tsx tools/wave/src/spine-cli.ts:*)",
+      "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/spine-cli.ts:*)",
+      "Bash(npm ci)",
+      "Bash(npx vitest run:*)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(git fetch origin:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m:*)",
+      "Bash(git push origin wave/:*)",
+      "Bash(git worktree add:*)",
+      "Bash(mkdir -p:*)"
     ],
     "deny": [
       "Read(.claude/settings.local.json)",
