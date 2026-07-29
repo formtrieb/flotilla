@@ -170,6 +170,20 @@ _Avoid_: auth manager, secret store (it stores nothing), fallback (as the ambien
 The `PreToolUse` hook (`tools/wave/hooks/echo-guard.cjs`) that hard-blocks a Bash command whose *text* matches one of four secret-echo families before it runs — any `$`-expansion of a credential-shaped name outside the sanctioned presence test; any value-substituting `${NAME:-…}` / `:=` / `:?` form, whatever the name; a whole-environment dump (`printenv`, bare `env`, bare `set`); or a wrapped configured **Lookup-Command** — and rejects with a teaching message naming Convention 8 and both sanctioned alternatives. A **speed bump, not an anchor**: it reads the command, never the output, so indirect expansion (`${!VAR}`) walks past it, and it fails *open* on its own crash. It sits on top of the settings-deny anchors and the **Credential-Resolver** indirection, never instead of them; passing it is not evidence that a command is safe.
 _Avoid_: secret scanner (it scans no output and no repository), permission rule (the permission layer provably cannot express this vector — that is precisely why a hook exists), lint (it blocks an invocation, it does not annotate source).
 
+### Distribution
+
+**Plugin clone**:
+The install surface a Claude-Code plugin consumer actually receives — the **entire repository** at a pinned SHA (`marketplace.json` `"source": "./"`), skills, `docs/`, engine sources and all; only gitignored artifacts (`node_modules`) are absent. Skill references may rely on it; the reference-guard spec is the tripwire that makes narrowing it a loud, deliberate decision (ADR-0031). Distinct from the **npm package**, a narrower surface (`src` + `bin` only) that ships no skills.
+_Avoid_: packaged plugin contents (implies a curated subset that does not exist), plugin package (confusable with the npm package).
+
+**Resolution anchor**:
+The context a file-path-shaped skill reference resolves against — the *skill file* for anchored markdown links, the *plugin-clone root* for bare path citations, *cwd plus installed artifacts* for command fragments. A reference is defective when written against the wrong anchor for its class, not when its target is missing from the package (ADR-0031); a consumer session's cwd is the consumer repo, never the clone.
+_Avoid_: broken link (names the symptom, not the class), missing file (the file usually exists — the anchor is wrong).
+
+**Dual-form**:
+A reference or invocation stated in both its in-repo form and its installed form, so whichever context is live, the reader picks the one that resolves. Established for cross-skill by-name references (wave-shared's load note, project-local first) and for engine invocations (published-package form first — the workflow-driver's default since #122 — vendored form as documented fallback); required in every `{{wave-cli}}` resolution block (ADR-0031).
+_Avoid_: fallback (both forms are first-class, chosen by context), alias.
+
 ### Provenance
 
 **Ur**:
