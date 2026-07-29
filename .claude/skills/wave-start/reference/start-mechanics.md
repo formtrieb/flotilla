@@ -13,6 +13,26 @@ The wave engine CLI, stated **dual-form (ADR-0031)**: the canonical resolution i
 ```bash
 SLUG=<2026-06-18-topic>; REPO=<consumer-root>; SPINE=".flotilla/waves/$SLUG.md"
 
+# 0. Define the Convention 12 capture guard ONCE per wave-start shell session,
+#    before the first capture that is later USED (step 7c's PR_URL). Body copied
+#    verbatim from the canonical one in wave-shared's convention-12 reference,
+#    which also carries the rationale: `null`/`undefined` are refused alongside
+#    `''` (jq -r on a missing key prints the four characters `null`), and only
+#    the NAME is ever printed, never the value (a capture may be a credential —
+#    Convention 8).
+require_capture() {   # require_capture <NAME> <captured-value>
+  case "$2" in
+    ''|null|undefined)
+      echo "STOP: $1 came back empty — the command that should have produced it did not run (exit 127? no match? no such key?). Refusing to continue with an empty value." >&2
+      return 1
+      ;;
+  esac
+}
+#    Not every capture below is in the class. `HELD_IDS` (step 3) is empty on the
+#    ordinary "no held rows" wave — a legitimate ANSWER, not a did-not-run — and
+#    is deliberately left unguarded; guarding it would be a false alarm, and
+#    false alarms are how guards get deleted (Convention 12's own rule).
+
 # 1. Load + status-gate (spine read prints RAW MARKDOWN)
 {{wave-cli}} spine read "$SPINE"          # read the **Status:** line + rows + Conflict-Map
 #   frontmatter **Status:** is a markdown bold line (NOT yaml `status:`)
@@ -188,8 +208,22 @@ PR_URL=$({{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
   --title "$PR_TITLE" --body "$PR_BODY_WITH_CLOSE_PHRASE_AND_VERDICT" | \
   jq -r '.url')   # or reuse report.prUrl — both resolve to the one open PR
 #   $PR_BODY_WITH_CLOSE_PHRASE_AND_VERDICT = "<summary>\n\n$VERDICT_SECTION\n\n<close phrase>"
+
+# GUARD THE CAPTURE BEFORE IT REACHES THE SPINE (wave-shared Convention 12; the
+# helper is defined once at step 0). An empty PR_URL never means "this PR has no
+# URL" — it means the value was never produced, and every way that happens is a
+# way you must not continue past: `host-pr create` was never invoked (a command
+# held in a shell variable, exit 127 — the five-occurrence class), it exited
+# non-zero, or `.url` was absent and `jq -r` printed the four characters `null`.
+# Neither `set -e` nor `$?` can see any of them — a pipeline carries the LAST
+# stage's status, so a 127 on the left of the `| jq` is invisible. Without this
+# line the two writes below flip the row to `pr-created` and record an EMPTY PR
+# cell: a row that reads as landed with nothing landed behind it. Both spine
+# writes are below the guard for that reason — the state flip is as wrong as the
+# empty cell when no PR was opened.
+require_capture PR_URL "$PR_URL" || exit 1
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" pr-created
-{{wave-cli}} spine set-row-pr    "$SPINE" "$ID" "$PR_URL"
+{{wave-cli}} spine set-row-pr    "$SPINE" "$ID" "$PR_URL"   # never reached on an empty capture
 {{wave-cli}} issue-store transition "$ID" in-review
 
 # 7d. transition → re-dispatched (cap=1 — enforced by transition() itself):

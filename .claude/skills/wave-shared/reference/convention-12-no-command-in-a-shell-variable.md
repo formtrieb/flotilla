@@ -61,10 +61,11 @@ wave_cli spine set-row-pr "$SPINE" "$ID" "$PR_URL"       # never reached on an e
 
 #### Guard the capture whose emptiness means "did not run" — NOT the one whose emptiness is an answer
 
-Getting this backwards turns the guard into a false-alarm generator, which is how guards get deleted. Two live counter-examples in this very skill set, both of which **must stay unguarded**:
+Getting this backwards turns the guard into a false-alarm generator, which is how guards get deleted. Three live counter-examples in this very skill set, all of which **must stay unguarded**:
 
 - `phase-4a`'s `HIT=$(git diff … | grep -E "$ENGINE_SURFACE")` — empty means *no self-repair hazard*, the good case.
-- `phase-5`'s derived `ACKED` — empty is the documented "nothing met / no verdict yet" value that `close` accepts as-is.
+- `phase-5`'s — and `resume-mechanics`' — derived `ACKED` — empty is the documented "nothing met / no verdict yet" value that `close` accepts as-is.
+- `start-mechanics`' `HELD_IDS` (step 3) — empty is the ordinary wave with no unresolved intra-wave `Blocked by` pair, i.e. the answer "nothing is held". The file says so at the definition site, so the next reader does not add a guard there.
 
 The guard goes one level up, on the capture that proves the verb *ran*: `ACKED_JSON` (the JSON `verdict-acked` printed). Empty there means the engine call did not execute, and deriving `ACKED=""` from nothing would tick nothing while looking exactly like a legitimate empty ack.
 
@@ -86,11 +87,29 @@ And **"remember to" was never a mechanism.** The proof is mechanical rather than
 ### Where the clause lives
 
 - **This file**, under `wave-shared/reference/` — the loader contract loads *every* file in that directory (see `wave-shared/SKILL.md`, "Load every file under reference/"), so it is reachable by every back-half skill with **zero loader edits**.
-- **`wave-close/reference/phase-4a-self-repair-pull.md`** — the branch-list loop and the `HEAD` verification.
+- **`wave-close/reference/phase-4a-self-repair-pull.md`** — the branch-list loop and the `HEAD` verification. Defines the helper for the `wave-close` session.
 - **`wave-close/reference/phase-5-done-reconcile.md`** — the `ACKED_JSON` capture that feeds `issue-store close`.
+- **`wave-start/reference/start-mechanics.md`** — defines the helper at step 0 and guards the step-7c `PR_URL` above both spine writes.
+- **`wave-resume/reference/resume-mechanics.md`** — defines the helper at step 0 and guards the step-5 `ACKED_JSON`, the mirror of `phase-5`'s.
+- **`wave-shared/reference/routing-mechanics.md`** — the `{{wave-cli}}` **binding** form (`wave_cli() { … "$@"; }`), written out at the resolution site itself rather than only linked from it.
 - **`wave-start/reference/workflow-driver.md`** — the `WAVE_CLI` compose-time note, and the Worker brief's Termination step 3, where the empty `prUrl` of the `#83` gate run originated.
 
-**Sites known to still carry an unguarded capture, outside the slice that wrote this file** (named here so they are findable rather than rediscovered): `wave-start/reference/start-mechanics.md`'s `PR_URL=$(… | jq -r '.url')` → `spine set-row-pr` at step 7c — the closest in-repo analogue of the `#83` gate failure — and `wave-resume/reference/resume-mechanics.md`'s `ACKED_JSON` capture. (`wave-shared/reference/routing-mechanics.md`'s `{{wave-cli}}` resolution section used to describe the CLI as a command string without saying how to bind it — the ADR-0031 dual-form pass closed that: it now points here for the function form.)
+### Site ledger — what is closed, and what is still open
+
+The three sites this file used to name as *"known to still carry an unguarded capture"* are now closed. They are kept here as a **record, not a to-do**, so this list can never be read as outstanding work that is in fact done:
+
+| Site | What it carried | How it was closed |
+|---|---|---|
+| `wave-start/reference/start-mechanics.md`, step 7c | `PR_URL=$(… \| jq -r '.url')` flowing straight into `spine set-row-pr` — the closest in-repo analogue of the `#83` gate failure, one directory from the row that wrote this file | `require_capture PR_URL "$PR_URL" \|\| exit 1` above **both** spine writes (the `pr-created` flip is as wrong as the empty cell when no PR was opened); helper defined once at step 0 |
+| `wave-resume/reference/resume-mechanics.md`, step 5 | the `ACKED_JSON` capture, byte-identical in shape to `phase-5`'s, on the path that runs *after* something already went wrong | the same guard `phase-5` carries, in the same position, with the derived `ACKED` left deliberately unguarded below it — the two paths are one shape and must not diverge |
+| `wave-shared/reference/routing-mechanics.md`, the `{{wave-cli}}` resolution section | an **instruction gap**, not a live capture: it named the command string and linked the rule, without writing out how to bind it | the section now states the binding inline (`wave_cli() { … "$@"; }`, both forms). Deliberately **no** `require_capture` — nothing is captured there, and forcing a guard onto a non-capture is the false-alarm failure mode above |
+
+**Still open, and deliberately outside that slice's declared files** — named for the same reason, so the next reader finds them rather than rediscovering them:
+
+- `wave-start/reference/start-mechanics.md`'s and `wave-shared/reference/convention-04-store-kind-close-phrase.md`'s `VERDICT_SECTION=$({{wave-cli}} render-verdict …)`. In class: empty means `render-verdict` did not run, and the PR body would then be composed *without* the rendered verdict while still reading as complete.
+- `wave-plan/reference/plan-mechanics.md`'s and `wave-create/reference/create-mechanics.md`'s `T=$(mktemp -d)`. In class: an empty `T` turns every `> "$T/x.json"` into a write at the filesystem root.
+
+That is the whole census: every other `VAR=$(…)` across `.claude/skills/` is either guarded, one of the three deliberate non-guards above, or `start-mechanics`' `WSTATE`, whose `$([ … ] && echo a || echo b)` form cannot produce an empty value. Re-run that census before adding a row to either half of this ledger.
 
 ### Common Mistakes
 

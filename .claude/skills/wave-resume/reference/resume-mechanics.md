@@ -96,6 +96,20 @@ SPINE=".flotilla/waves/$SLUG.md"
 REPORTS=".flotilla/waves/$SLUG/reports"
 VERDICTS=".flotilla/waves/$SLUG/verdicts"
 
+# 0. Define the Convention 12 capture guard once per wave-resume shell session,
+#    before the step-5 capture below. Body copied verbatim from the canonical one
+#    in wave-shared's convention-12 reference (which carries the rationale for
+#    refusing `null`/`undefined` alongside `''`, and for printing only the NAME
+#    and never the captured value):
+require_capture() {   # require_capture <NAME> <captured-value>
+  case "$2" in
+    ''|null|undefined)
+      echo "STOP: $1 came back empty — the command that should have produced it did not run (exit 127? no match? no such key?). Refusing to continue with an empty value." >&2
+      return 1
+      ;;
+  esac
+}
+
 # 1. Spine first (WAL authority)
 {{wave-cli}} spine read "$SPINE"
 
@@ -119,7 +133,26 @@ VERDICTS=".flotilla/waves/$SLUG/verdicts"
 # derivation — NEVER hand-parse a verdict sidecar here), then land it done via
 # the existing close verb (NOT `transition … done`):
 ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" "$ID")   # { acked: [...], iter, corrupt }
+
+# GUARD THE CAPTURE THAT PROVES THE VERB RAN (wave-shared Convention 12; helper
+# at step 0). This is the SAME shape the close path's done-reconcile guards, and
+# the two must not diverge. An empty ACKED_JSON does not mean "no ACs were met" —
+# it means `verdict-acked` produced nothing, and the only ways that happens are
+# ways you must not continue past: the engine CLI was never invoked (a command
+# held in a shell variable, exit 127 — the five-occurrence class), or it exited
+# non-zero. The next line would derive ACKED="" from that nothing, and `close`
+# would accept it as a legitimate "nothing met" and tick nothing — a silent wrong
+# answer written to the tracker. Resume is the path that runs AFTER something
+# already went wrong, which makes it the worst place to accept a silent empty.
+require_capture ACKED_JSON "$ACKED_JSON" || exit 1        # helper: Convention 12 / step 0
+
 ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf-8")).acked.join(","))')
+# ACKED itself is deliberately NOT guarded: "" is a documented, legitimate value
+# here (nothing met / no verdict sidecar yet) and `close` accepts it as-is.
+# Guarding it would be a false alarm on the ordinary case — Convention 12's
+# "guard the capture whose emptiness means *did not run*, not the one whose
+# emptiness is an answer" rule, with both halves of it live on these two lines,
+# exactly as on the close path this mirrors.
 {{wave-cli}} issue-store close "$ID" "$PR_URL" --acked "$ACKED"   # $PR_URL is read-closing's prUrl; $ACKED may be "" (nothing met / no verdict yet); FOR-13 fallback when no integration
 # open on a no-integration states.doneState workspace → read-closing can't see the
 # merge; consult the host directly (no out-of-band human confirmation):
