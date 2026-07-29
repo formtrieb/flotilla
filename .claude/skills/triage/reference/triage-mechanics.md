@@ -6,7 +6,7 @@ The engine-CLI plumbing for driving the **Triage facet** (ADR-0015). The skill b
 
 ## `{{wave-cli}}` resolution
 
-The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx tools/wave/src/cli.ts`. Every command needs the store config: run from a dir containing `wave.config.json`, or append `--config <path>`. The store (`markdown` or `github`) and the triage vocabulary are selected there — you never name a tracker, and you never write a native label string.
+The wave engine CLI, stated **dual-form (ADR-0031)**: the canonical resolution is the published npm package **`npx @formtrieb/flotilla-engine`** — the workflow driver's default, a bare command with no path in it, so it resolves independent of any checkout. The **vendored in-repo form** `npx tsx tools/wave/src/cli.ts` stays documented as the fallback for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish); both reach the identical router. Every command needs the store config: run from a dir containing `wave.config.json`, or append `--config <path>`. The store (`markdown` or `github`) and the triage vocabulary are selected there — you never name a tracker, and you never write a native label string.
 
 ## Commands
 

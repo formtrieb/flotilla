@@ -1,0 +1,550 @@
+/**
+ * skill-reference-guard.spec.ts — the anchor-aware tripwire over every shipped
+ * skill/agent markdown file (ADR-0031).
+ *
+ * A Claude-Code plugin consumer receives the **full repository at a pinned SHA**
+ * (`.claude-plugin/marketplace.json` declares `"source": "./"`), so skill
+ * references do not fail by absence from the package — `docs/adr/`,
+ * `docs/retros/` and `tools/wave/src/` all ship. What fails is the **resolution
+ * anchor**: a consumer session's cwd is the *consumer* repo, never the clone.
+ * ADR-0031 therefore splits every file-path-shaped reference into three classes,
+ * each judged against its own anchor, and this spec is the guard that keeps all
+ * three predicates true:
+ *
+ *   (a) anchored markdown links   — `[x](../../../docs/adr/0004-….md)`
+ *       anchor: the SKILL FILE. Predicate: the target exists file-relative.
+ *       Day-one prey: two `convention-07-host-landing-seam.md` links were one
+ *       directory level short (`../wave-close/…` for a file two levels down),
+ *       and `convention-05-sidecar-write-path.md` carried one level too many
+ *       (`reference/routing-mechanics.md` from inside `reference/`).
+ *
+ *   (b) bare path citations       — `` `docs/retros/2026-07-19-hardening-w5.md` ``
+ *       anchor: the PLUGIN-CLONE ROOT. Predicate: the target exists in the
+ *       clone. They stay bare (ADR-0031 rejects demoting them to slugs) —
+ *       existence-pinning buys rename/deletion protection at zero edit cost.
+ *       Day-one prey: `.claude/skills/README.md` still cited two
+ *       `docs/superpowers/plans/…` design docs that the publication cut
+ *       (ADR-0026) left behind in the private archive.
+ *
+ *   (c) `{{wave-cli}}` resolution blocks — `npx @formtrieb/flotilla-engine …`
+ *       anchor: cwd PLUS installed artifacts the clone does not carry
+ *       (`tools/wave/node_modules` is gitignored, so the vendored `npx tsx
+ *       tools/wave/src/cli.ts` form cannot run in a fresh clone). Predicate:
+ *       every canonical resolution block states BOTH invocation forms,
+ *       published-package form FIRST, vendored in-repo form as the documented
+ *       fallback — matching the workflow driver's settled `WAVE_CLI` default.
+ *
+ * The spec is deliberately structural, not a smoke test: the three predicates
+ * are separately assertable, the allowlist is a named const in this file with a
+ * one-line justification per entry (so every widening is visible in the diff
+ * that makes it), and population FLOOR counts fail loud if an extractor ever
+ * silently stops seeing references — a guard that matches nothing is green for
+ * the wrong reason. Permanent negative controls push planted dead references
+ * through the *same* extraction-and-resolution helpers the real assertions use
+ * (Convention 11), so "the check works" is distinguishable from "the check
+ * cannot fail".
+ *
+ * ADR-0031's fourth decision is pinned here too: narrowing the package surface
+ * away from `"source": "./"` must be a LOUD decision. `CLONE_ROOT_PREFIXES` is
+ * asserted to exist at the clone root, so shipping only `.claude/skills/` turns
+ * this spec red instead of quietly emptying the class-(b) population.
+ *
+ * Pure test — zero production change. Precedent: skill-schema-drift.spec.ts
+ * (anchor consts, negative control, header rationale comment).
+ *
+ * Path note: this spec lives at tools/wave/src/, so __dirname is tools/wave/src —
+ * three levels above the repo root. (vite `root` is tools/wave, but __dirname is
+ * the spec file's own dir; the ../../../ count is correct only for __dirname.)
+ */
+
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+/** The plugin-clone root — the resolution anchor for class (b). */
+const CLONE_ROOT = resolve(__dirname, '../../..');
+
+/** The two shipped skill/agent trees. Vendored skills (grill-with-docs) are
+ * deliberately NOT excluded: they ship in the clone like every other skill and
+ * a dead link there fails a consumer identically (ADR-0031, rejected option). */
+const SKILL_DIRS = ['.claude/skills', '.claude/agents'] as const;
+
+/**
+ * Clone-root top-level prefixes a bare path citation may name. Kept as an
+ * explicit const rather than derived from a directory listing so the class-(b)
+ * population is deterministic — and so ADR-0031's "narrowing the package
+ * surface is a loud decision" has something to fail against (see the existence
+ * assertion below).
+ */
+const CLONE_ROOT_PREFIXES = [
+  'docs/', // ADRs, retros, CHARTER — the citation-heavy evidence tree
+  'tools/', // the engine sources skills point at by path
+  '.claude/', // skills, agents, tracked settings
+  '.claude-plugin/', // the marketplace manifest that makes the clone the install surface
+  '.github/', // the CI workflow the landing seam depends on
+  'scripts/', // repo scripts referenced from skill prose
+] as const;
+
+/**
+ * Paths that exist only at RUNTIME and are gitignored, so they are absent from
+ * the clone by construction (ADR-0031: "only gitignored artifacts are absent").
+ * Citing them is correct prose; asserting their existence would be a category
+ * error, so they are filtered out of the class-(b) population entirely rather
+ * than allowlisted per occurrence.
+ */
+const RUNTIME_ARTIFACT_PREFIXES = [
+  '.flotilla/', // per-wave spines + sidecars — branch-local runtime state
+  '.claude/worktrees/', // agent worktrees created and torn down per wave
+  '.claude/settings.local.json', // operator-local permissions (gitignored, never read)
+  '.claude/projects/', // harness-local session data
+  'tools/wave/node_modules/', // installed dependencies — the one absence ADR-0031 names
+  'tools/wave/coverage/', // test output
+] as const;
+
+/**
+ * Class-(a) links that legitimately resolve to nothing. Every entry carries its
+ * justification on one line; a widening is therefore visible in the diff that
+ * makes it. Keyed `<clone-relative file>::<raw link target>`.
+ */
+const ANCHORED_LINK_ALLOWLIST: ReadonlyArray<{ file: string; target: string; why: string }> = [
+  {
+    file: '.claude/skills/grill-with-docs/CONTEXT-FORMAT.md',
+    target: './src/ordering/CONTEXT.md',
+    why: 'Illustrative CONTEXT-MAP.md sample inside a ```md fence — names a hypothetical consumer bounded context, not a flotilla file.',
+  },
+  {
+    file: '.claude/skills/grill-with-docs/CONTEXT-FORMAT.md',
+    target: './src/billing/CONTEXT.md',
+    why: 'Same illustrative CONTEXT-MAP.md sample — a second hypothetical bounded context in the worked example.',
+  },
+  {
+    file: '.claude/skills/grill-with-docs/CONTEXT-FORMAT.md',
+    target: './src/fulfillment/CONTEXT.md',
+    why: 'Same illustrative CONTEXT-MAP.md sample — the third hypothetical bounded context in the worked example.',
+  },
+];
+
+/** Population floors. A guard that stops matching is green for the wrong
+ * reason; these are the measured populations at the landing SHA, minus a small
+ * margin so ordinary prose edits do not churn the spec. */
+const MIN_SKILL_DOCS = 40; // 48 markdown files at landing
+const MIN_ANCHORED_LINKS = 60; // 77 anchored markdown links at landing
+const MIN_BARE_CITATIONS = 70; // 88 bare path citations at landing
+const EXPECTED_RESOLUTION_BLOCKS = 10; // the canonical `{{wave-cli}}` definition sites
+
+/** The published-package invocation — `{{wave-cli}}`'s canonical resolution. */
+const PUBLISHED_FORM = 'npx @formtrieb/flotilla-engine';
+
+/** The vendored in-repo invocation, in either of its two documented spellings. */
+const VENDORED_FORM_PATTERN = /tools\/wave\/(?:src\/(?:cli|spine-cli)\.ts|node_modules\/\.bin\/tsx)/;
+
+// ─── extraction ─────────────────────────────────────────────────────────────
+
+interface Reference {
+  /** Clone-relative path of the file the reference was found in. */
+  readonly file: string;
+  /** The raw reference text exactly as written. */
+  readonly target: string;
+}
+
+interface ResolutionBlock {
+  readonly file: string;
+  readonly heading: string;
+  readonly body: string;
+}
+
+/** Every shipped skill/agent markdown file, clone-relative, sorted. */
+function listSkillDocs(): string[] {
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith('.md')) {
+        out.push(relative(CLONE_ROOT, full).split(sep).join('/'));
+      }
+    }
+  };
+  for (const dir of SKILL_DIRS) walk(join(CLONE_ROOT, dir));
+  return out.sort();
+}
+
+const MARKDOWN_LINK = /\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+
+/**
+ * Class (a): markdown link targets that resolve **file-relative**. Absolute
+ * paths, fragment-only links and URLs (any `scheme:` prefix) are not
+ * file-relative references and are out of the class. Fenced code blocks are NOT
+ * stripped — the grill-with-docs worked example lives inside a ```md fence and
+ * is exactly the kind of reference the allowlist exists for.
+ */
+function extractAnchoredLinks(md: string, file: string): Reference[] {
+  const out: Reference[] = [];
+  for (const match of md.matchAll(MARKDOWN_LINK)) {
+    const raw = match[1];
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) continue; // http:, mailto:, …
+    if (raw.startsWith('#')) continue; // in-page fragment
+    if (raw.startsWith('/')) continue; // absolute — not file-relative
+    const target = raw.split('#')[0];
+    if (!target) continue;
+    out.push({ file, target: raw });
+  }
+  return out;
+}
+
+/** Resolve a class-(a) reference against its anchor: the skill file's own dir. */
+function resolveAnchoredLink(ref: Reference): boolean {
+  const target = ref.target.split('#')[0];
+  return existsSync(resolve(CLONE_ROOT, dirname(ref.file), target));
+}
+
+const INLINE_CODE = /`([^`\n]+)`/g;
+/** A bare, placeholder-free, slash-bearing path — no spaces (a command
+ * fragment has them), no `<…>`/`$`/`*` (a template or glob has them). */
+const BARE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)+\/?$/;
+
+/**
+ * Class (b): inline-code spans that name a clone-root-relative path. Gated on
+ * `CLONE_ROOT_PREFIXES` so a *file*-relative code span (`reference/foo.md`)
+ * never lands in the clone-root class, and filtered against
+ * `RUNTIME_ARTIFACT_PREFIXES` so gitignored runtime paths are not asserted to
+ * exist in a clone that by definition does not carry them.
+ */
+function extractBarePathCitations(md: string, file: string): Reference[] {
+  const out: Reference[] = [];
+  for (const match of md.matchAll(INLINE_CODE)) {
+    const target = match[1].trim();
+    if (!BARE_PATH.test(target)) continue;
+    if (!CLONE_ROOT_PREFIXES.some((p) => target.startsWith(p))) continue;
+    if (
+      RUNTIME_ARTIFACT_PREFIXES.some(
+        (p) => target === p.replace(/\/$/, '') || target.startsWith(p),
+      )
+    ) {
+      continue;
+    }
+    out.push({ file, target });
+  }
+  return out;
+}
+
+/** Resolve a class-(b) reference against its anchor: the plugin-clone root. */
+function resolveCloneRootCitation(ref: Reference): boolean {
+  return existsSync(resolve(CLONE_ROOT, ref.target));
+}
+
+const RESOLUTION_HEADING = /^(#{1,6})\s+(.*\{\{wave-cli\}\}.*\bresolution\b.*)$/i;
+
+/**
+ * Class (c): the canonical `{{wave-cli}}` resolution blocks — a markdown
+ * section whose heading names `{{wave-cli}}` and the word "resolution". The
+ * block runs to the next heading of any level. Narrative engine-path mentions
+ * outside such a section are class-(b) identifiers, not invocations, and are
+ * deliberately left alone (ADR-0031).
+ */
+function extractResolutionBlocks(md: string, file: string): ResolutionBlock[] {
+  const lines = md.split('\n');
+  const out: ResolutionBlock[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const head = RESOLUTION_HEADING.exec(lines[i]);
+    if (!head) continue;
+    const body: string[] = [];
+    for (let j = i + 1; j < lines.length && !/^#{1,6}\s/.test(lines[j]); j++) {
+      body.push(lines[j]);
+    }
+    out.push({ file, heading: head[2].trim(), body: body.join('\n') });
+  }
+  return out;
+}
+
+/**
+ * The class-(c) predicate. Returns `null` when the block is dual-form with the
+ * published package stated first, or a human-legible reason when it is not —
+ * naming which half is missing keeps a failure actionable instead of a bare
+ * boolean.
+ */
+function dualFormViolation(block: ResolutionBlock): string | null {
+  const publishedAt = block.body.indexOf(PUBLISHED_FORM);
+  const vendored = VENDORED_FORM_PATTERN.exec(block.body);
+  if (publishedAt < 0 && vendored === null) {
+    return `states NEITHER invocation form — a resolution block must name both (published: "${PUBLISHED_FORM}", vendored: tools/wave/src/cli.ts)`;
+  }
+  if (publishedAt < 0) {
+    return `states only the VENDORED in-repo form — the published-package form "${PUBLISHED_FORM}" must be stated first (it is the canonical resolution; the vendored form cannot run in a fresh clone, whose tools/wave/node_modules is gitignored)`;
+  }
+  if (vendored === null) {
+    return 'states only the PUBLISHED form — the vendored in-repo form (tools/wave/src/cli.ts) must stay documented as the fallback for a consumer that still vendors tools/wave locally';
+  }
+  if (publishedAt > vendored.index) {
+    return `states the vendored form BEFORE the published one — published-package form comes first (ADR-0031); found vendored at offset ${vendored.index}, published at ${publishedAt}`;
+  }
+  return null;
+}
+
+// ─── the corpus, read once ───────────────────────────────────────────────────
+
+const SKILL_DOCS = listSkillDocs();
+const SOURCES = new Map(
+  SKILL_DOCS.map((f) => [f, readFileSync(join(CLONE_ROOT, f), 'utf-8')] as const),
+);
+
+const ALL_ANCHORED = SKILL_DOCS.flatMap((f) =>
+  extractAnchoredLinks(SOURCES.get(f) as string, f),
+);
+const ALL_CITATIONS = SKILL_DOCS.flatMap((f) =>
+  extractBarePathCitations(SOURCES.get(f) as string, f),
+);
+const ALL_BLOCKS = SKILL_DOCS.flatMap((f) =>
+  extractResolutionBlocks(SOURCES.get(f) as string, f),
+);
+
+const isAllowlisted = (ref: Reference): boolean =>
+  ANCHORED_LINK_ALLOWLIST.some((e) => e.file === ref.file && e.target === ref.target);
+
+// ─── the population itself ───────────────────────────────────────────────────
+
+describe('skill-reference-guard — the population is the whole shipped skill/agent surface', () => {
+  it('enumerates every skill and agent markdown file, vendored skills included', () => {
+    expect(SKILL_DOCS.length).toBeGreaterThanOrEqual(MIN_SKILL_DOCS);
+    // Named spot-checks: the agent file, a first-party skill, and the VENDORED
+    // skill ADR-0031 explicitly refused to exclude structurally.
+    expect(SKILL_DOCS).toContain('.claude/agents/wave-reviewer.md');
+    expect(SKILL_DOCS).toContain('.claude/skills/wave-shared/SKILL.md');
+    expect(SKILL_DOCS).toContain('.claude/skills/grill-with-docs/SKILL.md');
+    expect(SKILL_DOCS).toContain('.claude/skills/grill-with-docs/CONTEXT-FORMAT.md');
+  });
+
+  it('the clone really is the full-repo install surface (ADR-0031 premise, pinned)', () => {
+    // If a future packaging change narrows `"source": "./"`, this is the first
+    // thing that goes red — deliberately, so the ADR gets revisited explicitly
+    // instead of the class-(b) population silently emptying out.
+    for (const prefix of CLONE_ROOT_PREFIXES) {
+      expect(
+        existsSync(join(CLONE_ROOT, prefix.replace(/\/$/, ''))),
+        `clone-root prefix "${prefix}" is missing — the package surface narrowed; ADR-0031 must be revisited`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ─── class (a): anchored markdown links resolve file-relative ────────────────
+
+describe('skill-reference-guard — class (a): anchored markdown links resolve file-relative', () => {
+  it('finds the anchored-link population (a guard that matches nothing is green for the wrong reason)', () => {
+    expect(ALL_ANCHORED.length).toBeGreaterThanOrEqual(MIN_ANCHORED_LINKS);
+  });
+
+  it('every anchored link resolves against its own skill file', () => {
+    const dead = ALL_ANCHORED.filter(
+      (ref) => !isAllowlisted(ref) && !resolveAnchoredLink(ref),
+    ).map((ref) => `${ref.file} → ${ref.target}`);
+    expect(
+      dead,
+      `dead anchored markdown link(s) — the target must exist RELATIVE TO THE SKILL FILE ` +
+        `(a consumer session's cwd is the consumer repo, never the clone). Fix the ` +
+        `path, or add it to ANCHORED_LINK_ALLOWLIST with a one-line justification:\n  ` +
+        dead.join('\n  '),
+    ).toEqual([]);
+  });
+
+  it('the two convention-07 landing-seam links carry their full directory depth (AC1)', () => {
+    const seam = ALL_ANCHORED.filter(
+      (r) => r.file === '.claude/skills/wave-shared/reference/convention-07-host-landing-seam.md',
+    );
+    const targets = seam.map((r) => r.target);
+    expect(targets).toContain('../../wave-close/reference/close-mechanics.md');
+    expect(targets).toContain('../../wave-resume/reference/resume-mechanics.md');
+    // The pre-fix spelling was one level short; pin that it never comes back.
+    expect(targets).not.toContain('../wave-close/reference/close-mechanics.md');
+    expect(targets).not.toContain('../wave-resume/reference/resume-mechanics.md');
+  });
+
+  it('every allowlist entry is still a real, still-dead reference', () => {
+    // An allowlist that outlives its reason is a hole. If an entry's link is
+    // gone (or has started resolving), the entry must go too.
+    for (const entry of ANCHORED_LINK_ALLOWLIST) {
+      const found = ALL_ANCHORED.find(
+        (r) => r.file === entry.file && r.target === entry.target,
+      );
+      expect(
+        found,
+        `stale allowlist entry: ${entry.file} → ${entry.target} is no longer written anywhere`,
+      ).toBeDefined();
+      expect(
+        resolveAnchoredLink(found as Reference),
+        `obsolete allowlist entry: ${entry.file} → ${entry.target} now resolves; drop the exception`,
+      ).toBe(false);
+      expect(entry.why.length).toBeGreaterThan(20); // a justification, not a shrug
+    }
+  });
+
+  it('negative control — a planted dead anchored link fails the same predicate', () => {
+    // Same extractor, same resolver, same corpus file as the real assertion.
+    const host = '.claude/skills/wave-shared/reference/convention-07-host-landing-seam.md';
+    const planted = extractAnchoredLinks(
+      'see [close mechanics](../wave-close/reference/close-mechanics.md) for the invocation\n',
+      host,
+    );
+    expect(planted).toHaveLength(1);
+    expect(isAllowlisted(planted[0])).toBe(false);
+    expect(resolveAnchoredLink(planted[0])).toBe(false); // the exact pre-fix spelling
+  });
+
+  it('positive control — the corrected link resolves through the same pipeline', () => {
+    const host = '.claude/skills/wave-shared/reference/convention-07-host-landing-seam.md';
+    const planted = extractAnchoredLinks(
+      'see [close mechanics](../../wave-close/reference/close-mechanics.md) for the invocation\n',
+      host,
+    );
+    expect(resolveAnchoredLink(planted[0])).toBe(true);
+  });
+});
+
+// ─── class (b): bare path citations resolve clone-root-relative ──────────────
+
+describe('skill-reference-guard — class (b): bare path citations resolve clone-root-relative', () => {
+  it('finds the bare-citation population', () => {
+    expect(ALL_CITATIONS.length).toBeGreaterThanOrEqual(MIN_BARE_CITATIONS);
+  });
+
+  it('every bare path citation exists in the plugin clone', () => {
+    const dead = [
+      ...new Set(
+        ALL_CITATIONS.filter((ref) => !resolveCloneRootCitation(ref)).map(
+          (ref) => `${ref.target}  (cited in ${ref.file})`,
+        ),
+      ),
+    ];
+    expect(
+      dead,
+      `bare path citation(s) naming something the plugin clone does not carry. ` +
+        `These are evidence identifiers read CLONE-ROOT-relative — the predicate ` +
+        `is existence, which is what buys rename/deletion protection. Repoint the ` +
+        `prose at what survives (do NOT demote the citation to a slug — ADR-0031 ` +
+        `rejected that), or, for a genuinely gitignored runtime path, add its ` +
+        `prefix to RUNTIME_ARTIFACT_PREFIXES:\n  ` +
+        dead.join('\n  '),
+    ).toEqual([]);
+  });
+
+  it('the retro and ADR citations really are in the population (they are the rename-protection case)', () => {
+    const targets = new Set(ALL_CITATIONS.map((r) => r.target));
+    expect([...targets].some((t) => t.startsWith('docs/retros/'))).toBe(true);
+    expect([...targets].some((t) => t.startsWith('tools/wave/src/'))).toBe(true);
+  });
+
+  it('negative control — a planted dead bare citation fails the same predicate', () => {
+    const planted = extractBarePathCitations(
+      'the plan lives in `docs/superpowers/plans/2026-06-06-p7-overview.md` — read it first\n',
+      '.claude/skills/README.md',
+    );
+    expect(planted).toHaveLength(1);
+    expect(resolveCloneRootCitation(planted[0])).toBe(false); // the real day-one prey
+  });
+
+  it('positive control — a live citation resolves, and a runtime artifact is out of class', () => {
+    const live = extractBarePathCitations(
+      'see `docs/CHARTER.md` for the split\n',
+      '.claude/skills/README.md',
+    );
+    expect(live).toHaveLength(1);
+    expect(resolveCloneRootCitation(live[0])).toBe(true);
+
+    // Gitignored runtime paths must never enter the class — asserting their
+    // existence in a clone would be a category error, not a finding.
+    expect(
+      extractBarePathCitations(
+        'the spine is `.flotilla/waves/<slug>.md` and permissions sit in `.claude/settings.local.json`\n',
+        '.claude/skills/wave-close/SKILL.md',
+      ),
+    ).toEqual([]);
+
+    // A file-relative code span is class (a) territory, not clone-root.
+    expect(
+      extractBarePathCitations('full flags: `reference/routing-mechanics.md`\n', '.claude/skills/x.md'),
+    ).toEqual([]);
+  });
+});
+
+// ─── class (c): `{{wave-cli}}` resolution blocks are dual-form ───────────────
+
+describe('skill-reference-guard — class (c): every {{wave-cli}} resolution block is dual-form', () => {
+  it('finds every canonical resolution block', () => {
+    expect(ALL_BLOCKS.length).toBe(EXPECTED_RESOLUTION_BLOCKS);
+    // Named spot-checks across the pipeline's two halves, so renaming a heading
+    // out of the pattern cannot quietly shrink the population.
+    const files = new Set(ALL_BLOCKS.map((b) => b.file));
+    for (const f of [
+      '.claude/skills/wave-close/reference/close-mechanics.md',
+      '.claude/skills/wave-plan/reference/plan-mechanics.md',
+      '.claude/skills/wave-start/reference/start-mechanics.md',
+      '.claude/skills/wave-shared/reference/routing-mechanics.md',
+      '.claude/skills/wave-setup/reference/setup-mechanics.md',
+      '.claude/skills/wave-resume/reference/resume-mechanics.md',
+      '.claude/skills/wave-create/reference/create-mechanics.md',
+      '.claude/skills/triage/reference/triage-mechanics.md',
+      '.claude/skills/to-issues/reference/filing-mechanics.md',
+      '.claude/skills/to-prd/reference/filing-mechanics.md',
+    ]) {
+      expect(files, `no {{wave-cli}} resolution block found in ${f}`).toContain(f);
+    }
+  });
+
+  it('every resolution block states both forms, published package first', () => {
+    const offenders = ALL_BLOCKS.map((b) => [b, dualFormViolation(b)] as const)
+      .filter(([, why]) => why !== null)
+      .map(([b, why]) => `${b.file}: ${why}`);
+    expect(
+      offenders,
+      `{{wave-cli}} resolution block(s) not stated dual-form (ADR-0031):\n  ` +
+        offenders.join('\n  '),
+    ).toEqual([]);
+  });
+
+  it('negative controls — dualFormViolation fires on each single-form shape', () => {
+    const vendoredOnly = {
+      file: 'x.md',
+      heading: '`{{wave-cli}}` resolution',
+      body: 'The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx tools/wave/src/cli.ts`.',
+    };
+    expect(dualFormViolation(vendoredOnly)).toMatch(/only the VENDORED/);
+
+    const publishedOnly = {
+      ...vendoredOnly,
+      body: 'The canonical resolution is `npx @formtrieb/flotilla-engine <verb>`.',
+    };
+    expect(dualFormViolation(publishedOnly)).toMatch(/only the PUBLISHED/);
+
+    const wrongOrder = {
+      ...vendoredOnly,
+      body: 'In-repo that is `npx tsx tools/wave/src/cli.ts`; the package form `npx @formtrieb/flotilla-engine` also works.',
+    };
+    expect(dualFormViolation(wrongOrder)).toMatch(/vendored form BEFORE/);
+
+    const neither = { ...vendoredOnly, body: 'The wave engine CLI. Your setup pins how it resolves.' };
+    expect(dualFormViolation(neither)).toMatch(/NEITHER/);
+  });
+
+  it('positive control — a correctly-ordered dual-form block passes', () => {
+    expect(
+      dualFormViolation({
+        file: 'x.md',
+        heading: '`{{wave-cli}}` resolution',
+        body: 'The canonical resolution is `npx @formtrieb/flotilla-engine` — the published npm package. The vendored in-repo form `npx tsx tools/wave/src/cli.ts` is the documented fallback.',
+      }),
+    ).toBeNull();
+  });
+
+  it('negative control — a resolution block that loses its heading drops out of the population', () => {
+    // The extractor is heading-driven, so "rename the heading" is the way this
+    // guard could be defeated without a single reference changing. Pin that the
+    // pattern is what it claims to be.
+    expect(
+      extractResolutionBlocks('## `{{wave-cli}}` resolution\n\nbody\n', 'x.md'),
+    ).toHaveLength(1);
+    expect(
+      extractResolutionBlocks('## `{{wave-cli}}` resolution + the `resume` subcommand\n\nbody\n', 'x.md'),
+    ).toHaveLength(1);
+    expect(extractResolutionBlocks('## CLI setup\n\nbody\n', 'x.md')).toHaveLength(0);
+  });
+});

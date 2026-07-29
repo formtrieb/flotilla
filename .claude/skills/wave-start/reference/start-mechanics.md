@@ -6,7 +6,7 @@ The engine-CLI plumbing for the dispatch loop. `SKILL.md` owns the judgment (gat
 
 ## `{{wave-cli}}` resolution
 
-The wave engine CLI; in-repo `npx tsx tools/wave/src/cli.ts`. Store-touching verbs (`spine`, `issue-store`, `dor`, `cross-wave`, `detect-host`) read the store config; the routing/validation verbs do not.
+The wave engine CLI, stated **dual-form (ADR-0031)**: the canonical resolution is the published npm package **`npx @formtrieb/flotilla-engine`** — the driver's own `WAVE_CLI` default, a bare command with no path in it (so it resolves in a Worker worktree and a Scribe's session cwd alike). The **vendored in-repo form** `npx tsx tools/wave/src/cli.ts` — and its npx-free sibling `./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts` — stays documented as the fallback for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish); both reach the identical router. Store-touching verbs (`spine`, `issue-store`, `dor`, `cross-wave`, `detect-host`) read the store config; the routing/validation verbs do not.
 
 ## Phase sequence
 
