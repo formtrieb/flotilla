@@ -154,6 +154,23 @@ describe('echo-guard — the Convention 8 catalogue, occurrence by occurrence', 
     // eighth reminder.
     expectBlocked(runGuard('printenv', CONFIGURED_ENV));
   });
+
+  it('the eighth occurrence (2026-07-28, credential-skills-half wave, Worker): the pipe-consumed printenv GITHUB_TOKEN | wc -c', () => {
+    // Only the byte count reached tool output — the pipe consumed the value
+    // before anything printed it, so no credential leaked and no rotation was
+    // needed. Still an occurrence: the whole-environment-dump affordance was
+    // reached for, past the clause that names it verbatim, which is exactly
+    // why it is worth pinning — it is the variant that LOOKS harmless and
+    // would be easiest to talk oneself into. Asserted on the PIPED form
+    // specifically (not folded into the bare-printenv case above), and on
+    // family 3's own "targets the secret directly" detail rather than only
+    // the generic blocked contract, so a future narrowing of family 3 to just
+    // the unpiped shape cannot silently un-cover this one.
+    const result = runGuard('printenv GITHUB_TOKEN | wc -c', CONFIGURED_ENV);
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+    expect(result.stderr).toContain('worse than a bare dump');
+  });
 });
 
 // ---------------------------------------------------------------------------
