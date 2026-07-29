@@ -33,6 +33,28 @@ export {
   defaultSpineIo,
   type SpineStore,
   type SpineIo,
+  // The Disclosures surface (ADR-0027) — read/ensure/add/set-disposition. The
+  // SpineStore methods above already cover it through the store; these are the
+  // standalone string-in/string-out primitives (`spine-cli.ts`'s own seam onto
+  // the same functions) for a consumer that wants the section without a
+  // disk-backed store.
+  readDisclosures,
+  openDisclosures,
+  ensureDisclosuresSection,
+  addDisclosureToSource,
+  setDispositionInSource,
+  isSettableDisposition,
+  normalizeDisclosureText,
+  renderDisclosureRow,
+  renderDisclosuresSection,
+  DISCLOSURE_SOURCES,
+  OPEN_DISPOSITION,
+  DISPOSITION_LITERALS,
+  DISPOSITION_PREFIXES,
+  DISPOSITION_VOCABULARY,
+  type Disclosure,
+  type DisclosureInput,
+  type DisclosureSource,
 } from './spine-store';
 
 export {
