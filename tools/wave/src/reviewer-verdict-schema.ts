@@ -40,6 +40,35 @@ export const AC_STATUS_VALUES = [
 ] as const;
 export type AcStatus = (typeof AC_STATUS_VALUES)[number];
 
+/**
+ * What raised the Documented-Form Comparison duty for this row
+ * ([ADR-0030](../../../docs/adr/0030-deferred-core-path-requires-documented-form-comparison.md)).
+ *
+ * Three first-class raisers, **any one of which triggers; none is a
+ * precondition**:
+ * - `issue-declared` — an acceptance criterion asked for the comparison
+ *   outright (it then also rides the ordinary per-AC machinery);
+ * - `worker-declared` — the Worker declared an unexecutable core path in
+ *   `judgmentCalls`, mirrored into `reviewerFocusItems`, and the focus sweep
+ *   turned it into a directed check;
+ * - `deferred-core-path` — the **backstop that fires when nobody remembered**:
+ *   the ACs covering the row's core path landed in the `deferred` valve
+ *   (outcome unreachable from the review environment, probe license
+ *   exhausted), so the documented form is the only evidence left.
+ *
+ * Deliberately NOT a fourth "the Reviewer ruled this row unexecutable" value:
+ * that would re-create the could-not/cannot conflation as a second, abstract
+ * judgment layer, when the ADR-0004-Amendment per-AC line (a failing probe is
+ * `not-met`; unreachable is `deferred`) already draws it operationally.
+ */
+export const DOCUMENTED_FORM_TRIGGER_VALUES = [
+  'issue-declared',
+  'worker-declared',
+  'deferred-core-path',
+] as const;
+export type DocumentedFormTrigger =
+  (typeof DOCUMENTED_FORM_TRIGGER_VALUES)[number];
+
 // ─── TS view of the verdict ─────────────────────────────────────────────────
 
 /** One row of the Reviewer's AC-verification table. */
@@ -50,6 +79,68 @@ export interface AcVerification {
   met: AcStatus;
   /** `file:line`, `commit-sha`, or "deferred per marker". */
   evidence: string;
+}
+
+/**
+ * One divergence between the change on the branch and the authoritative
+ * documented form of the mechanism it implements (ADR-0030).
+ *
+ * `deliberate` is the whole reason this is a *list* and not a verdict input: a
+ * commented departure from a vendor's documented form is a legitimate, common
+ * shape (flotilla's own release workflow carries several), and it must survive
+ * review intact. An uncommented divergence is ordinary Reviewer judgment like
+ * any other finding — the duty adds required *reporting*, not new *routing*.
+ * **Nothing here auto-flips `verdict`.**
+ */
+export interface DocumentedFormDivergence {
+  /** What differs, in one line — the change's form vs. the documented form. */
+  description: string;
+  /**
+   * `true` iff the departure is deliberate AND commented at the point of
+   * departure. A departure that is merely *plausible* is not deliberate: the
+   * classification is a fact about the diff (is the reason written down?), not
+   * a judgment about whether the divergence is defensible.
+   */
+  deliberate: boolean;
+}
+
+/**
+ * The **Documented-Form Comparison** — the Reviewer's required substitute
+ * evidence for a row whose core path is unreachable from the review
+ * environment (ADR-0030).
+ *
+ * Founding incident: a release workflow was approved with three divergences
+ * from the registry vendor's documented example still in it (a missing
+ * `registry-url`, dependency caching left on in a release build — vendor-
+ * advised-against on supply-chain grounds — and an outdated action version).
+ * Nothing malfunctioned: every acceptance criterion was verified and every one
+ * held. The core path (the OIDC exchange with the registry) simply **cannot be
+ * executed before a real release exists**, so "does this match the form the
+ * vendor documents" was not one evidence source among several — it was the
+ * only one available, and no AC asked for it, because ACs describe what a
+ * change should *do* and this is a question about what it should *look like*.
+ *
+ * `sources` is what makes the no-restatement constraint **structural** rather
+ * than hortatory: the operating contract's evidence-from-this-dispatch clause
+ * extends to documents, so a comparison cites what the Reviewer itself read.
+ * A comparison whose only source is the Worker's report is invalid by
+ * construction — {@link validateReviewerVerdict} rejects an empty `sources`,
+ * and the schema's `minItems: 1` rejects it at the `agent({ schema })`
+ * boundary. (The related live finding this guards: a factual misstatement in a
+ * Worker report travelled through the Reviewer unchallenged and into the human
+ * decision brief.)
+ */
+export interface DocumentedFormComparison {
+  /** Which raiser fired — see {@link DOCUMENTED_FORM_TRIGGER_VALUES}. */
+  trigger: DocumentedFormTrigger;
+  /**
+   * The authoritative document(s) the Reviewer read **in this dispatch** —
+   * vendor documentation, a spec, an RFC. Non-empty by construction; the
+   * Worker's report is never a valid entry.
+   */
+  sources: string[];
+  /** Every divergence found, classified. `[]` = the change matches the form. */
+  divergences: DocumentedFormDivergence[];
 }
 
 /**
@@ -76,6 +167,24 @@ export interface ReviewerVerdict {
   lintTestSummary?: string;
   /** Git-state sanity (globs match, AC ticks consistent with diff, Closed-by well-formed). */
   gitStateSane?: boolean;
+  /**
+   * The Documented-Form Comparison — **its own reported outcome**, never folded
+   * into `acVerification[]` (ADR-0030).
+   *
+   * **Flat and optional, deliberately.** The requirement is conditional ("when
+   * a trigger fired"), but encoding that condition in the schema would mean a
+   * top-level `anyOf`/`if` — exactly the shape the agent tool's `input_schema`
+   * validation rejects outright at the `agent({ schema })` boundary (live:
+   * W5-F1, which failed every Worker dispatch of a wave instantly, 0 tokens).
+   * So the schema keeps the field flat-optional and the **contract prose**
+   * (`.claude/agents/wave-reviewer.md` Check 6) carries the requirement — the
+   * same brief-enforced-not-schema-enforced division the driver copy's `prUrl`
+   * invariant already uses.
+   *
+   * Absent on the common case: a row whose core path is executable fires no
+   * trigger and pays nothing.
+   */
+  documentedFormComparison?: DocumentedFormComparison;
 }
 
 // ─── met-AC index derivation (FOR-17 — the dead --acked wire) ──────────────
@@ -264,6 +373,40 @@ export function renderVerdictSection(
   lines.push(`**Verify:** ${scrub(verdict.lintTestSummary ?? 'not reported')}`);
   lines.push('');
 
+  // The Documented-Form Comparison renders as its OWN section (ADR-0030) —
+  // never as extra rows in the AC table above, because the whole point of the
+  // duty is that the acceptance criteria were not where the risk lived. Absent
+  // on a row that fired no trigger: the section simply does not appear, so the
+  // common case adds nothing to the human's PR-body brief.
+  const dfc = verdict.documentedFormComparison;
+  if (dfc !== undefined) {
+    lines.push(`**Documented-form comparison** (trigger: ${dfc.trigger})`);
+    lines.push('');
+    lines.push('_Sources read in this review:_');
+    if (dfc.sources.length > 0) {
+      for (const source of dfc.sources) lines.push(`- ${scrub(source)}`);
+    } else {
+      // Unreachable through the schema (`minItems: 1`) — rendered rather than
+      // silently dropped so a hand-built/legacy payload is visibly wrong to
+      // the human instead of looking like a sourced comparison.
+      lines.push('- none cited — INVALID, a comparison must cite what it read');
+    }
+    lines.push('');
+    lines.push('_Divergences from the documented form:_');
+    if (dfc.divergences.length > 0) {
+      for (const d of dfc.divergences) {
+        // The classification is rendered as a visible prefix, not a column:
+        // a deliberate, commented departure must read as surviving review
+        // intact, and a divergence is never an automatic defect.
+        const tag = d.deliberate ? '(deliberate)' : '(divergence)';
+        lines.push(`- ${tag} ${scrub(d.description)}`);
+      }
+    } else {
+      lines.push('- none — the change matches the documented form');
+    }
+    lines.push('');
+  }
+
   lines.push('**Advisories:**');
   if (verdict.reviewerFocusItems.length > 0) {
     for (const item of verdict.reviewerFocusItems) {
@@ -318,6 +461,42 @@ export const REVIEWER_VERDICT_JSON_SCHEMA = {
     reviewerFocusItems: { type: 'array', items: { type: 'string' } },
     lintTestSummary: { type: 'string' },
     gitStateSane: { type: 'boolean' },
+    // The Documented-Form Comparison (ADR-0030). FLAT + OPTIONAL: the field is
+    // absent from `required` above and carries no top-level combinator of its
+    // own, so the whole schema stays boundary-safe (W5-F1 — the agent tool's
+    // input_schema validation rejects a top-level anyOf/oneOf/allOf outright,
+    // which is why the "required WHEN a trigger fired" half lives in contract
+    // prose, not in the schema). `sources` is `minItems: 1` — that is the
+    // structural half of the no-restatement rule: a comparison must cite at
+    // least one document the Reviewer read in its own dispatch.
+    documentedFormComparison: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['trigger', 'sources', 'divergences'],
+      properties: {
+        trigger: {
+          type: 'string',
+          enum: [...DOCUMENTED_FORM_TRIGGER_VALUES],
+        },
+        sources: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 1 },
+        },
+        divergences: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['description', 'deliberate'],
+            properties: {
+              description: { type: 'string', minLength: 1 },
+              deliberate: { type: 'boolean' },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -335,8 +514,10 @@ function isStringArray(v: unknown): v is string[] {
  * Dependency-free validator asserting the load-bearing `ReviewerVerdict`
  * constraints: `verdict` and `riskClass` within their enums (the two routing
  * inputs that must never be wrong), required strings present, `acVerification`
- * rows well-formed. Not a full JSON-Schema engine — {@link REVIEWER_VERDICT_JSON_SCHEMA}
- * is what the Workflow tool enforces; this lets the spec prove well-formed/malformed
+ * rows well-formed, and — when present — the `documentedFormComparison` block
+ * well-formed with a non-empty `sources` (ADR-0030's no-restatement rule). Not
+ * a full JSON-Schema engine — {@link REVIEWER_VERDICT_JSON_SCHEMA} is what the
+ * Workflow tool enforces; this lets the spec prove well-formed/malformed
  * without an ajv dependency.
  *
  * @returns `{ valid, errors }` — `errors` is empty iff `valid`.
@@ -393,5 +574,77 @@ export function validateReviewerVerdict(value: unknown): SchemaValidation {
     });
   }
 
+  // documentedFormComparison — OPTIONAL (a row with an executable core path
+  // fires no trigger), but ill-formed when present is an error like any other.
+  if (value.documentedFormComparison !== undefined) {
+    validateDocumentedFormComparison(value.documentedFormComparison, errors);
+  }
+
   return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Validate the optional `documentedFormComparison` block in place, appending to
+ * `errors` (ADR-0030). Split out so the no-restatement rule — `sources` must be
+ * non-empty — reads as its own named constraint rather than as one line buried
+ * in the main validator.
+ */
+function validateDocumentedFormComparison(
+  value: unknown,
+  errors: string[],
+): void {
+  if (!isPlainObject(value)) {
+    errors.push('documentedFormComparison must be an object');
+    return;
+  }
+
+  if (
+    !(DOCUMENTED_FORM_TRIGGER_VALUES as readonly string[]).includes(
+      value.trigger as string,
+    )
+  ) {
+    errors.push(
+      `documentedFormComparison.trigger ${JSON.stringify(value.trigger)} not in ` +
+        DOCUMENTED_FORM_TRIGGER_VALUES.join(' | '),
+    );
+  }
+
+  if (!isStringArray(value.sources)) {
+    errors.push('documentedFormComparison.sources must be a string[]');
+  } else if (value.sources.length === 0) {
+    // The structural half of the no-restatement rule (ADR-0030): the duty
+    // cannot be discharged by restating what the Worker already claimed, so a
+    // comparison MUST cite at least one document the Reviewer read itself.
+    errors.push(
+      'documentedFormComparison.sources must name at least one document the ' +
+        'Reviewer read in THIS dispatch — a comparison sourced only from the ' +
+        "Worker's report is invalid (ADR-0030)",
+    );
+  } else if (value.sources.some((s) => s.trim() === '')) {
+    errors.push(
+      'documentedFormComparison.sources entries must be non-empty strings',
+    );
+  }
+
+  if (!Array.isArray(value.divergences)) {
+    errors.push('documentedFormComparison.divergences must be an array');
+    return;
+  }
+  value.divergences.forEach((row, i) => {
+    if (!isPlainObject(row)) {
+      errors.push(`documentedFormComparison.divergences[${i}] must be an object`);
+      return;
+    }
+    if (typeof row.description !== 'string' || row.description.length === 0) {
+      errors.push(
+        `documentedFormComparison.divergences[${i}].description must be a non-empty string`,
+      );
+    }
+    if (typeof row.deliberate !== 'boolean') {
+      errors.push(
+        `documentedFormComparison.divergences[${i}].deliberate must be a boolean ` +
+          '(a commented departure is deliberate and survives review intact)',
+      );
+    }
+  });
 }

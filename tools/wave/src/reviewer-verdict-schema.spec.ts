@@ -21,11 +21,14 @@ import {
 } from './verdict-to-event';
 import {
   AC_STATUS_VALUES,
+  DOCUMENTED_FORM_TRIGGER_VALUES,
   REVIEWER_VERDICT_JSON_SCHEMA,
   metAcIndexes,
   neutralizeForeignTrackerIds,
   renderVerdictSection,
   validateReviewerVerdict,
+  type DocumentedFormComparison,
+  type DocumentedFormTrigger,
   type ReviewerVerdict,
 } from './reviewer-verdict-schema';
 
@@ -661,5 +664,466 @@ describe('local enums', () => {
       'not-met',
       'deferred',
     ]);
+  });
+
+  it('DOCUMENTED_FORM_TRIGGER_VALUES is the three raisers — and no Reviewer-ruling value (ADR-0030)', () => {
+    expect([...DOCUMENTED_FORM_TRIGGER_VALUES]).toEqual([
+      'issue-declared',
+      'worker-declared',
+      'deferred-core-path',
+    ]);
+    // The rejected fourth option: an abstract "the Reviewer ruled this row
+    // unexecutable" trigger would re-create the could-not/cannot conflation as
+    // a second judgment layer, when the per-AC deferred valve already draws it.
+    expect([...DOCUMENTED_FORM_TRIGGER_VALUES]).not.toContain(
+      'reviewer-ruled-unexecutable',
+    );
+  });
+});
+
+// ─── the Documented-Form Comparison (ADR-0030) ──────────────────────────────
+//
+// A row whose CORE PATH cannot be executed before something outside the wave
+// happens (a real release, a production credential, a human action) has no
+// executable evidence available at all — so "does this match the form the
+// vendor documents" stops being one source among several and becomes the only
+// one. The founding incident is the worked example at the bottom of this block.
+
+/** A well-formed comparison, overridable per test. */
+function validComparison(
+  over: Partial<DocumentedFormComparison> = {},
+): DocumentedFormComparison {
+  return {
+    trigger: 'deferred-core-path',
+    sources: [
+      'actions/setup-node docs/advanced-usage.md — "Publishing to npm with Trusted Publisher (OIDC)"',
+    ],
+    divergences: [
+      { description: 'no --provenance flag on the publish step', deliberate: true },
+    ],
+    ...over,
+  };
+}
+
+describe('documentedFormComparison — the field is optional and flat (ADR-0030)', () => {
+  it('is absent from required[] — a row with an executable core path pays nothing', () => {
+    expect(REVIEWER_VERDICT_JSON_SCHEMA.required).not.toContain(
+      'documentedFormComparison',
+    );
+  });
+
+  it('is present in properties as a plain object — flat, no top-level combinator anywhere', () => {
+    const schema = REVIEWER_VERDICT_JSON_SCHEMA as unknown as Record<string, unknown>;
+    // The W5-F1 lesson: the agent tool's input_schema validation rejects a
+    // top-level anyOf/oneOf/allOf outright. Encoding "required WHEN a trigger
+    // fired" in the schema would need exactly that, so the condition lives in
+    // the Reviewer contract prose instead and the schema root stays clean.
+    for (const key of ['anyOf', 'oneOf', 'allOf']) {
+      expect(schema).not.toHaveProperty(key);
+    }
+    const field = REVIEWER_VERDICT_JSON_SCHEMA.properties
+      .documentedFormComparison as unknown as Record<string, unknown>;
+    expect(field.type).toBe('object');
+    expect(field.additionalProperties).toBe(false);
+    for (const key of ['anyOf', 'oneOf', 'allOf']) {
+      expect(field).not.toHaveProperty(key);
+    }
+  });
+
+  it('requires trigger/sources/divergences within the block, and pins sources to minItems 1', () => {
+    const field = REVIEWER_VERDICT_JSON_SCHEMA.properties
+      .documentedFormComparison;
+    expect([...field.required]).toEqual(['trigger', 'sources', 'divergences']);
+    expect([...field.properties.trigger.enum]).toEqual([
+      ...DOCUMENTED_FORM_TRIGGER_VALUES,
+    ]);
+    // minItems: 1 is the STRUCTURAL half of the no-restatement rule — the
+    // agent({ schema }) boundary itself refuses a source-less comparison.
+    expect(field.properties.sources.minItems).toBe(1);
+    expect([...field.properties.divergences.items.required]).toEqual([
+      'description',
+      'deliberate',
+    ]);
+  });
+
+  it('a verdict WITHOUT the field is well-formed (the common case)', () => {
+    const v = validVerdict();
+    expect('documentedFormComparison' in v).toBe(false);
+    expect(validateReviewerVerdict(v)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('a verdict WITH a well-formed comparison is valid, for every trigger', () => {
+    for (const trigger of DOCUMENTED_FORM_TRIGGER_VALUES) {
+      const v = validVerdict({
+        documentedFormComparison: validComparison({ trigger }),
+      });
+      expect(validateReviewerVerdict(v)).toEqual({ valid: true, errors: [] });
+    }
+  });
+
+  it('accepts an EMPTY divergences list — "I compared and found nothing" is a real outcome', () => {
+    const v = validVerdict({
+      documentedFormComparison: validComparison({ divergences: [] }),
+    });
+    expect(validateReviewerVerdict(v).valid).toBe(true);
+  });
+});
+
+describe('documentedFormComparison — the duty cannot be discharged by restating the Worker (ADR-0030)', () => {
+  it('rejects an EMPTY sources[] — a comparison must cite what the Reviewer read itself', () => {
+    const v = validVerdict({
+      documentedFormComparison: validComparison({ sources: [] }),
+    });
+    const r = validateReviewerVerdict(v);
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/sources/);
+    expect(r.errors.join(' ')).toMatch(/THIS dispatch/);
+  });
+
+  it('rejects a blank sources entry — an empty citation is no citation', () => {
+    const v = validVerdict({
+      documentedFormComparison: validComparison({ sources: ['   '] }),
+    });
+    const r = validateReviewerVerdict(v);
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/sources/);
+  });
+
+  it('rejects a non-array sources', () => {
+    const v = validVerdict({
+      documentedFormComparison: {
+        ...validComparison(),
+        sources: 'the Worker report' as unknown as string[],
+      },
+    });
+    expect(validateReviewerVerdict(v).valid).toBe(false);
+  });
+});
+
+describe('documentedFormComparison — malformed blocks are rejected', () => {
+  it('rejects an out-of-enum trigger', () => {
+    const v = validVerdict({
+      documentedFormComparison: validComparison({
+        trigger: 'reviewer-hunch' as DocumentedFormTrigger,
+      }),
+    });
+    const r = validateReviewerVerdict(v);
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/documentedFormComparison\.trigger/);
+  });
+
+  it('rejects a non-object comparison', () => {
+    const v = validVerdict({
+      documentedFormComparison:
+        'compared, looked fine' as unknown as DocumentedFormComparison,
+    });
+    const r = validateReviewerVerdict(v);
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/documentedFormComparison must be an object/);
+  });
+
+  it('rejects a divergence missing its deliberate classification', () => {
+    const v = validVerdict({
+      documentedFormComparison: validComparison({
+        divergences: [
+          { description: 'caching left on' } as unknown as {
+            description: string;
+            deliberate: boolean;
+          },
+        ],
+      }),
+    });
+    const r = validateReviewerVerdict(v);
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(
+      /documentedFormComparison\.divergences\[0\]\.deliberate/,
+    );
+  });
+
+  it('rejects a divergence with an empty description', () => {
+    const v = validVerdict({
+      documentedFormComparison: validComparison({
+        divergences: [{ description: '', deliberate: false }],
+      }),
+    });
+    const r = validateReviewerVerdict(v);
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(
+      /documentedFormComparison\.divergences\[0\]\.description/,
+    );
+  });
+
+  it('rejects a non-array divergences', () => {
+    const v = validVerdict({
+      documentedFormComparison: {
+        ...validComparison(),
+        divergences: 'three' as unknown as [],
+      },
+    });
+    expect(validateReviewerVerdict(v).valid).toBe(false);
+  });
+});
+
+describe('documentedFormComparison — reporting, never routing (ADR-0030)', () => {
+  it('an approve carrying UNCOMMENTED divergences still validates and still routes to approved', () => {
+    // The duty adds required REPORTING, not new ROUTING: no divergence — not
+    // even three uncommented ones — auto-flips the verdict. The Reviewer may
+    // still choose changes-requested on ordinary judgment; nothing does it for
+    // them, and nothing does it behind their back.
+    const v = validVerdict({
+      verdict: 'approve',
+      riskClass: 'isolated-refactor',
+      documentedFormComparison: validComparison({
+        divergences: [
+          { description: 'registry-url is not set', deliberate: false },
+          { description: 'dependency caching is enabled', deliberate: false },
+          { description: 'action pinned to an outdated major', deliberate: false },
+        ],
+      }),
+    });
+    expect(validateReviewerVerdict(v)).toEqual({ valid: true, errors: [] });
+    const event = verdictToEvent(v.verdict, 1, v.riskClass);
+    expect(event).toBe('reviewer-approve');
+    expect(transition('reviewing', event, v.riskClass)).toEqual({
+      type: 'transition',
+      nextState: 'approved',
+    });
+  });
+
+  it('the comparison is its OWN outcome — it never becomes acVerification rows, so metAcIndexes is untouched', () => {
+    const base = validVerdict({
+      acVerification: [
+        { ac: 'AC1', met: 'met', evidence: 'a' },
+        { ac: 'AC2', met: 'deferred', evidence: 'core path unreachable pre-release' },
+      ],
+    });
+    const withComparison = {
+      ...base,
+      documentedFormComparison: validComparison({
+        divergences: [
+          { description: 'registry-url is not set', deliberate: false },
+          { description: 'dependency caching is enabled', deliberate: false },
+          { description: 'action pinned to an outdated major', deliberate: false },
+        ],
+      }),
+    };
+    // Same AC rows in, same met-indexes out — three divergences add zero AC
+    // rows and tick zero extra boxes. The founding incident's lesson is that
+    // the ACs were not where the risk lived; folding it in would re-enact it.
+    expect(withComparison.acVerification).toEqual(base.acVerification);
+    expect(metAcIndexes(withComparison)).toEqual(metAcIndexes(base));
+    expect(metAcIndexes(withComparison)).toEqual([0]);
+  });
+});
+
+// ─── the worked example: the founding incident (ADR-0030, AC5) ──────────────
+//
+// The release-workflow row as it stood AT REVIEW TIME. Its core path — the
+// OIDC credential exchange with the registry — cannot execute before a real
+// release exists, so no test, no local run and no Reviewer could reach it;
+// every acceptance criterion was verified and every one held. Three
+// divergences from the registry vendor's documented example survived that
+// review: a missing `registry-url`, dependency caching left on in a release
+// build (vendor-advised-against on supply-chain grounds), and an outdated
+// action version. One was flagged as arguable by the Worker; one was reported
+// by nobody and surfaced only because the Coordinator happened to open the
+// vendor's documentation for an unrelated question.
+
+/** The vendor's documented example for trusted publishing (the authority). */
+const VENDOR_DOCUMENTED_FORM = `
+- uses: actions/setup-node@v6
+  with:
+    node-version: "22"
+    registry-url: "https://registry.npmjs.org"
+    package-manager-cache: false
+- run: npm publish
+`;
+
+/** The release-workflow step AS IT STOOD AT REVIEW TIME — the reviewed diff. */
+const RELEASE_WORKFLOW_AT_REVIEW_TIME = `
+- uses: actions/setup-node@v4
+  with:
+    node-version: "22"
+    cache: npm
+- run: npm publish
+`;
+
+/**
+ * The comparison a Reviewer running Check 6 against that change produces: the
+ * vendor page as the source, and all three divergences, each classified
+ * `deliberate: false` because none of them carried a comment at the time.
+ */
+const FOUNDING_INCIDENT_COMPARISON: DocumentedFormComparison = {
+  trigger: 'deferred-core-path',
+  sources: [
+    'actions/setup-node docs/advanced-usage.md — "Publishing to npm with Trusted Publisher (OIDC)"',
+  ],
+  divergences: [
+    {
+      description:
+        'registry-url is not set on the setup-node step; the vendor example sets it to the public registry',
+      deliberate: false,
+    },
+    {
+      description:
+        'dependency caching is left on (cache: npm) in a release build; the vendor advises against it on supply-chain grounds — a poisoned cache can expose the OIDC credential this workflow rests on',
+      deliberate: false,
+    },
+    {
+      description:
+        'actions/setup-node is pinned to v4; the vendor example pins the current major (v6)',
+      deliberate: false,
+    },
+  ],
+};
+
+describe('worked example — the founding release-workflow row (ADR-0030, AC5)', () => {
+  const ANCHOR = '94437315bfd3ffd4ec8651626240a0d60c33d03b';
+
+  it('the comparison is well-formed and its trigger is the deferred valve on the unexecutable core path', () => {
+    const v = validVerdict({
+      verdict: 'approve',
+      acVerification: [
+        {
+          ac: 'the package publishes via trusted publishing',
+          met: 'deferred',
+          evidence:
+            'core path is the OIDC exchange — unreachable before a real release exists; probe license exhausted',
+        },
+      ],
+      documentedFormComparison: FOUNDING_INCIDENT_COMPARISON,
+    });
+    expect(validateReviewerVerdict(v)).toEqual({ valid: true, errors: [] });
+    expect(v.documentedFormComparison?.trigger).toBe('deferred-core-path');
+  });
+
+  it('surfaces ALL THREE divergences — and each is grounded in the two texts, not merely asserted', () => {
+    const { divergences } = FOUNDING_INCIDENT_COMPARISON;
+    expect(divergences).toHaveLength(3);
+
+    // 1. registry-url: in the documented form, absent from the reviewed change.
+    expect(VENDOR_DOCUMENTED_FORM).toContain('registry-url');
+    expect(RELEASE_WORKFLOW_AT_REVIEW_TIME).not.toContain('registry-url');
+    expect(divergences[0].description).toContain('registry-url');
+
+    // 2. caching: the documented form disables it; the reviewed change enables it.
+    expect(VENDOR_DOCUMENTED_FORM).toContain('package-manager-cache: false');
+    expect(RELEASE_WORKFLOW_AT_REVIEW_TIME).toContain('cache: npm');
+    expect(RELEASE_WORKFLOW_AT_REVIEW_TIME).not.toContain(
+      'package-manager-cache: false',
+    );
+    expect(divergences[1].description).toContain('caching');
+
+    // 3. action version: the documented form pins v6; the reviewed change v4.
+    expect(VENDOR_DOCUMENTED_FORM).toContain('actions/setup-node@v6');
+    expect(RELEASE_WORKFLOW_AT_REVIEW_TIME).toContain('actions/setup-node@v4');
+    expect(divergences[2].description).toContain('v4');
+
+    // None of the three was commented at the time — so none is deliberate, and
+    // the classification is a fact about the diff, not a judgment about merit.
+    expect(divergences.every((d) => d.deliberate === false)).toBe(true);
+  });
+
+  it('all three reach the human PR-body brief as their own section — not as AC rows', () => {
+    const v = validVerdict({
+      verdict: 'approve',
+      acVerification: [
+        {
+          ac: 'the package publishes via trusted publishing',
+          met: 'deferred',
+          evidence: 'OIDC exchange unreachable before a real release',
+        },
+      ],
+      reviewerFocusItems: [],
+      lintTestSummary: 'no verify profile',
+      documentedFormComparison: FOUNDING_INCIDENT_COMPARISON,
+    });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+
+    expect(out).toContain('**Documented-form comparison** (trigger: deferred-core-path)');
+    expect(out).toContain('_Sources read in this review:_');
+    expect(out).toContain('- actions/setup-node docs/advanced-usage.md');
+    expect(out).toContain('_Divergences from the documented form:_');
+    expect(out).toContain('- (divergence) registry-url is not set');
+    expect(out).toContain('- (divergence) dependency caching is left on');
+    expect(out).toContain('- (divergence) actions/setup-node is pinned to v4');
+    // Its own section, never folded into the AC table.
+    expect(out).toContain('| AC | Status | Evidence |');
+    expect(out).not.toContain('| registry-url is not set');
+    // ...and the verdict itself is untouched by the three findings.
+    expect(out).toContain('**Verdict:** approve (iteration 1)');
+  });
+
+  it('a deliberate, commented departure renders as surviving review — not as a defect', () => {
+    // The same workflow's real deliberate departures: `--provenance` absent and
+    // no auth environment variable on the publish step, each commented in place.
+    const v = validVerdict({
+      reviewerFocusItems: [],
+      documentedFormComparison: validComparison({
+        divergences: [
+          { description: 'no --provenance flag on the publish step', deliberate: true },
+          { description: 'no auth environment variable on the publish step', deliberate: true },
+        ],
+      }),
+    });
+    const out = renderVerdictSection(v, { iteration: 1, anchorSha: ANCHOR });
+    expect(out).toContain('- (deliberate) no --provenance flag on the publish step');
+    expect(out).toContain('- (deliberate) no auth environment variable on the publish step');
+    expect(out).not.toContain('(divergence) no --provenance');
+  });
+});
+
+describe('renderVerdictSection — the documented-form section', () => {
+  const ANCHOR = '94437315bfd3ffd4ec8651626240a0d60c33d03b';
+
+  it('renders NO section at all when the field is absent (the common case)', () => {
+    const out = renderVerdictSection(validVerdict(), {
+      iteration: 1,
+      anchorSha: ANCHOR,
+    });
+    expect(out).not.toContain('Documented-form comparison');
+    expect(out).toContain('**Advisories:**');
+  });
+
+  it('renders "none" divergences distinctly from an omitted comparison', () => {
+    const out = renderVerdictSection(
+      validVerdict({ documentedFormComparison: validComparison({ divergences: [] }) }),
+      { iteration: 1, anchorSha: ANCHOR },
+    );
+    expect(out).toContain('**Documented-form comparison**');
+    expect(out).toContain('- none — the change matches the documented form');
+  });
+
+  it('scrubs foreign tracker ids out of sources and divergence descriptions (Convention 4)', () => {
+    const out = renderVerdictSection(
+      validVerdict({
+        reviewerFocusItems: [],
+        lintTestSummary: undefined,
+        acVerification: [],
+        documentedFormComparison: validComparison({
+          sources: ['vendor doc, as cited in FOR-16'],
+          divergences: [{ description: 'same shape as #99', deliberate: false }],
+        }),
+      }),
+      { iteration: 1, anchorSha: ANCHOR, ownId: 'FOR-74' },
+    );
+    expect(out).not.toContain('FOR-16');
+    expect(out).not.toContain('#99');
+    expect(stripJoiner(out)).toContain('vendor doc, as cited in FOR-16');
+    expect(stripJoiner(out)).toContain('same shape as #99');
+    expect(integrationIdScan(out)).toEqual([]);
+  });
+
+  it('the section sits between the verify line and the advisories, in that order', () => {
+    const out = renderVerdictSection(
+      validVerdict({ documentedFormComparison: validComparison() }),
+      { iteration: 1, anchorSha: ANCHOR },
+    );
+    expect(out.indexOf('**Verify:**')).toBeLessThan(
+      out.indexOf('**Documented-form comparison**'),
+    );
+    expect(out.indexOf('**Documented-form comparison**')).toBeLessThan(
+      out.indexOf('**Advisories:**'),
+    );
   });
 });
