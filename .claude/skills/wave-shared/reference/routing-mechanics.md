@@ -6,7 +6,7 @@ The engine-CLI plumbing the execution skills share. The SKILL.md body owns the *
 
 ## `{{wave-cli}}` resolution
 
-The wave engine CLI. In-repo that is `npx tsx tools/wave/src/cli.ts`. Tracker-touching verbs need the store config: run from a dir containing `wave.config.json`, or append `--config <path>` **after** the subcommand and its op. The pure routing/validation verbs (`route-verdict`, `route-outcome`, `validate-report`, `validate-verdict`) are store-independent — they take no `--config`.
+The wave engine CLI, stated **dual-form (ADR-0031)**: the canonical resolution is the published npm package **`npx @formtrieb/flotilla-engine`** — the workflow driver's default, a bare command with no path in it, so it resolves independent of any checkout. The **vendored in-repo form** `npx tsx tools/wave/src/cli.ts` stays documented as the fallback for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish); both reach the identical router. **Bind whichever form you use to a shell *function*, never to a variable** — see [convention-12-no-command-in-a-shell-variable.md](./convention-12-no-command-in-a-shell-variable.md). Tracker-touching verbs need the store config: run from a dir containing `wave.config.json`, or append `--config <path>` **after** the subcommand and its op. The pure routing/validation verbs (`route-verdict`, `route-outcome`, `validate-report`, `validate-verdict`) are store-independent — they take no `--config`.
 
 ## Auth preflight
 

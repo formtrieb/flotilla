@@ -90,7 +90,7 @@ And **"remember to" was never a mechanism.** The proof is mechanical rather than
 - **`wave-close/reference/phase-5-done-reconcile.md`** — the `ACKED_JSON` capture that feeds `issue-store close`.
 - **`wave-start/reference/workflow-driver.md`** — the `WAVE_CLI` compose-time note, and the Worker brief's Termination step 3, where the empty `prUrl` of the `#83` gate run originated.
 
-**Sites known to still carry an unguarded capture, outside the slice that wrote this file** (named here so they are findable rather than rediscovered): `wave-start/reference/start-mechanics.md`'s `PR_URL=$(… | jq -r '.url')` → `spine set-row-pr` at step 7c — the closest in-repo analogue of the `#83` gate failure — and `wave-resume/reference/resume-mechanics.md`'s `ACKED_JSON` capture. `wave-shared/reference/routing-mechanics.md`'s `{{wave-cli}}` resolution section still describes the CLI as a command string without saying how to bind it; the function form above is the answer it should point at.
+**Sites known to still carry an unguarded capture, outside the slice that wrote this file** (named here so they are findable rather than rediscovered): `wave-start/reference/start-mechanics.md`'s `PR_URL=$(… | jq -r '.url')` → `spine set-row-pr` at step 7c — the closest in-repo analogue of the `#83` gate failure — and `wave-resume/reference/resume-mechanics.md`'s `ACKED_JSON` capture. (`wave-shared/reference/routing-mechanics.md`'s `{{wave-cli}}` resolution section used to describe the CLI as a command string without saying how to bind it — the ADR-0031 dual-form pass closed that: it now points here for the function form.)
 
 ### Common Mistakes
 

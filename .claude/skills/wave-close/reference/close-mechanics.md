@@ -6,7 +6,7 @@ The engine-CLI plumbing that is genuinely **cross-phase** — the pieces every p
 
 ## `{{wave-cli}}` resolution
 
-In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx tsx tools/wave/src/cli.ts issue-store <op> …` for issue-store verbs; `npx tsx tools/wave/src/spine-cli.ts <op> …` for spine verbs (or via the top-level CLI relay `npx tsx tools/wave/src/cli.ts spine <op> …`). Run from a directory with `wave.config.json`, or append `--config <path>` **after** the subcommand + op. The store (`markdown` or `github`) is selected there — you never name a tracker.
+**Dual-form (ADR-0031) — published package first, vendored in-repo copy as the documented fallback.** The canonical resolution is the **published npm package**: `npx @formtrieb/flotilla-engine <verb> …` for top-level verbs, `npx @formtrieb/flotilla-engine issue-store <op> …` for issue-store verbs, `npx @formtrieb/flotilla-engine spine <op> …` for spine verbs — the workflow driver's default, and a bare command with no path in it, so it resolves independent of any checkout. The **vendored in-repo form** stays documented for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish): `npx tsx tools/wave/src/cli.ts <verb> …`, with `npx tsx tools/wave/src/spine-cli.ts <op> …` as the direct spine entry the top-level `spine` relay wraps. Both forms reach the identical router. Run from a directory with `wave.config.json`, or append `--config <path>` **after** the subcommand + op. The store (`markdown` or `github`) is selected there — you never name a tracker.
 
 ## Commands
 

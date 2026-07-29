@@ -49,9 +49,9 @@ default branch. The WAVE.md spine is branch-local and does not merge to `main`.
 
 ## Where the design lives
 
-The skill set, its phases, and the rewrite-generic-from-the-Ur plan are in
-`docs/superpowers/plans/2026-06-06-p7-overview.md`. The integration surface these
-skills shell into (the CLI runners wired in P7.1) is in
-`docs/superpowers/plans/2026-06-06-p7.1-integration-surface.md`. Read
-`docs/CHARTER.md` (§4–§10) for the engine/adapter split and `CONTEXT.md` for the
-glossary before authoring a skill here.
+The skill set, its phases, and the rewrite-generic-from-the-Ur plan predate the
+publication cut (ADR-0026) and survive only in the private ops archive — the
+public authorities are the ADRs. Read `docs/CHARTER.md` (§4–§10) for the
+engine/adapter split, `docs/adr/0009-harness-agnostic-engine-no-dispatch-host.md`
+for why there is no `DispatchHost` seam, and `CONTEXT.md` for the glossary,
+before authoring a skill here.

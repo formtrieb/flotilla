@@ -2,7 +2,7 @@
 
 Sidecars — the durable Worker-report / Reviewer-verdict records under `.flotilla/waves/<slug>/reports|verdicts/` — are the WAL the resume doctrine ("disk beats a non-landed spine flip", ADR-0002) stands on. **The invariant (ADR-0024): every sidecar comes into being through the engine write verb, at the moment its agent returns — never hand-formatted, never bundled after routing.** This is the P-1 live-gate fix: a Coordinator death used to leave zero sidecars because they were written last, in a batch, after the Workflow returned.
 
-- **The write verbs own the format.** `write-report`/`write-verdict` are the printers paired with the `sidecar.ts` reader (the way `renderSpine` is paired with `readSpine`, ADR-0016). They **validate-then-write** — an invalid payload is refused (exit 1, nothing written), the filename is engine-computed (`<id>-<iter>.md`, the caller cannot misname it), the body is the fenced-json block the reader parses, the target dir is `mkdir -p`'d, and a same-iter re-write is last-writer-wins. Full flags + exit codes: [reference/routing-mechanics.md](reference/routing-mechanics.md).
+- **The write verbs own the format.** `write-report`/`write-verdict` are the printers paired with the `sidecar.ts` reader (the way `renderSpine` is paired with `readSpine`, ADR-0016). They **validate-then-write** — an invalid payload is refused (exit 1, nothing written), the filename is engine-computed (`<id>-<iter>.md`, the caller cannot misname it), the body is the fenced-json block the reader parses, the target dir is `mkdir -p`'d, and a same-iter re-write is last-writer-wins. Full flags + exit codes: [reference/routing-mechanics.md](./routing-mechanics.md).
 
   | Verb | Renders | Cross-check |
   |---|---|---|
