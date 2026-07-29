@@ -1107,6 +1107,25 @@ describe('worktree-cleanup subcommand — explicit-arg behavior is unchanged (FO
   });
 });
 
+/**
+ * A minimal, valid `wave.config.json` — a bare `store` block, no `cleanup`
+ * key. `loadWaveConfig` requires a well-formed `store`; the tests in the two
+ * blocks below care only that a config file's VALUE never binds as the
+ * <repo-root> positional, so they load real (but cleanup-empty) files rather
+ * than the pre-fix phantom paths that a purely discard-and-ignore `--config`
+ * used to tolerate.
+ */
+function writeMinimalWaveConfig(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'wave-cli-cleanup-cfg-'));
+  const cfgPath = join(dir, 'wave.config.json');
+  writeFileSync(
+    cfgPath,
+    JSON.stringify({ store: { kind: 'markdown', repoRoot: '.', slug: 'x' } }),
+    'utf-8',
+  );
+  return cfgPath;
+}
+
 // ─── Form 8e: worktree-cleanup — --config tolerance + fail-loud on unknown
 // flags (FOR-87, W25-F2) ──────────────────────────────────────────────────────
 //
@@ -1117,21 +1136,23 @@ describe('worktree-cleanup subcommand — explicit-arg behavior is unchanged (FO
 // token was silently dropped but its VALUE fell through to `positional` —
 // binding as the <repo-root> positional and producing a confusing ENOTDIR on
 // a concatenated phantom path once something joined it with a further
-// relative path. `--config <path>` must now be accepted-and-ignored, and any
-// OTHER unknown `--flag` must fail loud (exit 2, naming the flag) instead of
+// relative path. `--config <path>` must now be accepted, and any OTHER
+// unknown `--flag` must still fail loud (exit 2, naming the flag) instead of
 // silently becoming data.
-describe('worktree-cleanup subcommand — --config is accepted and ignored (FOR-87)', () => {
+//
+// `--config`'s value is no longer merely tolerated-and-discarded (issue
+// #184): it is now actually loaded via `loadWaveConfig`, so every fixture
+// below points at a real, readable, valid config file rather than the
+// pre-fix phantom path — a nonexistent path now surfaces as a load error
+// (see the dedicated describe block further down), which is the point of
+// this fix, not a regression in these four.
+describe('worktree-cleanup subcommand — --config is accepted and LOADED (FOR-87 / issue #184)', () => {
   beforeEach(() => {
     vi.mocked(execFileSync).mockImplementation(() => '');
   });
 
   it('a trailing --config <path> after an explicit repo-root does not shift into the <repo-root> positional', () => {
-    const code = main([
-      'worktree-cleanup',
-      root,
-      '--config',
-      '/definitely/not/a/real/config/path.json',
-    ]);
+    const code = main(['worktree-cleanup', root, '--config', writeMinimalWaveConfig()]);
     expect(code).toBe(0);
     const parsed = JSON.parse(stdoutBuf) as {
       dryRun: boolean;
@@ -1158,14 +1179,15 @@ describe('worktree-cleanup subcommand — --config is accepted and ignored (FOR-
         '--wave',
         join('.scratch', 'waves', '2026-01-03-stacked-wave.md'),
         '--config',
-        '/definitely/not/a/real/config/path.json',
+        writeMinimalWaveConfig(),
       ]);
       // Pre-fix, --config's value bound as <repo-root> (an absolute,
       // non-directory phantom path); resolving the RELATIVE --wave path
       // against it throws (ENOENT/ENOTDIR) and the CLI exits 2. Post-fix,
-      // --config is ignored, repoRoot falls back to the mocked cwd (root),
-      // the relative spine resolves and reads fine, and the spine's
-      // dispatch-log-declared branches surface in the dry-run-free summary.
+      // --config's value is a real file loaded (not bound as repoRoot),
+      // repoRoot falls back to the mocked cwd (root), the relative spine
+      // resolves and reads fine, and the spine's dispatch-log-declared
+      // branches surface in the dry-run-free summary.
       expect(code).toBe(0);
       const parsed = JSON.parse(stdoutBuf) as { branchFilter?: string[] };
       expect(parsed.branchFilter).toEqual(
@@ -1180,7 +1202,7 @@ describe('worktree-cleanup subcommand — --config is accepted and ignored (FOR-
     const code = main([
       'worktree-cleanup',
       '--config',
-      '/some/other/phantom/path',
+      writeMinimalWaveConfig(),
       '--dry-run',
       root,
     ]);
@@ -1196,10 +1218,216 @@ describe('worktree-cleanup subcommand — --config is accepted and ignored (FOR-
   });
 
   it('--config combined with --orphans is tolerated (both flags recognized, neither becomes positional)', () => {
-    const code = main(['worktree-cleanup', root, '--orphans', '--config', '/some/path']);
+    const code = main([
+      'worktree-cleanup',
+      root,
+      '--orphans',
+      '--config',
+      writeMinimalWaveConfig(),
+    ]);
     expect(code).toBe(0);
     const parsed = JSON.parse(stdoutBuf) as { orphans?: { selected: unknown[] } };
     expect(parsed.orphans).toBeDefined();
+  });
+
+  it('a --config pointing at an unreadable/nonexistent file now fails loud (exit 1) instead of being silently ignored', () => {
+    const code = main([
+      'worktree-cleanup',
+      root,
+      '--config',
+      '/definitely/not/a/real/config/path.json',
+    ]);
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/could not load --config/);
+    expect(stdoutBuf).toBe('');
+  });
+});
+
+// ─── Form 8g: worktree-cleanup — --config's cleanup.disposableNames reaches
+//             the plan at ALL THREE entry points (issue #184) ────────────────
+//
+// The last-mile wiring gap: issue #115 made `listAgentWorktrees`,
+// `listOrphanDirs`, and `executeCleanup` all ACCEPT a `disposableNames`
+// option, and `loadWaveConfig` already validated `cleanup.disposableNames` at
+// config-load time — but the CLI's `--config` handling discarded the value
+// (see Form 8e above), so a `wave-close` run driven by `--config` could never
+// make the declaration reach the plan. These specs drive the REAL
+// `worktree-cleanup` CLI entry point (never the bare engine functions
+// worktree-cleanup.spec.ts already covers) against a REAL git repository, with
+// a REAL `--config` file on disk declaring `cleanup.disposableNames`, so the
+// WIRING itself is under test — not the engine's own already-tested
+// classification logic.
+//
+// One repo fixture exercises BOTH orphan shapes `--orphans` sweeps, so a
+// single CLI invocation proves all three entry points at once:
+//
+//   • `orphanA` — a REGISTERED (`git worktree add`) worktree whose own `.git`
+//     pointer file was then removed (the exact FOR-59 "deregistered but not
+//     deleted" shape): `git worktree list --porcelain` still lists it, so it
+//     is found by `listAgentWorktrees`'s `parseWorktreeList` and classified
+//     via its filesystem-scan `orphanAllJunk` branch — proving
+//     `listAgentWorktrees` AND (via the real, non-dry-run removal)
+//     `executeCleanup` both honour the threaded declaration.
+//   • `orphanB` — a plain directory under the SAME recognized `wf_` prefix
+//     that was NEVER passed through `git worktree add` at all: `git worktree
+//     list --porcelain` never mentions it, so it is found ONLY by
+//     `listOrphanDirs` (the `--orphans` sweep) — proving that entry point
+//     independently.
+//
+// Both hold ONLY a `.build/` tree (Swift build output — the exact issue #115
+// live shape) — junk `orphanA`/`orphanB` are not, without the declaration.
+describe('worktree-cleanup subcommand — --config cleanup.disposableNames reaches listAgentWorktrees, listOrphanDirs, and executeCleanup (issue #184)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  /** A `wave.config.json` declaring `cleanup.disposableNames` (issue #115/#184). */
+  function writeCleanupConfig(names: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wave-cli-184-cfg-'));
+    const cfgPath = join(dir, 'wave.config.json');
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot: '.', slug: 'x' },
+        cleanup: { disposableNames: names },
+      }),
+      'utf-8',
+    );
+    return cfgPath;
+  }
+
+  /** The exact issue #115 leftover shape: built-in junk plus a Swift `.build/` tree. */
+  function makeSwiftLeftover(dir: string): void {
+    mkdirSync(join(dir, '.build', 'arm64-apple-macosx', 'debug'), { recursive: true });
+    writeFileSync(
+      join(dir, '.build', 'arm64-apple-macosx', 'debug', 'Package.o'),
+      'object-code',
+      'utf-8',
+    );
+    writeFileSync(join(dir, '.build', 'manifest.db'), 'build-manifest', 'utf-8');
+  }
+
+  /**
+   * A real repo with:
+   *   - `orphanA`: a real `git worktree add`-ed worktree, still LISTED by git
+   *     (its own `.git` pointer file removed — the FOR-59 fixture shape),
+   *     holding only a `.build/` tree.
+   *   - `orphanB`: a plain, never-registered directory under the same
+   *     recognized `wf_` prefix, holding only a `.build/` tree.
+   */
+  function makeRepoWithBothOrphanShapes(): {
+    mainRoot: string;
+    orphanA: string;
+    orphanB: string;
+  } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wave-cli-184-repo-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+
+    const orphanARel = join('.claude', 'worktrees', 'wf_184-orphan-a');
+    realGit(['worktree', 'add', '-q', orphanARel, '-b', 'wave/184-orphan-a'], mainRoot);
+    const orphanA = join(mainRoot, orphanARel);
+    rmSync(join(orphanA, '.git'), { force: true });
+    makeSwiftLeftover(orphanA);
+
+    const orphanB = join(mainRoot, '.claude', 'worktrees', 'wf_184-orphan-b');
+    mkdirSync(orphanB, { recursive: true });
+    makeSwiftLeftover(orphanB);
+
+    return { mainRoot, orphanA, orphanB };
+  }
+
+  it('with --config declaring cleanup.disposableNames: [".build"], a real (non-dry-run) --orphans run removes BOTH orphan shapes', () => {
+    const { mainRoot, orphanA, orphanB } = makeRepoWithBothOrphanShapes();
+    const configPath = writeCleanupConfig(['.build']);
+
+    const code = main(['worktree-cleanup', mainRoot, '--orphans', '--config', configPath]);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      removed: Array<{ path: string }>;
+      skipped: unknown[];
+      errors: unknown[];
+      orphans: { removed: Array<{ path: string }>; skipped: unknown[]; errors: unknown[] };
+    };
+    // orphanA is found via `listAgentWorktrees` (still git-worktree-listed) —
+    // proves that entry point AND `executeCleanup` (the real removal) honour
+    // the threaded declaration.
+    expect(parsed.removed.map((w) => w.path)).toEqual([orphanA]);
+    expect(parsed.skipped).toEqual([]);
+    expect(parsed.errors).toEqual([]);
+    // orphanB is found ONLY via `listOrphanDirs` (the --orphans sweep) — proves
+    // that entry point independently.
+    expect(parsed.orphans.removed.map((o) => o.path)).toEqual([orphanB]);
+    expect(parsed.orphans.skipped).toEqual([]);
+    expect(parsed.orphans.errors).toEqual([]);
+
+    expect(existsSync(orphanA)).toBe(false);
+    expect(existsSync(orphanB)).toBe(false);
+  });
+
+  // Convention 11 negative control: the IDENTICAL fixture with NOTHING
+  // declared (no --config at all) must classify both shapes as holding "real"
+  // (undeclared) content and refuse to remove either — the exact pre-#184
+  // behaviour, byte-identical. Without this, the test above could pass for a
+  // reason unrelated to the declaration actually reaching the plan.
+  it('the SAME fixture WITHOUT --config still classifies both shapes as real work and removes neither (negative control)', () => {
+    const { mainRoot, orphanA, orphanB } = makeRepoWithBothOrphanShapes();
+
+    const code = main(['worktree-cleanup', mainRoot, '--orphans']);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      removed: unknown[];
+      skipped: Array<{ path: string; reason: string }>;
+      orphans: { removed: unknown[]; skipped: Array<{ path: string; reason: string }> };
+    };
+    expect(parsed.removed).toEqual([]);
+    expect(parsed.skipped.map((w) => w.path)).toEqual([orphanA]);
+    expect(parsed.skipped[0].reason).toBe('orphan-with-real-files');
+    expect(parsed.orphans.removed).toEqual([]);
+    expect(parsed.orphans.skipped.map((o) => o.path)).toEqual([orphanB]);
+    expect(parsed.orphans.skipped[0].reason).toBe('orphan-with-real-files');
+
+    expect(existsSync(orphanA)).toBe(true);
+    expect(existsSync(orphanB)).toBe(true);
   });
 });
 

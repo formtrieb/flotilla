@@ -915,11 +915,25 @@ function resolveBranchFilter(
  * documented pattern every OTHER verb already tolerates. `worktree-cleanup` had
  * no case for it, so the config path silently bound as the <repo-root>
  * positional (a concatenated phantom path → a confusing ENOTDIR). `--config
- * <path>` is now accepted and its value discarded, same as `--wave`/`--branches`
- * consume their value token; it never reaches `positional`. Any OTHER unknown
- * `--flag` is a hard usage error (exit 2) naming the flag — never a silent
- * positional. This is a parsing-boundary fix only; the cleanup engine
- * (worktree-cleanup.ts) is untouched.
+ * <path>` is now accepted, same as `--wave`/`--branches` consume their value
+ * token; it never reaches `positional`. Any OTHER unknown `--flag` is a hard
+ * usage error (exit 2) naming the flag — never a silent positional.
+ *
+ * `--config` is no longer purely discarded (issue #184 — the last-mile wiring
+ * gap left by issue #115): its file is loaded via `loadWaveConfig`, and
+ * `cleanup?.disposableNames` is threaded into `listAgentWorktrees`,
+ * `listOrphanDirs`, and `executeCleanup` below — the SAME consumer-declared
+ * disposable-entry-name set `wave-config.ts` already validates at load time.
+ * Before this wiring, a `wave-close` run driven by `--config` could never make
+ * that declaration reach the plan; it only ever worked when a caller built the
+ * engine functions directly and passed `disposableNames` itself. A load
+ * failure (unreadable/invalid config) is a hard error (exit 1) rather than a
+ * silent fall-through to "no extra names" — an operator who supplied a bad
+ * `--config` should see why cleanup didn't honour it, not a quietly narrower
+ * sweep. Absent `--config` (the pre-existing, still-supported form)
+ * `disposableNames` stays `undefined` and every entry point below already
+ * treats that as "no extra names" — no behavior change for existing bare
+ * `worktree-cleanup` call sites.
  *
  * Prints the FULL engine summary so a run can never do work and show nothing
  * (FOR-67): removed/skipped/errors PLUS deregisteredNotDeleted (the ENOTEMPTY
@@ -946,12 +960,14 @@ function runWorktreeCleanup(args: string[]): number {
   const orphans = args.includes('--orphans');
   // Positional args are those that don't start with '--' and are not values of
   // a known flag (--wave / --branches / --config consume the token after
-  // them). `--config <path>` is accepted-and-ignored (FOR-87, W25-F2): every
-  // sibling verb already tolerates the uniform Coordinator-wrapper flag, and
-  // without a case for it here its value token fell through to `positional`
-  // (silently binding as <repo-root> — a confusing ENOTDIR on a concatenated
-  // phantom path). Any OTHER unknown `--flag` fails loud below — a
-  // flag-shaped token must never silently bind as data.
+  // them). `--config <path>` is accepted (FOR-87, W25-F2): every sibling verb
+  // already tolerates the uniform Coordinator-wrapper flag, and without a case
+  // for it here its value token fell through to `positional` (silently
+  // binding as <repo-root> — a confusing ENOTDIR on a concatenated phantom
+  // path). Its value is now actually loaded (issue #184 — see the doc comment
+  // above this function), not merely consumed-and-discarded. Any OTHER
+  // unknown `--flag` fails loud below — a flag-shaped token must never
+  // silently bind as data.
   const noValueFlags = new Set(['--dry-run', '--orphans']);
   const flagsWithValues = new Set(['--wave', '--branches', '--config']);
   const positional: string[] = [];
@@ -959,7 +975,7 @@ function runWorktreeCleanup(args: string[]): number {
     const a = args[i];
     if (a.startsWith('--')) {
       if (flagsWithValues.has(a)) {
-        i++; // consume the value token (--config's value is deliberately discarded)
+        i++; // consume the value token (--config's value is loaded below, issue #184)
         continue;
       }
       if (noValueFlags.has(a)) {
@@ -979,9 +995,29 @@ function runWorktreeCleanup(args: string[]): number {
   const repoRoot =
     positional.length > 0 ? resolve(positional[0]) : process.cwd();
 
+  // The consumer's cleanup.disposableNames declaration (issue #184 — the
+  // last-mile wiring gap left by issue #115): `loadWaveConfig` already
+  // validates the key at config-load time via the engine's own
+  // `normalizeDisposableNames`, so a bad declaration fails loud here rather
+  // than being silently narrowed to "no extra names". Absent --config
+  // (the pre-existing form) leaves `disposableNames` undefined — every entry
+  // point below already treats that as a no-op.
+  const configPath = flag(args, '--config');
+  let disposableNames: readonly string[] | undefined;
+  if (configPath !== undefined) {
+    try {
+      disposableNames = loadWaveConfig(configPath).cleanup?.disposableNames;
+    } catch (err) {
+      process.stderr.write(
+        `error: could not load --config ${configPath}: ${(err as Error).message}\n`,
+      );
+      return 1;
+    }
+  }
+
   try {
     const branchFilter = resolveBranchFilter(args, repoRoot);
-    const worktrees = listAgentWorktrees(repoRoot);
+    const worktrees = listAgentWorktrees(repoRoot, undefined, disposableNames);
     const plan = planCleanup(worktrees, branchFilter);
 
     // The orphan sweep (FOR-67) is an additive, branch-filter-independent pass:
@@ -991,7 +1027,9 @@ function runWorktreeCleanup(args: string[]): number {
     // parallel-safe — a sibling wave's live worktree is REGISTERED, so it is
     // never seen as an orphan (--wave/--branches scoping of the registered
     // cleanup above is untouched).
-    const orphanPlan = orphans ? planOrphanSweep(listOrphanDirs(repoRoot)) : null;
+    const orphanPlan = orphans
+      ? planOrphanSweep(listOrphanDirs(repoRoot, { disposableNames }))
+      : null;
 
     if (dryRun) {
       // Orphan-BRANCH preview (issue #148): planOrphanBranchSweep is the SAME
@@ -1039,7 +1077,7 @@ function runWorktreeCleanup(args: string[]): number {
       return 0;
     }
 
-    const result = executeCleanup(plan, { repoRoot });
+    const result = executeCleanup(plan, { repoRoot, disposableNames });
     const orphanResult =
       orphanPlan !== null ? executeOrphanSweep(orphanPlan, { repoRoot }) : null;
 

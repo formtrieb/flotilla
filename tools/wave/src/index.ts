@@ -261,11 +261,22 @@ export {
   cleanAgentWorktrees,
   listAgentWorktrees,
   defaultWorktreeRemover,
+  // The consumer-declared disposable-name validator (issue #115) + the
+  // widened option surface that carries it into the orphan sweep (issue
+  // #184 — same barrel-gap class the disclosure surface hit: an
+  // engine-complete symbol unreachable from the package root). `CleanupOptions`
+  // already carried its own `disposableNames` field and was exported above
+  // before this fix; `OrphanSweepOptions` is the other option surface #115
+  // widened with the same field, and `normalizeDisposableNames` is the
+  // exact-names validator both `wave-config.ts` and the cleanup entry points
+  // apply — none of the three were importable from the package root until now.
+  normalizeDisposableNames,
   type WorktreeEntry,
   type CleanupPlan,
   type CleanupResult,
   type WorktreeRemover,
   type CleanupOptions,
+  type OrphanSweepOptions,
 } from './worktree-cleanup';
 
 export {
