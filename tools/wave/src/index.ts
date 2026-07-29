@@ -310,9 +310,18 @@ export {
   AC_STATUS_VALUES,
   REVIEWER_VERDICT_JSON_SCHEMA,
   validateReviewerVerdict,
+  // The Documented-Form Comparison surface (ADR-0030) — the trigger vocabulary
+  // + the trigger/comparison/divergence shapes for a `ReviewerVerdict`'s
+  // optional `documentedFormComparison` field. Same barrel-gap class as the
+  // disclosure surface above: engine-complete, unreachable from the package
+  // root until now.
+  DOCUMENTED_FORM_TRIGGER_VALUES,
   type AcStatus,
   type AcVerification,
   type ReviewerVerdict,
+  type DocumentedFormTrigger,
+  type DocumentedFormComparison,
+  type DocumentedFormDivergence,
 } from './reviewer-verdict-schema';
 
 export {
