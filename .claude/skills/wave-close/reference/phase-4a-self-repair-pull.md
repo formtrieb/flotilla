@@ -15,8 +15,18 @@
 # evade this check:
 ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
 
-for BRANCH in <every wave branch from the dispatch-log>; do
+# WRITE THE BRANCHES OUT, or iterate a real array — never `for BRANCH in $BRANCHES`
+# (wave-shared Convention 12: zsh does not word-split, so a space-separated
+# variable is ONE token and the loop silently runs once against a name that does
+# not exist). ENGINE_SURFACE above is a PATTERN, not a command, and it is quoted
+# at its point of use — that is the safe shape; the unsafe one is a variable in
+# a loop head or in command position.
+WAVE_BRANCHES=(wave/<id>-<slug> wave/<id>-<slug>)   # every branch from the dispatch-log
+for BRANCH in "${WAVE_BRANCHES[@]}"; do
   HIT=$(git diff --name-only main...origin/"$BRANCH" | grep -E "$ENGINE_SURFACE")
+  # NOT guarded on purpose: an empty HIT is the GOOD answer (no hazard on this
+  # branch), not evidence the command failed to run — Convention 12's
+  # "guard the capture whose emptiness means *did not run*" rule.
   [ -n "$HIT" ] && echo "SELF-REPAIR HAZARD: $BRANCH changes wave-close's own engine surface — $HIT"
 done
 ```
@@ -30,6 +40,19 @@ Any hit means this wave is a self-repair case: **note it in the close summary** 
 Run this after every merge in the advisory order, before starting phase 5, regardless of whether the check above found a hit:
 
 ```bash
+# Define the Convention 12 capture guard once per wave-close shell session,
+# before the first capture below (wave-shared/reference/convention-12-…md carries
+# the canonical body + the rationale for rejecting `null`/`undefined` and for
+# printing only the NAME, never the captured value):
+require_capture() {   # require_capture <NAME> <captured-value>
+  case "$2" in
+    ''|null|undefined)
+      echo "STOP: $1 came back empty — the command that should have produced it did not run. Refusing to continue with an empty value." >&2
+      return 1
+      ;;
+  esac
+}
+
 git fetch origin main
 
 # Know before you run it, not after: does the incoming diff touch a harness
@@ -39,7 +62,19 @@ git diff --name-only HEAD origin/main | grep -E '^\.claude/(skills/|settings\.js
   && echo "WARNING: this pull touches a harness write-denied path — disable the sandbox for the commands below, or expect a half-applied, HEAD-frozen result"
 
 git pull --ff-only origin main
-git rev-parse HEAD   # MUST equal the merged main tip — do not trust exit code or git status alone
+
+# Verify the fast-forward MECHANICALLY, not by eyeballing two printed SHAs — and
+# refuse an EMPTY capture rather than comparing two blanks and calling it equal
+# (wave-shared Convention 12: `git rev-parse` writes its error to stderr and
+# leaves stdout empty, so `[ "$A" = "$B" ]` on two failed captures reads TRUE):
+MERGED_TIP=$(git rev-parse origin/main)
+LOCAL_HEAD=$(git rev-parse HEAD)
+require_capture MERGED_TIP "$MERGED_TIP" || exit 1     # Convention 12 helper
+require_capture LOCAL_HEAD "$LOCAL_HEAD" || exit 1
+[ "$LOCAL_HEAD" = "$MERGED_TIP" ] || {
+  echo "STOP: HEAD is not at the merged main tip — the fast-forward did not complete (see the half-applied-pull symptom below). Do NOT start phase 5." >&2
+  exit 1
+}
 ```
 
 **Sandbox precondition — disable the sandbox for this pull whenever this wave's rows touch anything under `.claude/skills/**`, or `.claude/settings.json`.** The sandbox denies writes to both, unconditionally: a fast-forward that includes a skill-file change OR a `.claude/settings.json` change stops mid-apply with `error: unable to unlink old '.claude/skills/<path>': Operation not permitted` (or the same error naming `.claude/settings.json`). Everything outside the denied paths (e.g. `tools/wave/src/**`) still lands — only the denied path doesn't. (`.claude/settings.local.json` is gitignored in this repo — never part of any commit, so it cannot itself fail a pull this way — but the identical harness rule denies writing it directly, so never hand-edit it from an agent either.)
@@ -72,4 +107,6 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 - **Relying on memory of the W4-F1 retro instead of running the phase-4a detection step.** Whether *this* wave is a self-repair case is not something to eyeball from having read a prior operating note — diff each dispatch-log branch against `main` and grep it against the engine-surface list in phase 4a. The pull happens either way, but the detection step is what tells you (and the close summary) whether this run was the load-bearing case.
 - **Trusting a `git pull`/`git reset` that touched `.claude/skills/**` or `.claude/settings.json` without checking `HEAD`.** The sandbox can deny the denied-path half of a fast-forward while the rest applies silently — no error past the failed unlink, `git status` reads as ordinary pending changes, and `HEAD` stays on the pre-merge SHA. This is a harness-level deny, not something either file's content or the operator's own config controls, and it never goes away since flotilla must keep `.claude/settings.json` tracked. Disable the sandbox for that pull whenever this wave's rows touch `.claude/skills/**` or `.claude/settings.json`, and confirm `git rev-parse HEAD` against the merged tip before trusting the checkout.
 - **Running the pull blind, then diagnosing the `unable to unlink` failure after the fact.** `git diff --name-only HEAD origin/main | grep -E '^\.claude/(skills/|settings\.json$)'` against the incoming diff, run BEFORE the pull, tells you in advance whether to disable the sandbox — don't wait for the mid-apply error to find out.
+- **Iterating the dispatch-log branches out of a space-separated variable (`for BRANCH in $BRANCHES`).** zsh does not word-split, so the loop runs **once**, against a branch name that does not exist, and every self-repair hazard in the wave goes unreported — with no error louder than one `unknown revision` line (wave-shared Convention 12; live: W5-F5, W18-F3). Write the branches out or iterate a real array, as above.
+- **Comparing `HEAD` to the merged tip by reading two printed SHAs.** Two *failed* `git rev-parse` calls both leave stdout empty, and an eyeball comparison of two blanks — or a bare `[ "$A" = "$B" ]` over them — reads as a match. Capture both, run them through the Convention 12 `require_capture` guard, and only then compare; the exact half-applied-pull case this step exists to catch is the one where a capture is most likely to be the thing that goes wrong.
 - **Discarding the leftover denied-path file without comparing it to what's committed first.** The write-deny can only leave the file unchanged (byte-identical to what `HEAD` already claims) or, if something else touched it, genuinely different. Compare with `git show HEAD:<path> | diff - <path>` before any `reset --hard` or manual removal — never assume the leftover copy is safe to discard.

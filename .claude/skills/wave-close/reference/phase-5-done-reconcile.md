@@ -25,7 +25,22 @@ Probe each terminal row's closing state, then either **land it `done`** (a merge
 # comma-joined acked array before passing it through (never hand-parse
 # acVerification[] instead of using this verb's output):
 ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" <id>)   # → { "acked": [...], "iter": ..., "corrupt": ... }
+
+# GUARD THE CAPTURE THAT PROVES THE VERB RAN (wave-shared Convention 12). An
+# empty ACKED_JSON does not mean "no ACs were met" — it means `verdict-acked`
+# produced nothing, and the only ways that happens are ways you must not
+# continue past: the engine CLI was never invoked (a command held in a shell
+# variable, exit 127 — the five-occurrence class), or it exited non-zero. The
+# next line would derive ACKED="" from it, and `close` would accept that as a
+# legitimate "nothing met" and tick nothing — a silent wrong answer.
+require_capture ACKED_JSON "$ACKED_JSON" || exit 1        # helper: Convention 12 / phase-4a
+
 ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf-8")).acked.join(","))')
+# ACKED itself is deliberately NOT guarded: "" is a documented, legitimate value
+# here (nothing met / no verdict sidecar yet) and `close` accepts it as-is.
+# Guarding it would be a false alarm on the ordinary case — Convention 12's
+# "guard the capture whose emptiness means *did not run*, not the one whose
+# emptiness is an answer" rule, with both halves of it live on these two lines.
 {{wave-cli}} issue-store close <id> <prUrl> --acked "$ACKED"  # $ACKED may be "" (nothing met / no verdict yet)
 
 # closed-unmerged (a PR was FOUND and it did not merge) → flag recoverable-stop
@@ -52,6 +67,7 @@ The flag is **orthogonal to the coarse rung** — the row stays at its current r
 - **Leaving a `merged` row at `in-review` (only clearing its flag).** A merged PR must be landed `done` via `{{wave-cli}} issue-store close <id> <prUrl> --acked <indexes>` — that is the done-reconcile (F1). Clearing a stale flag alone does not reach `done`, and in a no-integration `states.doneState` workspace nothing else ever will.
 - **Re-implementing close.** `close` is the existing `IssueStore.close()` verb — idempotent no-op-or-reconcile, and the FOR-13 fallback lives inside it. Call the verb; never hand-roll a state transition or a "done" write in the skill.
 - **Calling `close` without `--acked` (FOR-17 — the dead wire).** `close` has always accepted `--acked 0,2,3`; every closed issue used to read "not done yet" on the tracker because no skill ever passed it. On every merged row, derive the indexes first via `{{wave-cli}} verdict-acked <verdictsDir> <id>` (the single-owner engine verb) and pass them straight through — never hand-parse `acVerification[]` in the skill, and never skip the flag because "it's optional".
+- **Deriving `ACKED` from an unguarded `ACKED_JSON` capture (wave-shared Convention 12).** If the `verdict-acked` call never executed — the five-occurrence "command held in a shell variable, exit 127" class — its capture is empty, `ACKED` derives to `""`, and `close` lands the row `done` with nothing ticked while looking exactly like the legitimate "nothing met" case. Guard the JSON (the capture that proves the verb *ran*); leave the derived `ACKED` unguarded (its emptiness is a real answer).
 - **Deriving `--acked` at verdict-in instead of at close.** The tick fires at `close`, once a merge is confirmed — never earlier. An `approve` verdict whose PR later closes unmerged must never have ticked anything; deriving `--acked` any earlier than the merged-row close call would overstate what actually landed.
 - **Re-reading the AC tick as gate input anywhere.** The ADR-0004 boundary holds unconditionally: the tick `--acked` writes is cosmetic/human-facing only. No gate, probe, or later wave may read it back — `acVerification[]` on the Reviewer verdict stays the sole ground truth.
 - **Auto-moving `closed-unmerged` back to `available`.** A rejected PR re-grabbed by another wave redoes deliberately-rejected work. Flag it `recoverable-stop`; the human disposes.
