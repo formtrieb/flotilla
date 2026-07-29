@@ -18,6 +18,7 @@
     "!src/**/*.spec.ts",
     "!src/__fixtures__",
     "bin",
+    "hooks",
     "LICENSE",
     "README.md"
   ],
