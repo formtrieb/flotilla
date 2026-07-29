@@ -26,6 +26,8 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 | `{{wave-cli}} host-pr status --branch <b> [--remote <url>]` | done-reconcile host-evidence probe: `{ ok, verb:"status", host, branch, state:"open"\|"merged"\|"closed-unmerged"\|"none", url?, number? }`. `none` is a valid answer (no PR), not a failure. |
 | `{{wave-cli}} host-pr merge --branch <b> [--method …] [--delete-branch]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`, plus — with `--delete-branch` (consumer KW-F6) — it deletes the PR's **remote** head branch through the host API after a successful merge and reports the outcome under `branchDeletion:{ branch, deleted, error? }`. A failed delete is a reported degradation (`deleted:false`), **never** a merge failure (exit stays 0). `arm` threads the identical flag (row above) — its immediate-merge outcome deletes the same way; only its deferred `armed` outcome cannot delete synchronously. |
 | `{{wave-cli}} host-pr preflight [--remote <url>]` | code-host posture probe for the `--auto` confirm (ADR-0023 amendment): `{ ok, verb:"preflight", host, checks:[{name,status,detail}] }` for `pr-merge-token` / `allow-auto-merge` / `required-checks`. **Store-blind** — detect-host-routed, **no `--config`**, **no `--branch`** (required checks read against the default branch) — so it answers on **every** store kind, unlike the store-preflight it replaced here. `status` may be `pass`/`fail`/`advisory`/`unknown`; only `fail` blocks. |
+| `{{wave-cli}} spine check-disclosures <wave-file>` | the fail-closed archive gate (ADR-0027, phase 6): exits `0` iff no `open` disclosure remains in the spine's `## Disclosures` section, non-zero otherwise. On a non-zero exit, prints one line per still-open entry (`<ref>  row <id>  iter <n>  (<source>)  <text>`) — **read the exit code, not this prose** (the convention-coupled parse-back class, #141/#146). A spine with no `## Disclosures` section at all (predates ADR-0027, or nothing was ever captured) reads as already clear. |
+| `{{wave-cli}} spine set-disposition <wave-file> <disclosure-ref> <disposition>` | dispositions exactly one open entry. `<disposition>` must be one of `resolved-in-slice \| scope-extension \| filed:<id> \| dropped:<reason>` — anything else, including `open` (the capture default, not a decision), is refused loud with **nothing written**. |
 | any command, no args | usage |
 
 `host-pr create` (find-before-create PR opening, ADR-0023 decision 3) is also a shipped verb, but it is not in this table: it rides the **Worker terminator**, not wave-close — this skill only ever calls the four **landing/probe** verbs above (`arm`/`merge`/`status`/`preflight`).
@@ -46,6 +48,36 @@ In-repo: `npx tsx tools/wave/src/cli.ts <verb> …` for top-level verbs; `npx ts
 | `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) — incl. a `--delete-branch` request whose deletion FAILED on either verb (`branchDeletion.deleted:false` is a reported degradation, not a merge/arm failure) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage (incl. `--delete-branch` on a verb other than `arm`/`merge`) |
 | `host-pr status` | probe answered (read `state`; `none` is a valid answer) | host error | usage |
 | `host-pr preflight` | no check `fail`ed (checks may be `advisory`/`unknown`) | a check `fail`ed, no adapter (`adapter-not-implemented`), or host error / missing token | usage |
+| `spine check-disclosures` | `0 open of N` — archive gate CLEAR | `≥1 open of N` — archive gate BLOCKED (ADR-0027); an unreadable/corrupt spine blocks the same way (fail-closed) | usage (missing `<wave-file>`) |
+| `spine set-disposition` | disposition written, flushed | unknown disclosure-ref, or a disposition outside the vocabulary (including `open`) — nothing written | usage (missing `<disclosure-ref>`/`<disposition>`) |
+
+## Disclosure gate — worked invocation (ADR-0027)
+
+Phase 6 runs this before touching the archive move — the gate reads `check-disclosures`' exit code, never its printed prose:
+
+```bash
+{{wave-cli}} spine check-disclosures <wave-file>
+# clear:
+#   disclosures: 0 open of 3 — archive gate CLEAR
+#   exit 0 → continue straight to the archive Guards
+
+# blocked:
+#   disclosures: 1 open of 3 — archive gate BLOCKED (ADR-0027)
+#     01.1  row 01  iter 1  (worker)  gate 8 ships inert
+#     disposition each: spine set-disposition <wave-file> <ref> <resolved-in-slice|scope-extension|filed:<id>|dropped:<reason>>
+#   exit 1 → do NOT archive
+
+# disposition the entry the gate named — the vocabulary is exactly four
+# tokens, `open` itself is refused (it's the capture default, not a decision):
+{{wave-cli}} spine set-disposition <wave-file> 01.1 "filed:#210"
+
+# re-run — the very same check now flips green:
+{{wave-cli}} spine check-disclosures <wave-file>
+# → disclosures: 0 open of 3 — archive gate CLEAR
+# exit 0 → now archive
+```
+
+`dropped:<reason>` clears the gate exactly the same way `resolved-in-slice` does — the check counts dispositioned-vs-open, it does not read or judge which disposition was chosen.
 
 ## `ClosingState` shape
 

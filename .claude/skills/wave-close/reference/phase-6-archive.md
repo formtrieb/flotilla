@@ -1,5 +1,29 @@
 # Phase 6 — Archive (the last phase — terminal-only, idempotent, layout-aware)
 
+## Disclosure gate — BEFORE the archive move (ADR-0027)
+
+**Run this first, every time, before either Guard below.** It is a mechanical existence check, not a judgment call:
+
+```bash
+{{wave-cli}} spine check-disclosures <wave-file>
+```
+
+Read the **exit code only** — this gate never grep-parses the spine's `## Disclosures` table (the convention-coupled parse-back class, #141/#146 fixed that once already). Exit `0` → `disclosures: 0 open of N — archive gate CLEAR`, continue straight to the Guards below. **Non-zero exit → BLOCKED: do not archive**, regardless of how few rows are open or how late in the day it is.
+
+On a non-zero exit, the checked step is: **name every open disclosure the command printed, and give each one a disposition — chosen from exactly these four, no others accepted (not even `open` itself):**
+
+`resolved-in-slice | scope-extension | filed:<id> | dropped:<reason>`
+
+Set each one through the engine, never by hand-editing the spine:
+
+```bash
+{{wave-cli}} spine set-disposition <wave-file> <disclosure-ref> <disposition>
+```
+
+Then re-run `check-disclosures` — repeat until it reports `0 open`. Only then proceed to the Guards below. The gate demands **that** a disposition exists for every open entry; it never judges the disposition's quality — `dropped:<reason>` clears the gate exactly like `resolved-in-slice` does. That split is deliberate (ADR-0027): existence is enforced mechanically here, quality stays a human call.
+
+**`filed:<id>` — the existence-not-readiness split (ADR-0027).** `filed:<id>` records only that a **bare** issue now exists for the gap — created inline (`issue-store create`, or the host CLI per the ADR's interim note) with a title, the gap description, and a **provenance line** (wave slug, row id, iteration) — **deliberately without an eligibility label**. That bare issue is not wave-ready yet. Decoration (Risk / Worker / Files / Blocked-by, the eligibility label) is a separate, *later* `to-issues` decorate-mode step, done with the **next** wave's planning context — a wiring-gap follow-up's Files are precisely the call sites outside the old slice, which wants the wider-lens planning pass, not a rushed guess at close time. Do not decorate at disposition time; filing (existence) and deciding wave-readiness (decoration) are two different steps on purpose.
+
 **Guard (terminal-only):** archive only when every row is finalised (no row `dispatched`/`reviewing`/etc.). If any row is still pending → do NOT archive; print `wave not yet terminal (skipped)`.
 
 **Guard (idempotent):** `<wave-file>` already under `.flotilla/waves/_archive/` → print `already archived (no-op)`.
@@ -42,6 +66,7 @@ After archiving, print a close summary: wave slug, **which archive mode ran** (`
 
 ## Common Mistakes
 
+- **Archiving over an open disclosure.** The gate (`spine check-disclosures`) demands **that** a disposition exists for every disclosed entry — it never judges its quality; `dropped:<reason>` passes exactly like `resolved-in-slice` does. Do not hand-wave past a non-zero exit, do not hand-edit the spine's `## Disclosures` table to make it read clear, and do not skip the re-check after dispositioning — disposition every open entry through `spine set-disposition`, then re-run `check-disclosures` and confirm `0 open` before touching the archive move.
 - **Archiving before terminal.** The terminality gate (all rows `pr-created`/`approved`/`failed`/`abandoned`/`parked`) must hold. A row still `dispatched`/`reviewing` means the wave isn't done.
 - **Archiving to `done/`.** flotilla archives to `_archive/`; there is no `done/` close ceremony.
 - **Assuming `.flotilla/` is (or isn't) git-tracked and always running `git mv`.** A gitignored/untracked spine makes `git mv` fail outright (P-11 — the first live wave hit this and hand-typed a plain `mv` as a manual workaround). Detect the actual tracked status of the spine file for *this* archive, every time — do not assume from the consumer type, and do not assume from what the previous wave's archive did.
