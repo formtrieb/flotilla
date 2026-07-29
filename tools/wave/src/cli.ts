@@ -220,6 +220,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { validateIssue, validateIssueView, type DorResult } from './dor-gate';
+import { loadWaveConfig } from './wave-config';
+import type { VerifyConfig } from './verify';
 import { detectDrift, type DriftResult } from './files-drift';
 import {
   computeMergeOrderFromSpine,
@@ -348,7 +350,7 @@ function printUsage(): void {
     [
       'usage:',
       '  flotilla-engine <issue-path> [<issue-path> ...]',
-      '  flotilla-engine dor <issue-path> [<issue-path> ...]',
+      '  flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]',
       '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
       '  flotilla-engine files-drift <issue-path> <sha-range>',
       '  flotilla-engine merge-order <wave-md-path>',
@@ -393,10 +395,36 @@ function printUsage(): void {
 }
 
 function runDor(paths: string[]): number {
+  // Optional `--config <path>` (FOR-151): threads the consumer's
+  // wave.config.json `verify` block into Gate 8 (verify-profile-coverage) so it
+  // can actually run instead of always deferring for "no verify config
+  // supplied". Absent (the pre-existing, still-supported form) → `verify` stays
+  // undefined and Gate 8 defers exactly as before this fix — no behavior change
+  // for the many existing bare `dor <path>...` call sites.
+  const filePaths = [...paths];
+  let verify: VerifyConfig | undefined;
+  const configIdx = filePaths.indexOf('--config');
+  if (configIdx !== -1) {
+    const configPath = filePaths[configIdx + 1];
+    if (configPath === undefined) {
+      process.stderr.write('error: dor --config requires a <path>\n');
+      return 2;
+    }
+    filePaths.splice(configIdx, 2);
+    try {
+      verify = loadWaveConfig(configPath).verify;
+    } catch (err) {
+      process.stderr.write(
+        `error: could not load --config ${configPath}: ${(err as Error).message}\n`,
+      );
+      return 1;
+    }
+  }
+
   let anyFail = false;
   const outputs: string[] = [];
 
-  for (const arg of paths) {
+  for (const arg of filePaths) {
     const issuePath = resolve(arg);
     const repoRoot = findRepoRoot(issuePath);
     let source: string;
@@ -409,7 +437,7 @@ function runDor(paths: string[]): number {
       );
       continue;
     }
-    const result = validateIssue({ repoRoot, issuePath, source });
+    const result = validateIssue({ repoRoot, issuePath, source, verify });
     if (result.overall === 'FAIL') anyFail = true;
     outputs.push(renderResult(issuePath, result));
   }
@@ -465,7 +493,34 @@ export async function runDorById(
   }
 
   const repoRoot = flag(args, '--repo-root');
-  const result = validateIssueView(view, repoRoot !== undefined ? { repoRoot } : {});
+
+  // FOR-151: thread the consumer's wave.config.json `verify` block into
+  // Gate 8 (verify-profile-coverage) so it can actually run instead of
+  // always deferring with "No verify config supplied" — the gate previously
+  // had no way to see `--config` at all. Loaded independently of
+  // `resolveStore` above (which only surfaces the config to build the STORE,
+  // not to the caller) so this stays a one-line addition rather than a
+  // `resolveStore` signature change reaching into cli-store.ts (out of this
+  // slice's declared Files). Absent `--config` (the pre-existing form, and
+  // every test that passes an `injected` store without one) leaves `verify`
+  // undefined — Gate 8 defers exactly as before this fix.
+  const configPath = flag(args, '--config');
+  let verify: VerifyConfig | undefined;
+  if (configPath !== undefined) {
+    try {
+      verify = loadWaveConfig(configPath).verify;
+    } catch (err) {
+      process.stderr.write(
+        `error: could not load --config ${configPath}: ${(err as Error).message}\n`,
+      );
+      return 1;
+    }
+  }
+
+  const result = validateIssueView(view, {
+    ...(repoRoot !== undefined ? { repoRoot } : {}),
+    ...(verify !== undefined ? { verify } : {}),
+  });
   process.stdout.write(renderResult(id, result) + '\n');
   return result.overall === 'FAIL' ? 1 : 0;
 }

@@ -2455,6 +2455,157 @@ describe('dor --id <id> (store-backed, non-file)', () => {
   });
 });
 
+// ─── Gate 8 (verify-profile-coverage) threading — FOR-151 ────────────────────
+//
+// The defect: `runDor`/`runDorById` built a `ValidateOptions`/`ValidateViewOptions`
+// that never carried `opts.verify`, so Gate 8 (dor-gate.ts's own already-tested
+// `checkVerifyProfileCoverage`, see dor-gate.spec.ts) always saw `verify ===
+// undefined` and reported `deferred` — regardless of what `--config` on disk
+// actually held. These specs drive the REAL `dor --id` CLI entry point (never
+// the bare `validateIssueView` unit dor-gate.spec.ts already exercises) with a
+// real `--config` file on disk, so the WIRING itself — not just the gate's
+// internal logic — is under test.
+//
+// Judgment call (policy clause 1, AC-vs-repo-policy conflict — flagged in the
+// WorkerReport): issue #151's suggested AC says a no-match row "fails the
+// gate". dor-gate.ts's own doc comment + its existing spec coverage
+// (dor-gate.spec.ts, gate 8 describe block) are unambiguous and pre-date this
+// issue: Gate 8 is advisory-only by design (FOR-127 AC2) — it WARNs, and
+// deliberately never FAILs, so a row with no automated gate stays dispatchable
+// rather than being blocked outright. Repo policy wins: these specs assert the
+// REAL (warn, not fail) status and document the divergence here rather than
+// changing dor-gate.ts's settled advisory semantics as a side effect of a
+// wiring fix.
+
+function writeVerifyConfig(profiles: { name: string; appliesTo: string[] }[]): string {
+  const dir = mkdtempSync(join(tmpdir(), 'dor-verify-cfg-'));
+  const cfgPath = join(dir, 'wave.config.json');
+  writeFileSync(
+    cfgPath,
+    JSON.stringify({
+      store: { kind: 'markdown', repoRoot: '.', slug: 'x' },
+      verify: {
+        profiles: profiles.map((p) => ({
+          ...p,
+          commands: [{ command: 'npm test' }],
+        })),
+      },
+    }),
+    'utf-8',
+  );
+  return cfgPath;
+}
+
+describe('dor --id <id> --config <path> threads verify profiles into Gate 8 (FOR-151)', () => {
+  it("reports pass — never deferred — when the row's Files match a configured verify profile", async () => {
+    const store = tmpStore();
+    const repoRoot = (store as unknown as { repoRoot: string }).repoRoot;
+    const id = await store.create({ ...DOR_INPUT, files: ['apps/web/src/thing.ts'] });
+    const configPath = writeVerifyConfig([{ name: 'web', appliesTo: ['apps/web/**'] }]);
+
+    const code = await runDorById(
+      ['--id', id, '--repo-root', repoRoot, '--config', configPath],
+      store,
+    );
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/pass\s+verify-profile-coverage/);
+    expect(stdoutBuf).not.toMatch(/deferred\s+verify-profile-coverage/);
+  });
+
+  it(
+    "reports warn — never deferred — when the row's Files match NO configured verify profile " +
+      '(advisory-only per repo policy, FOR-127 AC2 — see the judgment-call note above the ' +
+      'describe block; the row stays dispatchable, exit 0)',
+    async () => {
+      const store = tmpStore();
+      const repoRoot = (store as unknown as { repoRoot: string }).repoRoot;
+      const id = await store.create({ ...DOR_INPUT, files: ['apps/ios/src/thing.ts'] });
+      const configPath = writeVerifyConfig([{ name: 'web', appliesTo: ['apps/web/**'] }]);
+
+      const code = await runDorById(
+        ['--id', id, '--repo-root', repoRoot, '--config', configPath],
+        store,
+      );
+
+      expect(code).toBe(0);
+      expect(stdoutBuf).toMatch(/warn\s+verify-profile-coverage/);
+      expect(stdoutBuf).not.toMatch(/deferred\s+verify-profile-coverage/);
+      expect(stdoutBuf).toMatch(/match no configured verify profile/);
+    },
+  );
+
+  it(
+    'defers ONLY because verify config is absent (never because of the working-tree gate) ' +
+      'when --config is omitted but --repo-root is supplied — the sole deferring condition (AC3)',
+    async () => {
+      const store = tmpStore();
+      const repoRoot = (store as unknown as { repoRoot: string }).repoRoot;
+      const id = await store.create({ ...DOR_INPUT, files: ['apps/web/src/thing.ts'] });
+
+      const code = await runDorById(['--id', id, '--repo-root', repoRoot], store);
+
+      expect(code).toBe(0);
+      // The other working-tree gate runs fine with --repo-root present — proving
+      // the defer below is caused SPECIFICALLY by the absent verify config, not
+      // by a missing checkout.
+      expect(stdoutBuf).not.toMatch(/deferred\s+files-glob-valid/);
+      expect(stdoutBuf).toMatch(/deferred\s+verify-profile-coverage/);
+      expect(stdoutBuf).toMatch(/No verify config supplied/);
+    },
+  );
+
+  it('exits 1 with a clear stderr message when --config points at an unreadable file', async () => {
+    const store = tmpStore();
+    const id = await store.create(DOR_INPUT);
+    const badConfig = join(mkdtempSync(join(tmpdir(), 'dor-verify-bad-')), 'nope.json');
+
+    const code = await runDorById(['--id', id, '--config', badConfig], store);
+
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/could not load --config/);
+  });
+});
+
+describe('dor <path> --config <path> threads verify profiles into Gate 8 (file form, FOR-151)', () => {
+  it('reports pass (not deferred) when Files match a configured verify profile', () => {
+    const matchedIssue = join(root, '.scratch', 'test-feature', 'issues', '90-verify-matched.md');
+    writeFileSync(
+      matchedIssue,
+      [
+        '# 90 — Verify matched',
+        '**Status:** ready-for-agent',
+        '**Risk:** mechanical',
+        '**Worker:** background',
+        '**Files:**',
+        '- apps/web/src/thing.ts',
+        '**Blocked by:** none',
+      ].join('\n'),
+      'utf-8',
+    );
+    const configPath = writeVerifyConfig([{ name: 'web', appliesTo: ['apps/web/**'] }]);
+
+    const code = main(['dor', '--config', configPath, matchedIssue]);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/pass\s+verify-profile-coverage/);
+  });
+
+  it('preserves the pre-existing behaviour — Gate 8 still defers — when --config is omitted', () => {
+    const code = main(['dor', issueFile]);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/deferred\s+verify-profile-coverage/);
+  });
+
+  it('exits 1 with a clear stderr message when --config points at an unreadable file', () => {
+    const code = main(['dor', '--config', join(root, 'no-such-config.json'), issueFile]);
+
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/could not load --config/);
+  });
+});
+
 // ─── FOR-11 AC1: pre-op-dispatch store failures exit non-zero ────────────────
 //
 // The observed defect (dogfooding, CLAUDE.md): a store/network failure BEFORE
