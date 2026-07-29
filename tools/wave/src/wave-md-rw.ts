@@ -576,6 +576,22 @@ const PLAN_TABLE_HEADER =
   '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |';
 const PLAN_TABLE_SEP = '|---|---|---|---|---|---|---|---|---|';
 
+// The `## Disclosures` section (ADR-0027) is owned OUTRIGHT by spine-store.ts —
+// its printer/parser pair (`renderDisclosuresSection` / `readDisclosures`) lives
+// there, not here. This module only scaffolds the same empty shape at the tail
+// of a fresh spine (see `renderSpine` below) so the section's presence is
+// uniform from birth; it cannot import the real constants because spine-store.ts
+// already imports FROM this module (`readSpine`, `renderSpine`, …) and importing
+// back would be circular. Keep these three literals byte-identical to
+// spine-store.ts's `DISCLOSURES_HEADING` / `DISCLOSURES_TABLE_HEADER` /
+// `DISCLOSURES_TABLE_SEP` — `ensureDisclosuresSection` composed on top of
+// `renderSpine`'s output must see the section as already present (a
+// byte-identical no-op), which is exactly what `spine create` does today.
+const DISCLOSURES_HEADING = '## Disclosures';
+const DISCLOSURES_TABLE_HEADER =
+  '| Ref | Row | Iter | Source | Disposition | Text |';
+const DISCLOSURES_TABLE_SEP = '|---|---|---|---|---|---|';
+
 /**
  * Render a fresh WAVE.md spine (ADR-0016). Owns every parser-consumed section
  * (frontmatter, Plan-Table, Conflict-Map); `dorCheck` is the one opaque,
@@ -641,6 +657,17 @@ export function renderSpine(
     '```',
     '',
     '## Closed-by',
+    '',
+    // ADR-0027: scaffold the (empty) Disclosures section on every fresh spine
+    // — its presence is uniform from birth rather than materializing later via
+    // `ensureDisclosuresSection`'s legacy-growth path. The header + separator
+    // are scaffolded even with zero entries (same reason the dispatch-log's
+    // fenced-YAML key is scaffolded above: a bare heading is not a write
+    // target — `addDisclosure` would otherwise have nothing to insert after).
+    DISCLOSURES_HEADING,
+    '',
+    DISCLOSURES_TABLE_HEADER,
+    DISCLOSURES_TABLE_SEP,
     '',
   ].join('\n');
 }

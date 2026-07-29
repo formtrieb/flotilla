@@ -25,6 +25,24 @@ import { ISSUE_STATES } from './stop-condition-state-machine';
 import { resume } from './resume';
 import type { WorktreeEntry } from './worktree-cleanup';
 import type { SidecarIndex } from './sidecar';
+// spine-store.ts owns the `## Disclosures` section (ADR-0027) outright — its
+// printer/parser pair lives there and is pinned by spine-store.spec.ts. The
+// import here is integration-only: it proves `renderSpine`'s scaffolded
+// section is exactly what `ensureDisclosuresSection` considers "already
+// present" (the acceptance criterion this issue exists to satisfy), without
+// this file taking on the section's format as its own concern.
+import { ensureDisclosuresSection, readDisclosures } from './spine-store';
+// Same surface, but imported through the PACKAGE ROOT rather than the module
+// file directly — proves the barrel actually re-exports it (issue #177's
+// second acceptance criterion), aliased to avoid colliding with the
+// direct-module import above.
+import {
+  ensureDisclosuresSection as ensureDisclosuresSectionFromRoot,
+  readDisclosures as readDisclosuresFromRoot,
+  addDisclosureToSource as addDisclosureToSourceFromRoot,
+  setDispositionInSource as setDispositionInSourceFromRoot,
+  type Disclosure as DisclosureFromRoot,
+} from './index';
 
 // ─── Golden fixture — a real-shape WAVE.md spine ──────────────────────────────
 //
@@ -923,6 +941,95 @@ describe('renderSpine', () => {
     const rendered = renderSpine(meta, roster, conflict, 'all pass.');
     expect(rendered).toContain('[r1](./demo/reports/1-1.md)');
     expect(rendered).toContain('[v1](./demo/verdicts/1-1.md)');
+  });
+
+  // ── Disclosures scaffolding (ADR-0027 wiring — issue #177) ──────────────────
+  //
+  // `spine create` used to compose `ensureDisclosuresSection` on top of this
+  // function's output because the section grew in later, on spines that
+  // pre-date it. That composition is now a no-op: `renderSpine` scaffolds the
+  // same empty section directly, so its presence is uniform from birth and the
+  // ensure path's "already there" branch is what a fresh spine actually hits.
+
+  it('scaffolds the empty Disclosures section on every fresh spine', () => {
+    const rendered = renderSpine(meta, roster, conflict, 'all pass.');
+    expect(rendered).toContain('## Disclosures');
+    expect(rendered).toContain('| Ref | Row | Iter | Source | Disposition | Text |');
+    // It reads back as zero entries — the table is scaffolded, not populated.
+    expect(readDisclosures(rendered)).toEqual([]);
+    // Every pre-existing section still parses; the new tail section is additive.
+    const spine = readSpine(rendered);
+    expect(spine.planTable).toHaveLength(2);
+    expect(spine.closedBy.body.trim()).toBe('');
+  });
+
+  it("ensureDisclosuresSection composed on top is a byte-identical no-op — the ensure path finds it already present", () => {
+    const rendered = renderSpine(meta, roster, conflict, 'all pass.');
+    expect(ensureDisclosuresSection(rendered)).toBe(rendered);
+  });
+
+  it('the Disclosures section is the LAST section, after Closed-by — Closed-by\'s body does not swallow it', () => {
+    const rendered = renderSpine(meta, roster, conflict, 'all pass.');
+    const lines = rendered.split('\n');
+    const closedByIdx = lines.indexOf('## Closed-by');
+    const disclosuresIdx = lines.indexOf('## Disclosures');
+    expect(closedByIdx).toBeGreaterThan(-1);
+    expect(disclosuresIdx).toBeGreaterThan(closedByIdx);
+    expect(readSpine(rendered).closedBy.body).not.toContain('Disclosures');
+  });
+
+  it('BACKWARD COMPATIBLE: a legacy spine without the section still reads — the lenient-missing branch stays legacy tolerance', () => {
+    // A pre-ADR-0027 spine (rendered before this issue existed, or hand-built
+    // for a test) has no `## Disclosures` heading at all.
+    const legacy = renderSpine(meta, roster, conflict, 'all pass.').replace(
+      /\n## Disclosures[\s\S]*$/,
+      '\n',
+    );
+    expect(legacy).not.toContain('## Disclosures');
+    // readSpine still parses everything before it, and the disclosure reader
+    // (spine-store.ts) tolerates the missing section as zero entries rather
+    // than throwing.
+    expect(readSpine(legacy).planTable).toHaveLength(2);
+    expect(readDisclosures(legacy)).toEqual([]);
+  });
+});
+
+describe('package root re-exports — the disclosure surface (issue #177)', () => {
+  // The barrel (index.ts) used explicit named re-exports, so the disclosure
+  // read/ensure/add/set-disposition surface — landed inside spine-store.ts —
+  // was never wired onto the package root a consumer actually imports from.
+  // This proves each of the four verbs, plus the `Disclosure` type, resolves
+  // through './index' rather than only through the internal module path.
+  const rootMeta = {
+    slug: 'demo', description: 'a demo wave', coordinator: 'at',
+    model: 'Opus 4.8', created: '2026-07-29', lastUpdated: '2026-07-29 10:00',
+  };
+  const rootRoster = [
+    { id: '1', title: 'First issue', worker: 'background', risk: 'mechanical' },
+  ];
+
+  it('read/ensure/add/set-disposition + the Disclosure type are importable from the package root', () => {
+    const rendered = renderSpine(rootMeta, rootRoster, { issues: [], cells: [] }, 'ok.');
+
+    // ensure — already scaffolded by renderSpine, so this is a no-op.
+    expect(ensureDisclosuresSectionFromRoot(rendered)).toBe(rendered);
+    // read — zero entries on the fresh, unpopulated section.
+    expect(readDisclosuresFromRoot(rendered)).toEqual([]);
+
+    // add — captures one entry at `open`.
+    const { source: withOne, disclosure } = addDisclosureToSourceFromRoot(rendered, {
+      rowId: '1',
+      iter: 1,
+      source: 'worker',
+      text: 'the barrel export lies outside the declared Files globs',
+    });
+    expect(disclosure.ref).toBe('1.1');
+
+    // set-disposition — closes it out.
+    const dispositioned = setDispositionInSourceFromRoot(withOne, '1.1', 'resolved-in-slice');
+    const entries: DisclosureFromRoot[] = readDisclosuresFromRoot(dispositioned);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].disposition).toBe('resolved-in-slice');
   });
 });
 
