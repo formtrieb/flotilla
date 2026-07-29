@@ -63,6 +63,12 @@ HELD_IDS=$(node -e '
 #   HELD_IDS is NOT a STOP condition — skip these ids in steps 5 and 6, report them
 #   plainly in step 9. A row leaves HELD_IDS once its blocker's IssueView.status
 #   reaches in-review/done — re-run wave-start to pick it up.
+#   It is also deliberately NOT run through step 0's `require_capture`, and this
+#   is the line that says so: an empty HELD_IDS is the ordinary "nothing is held"
+#   ANSWER, not a did-not-run. Guarding it here would be a false alarm, and false
+#   alarms are how guards get deleted — wave-shared Convention 12's "guard the
+#   capture whose emptiness means *did not run*, not the one whose emptiness is
+#   an answer" half.
 
 # 3a. OPTIONAL Coordinator disposition — park a HELD row instead of waiting
 #     (ADR-0022 §Consequences). A HELD id is still `planned` (never dispatched),

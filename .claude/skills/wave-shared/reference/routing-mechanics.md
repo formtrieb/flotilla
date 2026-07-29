@@ -15,7 +15,10 @@ Naming the form is only half an instruction. The other half is **how the name ge
 ```bash
 # published package — the canonical resolution
 wave_cli() { NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine "$@"; }
-# …or the vendored in-repo fallback, for a consumer still vendoring tools/wave
+# …or the vendored in-repo fallback, for a consumer still vendoring tools/wave —
+# shown in its npx-free local-binary sibling, the driver's default binary style
+# (parallel `npx` under fan-out contends on the npm cache lock, consumer retro
+# KW-F7); `npx tsx tools/wave/src/cli.ts "$@"` is the same form via npx.
 wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }
 
 wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing
