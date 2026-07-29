@@ -166,6 +166,10 @@ _Avoid_: token command (say which credential), credential helper (the code-host 
 The single engine seam that turns a credential need into a secret at construction time: the configured **Lookup-Command** first, the ambient environment variable when no command is configured — two first-class paths chosen by environment lifetime (long-lived interactive machines configure the command; ephemeral environments like CI stay ambient by design). Consumed by both tracker-store factories and the host-pr landing edge; resolves once per process; holds nothing at rest; its typed failure names the command and never carries its output (ADR-0029).
 _Avoid_: auth manager, secret store (it stores nothing), fallback (as the ambient path's name — it is the ephemeral-environment path, not a legacy).
 
+**Echo-Guard**:
+The `PreToolUse` hook (`tools/wave/hooks/echo-guard.cjs`) that hard-blocks a Bash command whose *text* matches one of four secret-echo families before it runs — any `$`-expansion of a credential-shaped name outside the sanctioned presence test; any value-substituting `${NAME:-…}` / `:=` / `:?` form, whatever the name; a whole-environment dump (`printenv`, bare `env`, bare `set`); or a wrapped configured **Lookup-Command** — and rejects with a teaching message naming Convention 8 and both sanctioned alternatives. A **speed bump, not an anchor**: it reads the command, never the output, so indirect expansion (`${!VAR}`) walks past it, and it fails *open* on its own crash. It sits on top of the settings-deny anchors and the **Credential-Resolver** indirection, never instead of them; passing it is not evidence that a command is safe.
+_Avoid_: secret scanner (it scans no output and no repository), permission rule (the permission layer provably cannot express this vector — that is precisely why a hook exists), lint (it blocks an invocation, it does not annotate source).
+
 ### Provenance
 
 **Ur**:
@@ -190,6 +194,7 @@ _Avoid_: the consumer's clear name (client-confidential).
 - A **Worker**/**Reviewer** disclosure becomes a **Disclosure** in the **Spine** at verdict-routing; `wave-close` archives only when every **Disclosure**'s **Disposition** is terminal — existence is gated mechanically, quality stays human (ADR-0027).
 - A **PRD** is sliced by `to-issues` into many grabbable **IssueView**s, each carrying a **Parent** backlink to it; the PRD's *consumed* status is derived from those backlinks, never written — the same derive-don't-write discipline as the **Coarse state** bookends.
 - **Arming** hands an approved row's merge to the code host; landing evidence flows back through the done-reconcile hierarchy **tracker attachment > host PR state > nothing** (ADR-0023).
+- The **Echo-Guard** is defense-in-depth *over* the auth anchors, never one of them: the tracked settings-deny entries own the gitignored-file-read vector, the **Lookup-Command** indirection owns the direct-execution vector (ADR-0029), and the guard covers only what a command's own text reveals.
 
 ## Flagged ambiguities
 
