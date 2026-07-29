@@ -99,6 +99,25 @@ const REVIEWER_VERDICT_SCHEMA = {
       properties: { ac: { type: 'string', minLength: 1 }, met: { type: 'string', enum: ['met','partial','not-met','deferred'] }, evidence: { type: 'string' } } } },
     reviewerFocusItems: { type: 'array', items: { type: 'string' } },
     lintTestSummary: { type: 'string' }, gitStateSane: { type: 'boolean' },
+    // Documented-Form Comparison (ADR-0030) — FLAT + OPTIONAL. The duty is
+    // conditional ("required when a trigger fired"), but a conditional at the
+    // schema ROOT means a top-level anyOf/if, which this boundary rejects
+    // outright (W5-F1) — so the condition lives in the Reviewer contract prose
+    // (.claude/agents/wave-reviewer.md, Check 6), exactly as the prUrl
+    // invariant above is brief-enforced rather than schema-enforced on this
+    // copy. `sources` minItems:1 is the STRUCTURAL half of the no-restatement
+    // rule: a comparison must cite a document the Reviewer read itself.
+    documentedFormComparison: {
+      type: 'object', additionalProperties: false,
+      required: ['trigger','sources','divergences'],
+      properties: {
+        trigger: { type: 'string', enum: ['issue-declared','worker-declared','deferred-core-path'] },
+        sources: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
+        divergences: { type: 'array', items: { type: 'object', additionalProperties: false,
+          required: ['description','deliberate'],
+          properties: { description: { type: 'string', minLength: 1 }, deliberate: { type: 'boolean' } } } },
+      },
+    },
   },
 }
 
@@ -408,6 +427,7 @@ ${issue.issueSpec}
 7. WIRING DISCLOSURE (wave-shared Convention 9): if your slice introduces a new verb, subcommand, or exported interface, name the consuming call-site(s) that now invoke it in your report — or explicitly disclose under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) that the wiring lies outside your declared Files globs, so the Coordinator can grant a scope extension or plan the wiring before the review round.
 8. RUNTIME RESIDUE (wave-shared Convention 10): if your slice starts any runtime resource — a compose project, a container, a background server, anything holding a port, a volume, or a network — tear it down before termination, or explicitly disclose the surviving resource under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) so the Coordinator can clean up after landing.
 9. PROVE THE CHECK CAN FAIL (wave-shared Convention 11): if your slice introduces a NEW check — a test, an assertion, a guard, a smoke probe, a lint rule, a CI gate, a preflight, a validator — break the thing that check exists to catch, run the check, and observe its own FAIL state; then restore the original state and re-verify green. Report the falsification under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`): which check, what you broke, the observed failing output verbatim, and that you restored it. A green check is compatible with "the check works" AND "the check cannot fail", and no acceptance criterion distinguishes them. Two mechanical questions decide whether you are in this class — does a pass/fail check exist after your diff, and is its failing condition new with this slice — and "is the falsification worth the time" is deliberately NOT one of them: an expensive falsification belongs in the disclosure, not outside the class. A check observed only as \`deferred\`/\`skipped\` has NOT been proven to fail (it has been proven not to run) — that is a failed falsification attempt, not a demonstration. If you could not falsify it, say so in the same channel with the reason and what input WOULD falsify it — "could not falsify, and here is why" is a legitimate reported outcome; silence and an unevidenced claim are not. A slice that only changes behaviour already covered by EXISTING checks is not in this class.
+10. UNEXECUTABLE CORE PATH — DECLARE, THEN SELF-COMPARE (ADR-0030): if the core path of your change **cannot be executed from this environment** — it needs a real release, a production credential, a merged PR, a human action, an external service you cannot reach — declare it explicitly under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`), naming WHICH path is unreachable and WHY. Then find the authoritative documented form for that mechanism — the vendor's own documentation, the spec, the reference example — **read it in this dispatch, do not recall it from memory** — compare your change against it, and report EVERY divergence in the same channel, each marked deliberate (you departed on purpose AND commented the reason at the point of departure) or not. A divergence is NOT automatically a defect: deliberate, commented departures are legitimate and must survive review intact. What is not legitimate is an undeclared one. Live occurrence: a release workflow shipped with three divergences from the registry vendor's documented example — a missing \`registry-url\`, dependency caching left on in a release build (which the vendor advises against on supply-chain grounds), and an outdated action version. Every acceptance criterion was verified and every one held; the core path (an OIDC credential exchange that cannot run before a real release exists) was reachable by no test, no local run and no reviewer, so the documented form was the only evidence available — and no acceptance criterion asked for it, because ACs describe what a change should DO and this is a question about what it should LOOK LIKE. Your self-comparison is defense-in-depth; the Reviewer runs its own comparison independently, and that one is the anchor.
 
 ## Verification gates (run the consumer's verify profile — from wave.config.json verify)
 Run the commands the VerifyGate selects for your changed files; report exact counts.
@@ -503,6 +523,19 @@ TOTAL absence on a slice that ships a new check is a finding: say so under
 as an outcome ("the check exists", "the guard is enforced") earns \`met\` only on
 outcome-exercising evidence — the Worker's falsification, or your own probe.
 
+**If this row's core path cannot be executed from your review environment**, the
+DOCUMENTED-FORM COMPARISON is required (ADR-0030, agent contract Check 6). Three
+raisers, any one of which fires it and none of which is a precondition: the ACs
+covering that path landed \`deferred\`; an issue AC asked for the comparison; or the
+Worker declared the unexecutable path above. Identify the authoritative documented
+form for the mechanism (vendor documentation, spec), **read it yourself in this
+dispatch**, compare the change on the branch against it, and report EVERY divergence
+via the \`documentedFormComparison\` field — each marked \`deliberate\` (a commented
+departure) or not. It is its own reported outcome: never fold it into
+\`acVerification[]\`, and never flip the verdict on a divergence alone. \`sources\`
+must name what YOU read — a comparison whose only source is the Worker's report is
+invalid, and the schema rejects an empty \`sources\` at this boundary.
+
 ## Evidence discipline (mention footgun — wave-shared Convention 4)
 Your \`acVerification[].evidence\` and \`reviewerFocusItems[]\` are folded verbatim into
 the PR body at the terminator. On a tracker with a native GitHub integration, every bare
@@ -514,7 +547,8 @@ any other id-shaped token as a structural backstop — treat that as a safety ne
 license to reach for a bare id.
 
 Return a JSON object matching the ReviewerVerdict schema:
-verdict, branchReviewed, riskClass, workerReportDigest, acVerification[], reviewerFocusItems[].`
+verdict, branchReviewed, riskClass, workerReportDigest, acVerification[], reviewerFocusItems[]
+— plus documentedFormComparison{trigger, sources[], divergences[]} whenever a trigger fired.`
 }
 
 // ── Scribe: persist ONE sidecar at agent-return through the paired write verb ──

@@ -54,6 +54,12 @@ const START_MECHANICS_MD = join(
 const DRIVER_WORKER_REPORT_ANCHOR =
   '// ── inlined from wave-shared (copy of WORKER_REPORT_SCHEMA) ──';
 
+const DRIVER_REVIEWER_VERDICT_ANCHOR =
+  '// ── inlined from wave-shared (copy of REVIEWER_VERDICT_SCHEMA — uniform Reviewer: NO briefProfile) ──';
+
+const WAVE_SHARED_REVIEWER_VERDICT_ANCHOR =
+  '// --- inlined from reviewer-verdict-schema.ts (REVIEWER_VERDICT_JSON_SCHEMA) ---';
+
 /** Top-level JSON-Schema combinator keys the agent tool's `input_schema`
  * validator rejects outright when present at the schema root (nested is
  * fine — only the top level is agent-tool-checked). */
@@ -252,6 +258,196 @@ describe('skill-schema-drift — the driver-facing schema literal is boundary-sa
     expect(() =>
       assertBoundarySafe({ type: 'object', properties: {} }, 'clean schema'),
     ).not.toThrow();
+  });
+});
+
+// ─── the Documented-Form Comparison field (ADR-0030) ────────────────────────
+//
+// ADR-0030 adds a flat optional `documentedFormComparison` to the Reviewer
+// verdict. Unlike the WORKER_REPORT copies, the REVIEWER_VERDICT copies carry
+// NO deliberate shape difference between wave-shared and the driver — the
+// engine const has no top-level combinator, so both copies must equal it
+// exactly. Before this block the driver's REVIEWER_VERDICT_SCHEMA copy was
+// pinned by nothing at all: it could drift from the engine const silently, and
+// a driver whose schema omits the field rejects every verdict that carries it
+// at the agent({ schema }) boundary (additionalProperties: false).
+
+type ReviewerVerdictSchemaShape = {
+  required: string[];
+  properties: Record<string, unknown> & {
+    documentedFormComparison?: {
+      type?: string;
+      additionalProperties?: boolean;
+      required?: string[];
+      properties?: {
+        trigger?: { enum?: string[] };
+        sources?: { minItems?: number };
+        divergences?: { items?: { required?: string[] } };
+      };
+    };
+  };
+};
+
+describe('skill-schema-drift — documentedFormComparison rides BOTH verdict copies (ADR-0030)', () => {
+  const sharedMd = readFileSync(SKILL_MD, 'utf-8');
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  function sharedVerdictSchema(md: string): ReviewerVerdictSchemaShape {
+    return extractInlinedSchema(
+      md,
+      WAVE_SHARED_REVIEWER_VERDICT_ANCHOR,
+      'REVIEWER_VERDICT_SCHEMA',
+    ) as ReviewerVerdictSchemaShape;
+  }
+
+  function driverVerdictSchema(md: string): ReviewerVerdictSchemaShape {
+    return extractInlinedSchema(
+      md,
+      DRIVER_REVIEWER_VERDICT_ANCHOR,
+      'REVIEWER_VERDICT_SCHEMA',
+    ) as ReviewerVerdictSchemaShape;
+  }
+
+  it("the DRIVER's REVIEWER_VERDICT_SCHEMA copy deep-equals the engine const (previously pinned by nothing)", () => {
+    expect(driverVerdictSchema(driverMd)).toEqual(
+      plain(REVIEWER_VERDICT_JSON_SCHEMA),
+    );
+  });
+
+  it('the driver verdict copy is boundary-safe — no top-level anyOf/oneOf/allOf', () => {
+    // The whole reason `documentedFormComparison` is flat-optional rather than
+    // conditionally required: a schema-root conditional means a top-level
+    // combinator, which this boundary rejects outright (W5-F1).
+    expect(() =>
+      assertBoundarySafe(
+        driverVerdictSchema(driverMd),
+        'workflow-driver.md REVIEWER_VERDICT_SCHEMA',
+      ),
+    ).not.toThrow();
+  });
+
+  /** Both verdict-schema copies, loaded lazily so a failure names its file. */
+  const BOTH_COPIES: Array<[string, () => ReviewerVerdictSchemaShape]> = [
+    ['wave-shared/SKILL.md', () => sharedVerdictSchema(sharedMd)],
+    ['workflow-driver.md', () => driverVerdictSchema(driverMd)],
+  ];
+
+  /** The same two copies as raw source + extraction anchor, for the regressions. */
+  const BOTH_SOURCES: Array<[string, string, string]> = [
+    ['wave-shared/SKILL.md', sharedMd, WAVE_SHARED_REVIEWER_VERDICT_ANCHOR],
+    ['workflow-driver.md', driverMd, DRIVER_REVIEWER_VERDICT_ANCHOR],
+  ];
+
+  it.each(BOTH_COPIES)(
+    'the %s copy carries documentedFormComparison as a FLAT OPTIONAL field',
+    (_label, load) => {
+      const schema = load();
+      // Optional: absent from required[] — a row with an executable core path
+      // fires no trigger and pays nothing.
+      expect(schema.required).not.toContain('documentedFormComparison');
+      // ...but present in properties: with additionalProperties:false, a copy
+      // that omits it would REJECT every verdict that reports a comparison.
+      expect(schema.properties).toHaveProperty('documentedFormComparison');
+    },
+  );
+
+  it.each(BOTH_COPIES)(
+    'the %s copy pins the block shape: three triggers, sources minItems 1, classified divergences',
+    (_label, load) => {
+      const field = load().properties.documentedFormComparison;
+      expect(field?.type).toBe('object');
+      expect(field?.additionalProperties).toBe(false);
+      expect(field?.required).toEqual(['trigger', 'sources', 'divergences']);
+      expect(field?.properties?.trigger?.enum).toEqual([
+        'issue-declared',
+        'worker-declared',
+        'deferred-core-path',
+      ]);
+      // minItems:1 is the STRUCTURAL half of ADR-0030's no-restatement rule:
+      // a comparison must cite at least one document the Reviewer read itself.
+      // Drop it and the duty becomes dischargeable by restating the Worker.
+      expect(field?.properties?.sources?.minItems).toBe(1);
+      expect(field?.properties?.divergences?.items?.required).toEqual([
+        'description',
+        'deliberate',
+      ]);
+    },
+  );
+
+  it.each(BOTH_SOURCES)(
+    'negative control — a %s copy that DROPS the field is caught (it would reject every comparison-bearing verdict)',
+    (_label, md, anchor) => {
+      const regressed = md.replace(/\n\s*documentedFormComparison: \{/, '\n    __dropped: {');
+      expect(regressed).not.toEqual(md); // the replace actually matched
+      const schema = extractInlinedSchema(
+        regressed,
+        anchor,
+        'REVIEWER_VERDICT_SCHEMA',
+      ) as ReviewerVerdictSchemaShape;
+      expect(schema.properties).not.toHaveProperty('documentedFormComparison');
+      // ...and the deep-equal pin above is what fails on it.
+      expect(schema).not.toEqual(plain(REVIEWER_VERDICT_JSON_SCHEMA));
+    },
+  );
+
+  it.each(BOTH_SOURCES)(
+    "negative control — a %s copy that relaxes sources to minItems 0 is caught (the no-restatement rule's structural half)",
+    (_label, md, anchor) => {
+      const regressed = md.replace(
+        /sources: \{ type: 'array', minItems: 1,/,
+        "sources: { type: 'array', minItems: 0,",
+      );
+      expect(regressed).not.toEqual(md); // the replace actually matched
+      const schema = extractInlinedSchema(
+        regressed,
+        anchor,
+        'REVIEWER_VERDICT_SCHEMA',
+      ) as ReviewerVerdictSchemaShape;
+      expect(
+        schema.properties.documentedFormComparison?.properties?.sources?.minItems,
+      ).toBe(0);
+      expect(schema).not.toEqual(plain(REVIEWER_VERDICT_JSON_SCHEMA));
+    },
+  );
+
+  it('negative control — a verdict copy that makes the field REQUIRED is caught (it must stay optional)', () => {
+    // Making it required would break the common case outright: every row with
+    // an executable core path fires no trigger, so its verdict has no field to
+    // supply, and a required field would reject the verdict at the boundary.
+    const regressed = driverMd.replace(
+      "required: ['verdict','branchReviewed','riskClass','workerReportDigest','acVerification','reviewerFocusItems'],",
+      "required: ['verdict','branchReviewed','riskClass','workerReportDigest','acVerification','reviewerFocusItems','documentedFormComparison'],",
+    );
+    expect(regressed).not.toEqual(driverMd); // the replace actually matched
+    const schema = extractInlinedSchema(
+      regressed,
+      DRIVER_REVIEWER_VERDICT_ANCHOR,
+      'REVIEWER_VERDICT_SCHEMA',
+    ) as ReviewerVerdictSchemaShape;
+    expect(schema.required).toContain('documentedFormComparison');
+    expect(schema).not.toEqual(plain(REVIEWER_VERDICT_JSON_SCHEMA));
+  });
+});
+
+describe('skill-schema-drift — the Documented-Form duty is briefed, not only schema-shaped (ADR-0030)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  it("the Worker brief carries the declare-and-self-compare clause (defense-in-depth)", () => {
+    expect(driverMd).toContain('UNEXECUTABLE CORE PATH');
+    expect(driverMd).toMatch(/read it in this dispatch, do not recall it from memory/i);
+  });
+
+  it('the Reviewer brief names the field and the no-restatement constraint', () => {
+    expect(driverMd).toContain('documentedFormComparison');
+    expect(driverMd).toMatch(/only source is the Worker's report is\s+invalid/);
+  });
+
+  it('the driver states the flat-optional rationale (the schema cannot carry the condition)', () => {
+    // The condition lives in contract prose because a schema-root conditional
+    // is exactly the shape the agent boundary rejects (W5-F1) — if that
+    // rationale is deleted, the next author "fixes" it back into an anyOf.
+    expect(driverMd).toMatch(/FLAT \+ OPTIONAL/);
+    expect(driverMd).toContain('W5-F1');
   });
 });
 

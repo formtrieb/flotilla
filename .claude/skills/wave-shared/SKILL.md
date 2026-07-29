@@ -141,12 +141,35 @@ const REVIEWER_VERDICT_SCHEMA = {
     reviewerFocusItems: { type: 'array', items: { type: 'string' } },
     lintTestSummary: { type: 'string' },
     gitStateSane: { type: 'boolean' },
+    documentedFormComparison: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['trigger', 'sources', 'divergences'],
+      properties: {
+        trigger: { type: 'string', enum: ['issue-declared', 'worker-declared', 'deferred-core-path'] },
+        sources: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
+        divergences: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['description', 'deliberate'],
+            properties: {
+              description: { type: 'string', minLength: 1 },
+              deliberate: { type: 'boolean' },
+            },
+          },
+        },
+      },
+    },
   },
 };
 // --- end ---
 ```
 
 `riskClass` is **required and load-bearing** (the G3 guard): `route-verdict` bifurcates on it — a `public-API-change` `approve` never silently fast-paths past the human STOP. There is **no `briefProfile`** — flotilla's Reviewer is uniform (no Risk→profile map, ADR-0016); the field was removed engine-side and must not reappear here, or `additionalProperties: false` would reject every real verdict.
+
+`documentedFormComparison` is the **Documented-Form Comparison** ([ADR-0030](../../../docs/adr/0030-deferred-core-path-requires-documented-form-comparison.md)) — the Reviewer's required substitute evidence for a row whose core path cannot be executed from the review environment, carried as **its own outcome** rather than folded into `acVerification[]`. It is **flat and optional in the schema, required by contract prose whenever a trigger fired**: the requirement is conditional, but encoding a conditional at the schema root would mean a top-level `anyOf`/`if` — the one shape the agent boundary rejects outright (W5-F1, same lesson as the `WORKER_REPORT_SCHEMA` note above), so the conditional half lives in `.claude/agents/wave-reviewer.md` (Check 6). `sources` is `minItems: 1` on purpose: that is the structural half of the no-restatement rule — a comparison must cite at least one document the Reviewer read **in its own dispatch**, so it can never be discharged by restating the Worker's claim.
 
 ## Load every file under reference/
 
