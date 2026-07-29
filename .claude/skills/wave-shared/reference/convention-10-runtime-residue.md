@@ -4,6 +4,8 @@ A Worker's slice can start more than files-on-disk — a compose project, a cont
 
 The clause itself lives in `workerBrief()`'s policy-clauses list (`.claude/skills/wave-start/reference/workflow-driver.md`) — the text a Worker actually receives; this section documents the convention it encodes. The engine stays untouched here: runtime-resource knowledge (docker, ports) deliberately does not enter the node-pure core (the two-layer split, CHARTER §4) — a structural cleanup sweep remains a possible future slice only if this convention proves insufficient in practice.
 
+A disclosure raised under this convention does not stop at the brief: `wave-start` captures it into the spine's `## Disclosures` section at verdict-routing, source-neutral, and it must reach a disposition other than `open` before the wave archives ([ADR-0027](../../../../docs/adr/0027-disclosures-are-spine-captured-at-routing-and-dispositioned-before-archive.md)).
+
 ### Live occurrence (evidence)
 
 **2026-07-22, second consumer wave, finding PC-F2** (doc slug 2026-07-22-postgres-ci): a lane Worker's self-started compose project — container, volume, network, a bound host port — survived worktree cleanup and later held the port during a local reproduction, cascading into a blocked repro session. The consumer mitigated ad-hoc with a per-wave brief clause; this convention generalizes that fix upstream so future consumers don't have to rediscover it.
