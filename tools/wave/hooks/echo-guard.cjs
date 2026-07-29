@@ -1,0 +1,435 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * echo-guard.cjs — the `PreToolUse` Echo-Guard (Convention 8, grill-settled).
+ *
+ * A zero-dependency CommonJS matcher over a Bash tool call's COMMAND STRING,
+ * run before the command executes. It rejects the secret-echo shapes Convention
+ * 8 forbids — the shapes the permission layer provably cannot express, because
+ * a `Bash(...)` rule is a command-PREFIX matcher and the dangerous element can
+ * sit anywhere in an arbitrary command, under any interpreter.
+ *
+ * ## Honest scope — a speed bump, not an anchor
+ *
+ * This is a TEXT matcher over the command. `V=GITHUB_TOKEN; echo "${!V}"` walks
+ * straight past it, and so does any deliberate string assembly. That limitation
+ * is recorded up front rather than discovered later: the guard is worth having
+ * precisely because it fires without anyone remembering the rule, and worth not
+ * overselling. **Passing this guard is not evidence that a command is safe.**
+ * The structural anchors remain the tracked `permissions.deny` entries and the
+ * ADR-0029 Lookup-Command indirection; this guard sits on top of them.
+ *
+ * Two vectors are deliberately NOT this guard's: reading a gitignored
+ * settings/secrets file (owned by the tracked `permissions.deny` Read/`cat`
+ * entries — the file-read anchor) and the DIRECT invocation of a configured
+ * `<VAR>_CMD` lookup command (owned by the tracked Lookup-Command deny entry,
+ * ADR-0029). Family 4 below extends the latter to the WRAPPED forms a prefix
+ * matcher cannot reach; it does not replace the anchor.
+ *
+ * ## Failure mode — hard-block, and fail OPEN on the guard's own crash
+ *
+ * A match exits **2** with a teaching message on stderr: the blocking channel of
+ * the `PreToolUse` contract. Hard-block, not warn-and-confirm — AFK roles have
+ * no human to confirm, and for the Coordinator a dismissable warning is the
+ * eight-times-evidenced failure mode ("a rule that has been read and then
+ * violated is not under-communicated").
+ *
+ * **The guard FAILS OPEN on its own crash.** Any internal error — malformed
+ * stdin, an unreadable payload, an unexpected exception — exits 0 and lets the
+ * command through. That is a deliberate trade for a speed bump that sits behind
+ * real anchors: a guard that bricks every Bash call when its own parsing breaks
+ * costs more than the vector it closes. A crash is therefore silent-permissive,
+ * not silent-denying, and this note is the record of that choice.
+ *
+ * ## The four families
+ *
+ * 1. **Credential-name expansion.** ANY `$`-expansion of a credential-shaped
+ *    variable name — the configured credential names (derived from the
+ *    `<VAR>_CMD` entries present at hook runtime) plus the suffix classes
+ *    `_TOKEN` / `_KEY` / `_SECRET` / `_PAT` / `_PASSWORD` / `_CMD` — anywhere in
+ *    the command, EXCEPT inside the sanctioned presence-test template.
+ * 2. **Value-substituting expansion.** `${NAME:-…}` / `${NAME:=…}` / `${NAME:?…}`
+ *    for ANY letter-initial name (positional parameters excluded by
+ *    construction). The catalogue's own lesson is that a rule closes only the
+ *    vector it names, so the form is denied independently of the name.
+ * 3. **Whole-environment dumps.** Every `printenv` invocation (with or without
+ *    an argument — `printenv GITHUB_TOKEN` is *worse*, not better), a bare `env`
+ *    (the documented `env -u NAME cmd` runner form passes), and an exactly-bare
+ *    `set` (flag forms like `set -e` pass).
+ * 4. **Wrapped Lookup-Command.** Any command containing a configured `<VAR>_CMD`
+ *    VALUE as a substring, the values read from the environment at hook runtime
+ *    (so this is config-driven and consumer-portable, never hardcoded). This
+ *    upgrades `echo $(…)` and shell-wrapper forms from prefix-unreachable to
+ *    caught. Accidents type the command verbatim; deliberate string assembly
+ *    stays outside the honest scope above.
+ *
+ * ## False-positive budget
+ *
+ * Pinned by spec (`../src/echo-guard.spec.ts`): the sanctioned presence test
+ * `[ -n "$VAR" ] && echo set`, the `env -u NAME cmd` runner form, and the
+ * allowlisted engine-CLI invocation shapes all pass untouched. Measured at
+ * grill time, the pipeline's operational surfaces contain zero legitimate
+ * value-substituting expansions (every fallback-form string in the skills is
+ * warning PROSE, not an executed command), so the composed set's real FP
+ * surface is near zero. A benign FP costs one rephrase, guided by the rejection
+ * message. One FP class is known and accepted: a command whose ARGUMENT quotes
+ * an unsafe form as prose — e.g. `git commit -m "... ${VAR:-no} ..."` — is
+ * blocked, because the matcher reads the command text and cannot tell prose
+ * from an expansion the shell will perform. Rephrase the argument.
+ *
+ * ============================================================================
+ * ## OPERATOR STEP (HITL) — ready to paste, deliberately NOT applied by an agent
+ * ============================================================================
+ *
+ * `.claude/settings.json` is agent-write-denied, so the wiring is an
+ * operator-present step. An agent that pre-applies it has committed a defect.
+ * Merge this `hooks` block into `.claude/settings.json` as a sibling of `env`
+ * and `permissions`:
+ *
+ * ```json
+ * "hooks": {
+ *   "PreToolUse": [
+ *     {
+ *       "matcher": "Bash",
+ *       "hooks": [
+ *         {
+ *           "type": "command",
+ *           "command": "node \"$CLAUDE_PROJECT_DIR/tools/wave/hooks/echo-guard.cjs\""
+ *         }
+ *       ]
+ *     }
+ *   ]
+ * }
+ * ```
+ *
+ * Verify it live, without executing anything unsafe — the guard rejects the
+ * command, so nothing is ever expanded:
+ *
+ * ```bash
+ * printf '%s' '{"tool_name":"Bash","tool_input":{"command":"printenv"}}' \
+ *   | node tools/wave/hooks/echo-guard.cjs; echo "exit=$?"   # expect exit=2
+ * ```
+ *
+ * ## STAGE-2 GATE — the consumer scaffold is NOT shipped by this slice
+ *
+ * `wave-setup`'s tracked-settings scaffold gains the identical hooks block plus
+ * a script copy for every consumer — unconditionally, like the deny anchors
+ * (the vector is universal, no per-consumer judgment) — but **only after this
+ * guard has survived one real flotilla wave with no false-positive incident**.
+ * That is the FOR-81 / ADR-0029 live-gate pattern: dogfood first, scaffold
+ * second. Until that gate is met, the block above stays a flotilla-local
+ * operator step. The gate is restated in Convention 8 so the next wave planner
+ * reads it where they already look.
+ */
+
+// ---------------------------------------------------------------------------
+// Family definitions
+// ---------------------------------------------------------------------------
+
+/** Suffix classes that make a variable name credential-shaped (family 1). */
+const CREDENTIAL_NAME_SUFFIXES = ['_TOKEN', '_KEY', '_SECRET', '_PAT', '_PASSWORD', '_CMD'];
+
+/** The ADR-0029 Lookup-Command variable suffix. */
+const LOOKUP_COMMAND_SUFFIX = '_CMD';
+
+/**
+ * Minimum length a configured Lookup-Command VALUE must have before family 4
+ * substring-matches on it. A three-character value would match half the world;
+ * a real lookup command (`security find-generic-password …`, `op read …`) is
+ * comfortably longer.
+ */
+const MIN_LOOKUP_VALUE_LENGTH = 12;
+
+/**
+ * The ONE sanctioned presence test: `[ -n "$VAR" ] && echo set` (and its `[[`,
+ * `-z`, unquoted and `${VAR}` spellings). Matched segments are excised before
+ * family 1 scans, which is exactly what keeps the sanctioned form passing while
+ * `[ -n "$TOK" ] && echo "$TOK"` still blocks on its second expansion.
+ */
+const SANCTIONED_PRESENCE_TEST_SRC = '\\[\\[?\\s+-[nz]\\s+"?\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?"?\\s+\\]\\]?';
+
+/** Any `$`-expansion of a letter-initial name — `$N`, `${N}`, `${N:-x}`, `${!N}`. */
+const ANY_EXPANSION_SRC = '\\$\\{?!?([A-Za-z_][A-Za-z0-9_]*)';
+
+/** The convention's own candidate regex: a VALUE-SUBSTITUTING expansion. */
+const VALUE_SUBSTITUTING_SRC = '\\$\\{([A-Za-z_][A-Za-z0-9_]*):[-=?]';
+
+/**
+ * Simple-command boundaries, for family 3's head detection. Splitting on
+ * command substitution and grouping too means `echo $(printenv)` and
+ * `{ printenv; }` are reached, not just top-level heads.
+ */
+const SEGMENT_SPLIT = /\$\(|\|\||&&|[;|\n&()`{}]/;
+
+/** Build a fresh global regex — module-level `lastIndex` state is a bug farm. */
+function g(source) {
+  return new RegExp(source, 'g');
+}
+
+// ---------------------------------------------------------------------------
+// Environment-derived configuration (family 1's names, family 4's values)
+// ---------------------------------------------------------------------------
+
+/**
+ * The credential names this consumer has actually configured, derived from the
+ * `<VAR>_CMD` entries in the environment: `GITHUB_TOKEN_CMD` contributes both
+ * `GITHUB_TOKEN_CMD` and `GITHUB_TOKEN`. Config-driven, so a consumer whose
+ * next store adapter needs a differently-named credential is covered without
+ * editing this file.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {Set<string>}
+ */
+function configuredCredentialNames(env) {
+  const names = new Set();
+  for (const key of Object.keys(env || {})) {
+    if (!key.endsWith(LOOKUP_COMMAND_SUFFIX)) continue;
+    const value = env[key];
+    if (typeof value !== 'string' || value.trim() === '') continue;
+    names.add(key);
+    names.add(key.slice(0, -LOOKUP_COMMAND_SUFFIX.length));
+  }
+  return names;
+}
+
+/**
+ * The configured Lookup-Command VALUES family 4 substring-matches on, keyed by
+ * their variable name. Only the NAME is ever surfaced in a rejection message.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {{ key: string, value: string }[]}
+ */
+function configuredLookupCommands(env) {
+  const out = [];
+  for (const key of Object.keys(env || {})) {
+    if (!key.endsWith(LOOKUP_COMMAND_SUFFIX)) continue;
+    const raw = env[key];
+    if (typeof raw !== 'string') continue;
+    const value = normalizeWhitespace(raw);
+    if (value.length < MIN_LOOKUP_VALUE_LENGTH) continue;
+    out.push({ key, value });
+  }
+  return out;
+}
+
+/** @param {string} name @param {Set<string>} configured */
+function isCredentialShaped(name, configured) {
+  if (configured.has(name)) return true;
+  return CREDENTIAL_NAME_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+/** @param {string} text */
+function normalizeWhitespace(text) {
+  return text.trim().replace(/\s+/g, ' ');
+}
+
+// ---------------------------------------------------------------------------
+// Family 3 — simple-command head detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Split a command into simple-command segments and return each one's head word
+ * plus its remaining arguments, skipping leading `VAR=value` assignment
+ * prefixes (so `NODE_USE_ENV_PROXY=1 npx …` heads on `npx`, not the assignment).
+ *
+ * @param {string} command
+ * @returns {{ head: string, rest: string[] }[]}
+ */
+function commandHeads(command) {
+  const heads = [];
+  for (const segment of command.split(SEGMENT_SPLIT)) {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i += 1;
+    if (i >= words.length) continue;
+    const head = words[i].replace(/^["']|["']$/g, '').replace(/^.*\//, '');
+    if (!head) continue;
+    heads.push({ head, rest: words.slice(i + 1) });
+  }
+  return heads;
+}
+
+// ---------------------------------------------------------------------------
+// The matcher
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{ family: string, detail: string }} Violation
+ */
+
+/**
+ * Evaluate one command string against the four families.
+ *
+ * @param {string} command the raw Bash command the tool call would run
+ * @param {Record<string, string | undefined>} [env] the hook-runtime environment
+ * @returns {Violation[]} empty when the command passes
+ */
+function evaluateCommand(command, env) {
+  if (typeof command !== 'string' || command.trim() === '') return [];
+  const environment = env || {};
+  const configured = configuredCredentialNames(environment);
+
+  /** @type {Violation[]} */
+  const violations = [];
+
+  // --- Family 1 — any $-expansion of a credential-shaped name ---------------
+  // The sanctioned presence test is excised first; everything that remains is
+  // an expansion nobody sanctioned.
+  const outsideSanctioned = command.replace(g(SANCTIONED_PRESENCE_TEST_SRC), ' <sanctioned-presence-test> ');
+  const reportedNames = new Set();
+  for (const match of outsideSanctioned.matchAll(g(ANY_EXPANSION_SRC))) {
+    const name = match[1];
+    if (!isCredentialShaped(name, configured)) continue;
+    if (reportedNames.has(name)) continue;
+    reportedNames.add(name);
+    violations.push({
+      family: 'credential-name expansion',
+      detail:
+        `the command expands $${name}, a credential-shaped variable, outside the sanctioned presence test — ` +
+        'the expansion substitutes the VALUE into tool output',
+    });
+  }
+
+  // --- Family 2 — a value-substituting expansion of ANY name ----------------
+  const reportedForms = new Set();
+  for (const match of command.matchAll(g(VALUE_SUBSTITUTING_SRC))) {
+    const name = match[1];
+    if (reportedForms.has(name)) continue;
+    reportedForms.add(name);
+    violations.push({
+      family: 'value-substituting expansion',
+      detail:
+        `\${${name}:…} is a value-substituting expansion (the :- / := / :? operators), not a presence test — ` +
+        'on the branch that matters, the branch where the variable IS set, it evaluates to the variable\'s own contents',
+    });
+  }
+
+  // --- Family 3 — whole-environment dumps -----------------------------------
+  const reportedDumps = new Set();
+  for (const { head, rest } of commandHeads(command)) {
+    let dump = null;
+    if (head === 'printenv') {
+      dump =
+        rest.length > 0
+          ? '`printenv <VAR>` targets the secret directly — it is worse than a bare dump, not better'
+          : '`printenv` prints every set variable, secrets included';
+    } else if (head === 'env' && rest.length === 0) {
+      dump = 'a bare `env` prints every set variable, secrets included (the `env -u NAME cmd` runner form is fine)';
+    } else if (head === 'set' && rest.length === 0) {
+      dump = 'a bare `set` prints every set variable, secrets included (flag forms like `set -e` are fine)';
+    }
+    if (dump === null || reportedDumps.has(head)) continue;
+    reportedDumps.add(head);
+    violations.push({ family: 'whole-environment dump', detail: dump });
+  }
+
+  // --- Family 4 — a wrapped configured Lookup-Command ------------------------
+  const haystack = normalizeWhitespace(command);
+  for (const { key, value } of configuredLookupCommands(environment)) {
+    if (!haystack.includes(value)) continue;
+    violations.push({
+      family: 'wrapped Lookup-Command',
+      detail:
+        `the command contains the configured ${key} lookup command — its stdout IS the secret, ` +
+        'and no role in this pipeline executes it outside the engine (ADR-0029)',
+    });
+  }
+
+  return violations;
+}
+
+/**
+ * The teaching rejection message: what fired, why it is a leak, and the two
+ * sanctioned alternatives — a presence test for an ambient variable, and the
+ * engine's value-free preflight probe for "can the credential be resolved?".
+ *
+ * @param {Violation[]} violations
+ * @returns {string}
+ */
+function rejectionMessage(violations) {
+  const findings = violations.map((v) => `  - ${v.family}: ${v.detail}`).join('\n');
+  return [
+    '[echo-guard] BLOCKED — Convention 8 (secret-safe tool output).',
+    '',
+    'This command was rejected BEFORE it ran because it matches a secret-echo shape:',
+    findings,
+    '',
+    'Why: tool output is not ephemeral — it is the session transcript on disk, long-lived',
+    'and read by humans and downstream agents alike. A value that reaches stdout has left',
+    'containment, and the only remedy afterwards is rotating the credential.',
+    '',
+    'Sanctioned alternatives:',
+    '  - "is the ambient variable set?" — the ONE sanctioned presence test:',
+    '        [ -n "$VAR" ] && echo set',
+    '  - "can the credential actually be resolved?" — the engine\'s value-free preflight',
+    '    probe, never a hand-run lookup:',
+    '        flotilla-engine credential-probe --all',
+    '    (wave-start step 4 / wave-close phase 2. ADR-0029: a configured <VAR>_CMD',
+    '     Lookup-Command\'s stdout IS the secret, so no role runs it outside the engine.)',
+    '',
+    'Full doctrine: .claude/skills/wave-shared/reference/convention-08-secret-safe-briefs.md',
+    'Scope note: this guard is a speed bump over the command TEXT, not an anchor — it does',
+    'not see indirect expansion. Passing it is not proof that a command is safe.',
+    '',
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// The PreToolUse entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide on one hook payload. Returns the process exit code: 2 blocks, 0 allows.
+ * Anything that is not a Bash tool call with a non-empty command is allowed —
+ * this hook has no opinion about other tools.
+ *
+ * @param {unknown} payload the parsed `PreToolUse` stdin JSON
+ * @param {Record<string, string | undefined>} env
+ * @param {(text: string) => void} writeStderr
+ * @returns {0 | 2}
+ */
+function decide(payload, env, writeStderr) {
+  const input = payload && typeof payload === 'object' ? payload : {};
+  const toolName = input.tool_name;
+  if (typeof toolName === 'string' && toolName !== 'Bash') return 0;
+  const toolInput = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
+  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+  const violations = evaluateCommand(command, env);
+  if (violations.length === 0) return 0;
+  writeStderr(rejectionMessage(violations));
+  return 2;
+}
+
+/* c8 ignore start — the process boundary is covered by spawning the script. */
+if (require.main === module) {
+  let code = 0;
+  try {
+    const raw = require('node:fs').readFileSync(0, 'utf-8');
+    code = decide(JSON.parse(raw), process.env, (text) => process.stderr.write(text));
+  } catch (err) {
+    // FAIL OPEN — see the "Failure mode" note above. The guard never becomes
+    // the reason a session cannot run a command.
+    code = 0;
+    try {
+      const reason = err && err.message ? err.message : String(err);
+      process.stderr.write(`[echo-guard] internal error — failing open: ${reason}\n`);
+    } catch (_ignored) {
+      /* nothing left to do */
+    }
+  }
+  process.exit(code);
+}
+/* c8 ignore stop */
+
+module.exports = {
+  evaluateCommand,
+  rejectionMessage,
+  decide,
+  commandHeads,
+  configuredCredentialNames,
+  configuredLookupCommands,
+  isCredentialShaped,
+  CREDENTIAL_NAME_SUFFIXES,
+  MIN_LOOKUP_VALUE_LENGTH,
+};
