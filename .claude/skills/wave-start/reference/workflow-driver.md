@@ -34,7 +34,8 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`.
 4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute, and **shell-quoted** wherever it is interpolated into a brief — see its own note below), `WAVE_CLI` (defaults to the **published npm package**, `npx @formtrieb/flotilla-engine` — a bare command with **no path in it at all**; see its comment below for the vendored fallback and the rationale this default now supports), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts` — likewise shell-quoted wherever interpolated), just as you fill `depsSetup`. `WAVE_CLI`'s bare-command form satisfies the **repo-relative, not absolute** constraint better than any path-bearing alternative: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry, and a bare npm-package invocation carries **no path whatsoever**, so it can never regress into one. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe therefore hits the permission gate mid-wave and breaks AFK dispatch. The **vendored local-binary form** (`./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts`) remains the documented **fallback** for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish) — it is repo-relative too, just not path-free. A Worker's worktree needs no extra step for either form to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by shell-quoted `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
 5. **Never backslash-escape an apostrophe inside a single-quoted JS string when composing a brief.** Composed brief text (`reviewerHints`, `issueSpec`, `prTitle`, and any other free-form field interpolated into the script body) is natural language and will routinely contain apostrophes — a `\'` inside a `'...'`-delimited literal parses fine to the human eye but is exactly the kind of thing to get wrong under compose pressure. Use a double-quoted string for that literal, or rephrase to drop the apostrophe. **Observed failure shape (W17-F1):** the first Workflow launch of a wave failed at the script parser — not at any `agent()` call — because a composed `reviewerHint` carried a backslash-escaped apostrophe inside a single-quoted string; the parser's error pointed at the escaped quote. Cost was zero (no agent had started, no state was touched), but the whole compose round was lost and had to be redone.
-6. **Check a composed row against `REQUIRED_ROW_FIELDS`, not against a re-derived reading of every brief.** The full set of scalar fields the briefs below interpolate is named in exactly one place — the `REQUIRED_ROW_FIELDS` array right before `assertRequiredRowFields` — so a Coordinator wiring a new row never has to grep every `workerBrief`/`reviewerBrief` for `${issue.*}` to find out what it must supply. A field added to a brief but not to that array is exactly how the narrow `assertAnchorSha` (anchorSha-only) predecessor of this assertion missed `branch` one wave-generation later.
+6. **Never hold the engine CLI — or any command — in a shell variable in your own Coordinator shell, and never let an empty capture flow onward (wave-shared Convention 12).** This constraint is about the shell *you* type into while composing and routing, not about the script: `CLI="npx …"; $CLI spine set-row-state …` exits **127** under zsh (no word-splitting of an unquoted expansion) and runs **nothing** — five occurrences, the most recent of which produced an empty PR URL that was then written to the spine as a value. Bind a function instead (`wave_cli() { … "$@"; }`), iterate a real array rather than `for x in $LIST`, and put a `require_capture`-style guard on every capture you subsequently *use* — a PR URL, an id, a SHA. The `WAVE_CLI` constant below is the safe shape by contrast, and stays that way precisely because it is a compose-time JS string that no shell ever expands (see its own comment).
+7. **Check a composed row against `REQUIRED_ROW_FIELDS`, not against a re-derived reading of every brief.** The full set of scalar fields the briefs below interpolate is named in exactly one place — the `REQUIRED_ROW_FIELDS` array right before `assertRequiredRowFields` — so a Coordinator wiring a new row never has to grep every `workerBrief`/`reviewerBrief` for `${issue.*}` to find out what it must supply. A field added to a brief but not to that array is exactly how the narrow `assertAnchorSha` (anchorSha-only) predecessor of this assertion missed `branch` one wave-generation later.
 
 ## A worktree carries tracked files only (FOR-32, W4-F4)
 
@@ -198,6 +199,20 @@ const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // run, or a harness without settings-env support) — the driver has no way to
 // know which posture a given consumer is in, so it keeps the belt-and-braces
 // form rather than assume the block is present.
+//
+// WAVE_CLI IS A COMPOSE-TIME JS CONSTANT — IT MUST NEVER BECOME A SHELL
+// VARIABLE (wave-shared Convention 12). It is interpolated into brief TEXT by
+// this script, before any shell exists, so every rendered brief carries the
+// literal command string and no expansion ever happens. That is what makes it
+// safe. The failure this note forecloses is the "helpful" refactor that moves
+// it into the agent's shell as `CLI="npx …"; $CLI verb` — under zsh an
+// unquoted expansion is NOT word-split, so that looks for a command literally
+// named `npx @formtrieb/flotilla-engine`, exits 127, and runs NOTHING. That
+// exact line has broken a wave four times before the guard below existed
+// (W4-F10 / W5-F5 / W18-F3 and the gate run that filed Convention 12). If a
+// shell binding is genuinely wanted somewhere, it is a FUNCTION —
+// `wave_cli() { NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine "$@"; }` —
+// never a variable in command position.
 const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine'
 // REPORTS_DIR / VERDICTS_DIR stay ABSOLUTE regardless — sidecar dirs are
 // addressed independent of whatever cwd the Scribe's REPO_ROOT `cd` leaves it
@@ -288,7 +303,7 @@ ISSUES.forEach((issue) => { issue.branch = `wave/${issue.id}-${issue.slug}` })
 // being read; it generalizes by covering the set. REQUIRED_ROW_FIELDS below
 // IS that set, named in exactly ONE place a Coordinator can check a composed
 // row against — instead of leaving the set to be inferred by reading every
-// brief for its `${issue.*}` interpolations (Authoring constraint #6 above).
+// brief for its `${issue.*}` interpolations (Authoring constraint #7 above).
 //
 // Deliberately EXCLUDED, with reasons (not merely forgotten):
 //   - depsSetup, iteration1HeadSha — legitimately optional; both briefs
@@ -451,7 +466,17 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 ${issue.closePhrase}"
    # exit 0 → stdout is one JSON object; its .url (outcome: created | reused) is your prUrl.
    \`\`\`
-   The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline, policy clause 6): do not reference any other issue id anywhere. Capture the printed \`.url\` as your prUrl.
+   The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline, policy clause 6): do not reference any other issue id anywhere.
+4. **Capture the printed \`.url\` as your prUrl — and STOP if that capture comes back empty** (wave-shared Convention 12). An empty capture is not "no PR"; it is "the command that should have produced one did not run", and the two are indistinguishable from the empty string alone. Reporting an empty/absent \`prUrl\` on a \`done\` outcome is the live failure this guard exists to stop: the Reviewer skips its PR-body check ("PR is not yet opened"), the Coordinator's terminator reads it as "no PR exists" and opens a duplicate, and the spine records nothing. If you capture into a shell variable, guard it before you use it:
+   \`\`\`bash
+   PR_URL=$(<the host-pr create call above> | jq -r '.url')
+   case "$PR_URL" in
+     ''|null|undefined)
+       echo "STOP: PR_URL came back empty — host-pr create produced no url. NOT reporting an empty prUrl." >&2
+       exit 1 ;;
+   esac
+   \`\`\`
+   Never report \`outcome: done\` with a missing, empty, \`null\`, or \`undefined\` \`prUrl\`: if the capture failed, fix the invocation and re-run \`host-pr create\` (it is find-before-create, so re-running is safe and never duplicates), or report \`blocked\` with what went wrong. An honest \`blocked\` is a correct answer; a \`done\` carrying an empty URL is not.
 
 ## Report — emit as your FINAL message, matching the WorkerReport schema:
 outcome, issue, branch, worktree, commitShas, prUrl, filesChanged{new,modified,renamed},
