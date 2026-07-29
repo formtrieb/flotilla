@@ -146,7 +146,16 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  rmSync,
+  realpathSync,
+  readdirSync,
+  chmodSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadWaveConfig } from './wave-config';
@@ -1842,6 +1851,51 @@ describe('listAgentWorktrees — toplevel-guarded orphan classification (FOR-59)
     realGit(['commit', '-q', '-m', 'track a source file'], worktreePath);
 
     rmSync(join(worktreePath, 'src-file.ts'), { force: true });
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(false);
+  });
+
+  // ── issue #150: the live pair this harness actually denies ────────────────
+  //
+  // A `git worktree add` run in THIS repo under this harness's sandbox is
+  // refused on exactly two tracked paths — `.claude/agents/wave-reviewer.md`
+  // and `.vscode/settings.json` — so a real dispatched worktree comes up
+  // carrying BOTH as ` D`. `.vscode` was missing from HARNESS_DENIED_DIRS, and
+  // one unrecognized path is enough for `isStatusExclusivelyDisposable` to
+  // fail: the issue #142 carve-out never fired in this repo at all.
+
+  it('AC1 (issue #150): the EXACT live denied pair — a ` D` under .claude/agents AND a ` D` .vscode/settings.json — classifies dirtyAllJunk:true', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_live-denied-pair');
+    mkdirSync(join(worktreePath, '.claude', 'agents'), { recursive: true });
+    mkdirSync(join(worktreePath, '.vscode'), { recursive: true });
+    writeFileSync(join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'), 'agent\n', 'utf-8');
+    writeFileSync(join(worktreePath, '.vscode', 'settings.json'), '{"files.exclude":{}}', 'utf-8');
+    realGit(['add', '.claude/agents/wave-reviewer.md', '.vscode/settings.json'], worktreePath);
+    realGit(['commit', '-q', '-m', 'track the two paths this sandbox denies'], worktreePath);
+
+    rmSync(join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'), { force: true });
+    rmSync(join(worktreePath, '.vscode', 'settings.json'), { force: true });
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(true);
+  });
+
+  // The same deletion-only discipline the `.claude/` entries already carry:
+  // `.vscode` widened the DELETION half only. Editing editor config is work.
+  it('a MODIFIED (not deleted) .vscode/settings.json is still NOT disposable — the issue #150 widening is deletion-only', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_vscode-modified');
+    mkdirSync(join(worktreePath, '.vscode'), { recursive: true });
+    writeFileSync(join(worktreePath, '.vscode', 'settings.json'), '{}', 'utf-8');
+    realGit(['add', '.vscode/settings.json'], worktreePath);
+    realGit(['commit', '-q', '-m', 'track editor config'], worktreePath);
+    writeFileSync(join(worktreePath, '.vscode', 'settings.json'), '{"editor.tabSize":2}', 'utf-8');
 
     const result = listAgentWorktrees(mainRoot);
 
@@ -4560,5 +4614,307 @@ describe('the junk purge honours consumer-declared names (issue #115)', () => {
     expect(result.removed).toHaveLength(1);
     // No real git/fs work happened — the injected seam owns the removal.
     expect(execFileSync).not.toHaveBeenCalled();
+  });
+});
+
+// ─── 26. A classified-disposable worktree is ACTUALLY removed (issue #150) ───
+//
+// The layer the issue #142 review never exercised. That slice taught
+// `planCleanup` to SELECT a worktree whose only divergence is deletions of
+// paths a sandboxed harness refused to write, and it was verified at exactly
+// that layer: the plan selects it. The criterion said "is removable by the
+// engine", and no test ever removed one. Measured on the wave that shipped it,
+// five such worktrees still came back `erroredStillListed: 5` and were removed
+// by hand.
+//
+// Every test here therefore drives the REAL `defaultWorktreeRemover` against a
+// REAL git repository with a REAL `git worktree add`, and asserts the OUTCOME —
+// the directory is gone from disk and git no longer lists it — never that a
+// plan selected something.
+//
+// Two shapes are pinned, and they are the two halves of the seam:
+//
+//   a. the ordinary harness-denied-deletion worktree: classification and
+//      removal agree end-to-end, directory gone.
+//   b. the shape that produced the field symptom: a worktree directory that
+//      still EXISTS but cannot be read. `physicallyDeleteGitLast` used to
+//      swallow that read failure and return as if the worktree were already
+//      gone, so `git worktree remove` was handed an intact, git-dirty
+//      worktree and refused it with git's own dirty-check message —
+//      overruling the `dirtyAllJunk` verdict this module had already reached.
+//      The removal must now fail at OUR step, and git must never be asked.
+describe('a classified-disposable worktree is ACTUALLY removed — real git, real fs (issue #150)', () => {
+  const tempRoots: string[] = [];
+  const modesToRestore: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    // Restore any permission-stripped fixture directory BEFORE the recursive
+    // cleanup below, or the cleanup itself cannot read it either.
+    while (modesToRestore.length > 0) {
+      const dir = modesToRestore.pop();
+      if (dir) {
+        try {
+          chmodSync(dir, 0o755);
+        } catch {
+          // already gone
+        }
+      }
+    }
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  /** Real `git`, bypassing the mock — fixture SETUP and independent verification. */
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /**
+   * A real repo with a real worktree under `.claude/worktrees/wf_<name>`, whose
+   * ONLY divergence is unstaged deletions of tracked files under harness-denied
+   * paths — the exact `' D'` shape a sandboxed harness checkout produces, and
+   * the exact shape the issue #142 gate targets.
+   *
+   * `core.excludesFile` is pinned to nothing so the fixture never inherits the
+   * developer's global excludes (the same reason section 12 does it).
+   */
+  function makeHarnessDeniedWorktree(name: string): {
+    mainRoot: string;
+    worktreePath: string;
+  } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-150-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'skills', 'wave-plan'), { recursive: true });
+    writeFileSync(join(mainRoot, '.claude', 'skills', 'wave-plan', 'SKILL.md'), '# skill\n');
+    mkdirSync(join(mainRoot, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(mainRoot, '.claude', 'agents', 'wave-reviewer.md'), 'agent config\n');
+    // `.vscode/settings.json` is in the fixture because it is in the LIVE
+    // shape: it is one of exactly two paths this harness's sandbox refuses to
+    // check out in this repo (issue #150 live gate).
+    mkdirSync(join(mainRoot, '.vscode'), { recursive: true });
+    writeFileSync(join(mainRoot, '.vscode', 'settings.json'), '{"files.exclude":{}}\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'track harness-owned paths'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    const relPath = join('.claude', 'worktrees', name);
+    realGit(['worktree', 'add', '-q', relPath, '-b', `wave/150-${name}`], mainRoot);
+    const worktreePath = join(mainRoot, relPath);
+
+    // The denied checkout never materializes these — modeled as the plain,
+    // unstaged deletion it actually produces (the index still holds the exact
+    // committed blob; nothing was ever `git rm`'d).
+    rmSync(join(worktreePath, '.claude', 'skills', 'wave-plan', 'SKILL.md'), { force: true });
+    rmSync(join(worktreePath, '.claude', 'agents', 'wave-reviewer.md'), { force: true });
+    rmSync(join(worktreePath, '.vscode', 'settings.json'), { force: true });
+
+    return { mainRoot, worktreePath };
+  }
+
+  /** Is `path` still registered per real `git worktree list --porcelain`? */
+  function stillRegistered(mainRoot: string, worktreePath: string): boolean {
+    return realGit(['worktree', 'list', '--porcelain'], mainRoot)
+      .split('\n')
+      .some((line) => line === `worktree ${worktreePath}`);
+  }
+
+  /** Every `git` argv this test recorded on the (real-delegating) execFileSync mock. */
+  function recordedGitArgs(): string[][] {
+    const calls = (execFileSync as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    return calls
+      .filter((args) => args[0] === 'git')
+      .map((args) => (Array.isArray(args[1]) ? (args[1] as string[]) : []));
+  }
+
+  it('AC1/AC3: a worktree carrying ONLY harness-denied deletions is driven through a REAL removal — the directory is GONE afterwards and git no longer lists it', () => {
+    const { mainRoot, worktreePath } = makeHarnessDeniedWorktree('wf_e2e-removed');
+
+    // Precondition, stated so a failure downstream is unambiguous: the fixture
+    // really is the `' D'`-only shape, and the module really does classify it
+    // disposable.
+    // NB: never `.trim()` porcelain — the ` D ` status code's own leading
+    // space is significant (that space IS the "index unchanged" half of the
+    // XY pair the issue #142 gate keys on).
+    const status = realGit(['status', '--porcelain', '--untracked-files=all'], worktreePath);
+    expect(status.split('\n').filter((l) => l.length > 0)).toEqual([
+      ' D .claude/agents/wave-reviewer.md',
+      ' D .claude/skills/wave-plan/SKILL.md',
+      ' D .vscode/settings.json',
+    ]);
+
+    const entries = listAgentWorktrees(mainRoot);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].dirty).toBe(true);
+    expect(entries[0].dirtyAllJunk).toBe(true);
+
+    const plan = planCleanup(entries);
+    expect(plan.selected.map((e) => e.path)).toEqual([worktreePath]);
+
+    // No injected remover, no injected pathExists/stillListed — the real
+    // two-phase `defaultWorktreeRemover` against the real repo.
+    const result = executeCleanup(plan, {
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+
+    // THE OUTCOME — not the plan.
+    expect(result.errors).toEqual([]);
+    expect(result.erroredStillListed).toHaveLength(0);
+    expect(result.deregisteredNotDeleted).toHaveLength(0);
+    expect(result.removed.map((e) => e.path)).toEqual([worktreePath]);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(false);
+  });
+
+  it('AC2: the no-force stance is upheld by the mechanism, not merely stated — `git worktree remove` is invoked without `--force`, on an already-empty path', () => {
+    const { mainRoot, worktreePath } = makeHarnessDeniedWorktree('wf_e2e-noforce');
+
+    const result = executeCleanup(planCleanup(listAgentWorktrees(mainRoot)), {
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+    expect(result.removed).toHaveLength(1);
+
+    const argvs = recordedGitArgs();
+    expect(argvs).toContainEqual(['worktree', 'remove', worktreePath]);
+    // Never `--force`, anywhere: the classification is carried out by deleting
+    // the directory ourselves first, never by overriding git's own check.
+    for (const argv of argvs) {
+      expect(argv).not.toContain('--force');
+      expect(argv).not.toContain('-f');
+    }
+  });
+
+  it('the removal is verified before deregistration — a physical delete that silently leaves the directory behind throws instead of reaching `git worktree remove`', () => {
+    const { mainRoot, worktreePath } = makeHarnessDeniedWorktree('wf_e2e-unverified');
+    // Strip the worktree to just its `.git` gitfile, so the ordinary path makes
+    // exactly two rmSync calls (phase 2 `.git`, phase 3 the directory) — both
+    // neutered below, so nothing throws yet nothing is deleted either.
+    for (const entry of readdirSync(worktreePath)) {
+      if (entry !== '.git') rmSync(join(worktreePath, entry), { recursive: true, force: true });
+    }
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+
+    const remover = defaultWorktreeRemover(mainRoot);
+    expect(() => remover.remove(worktreePath)).toThrow(/left the directory on disk/);
+
+    // The directory is still there and — crucially — git was never told to
+    // forget it, so the entry stays recoverable rather than becoming an orphan.
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(recordedGitArgs()).not.toContainEqual(['worktree', 'remove', worktreePath]);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
+  });
+
+  // The field symptom, reproduced. Permission bits are the portable way to make
+  // a directory that EXISTS but cannot be read; mode 0300 keeps traversal
+  // working, so git can still run its own status inside it — which is exactly
+  // what made git's dirty check fire and overrule the classification.
+  const canDenyRead = process.platform !== 'win32' && (process.getuid?.() ?? 0) !== 0;
+
+  it.skipIf(!canDenyRead)(
+    'AC1: a worktree directory that EXISTS but cannot be read fails at OUR removal step — never handed to `git worktree remove` to be refused by git\'s own dirty check',
+    () => {
+      const { mainRoot, worktreePath } = makeHarnessDeniedWorktree('wf_e2e-unreadable');
+      const plan = planCleanup(listAgentWorktrees(mainRoot));
+      expect(plan.selected).toHaveLength(1);
+
+      chmodSync(worktreePath, 0o300);
+      modesToRestore.push(worktreePath);
+
+      let thrown: unknown;
+      try {
+        defaultWorktreeRemover(mainRoot).remove(worktreePath);
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      const message = (thrown as Error).message;
+      // The regression this pins: git must never have been asked. Before the
+      // fix this message was, verbatim, git's own refusal —
+      // `fatal: '<path>' contains modified or untracked files, use --force to
+      // delete it` — a dirty verdict from a checker that never saw
+      // `dirtyAllJunk`.
+      expect(message).not.toMatch(/contains modified or untracked files/);
+      expect(message).not.toMatch(/use --force/);
+      expect(message).toMatch(/EACCES|EPERM|permission denied/i);
+      expect(recordedGitArgs()).not.toContainEqual(['worktree', 'remove', worktreePath]);
+      // Still fully registered — a failed removal never costs git's bookkeeping.
+      expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
+    },
+  );
+
+  it.skipIf(!canDenyRead)(
+    'AC1 (integration): the same unreadable worktree stays honestly classified `erroredStillListed` through the full pipeline — never `removed`, never silently deregistered',
+    () => {
+      const { mainRoot, worktreePath } = makeHarnessDeniedWorktree('wf_e2e-unreadable-pipeline');
+      const plan = planCleanup(listAgentWorktrees(mainRoot));
+      expect(plan.selected).toHaveLength(1);
+
+      chmodSync(worktreePath, 0o300);
+      modesToRestore.push(worktreePath);
+
+      const result = executeCleanup(plan, {
+        repoRoot: mainRoot,
+        skipBranchHygiene: true,
+        retryPause: () => {},
+      });
+
+      expect(result.removed).toHaveLength(0);
+      expect(result.erroredStillListed.map((e) => e.path)).toEqual([worktreePath]);
+      expect(existsSync(worktreePath)).toBe(true);
+      expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
+      expect(recordedGitArgs()).not.toContainEqual(['worktree', 'remove', worktreePath]);
+    },
+  );
+
+  it("regression: a directory that genuinely does NOT exist is still the idempotent no-op — it reaches `git worktree remove` and deregisters, exactly as before", () => {
+    const { mainRoot, worktreePath } = makeHarnessDeniedWorktree('wf_e2e-already-gone');
+    // Somebody (a harness that tore down its own worktree, an operator) already
+    // deleted the directory. The read failure here is ENOENT, not a denial.
+    rmSync(worktreePath, { recursive: true, force: true });
+    expect(existsSync(worktreePath)).toBe(false);
+
+    expect(() => defaultWorktreeRemover(mainRoot).remove(worktreePath)).not.toThrow();
+    expect(recordedGitArgs()).toContainEqual(['worktree', 'remove', worktreePath]);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(false);
   });
 });

@@ -282,6 +282,19 @@
  *     the one retry is genuinely stuck and stays a deliberate operator step,
  *     with the dirty-worktree safety invariant at the top of this file intact.
  *
+ *     RE-SETTLED WITH MEASUREMENT (issue #150 — see that section at the end of
+ *     this comment). Force is not merely useless against an obstruction the OS
+ *     refuses; it is strictly WORSE. Measured against real git 2.50.1 on a
+ *     worktree directory git could not delete: `git worktree remove --force`
+ *     failed to delete the directory AND deregistered the worktree anyway
+ *     (`git worktree list` went quiet while the directory stayed on disk) —
+ *     precisely the deregister-despite-failed-rm damage the two-phase FOR-34
+ *     design above exists to prevent. A force fallback would convert a
+ *     recoverable {@link CleanupResult.erroredStillListed} (registered,
+ *     prunable, retryable) into an orphan the module can no longer see. The
+ *     stance stands, and is now upheld by a mechanism rather than only stated
+ *     — see the issue #150 section for what that mechanism is.
+ *
  *     THIS DECISION STANDS — and it answers a **permission** obstruction: the
  *     removal WAS attempted and the OS refused the bytes. Do not read it as an
  *     answer to a **classification** obstruction, where no removal is ever
@@ -492,6 +505,65 @@
  *     changes how an incomplete removal is classified
  *     ({@link CleanupResult.deregisteredNotDeleted} /
  *     {@link CleanupResult.erroredStillListed}).
+ *
+ * ── git must never re-adjudicate a classification this module already made
+ *    (issue #150) ────────────────────────────────────────────────────────────
+ *
+ * The harness-denied-deletion carve-out above (issue #142) taught
+ * {@link planCleanup} to SELECT a worktree whose only divergence is deletions
+ * of paths a sandboxed harness refused to write. On the wave that shipped it,
+ * five such worktrees — `git status` codes exactly `' D'` × 29 each, the exact
+ * shape the gate targets — still came back `erroredStillListed: 5` and had to
+ * be removed by hand. Selection changed; the operator-visible outcome did not.
+ *
+ * The cause is a seam between the two halves, and it is reproducible on demand
+ * (see the dedicated spec section, which drives REAL git against a REAL
+ * worktree rather than a fixture — the fixture path already passed and proved
+ * nothing about the outcome):
+ *
+ *   1. {@link physicallyDeleteGitLast} opened with `readdirSync(abs)` inside a
+ *      `try { … } catch { return }`. That catch was written for the idempotent
+ *      "directory already fully removed" case, and it silently swallowed the
+ *      OTHER reason a read fails: the directory is still very much THERE and
+ *      merely unreadable — the exact shape a harness sandbox produces on the
+ *      worktree path. The remover then reported "nothing left to delete" and
+ *      fell through to step 2.
+ *   2. Step 2 is `git worktree remove <path>`, deliberately WITHOUT `--force`.
+ *      Handed an intact worktree, git runs its OWN dirty check — which knows
+ *      nothing of `dirtyAllJunk`/`orphanAllJunk` and never consulted it — and
+ *      refuses, verbatim: `fatal: '<path>' contains modified or untracked
+ *      files, use --force to delete it`. So the module declared the worktree
+ *      disposable and git overruled it.
+ *
+ * `--force` is NOT the answer to that (the "NO force flag" bullet above,
+ * re-settled with measurement: on a directory git cannot delete, `--force`
+ * deregisters the worktree anyway and leaves the directory orphaned). The
+ * answer is that git must never be ASKED the question. `git worktree remove`
+ * is only ever a DEREGISTRATION step here — the two-phase FOR-34 design
+ * already deletes the directory ourselves first, precisely so that git's
+ * dirty check is structurally unreachable (it is guarded by git's own
+ * `file_exists(worktree)` test: a path that is gone is never status-checked).
+ * That property was an accident of the delete happening to succeed. It is now
+ * enforced from both sides:
+ *
+ *   • {@link physicallyDeleteGitLast} distinguishes the two read failures: a
+ *     directory that genuinely does not exist stays the idempotent no-op it was
+ *     written to be; a directory that still EXISTS but cannot be read rethrows,
+ *     so the failure lands in OUR step — loudly, with git never told to forget
+ *     the worktree — which is the FOR-34 invariant this comment already
+ *     claimed and the swallow quietly broke.
+ *   • {@link defaultWorktreeRemover} verifies before it deregisters: if the
+ *     physical delete returned without throwing and the directory is somehow
+ *     still on disk, it throws rather than invoking `git worktree remove`. Same
+ *     verify-after-write discipline as {@link CleanupResult.deregisteredNotDeleted}
+ *     (FOR-67), applied one layer lower, so no future edit to the delete phases
+ *     can re-open the seam.
+ *
+ * Neither guard weakens anything: an entry that cannot be removed is still
+ * classified `erroredStillListed` (registered, prunable, one bounded retry,
+ * then a deliberate operator step), and the dirty-worktree safety invariant at
+ * the top of this file is untouched — this is entirely about WHO decides, and
+ * the decision stays with {@link planCleanup}.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -675,9 +747,24 @@ export interface CleanupResult {
  */
 export interface WorktreeRemover {
   /**
-   * Remove a single worktree by its absolute path.
-   * Implementations must call `git worktree remove <path>`.
-   * Throws on failure.
+   * Remove a single worktree by its absolute path: after a non-throwing
+   * return, the directory must be GONE from disk and git must no longer list
+   * the worktree. Throws on failure.
+   *
+   * An implementation must NOT delegate the removal ELIGIBILITY decision to
+   * git (issue #150). A bare `git worktree remove <path>` on an intact
+   * directory re-runs git's own dirty check, which knows nothing of this
+   * module's `dirtyAllJunk`/`orphanAllJunk` classification and refuses with
+   * `contains modified or untracked files, use --force to delete it` — so an
+   * implementation that did only that could never remove the very entries
+   * {@link planCleanup} selects via those classifications. Eligibility was
+   * already decided upstream; this seam's job is to carry it out.
+   *
+   * {@link defaultWorktreeRemover} satisfies that by deleting the directory
+   * itself FIRST and using `git worktree remove` purely as the deregistration
+   * step on an already-empty path (see its doc comment, and the file-level
+   * FOR-34 / issue #150 sections). `--force` is deliberately never passed —
+   * see the "NO force flag" bullet for the measured reason.
    */
   remove(worktreePath: string): void;
 }
@@ -2446,6 +2533,14 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
  * succeeds cleanly (git detects the now-"prunable" administrative entry) —
  * no `--force` needed, since removal is not gated on a dirty-tree check for
  * a directory that no longer exists.
+ *
+ * That last sentence is load-bearing, not incidental (issue #150): "the
+ * directory no longer exists" is the ONLY reason git skips its dirty check,
+ * and git's dirty check is the one thing that would overrule this module's
+ * `dirtyAllJunk`/`orphanAllJunk` classification. Step 2 is therefore VERIFIED
+ * rather than assumed — a step 1 that returned without throwing yet left the
+ * directory on disk throws here instead of proceeding, so `git worktree
+ * remove` is never handed an intact worktree to adjudicate.
  */
 export function defaultWorktreeRemover(
   repoRoot: string,
@@ -2491,6 +2586,23 @@ export function defaultWorktreeRemover(
       // all, in which case there is nothing to preserve either way).
       // Step 1 — physical deletion, `.git` deleted LAST (FOR-86).
       physicallyDeleteGitLast(abs, declared);
+      // Verify before deregistering (issue #150). Step 2 below is a pure
+      // DEREGISTRATION step and is only safe as one while the path is already
+      // gone: git guards its dirty check behind its own existence test, so an
+      // absent path is deregistered without git ever re-adjudicating
+      // dirtiness — the decision `planCleanup` already made via
+      // `dirtyAllJunk`/`orphanAllJunk`. Handed a directory that is still
+      // there, git would instead refuse with `contains modified or untracked
+      // files, use --force to delete it`, overruling that classification. A
+      // non-throwing step 1 that nonetheless left the directory behind (a
+      // racing actor re-creating it, a future edit to the delete phases)
+      // therefore fails HERE, at our own step, rather than being handed on —
+      // the same verify-after-write discipline FOR-67 applies one layer up.
+      if (existsSync(abs)) {
+        throw new Error(
+          `worktree removal left the directory on disk at ${abs} — refusing to deregister a worktree that was not actually removed`,
+        );
+      }
       // Step 2 — deregister. Reached only if step 1 fully succeeded.
       execFileSync('git', ['worktree', 'remove', abs], {
         cwd: repoRoot,
@@ -2618,8 +2730,25 @@ function physicallyDeleteGitLast(
   let entries: Dirent[];
   try {
     entries = readdirSync(abs, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (err) {
+    // Two very different failures reach this catch, and conflating them is
+    // what let a classified-disposable worktree be overruled by git (issue
+    // #150 — see the file-level section):
+    //
+    //   - the directory genuinely does NOT exist: already fully removed, the
+    //     idempotent no-op this phase was written to mirror (`rmSync`'s own
+    //     `force: true`). Return, exactly as before.
+    //   - the directory DOES exist and merely could not be read (a sandbox
+    //     read-deny on the worktree path, a permission-stripped directory):
+    //     nothing has been deleted, so returning here would report a removal
+    //     that did not happen and hand an intact, git-dirty worktree to
+    //     `git worktree remove` — which refuses it with `contains modified or
+    //     untracked files, use --force to delete it`. Rethrow instead: the
+    //     failure belongs to OUR step, which is the whole point of the
+    //     two-phase FOR-34 design (git is never told to forget a worktree we
+    //     could not delete).
+    if (!existsSync(abs)) return;
+    throw err;
   }
 
   const nonGitEntries = entries.filter((e) => e.name !== '.git');
@@ -2877,6 +3006,29 @@ const HARNESS_DENIED_DIRS: readonly string[] = [
   '.claude/routines',
   '.claude/skills',
   '.claude/workflows',
+  // Added having been looked at, with live evidence rather than by analogy
+  // (issue #150): a `git worktree add` run in this repo under this harness's
+  // own sandbox is refused on exactly two tracked paths —
+  //   error: unable to create file .claude/agents/wave-reviewer.md: Operation not permitted
+  //   error: unable to create file .vscode/settings.json: Operation not permitted
+  // — so a real dispatched worktree comes up carrying BOTH as ` D`. With
+  // `.vscode` missing from this list the whole issue #142 carve-out never
+  // fired here at all: one unrecognized denied path is enough for
+  // `isStatusExclusivelyDisposable` to fail, and the worktree was skipped
+  // `reason: 'dirty'` — selected by nothing, removed by nobody. That is the
+  // same "changed nothing an operator can see" outcome from the other side of
+  // the seam.
+  //
+  // `.vscode` is safe here in a way `.claude` deliberately is NOT (see
+  // HARNESS_INJECTED_PATHS' note): the reason the dirty path names
+  // harness-owned `.claude/` files INDIVIDUALLY is that this repo dogfoods
+  // itself and `.claude/skills/`/`.claude/agents/` hold flotilla's own product
+  // content. `.vscode/` holds editor configuration and nothing else — it is
+  // already a whole-subtree disposable unit for the orphan classifier
+  // ({@link JUNK_DIR_NAMES}), and this entry only brings the DELETION half of
+  // the dirty path into line with that. A MODIFIED `.vscode/settings.json` is
+  // still real work and still blocks removal, exactly as before.
+  '.vscode',
 ];
 
 const HARNESS_DENIED_FILES = new Set<string>([
