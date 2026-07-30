@@ -12,13 +12,13 @@
  * threaded per call — the seam stays about issues, not hosts.
  */
 
-import type { LandingHost, LandingPosture, RulesetChecksInfo } from '../../host-pr';
+import type { LandingHost, LandingPosture, ReportedCheck, RulesetChecksInfo } from '../../host-pr';
 
 // The code-host posture type `RequiredChecksInfo` was re-homed to the host seam
 // (host-pr.ts) by the ADR-0023 amendment — one owner for the landing-posture
 // facts. Re-exported here so the GitHub adapter's existing importers are
 // unchanged; the shape is host-neutral (the Bitbucket pilot produces it too).
-export type { RequiredChecksInfo, RulesetChecksInfo, AutoMergeSetting } from '../../host-pr';
+export type { RequiredChecksInfo, RulesetChecksInfo, AutoMergeSetting, ReportedCheck } from '../../host-pr';
 
 /** GitHub's native issue lifecycle state. */
 export type GhState = 'open' | 'closed';
@@ -170,6 +170,28 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    * a Bitbucket adapter (no rulesets endpoint) returns `readable:false`.
    */
   getRulesetRequiredChecks(branch?: string): Promise<RulesetChecksInfo>;
+  /**
+   * The checks the host has REPORTED for `ref` — the second half of the arm verb's
+   * check-ATTACH comparison (the 2026-07-30 live occurrences: `host-pr arm`
+   * direct-merged PRs ~90 s old whose two ruleset-required checks had not attached
+   * yet). Declaring it here is what makes the GitHub adapter structurally a
+   * `CheckAttachReader` (host-pr): the required NAMES come from the inherited
+   * {@link LandingPosture.getRequiredChecks} — the preflight's own effective-rules
+   * read, reused, not duplicated — and this is the only new fact needed.
+   *
+   * `ref` is a commit SHA or a `heads/<branch>` ref (GitHub's documented `ref`
+   * forms). The real impl folds BOTH report sources GitHub matches a required
+   * context against: check runs (`GET .../commits/{ref}/check-runs`, whose `filter`
+   * defaults to `latest`, one report per name) and commit statuses
+   * (`GET .../commits/{ref}/status`).
+   *
+   * Unlike the advisory posture reads this one MUST THROW on a failed read rather
+   * than degrade to `[]`: an empty list is EVIDENCE that nothing has attached yet
+   * (the input that forces an arm), so a read failure must never be able to
+   * counterfeit it. The arm's own guard turns a throw into "no evidence", which
+   * leaves the landing behaviour exactly as it was before this read existed.
+   */
+  getReportedChecks(ref: string): Promise<ReportedCheck[]>;
   // The three code-host posture reads — `canMergePullRequests`,
   // `getAutoMergeSetting`, `getRequiredChecks` — are inherited from
   // `LandingPosture` (host-pr.ts). They were declared here (FOR-12/ADR-0023) but

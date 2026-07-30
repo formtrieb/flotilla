@@ -6,6 +6,7 @@
 
 import type {
   GitHubApi, GhIssue, GhStateReason, CreateIssueInput, ClosingPrState, RequiredChecksInfo, RulesetChecksInfo,
+  ReportedCheck,
 } from './github-api';
 import {
   AutoMergeUnavailableError,
@@ -307,6 +308,14 @@ export class RealGitHubApi implements GitHubApi {
    * Selection when a branch has several PRs: an OPEN one wins (it is the only
    * actionable one), then a MERGED one (a merge is the stronger evidence for the
    * done-reconcile hierarchy), then closed-unmerged.
+   *
+   * The OPEN case additionally reports the PR's `headSha` and `baseRef` when the
+   * detail payload carries them — the two coordinates the arm verb's check-ATTACH
+   * comparison needs (which COMMIT to ask for reports about, and which branch's
+   * required checks are in force). Both come out of call 2, which was already being
+   * made for `mergeable_state`, so this costs no extra request; both keys stay
+   * ABSENT when the payload omits them, so a host/fixture that does not surface
+   * them yields the exact shape this method always returned.
    */
   async getPrStatus(branch: string): Promise<PrLandingStatus> {
     const head = `${this.owner}:${branch}`;
@@ -336,7 +345,68 @@ export class RealGitHubApi implements GitHubApi {
     if (detail.status !== 200) {
       throw new GitHubApiError(detail.status, 'getPrStatus', ghMessage(detail.json, 'getPrStatus'));
     }
-    return { state: 'open', number, url, mergeability: toMergeability(detail.json) };
+    return {
+      state: 'open',
+      number,
+      url,
+      mergeability: toMergeability(detail.json),
+      ...prRefs(detail.json),
+    };
+  }
+
+  /**
+   * The checks GitHub has REPORTED for `ref` — the arm verb's check-ATTACH input
+   * (2026-07-30 live occurrences). BOTH sources a required status-check context can
+   * be satisfied by are folded into one list, because GitHub matches a required
+   * context against either:
+   *
+   *   1. `GET /repos/{o}/{r}/commits/{ref}/check-runs` — GitHub Actions and every
+   *      other Checks-API app. Response: `{ total_count, check_runs: [{ name,
+   *      status, conclusion }] }`. `filter` is passed as `latest` EXPLICITLY even
+   *      though that is the documented default, so one re-run cannot turn into two
+   *      reports if the default ever changes.
+   *   2. `GET /repos/{o}/{r}/commits/{ref}/status` — the legacy commit-status API
+   *      (external CI). Response: `{ state, statuses: [{ context, state }], … }`.
+   *
+   * `ref` is a commit SHA, or a branch in GitHub's documented `heads/<branch>` form
+   * — its slashes are path separators GitHub matches on, so each segment is encoded
+   * individually while the slashes survive (the same treatment `deleteBranch` gives
+   * a ref path).
+   *
+   * THROWS on a non-200, deliberately, against the report-only stance of the
+   * posture probes next to it: an empty result is EVIDENCE that nothing has attached
+   * to this commit yet, and that is the one input that forces the arm verb away from
+   * a direct merge — so a failed read must not be able to counterfeit it. The arm
+   * catches the throw and treats it as "no evidence", i.e. unchanged behaviour.
+   */
+  async getReportedChecks(ref: string): Promise<ReportedCheck[]> {
+    const path = ref.split('/').map(encodeURIComponent).join('/');
+    const out: ReportedCheck[] = [];
+
+    for (let page = 1; ; page++) {
+      const res = await this.send('GET', `${this.base()}/commits/${path}/check-runs?filter=latest&per_page=100&page=${page}`);
+      if (res.status !== 200) {
+        throw new GitHubApiError(res.status, 'getReportedChecks', ghMessage(res.json, 'getReportedChecks'));
+      }
+      const runs = (res.json as Record<string, unknown>)?.check_runs;
+      const items = Array.isArray(runs) ? (runs as Record<string, unknown>[]) : [];
+      for (const it of items) {
+        if (typeof it.name !== 'string' || it.name.length === 0) continue;
+        out.push({ name: it.name, state: toCheckRunState(it) });
+      }
+      if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
+    }
+
+    const combined = await this.send('GET', `${this.base()}/commits/${path}/status?per_page=100`);
+    if (combined.status !== 200) {
+      throw new GitHubApiError(combined.status, 'getReportedChecks', ghMessage(combined.json, 'getReportedChecks'));
+    }
+    const statuses = (combined.json as Record<string, unknown>)?.statuses;
+    for (const it of Array.isArray(statuses) ? (statuses as Record<string, unknown>[]) : []) {
+      if (typeof it.context !== 'string' || it.context.length === 0) continue;
+      out.push({ name: it.context, state: toCommitStatusState(it.state) });
+    }
+    return out;
   }
 
   /**
@@ -580,6 +650,44 @@ function toMergeability(json: unknown): PrMergeability {
   if (o.draft === true) return 'draft';
   const raw = typeof o.mergeable_state === 'string' ? o.mergeable_state : '';
   return MERGEABLE_STATE[raw] ?? 'unknown';
+}
+
+/**
+ * A PR detail payload's `head.sha` + `base.ref`, as PRESENT-ONLY keys (an absent
+ * one is omitted, never emitted as `undefined`) so a payload carrying neither
+ * yields `{}` and `getPrStatus`'s shape is unchanged from before this read existed.
+ */
+function prRefs(json: unknown): { headSha?: string; baseRef?: string } {
+  const o = (json ?? {}) as Record<string, unknown>;
+  const sha = (o.head as Record<string, unknown> | undefined)?.sha;
+  const ref = (o.base as Record<string, unknown> | undefined)?.ref;
+  return {
+    ...(typeof sha === 'string' && sha.length > 0 ? { headSha: sha } : {}),
+    ...(typeof ref === 'string' && ref.length > 0 ? { baseRef: ref } : {}),
+  };
+}
+
+/**
+ * A check run → the normalised {@link ReportedCheck} state. `status` other than
+ * `completed` (`queued`, `in_progress`, `waiting`, `requested`, `pending`) is
+ * `pending`; a completed run is green for the three NON-BLOCKING conclusions —
+ * `success`, plus `skipped` (GitHub: a skipped job "will report its status as
+ * 'Success'. It will not prevent a pull request from merging, even if it is a
+ * required check") and `neutral` (its other non-blocking conclusion) — and
+ * `failure` for everything else (`failure`, `cancelled`, `timed_out`,
+ * `action_required`, or a missing conclusion on a completed run).
+ */
+function toCheckRunState(run: Record<string, unknown>): ReportedCheck['state'] {
+  if (run.status !== 'completed') return 'pending';
+  const c = run.conclusion;
+  return c === 'success' || c === 'skipped' || c === 'neutral' ? 'success' : 'failure';
+}
+
+/** A commit status's `state` (`success` | `pending` | `failure` | `error`) → the normalised state. */
+function toCommitStatusState(state: unknown): ReportedCheck['state'] {
+  if (state === 'success') return 'success';
+  if (state === 'pending') return 'pending';
+  return 'failure'; // `failure` | `error` | anything unrecognised
 }
 
 /** Required-check contexts from either the legacy `contexts[]` or the newer `checks[].context`. */
