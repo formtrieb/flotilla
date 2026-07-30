@@ -373,6 +373,17 @@ export class RealGitHubApi implements GitHubApi {
    * individually while the slashes survive (the same treatment `deleteBranch` gives
    * a ref path).
    *
+   * PAGINATION CONTRACT (issue #263, closed by issue #287): BOTH sources are
+   * paginated to exhaustion, not just the check-runs source. Confirmed against
+   * GitHub's own REST reference for "Get the combined status for a specific
+   * reference" (docs.github.com/en/rest/commits/statuses, read 2026-07-30): the
+   * endpoint documents standard `page`/`per_page` parameters (`per_page` max 100,
+   * default 30) with no stated hard cap on `statuses` that would make pagination
+   * unnecessary or unsafe — the same shape as the check-runs source, so it is read
+   * the identical way (`per_page=100`, loop until a short page). A cap on one
+   * source paired with exhaustive pagination on its sibling would silently
+   * under-report every legacy commit status past the first page.
+   *
    * THROWS on a non-200, deliberately, against the report-only stance of the
    * posture probes next to it: an empty result is EVIDENCE that nothing has attached
    * to this commit yet, and that is the one input that forces the arm verb away from
@@ -397,14 +408,18 @@ export class RealGitHubApi implements GitHubApi {
       if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
     }
 
-    const combined = await this.send('GET', `${this.base()}/commits/${path}/status?per_page=100`);
-    if (combined.status !== 200) {
-      throw new GitHubApiError(combined.status, 'getReportedChecks', ghMessage(combined.json, 'getReportedChecks'));
-    }
-    const statuses = (combined.json as Record<string, unknown>)?.statuses;
-    for (const it of Array.isArray(statuses) ? (statuses as Record<string, unknown>[]) : []) {
-      if (typeof it.context !== 'string' || it.context.length === 0) continue;
-      out.push({ name: it.context, state: toCommitStatusState(it.state) });
+    for (let page = 1; ; page++) {
+      const res = await this.send('GET', `${this.base()}/commits/${path}/status?per_page=100&page=${page}`);
+      if (res.status !== 200) {
+        throw new GitHubApiError(res.status, 'getReportedChecks', ghMessage(res.json, 'getReportedChecks'));
+      }
+      const statuses = (res.json as Record<string, unknown>)?.statuses;
+      const items = Array.isArray(statuses) ? (statuses as Record<string, unknown>[]) : [];
+      for (const it of items) {
+        if (typeof it.context !== 'string' || it.context.length === 0) continue;
+        out.push({ name: it.context, state: toCommitStatusState(it.state) });
+      }
+      if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
     }
     return out;
   }
@@ -673,9 +688,19 @@ function prRefs(json: unknown): { headSha?: string; baseRef?: string } {
  * `pending`; a completed run is green for the three NON-BLOCKING conclusions —
  * `success`, plus `skipped` (GitHub: a skipped job "will report its status as
  * 'Success'. It will not prevent a pull request from merging, even if it is a
- * required check") and `neutral` (its other non-blocking conclusion) — and
- * `failure` for everything else (`failure`, `cancelled`, `timed_out`,
- * `action_required`, or a missing conclusion on a completed run).
+ * required check" — docs.github.com/en/pull-requests/reference/status-checks,
+ * read 2026-07-30) and `neutral` (its other non-blocking conclusion, but a
+ * WEAKER inference than `skipped`'s: the same page's conclusions table
+ * describes `neutral` with wording IDENTICAL to `skipped`'s — "treated as a
+ * success" — and its merge-blocking framing lists only `failure`, `timed_out`
+ * and `action_required` as conclusions requiring review before merge, so
+ * `neutral` is absent from that list too; but the page never spells "required
+ * check" out next to `neutral` the way it does for `skipped`, so this rests on
+ * table-parity plus the blocking-list omission, not an equally explicit
+ * standalone sentence — see {@link ReportedCheck} in `host-pr.ts` for the full
+ * citation, issue #263) — and `failure` for everything else (`failure`,
+ * `cancelled`, `timed_out`, `action_required`, or a missing conclusion on a
+ * completed run).
  */
 function toCheckRunState(run: Record<string, unknown>): ReportedCheck['state'] {
   if (run.status !== 'completed') return 'pending';

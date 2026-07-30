@@ -455,6 +455,27 @@ describe('RealGitHubApi', () => {
       expect(http.requests).toHaveLength(3); // two check-run pages + the combined status
     });
 
+    // Negative control for the fix this pins: a single-page combined-status read
+    // (the pre-#287 shape) returns exactly 100 items here — never the 101 this
+    // test asserts — so a regression back to one uncapped `per_page=100` GET
+    // fails this exact assertion rather than being silently absorbed.
+    // (Falsified live: with the pagination loop reverted to one GET, this test
+    // failed with `expected 100 to be 101` / a request count of 2, not 3 — see
+    // the Worker report for the verbatim transcript.)
+    it('pages the combined-status list to exhaustion too — a 100-item page is followed by another (issue #287 negative control)', async () => {
+      const page1 = Array.from({ length: 100 }, (_, i) => ({ context: `ctx${i}`, state: 'success' }));
+      const { api, http } = makeApi((req) => {
+        if (!req.url.includes('/status')) return { status: 200, json: { check_runs: [] } };
+        return new URL(req.url).searchParams.get('page') === '1'
+          ? { status: 200, json: { statuses: page1 } }
+          : { status: 200, json: { statuses: [{ context: 'last-ctx', state: 'success' }] } };
+      });
+      const out = await api.getReportedChecks('c0ffee1');
+      expect(out).toHaveLength(101);
+      expect(out.at(-1)).toEqual({ name: 'last-ctx', state: 'success' });
+      expect(http.requests).toHaveLength(3); // the (empty) check-runs page + two combined-status pages
+    });
+
     it('keeps the slashes of a `heads/<branch>` ref as path separators, encoding each segment', async () => {
       const { api, http } = makeApi((req) =>
         req.url.includes('/check-runs')
