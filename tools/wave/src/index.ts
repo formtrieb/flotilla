@@ -348,6 +348,21 @@ export {
 
 export {
   loadWaveConfig,
+  // The engine-invocation binding (ADR-0032). All four names ship together so a
+  // ROOT-ONLY consumer can do the whole job from the package root: READ the
+  // binding (`loadWaveConfig(p).engine?.cli`, typed by `EngineConfig` on
+  // `WaveConfig`), re-apply the SAME plain-argv rule when it authors or
+  // re-checks a value (`normalizeEngineCli` — one rule, one implementation,
+  // shared with `config validate`), and CATCH the refusal typed
+  // (`EngineCliBindingError` + its `failure` discriminant) instead of
+  // string-matching a message. Exported at introduction time on purpose: the
+  // barrel gap — engine-complete symbol reachable only via a deep import — is a
+  // defect class this repo has had to close after the fact more than once
+  // (issues #177, #184, #216).
+  normalizeEngineCli,
+  EngineCliBindingError,
+  type EngineConfig,
+  type EngineCliBindingFailure,
   type WaveConfig,
   type StoreConfig,
   type MarkdownStoreConfig,
