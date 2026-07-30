@@ -6,7 +6,27 @@ The engine-CLI plumbing the execution skills share. The SKILL.md body owns the *
 
 ## `{{wave-cli}}` resolution
 
-The wave engine CLI, stated **dual-form (ADR-0031)**: the canonical resolution is the published npm package **`npx @formtrieb/flotilla-engine`** — the workflow driver's default, a bare command with no path in it, so it resolves independent of any checkout. The **vendored in-repo form** `npx tsx tools/wave/src/cli.ts` stays documented as the fallback for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish); both reach the identical router. **Bind whichever form you use to a shell *function*, never to a variable** — see [convention-12-no-command-in-a-shell-variable.md](./convention-12-no-command-in-a-shell-variable.md). Tracker-touching verbs need the store config: run from a dir containing `wave.config.json`, or append `--config <path>` **after** the subcommand and its op. The pure routing/validation verbs (`route-verdict`, `route-outcome`, `validate-report`, `validate-verdict`) are store-independent — they take no `--config`.
+The wave engine CLI, stated **dual-form (ADR-0031)**: the canonical resolution is the published npm package **`npx @formtrieb/flotilla-engine`** — the workflow driver's default, a bare command with no path in it, so it resolves independent of any checkout. The **vendored in-repo form** `npx tsx tools/wave/src/cli.ts` stays documented as the fallback for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish); both reach the identical router. **Bind whichever form you use to a shell *function*, never to a variable — the binding itself is written out immediately below, not left to the reader** (rationale: [convention-12-no-command-in-a-shell-variable.md](./convention-12-no-command-in-a-shell-variable.md)). Tracker-touching verbs need the store config: run from a dir containing `wave.config.json`, or append `--config <path>` **after** the subcommand and its op. The pure routing/validation verbs (`route-verdict`, `route-outcome`, `validate-report`, `validate-verdict`) are store-independent — they take no `--config`.
+
+### Binding the form — a shell function, never a variable
+
+Naming the form is only half an instruction. The other half is **how the name gets attached**, and a resolution section that stops at "here is the command string" leaves a gap the reader fills with the reflex that silently does nothing: `CLI="npx @formtrieb/flotilla-engine"; $CLI route-verdict …` exits **127** under zsh (which does not field-split an unquoted expansion) and runs *nothing at all* — not an error the command produced, because the command was never reached. So bind it, once per session, before the first verb:
+
+```bash
+# published package — the canonical resolution
+wave_cli() { NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine "$@"; }
+# …or the vendored in-repo fallback, for a consumer still vendoring tools/wave —
+# shown in its npx-free local-binary sibling, the driver's default binary style
+# (parallel `npx` under fan-out contends on the npm cache lock, consumer retro
+# KW-F7); `npx tsx tools/wave/src/cli.ts "$@"` is the same form via npx.
+wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }
+
+wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing
+```
+
+`"$@"` is the one expansion that preserves argument boundaries in **every** shell, which is exactly why a function survives where a variable does not. Read every `{{wave-cli}}` in the tables below as that function — and read a **list** the same way: iterate a real array (`for x in "${IDS[@]}"`), never a bare `$LIST` in a `for` head.
+
+The convention's second half governs what you do with a verb's **output**: a value you capture and then *use* — a PR URL, an id, a SHA — must be refused when it comes back empty, because an empty capture is indistinguishable from a 127 that never ran. The canonical `require_capture` body and the live call sites are in [convention-12-no-command-in-a-shell-variable.md](./convention-12-no-command-in-a-shell-variable.md).
 
 ## Auth preflight
 
