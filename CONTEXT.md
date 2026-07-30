@@ -23,7 +23,7 @@ A human-readable, cosmetic name component of an issue, used only to decorate bra
 _Avoid_: identifier, name (as a key).
 
 **Risk**:
-An issue's risk class (`mechanical · isolated-refactor · cross-feature-refactor · public-API-change`) — a **load-bearing routing key**, not just a validated enum: its string drives the dor-gate file-count heuristics and the `public-API-change` hard-STOP (ADR-0007). It does **not** select a reviewer profile — flotilla's **Reviewer** is universal, so the spine's `Reviewer` column is a uniform, vestigial decoration (a deliberate de-coupling from the Ur's `quick-verify`/`full-review` tiers).
+An issue's risk class (`mechanical · isolated-refactor · cross-feature-refactor · public-API-change`) — a **load-bearing routing key**, not just a validated enum: its string drives the dor-gate file-count heuristics and the `public-API-change` hard-STOP (ADR-0007), and it derives the **Reviewer**'s model tier at dispatch, mirroring the worker routing (`mechanical`/`isolated-refactor` → standard, the rest → `-heavy`; tiers bind to models in the driver config, never by name — ADR-0007 Amendment 2026-07-31). It does **not** select a reviewer *scope* — flotilla's **Reviewer** is universal in dispatch, checklist, and verdict schema whatever its tier, so the spine's `Reviewer` column is a uniform, vestigial decoration (a deliberate de-coupling from the Ur's `quick-verify`/`full-review` scope tiers).
 _Avoid_: severity, priority.
 
 **worker (assignment)**:
@@ -75,8 +75,12 @@ A gap an agent surfaced instead of silently absorbing — a Convention-9 wiring 
 _Avoid_: ledger (reserved for the tracker-side claim projection), finding (the retro's word — a Disclosure lives in-wave).
 
 **Disposition (of a Disclosure)**:
-The human-decided resolution a **Disclosure** must reach before the wave archives: `resolved-in-slice · scope-extension · filed:<id> · dropped:<reason>` — `open` until decided, and `wave-close` refuses the Archive phase while any Disclosure is `open` (ADR-0027). `filed` records *existence*, not wave-readiness: a bare tracker issue with a provenance line, decorated later via `to-issues`. Deliberately the same word as the row dispositions (park, abandon): a scripted, human-decided exit for an exception — never automatic.
-_Avoid_: resolution (vague), auto-file (rejected — the write is human-decided; only the *enforcement* is mechanical).
+The human-decided resolution a **Disclosure** must reach before the wave archives: `resolved-in-slice · scope-extension · filed:<id> · dropped:<reason>` — `open` until decided, and `wave-close` refuses the Archive phase while any Disclosure is `open` (ADR-0027). `filed` records *existence*, not wave-readiness: a bare tracker issue with a provenance line, decorated later via `to-issues`. Several Disclosures may share one filed id — a **thematic bundle** issue; own-ticket vs bundle follows the triviality default (own ticket only for a mechanism defect with observed consequence; ADR-0027 Amendment 2026-07-31), and a bundle accepts appends only while still bare. Deliberately the same word as the row dispositions (park, abandon): a scripted, human-decided exit for an exception — never automatic.
+_Avoid_: resolution (vague), auto-file (rejected — the write is human-decided; only the *enforcement* is mechanical), bundled-id (the shared filed id *is* the bundle — no second id concept).
+
+**Coordinator-direct (PR)**:
+A PR the running Coordinator session authors and lands itself — no Worker, no **Reviewer**. Legitimate **exclusively** for session-authored orchestration artifacts that close no tracker issue (retros, ADRs, glossary/CHARTER updates, config housekeeping); the test is binary: *does the PR close a tracker issue?* — yes → it goes through a wave row with a Reviewer verdict, whatever its file type (ADR-0033). The cheap lane for a bundle-class row is a Coordinator-implemented `foreground` row *with* a Reviewer, never a review waiver.
+_Avoid_: doc-only lane (file class is not the boundary — provenance is), self-merge (that is a landing mechanic, not this lane's definition).
 
 **Amend**:
 The intent-shaped change of an issue's *authored content* — its title and its free-prose body sections — through the **IssueStore**, upsert-by-heading, everything unmodeled preserved. Deliberately narrow: the modeled surfaces each keep their own verb (the wave Header-Block fields → decorate/annotate, triage state and comments → the Triage facet, claims → the ledger), so an amend can never silently clobber a managed list. A full re-scope is the *composition* amend + annotate, not one call.

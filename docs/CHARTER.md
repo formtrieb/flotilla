@@ -190,14 +190,16 @@ Shipped adapters: **`MarkdownFsStore`** (Ur parity) and **`GitHubIssuesStore`** 
 
 The AC-count check (Pre-PR floor) consumes the **typed reviewer return**, not a re-parsed markdown file — adapter-agnostic for both `MarkdownFsStore` and `GitHubIssuesStore`, which also strips the engine's last issue-file re-read (ADR-0001, ADR-0004). The issue checklist stays cosmetic; flotilla ticks the GitHub body only at `close` for human visibility.
 
-**`Risk` is a load-bearing routing key (ADR-0007), not just a validated enum.** The Risk *string* drives three behaviours — keep them documented here so the generic rewrite does not lose them:
+**`Risk` is a load-bearing routing key (ADR-0007), not just a validated enum.** The Risk *string* drives the engine behaviours below plus the dispatch-side reviewer tier — keep them documented here so the generic rewrite does not lose them:
 
-| Risk | reviewer profile | extra |
+| Risk | reviewer model tier (dispatch) | extra |
 |---|---|---|
-| `mechanical` | quick-verify | dor-gate Gate-4: `>5` files = concern |
-| `isolated-refactor` | quick-verify | — |
-| `cross-feature-refactor` | full-review | dor-gate Gate-4: `==1` file = concern |
-| `public-API-change` | full-review | **hard-STOP** `public-api-approval-required` (`verdict-to-event` G3 guard) |
+| `mechanical` | standard | dor-gate Gate-4: `>5` files = concern |
+| `isolated-refactor` | standard | — |
+| `cross-feature-refactor` | `-heavy` | dor-gate Gate-4: `==1` file = concern |
+| `public-API-change` | `-heavy` | **hard-STOP** `public-api-approval-required` (`verdict-to-event` G3 guard) |
+
+The tier column routes the Reviewer's *model binding* at dispatch (ADR-0007 Amendment 2026-07-31), mirroring the Worker's `-heavy` marker; tiers bind to concrete models in the driver config, never by name. It never routes review *scope* — the Reviewer's checklist, verdict schema, and universal dispatch are unchanged (ADR-0016); the Ur's `quick-verify`/`full-review` **scope** tiers stay dead in flotilla (they survive only as fixture strings in a few specs).
 
 The whole enum vocab is config-authoritative (`wave.config` via the `wave-setup` interview); **M1 freezes the Risk set + these behaviours** (only `Worker` is freely trimmable), with the Risk→behaviour *map* lifted to config in M2 (ADR-0007).
 
