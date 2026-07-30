@@ -194,6 +194,29 @@ import {
   type OrphanBranchSweepOps,
   type OrphanBranchSweepPlan,
 } from './worktree-cleanup';
+// The CLI router — imported so the `worktree-cleanup --detached` wiring and the
+// `worktreeCount` advisory field are exercised through the REAL verb an operator
+// types, not through the engine functions the rest of this file covers. The
+// declared file set for this slice does not include cli.spec.ts, and this is the
+// spec file that owns the module under wiring, so the CLI-level coverage lives
+// here alongside it.
+import { main } from './cli';
+// The SAME five names, imported through the PACKAGE ROOT rather than the module
+// file directly — proves the barrel actually re-exports the detached-sweep trio,
+// the advisory function and the threshold constant (ADR-0028's explicit
+// named-export style), aliased to avoid colliding with the direct-module imports
+// above. Mirrors reviewer-verdict-schema.spec.ts's `…FromRoot` convention.
+import {
+  listDetachedScratchpadWorktrees as listDetachedScratchpadWorktreesFromRoot,
+  planDetachedScratchpadSweep as planDetachedScratchpadSweepFromRoot,
+  sweepDetachedScratchpadWorktrees as sweepDetachedScratchpadWorktreesFromRoot,
+  checkWorktreeCountAdvisory as checkWorktreeCountAdvisoryFromRoot,
+  WORKTREE_COUNT_ADVISORY_THRESHOLD as WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT,
+  type DetachedSweepOptions as DetachedSweepOptionsFromRoot,
+  type WorktreeCountAdvisory as WorktreeCountAdvisoryFromRoot,
+  type WorktreeCountAdvisoryOptions as WorktreeCountAdvisoryOptionsFromRoot,
+  type SkipReason as SkipReasonFromRoot,
+} from './index';
 
 // node:child_process is mocked module-wide so Section 10's real
 // `defaultWorktreeRemover` calls don't shell out to a real `git`. Sections 12
@@ -5384,5 +5407,405 @@ describe('checkWorktreeCountAdvisory — counts real `git worktree list` output 
 
     // Same population, a threshold above it → ok.
     expect(checkWorktreeCountAdvisory({ repoRoot: mainRoot, threshold: 4 }).level).toBe('ok');
+  });
+});
+
+// ─── 31. `worktree-cleanup --detached` — the CLI wiring (issue #250) ───────────
+//
+// Sections 27–30 prove the ENGINE halves. What was missing is the last mile: the
+// `worktree-cleanup` verb had no way to run the detached sweep at all, and
+// nothing surfaced the count advisory — five tested exports with no production
+// consumer. These specs drive the REAL CLI router (`main(['worktree-cleanup',
+// …])`) against a REAL git repository, so the WIRING is what is under test, not
+// the already-covered classification logic.
+//
+// The headline property is DRY-RUN PARITY, and it is structural rather than
+// agreed: `runWorktreeCleanup` computes ONE `CleanupPlan` object above the
+// `--dry-run` branch, prints its `selected`/`skipped` on the preview path and
+// hands that same object to `executeCleanup` on the real path. The parity test
+// below therefore derives its expectation from the preview's own output rather
+// than transcribing a fixture, which is what makes it a parity assertion and not
+// two independent snapshots that happen to match.
+describe('worktree-cleanup --detached — CLI wiring + dry-run parity (issue #250)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+  let stdoutBuf: string;
+  let stderrBuf: string;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+    stdoutBuf = '';
+    stderrBuf = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      stdoutBuf += String(chunk);
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrBuf += String(chunk);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /** A real repo with a real worktrees root (same shape as section 28's). */
+  function makeRepo(label: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cli-250-${label}-`)));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    writeFileSync(join(mainRoot, 'README.md'), '# fixture\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    return mainRoot;
+  }
+
+  /** Plant an un-prefixed DETACHED scratch checkout — the reviewer-made shape. */
+  function plantDetached(mainRoot: string, name: string): string {
+    const rel = join('.claude', 'worktrees', name);
+    realGit(['worktree', 'add', '-q', '--detach', rel, 'HEAD'], mainRoot);
+    return join(mainRoot, rel);
+  }
+
+  /** Plant a branch-bearing dispatch worktree — the sweep must refuse this. */
+  function plantOnBranch(mainRoot: string, name: string, branch: string): string {
+    const rel = join('.claude', 'worktrees', name);
+    realGit(['worktree', 'add', '-q', rel, '-b', branch], mainRoot);
+    return join(mainRoot, rel);
+  }
+
+  function stillRegistered(mainRoot: string, path: string): boolean {
+    return realGit(['worktree', 'list', '--porcelain'], mainRoot)
+      .split('\n')
+      .some((line) => line.trim() === `worktree ${path}`);
+  }
+
+  /** The shape both output paths carry for the detached sweep + the advisory. */
+  type CleanupJson = {
+    dryRun: boolean;
+    removed?: Array<{ path: string }>;
+    skipped?: Array<{ path: string; reason?: string }>;
+    errors?: unknown[];
+    detached?: {
+      selected?: Array<{ path: string }>;
+      removed?: Array<{ path: string }>;
+      skipped: Array<{ path: string; reason?: string }>;
+      errors?: unknown[];
+      deregisteredNotDeleted?: unknown[];
+      erroredStillListed?: unknown[];
+    };
+    orphans?: unknown;
+    worktreeCount: {
+      count: number;
+      threshold: number;
+      level: string;
+      advisory: string | null;
+    };
+  };
+
+  function parse(): CleanupJson {
+    expect(stdoutBuf, `stderr was: ${stderrBuf}`).not.toBe('');
+    return JSON.parse(stdoutBuf) as CleanupJson;
+  }
+
+  it('--dry-run --detached previews the sweep and removes NOTHING', () => {
+    const mainRoot = makeRepo('preview');
+    const scratch = plantDetached(mainRoot, 'review-250');
+
+    const code = main(['worktree-cleanup', '--dry-run', '--detached', mainRoot]);
+
+    expect(code).toBe(0);
+    const parsed = parse();
+    expect(parsed.dryRun).toBe(true);
+    expect(parsed.detached?.selected?.map((w) => w.path)).toEqual([scratch]);
+    // Nothing was touched: still on disk AND still registered with git.
+    expect(existsSync(scratch)).toBe(true);
+    expect(stillRegistered(mainRoot, scratch)).toBe(true);
+  });
+
+  it('the real run removes EXACTLY what the preview selected — one plan, derived expectation', () => {
+    const mainRoot = makeRepo('parity');
+    const scratch = plantDetached(mainRoot, 'review-250');
+    const dirty = plantDetached(mainRoot, 'review-dirty');
+    writeFileSync(join(dirty, 'work-in-progress.txt'), 'do not lose me\n');
+    // Un-prefixed ON PURPOSE. A `wf_`/`agent-`-prefixed worktree belongs to the
+    // name-allowlisted GC, which an unscoped (no --wave/--branches) run selects
+    // for removal anyway and which the de-duplication then keeps out of the
+    // detached candidates — so it could never demonstrate this sweep's own
+    // `live-branch` refusal. An un-prefixed, branch-bearing checkout inside the
+    // containment root is exactly the case only this sweep sees, and exactly the
+    // one it must refuse.
+    const live = plantOnBranch(mainRoot, 'review-live', 'wave/250-live');
+
+    // 1. Preview.
+    expect(main(['worktree-cleanup', '--dry-run', '--detached', mainRoot])).toBe(0);
+    const preview = parse();
+    const previewSelected = (preview.detached?.selected ?? [])
+      .map((w) => w.path)
+      .sort();
+    const previewSkipped = new Map(
+      (preview.detached?.skipped ?? []).map((w) => [w.path, w.reason]),
+    );
+
+    // 2. The same invocation without --dry-run.
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', '--detached', mainRoot])).toBe(0);
+    const run = parse();
+
+    // THE parity assertion: the removed set is the previewed set, and the
+    // expectation is READ OFF the preview rather than transcribed here.
+    expect((run.detached?.removed ?? []).map((w) => w.path).sort()).toEqual(
+      previewSelected,
+    );
+    // ...and the refusals carry over verbatim, reason included.
+    expect(
+      new Map((run.detached?.skipped ?? []).map((w) => [w.path, w.reason])),
+    ).toEqual(previewSkipped);
+
+    // Sanity on the fixture itself, so the parity above cannot be vacuous:
+    // exactly one sweepable checkout, and both refusals named by reason.
+    expect(previewSelected).toEqual([scratch]);
+    expect(previewSkipped.get(dirty)).toBe('dirty');
+    expect(previewSkipped.get(live)).toBe('live-branch');
+
+    // Real outcomes on disk.
+    expect(existsSync(scratch)).toBe(false);
+    expect(stillRegistered(mainRoot, scratch)).toBe(false);
+    expect(existsSync(dirty)).toBe(true);
+    expect(existsSync(live)).toBe(true);
+    expect(stillRegistered(mainRoot, live)).toBe(true);
+    expect(run.detached?.errors).toEqual([]);
+    expect(run.detached?.deregisteredNotDeleted).toEqual([]);
+    expect(run.detached?.erroredStillListed).toEqual([]);
+  });
+
+  it('negative control — WITHOUT --detached the key is absent and the detached checkout survives a real run', () => {
+    // Proves the flag is what reaches the sweep. Pre-#250 this was the ONLY
+    // behaviour available: the verb could not sweep a detached checkout at all.
+    const mainRoot = makeRepo('nodetach');
+    const scratch = plantDetached(mainRoot, 'review-250');
+
+    const code = main(['worktree-cleanup', mainRoot]);
+
+    expect(code).toBe(0);
+    const parsed = parse();
+    expect(parsed.detached).toBeUndefined();
+    expect(parsed.removed).toEqual([]);
+    expect(existsSync(scratch)).toBe(true);
+    expect(stillRegistered(mainRoot, scratch)).toBe(true);
+  });
+
+  it('a DETACHED wf_* worktree qualifies for both populations yet is removed exactly ONCE (no double-remove error)', () => {
+    // The overlap the de-duplication exists for: a `wf_`-prefixed worktree on a
+    // DETACHED head is a candidate for the name-allowlisted GC *and* for the
+    // containment-scoped detached sweep. Two executeCleanup calls over one path
+    // would remove it, then fail to remove it again — a spurious `errors` entry
+    // for a worktree that was in fact cleaned correctly.
+    const mainRoot = makeRepo('dedupe');
+    const rel = join('.claude', 'worktrees', 'wf_250-detached');
+    realGit(['worktree', 'add', '-q', '--detach', rel, 'HEAD'], mainRoot);
+    const both = join(mainRoot, rel);
+
+    const code = main(['worktree-cleanup', '--detached', mainRoot]);
+
+    expect(code).toBe(0);
+    const parsed = parse();
+    // Accounted for once, by the registered GC (which saw it first).
+    expect(parsed.removed?.map((w) => w.path)).toEqual([both]);
+    expect((parsed.detached?.removed ?? []).map((w) => w.path)).toEqual([]);
+    expect(parsed.detached?.skipped).toEqual([]);
+    // No second removal attempt, therefore no error from one.
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.detached?.errors).toEqual([]);
+    expect(existsSync(both)).toBe(false);
+  });
+
+  it('--detached composes with --orphans: both sweeps report under their own keys', () => {
+    const mainRoot = makeRepo('compose');
+    const scratch = plantDetached(mainRoot, 'review-250');
+    // A never-registered leftover dir under the recognized prefix → orphan sweep.
+    const orphan = join(mainRoot, '.claude', 'worktrees', 'wf_250-orphan');
+    mkdirSync(orphan, { recursive: true });
+
+    const code = main([
+      'worktree-cleanup',
+      '--dry-run',
+      '--detached',
+      '--orphans',
+      mainRoot,
+    ]);
+
+    expect(code).toBe(0);
+    const parsed = parse();
+    expect(parsed.detached?.selected?.map((w) => w.path)).toEqual([scratch]);
+    expect(parsed.orphans).toBeDefined();
+  });
+
+  it('--detached is a recognized flag — it never falls through to the unknown-flag guard', () => {
+    const mainRoot = makeRepo('flagvocab');
+    expect(main(['worktree-cleanup', '--detached', mainRoot])).toBe(0);
+    expect(stderrBuf).not.toMatch(/unknown flag/);
+  });
+
+  // ─── the worktree-count advisory on the CLI JSON (issue #250) ──────────────
+
+  it('worktreeCount rides BOTH output shapes with count, threshold, level and advisory as named fields', () => {
+    const mainRoot = makeRepo('advisory-ok');
+    plantDetached(mainRoot, 'review-250');
+
+    expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    const preview = parse();
+    // primary checkout + one planted worktree
+    expect(preview.worktreeCount.count).toBe(2);
+    expect(preview.worktreeCount.threshold).toBe(WORKTREE_COUNT_ADVISORY_THRESHOLD);
+    expect(preview.worktreeCount.level).toBe('ok');
+    expect(preview.worktreeCount.advisory).toBeNull();
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', mainRoot])).toBe(0);
+    // Unconditional — no flag to remember, and present on the real-run shape too.
+    expect(parse().worktreeCount.threshold).toBe(WORKTREE_COUNT_ADVISORY_THRESHOLD);
+  });
+
+  it('over the threshold: level is advisory and `advisory` carries the ENGINE message verbatim', () => {
+    const mainRoot = makeRepo('advisory-fires');
+    // Deliberately OUTSIDE the worktrees root, so this population is about the
+    // COUNT only and cannot interact with either sweep.
+    mkdirSync(join(mainRoot, 'probes'), { recursive: true });
+    for (let i = 0; i <= WORKTREE_COUNT_ADVISORY_THRESHOLD; i++) {
+      realGit(
+        ['worktree', 'add', '-q', '--detach', join('probes', `probe-${i}`), 'HEAD'],
+        mainRoot,
+      );
+    }
+
+    expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    const parsed = parse();
+
+    expect(parsed.worktreeCount.count).toBe(WORKTREE_COUNT_ADVISORY_THRESHOLD + 2);
+    expect(parsed.worktreeCount.level).toBe('advisory');
+    // The rename (`message` → `advisory`) is pinned to the engine's own output
+    // for the SAME repo, so the CLI boundary can never paraphrase the wording
+    // the engine owns (the E2BIG shape, its subagent scope, the RESTART step).
+    expect(parsed.worktreeCount.advisory).toBe(
+      checkWorktreeCountAdvisory({ repoRoot: mainRoot }).message,
+    );
+    expect(parsed.worktreeCount.advisory).toContain('E2BIG');
+    expect(parsed.worktreeCount.advisory).toContain('RESTART');
+  });
+
+  it('the advisory is ADVISORY: an over-threshold population still exits 0', () => {
+    const mainRoot = makeRepo('advisory-not-a-gate');
+    mkdirSync(join(mainRoot, 'probes'), { recursive: true });
+    for (let i = 0; i <= WORKTREE_COUNT_ADVISORY_THRESHOLD; i++) {
+      realGit(
+        ['worktree', 'add', '-q', '--detach', join('probes', `probe-${i}`), 'HEAD'],
+        mainRoot,
+      );
+    }
+
+    // A REAL run (not a dry run) — the verb's exit code must ignore the level.
+    const code = main(['worktree-cleanup', mainRoot]);
+
+    expect(code).toBe(0);
+    expect(parse().worktreeCount.level).toBe('advisory');
+  });
+});
+
+// ─── 32. The E2BIG surface is reachable from the PACKAGE ROOT (issue #250) ─────
+//
+// The detached-sweep trio, `checkWorktreeCountAdvisory` and
+// `WORKTREE_COUNT_ADVISORY_THRESHOLD` were engine-complete and spec-covered but
+// reachable only via a deep import into `./worktree-cleanup` — the same
+// barrel-gap class as `normalizeDisposableNames` (issue #184) and the
+// Documented-Form types (issue #216). This block proves a consumer can drive the
+// whole surface, and type every option/result it involves, from a PACKAGE-ROOT
+// import alone: every symbol used below comes from `./index`.
+describe('the detached-sweep + count-advisory surface is reachable from the package root (issue #250)', () => {
+  it('all five root-imported bindings are the very same exports, not lookalikes', () => {
+    expect(listDetachedScratchpadWorktreesFromRoot).toBe(
+      listDetachedScratchpadWorktrees,
+    );
+    expect(planDetachedScratchpadSweepFromRoot).toBe(planDetachedScratchpadSweep);
+    expect(sweepDetachedScratchpadWorktreesFromRoot).toBe(
+      sweepDetachedScratchpadWorktrees,
+    );
+    expect(checkWorktreeCountAdvisoryFromRoot).toBe(checkWorktreeCountAdvisory);
+    expect(WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT).toBe(
+      WORKTREE_COUNT_ADVISORY_THRESHOLD,
+    );
+  });
+
+  it('a root-only import types the sweep options, plans a fixture and reads a refusal reason', () => {
+    // DetachedSweepOptions + SkipReason, both root-typed. `live-branch` is the
+    // sweep's defining refusal, so a consumer that cannot name that type cannot
+    // narrow the skip it is most likely to act on.
+    const opts: DetachedSweepOptionsFromRoot = {
+      repoRoot: '/repo',
+      extraRoots: ['scratchpad'],
+      skipBranchHygiene: true,
+    };
+    expect(opts.extraRoots).toEqual(['scratchpad']);
+
+    const candidate: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/review-250',
+      branch: 'wave/250-staked',
+      head: 'deadbeefcafe',
+      dirty: false,
+      locked: false,
+    };
+    const plan = planDetachedScratchpadSweepFromRoot([candidate]);
+    const reason: SkipReasonFromRoot | undefined = plan.skipped[0]?.reason;
+    expect(reason).toBe('live-branch');
+  });
+
+  it('a root-only import types the advisory options and its result', () => {
+    const opts: WorktreeCountAdvisoryOptionsFromRoot = {
+      threshold: WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT,
+      countWorktrees: () => WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT + 1,
+    };
+    const advisory: WorktreeCountAdvisoryFromRoot =
+      checkWorktreeCountAdvisoryFromRoot(opts);
+
+    expect(advisory.level).toBe('advisory');
+    expect(advisory.threshold).toBe(WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT);
+    expect(advisory.message).toContain('E2BIG');
   });
 });

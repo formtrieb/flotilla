@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WORKER_REPORT_JSON_SCHEMA } from './worker-report-schema';
 import { REVIEWER_VERDICT_JSON_SCHEMA } from './reviewer-verdict-schema';
+import { WORKTREE_COUNT_ADVISORY_THRESHOLD } from './worktree-cleanup';
 
 const SKILL_MD = join(
   __dirname,
@@ -49,6 +50,11 @@ const WORKFLOW_DRIVER_MD = join(
 const START_MECHANICS_MD = join(
   __dirname,
   '../../../.claude/skills/wave-start/reference/start-mechanics.md',
+);
+
+const WAVE_START_SKILL_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-start/SKILL.md',
 );
 
 const DRIVER_WORKER_REPORT_ANCHOR =
@@ -769,5 +775,224 @@ describe('skill-schema-drift — issue.branch matches the Coordinator spine set-
     );
     expect(regressed).not.toEqual(driverMd); // the replace actually matched
     expect(countRawBranchReconstructions(regressed)).toBe(2);
+  });
+});
+
+// ─── the worktree-count advisory threshold is pinned to the engine constant ───
+//
+// Same class of pin as the schema literals above, applied to a NUMBER instead of
+// an object: the operator-facing worktree-count threshold is written out as the
+// literal `12` in wave-start/SKILL.md step 4a and in start-mechanics.md (twice —
+// the step-4a shell block and the dedicated prose section), while the authority
+// is `WORKTREE_COUNT_ADVISORY_THRESHOLD` in tools/wave/src/worktree-cleanup.ts,
+// which also owns the number's rationale and the advisory wording. A skill cannot
+// `import` a TS const, so nothing coupled the two: raising the threshold in the
+// engine would leave three stale literals telling an operator to sweep at a
+// number the engine no longer uses (or, worse, not to).
+//
+// The pin is scoped to the doc REGIONS that discuss the threshold, resolved by
+// stable heading anchors, and inside each region it reads EVERY
+// comparison-shaped occurrence (`≤ 12`, `> 12`, `>12`, `<=12`) rather than a
+// hand-listed set of sentences — so a fourth mention added later is pinned the
+// day it is written, with nobody having to remember to extend a list. Anchors
+// and non-empty regions both fail loud: a doc restructure that empties a region
+// must break this pin rather than pass vacuously.
+
+/** Regions of the operator docs that state the threshold, by stable anchors. */
+const THRESHOLD_REGIONS: ReadonlyArray<{
+  label: string;
+  path: string;
+  start: string;
+  end: string;
+}> = [
+  {
+    label: 'wave-start/SKILL.md step 4a',
+    path: WAVE_START_SKILL_MD,
+    start: '### 4a. Worktree-count advisory',
+    end: '### 5. Mark each row in-flight',
+  },
+  {
+    label: 'start-mechanics.md step-4a shell block',
+    path: START_MECHANICS_MD,
+    start: '# 4a. Worktree-count advisory',
+    end: '# 5. Mark each NON-HELD row in-flight',
+  },
+  {
+    label: 'start-mechanics.md worktree-count advisory section',
+    path: START_MECHANICS_MD,
+    start: '## The worktree-count advisory (step 4a)',
+    end: '## Routing a tuple',
+  },
+];
+
+/**
+ * Slice out `[start, end)` by literal anchors. Throws (never returns an empty
+ * string) when either anchor is missing or out of order — a doc restructure has
+ * to FAIL this pin, not silently reduce it to scanning nothing.
+ */
+function regionBetween(
+  md: string,
+  label: string,
+  start: string,
+  end: string,
+): string {
+  const from = md.indexOf(start);
+  if (from < 0) {
+    throw new Error(`threshold-region start anchor missing in ${label}: ${start}`);
+  }
+  const to = md.indexOf(end, from + start.length);
+  if (to < 0) {
+    throw new Error(`threshold-region end anchor missing in ${label}: ${end}`);
+  }
+  return md.slice(from, to);
+}
+
+/**
+ * Every threshold-shaped comparison in a region: `≤ 12`, `> 12`, `>12`, `<=12`,
+ * including a markdown-bolded `> **12**`. Deliberately keyed on the COMPARISON
+ * operator rather than on bare digits, because these regions legitimately
+ * mention other numbers (a seven-row wave, a step number, an incident date) and
+ * only a compared number is the threshold. A markdown blockquote marker (`> `)
+ * followed by prose does not match — the pattern requires digits.
+ */
+function thresholdComparisons(region: string): number[] {
+  return [...region.matchAll(/(?:≤|>=|<=|>)\s*\**\s*(\d+)/g)].map((m) =>
+    Number(m[1]),
+  );
+}
+
+/**
+ * The load-bearing assertion: every comparison in `region` is `threshold`, and
+ * there is at least one. Throws with the offending values named, so a failure
+ * says which number drifted rather than "expected [12,12] to equal [16,16]".
+ */
+function assertThresholdPinned(
+  region: string,
+  label: string,
+  threshold: number,
+): void {
+  const found = thresholdComparisons(region);
+  if (found.length === 0) {
+    throw new Error(
+      `${label}: no threshold comparison found at all — the region no longer ` +
+        'states the threshold, so this pin would pass vacuously. Re-anchor it.',
+    );
+  }
+  const drifted = found.filter((n) => n !== threshold);
+  if (drifted.length > 0) {
+    throw new Error(
+      `${label}: threshold literal(s) ${drifted.join('/')} disagree with the ` +
+        `engine's WORKTREE_COUNT_ADVISORY_THRESHOLD (${threshold}). The engine ` +
+        'constant in tools/wave/src/worktree-cleanup.ts is the authority; the ' +
+        'doc literal is a copy of it and must be updated together with it.',
+    );
+  }
+}
+
+describe('skill-schema-drift — the worktree-count threshold literal pins WORKTREE_COUNT_ADVISORY_THRESHOLD', () => {
+  it.each(THRESHOLD_REGIONS.map((r) => [r.label, r] as const))(
+    'every threshold comparison in %s equals the engine constant',
+    (_label, region) => {
+      const md = readFileSync(region.path, 'utf-8');
+      const slice = regionBetween(md, region.label, region.start, region.end);
+      expect(() =>
+        assertThresholdPinned(
+          slice,
+          region.label,
+          WORKTREE_COUNT_ADVISORY_THRESHOLD,
+        ),
+      ).not.toThrow();
+      // Belt-and-braces: the helper above is the load-bearing assertion; this
+      // pins the extracted values directly, so a helper that silently stopped
+      // finding anything cannot hide behind a not.toThrow().
+      const found = thresholdComparisons(slice);
+      expect(found.length).toBeGreaterThan(0);
+      expect(new Set(found)).toEqual(new Set([WORKTREE_COUNT_ADVISORY_THRESHOLD]));
+    },
+  );
+
+  it.each([
+    ['wave-start/SKILL.md', WAVE_START_SKILL_MD],
+    ['start-mechanics.md', START_MECHANICS_MD],
+  ] as const)('%s cites the engine constant as the authority', (_label, path) => {
+    const md = readFileSync(path, 'utf-8');
+    expect(md).toContain('WORKTREE_COUNT_ADVISORY_THRESHOLD');
+    expect(md).toContain('tools/wave/src/worktree-cleanup.ts');
+    // ...and names the pin itself, so the next editor learns from the doc why a
+    // one-sided change fails, instead of from a red test they have to explain.
+    expect(md).toContain('skill-schema-drift.spec.ts');
+  });
+
+  it.each(THRESHOLD_REGIONS.map((r) => [r.label, r] as const))(
+    'negative control — a drifted literal in %s is caught',
+    (_label, region) => {
+      const md = readFileSync(region.path, 'utf-8');
+      const slice = regionBetween(md, region.label, region.start, region.end);
+      const drifted = WORKTREE_COUNT_ADVISORY_THRESHOLD + 4;
+      // Drift exactly ONE mention — the realistic shape of this defect is a
+      // partial edit, not a global rename.
+      const regressed = slice.replace(
+        new RegExp(`(≤|>=|<=|>)(\\s*\\**\\s*)${WORKTREE_COUNT_ADVISORY_THRESHOLD}`),
+        `$1$2${drifted}`,
+      );
+      expect(regressed).not.toEqual(slice); // the replace actually matched
+      expect(() =>
+        assertThresholdPinned(
+          regressed,
+          region.label,
+          WORKTREE_COUNT_ADVISORY_THRESHOLD,
+        ),
+      ).toThrow(new RegExp(`${drifted}`));
+      expect(thresholdComparisons(regressed)).toContain(drifted);
+    },
+  );
+
+  it('negative control — an engine-side change alone is caught (the other direction)', () => {
+    // The likelier real-world order: the constant is raised, the docs are not.
+    // Pinning against a *different* threshold value must fail for every region,
+    // or the pin only guards doc edits and not the constant it exists to track.
+    for (const region of THRESHOLD_REGIONS) {
+      const md = readFileSync(region.path, 'utf-8');
+      const slice = regionBetween(md, region.label, region.start, region.end);
+      expect(() =>
+        assertThresholdPinned(
+          slice,
+          region.label,
+          WORKTREE_COUNT_ADVISORY_THRESHOLD + 1,
+        ),
+      ).toThrow(/disagree with the engine/);
+    }
+  });
+
+  it('negative control — an emptied or re-titled region fails loud instead of passing vacuously', () => {
+    expect(() => assertThresholdPinned('no numbers here', 'fixture', 12)).toThrow(
+      /no threshold comparison found/,
+    );
+    expect(() =>
+      regionBetween('# nothing\n', 'fixture', '### 4a. Worktree-count advisory', '### 5.'),
+    ).toThrow(/start anchor missing/);
+    expect(() =>
+      regionBetween(
+        '### 4a. Worktree-count advisory\nbody\n',
+        'fixture',
+        '### 4a. Worktree-count advisory',
+        '### 5. Mark each row in-flight',
+      ),
+    ).toThrow(/end anchor missing/);
+  });
+
+  it('the extractor ignores non-threshold numbers and markdown blockquote markers', () => {
+    // Guards the discriminator itself: a region mentioning a seven-row wave, a
+    // step number and a date must contribute nothing, and a `> ` blockquote line
+    // must not read as a `>` comparison.
+    expect(
+      thresholdComparisons(
+        '> **This is an ADVISORY.** Live occurrence 2026-07-30, a seven-row wave, step 5.\n',
+      ),
+    ).toEqual([]);
+    expect(thresholdComparisons('- **≤ 12** → silent\n- **> 12** → sweep\n')).toEqual([
+      12, 12,
+    ]);
+    expect(thresholdComparisons('#   >12 → advisory; <=12 → silent\n')).toEqual([12, 12]);
   });
 });
