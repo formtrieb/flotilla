@@ -155,7 +155,14 @@ export interface CreateInput {
    */
   acceptanceCriteria?: { text: string; checked: boolean }[];
   estimatedWallclock?: string;
-  /** Free-prose body sections (Parent, What to build, …) written verbatim. */
+  /**
+   * Free-prose body sections (Parent, What to build, …) written verbatim.
+   *
+   * Optional for a DECORATED input (its Header-Block is already a body), but
+   * **required with non-blank content for a BARE one** — there it IS the whole
+   * authored body, so {@link classifyCreateInput} rejects a bare input whose
+   * `bodySections` is absent, `[]`, or all-blank (#278/#309).
+   */
   bodySections?: { heading: string; markdown: string }[];
 }
 
@@ -180,6 +187,72 @@ export const HEADER_BLOCK_FIELDS = [
  */
 const DECORATION_ONLY_FIELDS = ['unblocks', 'parent', 'estimatedWallclock'] as const;
 
+/**
+ * Which whole-input invariant a {@link CreateInputError} is about. A closed
+ * union so a caller routes on the discriminant rather than on message text
+ * (the {@link EngineCliBindingError} stance, ADR-0032/ADR-0029 fail-loud).
+ *
+ * - `header-block-half-written` — SOME of {@link HEADER_BLOCK_FIELDS} supplied.
+ * - `bare-carries-decoration-only-fields` — a bare input with a
+ *   {@link DECORATION_ONLY_FIELDS} stowaway.
+ * - `bare-without-body` — a bare input whose `bodySections` carries no authored
+ *   content at all (absent, `[]`, or every entry's `markdown` blank).
+ */
+export type CreateInputFailure =
+  | 'header-block-half-written'
+  | 'bare-carries-decoration-only-fields'
+  | 'bare-without-body';
+
+/**
+ * The typed rejection {@link classifyCreateInput} throws. Structured on
+ * purpose: `failure` names WHICH invariant broke and `fields` names the
+ * {@link CreateInput} fields it is about, so a caller (the issue-store CLI, a
+ * skill driver, any future one) can classify the rejection — usage-error vs
+ * domain-failure, which field to re-author — without string-matching a prose
+ * message. The message stays the human-facing rendering, not the contract.
+ *
+ * Every caller inherits the rejection because every adapter runs the classifier
+ * as the FIRST statement of `create()`: the rule cannot be reached around by
+ * calling a store directly instead of through the CLI.
+ */
+export class CreateInputError extends Error {
+  readonly name = 'CreateInputError';
+  readonly code = 'create-input-invalid';
+  constructor(
+    /** Which whole-input invariant this rejection is about. */
+    readonly failure: CreateInputFailure,
+    /**
+     * The {@link CreateInput} field names this rejection names — the missing
+     * Header-Block fields, the stowaways, or `['bodySections']`. Field NAMES
+     * only: never the authored values, which are the caller's content.
+     */
+    readonly fields: readonly string[],
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Does a BARE create's `bodySections` actually carry authored content? A bare
+ * issue has NO Header-Block to fall back on — `bodySections` IS its entire body
+ * — so "absent", "`[]`", and "present but every entry's `markdown` is blank"
+ * are the same failure: a filed issue with 0 body chars.
+ *
+ * Deliberately NOT exported. The invariant is the classifier's (below), and a
+ * shared predicate is exactly what let the rule live at one caller (the CLI)
+ * while the classifier that decides "this is a bare issue" declined to check
+ * the one field a bare issue depends on entirely. One owner, one seam: a caller
+ * that wants this answer asks {@link classifyCreateInput}.
+ */
+function hasBareBodyContent(sections: CreateInput['bodySections']): boolean {
+  return (
+    Array.isArray(sections) &&
+    sections.length > 0 &&
+    sections.some((s) => s.markdown.trim().length > 0)
+  );
+}
+
 /** A {@link CreateInput} whose whole wave Header-Block is present (the decorated path). */
 export type DecoratedCreateInput = CreateInput &
   Required<Pick<CreateInput, (typeof HEADER_BLOCK_FIELDS)[number]>>;
@@ -200,13 +273,24 @@ export type CreateShape =
  * minted and before any write, so a rejected input files nothing (the
  * {@link IssueStore.applyTriage} no-partial-application discipline).
  *
- * **Throws** on a PARTIAL Header-Block (some of {@link HEADER_BLOCK_FIELDS}
- * supplied, some not) and on a bare input carrying a
- * {@link DECORATION_ONLY_FIELDS} stowaway. Both are the same fail-loud stance
- * the body-codec takes on a present-but-unparseable `## Blocked by`: an ABSENT
- * Header-Block is a legitimate claim ("this is a bare issue"), a BROKEN one is
- * not, and silently completing a half-written header would mint a wave-eligible
- * issue out of a caller bug.
+ * **Throws** a typed {@link CreateInputError} on a PARTIAL Header-Block (some of
+ * {@link HEADER_BLOCK_FIELDS} supplied, some not), on a bare input carrying a
+ * {@link DECORATION_ONLY_FIELDS} stowaway, and on a bare input with no authored
+ * body content. All three are the same fail-loud stance the body-codec takes on
+ * a present-but-unparseable `## Blocked by`: an ABSENT Header-Block is a
+ * legitimate claim ("this is a bare issue"), a BROKEN one is not, and silently
+ * completing a half-written header would mint a wave-eligible issue out of a
+ * caller bug.
+ *
+ * **Why the body requirement lives HERE (#309).** It arrived as a predicate at
+ * the issue-store CLI, applied to whatever this function classified as bare —
+ * which worked, but left the classifier deciding "this is a bare issue" while
+ * declining to check the one field a bare issue depends on entirely, and left
+ * the rule reachable around by any non-CLI caller of `create`. The classifier is
+ * the seam every adapter already runs first, before an id is minted and before
+ * any write, so moving the requirement here makes it a property of the create
+ * contract rather than of one entrypoint. The CLI keeps only the RENDERING of
+ * the rejection (its exit-code choice and its message); the rule is inherited.
  */
 export function classifyCreateInput(input: CreateInput): CreateShape {
   const missing = HEADER_BLOCK_FIELDS.filter((f) => input[f] === undefined);
@@ -218,7 +302,9 @@ export function classifyCreateInput(input: CreateInput): CreateShape {
   if (missing.length === HEADER_BLOCK_FIELDS.length) {
     const stowaways = DECORATION_ONLY_FIELDS.filter((f) => input[f] !== undefined);
     if (stowaways.length > 0) {
-      throw new Error(
+      throw new CreateInputError(
+        'bare-carries-decoration-only-fields',
+        stowaways,
         `create: a BARE issue carries no Header-Block, so it cannot carry ` +
           `${stowaways.map((f) => `\`${f}\``).join(', ')} either. Either file it bare ` +
           `(title + filingHint + bodySections only) and decorate it later via ` +
@@ -226,10 +312,31 @@ export function classifyCreateInput(input: CreateInput): CreateShape {
           `(${HEADER_BLOCK_FIELDS.join(', ')}) now.`,
       );
     }
+    // #278's requirement, at its root (#309): a bare issue's `bodySections` IS
+    // its entire authored content, so an absent/empty/all-blank one would file
+    // an issue with literally nothing in its body (measured: ten dispositions
+    // from one wave landed on the tracker with 0 body chars). Checked here, in
+    // the same breath as the shape decision, so every caller of every store
+    // inherits it — not only the one that goes through the CLI. A DECORATED
+    // input is deliberately untouched by this: it carries a Header-Block, so
+    // its body is never empty even with no prose sections at all.
+    if (!hasBareBodyContent(input.bodySections)) {
+      throw new CreateInputError(
+        'bare-without-body',
+        ['bodySections'],
+        'create: a BARE issue (no Header-Block) carries its ENTIRE authored ' +
+          'content in `bodySections` — an absent, empty, or all-blank ' +
+          '`bodySections` would file an issue with no body at all. Supply at ' +
+          'least one `bodySections` entry with non-blank `markdown` (e.g. Gap ' +
+          '+ Provenance), or supply the full Header-Block for a decorated issue.',
+      );
+    }
     return { kind: 'bare' };
   }
 
-  throw new Error(
+  throw new CreateInputError(
+    'header-block-half-written',
+    missing,
     `create: the wave Header-Block is half-written — missing ` +
       `${missing.map((f) => `\`${f}\``).join(', ')}. Supply the whole block ` +
       `(${HEADER_BLOCK_FIELDS.join(', ')}) for a decorated issue, or NONE of it ` +
@@ -362,8 +469,11 @@ export interface IssueStore {
    * is the honest outcome — the wave fields are genuinely absent, not empty.
    *
    * Validates the WHOLE input via {@link classifyCreateInput} BEFORE minting an
-   * id or writing anything: a half-written Header-Block throws and files
-   * nothing.
+   * id or writing anything: a half-written Header-Block, a bare input with a
+   * decoration-only stowaway, and a bare input with no authored body content all
+   * throw a typed {@link CreateInputError} and file nothing. Those rejections are
+   * part of THIS contract, not of any one entrypoint — a direct caller of a store
+   * inherits them exactly as the issue-store CLI does.
    */
   create(input: CreateInput): Promise<string>;
 

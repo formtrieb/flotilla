@@ -359,15 +359,20 @@ describe('issue-store-cli', () => {
 
   // ── #278: a bare create with no body content is rejected, loud ──────────────
   //
-  // The defect this closes: `classifyCreateInput` only judges the Header-Block
-  // group, never `bodySections` — so a bare `--input` that forgot the Gap/
-  // Provenance prose used to sail through `create` and file an issue with
-  // literally nothing in its body. Ten dispositions from one wave's Disclosures
-  // all landed on the tracker measuring 0 body chars this way. These specs are
-  // the negative control (Convention 11): each ACCEPT variant below is the
+  // The defect this closes: a bare `--input` that forgot the Gap/Provenance
+  // prose used to sail through `create` and file an issue with literally
+  // nothing in its body. Ten dispositions from one wave's Disclosures all
+  // landed on the tracker measuring 0 body chars this way. These specs are the
+  // negative control (Convention 11): each ACCEPT variant below is the
   // BARE_INPUT shape (already covered above), and each REJECT variant removes
-  // exactly the content the guard exists to require — proving the guard can
-  // fail, not just that it always passes.
+  // exactly the content the rule exists to require — proving it can fail, not
+  // just that it always passes.
+  //
+  // #309: the RULE no longer lives here. `classifyCreateInput` owns it (its own
+  // unit specs pin the typed `CreateInputError`; the conformance suite pins that
+  // every store rejects the same way for a non-CLI caller). What these CLI cases
+  // now measure is this layer's remaining job — the exit code and the message
+  // the operator reads — which must be exactly what it was before the move.
   it('create rejects a BARE input with bodySections entirely ABSENT (exit 2, files nothing)', async () => {
     const store = tmpStore();
     const p = writeJson('is-nobody-', {
@@ -434,6 +439,26 @@ describe('issue-store-cli', () => {
     expect(id.length).toBeGreaterThan(0);
     const triage = await store.readTriage(id);
     expect(triage.body).toContain('wave hardening, row 3, iteration 1.');
+  });
+
+  it('the bare-no-body rejection keeps its message quality on stderr (the CLI renders it)', async () => {
+    // The layer move (#309) is only honest if the operator-facing text survives
+    // it: the message must still name the field to supply and what would
+    // otherwise be filed, not degrade to a generic "invalid input".
+    const store = tmpStore();
+    const p = writeJson('is-msg-', {
+      title: 'Gate 8 ships inert',
+      filingHint: 'gate-8-ships-inert',
+    });
+    expect(await runIssueStore(['create', '--input', p], store)).toBe(2);
+
+    const stderr = (errSpy.mock.calls as unknown[][]).map((c) => String(c[0])).join('');
+    expect(stderr).toContain('bodySections');
+    expect(stderr).toContain('no body at all');
+    expect(stderr).toContain('Header-Block');
+    // …and it is rendered as a USAGE error (the usage banner rides along),
+    // which is what exit 2 promises.
+    expect(stderr).toContain('usage: issue-store');
   });
 
   it('create with a HALF-WRITTEN Header-Block is a usage error (exit 2) and files nothing', async () => {
