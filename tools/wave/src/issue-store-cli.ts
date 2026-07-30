@@ -20,7 +20,12 @@
  *              files an undecorated issue with no eligibility marker and no
  *              Header-Block; wave-readiness comes later via `annotate` (decorate).
  *              A half-written Header-Block is a usage error (exit 2), never a
- *              silently-completed one.
+ *              silently-completed one. A BARE input whose `bodySections` is
+ *              absent/empty/all-blank is ALSO a usage error (exit 2, #278):
+ *              a bare issue has no Header-Block to fall back on, so an empty
+ *              `bodySections` means the filed issue carries no body at all —
+ *              exactly the defect that landed 10/10 disclosure filings with
+ *              0 body chars on the tracker.
  *   read     <id>                                  → prints the IssueView (JSON)
  *   parse-ref <id>                                 → prints the IssueRef {slug?, issue} (JSON)
  *   annotate <id> --patch <AnnotatePatch.json>     → decorates an existing issue (ADR-0010)
@@ -51,6 +56,7 @@ import { classifyCreateInput } from './adapters/issue-store';
 import type {
   IssueStore,
   CreateInput,
+  CreateShape,
   AnnotatePatch,
   AmendPatch,
   ClaimRung,
@@ -75,6 +81,22 @@ function flagAll(args: string[], name: string): string[] {
     if (args[i] === name) out.push(args[i + 1]);
   }
   return out;
+}
+
+/**
+ * #278 guard: does a BARE create's `bodySections` actually carry authored
+ * content? A bare issue has NO Header-Block to fall back on — `bodySections`
+ * IS its entire body — so "absent", "`[]`", and "present but every entry's
+ * `markdown` is blank" are the same failure: a filed issue with 0 body chars.
+ * Pure predicate, no I/O, so `runIssueStore`'s create case can reject BEFORE
+ * calling `store.create` — the write never happens on a false input.
+ */
+function hasBareBodyContent(sections: CreateInput['bodySections']): boolean {
+  return (
+    Array.isArray(sections) &&
+    sections.length > 0 &&
+    sections.some((s) => s.markdown.trim().length > 0)
+  );
 }
 
 function usage(message: string): number {
@@ -131,10 +153,30 @@ export async function runIssueStore(
         // accepted and files an undecorated issue; a HALF-WRITTEN Header-Block
         // is a caller bug, so it is a usage error (exit 2) naming the missing
         // fields, not a domain failure. Absent and broken are different claims.
+        let shape: CreateShape;
         try {
-          classifyCreateInput(input);
+          shape = classifyCreateInput(input);
         } catch (err) {
           return usage((err as Error).message);
+        }
+        // #278: classifyCreateInput only judges the Header-Block group — it
+        // does not require `bodySections`, so a bare input with an absent/
+        // empty/all-blank `bodySections` used to sail through and file an
+        // issue with literally nothing in its body (measured: 10/10 disclosure
+        // dispositions from one wave landed with 0 body chars on the tracker,
+        // the Gap/Provenance text surviving only because the spine was still
+        // archived). A bare issue's `bodySections` IS its entire authored
+        // content, so this is the SAME "usage error, not a domain failure"
+        // stance as the half-written-header check just above: reject loud,
+        // before any write, rather than fail silently after one.
+        if (shape.kind === 'bare' && !hasBareBodyContent(input.bodySections)) {
+          return usage(
+            'create: a BARE issue (no Header-Block) carries its ENTIRE authored ' +
+              'content in `bodySections` — an absent, empty, or all-blank ' +
+              '`bodySections` would file an issue with no body at all. Supply at ' +
+              'least one `bodySections` entry with non-blank `markdown` (e.g. Gap ' +
+              '+ Provenance), or supply the full Header-Block for a decorated issue.',
+          );
         }
         const id = await store.create(input);
         process.stdout.write(id + '\n');

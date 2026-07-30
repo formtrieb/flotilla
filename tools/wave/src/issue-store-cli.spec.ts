@@ -357,6 +357,85 @@ describe('issue-store-cli', () => {
     expect(errSpy).toHaveBeenCalled();
   });
 
+  // ── #278: a bare create with no body content is rejected, loud ──────────────
+  //
+  // The defect this closes: `classifyCreateInput` only judges the Header-Block
+  // group, never `bodySections` — so a bare `--input` that forgot the Gap/
+  // Provenance prose used to sail through `create` and file an issue with
+  // literally nothing in its body. Ten dispositions from one wave's Disclosures
+  // all landed on the tracker measuring 0 body chars this way. These specs are
+  // the negative control (Convention 11): each ACCEPT variant below is the
+  // BARE_INPUT shape (already covered above), and each REJECT variant removes
+  // exactly the content the guard exists to require — proving the guard can
+  // fail, not just that it always passes.
+  it('create rejects a BARE input with bodySections entirely ABSENT (exit 2, files nothing)', async () => {
+    const store = tmpStore();
+    const p = writeJson('is-nobody-', {
+      title: 'Gate 8 ships inert',
+      filingHint: 'gate-8-ships-inert',
+      // no bodySections key at all
+    });
+    expect(await runIssueStore(['create', '--input', p], store)).toBe(2);
+    expect(errSpy).toHaveBeenCalled();
+
+    captured = '';
+    await runIssueStore(['listOpen'], store);
+    expect(JSON.parse(captured) as IssueView[]).toHaveLength(0);
+  });
+
+  it('create rejects a BARE input with bodySections as an EMPTY array (exit 2, files nothing)', async () => {
+    const store = tmpStore();
+    const p = writeJson('is-emptybody-', {
+      title: 'Gate 8 ships inert',
+      filingHint: 'gate-8-ships-inert',
+      bodySections: [],
+    });
+    expect(await runIssueStore(['create', '--input', p], store)).toBe(2);
+    expect(errSpy).toHaveBeenCalled();
+
+    captured = '';
+    await runIssueStore(['listOpen'], store);
+    expect(JSON.parse(captured) as IssueView[]).toHaveLength(0);
+  });
+
+  it('create rejects a BARE input whose bodySections entries are all BLANK markdown (exit 2, files nothing)', async () => {
+    const store = tmpStore();
+    const p = writeJson('is-blankbody-', {
+      title: 'Gate 8 ships inert',
+      filingHint: 'gate-8-ships-inert',
+      bodySections: [
+        { heading: 'Gap', markdown: '   ' },
+        { heading: 'Provenance', markdown: '' },
+      ],
+    });
+    expect(await runIssueStore(['create', '--input', p], store)).toBe(2);
+    expect(errSpy).toHaveBeenCalled();
+
+    captured = '';
+    await runIssueStore(['listOpen'], store);
+    expect(JSON.parse(captured) as IssueView[]).toHaveLength(0);
+  });
+
+  it('create accepts a BARE input with at least one non-blank bodySections entry (the accept path stays open)', async () => {
+    const store = tmpStore();
+    // one blank entry alongside one real one — the guard asks for AT LEAST ONE
+    // non-blank section, not that every section carry content.
+    const p = writeJson('is-mixedbody-', {
+      title: 'Gate 8 ships inert',
+      filingHint: 'gate-8-ships-inert',
+      bodySections: [
+        { heading: 'Gap', markdown: '   ' },
+        { heading: 'Provenance', markdown: 'wave hardening, row 3, iteration 1.' },
+      ],
+    });
+    const code = await runIssueStore(['create', '--input', p], store);
+    expect(code).toBe(0);
+    const id = captured.trim();
+    expect(id.length).toBeGreaterThan(0);
+    const triage = await store.readTriage(id);
+    expect(triage.body).toContain('wave hardening, row 3, iteration 1.');
+  });
+
   it('create with a HALF-WRITTEN Header-Block is a usage error (exit 2) and files nothing', async () => {
     const store = tmpStore();
     // risk supplied, the rest of the block missing — neither bare nor decorated.
