@@ -15,8 +15,17 @@ import {
   ROW_STATES,
   setFrontmatterStatus,
   SPINE_STATUSES,
+  HUMAN_GATED_WORKER,
+  humanGatedRows,
+  humanHeldRowIds,
 } from './wave-md-rw';
 import { ISSUE_STATES } from './stop-condition-state-machine';
+// The shipped default Worker vocabulary. Imported for one parity assertion:
+// `HUMAN_GATED_WORKER` is this module's copy of a token whose authoritative
+// list lives in header-parser.ts, exactly as `ROW_STATES` mirrors the state
+// machine's `ISSUE_STATES` below — so a rename there must fail loud here
+// rather than leave the dispatch gate silently matching nothing.
+import { WORKER_VALUES } from './header-parser';
 // Imported to drive the REAL resume join (issue #141 AC6) against an
 // out-of-convention branch name — the join lives in resume.ts but reads its
 // branches from THIS module's `branchesByIssueId`, so the coupling under test
@@ -1398,5 +1407,141 @@ describe('resume join — a branch named outside the convention still joins its 
       OFF_CONVENTION,
       'feature/132-beta',
     ]);
+  });
+});
+
+// ─── the human-gated dispatch lane (the HITL gate, issue #292) ────────────────
+//
+// `HITL-required` is a first-class Worker value: real wave work that ENTERS a
+// wave and is merely human-gated (ADR-0012) — not the triage terminal
+// `ready-for-human`, which never enters one (ADR-0015). The engine's job here is
+// narrow and total: name the token in one place, and answer "which rows must a
+// dispatch pass hold?" off the spine, the WAL authority for what a wave contains.
+//
+// The load-bearing property is the CONJUNCTION — human-gated AND still
+// `planned`. That is the HELD seam reused on the worker axis: an intra-wave
+// blocked row waits at `planned` too, and a row past `planned` was released by a
+// human and is ordinary in-flight work. The negative controls below pin both
+// halves, so a gate that degenerated to "every human-gated row, forever" fails
+// here rather than in a wave that can no longer reach terminal.
+
+describe('human-gated rows — the dispatch-time human lane', () => {
+  const meta = {
+    slug: 'human-lane',
+    description: 'a wave carrying a human-gated row',
+    coordinator: 'at',
+    model: 'Opus 4.8',
+    created: '2026-07-30',
+    lastUpdated: '2026-07-30',
+  };
+  const NO_CONFLICT = { issues: [] as string[], cells: [] };
+
+  type Row = { id: string; title: string; worker: string; risk: string };
+
+  /** A freshly-rendered spine for `roster` — every row starts `planned`. */
+  const spineOf = (roster: Row[]): string =>
+    renderSpine(meta, roster, NO_CONFLICT, 'all self-content gates pass.');
+
+  const MIXED: Row[] = [
+    { id: '10', title: 'Ordinary AFK row', worker: 'background', risk: 'mechanical' },
+    { id: '11', title: 'Rotate the credential by hand', worker: HUMAN_GATED_WORKER, risk: 'cross-feature-refactor' },
+    { id: '12', title: 'Another AFK row', worker: 'background-heavy', risk: 'isolated-refactor' },
+  ];
+
+  const TITLE_ONLY: Row[] = [
+    {
+      id: '20',
+      title: `wire the ${HUMAN_GATED_WORKER} gate through wave-start`,
+      worker: 'background',
+      risk: 'mechanical',
+    },
+  ];
+
+  it('the default token is a member of the shipped Worker vocabulary (header-parser parity)', () => {
+    expect([...WORKER_VALUES]).toContain(HUMAN_GATED_WORKER);
+  });
+
+  it('selects exactly the human-gated row out of a mixed roster', () => {
+    const spine = readSpine(spineOf(MIXED));
+    expect(humanGatedRows(spine).map((r) => r.id)).toEqual(['11']);
+    expect(humanHeldRowIds(spine)).toEqual(['11']);
+    // …and leaves every sibling in the table: the wave runs AROUND the hold,
+    // it is not narrowed to it.
+    expect(spine.planTable.map((r) => r.id)).toEqual(['10', '11', '12']);
+  });
+
+  it('NEGATIVE CONTROL — a wave with no human-gated row holds nothing', () => {
+    const spine = readSpine(
+      spineOf(MIXED.filter((r) => r.worker !== HUMAN_GATED_WORKER)),
+    );
+    expect(humanGatedRows(spine)).toEqual([]);
+    expect(humanHeldRowIds(spine)).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — the token in a TITLE is not a human-gated row (cell match, never substring)', () => {
+    const source = spineOf(TITLE_ONLY);
+    // the token really is present in the rendered source — the ROW is not
+    expect(source).toContain(HUMAN_GATED_WORKER);
+    const spine = readSpine(source);
+    expect(humanGatedRows(spine)).toEqual([]);
+    expect(humanHeldRowIds(spine)).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — a human-gated row PAST `planned` is RELEASED, not held', () => {
+    // The HELD-seam reuse, in one assertion: the hold is (human-gated ∧
+    // planned), never human-gated alone. A human acted on an earlier pass, the
+    // Coordinator dispatched the row, and it must stop reading as "awaiting a
+    // human" — otherwise the gate holds its own row forever and the wave can
+    // never reach terminal.
+    for (const released of ROW_STATES.filter((s) => s !== 'planned')) {
+      const spine = readSpine(setRowState(spineOf(MIXED), '11', released));
+      expect(spine.planTable.find((r) => r.id === '11')?.state).toBe(released);
+      // still a human-gated ROW (the state-blind view) …
+      expect(humanGatedRows(spine).map((r) => r.id)).toEqual(['11']);
+      // … but no longer a HELD one (the gate answer).
+      expect(humanHeldRowIds(spine)).toEqual([]);
+    }
+  });
+
+  it('reads a heavily space-padded Worker cell (the on-disk shape)', () => {
+    const rendered = spineOf(MIXED);
+    const padded = rendered.replace(
+      `| ${HUMAN_GATED_WORKER} |`,
+      `|    ${HUMAN_GATED_WORKER}     |`,
+    );
+    expect(padded).not.toEqual(rendered); // the replace actually matched
+    expect(humanHeldRowIds(readSpine(padded))).toEqual(['11']);
+  });
+
+  it('honours a consumer-configured token (Worker is a config-governed enum)', () => {
+    const custom: Row[] = [
+      { id: '30', title: 'gated on a human', worker: 'needs-a-human', risk: 'mechanical' },
+      { id: '31', title: 'afk', worker: 'background', risk: 'mechanical' },
+    ];
+    const customSpine = readSpine(spineOf(custom));
+    // under the DEFAULT set the consumer's token is invisible …
+    expect(humanHeldRowIds(customSpine)).toEqual([]);
+    // … under the configured set it holds …
+    expect(humanHeldRowIds(customSpine, ['needs-a-human'])).toEqual(['30']);
+    // … and the default token no longer does: the set IS the whole answer.
+    expect(humanHeldRowIds(readSpine(spineOf(MIXED)), ['needs-a-human'])).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — an empty accepted set holds nothing (a fully-trimmed vocabulary)', () => {
+    expect(humanHeldRowIds(readSpine(spineOf(MIXED)), [])).toEqual([]);
+  });
+
+  it('matches the UNESCAPED cell value when the token itself carries a pipe', () => {
+    const spine = readSpine(
+      spineOf([{ id: '40', title: 'gated', worker: 'HITL|required', risk: 'mechanical' }]),
+    );
+    expect(spine.planTable[0].worker).toBe('HITL|required');
+    expect(humanHeldRowIds(spine, ['HITL|required'])).toEqual(['40']);
+  });
+
+  it('is total on a spine with no Plan-Table at all', () => {
+    const spine = readSpine('# Wave\n\n**Status:** draft\n');
+    expect(humanGatedRows(spine)).toEqual([]);
+    expect(humanHeldRowIds(spine)).toEqual([]);
   });
 });

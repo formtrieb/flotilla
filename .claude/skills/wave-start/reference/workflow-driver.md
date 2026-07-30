@@ -59,6 +59,18 @@ The live incident (`2026-07-27-consumer-gaps`): three of six Workers decorated t
 
 Neither gap is flotilla's to close generically with a hardcoded command — the dependency dir, the install command, and the config's location are all **consumer-specific**. The mitigation is two per-row inputs the Coordinator supplies (`depsSetup` / `issueSpec` below), sourced from the consumer's own setup — `wave-setup`'s preconditions record exactly these two answers so the Coordinator has them ready at compose time instead of re-deriving them wave after wave.
 
+## The human gate — a human-gated row never reaches `agent()`
+
+A row whose `Worker` is human-gated (`HITL-required` by default, ADR-0012) is real wave work — planned, claimed, tracked — that **no agent may pick up until a human acts**. `start-mechanics.md` step 3b holds such a row in the human lane and leaves it out of `ISSUES`. This file carries the backstop for that exclusion: `assertNotHumanGated`, run over every row **before any `agent()` fan-out**, right beside `assertRequiredRowFields`.
+
+**Why an assertion and not just the instruction.** This failure has no symptom of its own. Every required field is present, every brief interpolates cleanly, the worktree checks out, and the Worker runs to completion — against a blocker that is, by construction, not something an agent can clear. The wave spends a full agent budget and returns a report that looks ordinary. That is the same shape as the two defects the neighbouring assertion exists for (`anchorSha`, then `branch`): an exclusion the Coordinator is *told* to apply, applied by hand, per wave, until one pass forgets. The fix is the same too — make the composed array itself refuse.
+
+**Deliberately its own predicate, not a `REQUIRED_ROW_FIELDS` entry.** That list asks *is this field present enough to interpolate?* and its remedy is to wire the value in. This one asks *may this row be dispatched at all?* and its remedy is to take the row out. Merging them would make a missing `worker` read as a pass and a human-gated one read as a wiring bug.
+
+**The token is compose-time-filled, like `WAVE_CLI`.** `Worker` is a config-governed enum (ADR-0007), so `HUMAN_GATED_WORKERS` is the consumer's set, defaulting to the engine's `HUMAN_GATED_WORKER` (`tools/wave/src/wave-md-rw.ts`, whose `humanHeldRowIds` owns the same predicate engine-side). The script cannot `import` it — no filesystem, no local modules — so it is pasted, exactly as the two `*_SCHEMA` literals are.
+
+**Scope: this is a backstop, not the gate.** It throws for the whole `pipeline()` rather than skipping the offending row, because a human-gated row in `ISSUES` means the upstream hold did not run — and the rest of that composition is then worth re-checking too. The gate that lets the other rows dispatch normally is step 3b, upstream, where the row is simply never added.
+
 ## Re-dispatch (iteration ≥ 2): teardown-before-dispatch + tracking-free checkout (W26-F1)
 
 A cap=1 re-dispatch (`route-verdict`'s `changes-requested` → `re-dispatched`, start-mechanics.md step 7d) sends the SAME Worker back onto the SAME branch — `wave/<id>-<slug>` already exists, carrying the iteration-1 commits, and the fresh iteration-2 worktree must land on it, not discard it. Two structural traps live here, both hit for the first time live in `2026-07-23-w25-followups-w26` (finding W26-F1):
@@ -240,9 +252,12 @@ const VERDICTS_DIR = '<absolute .flotilla/waves/<slug>/verdicts>'
 const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('\n')
 
 // ── Per-row data — Coordinator fills this from the spine before invoking ──
-// Each: { id, slug, risk, iteration, model, anchorSha, coordinatorBranch,
+// Each: { id, slug, worker, risk, iteration, model, anchorSha, coordinatorBranch,
 //         depsSetup, issueSpec, prTitle, closePhrase, reviewerHints, siblingBranches,
 //         iteration1HeadSha? }
+// `worker` is copied straight off the row's Plan-Table Worker cell. It is not
+// interpolated into any brief — it exists so `assertNotHumanGated` below can
+// refuse to compose a row no agent may pick up (see §The human gate).
 // `branch` is NOT authored here — it is DERIVED, once, immediately below (see
 // its own comment) from `id` + `slug`, the same two fields already in this
 // list. Never add a hand-authored `branch:` to a row literal; the derivation
@@ -258,6 +273,10 @@ const ISSUES = [
   {
     id: 'NN',
     slug: 'short-slug',
+    // The row's Plan-Table Worker cell, verbatim. A human-gated value here is a
+    // compose-time throw, never a dispatch — the row should have been excluded
+    // upstream at start-mechanics.md step 3b (§The human gate, below).
+    worker: 'background',          // background | background-heavy | foreground | HITL-required
     risk: 'mechanical',            // mechanical | isolated-refactor | cross-feature-refactor | public-API-change
     iteration: 1,
     model: 'sonnet',               // 'opus' for cross-feature-refactor / public-API-change, else 'sonnet'
@@ -340,6 +359,13 @@ ISSUES.forEach((issue) => { issue.branch = `wave/${issue.id}-${issue.slug}` })
 //     into text on the path that would ever see it; an absent value
 //     misroutes to the iteration-1 branch rather than rendering "undefined",
 //     a different failure shape from the one this assertion targets.
+//   - worker — a DIFFERENT predicate with a DIFFERENT remedy, so it gets its
+//     own assertion (assertNotHumanGated, below) rather than a slot here.
+//     This list asks "is the field present enough to interpolate?" and its
+//     fix is to wire the value in; the worker check asks "may this row be
+//     dispatched at all?" and its fix is to REMOVE the row from ISSUES.
+//     Folding the two together would let a missing worker read as a pass and
+//     a human-gated one read as a wiring bug.
 const REQUIRED_ROW_FIELDS = [
   'id', 'slug', 'branch', 'risk', 'model', 'anchorSha', 'coordinatorBranch',
   'issueSpec', 'prTitle', 'closePhrase', 'siblingBranches',
@@ -369,6 +395,27 @@ function assertRequiredRowFields(issue) {
   }
 }
 ISSUES.forEach(assertRequiredRowFields)
+
+// ── Compose-time HUMAN GATE — also BEFORE any agent() fan-out (§The human gate) ──
+// A human-gated Worker means no agent may pick the row up until a human acts
+// (ADR-0012). start-mechanics.md step 3b already excludes such a row from ISSUES;
+// this is the structural backstop for that exclusion, in the same place and for
+// the same reason as the assertion above — an instruction a Coordinator can
+// forget becomes a throw the fan-out cannot get past. A held row that reaches
+// here has no failure of its own to hit: every brief interpolates fine, the
+// Worker runs, and it burns a full agent budget on the one blocker an agent
+// cannot clear by construction.
+// The default token is the engine's HUMAN_GATED_WORKER (tools/wave/src/wave-md-rw.ts);
+// a consumer that re-spelled or trimmed its config-governed Worker vocabulary
+// fills its own token(s) in here at compose time, exactly like WAVE_CLI.
+const HUMAN_GATED_WORKERS = ['HITL-required']
+
+function assertNotHumanGated(issue) {
+  if (HUMAN_GATED_WORKERS.includes(issue.worker)) {
+    throw new Error(`wave-start: row ${issue.id} has a human-gated worker (${issue.worker}) and must not be dispatched — hold it in the human lane and remove it from ISSUES`)
+  }
+}
+ISSUES.forEach(assertNotHumanGated)
 
 // The iteration-1 (default) workspace setup — unchanged from before the
 // re-dispatch teardown/tracking-free-checkout fix (W26-F1) except for its

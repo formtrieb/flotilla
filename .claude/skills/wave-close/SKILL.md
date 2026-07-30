@@ -33,6 +33,11 @@ wave-close runs only once the wave is **all-in-review**: every Plan-Table row's 
 - A row still at `dispatched`/`re-dispatched`/`reviewing`/`verdict-in`/`report-in` means the wave isn't done → STOP: `wave not yet terminal — N row(s) still in flight; run wave-start (or resume) first`.
 - `failed`/`abandoned` rows are terminal; include them in the gate check but they do not block closing — they will be flagged in phase 5.
 - **`parked` rows are terminal and silent** (ADR-0022). They pass the gate and never block closing. A parked row was deliberately taken out of *this* wave and its claim is already released — it is **not** a problem to flag, has no branch and no PR, and gets its own report rubric in phase 5. It is the reason a held row no longer has to be recorded as `abandoned` (which would mean "never" for work that will be re-planned).
+- **A row still at `planned` was HELD, never dispatched — report it, do not STOP on it.** `planned` is deliberately absent from the STOP list above: it is where both of `wave-start`'s holds park a row that this wave never sent out. Two shapes, distinguished by the row's `Worker` cell:
+  - **awaiting-human** — the `Worker` is human-gated (`HITL-required` by default, ADR-0012) and no human has acted yet. The row is **awaiting a human, not stuck and not errored**: nothing failed, nothing is in flight, and no probe can tell you anything about it. Phase 5 has its rubric.
+  - **HELD on an intra-wave blocker** — the `Worker` is ordinary; the row waited on a sibling that has since landed (or has not). Same treatment: report it, name what it waits on.
+
+  Neither blocks closing, and neither is a `needs-attention` flag — but neither is finished either, so **read the `Worker` column when you read the `State` column**. A `planned` row reported as "stuck" or silently swept into the archive is the failure this bullet exists to prevent.
 
 Do not open PRs or archive for a wave that has unfinished rows.
 
@@ -66,7 +71,7 @@ Opt-in only: present one confirm for the wave, arm the order-free rows through `
 
 ### 5. Done-reconcile + needs-attention for stuck rows
 
-Probe each terminal row's closing state via the evidence hierarchy, then land it `done`, flag it, or report it — never guessing between merged and rejected.
+Probe each terminal row's closing state via the evidence hierarchy, then land it `done`, flag it, or report it — never guessing between merged and rejected. A never-dispatched row (`parked`, or `planned` in one of the two held lanes) is reported under its own rubric and never probed: there is nothing for a probe to find, and a flag would answer a question nobody asked.
 
 ### 6. Archive (the last phase — terminal-only, idempotent, layout-aware)
 

@@ -1233,6 +1233,88 @@ export function upsertDispatchLogModel(
   });
 }
 
+// ─── Human-gated rows (the dispatch-time human lane) ─────────────────────────
+
+/**
+ * The default `Worker` value that marks a row as **human-gated**: real wave
+ * work that enters a wave and is planned, claimed and tracked like any other
+ * row, but that no agent may pick up until a human has acted (ADR-0012). It is
+ * emphatically NOT the triage terminal `ready-for-human`, which never enters a
+ * wave at all (ADR-0015).
+ *
+ * `Worker` is a **config-governed** enum (ADR-0007) — a consumer may trim or
+ * re-spell the vocabulary — so this is a *default*, not a law. Every reader
+ * below takes the accepted set as an argument defaulting to `[this value]`,
+ * rather than hard-coding the token at the comparison site.
+ */
+export const HUMAN_GATED_WORKER = 'HITL-required';
+
+/**
+ * The Plan-Table `State` a human-gated row sits at while it is held. It is
+ * `planned` — the pre-dispatch state — because the human lane deliberately
+ * **reuses the HELD seam** rather than inventing a state: a row held on an
+ * unresolved intra-wave blocker also stays `planned`, is skipped at fan-out,
+ * and rejoins a later pass untouched. One held-row shape, two reasons to hold.
+ *
+ * The corollary is what makes {@link humanHeldRowIds} answer the question the
+ * skills actually ask: a human-gated row that has moved PAST `planned` was
+ * released by a human on an earlier pass and is ordinary in-flight work — it
+ * must not read as "still awaiting a human".
+ */
+const HELD_ROW_STATE: RowState = 'planned';
+
+/** True when `worker` is one of the accepted human-gated tokens (exact match). */
+function isHumanGatedWorker(
+  worker: string,
+  humanGatedWorkers: readonly string[],
+): boolean {
+  return humanGatedWorkers.includes(worker);
+}
+
+/**
+ * Every Plan-Table row whose `Worker` cell names a human-gated value —
+ * state-blind, so a released (already-dispatched) human-gated row is still
+ * reported here. Use it to *describe* the wave's human lane; use
+ * {@link humanHeldRowIds} to decide what to skip at dispatch.
+ *
+ * The match is on the parsed `Worker` **cell**, exactly — never a substring of
+ * the row's line. A title that happens to contain the token (`"document the
+ * HITL-required gate"`) is not a human-gated row, and a padded cell
+ * (`| HITL-required  |`) is one: `readPlanTable` has already trimmed and
+ * pipe-unescaped every cell by the time this reads it.
+ */
+export function humanGatedRows(
+  spine: Spine,
+  humanGatedWorkers: readonly string[] = [HUMAN_GATED_WORKER],
+): PlanTableRow[] {
+  return spine.planTable.filter((row) =>
+    isHumanGatedWorker(row.worker, humanGatedWorkers),
+  );
+}
+
+/**
+ * The ids of the rows a dispatch pass must **hold in the human lane**: rows
+ * whose `Worker` is human-gated AND whose `State` is still `planned` (i.e. no
+ * human has released them yet, so nothing has ever been dispatched for them).
+ *
+ * This is the gate answer `wave-start` needs — the worker-axis twin of the
+ * intra-wave-blocked HELD set. Holding is ordinary sequencing, not an anomaly:
+ * a held id keeps its `planned` state and its existing claim, is excluded from
+ * the fan-out, and the rest of the wave dispatches around it.
+ *
+ * An **empty** result is a legitimate answer ("no row is awaiting a human"),
+ * not a did-not-run — which is why callers must not put an emptiness guard on
+ * it, exactly as they must not guard the intra-wave HELD set.
+ */
+export function humanHeldRowIds(
+  spine: Spine,
+  humanGatedWorkers: readonly string[] = [HUMAN_GATED_WORKER],
+): string[] {
+  return humanGatedRows(spine, humanGatedWorkers)
+    .filter((row) => row.state === HELD_ROW_STATE)
+    .map((row) => row.id);
+}
+
 // ─── Frontmatter status mutator ───────────────────────────────────────────────
 
 /** Valid frontmatter Status values (human scope-state; the per-row State is the WAL signal). */

@@ -38,6 +38,14 @@ T=$(mktemp -d)
 {{wave-cli}} issue-store read "$ID"          # IssueView → worker, risk, files
 {{wave-cli}} issue-store triage-read "$ID"   # TriageView → .title
 
+# 2a. Human-gate surface (surface + ask). No CLI call of its own: the answer is
+#     already in the `issue-store read` output from step 2 — `.worker`. Compare it
+#     against the consumer's human-gated Worker token(s); the engine's default is
+#     `HITL-required` (HUMAN_GATED_WORKER, tools/wave/src/wave-md-rw.ts).
+#     Surface every match, ask, and record the answer in the DOR-check narrative.
+#     Default = include-and-hold (NOT abort): the row is materialized and claimed
+#     like any other, and wave-start holds it in the human lane at dispatch.
+
 # 3. DoR (per id) — working-tree gates run with --repo-root
 {{wave-cli}} dor --id "$ID" --repo-root "$REPO"
 
@@ -79,6 +87,18 @@ The spine's `## Conflict-Map` is built from `cross-wave`'s `intraWaveConflicts` 
 `intraWaveBlockedByPairs` (FOR-8) is a **second, independent launch-gate**, also handled in step 4 — surface + ask, default abort on any non-empty array. It is **not** written into the spine payload either; a `Blocked by` sequencing hint is a launch-time confirmation, not durable spine state (the spine's own `## Resume-Metadata`/Plan-Table already carries each row's declared `Blocked by` implicitly via its `IssueView`, re-read fresh by `wave-start` at dispatch time).
 
 Each entry has the shape `{ blocked: string; blocker: string; resolved: boolean }` — `blocked`/`blocker` are both chosen-roster ids; `resolved` reflects the blocker's `IssueView.status` at the time of this `cross-wave` call (`true` only for `in-review`/`done`). Surface every pair regardless of `resolved`.
+
+## The human-gate surface (step 2a) — what it costs and what it buys
+
+No extra call: `IssueView.worker` is already in hand from step 2's `issue-store read`. The whole gate is a comparison against the consumer's human-gated Worker token(s) plus a question to the Coordinator.
+
+The `worker` value is carried into the payload's roster verbatim (it always was — see `SpineRosterRow` below), so `spine create` renders it into the Plan-Table `Worker` cell, and that cell is what every later pass reads. **This is why no new spine state, payload field, or CLI verb is needed anywhere in the chain:** the durable record of "this row is human-gated" is the Worker column the engine already writes, and the durable record of "it has not been released yet" is the `State` column already sitting at `planned`. The engine reads exactly that conjunction (`humanHeldRowIds`, `tools/wave/src/wave-md-rw.ts`), and the seam it reuses is the HELD one `wave-start` step 3 already runs for intra-wave `Blocked by`.
+
+**Include-and-hold is deliberately NOT include-and-park.** Both leave the row undispatched this pass, and they are opposites: `parked` releases the claim and takes the row out of the wave permanently (no un-park), while a human-gated hold keeps the claim and the row, waiting for a human who is expected to act. Parking a human-gated row at create time is the same mistake as parking a blocked one — see the ADR-0022 bullet in step 4 of the skill body. Parking stays available later, as a Coordinator disposition at `wave-start`, once waiting turns out to be the wrong call.
+
+### Why the gate exists — read the measured constraint, not the folk version
+
+Before you classify a row `HITL-required`, or read one that already is, know what the constraint usually turns out to be. The measurement is written up once, in [../../wave-start/reference/start-mechanics.md](../../wave-start/reference/start-mechanics.md) ("Why the human lane exists"). The short form: the observed blocker was **the Bash sandbox's write-deny on specific paths**, not an agent that cannot write files — an agent's file-editing tool wrote the target fine; it was git plumbing under the sandbox that could not unlink it. "Agents can't write here" is the over-broad reading, and it mis-classifies rows that are perfectly AFK-implementable.
 
 ## Payload shape (`payload.json`)
 
