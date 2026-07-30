@@ -31,17 +31,44 @@
  *   2 — usage / unreadable-or-unparseable file
  *
  * write-report / write-verdict exit codes (mirror validate-*):
- *   0 — written (absolute path of the written file on stdout)
- *   1 — invalid payload / failed report.issue↔--id cross-check (NOTHING written)
- *   2 — usage / unreadable-or-unparseable <json-file>
+ *   0 — written (absolute path of the written file on stdout). A `notice:` line
+ *       on stderr means a decorated `report.issue` was NORMALIZED on the way in;
+ *       a `warning:` line means MISNAMED litter was found in the target dir.
+ *   1 — invalid payload / `report.issue` names a different row than --id (NOTHING written)
+ *   2 — usage / unreadable-or-unparseable <json-file> / a --id that is not a bare id
+ *
+ * ## Why `--id` is validated and `report.issue` is repaired (issue #138)
+ *
+ * The two flags come from opposite places. `--id` is the COMPOSE-TIME row id, set
+ * by the Coordinator; `issue` is authored by an agent that was told the field's
+ * name and nothing about its shape. The verb used to validate a *relationship*
+ * between them and refuse on mismatch — which put the refusal where it could not
+ * be obeyed: given a refusal, the caller varies the argument it controls, and a
+ * Scribe that reached for `--id "<the decorated string>"` turned a loud refusal
+ * into `#126-1.md` — a real file, listed by `ls`, that the reader can never
+ * resolve for row `126`. So the two halves are now treated asymmetrically:
+ *
+ *  - **`--id` is validated against the bare-id shape rule and never repaired**
+ *    (exit 2). Varying it is not a way past a refusal any more; it is the
+ *    refusal, and the message says so.
+ *  - **`report.issue` IS repaired** when it decorates the same id (exit 0 + a
+ *    loud `notice:`), and refused only when it names a genuinely different row.
+ *    A decorated payload therefore no longer produces a refusal for a caller to
+ *    route around — there is nothing left to route around.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { flag, printJson } from './cli-utils';
 import { verdictToEvent, type Verdict } from './verdict-to-event';
 import { outcomeToEvent, validateWorkerReport, type WorkerOutcome } from './worker-report-schema';
 import { validateReviewerVerdict } from './reviewer-verdict-schema';
+import {
+  bareIssueIdViolation,
+  findMisnamedSidecars,
+  normalizeIssueRef,
+  type SidecarReader,
+} from './sidecar';
 import { transition, type IssueState } from './stop-condition-state-machine';
 import type { Risk } from './header-parser';
 
@@ -134,28 +161,57 @@ export function runValidateVerdict(args: string[]): number {
   return runValidateFile('validate-verdict', args, validateReviewerVerdict);
 }
 
+/** Minimal real-fs listing seam for {@link findMisnamedSidecars}. */
+const fsSidecarReader: SidecarReader = {
+  list: (dir) => {
+    try {
+      return readdirSync(dir);
+    } catch {
+      return []; // absent dir — nothing to find, never a failure
+    }
+  },
+  read: (dir, file) => readFileSync(join(dir, file), 'utf-8'),
+};
+
+/** Outcome of reconciling a payload's own id field against `--id`. */
+type Reconciled =
+  | { payload: unknown; notice?: string }
+  | { error: string };
+
 interface WriteSidecarSpec {
   label: 'write-report' | 'write-verdict';
   /** Human-scan heading rendered above the fenced json (the reader ignores it). */
   heading: 'WorkerReport' | 'ReviewerVerdict';
+  kind: 'report' | 'verdict';
   validate: (v: unknown) => { valid: boolean; errors: string[] };
   /**
-   * Report-only: mirror the reader's `report.issue` prefix rule against `--id`
-   * (sidecar.ts:101) at WRITE time — fail loud here instead of "corrupt" at
-   * resume. Return an error message to reject, or null to accept. Omitted for
-   * the verdict path (a verdict has no issue field — the reader checks none).
+   * Report-only: reconcile the payload's `issue` field with `--id` at WRITE
+   * time. Returns the payload to render (possibly with `issue` normalized to
+   * the bare `--id`) plus an optional loud notice, or an error to refuse on.
+   * Omitted for the verdict path (a verdict has no issue field — the reader
+   * checks none either).
    */
-  crossCheck?: (payload: unknown, id: string) => string | null;
+  reconcile?: (payload: unknown, id: string) => Reconciled;
 }
 
 /**
- * Shared body for write-report / write-verdict: read+parse the JSON payload,
- * validate it against the matching schema, run the (report-only) issue↔--id
- * cross-check, and — ONLY if all pass — render the fenced-json sidecar the
- * sidecar.ts reader accepts into `<dir>/<id>-<iter>.md`. The filename is
- * engine-computed (the caller cannot misname it); the target dir is `mkdir -p`'d;
- * a same-iter write is last-writer-wins (idempotent re-entries + the w2 bad-anchor
- * corrected-verdict round). A malformed payload is never written (exit 1).
+ * Shared body for write-report / write-verdict: check `--id` against the bare-id
+ * shape rule, read+parse the JSON payload, validate it against the matching
+ * schema, reconcile the (report-only) `issue` field with `--id`, and — ONLY if
+ * all pass — render the fenced-json sidecar the sidecar.ts reader accepts into
+ * `<dir>/<id>-<iter>.md`. The filename is engine-computed (the caller cannot
+ * misname it); the target dir is `mkdir -p`'d; a same-iter write is
+ * last-writer-wins (idempotent re-entries + the w2 bad-anchor corrected-verdict
+ * round). A malformed payload is never written (exit 1).
+ *
+ * After a successful write the target dir is swept for MISNAMED sidecars (see
+ * the header note): they are reported loudly on stderr and never touched. This
+ * is what makes the Coordinator's routing-time recovery catch the misnamed case
+ * — that recovery IS this verb, and its `[ -f … ]` trigger fires for a misnamed
+ * file exactly as it does for a missing one, so the sweep runs precisely when it
+ * is needed. Deleting the litter is deliberately NOT automatic: a misnamed
+ * sidecar may hold the only copy of a report, and destroying data to tidy a
+ * directory is the wrong trade for a verb whose whole purpose is durability.
  */
 function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
   const file = args[0];
@@ -173,6 +229,21 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     process.stderr.write(`error: ${spec.label}: --iter must be a positive integer, got "${iterRaw}"\n`);
     return 2;
   }
+  const idViolation = bareIssueIdViolation(id);
+  if (idViolation) {
+    process.stderr.write(
+      `error: ${spec.label}: --id ${JSON.stringify(id)} ${idViolation} — nothing written.\n` +
+        '  --id is the COMPOSE-TIME ROW ID and is never the caller\'s to vary: pass the\n' +
+        "  row id verbatim, NEVER the payload's own decorated reference. Substituting a\n" +
+        `  decorated --id does not make this command succeed — it would file\n` +
+        `  ${JSON.stringify(`${id}-${iter}.md`)}, a real file that an \`ls\` shows and that the\n` +
+        `  reader can never resolve for row ${JSON.stringify(normalizeIssueRef(id))}: present to\n` +
+        '  the operator, absent to resume.\n' +
+        "  If the payload's own id field is decorated, THAT is what gets normalized (this\n" +
+        '  verb does it for you, exit 0 + a notice) — the filename id is not.\n',
+    );
+    return 2;
+  }
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(file, 'utf-8'));
@@ -187,17 +258,22 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     );
     return 1;
   }
-  if (spec.crossCheck) {
-    const reason = spec.crossCheck(value, id);
-    if (reason) {
-      process.stderr.write(`error: ${spec.label}: ${reason} — nothing written\n`);
+  let payload = value;
+  if (spec.reconcile) {
+    const reconciled = spec.reconcile(value, id);
+    if ('error' in reconciled) {
+      process.stderr.write(`error: ${spec.label}: ${reconciled.error} — nothing written\n`);
       return 1;
+    }
+    payload = reconciled.payload;
+    if (reconciled.notice) {
+      process.stderr.write(`notice: ${spec.label}: ${reconciled.notice}\n`);
     }
   }
   const body =
     `# ${spec.heading} ${id} iter ${iter}\n\n` +
     '```json\n' +
-    JSON.stringify(value, null, 2) +
+    JSON.stringify(payload, null, 2) +
     '\n```\n';
   const target = join(dir, `${id}-${iter}.md`);
   try {
@@ -208,25 +284,67 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     return 2;
   }
   process.stdout.write(target + '\n');
+  warnAboutMisnamedSidecars(dir, spec);
   return 0;
 }
 
 /**
- * Mirror of the reader's `report.issue` prefix check (sidecar.ts:101): the id in
- * the filename and the payload's `issue` must be prefix-compatible either way. A
- * missing/blank issue is not checked (the reader treats it the same).
+ * Sweep `dir` for sidecars filed under a name the reader cannot resolve and say
+ * so, loudly, naming the file and the id it should have been filed under. Never
+ * fails the write: the record this invocation was asked to persist is already on
+ * disk, and litter next to it is an operator finding, not a write failure.
  */
-function reportIssueCrossCheck(payload: unknown, id: string): string | null {
-  const issue = (payload as { issue?: unknown }).issue;
-  if (
-    typeof issue === 'string' &&
-    issue.length > 0 &&
-    !issue.startsWith(id) &&
-    !id.startsWith(issue)
-  ) {
-    return `report.issue "${issue}" disagrees with --id "${id}" (the reader would reject it as corrupt)`;
+function warnAboutMisnamedSidecars(dir: string, spec: WriteSidecarSpec): void {
+  for (const m of findMisnamedSidecars(dir, spec.kind, fsSidecarReader)) {
+    process.stderr.write(
+      `warning: ${spec.label}: MISNAMED SIDECAR ${JSON.stringify(join(dir, m.file))} — its\n` +
+        `  filename id ${JSON.stringify(m.filenameId)} ${m.reason}, so the reader resolves it for NO row\n` +
+        `  (it holds the record for ${JSON.stringify(m.resolvesAs)}, which would be filed as\n` +
+        `  ${JSON.stringify(`${m.resolvesAs}-${m.iter}.md`)}). A file like this is present to an \`ls\` and\n` +
+        '  absent to resume, and an existence probe cannot tell it from a missing one.\n' +
+        '  Confirm the correctly-named record holds the same content, then delete it.\n',
+    );
   }
-  return null;
+}
+
+/**
+ * Reconcile a WorkerReport's `issue` field against `--id`.
+ *
+ * Three outcomes, matching the three shapes seen live in `2026-07-27-consumer-gaps`:
+ *  - already the bare id (or absent/blank — the reader checks neither) → pass through;
+ *  - a DECORATED form of the same id (`#126`, `#118 — <title>`) → rewrite the field
+ *    to the bare `--id` and return a loud notice. The sidecar that lands is
+ *    resolvable, and the decoration is reported rather than silently tolerated;
+ *  - a genuinely DIFFERENT row → refuse (exit 1). This is a mis-paired payload,
+ *    and no amount of renaming makes it the right record for this row.
+ *
+ * Note this is strictly tighter than the prefix rule it replaces: `issue: "13"`
+ * against `--id "138"` used to pass on `"138".startsWith("13")` — a wrong report
+ * accepted by an accident of string prefixes — and now refuses.
+ */
+function reconcileReportIssue(payload: unknown, id: string): Reconciled {
+  const record = payload as Record<string, unknown>;
+  const issue = record.issue;
+  if (typeof issue !== 'string' || issue.length === 0) return { payload };
+  if (issue === id) return { payload };
+  if (normalizeIssueRef(issue) === id) {
+    return {
+      // Spread preserves key order — `issue` keeps its position in the rendered json.
+      payload: { ...record, issue: id },
+      notice:
+        `report.issue ${JSON.stringify(issue)} is a DECORATED form of row ${JSON.stringify(id)} — ` +
+        'normalized to the bare id in the written sidecar so the reader can resolve it ' +
+        '(ADR-0001: a row id is opaque, therefore matched literally, therefore never decorated). ' +
+        'The Worker brief requires the bare id; this is a repair, not a licence — fix it at the source.',
+    };
+  }
+  return {
+    error:
+      `report.issue ${JSON.stringify(issue)} names a DIFFERENT row than --id ${JSON.stringify(id)} ` +
+      `(it normalizes to ${JSON.stringify(normalizeIssueRef(issue))}, not to the row id). ` +
+      'That is a mis-paired payload, not a decoration — re-check which row this report belongs to. ' +
+      'Do NOT "fix" it by changing --id',
+  };
 }
 
 /** `write-report <json-file> --dir <reportsDir> --id <id> --iter <n>`. */
@@ -234,8 +352,9 @@ export function runWriteReport(args: string[]): number {
   return runWriteSidecar(args, {
     label: 'write-report',
     heading: 'WorkerReport',
+    kind: 'report',
     validate: validateWorkerReport,
-    crossCheck: reportIssueCrossCheck,
+    reconcile: reconcileReportIssue,
   });
 }
 
@@ -244,6 +363,7 @@ export function runWriteVerdict(args: string[]): number {
   return runWriteSidecar(args, {
     label: 'write-verdict',
     heading: 'ReviewerVerdict',
+    kind: 'verdict',
     validate: validateReviewerVerdict,
   });
 }

@@ -15,6 +15,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  mkdirSync,
   mkdtempSync,
   writeFileSync,
   rmSync,
@@ -292,7 +293,7 @@ describe('write-report', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('report.issue disagreeing with --id (reader prefix rule) → exit 1, nothing written', () => {
+  it('report.issue naming a DIFFERENT row than --id → exit 1, nothing written', () => {
     const dir = tmp();
     const reportsDir = join(dir, 'reports');
     const f = join(dir, 'p.json');
@@ -302,6 +303,21 @@ describe('write-report', () => {
     err.mockRestore();
     expect(code).toBe(1); // fail loud at write time, not "corrupt" at resume
     expect(readSidecars(reportsDir, join(dir, 'verdicts'), fsReader).reportFor('FOR-6')).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a report.issue that is a mere string PREFIX of --id is refused (tighter than the old rule)', () => {
+    // "138".startsWith("13") — the old prefix rule accepted a wrong report by
+    // accident of string shape. Normalization does not grow an id, so it refuses.
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify({ ...writtenReport, issue: '13' }));
+    const err = silenceStderr();
+    const code = runWriteReport([f, '--dir', reportsDir, '--id', '138', '--iter', '1']);
+    err.mockRestore();
+    expect(code).toBe(1);
+    expect(fsReader.list(reportsDir)).toEqual([]); // nothing written at all
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -386,6 +402,208 @@ describe('write-verdict', () => {
     err.mockRestore();
     expect(code).toBe(1);
     expect(readSidecars(join(dir, 'reports'), verdictsDir, fsReader).verdictFor('FOR-6')).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ─── the bare-id contract at the write boundary (issue #138) ─────────────────
+//
+// Three shapes, all three observed live in `2026-07-27-consumer-gaps`, driven
+// through the real verb and rounded back through the real reader. What each row
+// asserts is not "the verb returned 0" but the two things the founding incident
+// actually got wrong: WHAT LANDS ON DISK, and WHETHER THE READER RESOLVES IT.
+
+describe('write-report — the bare-id contract (issue #138)', () => {
+  const ROW_ID = '126';
+
+  /** Run write-report for one payload shape and report what the world looks like after. */
+  function write(issueField: string, idFlag = ROW_ID) {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const verdictsDir = join(dir, 'verdicts');
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify({ ...writtenReport, issue: issueField }));
+    const out = captureStdout();
+    const err = silenceStderr();
+    const code = runWriteReport([f, '--dir', reportsDir, '--id', idFlag, '--iter', '1']);
+    err.mockRestore();
+    out.restore();
+    const idx = readSidecars(reportsDir, verdictsDir, fsReader);
+    return {
+      code,
+      stdout: out.lines().trim(),
+      onDisk: fsReader.list(reportsDir).sort(),
+      resolvedByRow: idx.reportFor(ROW_ID),
+      corruptForRow: idx.corruptFor(ROW_ID),
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+      reportsDir,
+    };
+  }
+
+  it.each([
+    ['the correct bare id', '126'],
+    ['a bare-hash id', '#126'],
+    ['a hash-and-title string', "#126 — A Worker's decorated issue field makes its own record unwritable"],
+  ])('%s as report.issue → 126-1.md on disk, resolved by the reader for row 126', (_label, issueField) => {
+    const w = write(issueField);
+    expect(w.code).toBe(0);
+    // WHAT LANDS: the engine-computed name, keyed on the row id — never the payload's string
+    expect(w.onDisk).toEqual(['126-1.md']);
+    expect(w.stdout).toBe(join(w.reportsDir, '126-1.md'));
+    // WHETHER IT RESOLVES: the row the operator will ask about on resume
+    expect(w.resolvedByRow?.iter).toBe(1);
+    expect(w.resolvedByRow?.report.tests).toBe('20/20 green');
+    expect(w.corruptForRow).toHaveLength(0);
+    // …and the persisted field itself is the bare id, so the record stays resolvable
+    // if it is ever re-read, re-written, or copied by something less forgiving.
+    expect(w.resolvedByRow?.report.issue).toBe('126');
+    w.cleanup();
+  });
+
+  it('the decorated shapes are REPAIRED, not merely tolerated — the written payload is normalized', () => {
+    const w = write('#126');
+    const raw = readFileSync(join(w.reportsDir, '126-1.md'), 'utf-8');
+    expect(raw).toContain('"issue": "126"');
+    expect(raw).not.toContain('"#126"');
+    w.cleanup();
+  });
+
+  it('a decorated --id is REFUSED (exit 2, nothing written) — the Scribe cannot route around the rule by varying it', () => {
+    // The founding incident: the verb refused the payload, so the caller varied
+    // the one argument it controlled and got `#126-1.md` — a file `ls` shows and
+    // `reportFor('126')` can never return. Varying --id is now the refusal.
+    for (const badId of ['#126', "#126 — a title", '126 with a space', 'a/b']) {
+      const w = write('#126', badId);
+      expect(w.code, badId).toBe(2);
+      expect(w.onDisk, badId).toEqual([]); // NOTHING written under any name
+      expect(w.resolvedByRow, badId).toBeNull();
+      w.cleanup();
+    }
+  });
+
+  it('the refusal is louder than the payload refusal it replaces — it names --id as not the callers to vary', () => {
+    const dir = tmp();
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify({ ...writtenReport, issue: '#126' }));
+    const chunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        chunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const code = runWriteReport([f, '--dir', join(dir, 'reports'), '--id', '#126', '--iter', '1']);
+    err.mockRestore();
+    expect(code).toBe(2);
+    const msg = chunks.join('');
+    expect(msg).toMatch(/COMPOSE-TIME ROW ID/);
+    expect(msg).toMatch(/nothing written/);
+    expect(msg).toMatch(/#126-1\.md/); // names the exact file it refused to create
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a normalized write says so on stderr — a repair is reported, never silent', () => {
+    const dir = tmp();
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify({ ...writtenReport, issue: '#126 — a title' }));
+    const chunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        chunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const out = captureStdout();
+    expect(runWriteReport([f, '--dir', join(dir, 'reports'), '--id', '126', '--iter', '1'])).toBe(0);
+    out.restore();
+    err.mockRestore();
+    expect(chunks.join('')).toMatch(/notice: write-report: report\.issue .* DECORATED/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('write verbs — the routing-time recovery now catches a MISNAMED sidecar, not only a missing one', () => {
+  /**
+   * The Coordinator's recovery probe is `[ -f <dir>/<id>-<iter>.md ]`, which a
+   * misnamed file fails identically to a missing one — so the recovery fires and
+   * the recovery IS this verb. Before the fix it rewrote the correct file and
+   * left the misnamed one behind, undetected. Now the same invocation reports it.
+   */
+  function withLitter(run: (dir: string, reportsDir: string) => string) {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    mkdirSync(reportsDir, { recursive: true });
+    // The exact litter shape from the incident: a real, well-formed sidecar filed
+    // under a decorated id. It is present to an `ls`…
+    writeFileSync(
+      join(reportsDir, '#126-1.md'),
+      '# WorkerReport #126 iter 1\n\n```json\n' +
+        JSON.stringify({ ...writtenReport, issue: '#126' }, null, 2) +
+        '\n```\n',
+      'utf-8',
+    );
+    expect(readdirSync(reportsDir)).toContain('#126-1.md');
+    // …and absent to the reader, for the row anyone would actually ask about.
+    expect(readSidecars(reportsDir, join(dir, 'verdicts'), fsReader).reportFor('126')).toBeNull();
+    const stderr = run(dir, reportsDir);
+    rmSync(dir, { recursive: true, force: true });
+    return stderr;
+  }
+
+  it('the recovery write reports the misnamed leftover by path and by the row it belongs to', () => {
+    const msg = withLitter((dir, reportsDir) => {
+      const f = join(dir, 'p.json');
+      writeFileSync(f, JSON.stringify({ ...writtenReport, issue: '126' }));
+      const chunks: string[] = [];
+      const err = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation((c: string | Uint8Array) => {
+          chunks.push(typeof c === 'string' ? c : c.toString());
+          return true;
+        });
+      const out = captureStdout();
+      expect(runWriteReport([f, '--dir', reportsDir, '--id', '126', '--iter', '1'])).toBe(0);
+      out.restore();
+      err.mockRestore();
+      // the correct record now exists AND resolves
+      expect(readSidecars(reportsDir, join(dir, 'verdicts'), fsReader).reportFor('126')?.iter).toBe(1);
+      return chunks.join('');
+    });
+    expect(msg).toMatch(/MISNAMED SIDECAR/);
+    expect(msg).toMatch(/#126-1\.md/);
+    expect(msg).toMatch(/"126-1\.md"/); // names where the record belongs
+  });
+
+  it('a clean reports dir produces no misnamed warning (the check is silent when there is nothing to say)', () => {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify({ ...writtenReport, issue: '126' }));
+    const chunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        chunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const out = captureStdout();
+    expect(runWriteReport([f, '--dir', reportsDir, '--id', '126', '--iter', '1'])).toBe(0);
+    out.restore();
+    err.mockRestore();
+    expect(chunks.join('')).not.toMatch(/MISNAMED/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('write-verdict enforces the same bare-id rule — a verdict has no payload id to fall back on', () => {
+    const dir = tmp();
+    const verdictsDir = join(dir, 'verdicts');
+    const f = join(dir, 'v.json');
+    writeFileSync(f, JSON.stringify(writtenVerdict));
+    const err = silenceStderr();
+    const code = runWriteVerdict([f, '--dir', verdictsDir, '--id', '#126', '--iter', '1']);
+    err.mockRestore();
+    expect(code).toBe(2);
+    expect(fsReader.list(verdictsDir)).toEqual([]);
     rmSync(dir, { recursive: true, force: true });
   });
 });

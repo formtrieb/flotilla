@@ -25,7 +25,20 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 
 - **`pipeline()` gains two cheap Scribe stages**: `worker → scribe(report) → reviewer → scribe(verdict)`. Each Scribe is a small `agent()` (`model: 'haiku', effort: 'low'`) whose brief carries the **already-schema-validated** payload byte-exact (`JSON.stringify`-interpolated — the `agent({schema})` boundary validated it; nothing is re-typed from prose) plus the exact `write-report`/`write-verdict` invocation. The report is durable **before the review even starts**; each record exists seconds after its agent returns, before any Coordinator routing.
 - **A Scribe failure never discards the in-band tuple.** The stage wraps its `agent()` in try/catch, **passes the report/verdict through regardless**, and `log()`s loud (`SIDECAR-WRITE FAILED <id>`). A `pipeline()` stage that *throws* drops the row to `null` — which would convert a *successful* Worker into a `worker-failed` STOP and discard finished work. Structurally forbidden here: the Scribe stage returns its passthrough value in every branch, and the Scribe itself retries the CLI call once, byte-identical.
-- **`SCRIBE_RESULT_SCHEMA` is driver-local — deliberately NOT drift-pinned.** No engine const corresponds to it (unlike the two `*_SCHEMA` copies), so `skill-schema-drift.spec.ts` does not — and must not — pin it. It is a plain `{ ok, path, error? }` shape with no top-level `anyOf`/`oneOf`/`allOf` (boundary-safe, W5-F1).
+- **`SCRIBE_RESULT_SCHEMA` is driver-local — deliberately NOT drift-pinned.** No engine const corresponds to it (unlike the two `*_SCHEMA` copies), so `skill-schema-drift.spec.ts` does not — and must not — pin it. It is a plain `{ ok, path, error?, notice? }` shape with no top-level `anyOf`/`oneOf`/`allOf` (boundary-safe, W5-F1). `notice` is the exit-0 channel: the write verb reports a normalized decorated id or misnamed litter on stderr while still succeeding, and `error` may only be set on failure, so without `notice` an exit-0 finding would die at the one stage that saw it.
+
+## The bare-id contract — why the id is fixed at both ends of the write
+
+A sidecar is filed as `<id>-<iter>.md` and resolved by `reportFor(<the row id>)`. Opaque (ADR-0001) means the engine never *interprets* that id; it does not mean the id is free-form, because "never interpret it" is precisely what forces a LITERAL match. So a decorated id — `#126`, `#126 — <the issue title>` — produces a real, well-formed, schema-valid file that no row can ever resolve: **present to an `ls`, absent to a resume**, with nothing loud anywhere. That is strictly worse than a sidecar that was never written, which at least fails the routing-time existence check honestly.
+
+Two values feed the write, and they come from opposite places — so the driver fixes them differently:
+
+| Value | Comes from | Rule |
+|---|---|---|
+| `--id` | the compose-time `ISSUES` row (Coordinator) | **Never varied, by anyone.** The Scribe brief forbids substituting it, and the engine refuses a non-bare `--id` with exit 2 — because the caller facing a refusal reaches for the argument it controls, and that reach is what produced the misfiled records in the first place. |
+| the report's `issue` field | the Worker (an agent told the field's name, historically not its shape) | **Stated in the Worker brief** as the bare id, and **normalized by the engine** when it arrives decorated (exit 0 + a `notice:`). A repair, not a refusal — a refusal here is exactly what a caller routes around. |
+
+The live incident (`2026-07-27-consumer-gaps`): three of six Workers decorated the field. Two sidecars landed under a name the reader could not resolve, and would have read as "no durable record" on a resume while the operator stared at a populated directory; the third was refused outright and only existed because a human noticed. Both directions are now closed at the boundary, and the routing-time recovery reports misnamed litter it used to walk past (wave-shared Convention 5).
 
 ## Authoring constraints
 
@@ -128,7 +141,14 @@ const REVIEWER_VERDICT_SCHEMA = {
 const SCRIBE_RESULT_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['ok', 'path'],
-  properties: { ok: { type: 'boolean' }, path: { type: 'string' }, error: { type: 'string' } },
+  properties: {
+    ok: { type: 'boolean' }, path: { type: 'string' }, error: { type: 'string' },
+    // `notice` carries an EXIT-0 stderr line through — a normalized decorated id,
+    // or misnamed litter the write verb found in the sidecar dir. Without it the
+    // only channel the Scribe has is `error`, which it may only set on failure,
+    // so an exit-0 finding would be dropped at exactly the stage that saw it.
+    notice: { type: 'string' },
+  },
 }
 
 // ── Scribe compose-time constants (Coordinator-filled, like depsSetup) ──
@@ -482,6 +502,16 @@ ${issue.closePhrase}"
 outcome, issue, branch, worktree, commitShas, prUrl, filesChanged{new,modified,renamed},
 tests, lint, conflictMarkers, judgmentCalls[], reviewerFocusItems[].
 
+**\`issue\` MUST be the BARE opaque tracker id — exactly \`${issue.id}\`, and nothing else.**
+Not \`#${issue.id}\`, not \`${issue.id} — <the issue title>\`, not a URL, not a branch name.
+That field is the key your own durable record is filed and resolved under: a row id is
+OPAQUE (ADR-0001), which means the reader never parses it — it matches it LITERALLY. A
+decorated value is the one field on this report that can make your finished work
+unfindable, and it fails in the quietest way available: the file exists, an \`ls\` shows
+it, and a resume asking for row \`${issue.id}\` gets nothing back. Live occurrence: three
+of six Workers in one wave decorated this field; two records landed under a name nothing
+could resolve, and the third was not written at all.
+
 ## Reviewer-handoff hints (from Coordinator)
 ${j(issue.reviewerHints)}`
 }
@@ -586,6 +616,19 @@ function scribeBrief(kind, issue, iter, payload) {
   const verb = kind === 'report' ? 'write-report' : 'write-verdict'
   return `You are a Wave Scribe. Persist one ${kind} sidecar THROUGH THE ENGINE — do not reformat, re-type, or "fix" anything in the payload.
 
+**\`--id\` IS NOT YOURS TO VARY.** It is fixed below as \`${issue.id}\` — the compose-time
+row id, straight off the wave spine — and it alone decides which row this sidecar is filed
+under. If the verb refuses, the refusal IS the answer: report it and let the Coordinator's
+routing-time recovery handle it. Do NOT re-run with a different \`--id\` — not the payload's
+own id field, not a decorated form, not anything you derived. A varied \`--id\` does not
+rescue the write; it files a real, well-formed record under a name the reader can never
+resolve for row \`${issue.id}\` — present to an \`ls\`, absent to a resume, silent both ways.
+That substitution, made once as a reasonable-looking workaround after a refusal, is the
+whole reason this clause exists. (The engine now refuses a decorated \`--id\` outright with
+exit 2, so the workaround fails loudly instead of half-working — do not go hunting for a
+spelling that gets past it. A decorated id in the PAYLOAD is a different matter: the verb
+normalizes that one itself and tells you it did.)
+
 1. As its OWN Bash call — NEVER combined with step 3 into one compound command —
    run \`cd "${REPO_ROOT}"\`: the compose-time absolute repo root, SHELL-QUOTED
    (a checkout path may contain a space or a non-ASCII character — this
@@ -607,9 +650,9 @@ ${JSON.stringify(payload)}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
    ${WAVE_CLI} ${verb} <that-temp-file> --dir "${dir}" --id ${issue.id} --iter ${iter}
-   (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload / id mismatch; exit 2 → usage/unreadable)
-4. If the exit code is non-zero, retry the SAME command ONCE, byte-identical.
-Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure> }.`
+   (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, or a payload naming a DIFFERENT row than --id; exit 2 → usage/unreadable, or a --id that is not a bare id)
+4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same --dir, same --iter. If it fails again, report the failure; never vary an argument to buy a zero.
+Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim — a normalized decoration or a misnamed leftover in the sidecar dir is a finding the Coordinator must see, and an exit-0 run is exactly where it would otherwise be dropped> }.`
 }
 
 // The stage wrapper ALWAYS returns `passthrough` — a throw here would drop the
@@ -623,6 +666,7 @@ async function scribe(kind, issue, iter, payload, passthrough) {
       model: 'haiku', effort: 'low', schema: SCRIBE_RESULT_SCHEMA,
     })
     if (!r.ok) log(`SIDECAR-WRITE FAILED ${kind} ${issue.id}: ${r.error || 'unknown'}`)
+    else if (r.notice) log(`SIDECAR-WRITE NOTICE ${kind} ${issue.id}: ${r.notice}`)
   } catch (e) {
     log(`SIDECAR-WRITE FAILED ${kind} ${issue.id}: ${e.message}`)
   }
