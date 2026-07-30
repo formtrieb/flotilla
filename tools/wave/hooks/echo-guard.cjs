@@ -73,27 +73,68 @@
  * value-substituting expansions (every fallback-form string in the skills is
  * warning PROSE, not an executed command), so the composed set's real FP
  * surface is near zero. A benign FP costs one rephrase, guided by the rejection
- * message. One FP class is known and accepted: a command whose ARGUMENT quotes
- * an unsafe form as prose — e.g. `git commit -m "... ${VAR:-no} ..."` — is
- * blocked, because the matcher reads the command text and cannot tell prose
- * from an expansion the shell will perform. Rephrase the argument.
+ * message.
  *
- * **Family 3 is position-aware about two literal (never re-parsed-as-a-command)
- * spans**, added after a same-day FP cluster (a Reviewer's `grep -n` search
- * PATTERN for the dump word, quoted in backticks inside single quotes, and a
- * Coordinator `gh issue create` heredoc BODY that merely mentioned the word as
- * the first word of a line):
+ * **One FP class is a KEPT, deliberate decision, not a gap** (assessed fresh
+ * 2026-07-30, alongside the family-3 double-quote fix below, precisely
+ * because that fix invites the question "why not this too?"): a command whose
+ * ARGUMENT quotes an unsafe VALUE-SUBSTITUTING form as prose — e.g.
+ * `git commit -m "... ${VAR:-no} ..."`, or a search PATTERN that merely
+ * mentions the `${NAME:-default}` SHAPE for a name that is not even
+ * credential-shaped — is blocked by family 2, because the matcher reads
+ * command text and cannot tell prose from an expansion the shell will
+ * perform. **Decision: KEEP, do not carve.** Family 3's dump-word detection
+ * is narrow enough to widen safely — it fires only when an ISOLATED command
+ * HEAD, with no arguments, exactly equals a dump word, a strong "this is not
+ * data" signal once literal spans are excluded. Family 2 has no equivalent
+ * narrow signal: `${NAME:-value}` is a SYNTACTIC FORM, not a command head, and
+ * that exact substring is indistinguishable — by the characters immediately
+ * around it — from one sitting inside a nested `$(...)` or an unquoted
+ * heredoc the shell WILL evaluate. Narrowing family 2 the way family 3 was
+ * narrowed below would need real quote-context-aware parsing of an
+ * expansion's OWN operand, not just the head of the command carrying it; the
+ * false-positive cost (one rephrase, guided by the rejection message) stays
+ * cheaper than that risk. Rephrase the argument.
+ *
+ * **Family 3 is position-aware about three literal (never re-parsed-as-a-command)
+ * spans**, the first two added after a 2026-07-29 same-day FP cluster (a
+ * Reviewer's `grep -n` search PATTERN for the dump word, quoted in backticks
+ * inside single quotes, and a Coordinator `gh issue create` heredoc BODY that
+ * merely mentioned the word as the first word of a line), the third added
+ * 2026-07-30 one carve-out further out than that cluster (a read-only `rg`
+ * invocation whose DOUBLE-quoted search pattern listed the
+ * dump word as one alternation term among several — `rg "printenv|env|set"
+ * docs/`, one segment of which is `env`, isolated by the live `|` and
+ * matching family 3's bare-`env` head exactly):
  *
  *   - **A single-quoted string.** Bash performs ZERO expansion inside single
  *     quotes — no `$`, no backtick command substitution, nothing — so a
  *     backtick-quoted mention of a dump word inside one (`grep -n '`printenv`'
- *     file`) is never a real invocation. `neutralizeSingleQuoted()` blanks
+ *     file`) is never a real invocation. `neutralizeQuotedSpans()` blanks
  *     every SEGMENT_SPLIT trigger character it finds there before family 3's
- *     head detection runs. A double-quoted span is walked over untouched —
- *     `$` and backticks ARE live inside double quotes in real bash — so an
- *     apostrophe like the one in `"don't …"` is never mistaken for a
- *     single-quote delimiter that could pair with some unrelated later quote
- *     and blank real command text between them.
+ *     head detection runs.
+ *   - **A double-quoted string — but only its genuinely INERT characters.**
+ *     Unlike a single-quoted span, `$` and a backtick ARE live inside double
+ *     quotes in real bash (`"$(printenv)"` really does run `printenv`), so
+ *     those two stay untouched — as do `(` and `)`, deliberately: the
+ *     existing head-detection isolates whatever sits inside a real `$(...)`
+ *     by splitting on ANY `(`/`)` at the character-class level (see the
+ *     "hidden behind ... a command substitution" case below), and giving
+ *     that up would need a nested-paren parser this guard is deliberately
+ *     not. What DOES get blanked inside a double-quoted span — `;`, `|`,
+ *     `&`, `{`, `}`, and a literal embedded newline — has NO special meaning
+ *     there at all in real bash; it is exactly as inert as it is inside
+ *     single quotes, which is what makes a pipe-joined alternation list in a
+ *     quoted search PATTERN (`"printenv|env|set"`) prose, not three separate
+ *     command heads. An apostrophe like the one in `"don't …"` is still never
+ *     mistaken for a single-quote delimiter, because the double-quote branch
+ *     never watches for `'` at all — only its own closing `"` ends it.
+ *     **Residual, deliberately not chased here:** a PARENTHESIZED alternation
+ *     inside double quotes (`"(printenv|env)"`) still splits on the live
+ *     `(`/`)` and can still isolate a bare dump word — the same class, one
+ *     shape further out, recorded rather than fixed blind, per this guard's
+ *     own "one datapoint, not urgent" filing discipline. Fix it once it is
+ *     evidenced, the same way this carve-out was.
  *   - **A heredoc BODY.** It is argument/stdin DATA for whatever reads it, not
  *     a further sequence of top-level commands, so a bare line that happens to
  *     open with the dump word must not manufacture a fake per-line command
@@ -105,13 +146,15 @@
  *     reaches its reader, stays exactly as reachable as it was before this
  *     carve-out existed.
  *
- * Both carve-outs are scoped to family 3's own head detection only — families
- * 1, 2 and 4 still scan the ORIGINAL command text unchanged, so a genuine
- * credential expansion or wrapped Lookup-Command hidden inside either span is
- * none of family 3's business to begin with and stays caught by its own
- * family. Neither carve-out weakens the piped, command-substitution or
- * command-head invocation forms: those never enter a single-quoted or heredoc
- * span, so the trigger characters that reach them are never masked.
+ * All three carve-outs are scoped to family 3's own head detection only —
+ * families 1, 2 and 4 still scan the ORIGINAL command text unchanged, so a
+ * genuine credential expansion or wrapped Lookup-Command hidden inside any of
+ * them is none of family 3's business to begin with and stays caught by its
+ * own family (see the KEEP decision above for family 2 specifically). None of
+ * the three weakens the piped, command-substitution or command-head
+ * invocation forms: those either never enter a quoted or heredoc span, or —
+ * for `$(...)` / backtick / bare-paren command substitution specifically —
+ * stay deliberately live inside one.
  *
  * ============================================================================
  * ## OPERATOR STEP (HITL) — ready to paste, deliberately NOT applied by an agent
@@ -296,6 +339,24 @@ function commandHeads(command) {
  */
 const SEGMENT_SPLIT_CHARS = new Set(['`', '\n', ';', '|', '&', '(', ')', '{', '}', '$']);
 
+/**
+ * The subset of SEGMENT_SPLIT_CHARS that stays genuinely LIVE inside a
+ * DOUBLE-quoted span in real bash — these still perform real expansion there,
+ * so a double-quoted span must never blank them. `$` starts `$var`, `${...}`
+ * and `$(...)`; a backtick starts legacy command substitution. `(` and `)`
+ * are grouped with them for a narrower reason: they carry no expansion
+ * meaning of their own inside double quotes, but the existing head-detection
+ * isolates a real `$(...)`'s CONTENTS by splitting on any `(`/`)` at the
+ * character-class level (see `commandHeads` via `SEGMENT_SPLIT`), with no
+ * pairing or nesting awareness — so blanking them here would blind that
+ * detection to `"$(printenv)"` while trying to fix an unrelated character.
+ * Leaving them live keeps that detection exactly as reachable as before, at
+ * the cost of not closing the PARENTHESIZED-alternation flavor of this same
+ * FP family (`"(printenv|env)"`) — recorded, not fixed blind, in the module
+ * docstring above.
+ */
+const DOUBLE_QUOTE_LIVE_CHARS = new Set(['$', '`', '(', ')']);
+
 /** @param {Set<string>} chars @param {string} text */
 function blankChars(chars, text) {
   let out = '';
@@ -304,27 +365,40 @@ function blankChars(chars, text) {
 }
 
 /**
- * Blank every SEGMENT_SPLIT trigger character that falls inside a
- * single-quoted span, leaving double-quoted spans untouched.
+ * Blank every SEGMENT_SPLIT trigger character that falls inside a quoted
+ * span — a single-quoted span in full, a double-quoted span for its
+ * genuinely inert characters only (`DOUBLE_QUOTE_LIVE_CHARS` stays untouched
+ * there).
  *
  * Bash performs ZERO expansion inside single quotes — no `$`, no backtick
  * command substitution, nothing — so nothing inside one is ever a further
  * command; a backtick pair used there as markdown-style quoting (a search
  * PATTERN argument, e.g. `grep -n '`printenv`' file`) must not be read as
- * command substitution. A double-quoted span is walked over WITHOUT touching
- * its contents — `$` and backticks ARE live inside double quotes in real
- * bash — which is what keeps an apostrophe like the one in `"don't …"` from
- * ever being mistaken for a single-quote delimiter that could pair with some
- * unrelated LATER quote and blank real command text sitting between them.
+ * command substitution.
+ *
+ * A double-quoted span is different in kind, not just degree: `$` and a
+ * backtick really do expand there (`"$(printenv)"` really runs `printenv`),
+ * so those — and, for the reason `DOUBLE_QUOTE_LIVE_CHARS` documents, `(`
+ * and `)` — are walked over untouched. Every OTHER SEGMENT_SPLIT character
+ * (`;`, `|`, `&`, `{`, `}`, an embedded literal newline) has no special
+ * meaning inside double quotes in real bash at all — it is exactly as inert
+ * there as it is inside single quotes — so a pipe-joined alternation list in
+ * a quoted search PATTERN (`"printenv|env|set"`) is prose, not three command
+ * heads, and gets blanked the same way a single-quoted one already is. An
+ * apostrophe like the one in `"don't …"` is never mistaken for a
+ * single-quote delimiter that could pair with some unrelated LATER quote and
+ * blank real command text sitting between them, because the double-quote
+ * branch below never treats `'` as special at all — only its own closing
+ * `"` ends it.
  *
  * A hand-rolled quote-state scan, not a shell parser — it exists only to
- * defuse the two evidenced false-positive shapes without touching a real
+ * defuse the evidenced false-positive shapes without touching a real
  * invocation.
  *
  * @param {string} command
  * @returns {string}
  */
-function neutralizeSingleQuoted(command) {
+function neutralizeQuotedSpans(command) {
   let out = '';
   /** @type {'none' | 'single' | 'double'} */
   let state = 'none';
@@ -336,7 +410,8 @@ function neutralizeSingleQuoted(command) {
         i += 1;
         continue;
       }
-      out += ch;
+      const blank = SEGMENT_SPLIT_CHARS.has(ch) && !DOUBLE_QUOTE_LIVE_CHARS.has(ch);
+      out += blank ? ' ' : ch;
       if (ch === '"') state = 'none';
       continue;
     }
@@ -415,19 +490,19 @@ function neutralizeHeredocBodies(command) {
 }
 
 /**
- * Both family-3 carve-outs composed: heredoc bodies folded first (so a
+ * All family-3 carve-outs composed: heredoc bodies folded first (so a
  * heredoc's own quoted delimiter token, e.g. `'EOF'`, is still intact and
- * self-contained when the single-quote pass runs next), then single-quoted
- * spans neutralized. Scoped to family 3's OWN head detection only — families
- * 1, 2 and 4 still scan the original, unmodified command text, so a genuine
- * credential expansion or wrapped Lookup-Command hidden inside either span
- * stays caught by its own family.
+ * self-contained when the quoted-span pass runs next), then single- and
+ * double-quoted spans neutralized. Scoped to family 3's OWN head detection
+ * only — families 1, 2 and 4 still scan the original, unmodified command
+ * text, so a genuine credential expansion or wrapped Lookup-Command hidden
+ * inside any of these spans stays caught by its own family.
  *
  * @param {string} command
  * @returns {string}
  */
 function literalSpanNeutralized(command) {
-  return neutralizeSingleQuoted(neutralizeHeredocBodies(command));
+  return neutralizeQuotedSpans(neutralizeHeredocBodies(command));
 }
 
 // ---------------------------------------------------------------------------
@@ -615,7 +690,7 @@ module.exports = {
   isCredentialShaped,
   CREDENTIAL_NAME_SUFFIXES,
   MIN_LOOKUP_VALUE_LENGTH,
-  neutralizeSingleQuoted,
+  neutralizeQuotedSpans,
   neutralizeHeredocBodies,
   literalSpanNeutralized,
 };

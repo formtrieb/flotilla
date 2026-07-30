@@ -351,6 +351,94 @@ describe('echo-guard family 3 — position-aware carve-outs (literal spans are n
 });
 
 // ---------------------------------------------------------------------------
+// 4c. Family 3 — the double-quoted search-PATTERN carve-out (2026-07-30,
+// post-#248 datapoint)
+// ---------------------------------------------------------------------------
+//
+// One step past the row-226 / close-time cluster above: a read-only `rg`
+// invocation whose search PATTERN was DOUBLE-quoted, not single-quoted,
+// listing the dump word as one alternation term among several
+// (`"printenv|env|set"`). The row-226 carve-out only neutralized
+// single-quoted spans, so the live `|` inside the double-quoted pattern still
+// split the string, isolating `env` as its own segment — a bare, argument-free
+// command head that matches family 3's whole-environment-dump check exactly.
+// Reproduces the reported shape: searching skill docs for occurrences of a
+// guarded word, alongside other alternation terms, in a quoted regex.
+describe('echo-guard family 3 — the double-quoted search-PATTERN carve-out (2026-07-30)', () => {
+  it('AC1: a guarded word as an alternation term in a DOUBLE-quoted search pattern is not a whole-environment dump', () => {
+    expectAllowed(runGuard('rg -n "printenv|env|set" .claude/skills', {}));
+  });
+
+  it('AC1: the same alternation pattern, single-quoted, still passes (no regression on the row-226 carve-out)', () => {
+    expectAllowed(runGuard("rg -n 'printenv|env|set' .claude/skills", {}));
+  });
+
+  it('AC1: the same guarded word in COMMAND position still blocks, even alongside the now-allowed quoted pattern', () => {
+    const result = runGuard('printenv | rg -n "printenv|env|set" .claude/skills', {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('negative control: a REAL trailing dump after a semicolon, outside the quotes, still blocks', () => {
+    // The benign quoted search stays benign; the semicolon-separated dump
+    // AFTER it — genuinely at the top level, never inside any quotes — must
+    // still be caught. Proves the ';' inert-character treatment is scoped to
+    // INSIDE a double-quoted span only, never to a real top-level separator.
+    const result = runGuard('rg -n "printenv|env|set" .claude/skills; printenv', {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('negative control: prose semicolons and pipes INSIDE a double-quoted argument stay inert (no dump, no crash)', () => {
+    expectAllowed(runGuard('git commit -m "fixed the env; printenv issue, see report|log"', {}));
+  });
+
+  it('negative control: a REAL command substitution embedded inside a double-quoted argument still blocks — $ and a backtick stay LIVE there', () => {
+    // "$(printenv)" must not be swallowed by the same treatment that now
+    // blanks ';' and '|' inside double quotes — $ and ` are genuinely live
+    // inside double quotes in real bash and are deliberately excluded from
+    // the inert set.
+    expectBlocked(runGuard('echo "current token check: $(printenv)"', {}));
+  });
+
+  it('negative control: a REAL backtick command substitution embedded inside a double-quoted argument still blocks', () => {
+    expectBlocked(runGuard('echo "current token check: `printenv`"', {}));
+  });
+
+  it('residual, deliberately NOT chased here: a PARENTHESIZED alternation inside double quotes still isolates the bare word', () => {
+    // "(printenv|env)" still splits on the live ( and ) — the
+    // parenthesized-alternation flavor of the same FP family, one shape
+    // further out than the reported occurrence. Recorded as a known,
+    // deliberate residual in the module docstring rather than fixed blind;
+    // pinned here so the limitation is asserted, not merely assumed, and a
+    // future fix has to touch this case on purpose.
+    expectBlocked(runGuard('rg -n "(printenv|env)" .claude/skills', {}));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4d. Family 2 — the KEEP decision for the value-substituting-expansion
+// shape in quoted/prose position (2026-07-30, same-day sibling datapoint)
+// ---------------------------------------------------------------------------
+//
+// Same triage session as the family-3 carve-out above surfaced a structurally
+// identical shape one family over: a search PATTERN merely quoting the
+// `${NAME:-…}` SYNTACTIC SHAPE for a name that is not even credential-shaped.
+// Family 2 has no literal-span awareness at all — it scans the raw command
+// text regardless of quoting — so this stays blocked. Decided here as a KEEP,
+// not a gap: see the module docstring's False-positive budget note for the
+// rationale (family 3's isolated-command-head signal has no equivalent in a
+// syntactic-form check).
+describe('echo-guard family 2 — the KEEP decision, pinned (2026-07-30)', () => {
+  it('a search PATTERN merely quoting the ${NAME:-…} SHAPE for a non-credential name still blocks — deliberate, not carved', () => {
+    const result = runGuard("grep -rn '${DEPLOY_TARGET:-' .claude/skills", {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('value-substituting expansion');
+    expect(result.stderr).toContain('DEPLOY_TARGET');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. Family 4 — a wrapped configured Lookup-Command
 // ---------------------------------------------------------------------------
 
