@@ -371,6 +371,46 @@ export {
   type LinearStateMapConfig,
 } from './wave-config';
 
+// The plugin/engine LOCKSTEP COMPARISON (ADR-0032) — the other half of the same
+// binding the `engine.cli` names above describe. The version gate shipped with
+// two consuming surfaces, the `version` verb and the `store-preflight`
+// advisory, and BOTH sit on the CLI side: a consumer that imports this package
+// rather than shelling its CLI could not ask the question the ADR makes a
+// checked invariant. That is the barrel gap this closes — the same defect class
+// already closed after the fact for the disclosure surface, the disposable-name
+// validator, and the documented-form vocabulary (issues #177, #184, #216).
+//
+// The trio ships WHOLE because it is the whole job from the root: read an
+// installation's own manifest (`readEngineVersion`, pointable at a manifest
+// other than this package's, and never throwing — an unreadable manifest is a
+// reported state), compare it against the expectation the caller holds
+// (`compareEngineVersion`), and map the five-valued outcome to the same exit
+// code the verb returns (`engineVersionExitCode`). One comparison, one
+// exit-code mapping — a root-only consumer re-implementing either is exactly
+// the drift ADR-0032 exists to end. The three result types ride along so the
+// report can be annotated and its `outcome` discriminant switched on
+// exhaustively.
+//
+// Costs the barrel nothing at load time: `./cli` (re-exported at the bottom of
+// this file) already imports `./cli-store`, so the module is in this graph
+// either way — these are names, not a new dependency.
+//
+// Deliberately NOT re-exported: `engineManifestPath` (every reading already
+// carries the manifest it read as `manifestPath`, so the root surface would
+// gain a second way to ask one question) and `engineVersionPreflightCheck`
+// (its return type belongs to the store-preflight surface — `PreflightCheck`,
+// `StorePreflightReport`, `preflightStore` — none of which is root-reachable
+// today; that is a wider, older gap, and dragging it in behind a version-gate
+// fix would make this a store-preflight API change nobody reviewed as one).
+export {
+  readEngineVersion,
+  compareEngineVersion,
+  engineVersionExitCode,
+  type EngineVersionReading,
+  type EngineVersionOutcome,
+  type EngineVersionReport,
+} from './cli-store';
+
 export {
   LinearIssuesStore,
   DEFAULT_LINEAR_STATES,
