@@ -26,7 +26,15 @@ import {
   afterEach,
 } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+  realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, mainAsync, runDorById, findRepoRoot } from './cli';
@@ -3947,5 +3955,152 @@ describe('credential-probe subcommand routing (ADR-0029)', () => {
     );
     expect(code).toBe(0);
     expect((JSON.parse(stdoutBuf) as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+// ─── `version` subcommand routing (ADR-0032) ─────────────────────────────────
+//
+// The engine half of the plugin/engine lockstep gate. Three properties are
+// asserted here, and only the first is about plumbing:
+//
+//   1. ROUTING — `version` is a real subcommand, `--version` is its alias, and
+//      a BARE `version` is exempt from the router's zero-arg guard (it is that
+//      verb's primary form, and it performs no action).
+//   2. STORE-FREE — the verb answers with no wave config anywhere in sight.
+//      That is the AC, and it is what makes the verb usable on a machine where
+//      the skew is the reason nothing else works.
+//   3. NON-VACUITY — a value-less or blank `--expect` is a usage error, and a
+//      missing side of the comparison is a non-match. A version gate that can
+//      be silently disarmed by the invocation meant to arm it is worse than no
+//      gate, because it reads as green.
+//
+// The engine version is DERIVED from the package's own manifest in every
+// assertion below, never transcribed: a literal would go stale at the next
+// release and start failing for a healthy install.
+
+describe('version subcommand routing (ADR-0032)', () => {
+  const ENGINE_MANIFEST = join(__dirname, '..', 'package.json');
+  const engineVersion = (): string =>
+    (JSON.parse(readFileSync(ENGINE_MANIFEST, 'utf-8')) as { version: string }).version;
+
+  it('a BARE `version` prints the engine version as JSON and exits 0 — no store config needed', () => {
+    const code = main(['version']);
+
+    expect(code).toBe(0);
+    const report = JSON.parse(stdoutBuf) as {
+      version: string;
+      match: boolean | null;
+      outcome: string;
+    };
+    expect(report.version).toBe(engineVersion());
+    expect(report.outcome).toBe('no-expectation');
+    expect(report.match).toBeNull();
+    // The zero-arg guard did NOT fire: usage would have gone to stderr instead.
+    expect(stderrBuf).toBe('');
+  });
+
+  it('is routed via KNOWN_SUBCOMMANDS, not treated as an unknown subcommand', () => {
+    main(['version']);
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+  });
+
+  it('the top-level usage lists the verb and its --expect flag', () => {
+    main([]);
+    expect(stderrBuf).toMatch(/flotilla-engine version \[--expect <plugin-version>\]/);
+    expect(stderrBuf).toMatch(/available subcommands: .*\bversion\b/);
+  });
+
+  it('`--version` is an alias producing byte-identical output', () => {
+    const subCode = main(['version']);
+    const subOut = stdoutBuf;
+
+    stdoutBuf = '';
+    const aliasCode = main(['--version']);
+
+    expect(aliasCode).toBe(subCode);
+    expect(stdoutBuf).toBe(subOut);
+    // Without the alias case this token would fall into looksLikeSubcommand().
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+  });
+
+  it('MATCH: --expect at the real engine version exits 0 with match:true', () => {
+    const code = main(['version', '--expect', engineVersion()]);
+
+    expect(code).toBe(0);
+    const report = JSON.parse(stdoutBuf) as {
+      match: boolean;
+      outcome: string;
+      repair: string | null;
+    };
+    expect(report.match).toBe(true);
+    expect(report.outcome).toBe('match');
+    expect(report.repair).toBeNull();
+  });
+
+  it('NEGATIVE CONTROL (Convention 11) — MISMATCH fires end-to-end: exit 1, match:false, one-line repair', () => {
+    // The ONLY difference from the passing case above is the expectation, and
+    // the whole verdict flips. This is what distinguishes "the gate works" from
+    // "the gate cannot fail".
+    const code = main(['version', '--expect', '9.9.9-no-such-release']);
+
+    expect(code).toBe(1);
+    const report = JSON.parse(stdoutBuf) as {
+      version: string;
+      expected: string;
+      match: boolean;
+      outcome: string;
+      repair: string;
+    };
+    expect(report.match).toBe(false);
+    expect(report.outcome).toBe('mismatch');
+    expect(report.version).toBe(engineVersion());
+    expect(report.expected).toBe('9.9.9-no-such-release');
+    expect(report.repair).toBe('npm i -D @formtrieb/flotilla-engine@9.9.9-no-such-release');
+  });
+
+  it('RESTORED: the very same invocation at the right version is green again (exit 0)', () => {
+    expect(main(['version', '--expect', engineVersion()])).toBe(0);
+  });
+
+  it('the alias carries the mismatch exit code too', () => {
+    expect(main(['--version', '--expect', '9.9.9-no-such-release'])).toBe(1);
+  });
+
+  it('a value-less --expect is a usage error (exit 2) — never a silently skipped check', () => {
+    const code = main(['version', '--expect']);
+
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/--expect requires a <plugin-version> value/);
+    expect(stdoutBuf).toBe(''); // no report at all, so nothing can read as a pass
+  });
+
+  it('a blank --expect value is refused rather than read as "no expectation"', () => {
+    const code = main(['version', '--expect', '   ']);
+    expect(code).toBe(2);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('an --expect swallowed by the next flag is refused, not bound to the flag name', () => {
+    const code = main(['version', '--expect', '--config']);
+    expect(code).toBe(2);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('an unknown flag is a usage error naming the flag', () => {
+    const code = main(['version', '--bogus']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/unknown flag --bogus/);
+  });
+
+  it('a stray positional is a usage error — the verb takes none', () => {
+    const code = main(['version', '0.1.0']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/takes no positional arguments/);
+  });
+
+  it('reaches the same runner through the async entrypoint (the shipped bin path)', async () => {
+    const code = await mainAsync(['version', '--expect', '9.9.9-no-such-release']);
+    expect(code).toBe(1);
+    expect((JSON.parse(stdoutBuf) as { outcome: string }).outcome).toBe('mismatch');
   });
 });
