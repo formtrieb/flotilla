@@ -85,6 +85,21 @@ HELD_IDS=$(node -e '
 {{wave-cli}} detect-host "$(git -C "$REPO" remote get-url origin)"   # → { host, workspace, repo }
 #   then gh auth status (GitHub) — fail → STOP before the flip
 
+# 4a. Worktree-count advisory — the E2BIG preflight (issue #238). One sandbox
+#     filesystem-deny entry per REGISTERED worktree, profile cached per session:
+#     past the exec argument limit every Bash spawn dies with E2BIG, subagents
+#     included. ADVISORY, never a STOP (see the dedicated section below for why,
+#     and for the recovery sequence — which requires a harness RESTART).
+WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree ')
+#   >12 → print the advisory and sweep before the flip; <=12 → silent, proceed.
+#   12 == WORKTREE_COUNT_ADVISORY_THRESHOLD in tools/wave/src/worktree-cleanup.ts
+#   (the engine owns the number, its rationale, and the advisory text).
+#   Deliberately NOT run through step 0's `require_capture`: `grep -c` prints `0`
+#   on no match, so this capture is never empty on a did-not-run — and a repo
+#   with zero registered worktrees is impossible anyway (the primary checkout
+#   always counts). Guarding it would be the false alarm Convention 12 warns
+#   about, exactly like HELD_IDS above.
+
 # 5. Mark each NON-HELD row in-flight (WAL: spine first, then rung, in row order).
 #    Skip any id present in HELD_IDS (step 3) — its State stays `planned`.
 #    Per row, bind $ID / $ROW_SLUG / $MODEL from the roster — the SAME id+slug+model
@@ -139,6 +154,34 @@ HELD_IDS=$(node -e '
 - `dispatched` / `re-dispatched` are the two *running* states (a Worker is out). `planned`/`pr-created`/`approved`/`failed`/`abandoned`/etc. are not running → not counted.
 - Run it over every **other** spine; this wave's own spine is exempt (idempotent re-entry may already carry running rows).
 - A Title cell containing the literal word `dispatched` padded by pipes is a theoretical false-positive only; real titles do not carry pipe-padded state tokens.
+
+## The worktree-count advisory (step 4a) — the E2BIG preflight
+
+**The mechanism.** The agent harness composes its sandbox profile with one filesystem-deny entry per **registered** git worktree, and caches that profile for the whole session. Nothing about a single worktree is expensive; the *population* is. Once the profile exceeds the OS `exec` argument limit, every process spawn fails with `E2BIG` ("argument list too long") — the Coordinator's Bash calls and **every subagent's**, since a subagent inherits the same cached profile. Live occurrence 2026-07-30 during the resume of a seven-row wave, on the third dispatch run of the day; the subagent scope was confirmed with a minimal probe agent that hit the identical `E2BIG`.
+
+**Why it belongs in the preflight, before the flip.** The failure has no partial mode. A wave dispatched into a session already past the limit does not degrade — every Worker's first shell call dies, and the wave consumes its whole agent budget on calls that could not have succeeded. Measuring costs one `git` invocation.
+
+**The measurement.**
+
+```bash
+git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
+```
+
+The count deliberately **includes the primary checkout**, because that is what `git worktree list` reports and therefore what an operator reproducing this by hand sees. The engine's `checkWorktreeCountAdvisory` (`tools/wave/src/worktree-cleanup.ts`) counts the same population against the same `WORKTREE_COUNT_ADVISORY_THRESHOLD`, so the shell form and the engine can never quietly disagree — and the engine is where the number, its rationale, and the advisory wording live. The threshold is set so one full seven-row wave plus its reviewer checkouts stays *under* it: an advisory that fires during ordinary operation is an advisory that gets ignored.
+
+**Advisory, not a gate — and this is a deliberate asymmetry with step 4.** A failed host-auth or credential probe STOPs the wave because the failure is *measured* (the token really did not authenticate). The worktree threshold is a *heuristic* about a harness-side limit nothing here can measure; converting it into a refusal would block a legitimately wide multi-wave day on a number no one can verify from inside the engine. `> 12` therefore reports and lets the Coordinator decide, and that decision is named in the step-9 report.
+
+**Recovery — the three steps, in order.**
+
+```bash
+{{wave-cli}} worktree-cleanup --orphans        # 1. sweep (see wave-close phase 3 for the reading guide)
+git -C "$REPO" worktree prune                  # 2. clear unvalidatable administrative entries
+#                                                3. RESTART the harness — see below
+```
+
+Step 3 is not optional and is not intuitive: **cleanup alone does not recover a session that is already failing.** The profile is cached, so removing the worktrees fixes the population while the running session keeps the deny list it already built — every Bash spawn keeps dying. This was verified live: `git worktree remove` + `git worktree prune` did not restore the session, and only a harness restart did. Sweep *then* restart; a report that says "cleaned up, retrying" without the restart is describing a retry that cannot work.
+
+**Between waves, not only before one.** The incident was the third dispatch run of a single day, and its residue came from the first two runs plus a previous session's leftovers. A multi-wave day wants this count re-read after every close, which is where [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md) picks it up.
 
 ## Routing a tuple `{ id, risk, iteration, report, verdict }`
 

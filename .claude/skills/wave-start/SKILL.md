@@ -98,6 +98,33 @@ Verify host write-auth **once**, up-front, so a dead token surfaces as a single 
 >
 > **Never run the `_CMD` value yourself to "check that it works".** Its stdout **is** the secret, so executing it is the exact leak the indirection removes — the probe verb exists so you never have to (wave-shared Convention 8, ADR-0029).
 
+### 4a. Worktree-count advisory — the E2BIG dispatch preflight
+
+Registered git worktrees are not free. The agent harness adds **one sandbox filesystem-deny entry per registered worktree**, and it caches that profile for the whole session — so it is the *population*, never any single worktree, that eventually pushes the profile past the OS `exec` argument limit. Past that point **every** Bash spawn fails with `E2BIG` ("argument list too long"): the Coordinator's and every subagent's alike, because subagents share the same cached profile. Live occurrence 2026-07-30, on the third dispatch run of a seven-row wave, confirmed with a minimal subagent probe.
+
+That is why this is a preflight and not a lesson learned afterwards: the failure is invisible until it is total, and a wave dispatched into an already-bloated session burns its entire agent budget on shell calls that were guaranteed to fail before the first Worker spawned.
+
+Count before the flip — value-free, no store, no credentials:
+
+```bash
+git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
+```
+
+- **≤ 12** → silent, proceed to step 5.
+- **> 12** → surface the advisory and sweep before dispatching.
+
+`12` is the engine's documented threshold — `WORKTREE_COUNT_ADVISORY_THRESHOLD` in `tools/wave/src/worktree-cleanup.ts`, which also owns the advisory text and the reasoning for the number: one seven-row wave plus its reviewer checkouts has to stay *under* it, or the advisory becomes standing noise and gets ignored. Keep the two in step — the engine constant is the authority, this line is the operator-facing copy of it. The count includes the primary checkout, exactly as `git worktree list` reports it (the engine counts the same way on purpose, so a hand check and the engine never disagree).
+
+> **This is an ADVISORY, never a STOP.** The threshold is a heuristic about a harness-side limit the engine cannot measure; a hard refusal on an unverifiable number would block a legitimately wide multi-wave day. Unlike step 4's auth/credential gates, `> 12` does not hold the wave — you decide whether to sweep first or proceed knowingly, and you say which in the step-9 report.
+
+**Sweeping is the fix — and once E2BIG has already started, sweeping alone is NOT.** The order matters, and the third step is the one everybody skips:
+
+1. `{{wave-cli}} worktree-cleanup --orphans` — the ordinary sweep. Full reading guide (including the classes it does *not* reach, e.g. an agent's own hand-made detached scratch checkout) in [wave-close phase 3](../wave-close/reference/phase-3-worktree-cleanup.md).
+2. `git -C "$REPO" worktree prune` — clears administrative entries for anything left unvalidatable.
+3. **RESTART the harness.** The sandbox profile is cached per session: removing the worktrees fixes the population, but the running session keeps the profile it already built, so every Bash spawn keeps dying exactly as before. Only a restart rebuilds it. Verified live — `git worktree remove` + `prune` did **not** recover the session; the restart did.
+
+A multi-wave day wants this audit **between** waves too, not only at the start of one — the observed incident was the *third* dispatch run of the day, and its residue came from the first two plus a prior session.
+
 ### 5. Mark each row in-flight (WAL: spine first)
 
 For each **non-HELD** row (step 3's membership resolution — skip any id marked HELD) in **Plan-Table row order**: `{{wave-cli}} spine set-row-state <spine> <id> dispatched` (the fine `IssueState`, **first** — the durable WAL record), then `{{wave-cli}} spine set-branch <spine> <id> wave/<id>-<slug> --model <model>`, then `{{wave-cli}} issue-store transition <id> in-flight` (the coarse `ClaimRung`). Spine first (both spine writes), then the rung. The frontmatter `**Status:**` line was already set to `ready` in step 1 — the running signal is the per-row `State` column, not the frontmatter. (Exact sequence in [reference/start-mechanics.md](reference/start-mechanics.md).)
@@ -191,6 +218,7 @@ This step is **report-only**. When every non-HELD, non-parked row is at `pr-crea
 - **Re-dispatching more than once.** The cap is 1, enforced inside `transition()`. Do not loop a 3rd Worker attempt — a 2nd `changes-requested`/`needs-context` returns a `stop` you must flag, not re-dispatch.
 - **Re-dispatching iteration 2 without tearing down the iteration-1 worktree first, or letting its brief use a tracking checkout (W26-F1).** Both are structural, not Worker heroism: run `{{wave-cli}} worktree-cleanup --branches <wave-branch>` BEFORE the iteration-2 dispatch (its iteration-1 worktree still holds the branch's `git worktree` registration, blocking a second checkout), and compose the iteration-2 brief with the tracking-free form (`git fetch` + `checkout -B <branch> FETCH_HEAD`, or the explicit iteration-1 head SHA) — never `checkout -B <branch> origin/<branch>`, which writes upstream-tracking into the main repo's shared `.git/config` (sandbox-write-denied for a worktree-isolated agent) and strands the switch half-applied. Live occurrence: an iteration-2 Worker had to unregister the stale worktree and finish a half-applied branch switch by hand via `git symbolic-ref`. Full mechanics: `reference/workflow-driver.md` §Re-dispatch and `reference/start-mechanics.md` step 7d.
 - **Auth-preflight per Worker.** Verify host auth once, up-front, before the flip — not lazily per terminator (the dead-token-for-the-whole-wave failure).
+- **Dispatching into a session whose registered-worktree count already sits above the advisory threshold (step 4a).** One sandbox deny entry per registered worktree, profile cached per session: past the `exec` argument limit **every** Bash spawn dies with `E2BIG`, subagents included, so the wave spends its whole agent budget on calls that could never have succeeded. Count first (`git worktree list --porcelain | grep -c '^worktree '`), sweep if it is over. And do not read a clean sweep as recovery for a session that is *already* failing: the profile is cached, so the sequence is sweep + `git worktree prune` + **restart the harness** — cleanup alone is verified not to heal a running session.
 - **Checking whether a token is set with `${VAR:-no}` — as the Coordinator, at step 4.** `${VAR:-fallback}` substitutes **the value** when the variable is set; only the absent branch prints the literal. It reads as a presence test and is not one, and `${VAR:+yes}${VAR:-no}` is the same trap with a convincing `yes` in front of the key. Use `[ -n "$GITHUB_TOKEN" ] && echo set` — never `printenv`, a bare `env`/`set`, or a read of a gitignored settings/`.env`-class file. **Convention 8 binds the Coordinator, not only the briefs it composes**: the clause forbidding this ships in `workerBrief()` policy clause 5, which you *write* and never *receive* — two of the class's six live occurrences were Coordinators, at this exact step, each costing a rotated credential.
 - **Proceeding past a STOP.** Flag `needs-attention` and ping; never auto-continue a `stop` outcome.
 - **Dispatching a HELD row anyway, or flagging it `needs-attention`.** A row whose intra-wave blocker is not yet `in-review`/`done` (FOR-8, step 3) is HELD, not stopped and not anomalous — leave its `State` at `planned`, exclude it from `ISSUES` (step 6), and report it plainly. Do not dispatch it "to save a round-trip" and do not raise a flag over ordinary sequencing.

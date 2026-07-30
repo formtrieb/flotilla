@@ -178,6 +178,11 @@ import {
   executeOrphanBranchSweep,
   defaultOrphanBranchSweepOps,
   normalizeDisposableNames,
+  listDetachedScratchpadWorktrees,
+  planDetachedScratchpadSweep,
+  sweepDetachedScratchpadWorktrees,
+  checkWorktreeCountAdvisory,
+  WORKTREE_COUNT_ADVISORY_THRESHOLD,
   type WorktreeEntry,
   type WorktreeRemover,
   type RedispatchCleanupOps,
@@ -4916,5 +4921,468 @@ describe('a classified-disposable worktree is ACTUALLY removed — real git, rea
     expect(() => defaultWorktreeRemover(mainRoot).remove(worktreePath)).not.toThrow();
     expect(recordedGitArgs()).toContainEqual(['worktree', 'remove', worktreePath]);
     expect(stillRegistered(mainRoot, worktreePath)).toBe(false);
+  });
+});
+
+// ─── 27. Detached-HEAD scratchpad sweep — planning (issue #238) ───────────────
+//
+// The population half of the E2BIG hardening. `planDetachedScratchpadSweep` is
+// pure, so these fixtures pin every refusal by name with zero git/fs: the
+// defining `live-branch` gate, and the three safety refusals it inherits
+// (`locked`, `dirty`, `orphan-with-real-files`) which must keep behaving exactly
+// as they do on the `planCleanup` path.
+describe('planDetachedScratchpadSweep — selection + named refusals (issue #238)', () => {
+  const SCRATCH = '/repo/.claude/worktrees/review-238';
+
+  /** A candidate entry as `listDetachedScratchpadWorktrees` would return it. */
+  function candidate(over: Partial<WorktreeEntry> = {}): WorktreeEntry {
+    return {
+      path: SCRATCH,
+      branch: null,
+      head: 'abc1234abc1234abc1234abc1234abc1234abcd',
+      dirty: false,
+      locked: false,
+      ...over,
+    };
+  }
+
+  it('selects a detached, clean, unlocked scratch checkout — the whole point of the sweep', () => {
+    const plan = planDetachedScratchpadSweep([candidate()]);
+
+    expect(plan.selected.map((w) => w.path)).toEqual([SCRATCH]);
+    expect(plan.skipped).toHaveLength(0);
+  });
+
+  it("skips a worktree with a branch checked out — reason 'live-branch', never removed", () => {
+    const plan = planDetachedScratchpadSweep([
+      candidate({ path: '/repo/.claude/worktrees/wf_row-1', branch: 'wave/238-e2big-sweep' }),
+    ]);
+
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped).toHaveLength(1);
+    expect(plan.skipped[0].reason).toBe('live-branch');
+  });
+
+  it("skips a DIRTY detached checkout — reason 'dirty' (the safety invariant is untouched)", () => {
+    const plan = planDetachedScratchpadSweep([candidate({ dirty: true })]);
+
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped[0].reason).toBe('dirty');
+  });
+
+  it('selects a detached checkout whose dirt is EXCLUSIVELY the already-classified disposable shape', () => {
+    const plan = planDetachedScratchpadSweep([
+      candidate({ dirty: true, dirtyAllJunk: true }),
+    ]);
+
+    expect(plan.selected.map((w) => w.path)).toEqual([SCRATCH]);
+    expect(plan.skipped).toHaveLength(0);
+  });
+
+  it("skips a LOCKED detached checkout up front — reason 'locked', it never reaches the remover", () => {
+    const plan = planDetachedScratchpadSweep([candidate({ locked: true })]);
+
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped[0].reason).toBe('locked');
+  });
+
+  it("skips an orphaned detached dir holding real files — reason 'orphan-with-real-files'", () => {
+    const plan = planDetachedScratchpadSweep([
+      candidate({ orphan: true, orphanAllJunk: false }),
+    ]);
+
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped[0].reason).toBe('orphan-with-real-files');
+  });
+
+  it('selects an orphaned detached dir that is exclusively allowlisted junk', () => {
+    const plan = planDetachedScratchpadSweep([
+      candidate({ orphan: true, orphanAllJunk: true }),
+    ]);
+
+    expect(plan.selected.map((w) => w.path)).toEqual([SCRATCH]);
+  });
+
+  it('a mixed batch: every skipped entry carries a machine-readable reason, nothing is silently dropped', () => {
+    const plan = planDetachedScratchpadSweep([
+      candidate({ path: '/repo/.claude/worktrees/review-a' }),
+      candidate({ path: '/repo/.claude/worktrees/review-b', dirty: true }),
+      candidate({ path: '/repo/.claude/worktrees/wf_row-1', branch: 'wave/1-x' }),
+      candidate({ path: '/repo/.claude/worktrees/review-c', locked: true }),
+    ]);
+
+    expect(plan.selected.map((w) => w.path)).toEqual(['/repo/.claude/worktrees/review-a']);
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['dirty', 'live-branch', 'locked']);
+    expect(plan.skipped.every((w) => w.reason !== undefined)).toBe(true);
+  });
+
+  it('empty candidate list → empty plan (idempotent no-op)', () => {
+    expect(planDetachedScratchpadSweep([])).toEqual({ selected: [], skipped: [] });
+  });
+});
+
+// ─── 28. Detached-HEAD scratchpad sweep — real git/fs end-to-end (issue #238) ─
+//
+// The gap this closes only exists against REAL git: an un-prefixed detached
+// checkout is fully REGISTERED (so `listOrphanDirs` cannot see it) and carries
+// no `agent-`/`wf_` prefix (so `listAgentWorktrees` filters it out). Both halves
+// of that claim are asserted here against genuine `git worktree list` output,
+// alongside the outcome — the directory is gone from disk AND deregistered.
+describe('detached-scratchpad sweep — real git/fs end-to-end (issue #238)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /**
+   * A real repo with a real worktrees root. `core.excludesFile` is pinned to
+   * nothing so no developer's global excludes leak into the fixture (the same
+   * reason sections 12 and 26 do it).
+   */
+  function makeRepo(label: string): { mainRoot: string; worktreesRoot: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cleanup-238-${label}-`)));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    writeFileSync(join(mainRoot, 'README.md'), '# fixture\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'init'], mainRoot);
+    const worktreesRoot = join(mainRoot, '.claude', 'worktrees');
+    mkdirSync(worktreesRoot, { recursive: true });
+    return { mainRoot, worktreesRoot };
+  }
+
+  /** Plant an un-prefixed DETACHED scratch checkout — the reviewer-made shape. */
+  function plantDetachedScratchpad(mainRoot: string, name: string): string {
+    const rel = join('.claude', 'worktrees', name);
+    realGit(['worktree', 'add', '-q', '--detach', rel, 'HEAD'], mainRoot);
+    return join(mainRoot, rel);
+  }
+
+  /** Is `path` still registered per real `git worktree list --porcelain`? */
+  function stillRegistered(mainRoot: string, path: string): boolean {
+    return realGit(['worktree', 'list', '--porcelain'], mainRoot)
+      .split('\n')
+      .some((line) => line.trim() === `worktree ${path}`);
+  }
+
+  it('the pre-existing GC and orphan-dir sweeps BOTH structurally miss a planted un-prefixed detached checkout — the gap this sweep exists for', () => {
+    const { mainRoot } = makeRepo('gap');
+    const scratch = plantDetachedScratchpad(mainRoot, 'review-238');
+
+    // Registered, so it is not an orphan DIRECTORY at all.
+    expect(stillRegistered(mainRoot, scratch)).toBe(true);
+    expect(listOrphanDirs(mainRoot).map((o) => o.path)).not.toContain(scratch);
+    // No recognized name prefix, so the name-allowlisted GC never lists it.
+    expect(listAgentWorktrees(mainRoot).map((w) => w.path)).not.toContain(scratch);
+    expect(
+      planCleanup(listAgentWorktrees(mainRoot)).selected.map((w) => w.path),
+    ).not.toContain(scratch);
+
+    // The new sweep DOES see it.
+    expect(
+      listDetachedScratchpadWorktrees({ repoRoot: mainRoot }).map((w) => w.path),
+    ).toContain(scratch);
+  });
+
+  it('sweepDetachedScratchpadWorktrees removes the planted detached checkout — gone from disk AND deregistered', () => {
+    const { mainRoot } = makeRepo('remove');
+    const scratch = plantDetachedScratchpad(mainRoot, 'review-238');
+
+    const result = sweepDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.deregisteredNotDeleted).toEqual([]);
+    expect(result.erroredStillListed).toEqual([]);
+    expect(result.removed.map((w) => w.path)).toEqual([scratch]);
+    expect(existsSync(scratch)).toBe(false);
+    expect(stillRegistered(mainRoot, scratch)).toBe(false);
+  });
+
+  it("a branch-bearing dispatch worktree in the SAME root is skipped 'live-branch' and survives", () => {
+    const { mainRoot } = makeRepo('live');
+    const scratch = plantDetachedScratchpad(mainRoot, 'review-238');
+    const relDispatch = join('.claude', 'worktrees', 'wf_row-1');
+    realGit(['worktree', 'add', '-q', relDispatch, '-b', 'wave/238-live'], mainRoot);
+    const dispatchPath = join(mainRoot, relDispatch);
+
+    const result = sweepDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+
+    expect(result.removed.map((w) => w.path)).toEqual([scratch]);
+    const liveSkip = result.skipped.find((w) => w.path === dispatchPath);
+    expect(liveSkip?.reason).toBe('live-branch');
+    expect(existsSync(dispatchPath)).toBe(true);
+    expect(stillRegistered(mainRoot, dispatchPath)).toBe(true);
+  });
+
+  it("a DIRTY detached checkout is skipped 'dirty' and survives — real uncommitted content, real git status", () => {
+    const { mainRoot } = makeRepo('dirty');
+    const dirtyScratch = plantDetachedScratchpad(mainRoot, 'review-dirty');
+    writeFileSync(join(dirtyScratch, 'work-in-progress.txt'), 'do not lose me\n');
+
+    const result = sweepDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+
+    expect(result.removed).toEqual([]);
+    expect(result.skipped.map((w) => w.path)).toEqual([dirtyScratch]);
+    expect(result.skipped[0].reason).toBe('dirty');
+    expect(existsSync(dirtyScratch)).toBe(true);
+    expect(stillRegistered(mainRoot, dirtyScratch)).toBe(true);
+  });
+
+  it('the primary checkout is never a candidate, however the roots are pointed', () => {
+    const { mainRoot } = makeRepo('primary');
+    plantDetachedScratchpad(mainRoot, 'review-238');
+
+    const candidates = listDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      // Deliberately hostile: declare the repo root ITSELF as a containment root.
+      extraRoots: ['.'],
+    });
+
+    expect(candidates.map((w) => w.path)).not.toContain(mainRoot);
+  });
+
+  it('a detached worktree OUTSIDE every containment root is left strictly alone until its root is declared', () => {
+    const { mainRoot } = makeRepo('outside');
+    const outsideRel = join('scratchpad', 'probe-238');
+    realGit(['worktree', 'add', '-q', '--detach', outsideRel, 'HEAD'], mainRoot);
+    const outside = join(mainRoot, outsideRel);
+
+    // Undeclared → not a candidate.
+    expect(
+      listDetachedScratchpadWorktrees({ repoRoot: mainRoot }).map((w) => w.path),
+    ).not.toContain(outside);
+
+    // Declared → a candidate, and selected.
+    const declared = listDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      extraRoots: ['scratchpad'],
+    });
+    expect(declared.map((w) => w.path)).toContain(outside);
+    expect(
+      planDetachedScratchpadSweep(declared).selected.map((w) => w.path),
+    ).toContain(outside);
+  });
+
+  it('is idempotent: a re-run after the sweep finds no candidate and removes nothing', () => {
+    const { mainRoot } = makeRepo('idem');
+    plantDetachedScratchpad(mainRoot, 'review-238');
+
+    const first = sweepDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+    expect(first.removed).toHaveLength(1);
+
+    const second = sweepDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+    expect(second.removed).toHaveLength(0);
+    expect(second.skipped).toHaveLength(0);
+    expect(second.errors).toHaveLength(0);
+  });
+});
+
+// ─── 29. Worktree-count advisory (issue #238) ─────────────────────────────────
+//
+// The measurement half: a dispatch preflight that fires BEFORE the sandbox
+// profile outgrows the exec argument limit. Advisory, never a refusal — and the
+// message is load-bearing, because it is the only place an operator learns that
+// cleanup alone does not heal an already-E2BIG session.
+describe('checkWorktreeCountAdvisory — the E2BIG dispatch preflight (issue #238)', () => {
+  it('a count at or under the threshold is `ok`, with NO message to print', () => {
+    const under = checkWorktreeCountAdvisory({ countWorktrees: () => 3 });
+    expect(under).toEqual({
+      count: 3,
+      threshold: WORKTREE_COUNT_ADVISORY_THRESHOLD,
+      level: 'ok',
+      message: null,
+    });
+
+    // Boundary: exactly AT the threshold is still ok — the advisory fires above it.
+    const at = checkWorktreeCountAdvisory({
+      countWorktrees: () => WORKTREE_COUNT_ADVISORY_THRESHOLD,
+    });
+    expect(at.level).toBe('ok');
+    expect(at.message).toBeNull();
+  });
+
+  it('a count above the threshold fires an advisory naming the E2BIG shape, its subagent scope, and the RESTART requirement', () => {
+    const advisory = checkWorktreeCountAdvisory({
+      countWorktrees: () => WORKTREE_COUNT_ADVISORY_THRESHOLD + 1,
+    });
+
+    expect(advisory.level).toBe('advisory');
+    expect(advisory.count).toBe(WORKTREE_COUNT_ADVISORY_THRESHOLD + 1);
+    expect(advisory.threshold).toBe(WORKTREE_COUNT_ADVISORY_THRESHOLD);
+    // The three load-bearing facts, pinned so a reword cannot silently drop one.
+    expect(advisory.message).toContain('E2BIG');
+    expect(advisory.message).toContain('subagent');
+    expect(advisory.message).toContain('RESTART');
+    expect(advisory.message).toContain(String(WORKTREE_COUNT_ADVISORY_THRESHOLD + 1));
+  });
+
+  it('an explicit threshold override is honoured in both directions', () => {
+    expect(
+      checkWorktreeCountAdvisory({ countWorktrees: () => 5, threshold: 4 }).level,
+    ).toBe('advisory');
+    expect(
+      checkWorktreeCountAdvisory({ countWorktrees: () => 5, threshold: 40 }).level,
+    ).toBe('ok');
+  });
+
+  it('a garbled threshold throws rather than silently disabling the advisory (a NaN compare always reads `ok`)', () => {
+    expect(() =>
+      checkWorktreeCountAdvisory({
+        countWorktrees: () => 99,
+        threshold: Number.NaN,
+      }),
+    ).toThrow(/non-negative integer/);
+    expect(() =>
+      checkWorktreeCountAdvisory({ countWorktrees: () => 99, threshold: -1 }),
+    ).toThrow(/non-negative integer/);
+    expect(() =>
+      checkWorktreeCountAdvisory({ countWorktrees: () => 99, threshold: 2.5 }),
+    ).toThrow(/non-negative integer/);
+  });
+
+  it('the shipped threshold leaves a full seven-row wave (plus its primary checkout) under the advisory', () => {
+    // The live E2BIG incident was a 7-row wave's third dispatch run of the day.
+    // One wave's own worktrees must never trip the advisory, or the warning
+    // becomes standing noise and gets ignored.
+    expect(checkWorktreeCountAdvisory({ countWorktrees: () => 8 }).level).toBe('ok');
+    expect(WORKTREE_COUNT_ADVISORY_THRESHOLD).toBeGreaterThan(8);
+  });
+});
+
+// ─── 30. Worktree-count advisory — real git count (issue #238) ────────────────
+describe('checkWorktreeCountAdvisory — counts real `git worktree list` output (issue #238)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  it('counts the primary checkout plus every added worktree, and fires once the override threshold is passed', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-238-count-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+
+    // Primary only.
+    expect(checkWorktreeCountAdvisory({ repoRoot: mainRoot, threshold: 1 }).count).toBe(1);
+
+    for (let i = 0; i < 3; i++) {
+      realGit(
+        [
+          'worktree',
+          'add',
+          '-q',
+          '--detach',
+          join('.claude', 'worktrees', `probe-${i}`),
+          'HEAD',
+        ],
+        mainRoot,
+      );
+    }
+
+    const withThree = checkWorktreeCountAdvisory({ repoRoot: mainRoot, threshold: 3 });
+    expect(withThree.count).toBe(4);
+    expect(withThree.level).toBe('advisory');
+    expect(withThree.message).toContain('E2BIG');
+
+    // Same population, a threshold above it → ok.
+    expect(checkWorktreeCountAdvisory({ repoRoot: mainRoot, threshold: 4 }).level).toBe('ok');
   });
 });
