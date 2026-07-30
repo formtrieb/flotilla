@@ -108,9 +108,10 @@ export interface EngineConfig {
    *
    * Repo-relative by construction. The tracked permission allowlist an AFK
    * Worker's worktree inherits can only carry repo-relative prefixes, so an
-   * absolute or `~`-rooted command would stall every dispatched row at the
-   * permission gate — the same structural objection that ruled out the
-   * plugin-clone as a CLI provider (ADR-0032, Considered Options).
+   * absolute or `~`-rooted command is refused outright — either would stall
+   * every dispatched row at the permission gate — the same structural
+   * objection that ruled out the plugin-clone as a CLI provider (ADR-0032,
+   * Considered Options).
    *
    * Validated by {@link normalizeEngineCli}.
    */
@@ -131,7 +132,15 @@ export type EngineCliBindingFailure =
    * character outside the accepted set — a shell metacharacter, a control
    * character, or an expansion sigil.
    */
-  | 'not-plain-argv';
+  | 'not-plain-argv'
+  /**
+   * A non-empty, plain-argv string whose FIRST character is `/` — a
+   * leading-slash absolute path. `/` stays allowed everywhere else in the
+   * word list (every repo-relative form uses it: `./node_modules/.bin/…`),
+   * so this is checked separately from `not-plain-argv` rather than folded
+   * into the character allow-list.
+   */
+  | 'absolute-path';
 
 /**
  * The typed `engine.cli` failure (ADR-0032, applying the ADR-0029 fail-loud
@@ -177,6 +186,12 @@ export class EngineCliBindingError extends Error {
  *
  * `~` is refused with the rest: a home-rooted command is machine-specific, and
  * ADR-0032 requires a repo-relative one so the tracked allowlist can carry it.
+ *
+ * `/` stays in the allow-list — every repo-relative form needs it
+ * (`./node_modules/.bin/flotilla-engine`) — so this class cannot also be
+ * where a leading-slash ABSOLUTE path is refused: the class has no notion of
+ * position, only membership. That refusal is a dedicated first-character
+ * check in {@link normalizeEngineCli}, applied before this one.
  */
 const ENGINE_CLI_FORBIDDEN_CHAR = /[^ A-Za-z0-9_.\/:@=+,-]/;
 
@@ -222,6 +237,21 @@ export function normalizeEngineCli(
       'empty',
       value,
       `${label} must be a non-empty command string — an empty binding is not "unbound", it is a binding that cannot be invoked. Omit the key entirely to leave the engine unbound.`,
+    );
+  }
+
+  if (cli[0] === '/') {
+    // Leading-slash ABSOLUTE path — refused the same loud, typed way a
+    // `~`-rooted path already is (ADR-0032's Considered-Options text frames
+    // `engine.cli` as repo-relative, non-machine-specific, the exact ground
+    // the plugin-clone option was rejected on). Checked ahead of the
+    // character allow-list because `/` stays accepted everywhere else in the
+    // word list — this rule is about POSITION, not membership, so the
+    // negated-class regex above cannot express it.
+    throw new EngineCliBindingError(
+      'absolute-path',
+      value,
+      `${label} ${JSON.stringify(cli)} starts with ${JSON.stringify('/')} at index 0 — the binding must be repo-relative (ADR-0032), not a machine-specific absolute path; the tracked permission allowlist an AFK Worker's worktree inherits can only carry repo-relative prefixes. Use a repo-relative command such as "./node_modules/.bin/flotilla-engine".`,
     );
   }
 
