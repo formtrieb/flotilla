@@ -21,13 +21,19 @@ Each `<skill>/SKILL.md` reaches the engine in one of two ways:
    ```
 
    Each SKILL.md writes the engine invocation as the token **`{{wave-cli}}`** so
-   it stays portable. The canonical resolution is **`npx @formtrieb/flotilla-engine
-   <subcommand>`** — the published npm package `wave-setup` scaffolds onto the
-   consumer's own allowlist, so a plugin consumer never needs a vendored
-   `tools/wave` path. (This repo is simultaneously the plugin source and a
-   dogfood consumer of its own skills, so its own tracked allowlist additionally
-   keeps the vendored `npx tsx tools/wave/src/cli.ts` / local-binary forms as a
-   fallback — both reach the identical router.)
+   it stays portable. The token is a **setup-time binding, not a form chosen at
+   invocation time**: it stands for the one command string a repo's
+   `wave.config.json` names under `engine.cli` — authored once by `wave-setup`,
+   read there, resolved host-side when an invocation is composed. There is no
+   invocation-form ordering and no fallback chain to reason through: a configured
+   binding that fails is a STOP (a broken install, config or release), and an
+   absent one means `wave-setup` has not finished in that repo. Concrete
+   invocation forms therefore appear in exactly one place — `wave-setup`'s
+   scaffold — and every other skill reads the configured value. That binding is
+   also what pins a repo to one distribution form per layer: a consumer runs the
+   installed form (plugin + npm package), this repo runs the source form on both
+   layers because it builds what it runs, and neither is a runtime choice
+   (ADR-0032).
    The router (`tools/wave/src/cli.ts`) dispatches to the per-subcommand runner
    and returns a JSON result + a meaningful exit code. Subcommands:
    `dor`, `files-drift`, `merge-order`, `closed-by`, `detect-host`,

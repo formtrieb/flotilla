@@ -18,9 +18,10 @@ POSIX `sh` and `bash` **word-split** an unquoted parameter expansion; **zsh does
 **The form that survives both shells is a function**, because `"$@"` is the one expansion that preserves argument boundaries in every shell:
 
 ```bash
-# The binding to use wherever `{{wave-cli}}` is resolved to a concrete invocation.
-wave_cli() { NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine "$@"; }
-# …or, for a consumer still vendoring tools/wave (this repo, dogfooding):
+# The binding to use wherever `{{wave-cli}}` is resolved to a concrete
+# invocation. The body is this repo's configured `engine.cli` verbatim — one
+# authoritative string per repo, read out of `wave.config.json`, never guessed
+# (ADR-0032). This checkout's own binding is the vendored one:
 wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }
 
 wave_cli spine set-row-state "$SPINE" "$ID" pr-created
@@ -102,7 +103,7 @@ The three sites this file used to name as *"known to still carry an unguarded ca
 |---|---|---|
 | `wave-start/reference/start-mechanics.md`, step 7c | `PR_URL=$(… \| jq -r '.url')` flowing straight into `spine set-row-pr` — the closest in-repo analogue of the `#83` gate failure, one directory from the row that wrote this file | `require_capture PR_URL "$PR_URL" \|\| exit 1` above **both** spine writes (the `pr-created` flip is as wrong as the empty cell when no PR was opened); helper defined once at step 0 |
 | `wave-resume/reference/resume-mechanics.md`, step 5 | the `ACKED_JSON` capture, byte-identical in shape to `phase-5`'s, on the path that runs *after* something already went wrong | the same guard `phase-5` carries, in the same position, with the derived `ACKED` left deliberately unguarded below it — the two paths are one shape and must not diverge |
-| `wave-shared/reference/routing-mechanics.md`, the `{{wave-cli}}` resolution section | an **instruction gap**, not a live capture: it named the command string and linked the rule, without writing out how to bind it | the section now states the binding inline (`wave_cli() { … "$@"; }`, both forms). Deliberately **no** `require_capture` — nothing is captured there, and forcing a guard onto a non-capture is the false-alarm failure mode above |
+| `wave-shared/reference/routing-mechanics.md`, the `{{wave-cli}}` resolution section | an **instruction gap**, not a live capture: it named the command string and linked the rule, without writing out how to bind it | the section now states the binding inline (`wave_cli() { … "$@"; }`, filled from the configured `engine.cli`). Deliberately **no** `require_capture` — nothing is captured there, and forcing a guard onto a non-capture is the false-alarm failure mode above |
 
 **Still open, and deliberately outside that slice's declared files** — named for the same reason, so the next reader finds them rather than rediscovering them:
 

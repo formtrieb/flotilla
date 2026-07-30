@@ -26,13 +26,20 @@
  *       `docs/superpowers/plans/…` design docs that the publication cut
  *       (ADR-0026) left behind in the private archive.
  *
- *   (c) `{{wave-cli}}` resolution blocks — `npx @formtrieb/flotilla-engine …`
- *       anchor: cwd PLUS installed artifacts the clone does not carry
- *       (`tools/wave/node_modules` is gitignored, so the vendored `npx tsx
- *       tools/wave/src/cli.ts` form cannot run in a fresh clone). Predicate:
- *       every canonical resolution block states BOTH invocation forms,
- *       published-package form FIRST, vendored in-repo form as the documented
- *       fallback — matching the workflow driver's settled `WAVE_CLI` default.
+ *   (c) `{{wave-cli}}` resolution blocks — the engine-invocation BINDING
+ *       anchor: the consumer's own `wave.config.json`. ADR-0031 originally had
+ *       these blocks state two invocation forms in a fixed order (published
+ *       package first, vendored in-repo form as the documented fallback);
+ *       **ADR-0032 superseded that rule** after the ordering turned out to be
+ *       operationally dead — 5 of 7 rows of one wave silently degraded to the
+ *       fallback, and the two authority docs then disagreed about which form
+ *       even *was* the default. Invocation forms now live in exactly ONE place
+ *       (wave-setup's scaffold) and every other block reads the configured
+ *       value. Predicate: a resolution block states the BINDING — it names the
+ *       `engine.cli` field, names the config it is read from, and says what an
+ *       absent binding means (a STOP pointing at wave-setup) — and it never
+ *       RANKS invocation forms (no first/fallback/canonical ordering attached
+ *       to a named form).
  *
  * A fourth predicate rides the same corpus but asks a different question — not
  * "does this reference resolve?" but "is it in the right PLACE?":
@@ -192,11 +199,51 @@ const EXPECTED_RESOLUTION_BLOCKS = 10; // the canonical `{{wave-cli}}` definitio
 const MIN_SKILL_BODIES = 10; // 12 SKILL.md bodies at landing
 const MIN_BODY_CITATIONS = 130; // 146 ADR/retro/finding citations in those bodies at landing
 
-/** The published-package invocation — `{{wave-cli}}`'s canonical resolution. */
-const PUBLISHED_FORM = 'npx @formtrieb/flotilla-engine';
+/** The config field every resolution block must name (ADR-0032). */
+const BINDING_FIELD = /\bengine\.cli\b/;
 
-/** The vendored in-repo invocation, in either of its two documented spellings. */
-const VENDORED_FORM_PATTERN = /tools\/wave\/(?:src\/(?:cli|spine-cli)\.ts|node_modules\/\.bin\/tsx)/;
+/** …and the config file it is read from, named rather than implied. */
+const BINDING_SOURCE = /wave\.config\.json|\bwave config\b/i;
+
+/**
+ * The absent-binding STOP, asserted at SENTENCE scope: one sentence must carry
+ * all three of an absence word, the refusal, and the pointer at setup. Scoping
+ * it to a sentence is what stops three unrelated words scattered across a long
+ * block from satisfying the rule by coincidence.
+ */
+const ABSENCE_WORD = /\babsent\b|\bmissing\b|\bunbound\b|\bnot configured\b|\bno binding\b/i;
+const STOP_WORD = /\bstops?\b/i;
+const SETUP_POINTER = /\bwave-setup\b|\bsetup\b/i;
+
+/**
+ * The concrete invocation forms a block can NAME. Naming one is not itself a
+ * violation — wave-setup's own block legitimately names the pre-setup bootstrap
+ * form and flotilla's documented vendored exception, and CONTEXT.md's re-scoped
+ * "dual-form" still covers prose references. What ADR-0032 forbids is *ranking*
+ * them, which is why this list is only ever consulted together with the ranking
+ * language below.
+ */
+const INVOCATION_FORM_PATTERNS: ReadonlyArray<{ readonly label: string; readonly re: RegExp }> = [
+  { label: 'npx published-package form', re: /npx\s+@formtrieb\/flotilla-engine/ },
+  { label: 'installed local-binary form', re: /node_modules\/\.bin\/flotilla-engine/ },
+  {
+    label: 'vendored in-repo form',
+    re: /tools\/wave\/(?:src\/(?:cli|spine-cli|resume-cli)\.ts|node_modules\/\.bin\/tsx)/,
+  },
+];
+
+/**
+ * Ranking language — the words that turn a named form into an *ordered
+ * alternative*. Deliberately NOT a bare `/fallback/` sweep over the block:
+ * "there is no fallback chain" is the rule being STATED, not broken, and a
+ * block-scoped word match cannot tell the two apart. Pairing this with a named
+ * form **in the same sentence** is what distinguishes "this form comes first,
+ * that one is the fallback" (the ADR-0031 shape, now a violation) from "the
+ * fallback chain is abolished" (the ADR-0032 rule) and from "flotilla binds
+ * engine.cli to the vendored form" (an incidental naming).
+ */
+const FORM_RANKING_LANGUAGE =
+  /\bdual[- ]form\b|\bcanonical\b|\bfall(?:s|en)?\s+back\b|\bfallbacks?\b|\bfirst\b|\bsecond\b|\botherwise\b|\bif that fails\b|\beither form\b|\bboth forms?\b|\bboth reach\b|\bwhichever form\b|\bprefer(?:s|red)?\b/i;
 
 // ─── extraction ─────────────────────────────────────────────────────────────
 
@@ -318,26 +365,72 @@ function extractResolutionBlocks(md: string, file: string): ResolutionBlock[] {
 }
 
 /**
- * The class-(c) predicate. Returns `null` when the block is dual-form with the
- * published package stated first, or a human-legible reason when it is not —
- * naming which half is missing keeps a failure actionable instead of a bare
- * boolean.
+ * Split a block body into sentences. A sentence-ender followed by whitespace,
+ * or a line break, ends one — and markdown closers (`**`, a backtick, a closing
+ * paren) are allowed to sit between the two, since a bolded sentence ends
+ * `it.**` rather than `it.`. An inline-code path (`wave.config.json`) never
+ * splits: its dot is followed by a letter, not by whitespace.
+ *
+ * `:` and `;` deliberately do NOT end a sentence. Both routinely join a claim
+ * to its consequence in this corpus ("an absent binding is a STOP: finish
+ * wave-setup"), and splitting there would tear the absent-binding statement in
+ * half and fail a block that states the rule perfectly well.
  */
-function dualFormViolation(block: ResolutionBlock): string | null {
-  const publishedAt = block.body.indexOf(PUBLISHED_FORM);
-  const vendored = VENDORED_FORM_PATTERN.exec(block.body);
-  if (publishedAt < 0 && vendored === null) {
-    return `states NEITHER invocation form — a resolution block must name both (published: "${PUBLISHED_FORM}", vendored: tools/wave/src/cli.ts)`;
+function sentences(body: string): string[] {
+  return body
+    .replace(/([.!?][)\]*_`"'”’]*)\s+/g, '$1\n') // a sentence break becomes a line break
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/** Every concrete invocation form NAMED in a fragment, by label. */
+function namedForms(fragment: string): string[] {
+  return INVOCATION_FORM_PATTERNS.filter((f) => f.re.test(fragment)).map((f) => f.label);
+}
+
+/**
+ * The class-(c) predicate (ADR-0032). Returns `null` when the block states the
+ * binding, or a human-legible reason when it does not — naming which half is
+ * missing keeps a failure actionable instead of a bare boolean.
+ *
+ * Two halves, and both matter. The POSITIVE half is what the block must say:
+ * `engine.cli`, the config it lives in, and the consequence of its absence. The
+ * NEGATIVE half is what it must not do: rank invocation forms. A block that
+ * merely *names* a form is fine (wave-setup's does, twice, for the pre-setup
+ * bootstrap path and flotilla's own vendored exception); a block that attaches
+ * ordering language to a named form is the superseded ADR-0031 shape.
+ */
+function bindingFormViolation(block: ResolutionBlock): string | null {
+  const body = block.body;
+
+  if (!BINDING_FIELD.test(body)) {
+    return 'never names the `engine.cli` binding — a resolution block states WHERE the invocation comes from (the configured `engine.cli`), not which form to use (ADR-0032)';
   }
-  if (publishedAt < 0) {
-    return `states only the VENDORED in-repo form — the published-package form "${PUBLISHED_FORM}" must be stated first (it is the canonical resolution; the vendored form cannot run in a fresh clone, whose tools/wave/node_modules is gitignored)`;
+  if (!BINDING_SOURCE.test(body)) {
+    return 'names `engine.cli` but not the wave config it is read from — a reader has to be told which file carries the binding, not just the field name';
   }
-  if (vendored === null) {
-    return 'states only the PUBLISHED form — the vendored in-repo form (tools/wave/src/cli.ts) must stay documented as the fallback for a consumer that still vendors tools/wave locally';
+
+  const lines = sentences(body);
+  const hasAbsentStop = lines.some(
+    (s) => ABSENCE_WORD.test(s) && STOP_WORD.test(s) && SETUP_POINTER.test(s),
+  );
+  if (!hasAbsentStop) {
+    return 'never says what an ABSENT binding means — it is a STOP pointing at wave-setup, never a cue to guess a form; state that in one sentence (absence + stop + wave-setup)';
   }
-  if (publishedAt > vendored.index) {
-    return `states the vendored form BEFORE the published one — published-package form comes first (ADR-0031); found vendored at offset ${vendored.index}, published at ${publishedAt}`;
+
+  const ranked = lines
+    .map((s) => [s, namedForms(s)] as const)
+    .filter(([s, forms]) => forms.length > 0 && FORM_RANKING_LANGUAGE.test(s));
+  if (ranked.length > 0) {
+    const [sentence, forms] = ranked[0];
+    return (
+      `RANKS invocation forms — ADR-0032 abolished the ordering, so forms live only in wave-setup's ` +
+      `scaffold and every other block reads the configured value. Offending sentence names ` +
+      `[${forms.join(', ')}] alongside ordering language: "${sentence.slice(0, 160)}"`
+    );
   }
+
   return null;
 }
 
@@ -633,9 +726,9 @@ describe('skill-reference-guard — class (b): bare path citations resolve clone
   });
 });
 
-// ─── class (c): `{{wave-cli}}` resolution blocks are dual-form ───────────────
+// ─── class (c): `{{wave-cli}}` resolution blocks state the binding ───────────
 
-describe('skill-reference-guard — class (c): every {{wave-cli}} resolution block is dual-form', () => {
+describe('skill-reference-guard — class (c): every {{wave-cli}} resolution block states the binding', () => {
   it('finds every canonical resolution block', () => {
     expect(ALL_BLOCKS.length).toBe(EXPECTED_RESOLUTION_BLOCKS);
     // Named spot-checks across the pipeline's two halves, so renaming a heading
@@ -657,47 +750,141 @@ describe('skill-reference-guard — class (c): every {{wave-cli}} resolution blo
     }
   });
 
-  it('every resolution block states both forms, published package first', () => {
-    const offenders = ALL_BLOCKS.map((b) => [b, dualFormViolation(b)] as const)
+  it('every resolution block states the binding and ranks no invocation form', () => {
+    const offenders = ALL_BLOCKS.map((b) => [b, bindingFormViolation(b)] as const)
       .filter(([, why]) => why !== null)
       .map(([b, why]) => `${b.file}: ${why}`);
     expect(
       offenders,
-      `{{wave-cli}} resolution block(s) not stated dual-form (ADR-0031):\n  ` +
+      `{{wave-cli}} resolution block(s) not stated as a BINDING (ADR-0032). A block reads ` +
+        `\`engine.cli\` out of the wave config and says an absent binding is a STOP pointing ` +
+        `at wave-setup; it never orders invocation forms, because ADR-0032 abolished the ` +
+        `fallback chain and left the forms themselves in exactly one place — wave-setup's ` +
+        `scaffold:\n  ` +
         offenders.join('\n  '),
     ).toEqual([]);
   });
 
-  it('negative controls — dualFormViolation fires on each single-form shape', () => {
-    const vendoredOnly = {
-      file: 'x.md',
-      heading: '`{{wave-cli}}` resolution',
-      body: 'The wave engine CLI. Your setup pins how it resolves; in-repo that is `npx tsx tools/wave/src/cli.ts`.',
-    };
-    expect(dualFormViolation(vendoredOnly)).toMatch(/only the VENDORED/);
-
-    const publishedOnly = {
-      ...vendoredOnly,
-      body: 'The canonical resolution is `npx @formtrieb/flotilla-engine <verb>`.',
-    };
-    expect(dualFormViolation(publishedOnly)).toMatch(/only the PUBLISHED/);
-
-    const wrongOrder = {
-      ...vendoredOnly,
-      body: 'In-repo that is `npx tsx tools/wave/src/cli.ts`; the package form `npx @formtrieb/flotilla-engine` also works.',
-    };
-    expect(dualFormViolation(wrongOrder)).toMatch(/vendored form BEFORE/);
-
-    const neither = { ...vendoredOnly, body: 'The wave engine CLI. Your setup pins how it resolves.' };
-    expect(dualFormViolation(neither)).toMatch(/NEITHER/);
+  it('the wave-setup block passes on its MERITS, not on an incidental form pair', () => {
+    // This block is the one place invocation forms legitimately appear (the
+    // pre-setup bootstrap path and flotilla's own vendored exception), so it is
+    // the sharpest test of the predicate's discrimination: it must pass BECAUSE
+    // it states the binding rule, and the naming of two forms must not be what
+    // carries it. The superseded predicate passed this block for exactly the
+    // wrong reason — it read that incidental pair as a compliant dual-form
+    // statement — which is how a green guard stopped asserting what it was
+    // written to assert.
+    const setup = ALL_BLOCKS.filter(
+      (b) => b.file === '.claude/skills/wave-setup/reference/setup-mechanics.md',
+    );
+    expect(setup).toHaveLength(1);
+    expect(bindingFormViolation(setup[0])).toBeNull();
+    // It really does name forms — so the pass above is the discrimination
+    // working, not an absence of anything to discriminate.
+    expect(namedForms(setup[0].body).length).toBeGreaterThanOrEqual(2);
+    // …and it really does state the rule the predicate credits it for.
+    expect(BINDING_FIELD.test(setup[0].body)).toBe(true);
+    expect(BINDING_SOURCE.test(setup[0].body)).toBe(true);
   });
 
-  it('positive control — a correctly-ordered dual-form block passes', () => {
+  it('negative control — a planted DUAL-FORM block fails the rewritten predicate (AC4)', () => {
+    // The exact superseded shape, verbatim in spirit: two forms, ordered, with
+    // one named the canonical resolution and the other the documented fallback.
+    // It even names `engine.cli` and the config file, so it clears the positive
+    // half — what rejects it is the RANKING, which is the whole point.
+    const planted: ResolutionBlock = {
+      file: 'x.md',
+      heading: '`{{wave-cli}}` resolution',
+      body:
+        'The wave engine CLI, stated dual-form: the canonical resolution is the published npm ' +
+        'package `npx @formtrieb/flotilla-engine`, recorded as `engine.cli` in `wave.config.json`. ' +
+        'The vendored in-repo form `npx tsx tools/wave/src/cli.ts` stays documented as the ' +
+        'fallback; both reach the identical router. An absent binding is a STOP — finish ' +
+        'wave-setup first.',
+    };
+    const why = bindingFormViolation(planted);
+    expect(why).toMatch(/RANKS invocation forms/);
+    expect(why).toMatch(/npx published-package form/);
+
+    // …and the same body with the ranking removed passes, so the rejection is
+    // attributable to the ordering and to nothing else in the plant.
     expect(
-      dualFormViolation({
+      bindingFormViolation({
+        ...planted,
+        body:
+          'The wave engine CLI. `{{wave-cli}}` IS the command string `wave.config.json` names ' +
+          'under `engine.cli`. An absent binding is a STOP: finish wave-setup before running ' +
+          'a verb.',
+      }),
+    ).toBeNull();
+  });
+
+  it('negative controls — each missing half of the binding statement is named', () => {
+    const stated: ResolutionBlock = {
+      file: 'x.md',
+      heading: '`{{wave-cli}}` resolution',
+      body:
+        'The wave engine CLI. `{{wave-cli}}` IS the command string this repo\'s ' +
+        '`wave.config.json` names under `engine.cli`. An absent binding is a STOP: it means ' +
+        'wave-setup has not finished here.',
+    };
+    expect(bindingFormViolation(stated)).toBeNull();
+
+    expect(
+      bindingFormViolation({ ...stated, body: 'The wave engine CLI. Your setup pins how it resolves.' }),
+    ).toMatch(/never names the `engine\.cli` binding/);
+
+    expect(
+      bindingFormViolation({
+        ...stated,
+        body: 'The wave engine CLI. Read `engine.cli`. An absent binding is a STOP — finish wave-setup.',
+      }),
+    ).toMatch(/not the wave config it is read from/);
+
+    expect(
+      bindingFormViolation({
+        ...stated,
+        body: 'The wave engine CLI. `engine.cli` in `wave.config.json` is the binding.',
+      }),
+    ).toMatch(/never says what an ABSENT binding means/);
+
+    // The three absent-STOP words must land in ONE sentence — scattered across
+    // a block they are a coincidence, not a statement.
+    expect(
+      bindingFormViolation({
+        ...stated,
+        body:
+          'The wave engine CLI. `engine.cli` in `wave.config.json` is the binding. ' +
+          'Run wave-setup once per repo. A failing verb is a STOP. Nothing is absent here.',
+      }),
+    ).toMatch(/never says what an ABSENT binding means/);
+  });
+
+  it('positive control — naming a form WITHOUT ranking it is not a violation', () => {
+    // The discrimination the predicate has to make, in isolation: wave-setup's
+    // shape (forms named for a bootstrap path and a documented exception) vs.
+    // the ADR-0031 shape (forms ordered as invocation alternatives).
+    const incidental =
+      'The wave engine CLI. `{{wave-cli}}` IS the command string `wave.config.json` names under ' +
+      '`engine.cli`. An absent binding is a STOP: wave-setup has not finished. ' +
+      'Before that binding exists, a prospective consumer can explore with `npx ' +
+      '@formtrieb/flotilla-engine <verb>`. flotilla itself binds `engine.cli` to ' +
+      '`./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts`, because it builds what it runs.';
+    expect(namedForms(incidental)).toHaveLength(2);
+    expect(
+      bindingFormViolation({ file: 'x.md', heading: '`{{wave-cli}}` resolution', body: incidental }),
+    ).toBeNull();
+
+    // Stating that the fallback chain is ABOLISHED is the rule, not a breach of
+    // it — a block-scoped word match could not tell those apart, which is why
+    // the ranking check is sentence-scoped and form-gated.
+    expect(
+      bindingFormViolation({
         file: 'x.md',
         heading: '`{{wave-cli}}` resolution',
-        body: 'The canonical resolution is `npx @formtrieb/flotilla-engine` — the published npm package. The vendored in-repo form `npx tsx tools/wave/src/cli.ts` is the documented fallback.',
+        body:
+          `${incidental} There is no invocation-form ordering and no fallback chain to reason ` +
+          'through — ADR-0032 abolished both.',
       }),
     ).toBeNull();
   });

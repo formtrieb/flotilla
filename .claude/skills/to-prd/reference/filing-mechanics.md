@@ -6,7 +6,9 @@ The engine-CLI plumbing for publishing a PRD. The skill body owns the **judgment
 
 ## `{{wave-cli}}` resolution
 
-The wave engine CLI, stated **dual-form (ADR-0031)**: the canonical resolution is the published npm package **`npx @formtrieb/flotilla-engine`** — the workflow driver's default, a bare command with no path in it, so it resolves independent of any checkout. The **vendored in-repo form** `npx tsx tools/wave/src/cli.ts` stays documented as the fallback for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish); both reach the identical router. Every command needs the store config: run from a dir containing `wave.config.json`, or append `--config <path>`. The store (`markdown` or `github`) is selected there — a PRD becomes a `prd`-labelled issue on GitHub, a `prd.md` on a markdown store.
+The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the command string this repo's `wave.config.json` names under `engine.cli`** — read there, resolved host-side when an invocation is composed, and never re-derived here. There is one command string per repo and no invocation-form ordering to weigh: a configured binding that fails is a STOP/needs-attention finding — a broken install, config or release — not a cue to reach for another spelling. An **absent** `engine.cli` is a STOP too: it means `wave-setup` has not finished in this repo, so stop and finish setup before running anything here.
+
+Every command needs the store config: run from a dir containing `wave.config.json`, or append `--config <path>`. The store (`markdown` or `github`) is selected there — a PRD becomes a `prd`-labelled issue on GitHub, a `prd.md` on a markdown store.
 
 ## Commands
 

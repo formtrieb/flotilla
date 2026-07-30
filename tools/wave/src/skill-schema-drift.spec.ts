@@ -457,13 +457,28 @@ describe('skill-schema-drift — the Documented-Form duty is briefed, not only s
   });
 });
 
-describe('skill-schema-drift — workflow-driver.md WAVE_CLI defaults to the published package (FOR-122, DA-F1)', () => {
+/**
+ * WAVE_CLI is filled from the configured `engine.cli` binding (ADR-0032).
+ *
+ * This block used to pin the opposite invariant — that WAVE_CLI *defaulted* to
+ * the published npm package, with the vendored form documented as its fallback
+ * (FOR-122, DA-F1). ADR-0032 superseded that: a second authority stating a
+ * default form is precisely the doc-drift the ADR records (by 2026-07-30 this
+ * driver and `setup-mechanics.md` disagreed about which form even *was* the
+ * default), so the driver now states no form at all and reads the consumer's
+ * binding instead. The DA-F1 evidence is not discarded — it survives as the
+ * driver's rationale for why the binding is a per-repo SETUP-TIME decision, and
+ * is pinned as such below.
+ */
+describe('skill-schema-drift — workflow-driver.md WAVE_CLI is filled from the configured binding (ADR-0032)', () => {
   const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
 
   /**
    * Extract the `const WAVE_CLI = '...'` value verbatim. Throws (rather than
    * returning undefined) if the constant is missing, so a renamed/reshaped
    * constant fails loud instead of silently passing every assertion below.
+   * Its EXISTENCE in this shape is itself the Convention-12 invariant: a
+   * compose-time JS string literal, never a shell variable or runtime lookup.
    */
   function extractWaveCliConst(md: string): string {
     const m = md.match(/^const WAVE_CLI = '([^']*)'$/m);
@@ -473,32 +488,66 @@ describe('skill-schema-drift — workflow-driver.md WAVE_CLI defaults to the pub
     return m[1];
   }
 
-  it("WAVE_CLI's default resolves the published npm package, not the vendored tools/wave path", () => {
+  it('WAVE_CLI names NO invocation form — it points at the configured binding', () => {
     const value = extractWaveCliConst(driverMd);
-    expect(value).toContain('npx @formtrieb/flotilla-engine');
+    // No form, in either direction. Hardcoding one here is what re-creates the
+    // two-authorities-disagree drift ADR-0032 exists to end.
+    expect(value).not.toContain('npx @formtrieb/flotilla-engine');
+    expect(value).not.toContain('node_modules/.bin/flotilla-engine');
     expect(value).not.toContain('tools/wave/node_modules');
     expect(value).not.toContain('tools/wave/src/cli.ts');
+    // What it DOES carry: the placeholder naming where the value comes from,
+    // plus the proxy prefix (Convention 1) that survives the ADR untouched.
+    expect(value).toContain('engine.cli');
+    expect(value).toContain('NODE_USE_ENV_PROXY=1');
   });
 
-  it('the vendored tools/wave/node_modules form remains documented as the fallback', () => {
-    // Belt-and-braces: the assertion above pins the live DEFAULT; this pins
-    // that the fallback text wasn't deleted outright along with it (AC 1).
-    expect(driverMd).toMatch(/tools\/wave\/node_modules\/\.bin\/tsx/);
-    expect(driverMd).toMatch(/documented\s+\*{0,2}fallback\*{0,2}/i);
+  it('the driver states the binding rule the constant is filled from', () => {
+    expect(driverMd).toContain('wave.config.json');
+    expect(driverMd).toMatch(/filled from .{0,40}configured .{0,20}engine\.cli/i);
+    // An absent binding is a STOP, not a cue to pick a form — the half of the
+    // rule a reader is most likely to improvise past.
+    expect(driverMd).toMatch(/ABSENT `engine\.cli` is a STOP/);
   });
 
-  it('negative control — extractWaveCliConst would catch a reverted (vendored-default) constant', () => {
-    // The exact live regression (DA-F1): WAVE_CLI reverted to the vendored
-    // local-binary form, which resolves to nothing for a plugin consumer with
-    // no in-repo tools/wave checkout. If this stopped catching the revert,
-    // that regression would again ship silently past this spec.
+  it('the DA-F1 evidence survives as the rationale for a per-repo binding', () => {
+    // The finding that killed a vendored default for plugin consumers is why
+    // the binding is a setup-time decision at all. Deleting it would leave the
+    // rule with no observed failure behind it, which is how a rule gets
+    // "simplified" away by the next author.
+    expect(driverMd).toContain('DA-F1');
+    expect(driverMd).toMatch(/vendored `tools\/wave` and no local `tsx` binary/);
+  });
+
+  it('negative control — extractWaveCliConst would catch a HARDCODED form, either one', () => {
+    const placeholder = extractWaveCliConst(driverMd);
+
+    for (const hardcoded of [
+      'NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine',
+      'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts',
+      'NODE_USE_ENV_PROXY=1 ./node_modules/.bin/flotilla-engine',
+    ]) {
+      const regressed = driverMd.replace(
+        `const WAVE_CLI = '${placeholder}'`,
+        `const WAVE_CLI = '${hardcoded}'`,
+      );
+      expect(regressed).not.toEqual(driverMd); // the replace actually matched something
+      const value = extractWaveCliConst(regressed);
+      expect(value).toBe(hardcoded);
+      expect(value).not.toContain('engine.cli'); // …which the assertion above rejects
+    }
+  });
+
+  it('negative control — a WAVE_CLI moved into the shell is not a JS constant any more', () => {
+    // The Convention-12 regression this extractor doubles as a guard against:
+    // the "helpful" refactor that turns the compose-time literal into a runtime
+    // lookup. It stops being `const WAVE_CLI = '...'`, so the extractor throws.
     const regressed = driverMd.replace(
-      "const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine'",
-      "const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts'",
+      /^const WAVE_CLI = '[^']*'$/m,
+      'const WAVE_CLI = `$(node -e "…engine.cli…")`',
     );
-    expect(regressed).not.toEqual(driverMd); // the replace actually matched something
-    const value = extractWaveCliConst(regressed);
-    expect(value).toContain('tools/wave/node_modules');
+    expect(regressed).not.toEqual(driverMd);
+    expect(() => extractWaveCliConst(regressed)).toThrow(/not found in workflow-driver\.md/);
   });
 });
 
