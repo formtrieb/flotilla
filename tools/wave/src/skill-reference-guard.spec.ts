@@ -34,8 +34,22 @@
  *       published-package form FIRST, vendored in-repo form as the documented
  *       fallback — matching the workflow driver's settled `WAVE_CLI` default.
  *
- * The spec is deliberately structural, not a smoke test: the three predicates
- * are separately assertable, the allowlist is a named const in this file with a
+ * A fourth predicate rides the same corpus but asks a different question — not
+ * "does this reference resolve?" but "is it in the right PLACE?":
+ *
+ *   (d) citation PLACEMENT in SKILL.md bodies — wave-shared Convention 14.
+ *       anchor: none; this is an editorial invariant, not a resolution one.
+ *       Predicate: an ADR/retro/finding citation inside a SKILL.md body sits in
+ *       a provenance position (a compact trailing pointer, a provenance block,
+ *       or — best — a reference file), never in bare narrative prose inside an
+ *       instruction. Skills are an agent-executed protocol, so a rule's one-line
+ *       *why* must stay in place; the evidence behind that why is what turns
+ *       shipped prose into an internal diary for a plugin consumer. Seeded with
+ *       a named legacy allowlist of the bodies already in violation, ratcheted
+ *       so those may shrink but never grow.
+ *
+ * The spec is deliberately structural, not a smoke test: the four predicates
+ * are separately assertable, each allowlist is a named const in this file with a
  * one-line justification per entry (so every widening is visible in the diff
  * that makes it), and population FLOOR counts fail loud if an extractor ever
  * silently stops seeing references — a guard that matches nothing is green for
@@ -124,6 +138,50 @@ const ANCHORED_LINK_ALLOWLIST: ReadonlyArray<{ file: string; target: string; why
   },
 ];
 
+/**
+ * Class-(d) legacy: the SKILL.md bodies that already carried narrative
+ * citations when Convention 14 landed. Deliberately NOT a mass rewrite — a
+ * placement-only sweep would conflict with every open row declaring these
+ * files, for a defect that costs nothing while it sits. The list is a
+ * **ratchet**, enforced by the tests below: `seeded` is the occurrence count
+ * measured at landing and acts as a CEILING (a new violation in an
+ * already-listed file still fails), and an entry whose file has reached zero
+ * must be deleted (an allowlist that outlives its reason is a hole). Clean a
+ * body up when you are editing it anyway and drop its entry in the same diff.
+ */
+const CITATION_PLACEMENT_LEGACY: ReadonlyArray<{ file: string; seeded: number; why: string }> = [
+  {
+    file: '.claude/skills/wave-shared/SKILL.md',
+    seeded: 6,
+    why: 'The plugin-namespaced-by-name-load section is a two-paragraph evidence argument (clean-room retro finding DA-F3) living in the body; relocating it means moving it to a reference file, not repositioning a pointer.',
+  },
+  {
+    file: '.claude/skills/wave-setup/SKILL.md',
+    seeded: 4,
+    why: 'The keychain live-gate prose argues against a wrong reading of the credential ADR by name, twice, plus a doubled-invocation-prefix rationale — the argument is the instruction here, so the fix is structural.',
+  },
+  {
+    file: '.claude/skills/wave-start/SKILL.md',
+    seeded: 3,
+    why: 'Three inline "per ADR-NNNN" rationale mentions in gate prose and Common Mistakes; mechanical to convert to trailing pointers, deferred to the next edit of this file.',
+  },
+  {
+    file: '.claude/skills/wave-close/SKILL.md',
+    seeded: 1,
+    why: 'One Common-Mistakes bullet closes on "the live-gate defect ADR-NNNN exists to fix"; a trailing pointer is the whole fix, deferred to the next edit of this file.',
+  },
+  {
+    file: '.claude/skills/wave-resume/SKILL.md',
+    seeded: 1,
+    why: 'The done-reconcile probe names the ADR that owns the evidence hierarchy mid-sentence; rewording touches load-bearing probe prose, so it waits for a row that is already in there.',
+  },
+  {
+    file: '.claude/skills/wave-reviewer/SKILL.md',
+    seeded: 1,
+    why: 'The "Related" section is a narrative provenance paragraph about a clean-room finding; it wants a provenance heading, which is a structural edit rather than a placement one.',
+  },
+];
+
 /** Population floors. A guard that stops matching is green for the wrong
  * reason; these are the measured populations at the landing SHA, minus a small
  * margin so ordinary prose edits do not churn the spec. */
@@ -131,6 +189,8 @@ const MIN_SKILL_DOCS = 40; // 48 markdown files at landing
 const MIN_ANCHORED_LINKS = 60; // 77 anchored markdown links at landing
 const MIN_BARE_CITATIONS = 70; // 88 bare path citations at landing
 const EXPECTED_RESOLUTION_BLOCKS = 10; // the canonical `{{wave-cli}}` definition sites
+const MIN_SKILL_BODIES = 10; // 12 SKILL.md bodies at landing
+const MIN_BODY_CITATIONS = 130; // 153 ADR/retro/finding citations in those bodies at landing
 
 /** The published-package invocation — `{{wave-cli}}`'s canonical resolution. */
 const PUBLISHED_FORM = 'npx @formtrieb/flotilla-engine';
@@ -281,6 +341,104 @@ function dualFormViolation(block: ResolutionBlock): string | null {
   return null;
 }
 
+/**
+ * Class (d): the citation shapes Convention 14 governs — an ADR number, a
+ * `docs/adr/` or `docs/retros/` path, or a retro finding id (`W5-F1`, `DA-F3`,
+ * `KW-F4`). These are *evidence* identifiers: they justify a rule to a
+ * maintainer reading backwards and change nothing an executing agent does next,
+ * which is exactly why their placement — not their presence — is the invariant.
+ */
+const CITATION_TOKEN = /\bADR-\d{4}\b|\bdocs\/(?:adr|retros)\/[A-Za-z0-9._/-]+|\b[A-Z]{1,4}\d*-F\d+\b/g;
+
+/** A heading whose section exists to hold provenance. Text under one of these
+ * is a provenance block — the second sanctioned position. */
+const PROVENANCE_HEADING =
+  /provenance|live occurrence|evidence|background|references|see also|history|further reading|where the clause lives/i;
+
+/** Where a citation sits, relative to Convention 14's three sanctioned positions. */
+type CitationPlacement = 'narrative' | 'trailing-pointer' | 'provenance-block';
+
+interface Citation {
+  readonly file: string;
+  /** 1-indexed line, so a failure message points at something openable. */
+  readonly line: number;
+  readonly token: string;
+  readonly placement: CitationPlacement;
+  readonly text: string;
+}
+
+/**
+ * Blank out every parenthetical group, innermost first, replacing it with
+ * spaces so byte offsets in the masked line still align with the raw line. A
+ * citation that survives masking was in bare running prose; one that does not
+ * was inside a parenthetical — the compact-trailing-pointer form. (Markdown
+ * link TARGETS are parenthesized by construction and therefore masked too,
+ * which is correct: a link target is a pointer. A link LABEL sits in `[…]` and
+ * stays visible, which is also correct — `[ADR-0018](…)` mid-sentence is a
+ * citation in narrative prose no matter how it is marked up.)
+ */
+function maskParentheticals(line: string): string {
+  let masked = line;
+  for (;;) {
+    const next = masked.replace(/\([^()]*\)/g, (m) => ' '.repeat(m.length));
+    if (next === masked) return masked;
+    masked = next;
+  }
+}
+
+/**
+ * Class (d) extraction: every citation in a markdown body, tagged with the
+ * position it occupies. Fenced code is skipped entirely — a command or a sample
+ * naming a path is not narrative prose — and headings drive the
+ * provenance-block state for the lines that follow them.
+ *
+ * What this deliberately does NOT judge: whether a parenthetical is genuinely
+ * *compact*. A three-sentence parenthetical recounting a wave satisfies this
+ * predicate and defeats the convention; placement is machine-checkable,
+ * compression is the author's. Convention 14 says so in the same words.
+ */
+function extractCitations(md: string, file: string): Citation[] {
+  const out: Citation[] = [];
+  const lines = md.split('\n');
+  let inFence = false;
+  let underProvenance = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const heading = /^#{1,6}\s+(.*)$/.exec(line);
+    if (heading) {
+      underProvenance = PROVENANCE_HEADING.test(heading[1]);
+      continue;
+    }
+    const masked = maskParentheticals(line);
+    for (const m of line.matchAll(CITATION_TOKEN)) {
+      const at = m.index as number;
+      const stillVisible = masked.slice(at, at + m[0].length) === m[0];
+      out.push({
+        file,
+        line: i + 1,
+        token: m[0],
+        placement: underProvenance
+          ? 'provenance-block'
+          : stillVisible
+            ? 'narrative'
+            : 'trailing-pointer',
+        text: line.trim(),
+      });
+    }
+  }
+  return out;
+}
+
+/** The class-(d) predicate, per file: citations sitting in bare narrative prose. */
+function narrativeCitations(citations: readonly Citation[]): Citation[] {
+  return citations.filter((c) => c.placement === 'narrative');
+}
+
 // ─── the corpus, read once ───────────────────────────────────────────────────
 
 const SKILL_DOCS = listSkillDocs();
@@ -296,6 +454,15 @@ const ALL_CITATIONS = SKILL_DOCS.flatMap((f) =>
 );
 const ALL_BLOCKS = SKILL_DOCS.flatMap((f) =>
   extractResolutionBlocks(SOURCES.get(f) as string, f),
+);
+
+/** Class (d)'s population is the SKILL.md **bodies** only — the files a reader
+ * must hold to act. Reference files are where deep provenance is supposed to
+ * go, so asserting the rule against them would forbid the sanctioned position;
+ * the agent brief in `.claude/agents/` is a dispatched brief, not a skill body. */
+const SKILL_BODIES = SKILL_DOCS.filter((f) => f.endsWith('/SKILL.md'));
+const ALL_CITATIONS_IN_BODIES = SKILL_BODIES.flatMap((f) =>
+  extractCitations(SOURCES.get(f) as string, f),
 );
 
 const isAllowlisted = (ref: Reference): boolean =>
@@ -546,5 +713,163 @@ describe('skill-reference-guard — class (c): every {{wave-cli}} resolution blo
       extractResolutionBlocks('## `{{wave-cli}}` resolution + the `resume` subcommand\n\nbody\n', 'x.md'),
     ).toHaveLength(1);
     expect(extractResolutionBlocks('## CLI setup\n\nbody\n', 'x.md')).toHaveLength(0);
+  });
+});
+
+// ─── class (d): Convention 14 — citations sit in provenance positions ────────
+
+describe('skill-reference-guard — class (d): Convention 14 citation placement in SKILL.md bodies', () => {
+  it('finds the SKILL.md-body citation population (a guard that matches nothing is green for the wrong reason)', () => {
+    expect(SKILL_BODIES.length).toBeGreaterThanOrEqual(MIN_SKILL_BODIES);
+    expect(SKILL_BODIES).toContain('.claude/skills/wave-shared/SKILL.md');
+    expect(SKILL_BODIES).toContain('.claude/skills/wave-start/SKILL.md');
+    // Reference files are the sanctioned home for deep provenance, so they must
+    // NOT be in this class — asserting the rule against them would forbid the
+    // very position the convention recommends.
+    expect(SKILL_BODIES).not.toContain(
+      '.claude/skills/wave-shared/reference/convention-14-citation-placement.md',
+    );
+    expect(ALL_CITATIONS_IN_BODIES.length).toBeGreaterThanOrEqual(MIN_BODY_CITATIONS);
+    // The convention codifies what the corpus already does nine times out of
+    // ten; if narrative placement were ever the majority the predicate would be
+    // measuring something other than what it claims.
+    expect(narrativeCitations(ALL_CITATIONS_IN_BODIES).length).toBeLessThan(
+      ALL_CITATIONS_IN_BODIES.length / 2,
+    );
+  });
+
+  it('no SKILL.md body outside the legacy allowlist carries a citation in narrative prose', () => {
+    const offenders = narrativeCitations(ALL_CITATIONS_IN_BODIES)
+      .filter((c) => !CITATION_PLACEMENT_LEGACY.some((e) => e.file === c.file))
+      .map((c) => `${c.file}:${c.line}  [${c.token}]  ${c.text.slice(0, 110)}`);
+    expect(
+      offenders,
+      `citation(s) sitting in bare narrative prose inside a SKILL.md body (Convention 14). ` +
+        `Keep the rule and its ONE-LINE why exactly where it is — an unexplained invariant ` +
+        `invites an executing agent to improve it — and move the evidence to a provenance ` +
+        `position: a compact trailing pointer "(ADR-NNNN)", a section under a provenance ` +
+        `heading, or a reference file. Do NOT delete the citation, and do NOT add a new ` +
+        `CITATION_PLACEMENT_LEGACY entry — that list is a shrinking legacy, not an escape hatch:\n  ` +
+        offenders.join('\n  '),
+    ).toEqual([]);
+  });
+
+  it('every legacy entry is still needed, has not grown, and carries a justification (the ratchet)', () => {
+    expect(
+      new Set(CITATION_PLACEMENT_LEGACY.map((e) => e.file)).size,
+      'duplicate file in CITATION_PLACEMENT_LEGACY — one entry per body',
+    ).toBe(CITATION_PLACEMENT_LEGACY.length);
+
+    for (const entry of CITATION_PLACEMENT_LEGACY) {
+      expect(
+        SKILL_BODIES,
+        `stale legacy entry: ${entry.file} is no longer a shipped SKILL.md body`,
+      ).toContain(entry.file);
+
+      const actual = narrativeCitations(
+        ALL_CITATIONS_IN_BODIES.filter((c) => c.file === entry.file),
+      ).length;
+
+      expect(
+        actual,
+        `obsolete legacy entry: ${entry.file} now places every citation in a provenance ` +
+          `position — drop the entry (an allowlist that outlives its reason is a hole)`,
+      ).toBeGreaterThan(0);
+      expect(
+        actual,
+        `${entry.file} grew from ${entry.seeded} narrative citation(s) to ${actual}. The ` +
+          `seeded count is a CEILING: a legacy body may shrink, never grow. Place the new ` +
+          `citation as a trailing pointer instead of adding it to the pile.`,
+      ).toBeLessThanOrEqual(entry.seeded);
+      expect(entry.why.length).toBeGreaterThan(20); // a justification, not a shrug
+    }
+  });
+
+  it('Convention 14 is registered under the number 14, with no same-number collision', () => {
+    const conventionFile =
+      '.claude/skills/wave-shared/reference/convention-14-citation-placement.md';
+    expect(SKILL_DOCS).toContain(conventionFile);
+    expect((SOURCES.get(conventionFile) as string).startsWith('## Convention 14 — ')).toBe(true);
+
+    // Numbers are cited by siblings and are therefore never re-used and never
+    // renumbered: filename number and heading number must agree, and no two
+    // files may claim the same number.
+    const numbered = SKILL_DOCS.filter((f) =>
+      /^\.claude\/skills\/wave-shared\/reference\/convention-\d{2}-/.test(f),
+    );
+    const numberOf = (f: string): number => Number(/convention-(\d{2})-/.exec(f)?.[1]);
+    const numbers = numbered.map(numberOf);
+    expect(numbers.length).toBeGreaterThanOrEqual(14);
+    expect(
+      new Set(numbers).size,
+      `two convention reference files claim the same number: ${numbered.join(', ')}`,
+    ).toBe(numbers.length);
+    expect(Math.max(...numbers)).toBe(14);
+    for (const f of numbered) {
+      expect(
+        (SOURCES.get(f) as string).startsWith(`## Convention ${numberOf(f)} — `),
+        `${f} does not open with "## Convention ${numberOf(f)} — " — filename and heading disagree`,
+      ).toBe(true);
+    }
+
+    // The loader's allocation register names the same number, so two slices
+    // planned in parallel cannot both reach for "the next one" and both land 14.
+    expect(SOURCES.get('.claude/skills/wave-shared/SKILL.md') as string).toContain(
+      'the highest allocated Convention number is **14**',
+    );
+  });
+
+  it('negative control — a planted narrative citation fails the same predicate', () => {
+    // Same extractor, same predicate, same allowlist filter as the real
+    // assertion above, on a real corpus body that is NOT on the legacy list.
+    const host = '.claude/skills/wave-plan/SKILL.md';
+    expect(CITATION_PLACEMENT_LEGACY.some((e) => e.file === host)).toBe(false);
+    const original = SOURCES.get(host) as string;
+    expect(narrativeCitations(extractCitations(original, host))).toEqual([]);
+
+    const planted = extractCitations(
+      `${original}\n## Planted\n\nThe cross-wave check stays advisory because ADR-0007 made Risk config-authoritative, as W4-F1 showed.\n`,
+      host,
+    );
+    const offenders = narrativeCitations(planted).filter(
+      (c) => !CITATION_PLACEMENT_LEGACY.some((e) => e.file === c.file),
+    );
+    expect(offenders.map((c) => c.token)).toEqual(['ADR-0007', 'W4-F1']);
+  });
+
+  it('positive control — the same citation passes in each of the three sanctioned positions', () => {
+    const host = '.claude/skills/wave-plan/SKILL.md';
+
+    // (1) compact trailing pointer
+    expect(
+      extractCitations(
+        'Risk is config-authoritative and never re-derived from prose (ADR-0007).\n',
+        host,
+      ).map((c) => c.placement),
+    ).toEqual(['trailing-pointer']);
+
+    // (2) provenance block
+    expect(
+      extractCitations('### Live occurrences (evidence)\n\nADR-0007 settled this after W4-F1.\n', host).map(
+        (c) => c.placement,
+      ),
+    ).toEqual(['provenance-block', 'provenance-block']);
+
+    // (3) fenced code — a command or sample naming a path is not narrative prose
+    expect(
+      extractCitations(
+        '```bash\ngrep -n Risk docs/adr/0007-risk-is-a-load-bearing-key-config-authoritative.md\n```\n',
+        host,
+      ),
+    ).toEqual([]);
+
+    // And the design choice that decides the ambiguous case: a markdown link's
+    // LABEL is narrative text, its TARGET is a pointer.
+    expect(
+      extractCitations(
+        'Per [ADR-0016](../../../docs/adr/0016-spine-creation-is-an-engine-owned-renderspine.md) the frontmatter is markdown.\n',
+        host,
+      ).map((c) => c.placement),
+    ).toEqual(['narrative', 'trailing-pointer']);
   });
 });
