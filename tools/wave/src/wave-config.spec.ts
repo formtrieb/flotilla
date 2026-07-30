@@ -227,9 +227,30 @@ describe('loadWaveConfig — engine.cli: the REJECT path is loud and typed (AC#2
     ['home-rooted path (machine-specific, un-allowlistable)', '~/bin/flotilla-engine'],
     ['embedded newline', './bin/engine\nrm -rf /'],
     ['invisible non-ASCII codepoint', './bin/engine\u2060'],
+    ['leading-slash absolute path (machine-specific, un-allowlistable)', '/usr/local/bin/flotilla-engine'],
   ])('rejects a binding carrying a %s', (_label, cli) => {
     expect(() => loadEngineCli(cli)).toThrow(EngineCliBindingError);
     expect(() => loadEngineCli(cli)).toThrow(/engine\.cli/);
+  });
+
+  // issue #288 \u2014 a leading-slash ABSOLUTE path slipped past the character
+  // allow-list unconditionally, because `/` stays legitimately allowed
+  // mid-string for every repo-relative form. Repo-relative values that
+  // merely CONTAIN slashes (the ordinary case) must keep working.
+  it('accepts a repo-relative value containing many slashes \u2014 only a LEADING slash is refused', () => {
+    const nested = './a/b/c/d/flotilla-engine --flag=./x/y';
+    expect(loadEngineCli(nested)).toBe(nested);
+  });
+
+  // NEGATIVE CONTROL for the absolute-path rule (wave-shared Convention 11).
+  // The two strings below differ by exactly the leading "." that makes one
+  // repo-relative and the other absolute \u2014 a guard hardwired to accept fails
+  // the second assertion, a guard hardwired to reject fails the first.
+  it('NEGATIVE CONTROL: a leading slash is the whole difference between accept and reject', () => {
+    const relative = './node_modules/.bin/flotilla-engine';
+    const absolute = '/node_modules/.bin/flotilla-engine';
+    expect(loadEngineCli(relative)).toBe(relative);
+    expect(() => loadEngineCli(absolute)).toThrow(EngineCliBindingError);
   });
 
   it('rejects a non-object engine key, naming that field', () => {
@@ -272,10 +293,11 @@ describe('normalizeEngineCli — the typed refusal a caller can branch on (AC#2)
     }
   });
 
-  it('discriminates the three present-but-invalid shapes', () => {
+  it('discriminates the four present-but-invalid shapes', () => {
     expect(failureOf(7).failure).toBe('not-a-string');
     expect(failureOf('  ').failure).toBe('empty');
     expect(failureOf('./bin/engine; boom').failure).toBe('not-plain-argv');
+    expect(failureOf('/usr/local/bin/flotilla-engine').failure).toBe('absolute-path');
   });
 
   it('names the offending character and its index, and echoes the configured value', () => {
@@ -283,6 +305,14 @@ describe('normalizeEngineCli — the typed refusal a caller can branch on (AC#2)
     expect(err.configured).toBe('./bin/engine; boom');
     expect(err.message).toMatch(/";"/);
     expect(err.message).toMatch(/index 12/);
+  });
+
+  it('names the leading "/" and index 0 for an absolute-path binding, and echoes the configured value', () => {
+    const err = failureOf('/usr/local/bin/flotilla-engine');
+    expect(err.failure).toBe('absolute-path');
+    expect(err.configured).toBe('/usr/local/bin/flotilla-engine');
+    expect(err.message).toMatch(/"\/"/);
+    expect(err.message).toMatch(/index 0/);
   });
 
   it('reports no configured value when the binding was not a string at all', () => {
