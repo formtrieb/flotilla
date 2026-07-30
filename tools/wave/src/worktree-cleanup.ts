@@ -564,6 +564,69 @@
  * then a deliberate operator step), and the dirty-worktree safety invariant at
  * the top of this file is untouched — this is entirely about WHO decides, and
  * the decision stays with {@link planCleanup}.
+ *
+ * ── registration COUNT is itself a failure mode: E2BIG (issue #238) ───────────
+ *
+ * Every mechanism above answers "can this ONE worktree be removed". A live
+ * 2026-07-30 incident showed the population size is its own, orthogonal
+ * failure: the agent harness's sandbox profile adds a filesystem-deny entry per
+ * REGISTERED git worktree and caches that profile for the whole session. A day
+ * of wave orchestration (three dispatch runs of a seven-row wave, plus
+ * reviewer-created checkouts, plus leftovers from earlier sessions) pushed the
+ * profile past the OS `exec` argument limit, and from that moment EVERY Bash
+ * spawn — the Coordinator's and, verified with a minimal subagent probe, every
+ * subagent's — failed with `E2BIG` until the harness was restarted. The failure
+ * is invisible until it is total: a wave dispatched into a bloated session
+ * burns its whole agent budget on guaranteed-failing shell calls.
+ *
+ * Two additions here, and the boundary between them matters:
+ *
+ *   1. {@link listDetachedScratchpadWorktrees} / {@link planDetachedScratchpadSweep}
+ *      / {@link sweepDetachedScratchpadWorktrees} — the population half. The
+ *      registered-worktree GC ({@link listAgentWorktrees}) only ever sees a
+ *      path matching the `agent-`/`wf_` NAME prefixes, and the orphan-directory
+ *      sweep ({@link listOrphanDirs}) only ever sees directories git has
+ *      already forgotten. A reviewer (or any agent) that adds its own scratch
+ *      checkout with `git worktree add --detach <dir> <sha>` under the
+ *      worktrees root lands in NEITHER set: it is fully registered, so it is
+ *      not an orphan directory, and its name carries no recognized prefix, so
+ *      the GC allowlist skips it. It nevertheless costs exactly one sandbox
+ *      deny entry, and nothing in any wave's `--wave`/`--branches` scope ever
+ *      reaps it. This sweep closes precisely that gap: the containment root is
+ *      the SAME marker-derived worktrees root the rest of the module already
+ *      trusts (plus any root a caller declares via
+ *      {@link DetachedSweepOptions.extraRoots}), but the per-directory NAME
+ *      prefix is deliberately dropped — a detached HEAD is the signal instead.
+ *
+ *      Why detachment is the right signal, and why the safety floor is
+ *      unchanged: a scratch inspection checkout has no branch by construction
+ *      (`--detach` at a SHA), so nothing is staked on it, while every worktree
+ *      that IS holding work holds it on a branch — and such an entry is skipped
+ *      with the new `reason: 'live-branch'` rather than removed. Dirty state
+ *      still protects a worktree exactly as everywhere else in this file
+ *      (`reason: 'dirty'`, unless the divergence is the already-classified
+ *      disposable shape), a `locked` worktree is still refused up front, and an
+ *      orphaned directory holding real files still reports
+ *      `orphan-with-real-files`. Removal itself is NOT a new path: the plan is
+ *      an ordinary {@link CleanupPlan} handed to the same
+ *      {@link executeCleanup}, so the bounded retry, the incomplete-removal
+ *      classification, and local-branch hygiene all apply byte-for-byte.
+ *
+ *   2. {@link checkWorktreeCountAdvisory} — the measurement half, for a
+ *      DISPATCH preflight. It counts what `git worktree list` reports and
+ *      returns an advisory above {@link WORKTREE_COUNT_ADVISORY_THRESHOLD}
+ *      whose message names the E2BIG shape and the recovery. It is
+ *      deliberately ADVISORY, never a refusal: the threshold is a heuristic
+ *      about a harness-side limit this module cannot measure, and a hard stop
+ *      on a heuristic would block legitimate work (a genuinely large
+ *      multi-wave day) on a number nobody can verify from here.
+ *
+ * The recovery sequence is the one part that must be stated wherever this is
+ * documented, because the intuitive half of it does not work: once a session
+ * has hit E2BIG, removing the worktrees does NOT heal it. `git worktree remove`
+ * + `git worktree prune` fix the population, but the sandbox profile is already
+ * cached for the session, so every Bash spawn keeps failing. **Cleanup AND a
+ * harness restart** — in that order — is the recovery; cleanup alone is not.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -654,8 +717,21 @@ export interface WorktreeEntry {
   retried?: boolean;
 }
 
-/** Machine-readable cause a `planCleanup` skip is tagged with (FOR-59). */
-export type SkipReason = 'dirty' | 'locked' | 'orphan-with-real-files';
+/**
+ * Machine-readable cause a `planCleanup` skip is tagged with (FOR-59).
+ *
+ * `'live-branch'` is the detached-scratchpad sweep's own refusal (issue #238):
+ * a worktree with a branch checked out is, by construction, not a throwaway
+ * inspection checkout — see {@link planDetachedScratchpadSweep}. It can never
+ * appear on a {@link planCleanup} skip (that planner's candidates are already
+ * name-allowlisted and it never asks the question), so the widening is additive
+ * for every pre-existing reader of this type.
+ */
+export type SkipReason =
+  | 'dirty'
+  | 'locked'
+  | 'orphan-with-real-files'
+  | 'live-branch';
 
 /**
  * The result of a cleanup plan — which worktrees are selected for removal and
@@ -1724,6 +1800,367 @@ export function defaultOrphanRemover(
       physicallyDeleteWithJunkPurge(nodePath.resolve(dirPath), declared);
     },
   };
+}
+
+// ─── Detached-HEAD scratchpad sweep (issue #238 — the E2BIG population) ───────
+//
+// A FOURTH class, and the one every earlier sweep structurally cannot see. The
+// registered GC (`listAgentWorktrees` → `planCleanup`) filters on the `agent-`/
+// `wf_` NAME prefixes; the orphan-DIRECTORY sweep (`listOrphanDirs`) only sees
+// directories `git worktree list` has already forgotten. A `git worktree add
+// --detach <dir> <sha>` scratch checkout an agent makes for itself — a reviewer
+// inspecting a branch, a probe comparing two SHAs — is BOTH fully registered
+// AND un-prefixed, so it falls through both. It still costs one harness sandbox
+// deny entry each, which is the whole E2BIG accumulation (see the file-level
+// "registration COUNT is itself a failure mode" section).
+//
+// What is dropped: the per-directory name-prefix requirement. What is NOT
+// dropped: the containment root (the same marker-derived worktrees root, plus
+// any root the caller explicitly declares), the dirty-worktree safety
+// invariant, the locked refusal, and the orphan-with-real-files refusal. Added
+// in their place is a positive requirement — the worktree's HEAD must be
+// DETACHED. A branch-bearing worktree is skipped with `reason: 'live-branch'`,
+// never removed, because a branch is exactly where work is staked.
+
+/** Options for the detached-HEAD scratchpad sweep (issue #238). */
+export interface DetachedSweepOptions {
+  /**
+   * Absolute repo root — where `git worktree list` is invoked and against which
+   * the marker-derived containment roots resolve. Defaults to `process.cwd()`.
+   */
+  repoRoot?: string;
+  /**
+   * Path prefix(es) whose DIRNAMES supply the default containment roots — the
+   * SAME allowlist {@link listAgentWorktrees}/{@link listOrphanDirs} use
+   * (defaults to {@link DEFAULT_AGENT_PATH_MARKERS}, i.e. containment root
+   * `.claude/worktrees`).
+   *
+   * Note the difference from every other consumer of this option: here only the
+   * DIRNAME is used, never the per-directory prefix itself — dropping that
+   * prefix requirement is the entire point of this sweep (a
+   * `.claude/worktrees/review-238` scratch checkout matches no prefix, and is
+   * exactly the accumulation this exists to reap). Containment is what keeps
+   * the widening bounded.
+   */
+  agentPathMarker?: string | readonly string[];
+  /**
+   * ADDITIONAL containment roots, absolute or repo-root-relative — unioned with
+   * the marker-derived ones, never a replacement. A consumer whose agents make
+   * their scratch checkouts somewhere other than the worktrees root (a harness
+   * scratchpad directory, say) declares that root here; without a declaration
+   * such a checkout is left strictly alone, which is the conservative default.
+   */
+  extraRoots?: readonly string[];
+  /**
+   * Consumer-declared disposable entry names (issue #115) — forwarded verbatim
+   * to {@link listAllWorktrees}'s classification and, from
+   * {@link sweepDetachedScratchpadWorktrees}, to {@link executeCleanup}. Same
+   * union-never-replace semantics and same {@link normalizeDisposableNames}
+   * validation as everywhere else.
+   */
+  disposableNames?: readonly string[];
+  /** Injectable removal seam, forwarded to {@link executeCleanup}. Defaults to {@link defaultWorktreeRemover}. */
+  remover?: WorktreeRemover;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.pathExists}. */
+  pathExists?: (path: string) => boolean;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.stillListed}. */
+  stillListed?: (path: string) => boolean;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.retryPause}. */
+  retryPause?: () => void;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.purgeJunk}. */
+  purgeJunk?: (worktreePath: string) => void;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.skipBranchHygiene}. */
+  skipBranchHygiene?: boolean;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.branchHygiene}. */
+  branchHygiene?: BranchHygieneOps;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.defaultBranch}. */
+  defaultBranch?: string;
+}
+
+/**
+ * Resolve the containment roots for a detached-scratchpad sweep: the
+ * marker-derived worktrees root(s) (see {@link worktreesRootsFromMarkers})
+ * UNIONED with any caller-declared {@link DetachedSweepOptions.extraRoots},
+ * each resolved against `repoRoot` and realpath-normalized so the comparison
+ * survives a symlinked root (macOS `/tmp` → `/private/tmp`).
+ */
+function resolveContainmentRoots(
+  repoRoot: string,
+  markers: string[],
+  extraRoots: readonly string[] | undefined,
+): string[] {
+  const roots = new Set<string>();
+  for (const relRoot of worktreesRootsFromMarkers(markers)) {
+    roots.add(realpathForCompare(nodePath.resolve(repoRoot, relRoot)));
+  }
+  for (const extra of extraRoots ?? []) {
+    const trimmed = extra.trim();
+    if (trimmed.length === 0) continue;
+    roots.add(realpathForCompare(nodePath.resolve(repoRoot, trimmed)));
+  }
+  return [...roots];
+}
+
+/**
+ * Is `absPath` strictly INSIDE one of `roots`? Equality is deliberately NOT
+ * containment — the worktrees root itself is never a sweepable worktree — and
+ * the separator-terminated prefix check keeps a sibling directory whose name
+ * merely starts with a root's name (`.claude/worktrees-backup`) out.
+ */
+function isStrictlyUnderAnyRoot(absPath: string, roots: string[]): boolean {
+  const p = realpathForCompare(absPath);
+  return roots.some((root) => p !== root && p.startsWith(root + nodePath.sep));
+}
+
+/**
+ * List every REGISTERED worktree that sits inside a containment root and is
+ * therefore a candidate for the detached-scratchpad sweep (issue #238) —
+ * including the branch-bearing / dirty / locked ones, so
+ * {@link planDetachedScratchpadSweep} can report each refusal by name rather
+ * than silently dropping it.
+ *
+ * Built on {@link listAllWorktrees} (the un-prefixed listing the crash-cleanup
+ * layer already uses), so every entry arrives with the same toplevel-guarded
+ * dirty/orphan probe (`dirty`, `dirtyAllJunk`, `orphan`, `orphanAllJunk`,
+ * `locked`) the rest of the module reasons about. The repo's own primary
+ * checkout is excluded structurally: it is never strictly inside a worktrees
+ * root, and an explicit `repoRoot` identity guard makes that independent of
+ * where a consumer points its roots.
+ */
+export function listDetachedScratchpadWorktrees(
+  opts: DetachedSweepOptions = {},
+): WorktreeEntry[] {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const markers = normalizeMarkers(opts.agentPathMarker);
+  const roots = resolveContainmentRoots(repoRoot, markers, opts.extraRoots);
+  if (roots.length === 0) return [];
+
+  const primary = realpathForCompare(repoRoot);
+  return listAllWorktrees(repoRoot, opts.disposableNames).filter((wt) => {
+    if (realpathForCompare(wt.path) === primary) return false;
+    return isStrictlyUnderAnyRoot(wt.path, roots);
+  });
+}
+
+/**
+ * Plan a detached-scratchpad sweep (issue #238) from the candidates
+ * {@link listDetachedScratchpadWorktrees} returned. Returns an ordinary
+ * {@link CleanupPlan}, so the caller hands it to the SAME
+ * {@link executeCleanup} every other removal path uses — the bounded retry, the
+ * incomplete-removal classification and local-branch hygiene are inherited, not
+ * reimplemented.
+ *
+ * Refusals, in evaluation order, each tagged with a machine-readable
+ * {@link SkipReason} so nothing is ever silently dropped:
+ *
+ *   1. `locked` — git itself refuses to `remove` a locked worktree without an
+ *      explicit unlock; surfaced up front rather than as a removal error (the
+ *      same stance {@link planCleanup} takes).
+ *   2. `live-branch` — the worktree has a branch checked out, so it is not a
+ *      throwaway inspection checkout. This is the sweep's defining refusal: a
+ *      branch is where work is staked, and a dispatch worktree belongs to the
+ *      wave-scoped GC path, never here.
+ *   3. `dirty` — uncommitted changes, unless they are exclusively the
+ *      already-classified disposable shape (`dirtyAllJunk`, issues #111/#142).
+ *      The dirty-worktree safety invariant at the top of this file is honoured
+ *      verbatim; this sweep widens nothing about it.
+ *   4. `orphan-with-real-files` — a registered-but-deregistered directory
+ *      (FOR-59's shape) holding real, non-junk content. Same refusal
+ *      {@link planCleanup} makes.
+ *
+ * Everything else — detached, unlocked, clean (or disposably dirty) — is
+ * selected.
+ */
+export function planDetachedScratchpadSweep(
+  candidates: WorktreeEntry[],
+): CleanupPlan {
+  const selected: WorktreeEntry[] = [];
+  const skipped: WorktreeEntry[] = [];
+
+  for (const wt of candidates) {
+    if (wt.locked) {
+      skipped.push({ ...wt, reason: 'locked' });
+      continue;
+    }
+    // The defining gate: a branch means this is not a scratch checkout.
+    if (wt.branch !== null) {
+      skipped.push({ ...wt, reason: 'live-branch' });
+      continue;
+    }
+    if (wt.orphan) {
+      if (wt.orphanAllJunk) {
+        selected.push(wt);
+      } else {
+        skipped.push({ ...wt, reason: 'orphan-with-real-files' });
+      }
+      continue;
+    }
+    if (wt.dirty && !wt.dirtyAllJunk) {
+      skipped.push({ ...wt, reason: 'dirty' });
+      continue;
+    }
+    selected.push(wt);
+  }
+
+  return { selected, skipped };
+}
+
+/**
+ * High-level detached-scratchpad sweep (issue #238): list → plan → execute in
+ * one call, additive to and independent of `cleanAgentWorktrees` (name-prefixed
+ * registered GC) and `sweepOrphanWorktrees` (unregistered directories). A
+ * caller that wants a preview calls {@link listDetachedScratchpadWorktrees} +
+ * {@link planDetachedScratchpadSweep} and inspects `selected`/`skipped` without
+ * removing anything — the same read/write split the orphan sweeps offer.
+ *
+ * Idempotent: a re-run after everything is swept finds no candidate and returns
+ * empty classes.
+ */
+export function sweepDetachedScratchpadWorktrees(
+  opts: DetachedSweepOptions = {},
+): CleanupResult {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const plan = planDetachedScratchpadSweep(listDetachedScratchpadWorktrees(opts));
+  return executeCleanup(plan, {
+    repoRoot,
+    disposableNames: opts.disposableNames,
+    remover: opts.remover,
+    pathExists: opts.pathExists,
+    stillListed: opts.stillListed,
+    retryPause: opts.retryPause,
+    purgeJunk: opts.purgeJunk,
+    skipBranchHygiene: opts.skipBranchHygiene,
+    branchHygiene: opts.branchHygiene,
+    defaultBranch: opts.defaultBranch,
+  });
+}
+
+// ─── Worktree-count advisory for a dispatch preflight (issue #238) ────────────
+
+/**
+ * The documented worktree-count advisory threshold (issue #238).
+ *
+ * NOT the OS limit, and deliberately not presented as one — the harness's
+ * sandbox-profile size, and the `exec` argument limit it eventually exceeds,
+ * are not measurable from inside this engine. What IS known is the live shape:
+ * the 2026-07-30 E2BIG incident happened on the third dispatch run of a
+ * SEVEN-row wave, with reviewer checkouts and prior-session leftovers on top —
+ * i.e. well north of twenty registrations.
+ *
+ * The threshold is therefore set at "more than one wave's worth of worktrees is
+ * registered": a single seven-row wave plus its reviewer checkouts still fits
+ * under it, so an ordinary in-flight wave never trips the advisory, while a
+ * second wave's residue surviving into a third dispatch does. That leaves
+ * roughly a full wave of headroom before the observed cliff, which is the point
+ * — an advisory that only fires at the cliff is useless, since by then the next
+ * Bash spawn is already the one that dies.
+ *
+ * Overridable per call ({@link WorktreeCountAdvisoryOptions.threshold}) so a
+ * consumer whose waves are routinely wider can raise it rather than learn to
+ * ignore a standing warning.
+ */
+export const WORKTREE_COUNT_ADVISORY_THRESHOLD = 12;
+
+/**
+ * The advisory {@link checkWorktreeCountAdvisory} returns (issue #238).
+ *
+ * `level` is the machine-readable verdict; `message` is the human-facing text
+ * and is non-null EXACTLY when `level === 'advisory'`, so a caller can print
+ * `message` unconditionally on the advisory branch without a null check and
+ * never accidentally print a warning on the `ok` branch.
+ */
+export interface WorktreeCountAdvisory {
+  /** How many worktrees `git worktree list` reported, the primary checkout included. */
+  count: number;
+  /** The threshold this count was compared against (the effective one, after any override). */
+  threshold: number;
+  /** `'advisory'` iff `count > threshold`; `'ok'` otherwise. */
+  level: 'ok' | 'advisory';
+  /** The advisory text (naming the E2BIG shape + the recovery), or `null` when `level` is `'ok'`. */
+  message: string | null;
+}
+
+export interface WorktreeCountAdvisoryOptions {
+  /** Absolute repo root `git worktree list` is invoked in. Defaults to `process.cwd()`. */
+  repoRoot?: string;
+  /** Override {@link WORKTREE_COUNT_ADVISORY_THRESHOLD}. Must be a non-negative integer. */
+  threshold?: number;
+  /**
+   * Injectable counting seam — mirrors the {@link CleanupOptions.pathExists} /
+   * {@link CleanupOptions.stillListed} pattern. Defaults to a
+   * `git worktree list --porcelain` membership count
+   * ({@link registeredWorktreePaths}); the spec injects a fixture so the
+   * threshold logic is exercised without registering twelve real worktrees.
+   */
+  countWorktrees?: () => number;
+}
+
+/**
+ * Build the advisory text for a count over threshold (issue #238). Kept as its
+ * own function so the E2BIG shape and the recovery sequence are written down
+ * exactly ONCE in the engine — the operating docs quote this, they do not
+ * paraphrase it, and the spec pins the three load-bearing substrings (`E2BIG`,
+ * the subagent scope, the restart requirement).
+ */
+function worktreeCountAdvisoryMessage(count: number, threshold: number): string {
+  return (
+    `${count} registered git worktrees (advisory threshold ${threshold}). ` +
+    'The agent harness adds one sandbox filesystem-deny entry per registered worktree ' +
+    'and caches that profile for the whole session, so continued accumulation ends in ' +
+    'E2BIG ("argument list too long") on EVERY Bash spawn — the Coordinator\'s and every ' +
+    'subagent\'s alike, since subagents share the cached profile. ' +
+    'Sweep the worktrees before dispatching. ' +
+    'If E2BIG has ALREADY started, cleanup alone does not recover the session: the profile ' +
+    'is cached, so the sequence is worktree cleanup + `git worktree prune` AND a harness ' +
+    'RESTART.'
+  );
+}
+
+/**
+ * Count the registered worktrees and return a {@link WorktreeCountAdvisory}
+ * (issue #238) — the measurement half of the E2BIG hardening, intended for a
+ * DISPATCH preflight (wave-start), where a bloated session would otherwise burn
+ * a whole wave's agent budget on guaranteed-failing shell calls.
+ *
+ * ADVISORY BY DESIGN, never a refusal. The threshold is a heuristic about a
+ * harness-side limit this engine cannot measure (see
+ * {@link WORKTREE_COUNT_ADVISORY_THRESHOLD}); turning an unverifiable heuristic
+ * into a hard stop would block a legitimately large multi-wave day on a number
+ * nobody can check from here. The caller decides what to do with `level`.
+ *
+ * The count includes the primary checkout, because that is what
+ * `git worktree list` reports and therefore what an operator reproducing this
+ * by hand (`git worktree list --porcelain | grep -c '^worktree '`) will see —
+ * a count that quietly disagreed with the obvious shell equivalent would be
+ * worse than one that is simply documented as inclusive.
+ *
+ * @throws when an explicit `threshold` is not a non-negative integer — a
+ *   garbled override must fail loud rather than silently disable the advisory
+ *   (a `NaN` comparison is always false, i.e. it would read as a permanent
+ *   `ok`).
+ */
+export function checkWorktreeCountAdvisory(
+  opts: WorktreeCountAdvisoryOptions = {},
+): WorktreeCountAdvisory {
+  const threshold = opts.threshold ?? WORKTREE_COUNT_ADVISORY_THRESHOLD;
+  if (!Number.isInteger(threshold) || threshold < 0) {
+    throw new Error(
+      `worktree-count advisory threshold must be a non-negative integer, got ${String(threshold)}`,
+    );
+  }
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const count =
+    opts.countWorktrees?.() ?? registeredWorktreePaths(repoRoot).size;
+
+  if (count > threshold) {
+    return {
+      count,
+      threshold,
+      level: 'advisory',
+      message: worktreeCountAdvisoryMessage(count, threshold),
+    };
+  }
+  return { count, threshold, level: 'ok', message: null };
 }
 
 // ─── Standalone orphaned-branch sweep (FOR-72 — W15-F1, 3× reproduced) ────────

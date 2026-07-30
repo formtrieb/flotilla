@@ -41,6 +41,33 @@ The `--wave` flag scopes the registered-worktree removal to branches in this spi
 
 Either way, verify on disk after cleanup — e.g. `ls .claude/worktrees/` (or wherever this repo's worktrees live) against `errors` / `deregisteredNotDeleted` / `erroredStillListed` — rather than trusting `git worktree list`'s silence; the directory may still sit in the repo, potentially holding an editor/language-server indexing job. Removing a confirmed orphan may need the sandbox disabled (harness worktree paths are commonly write-denied).
 
+## Worktree ACCUMULATION is its own failure mode — E2BIG, and why cleanup alone does not heal it
+
+Everything above answers "can *this* worktree be removed". The population size is a separate, orthogonal failure. The agent harness adds **one sandbox filesystem-deny entry per registered git worktree** and caches that profile for the whole session, so past the OS `exec` argument limit **every** process spawn fails with `E2BIG` ("argument list too long") — the Coordinator's and **every subagent's**, because subagents inherit the same cached profile. Live occurrence 2026-07-30, during the resume of a seven-row wave on the third dispatch run of the day; the subagent scope was confirmed with a minimal probe agent that hit the identical `E2BIG`.
+
+**The recovery sequence is three steps, and the third is the one that actually restores the session:**
+
+```bash
+{{wave-cli}} worktree-cleanup --wave <wave-file> --orphans   # 1. sweep (the commands above)
+git worktree prune                                           # 2. clear unvalidatable administrative entries
+#                                                              3. RESTART the harness
+```
+
+**Cleanup alone is NOT recovery.** Removing the worktrees fixes the population, but a session that has already hit `E2BIG` keeps the sandbox profile it built at startup — so every Bash spawn keeps dying exactly as before, including the cleanup commands themselves if they have not run yet. Verified live: `git worktree remove` + `git worktree prune` did not restore the session; only restarting the harness did. Do not report "cleaned up, retrying" without the restart — that describes a retry that cannot succeed. (Symmetrically: **before** the limit is reached, a sweep IS sufficient and no restart is needed — the restart is specifically the cure for an already-cached oversized profile.)
+
+**Audit between waves, not only at a close.** The incident was the third dispatch run of one day and its residue came from the first two runs plus a prior session. `wave-start`'s own dispatch preflight now counts registered worktrees and surfaces an advisory above a documented threshold — see [wave-start's start mechanics](../../wave-start/reference/start-mechanics.md) — so a close that leaves residue behind is a close that will be paid for at the next dispatch.
+
+**The class this phase's two sweeps do NOT reach: an agent's own hand-made detached scratch checkout.** `--wave`-scoped removal sees only worktrees whose *branch* is in this spine's dispatch log; the unscoped registered GC sees only paths matching the `agent-`/`wf_` **name** prefixes; `--orphans` sees only directories `git worktree list` has already forgotten. A reviewer (or any agent) that runs `git worktree add --detach <dir> <sha>` under the worktrees root to inspect a branch lands in none of those: it is fully **registered** (so it is not an orphan directory) and **un-prefixed** (so the name allowlist skips it), yet it costs a sandbox deny entry like every other worktree, and no wave's scope ever reaps it.
+
+The engine now classifies exactly that shape — `listDetachedScratchpadWorktrees` / `planDetachedScratchpadSweep` / `sweepDetachedScratchpadWorktrees` in `tools/wave/src/worktree-cleanup.ts`. It drops only the name-prefix requirement; the containment root (the worktrees root, plus any root a consumer declares), the dirty-worktree safety invariant, the locked refusal and the `orphan-with-real-files` refusal all still hold, and a worktree with a **branch** checked out is refused with its own `reason: 'live-branch'` — a branch is where work is staked, so a dispatch worktree is never swept by this path. **The `worktree-cleanup` CLI verb does not surface this sweep yet** (its flag wiring is a separate slice), so until it does, a detached leftover this phase's output does not account for is removed by hand:
+
+```bash
+git worktree list --porcelain | grep -B2 '^detached'   # find the detached ones
+git worktree remove <path>                             # per confirmed-clean leftover
+```
+
+Check it against `git worktree list` after the sweep above rather than assuming the two sweeps covered everything — an un-prefixed detached checkout is precisely the entry that will still be there.
+
 ## Common Mistakes
 
 - **Removing a dirty worktree.** A worktree with uncommitted changes is reported and skipped, never removed.
@@ -48,3 +75,6 @@ Either way, verify on disk after cleanup — e.g. `ls .claude/worktrees/` (or wh
 - **Reading `0/0/0` on `worktree-cleanup --wave` as "nothing to do."** It only means nothing was registered for `planCleanup` to consider — the harness commonly removes its own worktree before wave-close ever runs. Check `branchesDeleted` / `branchHygieneSkipped` / `orphans` from the SAME `--orphans` call before concluding there was no cleanup work; a non-empty result there while the worktree triple reads `0/0/0` is a distinct, reportable outcome, not a no-op.
 - **Gating the orphaned-branch sweep behind "a manual removal happened."** That trigger was written for the ENOTEMPTY-fallback (hand-removing a stuck worktree); the harness's own routine worktree removal never satisfies it, so a sweep gated this way silently never runs for the majority case. Pass `--orphans` on every phase-3 call unconditionally, and again after phase 4a's pull.
 - **Trusting a clean `git worktree list` as proof the directories are gone.** Git can deregister a worktree while failing to delete its on-disk directory, leaving an orphan `git worktree list` no longer reports. Verify on disk (list the worktree root) against `worktree-cleanup`'s `errors` array.
+- **Treating a worktree sweep as recovery for a session that is ALREADY throwing `E2BIG`.** The sandbox profile is cached per session, so removing the worktrees fixes the population while the running session keeps its oversized deny list — every Bash spawn keeps dying. The sequence is sweep + `git worktree prune` + **restart the harness**; verified live, cleanup alone did not restore the session. (Before the limit is hit, the sweep alone is enough — the restart is the cure for an already-cached profile, not a ritual.)
+- **Assuming this phase's two sweeps account for every registered worktree.** An agent's own `git worktree add --detach` scratch checkout under the worktrees root is registered (so `--orphans` cannot see it) and un-prefixed (so the `agent-`/`wf_` name allowlist skips it) — it survives both, and still costs a sandbox deny entry. Re-read `git worktree list` after the sweep and hand-remove any confirmed-clean detached leftover until the CLI verb surfaces the engine's detached-scratchpad sweep.
+- **Reporting a close as clean while leaving worktree residue for the next dispatch to pay for.** The accumulation that produced the `E2BIG` incident came from earlier runs of the same day plus a prior session; `wave-start`'s step-4a count is where that bill arrives. A between-waves audit belongs to the close, not to the next wave's preflight.
