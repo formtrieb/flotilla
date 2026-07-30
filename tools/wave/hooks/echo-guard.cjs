@@ -78,6 +78,41 @@
  * blocked, because the matcher reads the command text and cannot tell prose
  * from an expansion the shell will perform. Rephrase the argument.
  *
+ * **Family 3 is position-aware about two literal (never re-parsed-as-a-command)
+ * spans**, added after a same-day FP cluster (a Reviewer's `grep -n` search
+ * PATTERN for the dump word, quoted in backticks inside single quotes, and a
+ * Coordinator `gh issue create` heredoc BODY that merely mentioned the word as
+ * the first word of a line):
+ *
+ *   - **A single-quoted string.** Bash performs ZERO expansion inside single
+ *     quotes — no `$`, no backtick command substitution, nothing — so a
+ *     backtick-quoted mention of a dump word inside one (`grep -n '`printenv`'
+ *     file`) is never a real invocation. `neutralizeSingleQuoted()` blanks
+ *     every SEGMENT_SPLIT trigger character it finds there before family 3's
+ *     head detection runs. A double-quoted span is walked over untouched —
+ *     `$` and backticks ARE live inside double quotes in real bash — so an
+ *     apostrophe like the one in `"don't …"` is never mistaken for a
+ *     single-quote delimiter that could pair with some unrelated later quote
+ *     and blank real command text between them.
+ *   - **A heredoc BODY.** It is argument/stdin DATA for whatever reads it, not
+ *     a further sequence of top-level commands, so a bare line that happens to
+ *     open with the dump word must not manufacture a fake per-line command
+ *     head the way a real top-level newline would. `neutralizeHeredocBodies()`
+ *     folds a heredoc's body lines into the line that opened it (spaces
+ *     standing in for the newlines) before family 3 runs. Nothing inside the
+ *     body other than the newline itself is touched — an embedded `$(…)`
+ *     command substitution, which real bash DOES evaluate before the body
+ *     reaches its reader, stays exactly as reachable as it was before this
+ *     carve-out existed.
+ *
+ * Both carve-outs are scoped to family 3's own head detection only — families
+ * 1, 2 and 4 still scan the ORIGINAL command text unchanged, so a genuine
+ * credential expansion or wrapped Lookup-Command hidden inside either span is
+ * none of family 3's business to begin with and stays caught by its own
+ * family. Neither carve-out weakens the piped, command-substitution or
+ * command-head invocation forms: those never enter a single-quoted or heredoc
+ * span, so the trigger characters that reach them are never masked.
+ *
  * ============================================================================
  * ## OPERATOR STEP (HITL) — ready to paste, deliberately NOT applied by an agent
  * ============================================================================
@@ -251,6 +286,151 @@ function commandHeads(command) {
 }
 
 // ---------------------------------------------------------------------------
+// Family 3 — position-aware carve-outs (literal spans, never real invocations)
+// ---------------------------------------------------------------------------
+
+/**
+ * The individual characters SEGMENT_SPLIT reacts to. `$(`, `||` and `&&` are
+ * each anchored by one of these single characters, so blanking the anchor
+ * defuses the two-character form too — no need to match it separately.
+ */
+const SEGMENT_SPLIT_CHARS = new Set(['`', '\n', ';', '|', '&', '(', ')', '{', '}', '$']);
+
+/** @param {Set<string>} chars @param {string} text */
+function blankChars(chars, text) {
+  let out = '';
+  for (const ch of text) out += chars.has(ch) ? ' ' : ch;
+  return out;
+}
+
+/**
+ * Blank every SEGMENT_SPLIT trigger character that falls inside a
+ * single-quoted span, leaving double-quoted spans untouched.
+ *
+ * Bash performs ZERO expansion inside single quotes — no `$`, no backtick
+ * command substitution, nothing — so nothing inside one is ever a further
+ * command; a backtick pair used there as markdown-style quoting (a search
+ * PATTERN argument, e.g. `grep -n '`printenv`' file`) must not be read as
+ * command substitution. A double-quoted span is walked over WITHOUT touching
+ * its contents — `$` and backticks ARE live inside double quotes in real
+ * bash — which is what keeps an apostrophe like the one in `"don't …"` from
+ * ever being mistaken for a single-quote delimiter that could pair with some
+ * unrelated LATER quote and blank real command text sitting between them.
+ *
+ * A hand-rolled quote-state scan, not a shell parser — it exists only to
+ * defuse the two evidenced false-positive shapes without touching a real
+ * invocation.
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function neutralizeSingleQuoted(command) {
+  let out = '';
+  /** @type {'none' | 'single' | 'double'} */
+  let state = 'none';
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (state === 'double') {
+      if (ch === '\\' && i + 1 < command.length) {
+        out += ch + command[i + 1];
+        i += 1;
+        continue;
+      }
+      out += ch;
+      if (ch === '"') state = 'none';
+      continue;
+    }
+    if (state === 'single') {
+      if (ch === "'") {
+        state = 'none';
+        out += ch;
+        continue;
+      }
+      out += SEGMENT_SPLIT_CHARS.has(ch) ? ' ' : ch;
+      continue;
+    }
+    out += ch;
+    if (ch === "'") state = 'single';
+    else if (ch === '"') state = 'double';
+  }
+  return out;
+}
+
+/** Matches a heredoc-opening token: `<<`, optional `-`, optional quote, the delimiter word. */
+const HEREDOC_INTRO_SRC = "<<-?\\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\\1";
+
+/**
+ * Fold every heredoc's BODY lines into the line that opened it, spaces
+ * standing in for the newlines that separated them.
+ *
+ * A heredoc body is argument/stdin DATA for whatever reads it, never a
+ * further sequence of top-level commands — so a body line that happens to
+ * open with a dump word (`printenv leaked in row 226…`, the first word of a
+ * `gh issue create` heredoc BODY paragraph) must not manufacture a fake
+ * per-line command head the way a real top-level newline would. Nothing
+ * inside the body OTHER than the newline is touched: an embedded `$(…)`
+ * command substitution — which real bash DOES evaluate before the body
+ * reaches its reader, regardless of whether the delimiter itself is quoted —
+ * stays exactly as reachable to family 3 as it was before this carve-out
+ * existed, because its own `$(` split point is untouched by this function.
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function neutralizeHeredocBodies(command) {
+  const lines = command.split('\n');
+  const introRe = new RegExp(HEREDOC_INTRO_SRC);
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    out.push(line);
+    i += 1;
+    // A line can open more than one heredoc in real bash; tracking only the
+    // LAST delimiter on the line is an adequate simplification for a guard
+    // whose job here is just "don't manufacture a fake per-line head."
+    let delim = null;
+    let remainder = line;
+    let match;
+    while ((match = introRe.exec(remainder))) {
+      delim = match[2];
+      remainder = remainder.slice(match.index + match[0].length);
+    }
+    if (delim === null) continue;
+    const closeExact = new RegExp('^[ \\t]*' + delim + '$');
+    const bodyLines = [];
+    while (i < lines.length && !closeExact.test(lines[i])) {
+      bodyLines.push(lines[i]);
+      i += 1;
+    }
+    if (bodyLines.length > 0) {
+      out[out.length - 1] += ' ' + bodyLines.join(' ');
+    }
+    if (i < lines.length) {
+      out.push(lines[i]); // the closing delimiter line itself, untouched
+      i += 1;
+    }
+  }
+  return out.join('\n');
+}
+
+/**
+ * Both family-3 carve-outs composed: heredoc bodies folded first (so a
+ * heredoc's own quoted delimiter token, e.g. `'EOF'`, is still intact and
+ * self-contained when the single-quote pass runs next), then single-quoted
+ * spans neutralized. Scoped to family 3's OWN head detection only — families
+ * 1, 2 and 4 still scan the original, unmodified command text, so a genuine
+ * credential expansion or wrapped Lookup-Command hidden inside either span
+ * stays caught by its own family.
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function literalSpanNeutralized(command) {
+  return neutralizeSingleQuoted(neutralizeHeredocBodies(command));
+}
+
+// ---------------------------------------------------------------------------
 // The matcher
 // ---------------------------------------------------------------------------
 
@@ -306,8 +486,11 @@ function evaluateCommand(command, env) {
   }
 
   // --- Family 3 — whole-environment dumps -----------------------------------
+  // Head detection runs over the LITERAL-SPAN-NEUTRALIZED text (single-quoted
+  // spans and heredoc bodies), not the raw command — see literalSpanNeutralized()
+  // above. Families 1, 2 and 4 above and below still scan the raw `command`.
   const reportedDumps = new Set();
-  for (const { head, rest } of commandHeads(command)) {
+  for (const { head, rest } of commandHeads(literalSpanNeutralized(command))) {
     let dump = null;
     if (head === 'printenv') {
       dump =
@@ -432,4 +615,7 @@ module.exports = {
   isCredentialShaped,
   CREDENTIAL_NAME_SUFFIXES,
   MIN_LOOKUP_VALUE_LENGTH,
+  neutralizeSingleQuoted,
+  neutralizeHeredocBodies,
+  literalSpanNeutralized,
 };
