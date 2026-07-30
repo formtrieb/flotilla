@@ -11,7 +11,7 @@
   "type": "commonjs",
   "main": "./src/index.ts",
   "bin": {
-    "flotilla-engine": "./bin/flotilla-engine.js"
+    "flotilla-engine": "bin/flotilla-engine.js"
   },
   "files": [
     "src",

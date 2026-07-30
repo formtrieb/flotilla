@@ -122,7 +122,7 @@ jobs:
         run: npm run typecheck
 
       - name: Publish to npm
-        # No flags and no environment. `--provenance` is deliberately absent: for a
+        # No auth flags and no environment. `--provenance` is deliberately absent: for a
         # public repository publishing a public package the registry attaches
         # provenance by itself. No token is read here — npm performs the OIDC
         # exchange on its own using the identity token permission granted above.
@@ -131,4 +131,19 @@ jobs:
         # note above, and is just as deliberate: the vendor's documented example sets
         # the registry URL and gives the publish step no `NODE_AUTH_TOKEN`. Adding one
         # here would be the token path this whole workflow exists to avoid.
-        run: npm publish
+        #
+        # `--tag` IS required for a prerelease version — npm (>= the 11.x line this job
+        # floats onto via the install step above) refuses `npm publish` of a version
+        # with a prerelease suffix unless an explicit dist-tag is given, so a
+        # prerelease can never silently shadow `latest`. Live occurrence: the
+        # v0.1.0-beta.1 release run failed exactly here ("You must specify a tag using
+        # --tag when publishing a prerelease version") although v0.1.0-beta.0 had
+        # published clean three days earlier — the floor-without-ceiling npm install
+        # floats forward, and the requirement arrived with it. A stable version
+        # publishes untagged and lands `latest`, the default.
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in
+            *-*) npm publish --tag beta ;;
+            *)   npm publish ;;
+          esac
