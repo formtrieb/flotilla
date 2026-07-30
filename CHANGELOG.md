@@ -9,6 +9,41 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [0.1.0-beta.1] — 2026-07-30
+
+The release that makes the **npm-first invocation form operational**. Every skill's
+engine-CLI resolution block states the published-package form first (`npx
+@formtrieb/flotilla-engine`, ADR-0031), but `0.1.0-beta.0` predates the credential
+seam entirely: on a consumer using the keychain indirection it could not resolve a
+credential and therefore could not execute the landing seam at all. This beta closes
+that gap; the vendored in-repo form remains the documented fallback.
+
+### Added
+
+- **Per-project credential resolution (ADR-0029).** Credentials resolve lazily through
+  a per-project lookup command — `<VAR>_CMD` environment variables
+  (`GITHUB_TOKEN_CMD`, `LINEAR_API_KEY_CMD`) name a command whose stdout is the
+  secret (OS keychain, any secret manager). A configured command wins over the ambient
+  variable and fails loud; the ambient variable remains the fallback when no command
+  is configured. One resolver module serves both tracker stores and the host seam.
+- **`credential-probe` verb** — the value-free AFK preflight: probes each configured
+  lookup command (exit status only, never the output) so a broken or prompting
+  resolver surfaces before dispatch instead of mid-wave.
+- **`hooks/` in the published tarball** — the PreToolUse Echo-Guard
+  (`hooks/echo-guard.cjs`), the structural speed bump against credential-echo forms
+  in Bash commands; a packaging spec now pins every runtime directory into the npm
+  file set so a shipped directory cannot silently drop out again.
+- **Documented-form comparison types re-exported from the package root (ADR-0030)** —
+  the `documentedFormComparison` verdict types are importable without deep paths.
+
+### Notes for consumers
+
+- With this release the dual-form resolution blocks' npm-first ordering is
+  operationally true on credential-indirection consumers. `0.1.0-beta.0`'s known
+  failure shapes there — `credential-probe` as an unknown subcommand and
+  `host-pr create` failing with a missing-token error despite a configured keychain
+  lookup — are resolved by upgrading.
+
 ## [0.1.0-beta.0] — 2026-07-27
 
 The first public release. flotilla has existed and been used to build itself for some
@@ -98,4 +133,5 @@ Stated plainly, because a beta that hides this is worth less than one that does 
   which is all of them in practice — cleanup currently happens by hand
   ([#111](https://github.com/formtrieb/flotilla/issues/111)).
 
+[0.1.0-beta.1]: https://github.com/formtrieb/flotilla/releases/tag/v0.1.0-beta.1
 [0.1.0-beta.0]: https://github.com/formtrieb/flotilla/releases/tag/v0.1.0-beta.0
