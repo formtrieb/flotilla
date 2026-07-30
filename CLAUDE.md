@@ -31,6 +31,7 @@ Those are the Ur's bindings. flotilla is **tracker-agnostic, protected-`main` / 
 - **Branch model:** protected `main`, **PR-only landing for everything** — never direct-push to the default branch. The spine is branch-local and does not need to merge to `main`.
 - **Engine ships raw TS, no build step** (`main: ./src/index.ts`, `tsc --noEmit` as the type gate). Standalone vitest; the ported spec files are the regression net and must stay green.
 - **Skills are rewritten generic**, not placeholder-templated — a predecessor's skill logic is a reference to read, never a template to fill in.
+- **Source form / Installed form:** this repo runs the **source form** on both distribution layers — local `.claude/skills/` (the tracked `enabledPlugins` self-disable in `.claude/settings.json` keeps its own installed plugin off, deliberately) and the vendored engine (`tools/wave`). Every consumer runs the **installed form**: the plugin plus the npm package, bound through `engine.cli` in the wave config. One form per layer per repo, statically bound, never a runtime fallback (CONTEXT.md `### Distribution`, ADR-0032).
 
 ## Verify
 
