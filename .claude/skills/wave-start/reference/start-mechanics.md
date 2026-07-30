@@ -70,6 +70,31 @@ HELD_IDS=$(node -e '
 #   capture whose emptiness means *did not run*, not the one whose emptiness is
 #   an answer" half.
 
+# 3b. The HUMAN gate — the second, independent hold, on the WORKER axis. Needs no
+#     store call and no cross-wave result: both facts are already in the spine you
+#     read at step 1. A row is HUMAN-HELD iff its Worker cell names a human-gated
+#     value AND its State is still `planned`. The mechanical cross-check over the
+#     raw markdown, shaped exactly like the step-2 in-flight detector (the State
+#     cell is pipe-delimited and space-padded; so is the Worker cell):
+{{wave-cli}} spine read "$SPINE" | grep -E '\|[[:space:]]*HITL-required[[:space:]]*\|'
+#   Each matching line IS a Plan-Table row — its first cell is the id, its State
+#   cell tells you whether it is still held. `HITL-required` is the DEFAULT token
+#   (HUMAN_GATED_WORKER in tools/wave/src/wave-md-rw.ts, whose `humanHeldRowIds`
+#   is the engine-side owner of this same conjunction); a consumer that trimmed or
+#   re-spelled its Worker vocabulary substitutes its own token here.
+#   Exit 1 (no match) is the ordinary "no human-gated row" answer — like HELD_IDS
+#   above, it is an ANSWER, not a did-not-run, so it takes no capture guard and no
+#   `|| exit`. Same padding-tolerance caveat as step 2's detector: a Title cell
+#   containing the pipe-padded token would be a theoretical false positive only.
+#   RELEASE IS AN EXPLICIT HUMAN "yes, it is done", asked per pass. Unattended =>
+#   nobody to answer => HOLD. Skip every HUMAN-HELD id in steps 5 and 6 exactly as
+#   you skip HELD_IDS, and report it in step 9 WITH the action it waits on.
+
+# 3c. OPTIONAL Coordinator disposition — park a HUMAN-HELD row instead of waiting.
+#     Identical to 3a below (a HUMAN-HELD row is `planned` for the same reason and
+#     has never been dispatched); reach for it when the human action is not coming
+#     in a useful timeframe. Never automatic.
+
 # 3a. OPTIONAL Coordinator disposition — park a HELD row instead of waiting
 #     (ADR-0022 §Consequences). A HELD id is still `planned` (never dispatched),
 #     one of the two legal entry states into `parked` — park it directly, spine
@@ -146,7 +171,11 @@ case "$ENGINE_CLI" in
 esac
 
 # 5. Mark each NON-HELD row in-flight (WAL: spine first, then rung, in row order).
-#    Skip any id present in HELD_IDS (step 3) — its State stays `planned`.
+#    Skip any id present in HELD_IDS (step 3) — its State stays `planned`. Skip
+#    every HUMAN-HELD id (step 3b) for the identical reason and by the identical
+#    means: nothing is flipped, nothing is transitioned, the row is simply not
+#    part of this pass. (The heading above says NON-HELD; both holds are HELD in
+#    that sense — one on a sibling row, one on a human.)
 #    Per row, bind $ID / $ROW_SLUG / $MODEL from the roster — the SAME id+slug+model
 #    that go into the Workflow ISSUES array (workflow-driver.md), NOT the wave-level
 #    $SLUG. Both spine writes precede the coarse rung (spine-first WAL).
@@ -169,7 +198,11 @@ esac
 {{wave-cli}} issue-store transition "$ID" in-flight                     # coarse rung, second
 
 # 6. Dispatch — compose + run the Workflow script (workflow-driver.md), ISSUES
-#    built from the non-HELD rows only (HELD_IDS excluded from the array).
+#    built from the DISPATCHABLE rows only (both HELD_IDS and the HUMAN-HELD ids
+#    excluded from the array). The driver carries a `worker` field per row and
+#    refuses at compose time if a human-gated one reached ISSUES anyway — the
+#    structural backstop for this exclusion, in the same place as the
+#    anchor/branch assertion (workflow-driver.md).
 #    The driver's Scribe stages persist each sidecar AT AGENT-RETURN via
 #    write-report/write-verdict (ADR-0024) — nothing is written bundled in step 9.
 #    Per row, decide whether the slice SHIPS A NEW CHECK (wave-shared Convention
@@ -199,6 +232,33 @@ esac
 - `dispatched` / `re-dispatched` are the two *running* states (a Worker is out). `planned`/`pr-created`/`approved`/`failed`/`abandoned`/etc. are not running → not counted.
 - Run it over every **other** spine; this wave's own spine is exempt (idempotent re-entry may already carry running rows).
 - A Title cell containing the literal word `dispatched` padded by pipes is a theoretical false-positive only; real titles do not carry pipe-padded state tokens.
+
+## The human gate (step 3b) — the hold on the worker axis
+
+**The detector.** Both facts the gate needs are already in the spine, so this step calls no store and needs no `cross-wave` result. `spine read` prints raw markdown; the `Worker` cell is pipe-delimited and space-padded exactly like the `State` cell, so it matches padding-tolerantly the same way:
+
+```bash
+{{wave-cli}} spine read "$SPINE" | grep -E '\|[[:space:]]*HITL-required[[:space:]]*\|'
+```
+
+Each matching line is a whole Plan-Table row — its first cell is the id and its `State` cell says whether it is still held. `HITL-required` is the **default** token; the authority is `HUMAN_GATED_WORKER` in `tools/wave/src/wave-md-rw.ts`, and a consumer that trimmed or re-spelled its Worker vocabulary substitutes its own. That module's `humanHeldRowIds` is the engine-side owner of the same conjunction, spec-covered with negative controls in `tools/wave/src/wave-md-rw.spec.ts`; the grep here is the operator-facing copy for a step that runs before any config resolution, exactly as step 4a keeps a raw `git` one-liner for the same reason.
+
+**The predicate is a conjunction: human-gated `∧` still `planned`.** The Worker value alone is not the hold. A human-gated row that was released on an earlier pass has moved past `planned`, and re-holding it would mean the row could never finish — the gate would be permanent rather than a gate. `planned` is also precisely where an intra-wave-blocked HELD row waits, which is what makes this a *reuse* of that seam rather than a parallel mechanism: one held-row shape, one set of exclusions, two reasons to be in it.
+
+**Release is an explicit human "yes, it is done", asked once per pass — and its default is hold.** The unattended case is the one this gate exists for, and in it there is nobody to answer, so the row is held. A gate whose default fires only when a human happens to be watching is not a gate. Nothing durable records the release: the row simply dispatches, moves past `planned`, and stops matching the predicate.
+
+**Nothing is written for a held row.** No new state, no label, no tracker call — `State` stays `planned`, the `ClaimRung` stays where `wave-create` left it, and step 9 reports the row plainly (with the human action it waits on) rather than flagging it. A held row is ordinary sequencing.
+
+### Why the human lane exists — the measured constraint, not the folk version
+
+The gate is worth having only if rows are classified `HITL-required` for real reasons, so know what the constraint actually measured out to be on the row that motivated this lane — a row whose work touched paths a dispatched agent could not update.
+
+**Measured, end-to-end:** the blocker was the **Bash sandbox's write-deny on specific paths**. The agent's file-editing tool wrote the target file *fine*; what failed was **git plumbing under the sandbox, which could not unlink it**. Two consequences follow, and both matter when you are deciding whether a row belongs in this lane:
+
+- **"An agent cannot write there" is the over-broad reading, and it is wrong.** Taken literally it classifies as human-gated a large set of rows an agent can in fact implement unattended, which costs exactly what this gate is supposed to save. The narrow, measured claim is about one tool path under one sandbox policy — not about agent write capability in general.
+- **The remedy is therefore path- and tool-shaped, not personnel-shaped.** A row blocked this way may stop being human-gated when the sandbox policy or the write path changes, with nothing about the work itself having moved. Re-read the Worker value when that happens instead of treating it as settled.
+
+Keep the distinction when you write a step-9 report: name the human action (`rotate the PAT in the keychain`, `approve the settings change`), never a blanket "agents can't write here".
 
 ## The worktree-count advisory (step 4a) — the E2BIG preflight
 

@@ -34,6 +34,24 @@ Per chosen id, call two engine verbs:
 
 Build each roster row as `{ id, title, worker, risk }`. The title comes from the **Triage facet** (`triage-read`) because `IssueView` carries no title — it is wave-header-only (ADR-0015). `triage-read` returns the native tracker title whether or not the issue was ever explicitly triaged.
 
+### 2a. Human-gate surface (surface + ask) — the row no agent may pick up
+
+You have just read `IssueView.worker` for every chosen id. **A row whose Worker is the human-gated value must be surfaced here, before anything else happens to it** — the default token is `HITL-required` (the engine's `HUMAN_GATED_WORKER` in `tools/wave/src/wave-md-rw.ts`; the Worker vocabulary is consumer-configurable, so read the consumer's own set rather than assuming the spelling).
+
+Such a row is **real wave work**: it enters the wave, gets a spine row, and takes the `queued` soft-claim exactly like any other row (ADR-0012). What it must never do is enter *silently*. A human-gated row that is materialized indistinguishably from background work is a row that reaches `wave-start` looking dispatchable — and gets fanned out to an unattended Worker that cannot do the one thing the row is waiting for.
+
+So **surface + ask**, naming the row and stating plainly that no agent will pick it up until a human acts. Unlike the two cross-wave gates in step 4, the default here is **include-and-hold**, not abort:
+
+- **Include it (the default).** It is materialized and claimed `queued`; `wave-start` then holds it in the visible human lane — never dispatched — until a human acts. The rest of the wave dispatches around it.
+- **Act first, then include it.** The human does the thing now, in this session. The row then dispatches like any other row.
+- **Drop it from the roster.** It stays `available` for a future draw — the same move as a DoR self-content FAIL you choose not to fix.
+
+**The seam this reuses is HELD** — the intra-wave `Blocked by` hold `wave-start` step 3 already implements. A human-gated row and a blocked row are the same shape: materialized, claimed, `State: planned`, skipped at fan-out, and picked up unchanged by a later pass. Nothing new is invented; the only difference is the axis the hold reads — this row's own Worker, rather than another row's status.
+
+**What this gate is NOT: a plan-time exclusion.** `wave-plan`'s contract deliberately *includes and flags* human-gated rows, and dropping one by hand hides a real node in the dependency graph. It is also not the triage terminal `ready-for-human`, which is not wave work at all and never reaches a roster (ADR-0015). Ask; do not decide silently in either direction.
+
+Record the answer in the `## DOR-check` narrative you assemble in step 3 — row id, the human action it is waiting on, and which of the three options the Coordinator chose. `wave-start` re-derives the hold itself from the spine on every entry, so this narrative is the human-readable record, not the mechanism. Worked detail: [reference/create-mechanics.md](reference/create-mechanics.md).
+
 ### 3. DoR
 
 Run `dor --id <id> --repo-root <consumer-root>` per chosen id. The `--repo-root` flag lets the engine run working-tree gates (glob resolution, literal-file existence) against the coordinator's checkout — without it, those gates defer.
@@ -86,7 +104,7 @@ Run `issue-store transition <id> queued` per issue — in the same order as the 
 
 ### 7. Report
 
-Print the spine path. Note that Status is `draft` — left that way deliberately. There is no manual step: `wave-start` auto-flips `draft → ready` via `spine set-status` at dispatch (idempotent — a no-op if already `ready`), so the commit-to-scope decision is expressed by the act of running `wave-start`, never by manually editing the frontmatter. The next step is `wave-start` (P7.4).
+Name every human-gated row you admitted in step 2a, and say what it is waiting on — the Coordinator running `wave-start` next must not have to rediscover it from the Plan-Table. Print the spine path. Note that Status is `draft` — left that way deliberately. There is no manual step: `wave-start` auto-flips `draft → ready` via `spine set-status` at dispatch (idempotent — a no-op if already `ready`), so the commit-to-scope decision is expressed by the act of running `wave-start`, never by manually editing the frontmatter. The next step is `wave-start` (P7.4).
 
 ## Common Mistakes
 
@@ -99,6 +117,9 @@ Print the spine path. Note that Status is `draft` — left that way deliberately
 - **Skipping the pre-flight existence check.** `spine create` overwrites silently — it does NOT reject an existing path. The skill's step-1 existence check is the *only* guard against clobbering a durable, possibly in-flight spine. Never skip it.
 - **Using the `conflict-map` CLI to build the spine's Conflict-Map.** `conflict-map` now has a store-backed `--id` entrypoint for non-file stores, but the spine build still goes through `cross-wave` — it computes the same cells *plus* the claimed-set comparison and the `intraWaveBlockedByPairs` this skill's gates need. Use `cross-wave` with the `IssueView[]` arrays, then extract `intraWaveConflicts` from the `CrossWaveResult`.
 - **Deriving the roster title from `IssueView`.** `IssueView` has no title — it is wave-header-only. Always use `issue-store triage-read <id>` for the title.
+- **Materializing a human-gated row silently, as if it were background work (step 2a).** A `HITL-required` Worker is not a decoration on an otherwise-ordinary row: it is the statement that no agent may pick the row up until a human acts. Surface it and ask. A row that enters the spine unannounced is a row the next `wave-start` fans out to an unattended Worker.
+- **"Solving" a human-gated row by dropping it from the roster without asking.** The include-and-hold default exists because such a row is real wave work at a node other rows may depend on — `wave-plan` includes and flags it precisely so it is *visible*, not so it can be filtered out one step later. Dropping it is one of the three options the human picks from, never the one you take on their behalf.
+- **Reading `HITL-required` as `ready-for-human` and refusing the roster.** They are two different "human" concepts at two pipeline stages: `ready-for-human` never enters a wave; a human-gated **Worker** does, and is merely gated (ADR-0015). Refusing to materialize one contradicts the eligibility that put it in the candidate set.
 - **Dispatching from this skill.** wave-create ends at `queued` + `draft` spine. Dispatch is `wave-start`.
 - **Treating a `verify-profile-coverage` warn as noise and summarizing it out of the `## DOR-check` narrative.** It is the one signal telling a later Reviewer that an `approve` on that row will be inspection-only — nothing compiled or tested — rather than backed by a real run. Keep the row id and its unmatched files verbatim; do not fold it into a generic "warnings present" line.
 - **Widening a verify profile's `appliesTo` (or inventing a catch-all profile) just to make a `verify-profile-coverage` warn go away.** The warn is not a defect in the row — some work genuinely has no automated gate. Silencing it by changing the consumer's verify config hides exactly the fact the gate exists to surface; leave the config alone and let the warn stand.
