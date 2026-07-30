@@ -867,10 +867,25 @@ export class LandingNotImplementedError extends Error {
  *
  * `state` is three-valued on purpose:
  *   - `success` — reported AND settled green. GitHub's `conclusion` values
- *     `success`, `neutral` and `skipped` all land here: a skipped job
- *     "will report its status as 'Success'. It will not prevent a pull request
- *     from merging, even if it is a required check" (GitHub, About status checks),
- *     and `neutral` is its other non-blocking conclusion.
+ *     `success`, `neutral` and `skipped` all land here. `skipped` is
+ *     confirmed VERBATIM by GitHub's current "Status checks" reference
+ *     (docs.github.com/en/pull-requests/reference/status-checks, read
+ *     2026-07-30): "A job that is skipped will report its status as
+ *     'Success'. It will not prevent a pull request from merging, even if
+ *     it is a required check." `neutral` is CONFORMANCE-CHECKED against the
+ *     same page, not merely assumed: its conclusions table describes
+ *     `neutral` with wording IDENTICAL to `skipped`'s — "The check run
+ *     completed with a neutral result. This is treated as a success for
+ *     dependent checks in GitHub Actions." — and the page's own
+ *     merge-blocking framing lists only `failure`, `timed_out` and
+ *     `action_required` as conclusions where "someone must review the
+ *     details before the pull request can merge"; `neutral` is absent from
+ *     that list. The vendor page does not spell "required check" out next to
+ *     `neutral` the way it does for `skipped`, so the inference rests on
+ *     that table-parity plus the blocking-list omission rather than on an
+ *     equally explicit standalone sentence — recorded here so the gap in
+ *     directness is visible rather than silently rounded up to "confirmed
+ *     identically" (issue #263).
  *   - `pending` — reported but not settled (queued / in progress).
  *   - `failure` — reported, settled, and not green.
  *
@@ -974,6 +989,23 @@ export interface CheckAttachReader {
    * combined-status reads). MUST throw rather than return `[]` when the read
    * itself fails: an empty list is EVIDENCE of the latency window, and a failed
    * read must never be able to counterfeit it.
+   *
+   * PAGINATION CONTRACT (issue #263): both underlying reads — the check-runs
+   * source and the legacy combined-status source — are pageable GitHub REST
+   * endpoints (`per_page`/`page`), and a commit can carry more than one page
+   * of EITHER. An implementation MUST paginate each to exhaustion, or MUST
+   * comment any deliberate cap with its safety rationale at the exact point
+   * the cap is applied. A cap on one source paired with exhaustive
+   * pagination on its sibling, left uncommented, is an asymmetry that
+   * silently under-reports — e.g. a commit carrying more than one page of
+   * legacy commit statuses would lose every status past the first page. This
+   * paragraph is the CONTRACT; conformance is an implementation property this
+   * interface cannot enforce by type. It is stated here, not fixed there,
+   * because the concrete violation (`RealGitHubApi.getReportedChecks`,
+   * `adapters/github/real-github-api.ts`: an exhaustive check-runs loop
+   * immediately above a single-page, uncommented combined-status GET) lives
+   * outside this issue's declared Files — flagged for a follow-up rather than
+   * silently left unstated.
    */
   getReportedChecks(ref: string): Promise<ReportedCheck[]>;
 }
