@@ -38,8 +38,21 @@
  * to `host-pr preflight` under the ADR-0023 amendment's single-owner discipline:
  * a code-host fact has ONE owner, the host seam, and `host-pr preflight` reports
  * it store-blind on every store kind. See {@link preflightHost} in host-pr.ts.
+ *
+ * ── The plugin/engine lockstep version check (ADR-0032) ──────────────────────
+ * This module also owns the engine-version reading + comparison the `version`
+ * verb and the store-preflight advisory both report. It lives HERE, beside
+ * `preflightStore`, because it is a precondition fact of exactly that kind —
+ * "does this installation satisfy what the wave is about to assume?" — and
+ * because the alternative placements are worse: `cli.ts` already imports this
+ * module (so a definition there would need a circular import back), and a new
+ * module would put a second owner between the verb and the preflight, which is
+ * the drift ADR-0032 exists to end. The router verb is the usual thin case
+ * router; the logic is here. See {@link compareEngineVersion}.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { DEFAULT_ELIGIBILITY, RUNG_PRECEDENCE, type IssueStore } from './adapters/issue-store';
 import { buildStore } from './store-factory';
 import { loadWaveConfig, type WaveConfig, type StoreConfig, type GitHubStoreConfig, type LinearStoreConfig } from './wave-config';
@@ -80,10 +93,17 @@ export async function resolveStore(args: string[], injected?: IssueStore): Promi
  * carry (`pr-merge-token`, `allow-auto-merge`, `required-checks`) moved to
  * `host-pr preflight` (ADR-0023 amendment, single-owner) — a code-host fact has
  * one owner, the host seam.
+ *
+ * `engine-version` (ADR-0032) is the one non-tracker entry, and it is here for a
+ * reason that does not reopen that split: it is not a fact about the tracker OR
+ * the code host, it is a fact about the INSTALLATION the probe is already
+ * running inside, and setup/plan time is when it is cheap to notice. It appears
+ * only when the caller supplies an expectation, and it is reported
+ * `pass`/`advisory` and NEVER `fail` — see {@link engineVersionPreflightCheck}.
  */
 export interface PreflightCheck {
   /** Stable machine key for the precondition. */
-  name: 'tracker-host-integration' | 'state-catalog';
+  name: 'tracker-host-integration' | 'state-catalog' | 'engine-version';
   status: CheckStatus;
   detail: string;
 }
@@ -93,6 +113,275 @@ export interface StorePreflightReport {
   ok: boolean;
   storeKind: StoreConfig['kind'];
   checks: PreflightCheck[];
+}
+
+// ── the plugin/engine lockstep version check (ADR-0032) ───────────────────────
+
+/**
+ * The engine package name used in the repair line when the manifest could not
+ * be read (so its own `name` field is unavailable). A literal only as a LAST
+ * resort: the reading below prefers the manifest's own `name`, so a rename of
+ * the published package cannot leave a stale instruction behind on the path
+ * that matters.
+ */
+const ENGINE_PACKAGE_NAME_FALLBACK = '@formtrieb/flotilla-engine';
+
+/** What reading the engine package's own manifest produced. */
+export interface EngineVersionReading {
+  /** The `version` field, trimmed — `null` when it could not be read at all. */
+  readonly version: string | null;
+  /** The `name` field, trimmed — `null` when it could not be read. */
+  readonly packageName: string | null;
+  /** The manifest actually read, so a surprising answer is traceable. */
+  readonly manifestPath: string;
+  /**
+   * Why `version` is `null`, verbatim — `null` exactly when `version` is
+   * non-null. An unreadable manifest is a REPORTED state, never a throw: the
+   * verb's whole job is to answer a question about the installation, and
+   * "I could not tell" is an answer callers must be able to see rather than a
+   * stack trace they have to parse.
+   */
+  readonly unreadable: string | null;
+}
+
+/**
+ * The comparison's outcome. Deliberately five-valued rather than a boolean:
+ * "the versions differ" and "I could not read one side" are different facts
+ * with the same non-match consequence, and collapsing them is how a gate ends
+ * up passing vacuously on an absent input.
+ */
+export type EngineVersionOutcome =
+  /** Both sides read, and equal. */
+  | 'match'
+  /** Both sides read, and different. */
+  | 'mismatch'
+  /** No expectation supplied — nothing was compared. */
+  | 'no-expectation'
+  /** An expectation was supplied, but the engine's own version is unreadable. */
+  | 'engine-version-unreadable'
+  /** An expectation was supplied but is unusable (empty/whitespace-only). */
+  | 'expectation-unusable';
+
+/** The machine-readable result of the lockstep comparison. */
+export interface EngineVersionReport {
+  /** The engine package's own version — `null` when unreadable. */
+  readonly version: string | null;
+  /** The caller-supplied expectation, trimmed — `null` when none was given. */
+  readonly expected: string | null;
+  /**
+   * `true` ONLY on a real, both-sides-read equality; `false` for every other
+   * comparison that was requested (differing, unreadable engine version,
+   * unusable expectation); `null` exactly when no comparison was requested.
+   *
+   * The asymmetry is the point (ADR-0032 applies the ADR-0029 fail-loud
+   * principle): a check whose two inputs are "equal" and "I could not read one
+   * of them" must not report the same thing for both, or the absent side
+   * silently becomes a pass.
+   */
+  readonly match: boolean | null;
+  readonly outcome: EngineVersionOutcome;
+  /** Human-legible one-liner naming what was compared and what came back. */
+  readonly detail: string;
+  /**
+   * The one-line repair, non-null exactly when there is something to repair
+   * (every outcome except `match` and `no-expectation`). Single-owner: the
+   * skills quote this field rather than re-deriving the command, so the repair
+   * a Coordinator prints and the repair the engine believes in cannot drift.
+   */
+  readonly repair: string | null;
+}
+
+/**
+ * The engine package's own `package.json`, resolved from THIS module's location
+ * rather than from cwd. Correct in both distribution forms (ADR-0032): the
+ * vendored source form has `tools/wave/src/…` → `tools/wave/package.json`, and
+ * the installed form has `node_modules/@formtrieb/flotilla-engine/src/…` →
+ * that package's own manifest. cwd would answer a different question entirely
+ * (the CONSUMER's manifest), which is exactly the version nobody is asking for.
+ */
+export function engineManifestPath(): string {
+  return resolve(__dirname, '..', 'package.json');
+}
+
+/**
+ * Read the engine package's own name + version. Never throws: an unreadable or
+ * malformed manifest comes back as `version: null` with the reason in
+ * `unreadable`, which the comparison below turns into a non-match rather than a
+ * silent pass.
+ *
+ * @param manifestPath - override for tests (and for a caller inspecting a
+ *   different installation); defaults to {@link engineManifestPath}.
+ */
+export function readEngineVersion(
+  manifestPath: string = engineManifestPath(),
+): EngineVersionReading {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown;
+  } catch (err) {
+    return {
+      version: null,
+      packageName: null,
+      manifestPath,
+      unreadable: `could not read or parse ${manifestPath}: ${(err as Error).message}`,
+    };
+  }
+  const name = (raw as { name?: unknown } | null)?.name;
+  const packageName =
+    typeof name === 'string' && name.trim().length > 0 ? name.trim() : null;
+  const version = (raw as { version?: unknown } | null)?.version;
+  if (typeof version !== 'string' || version.trim().length === 0) {
+    return {
+      version: null,
+      packageName,
+      manifestPath,
+      // A manifest that parses but carries no usable `version` is the quietest
+      // form of this failure — it must not read as "version: undefined, equal
+      // to nothing, carry on".
+      unreadable: `${manifestPath} has no non-empty "version" string`,
+    };
+  }
+  return { version: version.trim(), packageName, manifestPath, unreadable: null };
+}
+
+/**
+ * Compare the engine's own version against a caller-supplied expectation.
+ *
+ * The DIVISION OF LABOUR is ADR-0032's: the engine knows only its own version
+ * and how to compare it. The expectation comes from the Coordinator, which
+ * reads the plugin version out of the plugin manifest at the skill's own
+ * resolution anchor (the plugin clone ships `.claude-plugin/plugin.json` —
+ * ADR-0031's full-clone premise). The engine deliberately does NOT go looking
+ * for a plugin manifest itself: it has no way to know which clone is the one
+ * the running skills came from, and guessing is worse than being told.
+ *
+ * Equality is EXACT string equality, pre-1.0 — `plugin.json` and the npm
+ * package carry the same version per release, so equality is the whole check.
+ * Loosening it (a semver range, a major/minor-only compare) is a post-1.0
+ * decision, deliberately not anticipated here.
+ *
+ * @param expected - the expectation, or `undefined` for "just tell me the version"
+ * @param reading - override for tests; defaults to reading the real manifest
+ */
+export function compareEngineVersion(
+  expected: string | undefined,
+  reading: EngineVersionReading = readEngineVersion(),
+): EngineVersionReport {
+  const pkg = reading.packageName ?? ENGINE_PACKAGE_NAME_FALLBACK;
+
+  if (expected === undefined) {
+    // No comparison was requested. `match` is null, not true — nothing was
+    // compared, and a caller reading `match` must be able to tell that apart
+    // from an equality that really held.
+    if (reading.version === null) {
+      return {
+        version: null,
+        expected: null,
+        match: null,
+        outcome: 'engine-version-unreadable',
+        detail: `the engine could not read its own version — ${reading.unreadable}`,
+        repair: `reinstall the engine (\`npm i -D ${pkg}\`) — its package manifest is missing or malformed.`,
+      };
+    }
+    return {
+      version: reading.version,
+      expected: null,
+      match: null,
+      outcome: 'no-expectation',
+      detail: `engine ${pkg} is at ${reading.version}; no expected version was supplied, so nothing was compared.`,
+      repair: null,
+    };
+  }
+
+  const want = expected.trim();
+  if (want.length === 0) {
+    // An empty expectation is not "no expectation" — it is an expectation the
+    // caller failed to produce (an unset shell variable, a `jq` miss). Reading
+    // it as absent would turn the gate off precisely when its input broke.
+    return {
+      version: reading.version,
+      expected: null,
+      match: false,
+      outcome: 'expectation-unusable',
+      detail:
+        'an expected version was supplied but is empty — that is a caller whose lookup produced nothing, not a request to skip the check.',
+      repair:
+        'recover the expected version (the plugin manifest\'s "version" field) and re-run — an empty expectation is never treated as a match.',
+    };
+  }
+
+  if (reading.version === null) {
+    return {
+      version: null,
+      expected: want,
+      match: false,
+      outcome: 'engine-version-unreadable',
+      detail: `expected ${want}, but the engine could not read its own version — ${reading.unreadable}`,
+      repair: `npm i -D ${pkg}@${want}`,
+    };
+  }
+
+  if (reading.version === want) {
+    return {
+      version: reading.version,
+      expected: want,
+      match: true,
+      outcome: 'match',
+      detail: `engine ${pkg} is at ${reading.version}, matching the expected version.`,
+      repair: null,
+    };
+  }
+
+  return {
+    version: reading.version,
+    expected: want,
+    match: false,
+    outcome: 'mismatch',
+    detail: `engine ${pkg} is at ${reading.version} but ${want} was expected — the plugin and the engine are not in lockstep.`,
+    repair: `npm i -D ${pkg}@${want}`,
+  };
+}
+
+/**
+ * The exit code for the `version` verb, derived from the outcome rather than
+ * from `match` — `match: null` means two different things (nothing compared vs.
+ * nothing readable) and only the outcome separates them.
+ *
+ * 0 — the question was answered affirmatively (`match`, or a bare read)
+ * 1 — the comparison did not hold, or could not be made
+ */
+export function engineVersionExitCode(report: EngineVersionReport): number {
+  switch (report.outcome) {
+    case 'match':
+    case 'no-expectation':
+      return 0;
+    case 'mismatch':
+    case 'engine-version-unreadable':
+    case 'expectation-unusable':
+      return 1;
+  }
+}
+
+/**
+ * The same comparison, as a store-preflight check. ADVISORY BY CONSTRUCTION:
+ * the return type narrows `status` to `'pass' | 'advisory'`, so a future editor
+ * cannot make this check `fail` — and therefore cannot make it flip
+ * `StorePreflightReport.ok` — without changing this signature and being seen
+ * doing it. Setup/plan time is the moment to NOTICE a version skew, not the
+ * moment to refuse; the refusal lives in wave-start's gate phase, where the
+ * next action is a dispatch (ADR-0032).
+ */
+export function engineVersionPreflightCheck(
+  report: EngineVersionReport,
+): PreflightCheck & { status: 'pass' | 'advisory' } {
+  return {
+    name: 'engine-version',
+    status: report.outcome === 'match' ? 'pass' : 'advisory',
+    detail:
+      report.repair === null
+        ? report.detail
+        : `${report.detail} Repair: ${report.repair}`,
+  };
 }
 
 /**
@@ -107,16 +396,46 @@ export interface StorePreflightReport {
  *   - linear → the GitHub integration + the workflow-state catalog (ADR-0020);
  *   - markdown → all n/a (a local dev/dogfood store).
  * Pure over the seam — `store` may wrap an in-memory fake (test) or a real impl.
+ *
+ * `opts.expectedEngineVersion` (ADR-0032) appends the plugin/engine lockstep
+ * check. It is appended ONLY when an expectation is supplied — a probe with
+ * nothing to compare against reports nothing rather than a permanent
+ * `not-applicable` row nobody reads — and it can only be `pass`/`advisory`, so
+ * it never moves `ok`.
  */
-export async function preflightStore(config: WaveConfig, store: IssueStore): Promise<StorePreflightReport> {
+export async function preflightStore(
+  config: WaveConfig,
+  store: IssueStore,
+  opts: StorePreflightOptions = {},
+): Promise<StorePreflightReport> {
   const s = config.store;
-  const checks =
+  const checks: PreflightCheck[] =
     s.kind === 'github'
       ? await githubChecks((store as GitHubIssuesStore).api, s)
       : s.kind === 'linear'
         ? await linearChecks((store as LinearIssuesStore).api, s)
         : markdownChecks();
+  if (opts.expectedEngineVersion !== undefined) {
+    checks.push(
+      engineVersionPreflightCheck(
+        compareEngineVersion(opts.expectedEngineVersion, opts.engineVersionReading),
+      ),
+    );
+  }
   return { ok: checks.every((c) => c.status !== 'fail'), storeKind: s.kind, checks };
+}
+
+/** Options for {@link preflightStore}. All optional — omitting them is today's behaviour. */
+export interface StorePreflightOptions {
+  /**
+   * The plugin version the caller expects the engine to be at (ADR-0032).
+   * Supplied by the Coordinator, which reads it from the plugin manifest at the
+   * skill's own resolution anchor. Absent → the lockstep check is not reported
+   * at all.
+   */
+  readonly expectedEngineVersion?: string;
+  /** Override for the engine's own version reading (tests). */
+  readonly engineVersionReading?: EngineVersionReading;
 }
 
 /**
@@ -251,14 +570,40 @@ function preflightUsage(message: string): number {
   process.stderr.write(
     [
       `error: ${message}`,
-      'usage: cli-store preflight [--config <path>]',
+      'usage: cli-store preflight [--config <path>] [--expect <plugin-version>]',
       '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
+      '  --expect <plugin-version> additionally reports the plugin/engine lockstep',
+      '  comparison as an ADVISORY check (ADR-0032) — it never fails the preflight.',
       '  For code-host posture (pr-merge-token, allow-auto-merge, required-checks) run',
       '  `host-pr preflight` — it is store-blind and reports on every store kind (ADR-0023).',
       '',
     ].join('\n'),
   );
   return 2;
+}
+
+/**
+ * Read `--expect <version>` off an arg list, distinguishing "absent" from
+ * "present with nothing usable after it".
+ *
+ * `flag()` cannot make that distinction — a trailing `--expect` with no value
+ * comes back `undefined`, byte-identical to the flag never being there — and
+ * that collapse is exactly how a version gate ends up silently disabled by the
+ * command that was supposed to arm it. So this parses positionally: present but
+ * value-less (or followed by the next flag) is a USAGE ERROR, never a silent
+ * "no expectation".
+ *
+ * @returns the raw value, `undefined` when the flag is absent, or `null` when it
+ *   is present but has no usable value (the caller turns that into exit 2)
+ */
+function readExpectFlag(args: string[]): string | undefined | null {
+  const idx = args.indexOf('--expect');
+  if (idx === -1) return undefined;
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith('--') || value.trim().length === 0) {
+    return null;
+  }
+  return value;
 }
 
 /**
@@ -271,11 +616,23 @@ function preflightUsage(message: string): number {
  *   built from the config via resolveStore (impure — hits the real factory).
  * @returns exit code: 0 all preconditions pass (or n/a); 1 a precondition FAILED
  *   loudly, or the probe/host threw; 2 usage error or unreadable/invalid config.
+ *
+ * `--expect <plugin-version>` (ADR-0032) adds the lockstep comparison as an
+ * ADVISORY check. It deliberately does not move the exit code: a version skew
+ * noticed at setup/plan time is information, and turning it into a refusal here
+ * would block a `wave-plan` on a fact that only bites at dispatch. The hard
+ * refusal is wave-start's gate phase.
  */
 export async function runStorePreflight(args: string[], injected?: IssueStore): Promise<number> {
   const op = args[0];
   if (op !== 'preflight') {
     return preflightUsage(`unknown op "${op ?? ''}" — only "preflight" is supported`);
+  }
+  const expected = readExpectFlag(args);
+  if (expected === null) {
+    return preflightUsage(
+      '--expect requires a <plugin-version> value — a value-less --expect is a caller whose lookup produced nothing, not a request to skip the lockstep check',
+    );
   }
   let config: WaveConfig;
   try {
@@ -287,7 +644,9 @@ export async function runStorePreflight(args: string[], injected?: IssueStore): 
   }
   try {
     const store = await resolveStore(args, injected);
-    const report = await preflightStore(config, store);
+    const report = await preflightStore(config, store, {
+      ...(expected !== undefined ? { expectedEngineVersion: expected } : {}),
+    });
     printJson(report);
     return report.ok ? 0 : 1; // 1 = a precondition failed LOUDLY (the FOR-12 signal)
   } catch (err) {
@@ -312,6 +671,10 @@ export async function runStorePreflight(args: string[], injected?: IssueStore): 
  * flags) is legal and probes against the default `wave.config.json`, exactly as
  * a bare `cli-store.ts preflight` does. `cli.ts` therefore intercepts this
  * subcommand in `mainAsync` BEFORE the router's zero-arg guard.
+ *
+ * `--expect <plugin-version>` rides through unchanged like every other flag —
+ * the shim adds no parsing of its own, so the two spellings cannot drift on it
+ * either.
  */
 export function runStorePreflightSubcommand(
   args: string[],

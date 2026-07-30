@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
@@ -34,8 +34,18 @@ vi.mock('./adapters/linear/linear-api-factory', () => ({
 }));
 
 // resolveStore is imported AFTER the mocks above so it picks up the mocked factories.
-const { resolveStore, preflightStore, runStorePreflight, runStorePreflightSubcommand } =
-  await import('./cli-store');
+const {
+  resolveStore,
+  preflightStore,
+  runStorePreflight,
+  runStorePreflightSubcommand,
+  // ADR-0032 — the plugin/engine lockstep surface this module owns.
+  engineManifestPath,
+  readEngineVersion,
+  compareEngineVersion,
+  engineVersionExitCode,
+  engineVersionPreflightCheck,
+} = await import('./cli-store');
 // The router, imported the same way (it pulls in cli-store, so it must see the
 // same mocked factories). Used only to pin the `store-preflight` subcommand's
 // wiring back to THIS module (issue #77).
@@ -498,5 +508,356 @@ describe('runStorePreflight (FOR-12) — the CLI verb wave-setup runs', () => {
       expect(stderr).toMatch(/async/i);
       expect(stdout).toBe('');
     });
+  });
+
+  // ── the lockstep advisory on the preflight (ADR-0032) ─────────────────────
+
+  describe('store-preflight --expect — the lockstep comparison as an ADVISORY', () => {
+    it('reports the engine-version check and still exits 0 when the versions MISMATCH', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--expect', '9.9.9-not-this-engine'],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      // The whole point of the AC: setup/plan time NOTICES the skew, it does
+      // not refuse. A non-zero here would block wave-plan on a fact that only
+      // bites at dispatch.
+      expect(code).toBe(0);
+      const report = JSON.parse(stdout);
+      expect(report.ok).toBe(true);
+      const check = report.checks.find((c: { name: string }) => c.name === 'engine-version');
+      expect(check.status).toBe('advisory');
+      expect(check.status).not.toBe('fail');
+      expect(check.detail).toContain('9.9.9-not-this-engine');
+      expect(check.detail).toContain('npm i -D'); // the one-line repair rides along
+    });
+
+    it('reports the engine-version check as pass when the expectation matches the real engine', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+      // Derived from the engine's own manifest, never transcribed — a hardcoded
+      // literal here would go stale at the next release and start asserting
+      // "mismatch" for a perfectly healthy install.
+      const real = readEngineVersion().version as string;
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--expect', real],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      expect(code).toBe(0);
+      const check = JSON.parse(stdout).checks.find(
+        (c: { name: string }) => c.name === 'engine-version',
+      );
+      expect(check.status).toBe('pass');
+    });
+
+    it('a tracker FAIL still exits 1 while the lockstep advisory rides alongside — the advisory neither masks nor causes it', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+      const api = new InMemoryLinearApi();
+      api.setStateCatalog(FRESH_TEAM_MISSING_IN_REVIEW);
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--expect', '9.9.9-not-this-engine'],
+        new LinearIssuesStore({ api }),
+      );
+
+      expect(code).toBe(1); // from state-catalog, not from the version skew
+      const report = JSON.parse(stdout);
+      expect(report.checks.find((c: { name: string }) => c.name === 'state-catalog').status).toBe('fail');
+      expect(report.checks.find((c: { name: string }) => c.name === 'engine-version').status).toBe('advisory');
+    });
+
+    it('omits the engine-version check entirely when no expectation is supplied', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      expect(code).toBe(0);
+      const names = JSON.parse(stdout).checks.map((c: { name: string }) => c.name);
+      expect(names).not.toContain('engine-version');
+    });
+
+    it('a value-less --expect is a USAGE error (exit 2), never a silently skipped check', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+
+      // `--expect` last: the shape `flag()` cannot tell from "absent".
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--expect'],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/--expect requires a <plugin-version> value/);
+      expect(stdout).toBe(''); // no report at all — the probe never ran
+    });
+
+    it('an --expect swallowed by the NEXT flag is refused too (not read as the flag name)', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+
+      const code = await runStorePreflight(
+        ['preflight', '--expect', '--config', path],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      expect(code).toBe(2);
+      expect(stdout).toBe('');
+    });
+
+    it('the router spelling carries --expect through unchanged', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+
+      const code = await mainAsync(
+        ['store-preflight', '--config', path, '--expect', '9.9.9-not-this-engine'],
+        new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      );
+
+      expect(code).toBe(0);
+      const check = JSON.parse(stdout).checks.find(
+        (c: { name: string }) => c.name === 'engine-version',
+      );
+      expect(check.status).toBe('advisory');
+    });
+  });
+});
+
+// ─── the plugin/engine lockstep version check (ADR-0032) ─────────────────────
+//
+// The engine half of the lockstep gate: it knows its OWN version and can
+// compare it against an expectation handed to it. The expectation is the
+// PLUGIN's version, read by the Coordinator from the plugin manifest at the
+// skill's own resolution anchor — the engine never goes looking for it, because
+// it has no way to know which clone the running skills came from.
+//
+// The assertions below are grouped around one property: the comparison must not
+// be able to pass VACUOUSLY. Both sides absent, one side absent, one side blank
+// — each has its own outcome and each is a non-match, never a quiet `true`.
+
+describe('readEngineVersion — the engine package reads its OWN manifest', () => {
+  it('resolves the manifest from the module location, not from cwd', () => {
+    // cwd during a vitest run is tools/wave, so a cwd-based resolution would
+    // accidentally agree here. The assertion is on the PATH shape: it must end
+    // at the engine package root's manifest, one level above src/.
+    expect(engineManifestPath().replace(/\\/g, '/')).toMatch(/\/tools\/wave\/package\.json$/);
+  });
+
+  it('reads the real name + version out of that manifest', () => {
+    const manifest = JSON.parse(readFileSync(engineManifestPath(), 'utf8')) as {
+      name: string;
+      version: string;
+    };
+    const reading = readEngineVersion();
+
+    expect(reading.version).toBe(manifest.version);
+    expect(reading.packageName).toBe(manifest.name);
+    expect(reading.unreadable).toBeNull();
+  });
+
+  it('an ABSENT manifest is a reported null version with a reason, never a throw', () => {
+    const reading = readEngineVersion('/nonexistent/definitely-not-here/package.json');
+    expect(reading.version).toBeNull();
+    expect(reading.unreadable).toContain('/nonexistent/definitely-not-here/package.json');
+  });
+
+  it('a manifest that PARSES but carries no version is unreadable, not "version: undefined"', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'engine-manifest-'));
+    const path = join(dir, 'package.json');
+    writeFileSync(path, JSON.stringify({ name: '@formtrieb/flotilla-engine' }), 'utf8');
+
+    const reading = readEngineVersion(path);
+
+    expect(reading.version).toBeNull();
+    expect(reading.packageName).toBe('@formtrieb/flotilla-engine');
+    expect(reading.unreadable).toContain('no non-empty "version" string');
+  });
+
+  it('a whitespace-only version is treated as absent (it cannot be compared to anything)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'engine-manifest-'));
+    const path = join(dir, 'package.json');
+    writeFileSync(path, JSON.stringify({ name: 'x', version: '   ' }), 'utf8');
+
+    expect(readEngineVersion(path).version).toBeNull();
+  });
+});
+
+describe('compareEngineVersion — match, mismatch, and the no-expectation path', () => {
+  const reading = (version: string | null, unreadable: string | null = null) => ({
+    version,
+    packageName: '@formtrieb/flotilla-engine',
+    manifestPath: '/fake/package.json',
+    unreadable,
+  });
+
+  it('MATCH: equal versions report match:true with nothing to repair', () => {
+    const report = compareEngineVersion('0.1.0-beta.1', reading('0.1.0-beta.1'));
+    expect(report.outcome).toBe('match');
+    expect(report.match).toBe(true);
+    expect(report.repair).toBeNull();
+    expect(engineVersionExitCode(report)).toBe(0);
+  });
+
+  it('MATCH: an expectation with surrounding whitespace still matches (the caller captured a trailing newline)', () => {
+    expect(compareEngineVersion('  0.1.0-beta.1\n', reading('0.1.0-beta.1')).match).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL (Convention 11) — MISMATCH really fires: differing versions report match:false and the exact repair', () => {
+    // The control that distinguishes "the check works" from "the check cannot
+    // fail": the ONLY thing changed against the passing case above is the
+    // engine-side version, and the report flips.
+    const report = compareEngineVersion('0.1.0-beta.2', reading('0.1.0-beta.1'));
+
+    expect(report.outcome).toBe('mismatch');
+    expect(report.match).toBe(false);
+    expect(report.version).toBe('0.1.0-beta.1');
+    expect(report.expected).toBe('0.1.0-beta.2');
+    expect(report.repair).toBe('npm i -D @formtrieb/flotilla-engine@0.1.0-beta.2');
+    expect(report.detail).toContain('not in lockstep');
+    expect(engineVersionExitCode(report)).toBe(1);
+  });
+
+  it('MISMATCH is exact, pre-1.0: a differing PRERELEASE suffix is a mismatch, not a near-enough match', () => {
+    expect(compareEngineVersion('0.1.0', reading('0.1.0-beta.1')).match).toBe(false);
+  });
+
+  it('NO EXPECTATION: match is null (nothing was compared), never true', () => {
+    const report = compareEngineVersion(undefined, reading('0.1.0-beta.1'));
+    expect(report.outcome).toBe('no-expectation');
+    expect(report.match).toBeNull();
+    expect(report.version).toBe('0.1.0-beta.1');
+    expect(report.expected).toBeNull();
+    expect(engineVersionExitCode(report)).toBe(0);
+  });
+
+  it('VACUITY GUARD: an unreadable ENGINE version with an expectation is a non-match, not a pass', () => {
+    const report = compareEngineVersion(
+      '0.1.0-beta.1',
+      reading(null, 'could not read /fake/package.json: ENOENT'),
+    );
+    expect(report.outcome).toBe('engine-version-unreadable');
+    expect(report.match).toBe(false);
+    expect(report.match).not.toBe(true);
+    expect(report.detail).toContain('ENOENT');
+    expect(report.repair).toBe('npm i -D @formtrieb/flotilla-engine@0.1.0-beta.1');
+    expect(engineVersionExitCode(report)).toBe(1);
+  });
+
+  it('VACUITY GUARD: an EMPTY expectation is a non-match, not "no expectation"', () => {
+    const report = compareEngineVersion('   ', reading('0.1.0-beta.1'));
+    expect(report.outcome).toBe('expectation-unusable');
+    expect(report.match).toBe(false);
+    expect(report.outcome).not.toBe('no-expectation');
+    expect(engineVersionExitCode(report)).toBe(1);
+  });
+
+  it('VACUITY GUARD: BOTH sides absent is still not a match', () => {
+    const report = compareEngineVersion('', reading(null, 'gone'));
+    expect(report.match).toBe(false);
+    expect(engineVersionExitCode(report)).toBe(1);
+  });
+
+  it('an unreadable manifest with NO expectation reports the failure rather than a version of null read as fine', () => {
+    const report = compareEngineVersion(undefined, reading(null, 'gone'));
+    expect(report.outcome).toBe('engine-version-unreadable');
+    expect(report.version).toBeNull();
+    expect(engineVersionExitCode(report)).toBe(1);
+  });
+
+  it('falls back to the published package name in the repair when the manifest could not name itself', () => {
+    const report = compareEngineVersion('0.2.0', {
+      version: null,
+      packageName: null,
+      manifestPath: '/fake/package.json',
+      unreadable: 'gone',
+    });
+    expect(report.repair).toContain('@formtrieb/flotilla-engine@0.2.0');
+  });
+});
+
+describe('engineVersionPreflightCheck — advisory by construction', () => {
+  const reading = (version: string) => ({
+    version,
+    packageName: '@formtrieb/flotilla-engine',
+    manifestPath: '/fake/package.json',
+    unreadable: null,
+  });
+
+  it.each([
+    ['match', '0.1.0-beta.1', 'pass'],
+    ['mismatch', '0.1.0-beta.2', 'advisory'],
+  ] as const)('a %s maps to status %s', (_label, expected, status) => {
+    const check = engineVersionPreflightCheck(
+      compareEngineVersion(expected, reading('0.1.0-beta.1')),
+    );
+    expect(check.name).toBe('engine-version');
+    expect(check.status).toBe(status);
+  });
+
+  it('NEVER emits fail — the status that would flip StorePreflightReport.ok', () => {
+    for (const expected of ['0.1.0-beta.1', '0.1.0-beta.2', '   ']) {
+      const check = engineVersionPreflightCheck(
+        compareEngineVersion(expected, reading('0.1.0-beta.1')),
+      );
+      expect(check.status).not.toBe('fail');
+    }
+    const unreadable = engineVersionPreflightCheck(
+      compareEngineVersion('0.1.0-beta.1', {
+        version: null,
+        packageName: null,
+        manifestPath: '/fake/package.json',
+        unreadable: 'gone',
+      }),
+    );
+    expect(unreadable.status).not.toBe('fail');
+  });
+});
+
+describe('preflightStore — the lockstep check rides the injected reading', () => {
+  it('appends an ADVISORY engine-version check without moving ok', async () => {
+    const store = new LinearIssuesStore({ api: new InMemoryLinearApi() });
+    const report = await preflightStore({ store: { kind: 'linear', team: 'EX' } }, store, {
+      expectedEngineVersion: '0.1.0-beta.2',
+      engineVersionReading: {
+        version: '0.1.0-beta.1',
+        packageName: '@formtrieb/flotilla-engine',
+        manifestPath: '/fake/package.json',
+        unreadable: null,
+      },
+    });
+
+    expect(report.ok).toBe(true);
+    const check = report.checks.find((c) => c.name === 'engine-version');
+    expect(check?.status).toBe('advisory');
+  });
+
+  it('markdown (the source-form dogfood store) reports the same advisory — the check is store-blind', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-store-md-'));
+    const store = new MarkdownFsStore({ repoRoot: dir, slug: '2026-07-30-x' });
+    const report = await preflightStore(
+      { store: { kind: 'markdown', repoRoot: dir, slug: '2026-07-30-x' } },
+      store,
+      {
+        expectedEngineVersion: '0.1.0-beta.2',
+        engineVersionReading: {
+          version: '0.1.0-beta.1',
+          packageName: '@formtrieb/flotilla-engine',
+          manifestPath: '/fake/package.json',
+          unreadable: null,
+        },
+      },
+    );
+
+    expect(report.ok).toBe(true);
+    expect(report.checks.find((c) => c.name === 'engine-version')?.status).toBe('advisory');
   });
 });

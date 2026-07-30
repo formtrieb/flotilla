@@ -107,6 +107,44 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #   always counts). Guarding it would be the false alarm Convention 12 warns
 #   about, exactly like HELD_IDS above.
 
+# 4b. Plugin/engine lockstep gate — the LAST gate before the flip, and a STOP
+#     (ADR-0032). SCOPE FIRST: it bites only where it can mean something — a
+#     repo whose `engine.cli` binding is the INSTALLED package form. On the
+#     SOURCE form (this repo binds `engine.cli` to the vendored
+#     `tools/wave/src/cli.ts` invocation) the skills and the engine come from
+#     ONE SHA by construction, so the comparison is vacuous and the gate is
+#     SKIPPED. Decide from the binding itself, never by feel.
+WAVE_CONFIG="$REPO/wave.config.json"   # or wherever this consumer keeps it
+ENGINE_CLI=$(node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String((c.engine||{}).cli||""))' "$WAVE_CONFIG")
+#   An empty ENGINE_CLI is never "unbound, carry on": every {{wave-cli}} call in
+#   the steps above already used the binding, so nothing here could have run
+#   without one. Empty means the config could not be read — a did-not-run, and
+#   exactly the class step 0's helper exists for.
+require_capture ENGINE_CLI "$ENGINE_CLI" || exit 1
+case "$ENGINE_CLI" in
+  *tools/wave/src/cli.ts*)
+    : "source form — skills and engine share one SHA; lockstep vacuous, gate skipped" ;;
+  *)
+    #   The EXPECTATION is the PLUGIN's version, read from the plugin manifest at
+    #   THIS skill's own resolution anchor: the plugin clone is a full-repo clone
+    #   and ships `.claude-plugin/plugin.json` (ADR-0031's premise). The engine
+    #   never goes looking for it — it cannot know which clone the running skills
+    #   came from — so it is TOLD. That division of labour IS the design: the
+    #   engine knows only its own version and how to compare.
+    PLUGIN_MANIFEST="<plugin-clone-root>/.claude-plugin/plugin.json"
+    PLUGIN_VERSION=$(node -e 'const fs=require("fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version||""))' "$PLUGIN_MANIFEST")
+    require_capture PLUGIN_VERSION "$PLUGIN_VERSION" || exit 1
+    {{wave-cli}} version --expect "$PLUGIN_VERSION"
+    #   exit 0 → in lockstep; proceed to step 5
+    #   exit 1 → STOP THE WAVE HERE, before the flip. Nothing is dispatched. The
+    #            printed JSON carries `.repair` — the one-line fix, e.g.
+    #            `npm i -D @formtrieb/flotilla-engine@<plugin-version>` — quote
+    #            it verbatim in the STOP so the operator copy-pastes rather than
+    #            derives. exit 2 is a malformed invocation of the gate itself
+    #            (a value-less --expect), not a verdict: fix the call and re-run.
+    ;;
+esac
+
 # 5. Mark each NON-HELD row in-flight (WAL: spine first, then rung, in row order).
 #    Skip any id present in HELD_IDS (step 3) — its State stays `planned`.
 #    Per row, bind $ID / $ROW_SLUG / $MODEL from the roster — the SAME id+slug+model
@@ -193,6 +231,29 @@ git -C "$REPO" worktree prune                                # 2. clear unvalida
 Step 3 is not optional and is not intuitive: **cleanup alone does not recover a session that is already failing.** The profile is cached, so removing the worktrees fixes the population while the running session keeps the deny list it already built — every Bash spawn keeps dying. This was verified live: `git worktree remove` + `git worktree prune` did not restore the session, and only a harness restart did. Sweep *then* restart; a report that says "cleaned up, retrying" without the restart is describing a retry that cannot work.
 
 **Between waves, not only before one.** The incident was the third dispatch run of a single day, and its residue came from the first two runs plus a previous session's leftovers. A multi-wave day wants this count re-read after every close, which is where [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md) picks it up.
+
+## The plugin/engine lockstep gate (step 4b) — a STOP, not an advisory
+
+**What is compared.** The version of the **plugin** the running skills came from against the version of the **engine** the configured `engine.cli` binding invokes. They are released together and carry the same version per release, so **exact equality is the whole check** — pre-1.0, no range, no major/minor-only compare. Loosening it is a post-1.0 decision, deliberately not anticipated.
+
+**Division of labour.** The engine knows only *its own* version and how to compare it against an expectation handed to it (`{{wave-cli}} version --expect <v>`); it never goes hunting for a plugin manifest, because it has no way to know which clone the running skills came from. The **Coordinator** supplies the expectation, read from `.claude-plugin/plugin.json` at the skill's own resolution anchor — the plugin clone is a full-repo clone, so the manifest ships with it (ADR-0031's premise, paying off here).
+
+**Why a STOP here, when step 4a is only an advisory.** The asymmetry is the same one that separates the host-auth probe from the worktree count: a lockstep skew is **measured**, not heuristic. A mismatched engine is a *different program* from the one the composed briefs describe — verbs it lacks, flags whose shape moved, exit codes that changed meaning — and the failure lands inside dispatched Workers, one per row, after the coarse ledger already says `in-flight`. There is no partial mode worth having and no cheaper moment to notice: the check costs one process spawn and runs *before* the flip.
+
+**Scope: the installed form only.** The gate is meaningful exactly where the two halves can drift — a repo whose `engine.cli` points at the installed package binary, since the plugin and the npm package are then two independently-updatable artifacts. On the **source form** (this repo: `engine.cli` is the vendored `tools/wave/src/cli.ts` invocation) skills and engine come out of one checkout at one SHA, so the comparison cannot fail and the gate is skipped. Documented as vacuous rather than quietly always-run: a reader of a green gate should know whether it *held* or merely *could not fire* — and step 4b decides that from the binding string, not from anyone's sense of which repo they are in.
+
+**The STOP message carries its repair.** The verb prints the fix as a field (`.repair`), so the STOP quotes it instead of deriving it:
+
+```
+STOP — plugin/engine lockstep: plugin is at <plugin-version>, engine at <engine-version>.
+Repair: npm i -D @formtrieb/flotilla-engine@<plugin-version>
+```
+
+Single-owner, deliberately: the command lives in the engine (`tools/wave/src/cli-store.ts`), so the repair an operator is handed and the repair the engine believes in cannot drift.
+
+**It cannot pass vacuously, and that is the load-bearing property.** A gate that reads green when one of its two inputs went missing is worse than no gate. So: a value-less or blank `--expect` is a **usage error** (exit 2), never "no expectation"; an engine that cannot read its own version is a **non-match** (exit 1), never a pass; and `match` is `true` only when both sides were read and are equal (`null` — never `true` — when nothing was compared).
+
+**The same comparison, earlier and softer.** `{{wave-cli}} store-preflight --expect <plugin-version>` reports the identical check as an `advisory` entry in its `checks` array at setup/plan time. It never fails the preflight and never moves its exit code: at plan time a skew is information, and refusing there would block a `wave-plan` on a fact that only bites at dispatch. The refusal belongs *here*, where the next action is a dispatch.
 
 ## Routing a tuple `{ id, risk, iteration, report, verdict }`
 
@@ -442,6 +503,15 @@ A `terminal-failure` row's eventual disposition is not always `abandoned` — st
 | `0` | written — absolute path of `<id>-<iter>.md` on stdout (`mkdir -p`, last-writer-wins) |
 | `1` | invalid payload, or `report.issue`↔`--id` mismatch — **nothing written** |
 | `2` | usage error (missing `<json-file>`/`--dir`/`--id`/`--iter`, non-integer `--iter`, or unreadable/unparseable `<json-file>`) |
+
+### `version` (the step-4b lockstep gate, ADR-0032)
+| Code | Meaning |
+|---|---|
+| `0` | in lockstep (`--expect` supplied and equal), or a bare `version` read with nothing to compare |
+| `1` | **STOP** — mismatch, or the engine could not read its own version, or the supplied expectation was unusable. Never a silent pass on a missing side |
+| `2` | usage — a value-less/blank `--expect`, an unknown flag, or a stray positional. A malformed gate call, not a verdict: fix the invocation and re-run |
+
+Prints `{ version, expected, match, outcome, detail, repair }` on stdout in every non-usage case. `outcome` is the discriminant (`match` · `mismatch` · `no-expectation` · `engine-version-unreadable` · `expectation-unusable`); `repair` is non-null exactly when there is something to repair. The verb resolves no store and reads no wave config, so it answers on a machine where the skew is the reason nothing else works. `--version` in first position is an accepted alias.
 
 ### `issue-store flag`
 | Code | Meaning |

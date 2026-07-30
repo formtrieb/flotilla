@@ -236,6 +236,28 @@
  *   1 — at least one probed credential failed to resolve
  *   2 — usage (no selection, unknown flag, stray positional)
  *
+ * version (ADR-0032 — the plugin/engine lockstep gate's engine half) — prints
+ * the ENGINE PACKAGE's own version as JSON, and, with `--expect <version>`,
+ * compares it against a caller-supplied expectation. Resolves no store and
+ * reads no config, so it is the one verb that answers on a machine where
+ * nothing else is set up yet — which is precisely when a version skew has to be
+ * findable. Sync, and exempt from the router's zero-arg guard: a BARE `version`
+ * is its primary form, not a misinvocation. `--version` in the FIRST argv
+ * position is accepted as an alias, because that is the spelling ADR-0032 and
+ * the operator docs use and because the published `bin` shim deliberately
+ * forwards every token to this router rather than growing a flag of its own.
+ *
+ * The DIVISION OF LABOUR is ADR-0032's and is the reason this verb takes the
+ * expectation instead of finding it: the engine knows only its own version; the
+ * expectation is the PLUGIN's version, which the Coordinator reads from the
+ * plugin manifest at the skill's own resolution anchor (ADR-0031's full-clone
+ * premise). The engine has no way to know which clone the running skills came
+ * from, so it is told rather than guessing. Exit codes:
+ *   0 — match, or a bare read with no expectation
+ *   1 — mismatch, an unreadable engine version, or an unusable expectation —
+ *       never a silent pass on a missing side
+ *   2 — usage (an unknown flag, a stray positional, or a value-less --expect)
+ *
  * render-verdict (FOR-16 — the PR body carries the reviewer-verdict summary) —
  * the single-owner engine render of the human-facing `## Reviewer verdict`
  * PR-body section from the FINAL (max-iter valid) ReviewerVerdict sidecar for
@@ -304,7 +326,16 @@ import {
 } from './route-cli';
 import { findScratchRoot } from './find-repo-root';
 import { flag, printJson } from './cli-utils';
-import { resolveStore, runStorePreflightSubcommand } from './cli-store';
+import {
+  resolveStore,
+  runStorePreflightSubcommand,
+  // ADR-0032 — the lockstep version surface. Imported from cli-store rather
+  // than defined here on purpose: `store-preflight` reports the SAME comparison
+  // as an advisory, and cli.ts already depends on cli-store (the reverse
+  // direction would be a circular import). One comparison, two surfaces.
+  compareEngineVersion,
+  engineVersionExitCode,
+} from './cli-store';
 import { runResume } from './resume-cli';
 import type { IssueStore } from './adapters/issue-store';
 import { readSidecars, type SidecarReader } from './sidecar';
@@ -354,6 +385,7 @@ const KNOWN_SUBCOMMANDS = [
   'write-verdict',
   'verdict-acked',
   'render-verdict',
+  'version',
 ] as const;
 type Subcommand = (typeof KNOWN_SUBCOMMANDS)[number];
 
@@ -427,6 +459,7 @@ function printUsage(): void {
       '  flotilla-engine write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>',
       '  flotilla-engine verdict-acked <verdictsDir> <id>',
       '  flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>',
+      '  flotilla-engine version [--expect <plugin-version>]   # ADR-0032: the engine version, and the lockstep comparison (alias: --version)',
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
       '',
@@ -1459,6 +1492,74 @@ function runRenderVerdict(args: string[]): number {
   return 0;
 }
 
+/**
+ * Run the `version` subcommand (ADR-0032) — a thin router to
+ * {@link compareEngineVersion} / {@link engineVersionExitCode} (cli-store.ts),
+ * the same pair `store-preflight --expect` reports as an advisory. The CLI adds
+ * no comparison logic of its own; it only parses args and prints.
+ *
+ * Arg discipline is deliberately strict, and this is the load-bearing half of
+ * the verb. A version gate is only worth having if it cannot be silently
+ * disarmed by the invocation that was meant to arm it, so:
+ *   - `--expect` with no value (or followed by another flag) is a USAGE ERROR,
+ *     not "no expectation". `flag()` cannot tell those apart — a trailing
+ *     `--expect` reads back `undefined`, byte-identical to the flag being
+ *     absent — which is exactly the shape that turns a gate off when its input
+ *     breaks (an unset shell variable, a `jq` miss);
+ *   - an empty/whitespace-only expectation is refused for the same reason;
+ *   - any other flag, and any stray positional, is a usage error rather than
+ *     something quietly ignored.
+ *
+ * Prints the full {@link EngineVersionReport} as JSON, so a caller can read
+ * `version` (AC: machine-readable, no store config needed), `match`, `outcome`
+ * and the one-line `repair` without parsing prose.
+ */
+function runVersion(args: string[]): number {
+  let expected: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--expect') {
+      const value = args[i + 1];
+      if (
+        value === undefined ||
+        value.startsWith('--') ||
+        value.trim().length === 0
+      ) {
+        return versionUsage(
+          '--expect requires a <plugin-version> value — a value-less --expect is a caller whose lookup produced nothing, not a request to skip the check',
+        );
+      }
+      expected = value;
+      i++;
+      continue;
+    }
+    return versionUsage(
+      a.startsWith('--')
+        ? `unknown flag ${a}`
+        : `unexpected argument "${a}" — version takes no positional arguments`,
+    );
+  }
+
+  const report = compareEngineVersion(expected);
+  printJson(report);
+  return engineVersionExitCode(report);
+}
+
+function versionUsage(message: string): number {
+  process.stderr.write(
+    [
+      `error: version: ${message}`,
+      'usage: flotilla-engine version [--expect <plugin-version>]',
+      '  Prints { version, expected, match, outcome, detail, repair } as JSON.',
+      '  Resolves no store and reads no wave config.',
+      '  Exit: 0 match / bare read; 1 mismatch, unreadable engine version, or',
+      '  unusable expectation; 2 usage.',
+      '',
+    ].join('\n'),
+  );
+  return 2;
+}
+
 export function main(argv: string[] = process.argv.slice(2)): number {
   if (argv.length === 0) {
     printUsage();
@@ -1466,6 +1567,18 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   }
 
   const first = argv[0];
+
+  // `--version` as a leading token is an ALIAS for the `version` subcommand
+  // (ADR-0032). Handled before the KNOWN_SUBCOMMANDS lookup because a
+  // flag-shaped token can never be a subcommand name, and before the
+  // unknown-subcommand branch because `looksLikeSubcommand('--version')` is
+  // true (no `/`, no `.`) — without this case the documented spelling would
+  // come back "unknown subcommand: --version". The published `bin` shim
+  // forwards argv verbatim and deliberately owns no flags of its own, so this
+  // router is the only place the spelling can live.
+  if (first === '--version') {
+    return runVersion(argv.slice(1));
+  }
 
   // Explicit subcommand routing.
   if (KNOWN_SUBCOMMANDS.includes(first as Subcommand)) {
@@ -1478,7 +1591,14 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     // that silently accepted zero arguments (FOR-34/W5-F4a) — a bare `--dry-run`
     // (no repo-root/--wave/--branches) is still fine, since it performs no
     // removal; only the truly arg-less call needs to require an explicit target.
-    if (rest.length === 0) {
+    //
+    // `version` is the ONE exemption (ADR-0032), and for the opposite reason
+    // worktree-cleanup lost its: a bare `version` is that verb's PRIMARY form
+    // ("what version is this engine?"), it performs no action at all, and it is
+    // the invocation an operator reaches for when nothing else on the machine
+    // is configured yet. Printing usage instead would make the verb unusable
+    // exactly where it is needed most.
+    if (rest.length === 0 && first !== 'version') {
       printUsage();
       return 2;
     }
@@ -1537,6 +1657,11 @@ export function main(argv: string[] = process.argv.slice(2)): number {
         return runVerdictAcked(rest);
       case 'render-verdict':
         return runRenderVerdict(rest);
+      case 'version':
+        // ADR-0032 — the lockstep gate's engine half. Sync and store-free: it
+        // reads only the engine package's own manifest, so it answers on a
+        // machine where no wave config exists yet.
+        return runVersion(rest);
       case 'issue-store':
         // `issue-store` is async (Promise<number>) and cannot run inside this
         // sync `main()`. The async entrypoint `mainAsync()` intercepts it BEFORE
