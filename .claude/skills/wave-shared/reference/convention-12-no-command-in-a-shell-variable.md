@@ -111,6 +111,8 @@ The three sites this file used to name as *"known to still carry an unguarded ca
 
 That is the whole census: every other `VAR=$(…)` across `.claude/skills/` is either guarded, one of the three deliberate non-guards above, or `start-mechanics`' `WSTATE`, whose `$([ … ] && echo a || echo b)` form cannot produce an empty value. Re-run that census before adding a row to either half of this ledger.
 
+**A different open defect in the same family — a drifted copy, not a missing guard.** `wave-close/reference/phase-4a-self-repair-pull.md`'s helper definition is *not* byte-identical to the canonical body above: it omits the `(exit 127? no match? no such key?)` parenthetical, and is otherwise the same. That is a **second dialect of one guard**, which is its own hazard — the parenthetical is the part that tells an operator mid-wave which three things to go look at, and a `wave-close` session gets the shortened message for **both** `phase-4a`'s captures and `phase-5`'s, since `phase-5` calls the helper `phase-4a` defined. It predates this ledger (it landed with the file that first stated the convention) and sits outside the declared files of the slice that wrote this section, so it is recorded rather than fixed here. **When it is fixed, copy the body above verbatim** — the point of a canonical body is that there is exactly one.
+
 ### Common Mistakes
 
 - **Binding `{{wave-cli}}` to a shell variable.** `CLI="npx tsx tools/wave/src/cli.ts"; $CLI spine …` is the original W4-F10 line. Bind a function.
