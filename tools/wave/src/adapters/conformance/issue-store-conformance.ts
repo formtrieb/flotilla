@@ -17,6 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { CoarseState } from '../../contract';
+import { CreateInputError } from '../issue-store';
 import type {
   IssueStore,
   IssueStoreConformanceHooks,
@@ -247,6 +248,99 @@ export function runIssueStoreConformance(
           store.create({ title: base.title, filingHint: base.filingHint, ...stowaway }),
         ).rejects.toThrow(/bare/i);
       }
+    });
+
+    // #309: the bare-body requirement is a property of the CREATE CONTRACT, not
+    // of the issue-store CLI that used to hold it. These cases call `create()`
+    // directly — no CLI anywhere in the stack — so they measure the rejection a
+    // non-CLI caller (a skill driver, a consumer's script, another adapter)
+    // actually inherits, on all three stores. A bare issue's `bodySections` IS
+    // its entire authored body: absent, `[]`, and all-blank are one failure —
+    // an issue filed with 0 body chars.
+    it('create() rejects a BARE input with no authored body content, and files nothing', async () => {
+      const { h, store } = await fresh();
+      const before = (await store.listOpen('wave-ready')).length;
+      const base = h.baseInput();
+
+      for (const bodyless of [
+        {}, // bodySections absent entirely
+        { bodySections: [] }, // present but empty
+        {
+          bodySections: [
+            { heading: 'Gap', markdown: '   ' },
+            { heading: 'Provenance', markdown: '' },
+          ],
+        }, // present, non-empty, but every entry blank
+      ]) {
+        await expect(
+          store.create({ title: base.title, filingHint: base.filingHint, ...bodyless }),
+        ).rejects.toThrow(/bodySections/i);
+      }
+
+      // no-partial-application: not one of the rejected creates filed anything.
+      expect((await store.listOpen('wave-ready')).length).toBe(before);
+    });
+
+    it('the bare-no-body rejection is STRUCTURED — a typed failure, not just a message', async () => {
+      // The whole point of pushing the rule below the CLI: a caller routes on
+      // the discriminant instead of grepping prose, and gets the same verdict
+      // whichever store it holds.
+      const { h, store } = await fresh();
+      const base = h.baseInput();
+      await expect(
+        store.create({ title: base.title, filingHint: base.filingHint }),
+      ).rejects.toMatchObject({
+        name: 'CreateInputError',
+        code: 'create-input-invalid',
+        failure: 'bare-without-body',
+        fields: ['bodySections'],
+      });
+      await expect(
+        store.create({ title: base.title, filingHint: base.filingHint }),
+      ).rejects.toBeInstanceOf(CreateInputError);
+    });
+
+    it('a BARE input with ONE non-blank section still files — the rule asks for content, not for every section to carry it', async () => {
+      const { h, store } = await fresh();
+      const base = h.baseInput();
+      const id = await store.create({
+        title: base.title,
+        filingHint: base.filingHint,
+        bodySections: [
+          { heading: 'Gap', markdown: '   ' },
+          { heading: 'Provenance', markdown: 'wave hardening, row 3, iteration 1.' },
+        ],
+      });
+      expect((await store.readTriage(id)).body).toContain(
+        'wave hardening, row 3, iteration 1.',
+      );
+    });
+
+    // NEGATIVE CONTROL for the case above: the body requirement is BARE-only.
+    // A decorated input carries a Header-Block, so it is never a 0-body-char
+    // filing and must keep filing with no prose sections at all — the shape the
+    // whole decorated path (and most of this suite) already uses.
+    it('create() still accepts a DECORATED input that carries NO bodySections', async () => {
+      const { h, store } = await fresh();
+      const input = h.baseInput({ title: 'Decorated, no prose' });
+      expect(input.bodySections).toBeUndefined();
+      const id = await store.create(input);
+      expect((await store.read(id)).id).toBe(id);
+      expect((await store.listOpen('wave-ready')).map((v) => v.id)).toContain(id);
+
+      // …and an explicitly empty / all-blank one is accepted too: `bodySections`
+      // stays genuinely optional on the decorated path.
+      const empty = await store.create(
+        h.baseInput({ title: 'Decorated, empty prose', bodySections: [] }),
+      );
+      expect((await store.read(empty)).id).toBe(empty);
+      const blank = await store.create(
+        h.baseInput({
+          title: 'Decorated, blank prose',
+          bodySections: [{ heading: 'What to build', markdown: '   ' }],
+        }),
+      );
+      expect((await store.read(blank)).id).toBe(blank);
     });
 
     it('create() rejects a BARE bodySection whose heading would forge a Header-Block section', async () => {

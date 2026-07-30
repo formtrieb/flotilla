@@ -105,6 +105,28 @@ describe('bare create — MarkdownFs storage shape (ADR-0027)', () => {
     // not even an empty issues/ dir entry: the classifier runs before mkdir.
     await expect(readdir(issuesDir())).rejects.toThrow();
   });
+
+  // #309: the bare-body rule used to sit at the issue-store CLI, so a caller
+  // holding the store directly — the shape this whole file exercises — could
+  // still write a 0-body-char issue to disk. Now the classifier owns it, and
+  // "rejects" means the same thing it means for a half-written header: nothing
+  // reached the filesystem.
+  it('a bodyless BARE input writes no file at all — the rule is not the CLI-layer predicate any more', async () => {
+    await expect(
+      store.create({ title: 'Bodyless', filingHint: 'bodyless' }),
+    ).rejects.toThrow(/bodySections/i);
+    await expect(
+      store.create({ title: 'Bodyless', filingHint: 'bodyless', bodySections: [] }),
+    ).rejects.toThrow(/bodySections/i);
+    await expect(
+      store.create({
+        title: 'Bodyless',
+        filingHint: 'bodyless',
+        bodySections: [{ heading: 'Gap', markdown: '  \n ' }],
+      }),
+    ).rejects.toThrow(/bodySections/i);
+    await expect(readdir(issuesDir())).rejects.toThrow();
+  });
 });
 
 describe('bare create — GitHub storage shape (ADR-0027)', () => {
