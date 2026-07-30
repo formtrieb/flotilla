@@ -180,9 +180,13 @@ _Avoid_: packaged plugin contents (implies a curated subset that does not exist)
 The context a file-path-shaped skill reference resolves against — the *skill file* for anchored markdown links, the *plugin-clone root* for bare path citations, *cwd plus installed artifacts* for command fragments. A reference is defective when written against the wrong anchor for its class, not when its target is missing from the package (ADR-0031); a consumer session's cwd is the consumer repo, never the clone.
 _Avoid_: broken link (names the symptom, not the class), missing file (the file usually exists — the anchor is wrong).
 
+**Source form / Installed form**:
+The two forms every distribution layer exists in — the skills as local `.claude/skills/` (source) vs. the installed plugin, the engine as vendored `tools/wave` sources (source) vs. the published npm package. A repo runs exactly **one** form per layer, statically bound through tracked config: the skills layer via the `enabledPlugins` self-disable in the tracked settings, the engine layer via the `engine.cli` binding in the wave config (ADR-0032). flotilla itself is the only repo that runs source form on both layers — it builds what it runs; every consumer runs installed form. Mixed forms are the defect both bindings exist to prevent.
+_Avoid_: dev mode (implies a runtime toggle — the binding is static, tracked config), dogfood mode (same problem).
+
 **Dual-form**:
-A reference or invocation stated in both its in-repo form and its installed form, so whichever context is live, the reader picks the one that resolves. Established for cross-skill by-name references (wave-shared's load note, project-local first) and for engine invocations (published-package form first — the workflow-driver's default since #122 — vendored form as documented fallback); required in every `{{wave-cli}}` resolution block (ADR-0031).
-_Avoid_: fallback (both forms are first-class, chosen by context), alias.
+A *prose reference* stated in both its in-repo form and its installed form, so whichever context is live, the reader picks the one that resolves — established for cross-skill by-name references (wave-shared's load note, project-local first). Prose only: an *invocation* is never dual-form — the engine invocation is a single setup-time binding (`engine.cli`, ADR-0032) that fails loud, never a chained alternative.
+_Avoid_: fallback (the resolving form is chosen by reading context, and invocations never chain at runtime), alias.
 
 ### Provenance
 
