@@ -93,7 +93,14 @@ HELD_IDS=$(node -e '
 WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree ')
 #   >12 → print the advisory and sweep before the flip; <=12 → silent, proceed.
 #   12 == WORKTREE_COUNT_ADVISORY_THRESHOLD in tools/wave/src/worktree-cleanup.ts
-#   (the engine owns the number, its rationale, and the advisory text).
+#   (the engine owns the number, its rationale, and the advisory text). Every
+#   literal `12` in this file is DRIFT-PINNED to that constant by
+#   tools/wave/src/skill-schema-drift.spec.ts — change the constant without
+#   changing these lines (or vice versa) and the engine test suite fails.
+#   The engine surfaces the same verdict machine-readably: every
+#   `worktree-cleanup` run (--dry-run included) prints
+#   worktreeCount { count, threshold, level, advisory }. THIS step keeps the raw
+#   git form because the preflight runs before any config/store resolution.
 #   Deliberately NOT run through step 0's `require_capture`: `grep -c` prints `0`
 #   on no match, so this capture is never empty on a did-not-run — and a repo
 #   with zero registered worktrees is impossible anyway (the primary checkout
@@ -169,15 +176,19 @@ git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 
 The count deliberately **includes the primary checkout**, because that is what `git worktree list` reports and therefore what an operator reproducing this by hand sees. The engine's `checkWorktreeCountAdvisory` (`tools/wave/src/worktree-cleanup.ts`) counts the same population against the same `WORKTREE_COUNT_ADVISORY_THRESHOLD`, so the shell form and the engine can never quietly disagree — and the engine is where the number, its rationale, and the advisory wording live. The threshold is set so one full seven-row wave plus its reviewer checkouts stays *under* it: an advisory that fires during ordinary operation is an advisory that gets ignored.
 
+That advisory is also **CLI-reachable**, so nothing downstream has to re-implement the comparison: every `{{wave-cli}} worktree-cleanup` run — `--dry-run` included — prints `worktreeCount: { count, threshold, level, advisory }`, with `level` as `ok`/`advisory` and `advisory` carrying the engine's text verbatim (non-null exactly when `level` is `advisory`). It is read *before* any removal, so a preview and the real run report the same starting population, and it never affects the exit code. This step keeps the raw `git` one-liner because the preflight runs before any config/store resolution; the JSON field is the form to read once a sweep is already in hand. Both the literal above and the ones in the step-4a block are drift-pinned to the engine constant by `tools/wave/src/skill-schema-drift.spec.ts` — the number cannot diverge silently in either direction.
+
 **Advisory, not a gate — and this is a deliberate asymmetry with step 4.** A failed host-auth or credential probe STOPs the wave because the failure is *measured* (the token really did not authenticate). The worktree threshold is a *heuristic* about a harness-side limit nothing here can measure; converting it into a refusal would block a legitimately wide multi-wave day on a number no one can verify from inside the engine. `> 12` therefore reports and lets the Coordinator decide, and that decision is named in the step-9 report.
 
 **Recovery — the three steps, in order.**
 
 ```bash
-{{wave-cli}} worktree-cleanup --orphans        # 1. sweep (see wave-close phase 3 for the reading guide)
-git -C "$REPO" worktree prune                  # 2. clear unvalidatable administrative entries
-#                                                3. RESTART the harness — see below
+{{wave-cli}} worktree-cleanup --orphans --detached "$REPO"   # 1. sweep (wave-close phase 3 = reading guide)
+git -C "$REPO" worktree prune                                # 2. clear unvalidatable administrative entries
+#                                                              3. RESTART the harness — see below
 ```
+
+`--detached` is what makes step 1 actually reach this incident's population. An agent's or reviewer's own hand-made detached scratch checkout is git-*registered* (so the `--orphans` directory sweep never sees it) and carries no `agent-`/`wf_` name prefix (so the name-allowlisted GC filters it out) — every other sweep structurally misses it, which is how it survives wave after wave. The sweep refuses anything where work could be staked: a branch-bearing worktree in the same root is skipped `live-branch`, a dirty one `dirty`, a locked one `locked`, and none of the three is ever removed. Prepend `--dry-run` to preview first — preview and run share one plan, so `detached.selected` names exactly what the run will remove.
 
 Step 3 is not optional and is not intuitive: **cleanup alone does not recover a session that is already failing.** The profile is cached, so removing the worktrees fixes the population while the running session keeps the deny list it already built — every Bash spawn keeps dying. This was verified live: `git worktree remove` + `git worktree prune` did not restore the session, and only a harness restart did. Sweep *then* restart; a report that says "cleaned up, retrying" without the restart is describing a retry that cannot work.
 

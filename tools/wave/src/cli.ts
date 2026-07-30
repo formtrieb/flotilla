@@ -11,7 +11,7 @@
  *   npx tsx tools/wave/src/cli.ts closed-by <closed-by-line>
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
  *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>]
- *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]
+ *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]
  *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports <dir> --verdicts <dir> [...]
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
@@ -71,6 +71,40 @@
  *                    same `planOrphanBranchSweep` the real run executes, so a
  *                    preview that reports nothing selected is no longer followed
  *                    by a real run that deletes branches it never showed.
+ *
+ *                    --detached (issue #238) adds the THIRD population: git-
+ *                    REGISTERED worktrees under the worktrees root whose HEAD is
+ *                    DETACHED — an agent's or reviewer's hand-made inspection
+ *                    checkout. Neither pre-existing sweep can reach these: they
+ *                    are registered (so the --orphans directory sweep never sees
+ *                    them) and carry no `agent-`/`wf_` name prefix (so the
+ *                    name-allowlisted GC filters them out), which is how they
+ *                    accumulate until the harness's per-worktree sandbox-deny
+ *                    profile outgrows the exec argument limit and every Bash
+ *                    spawn dies with E2BIG. Reported under the `detached` key as
+ *                    a full CleanupResult; a branch-bearing worktree in the same
+ *                    root is skipped `live-branch` and NEVER removed (a branch
+ *                    is where work is staked), a dirty one `dirty`, a locked one
+ *                    `locked`. Dry-run parity is structural, not agreed: ONE
+ *                    plan object is computed before the --dry-run branch, the
+ *                    preview prints its selected/skipped and the real run hands
+ *                    that same object to executeCleanup. Independent of the
+ *                    --wave/--branches scoping (a detached worktree has no
+ *                    branch to scope by) and de-duplicated against the
+ *                    registered-GC plan so a detached `wf_*` worktree is never
+ *                    removed twice.
+ *
+ *                    worktreeCount (issue #238) is printed on BOTH shapes,
+ *                    unconditionally: { count, threshold, level, advisory } from
+ *                    the engine's checkWorktreeCountAdvisory — `count` is the
+ *                    registered-worktree population `git worktree list` reports
+ *                    (primary checkout included), `threshold` the effective
+ *                    WORKTREE_COUNT_ADVISORY_THRESHOLD, `level` 'ok'|'advisory',
+ *                    and `advisory` the engine's advisory TEXT verbatim (non-
+ *                    null exactly when level is 'advisory'). Read BEFORE any
+ *                    removal, so a --dry-run and the real run report the same
+ *                    starting population. ADVISORY, never a refusal — it never
+ *                    affects the exit code.
  *
  *                    Optional branch-scoped filter (issue #77 — parallel-wave safety):
  *                      --wave <spine-path>  Read the WAVE.md spine and derive the
@@ -136,8 +170,10 @@
  *   2 — usage error
  *
  * worktree-cleanup exit codes:
- *   0 — success (nothing to remove, or all selected removed cleanly)
- *   1 — completed with per-worktree removal errors
+ *   0 — success (nothing to remove, or all selected removed cleanly). The
+ *       worktreeCount advisory NEVER affects this — it is advisory by design.
+ *   1 — completed with per-worktree removal errors (registered GC, --detached
+ *       sweep, or --orphans sweep)
  *   2 — usage / unexpected error
  *
  * verdict-acked (FOR-17 — the dead --acked wire, ADR-0004) — the single-owner
@@ -241,6 +277,16 @@ import {
   executeOrphanSweep,
   planOrphanBranchSweep,
   executeOrphanBranchSweep,
+  // The detached-HEAD scratchpad sweep + the worktree-count advisory (issue
+  // #238). The sweep is deliberately imported as its list/plan PAIR rather than
+  // as the one-shot `sweepDetachedScratchpadWorktrees`: the one-shot cannot
+  // preview, and `--dry-run` parity here means the preview and the run share
+  // ONE plan object, not two calls that happen to agree (see
+  // `runWorktreeCleanup`). The one-shot stays the programmatic form and rides
+  // the package-root barrel for out-of-tree callers.
+  listDetachedScratchpadWorktrees,
+  planDetachedScratchpadSweep,
+  checkWorktreeCountAdvisory,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
@@ -356,7 +402,8 @@ function printUsage(): void {
       '  flotilla-engine merge-order <wave-md-path>',
       '  flotilla-engine closed-by <closed-by-line>',
       '  flotilla-engine detect-host <remote-url>',
-      '  flotilla-engine worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [...]',
+      '  flotilla-engine worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]',
+      '    --detached   also sweep REGISTERED detached-HEAD scratch checkouts under the worktrees root (the E2BIG population); --dry-run previews the same plan',
       '  flotilla-engine conflict-map <issue-path> [<issue-path> ...]',
       '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
       '  flotilla-engine cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
@@ -897,6 +944,19 @@ function resolveBranchFilter(
  *                         deletions/skips ride the existing branchesDeleted /
  *                         branchHygieneSkipped fields.
  *
+ * Optional detached-scratchpad sweep (issue #238):
+ *   --detached            Additionally sweep git-REGISTERED worktrees under the
+ *                         worktrees root whose HEAD is DETACHED — the hand-made
+ *                         inspection checkout neither pre-existing sweep can
+ *                         reach (registered, so not an orphan DIRECTORY; no
+ *                         `agent-`/`wf_` prefix, so filtered out of the
+ *                         name-allowlisted GC). Reported under `detached`. A
+ *                         branch-bearing worktree in the same root is skipped
+ *                         `live-branch` and never removed. Independent of
+ *                         --wave/--branches (a detached worktree has no branch
+ *                         to scope by) and de-duplicated against the
+ *                         registered-GC plan, so no worktree is removed twice.
+ *
  * Preview/execute share ONE plan (issue #148): the orphan-branch half used to
  * be reachable only through `sweepOrphanBranches`, a single-shot plan-and-
  * delete the real run called and `--dry-run` never called at all — so
@@ -943,7 +1003,19 @@ function resolveBranchFilter(
  * --orphans) orphans. `--dry-run --orphans` additionally prints
  * `orphanBranches: { toDelete, branchHygieneSkipped }` (issue #148) — the
  * branch-sweep preview the real run's branchesDeleted/branchHygieneSkipped
- * then fulfils.
+ * then fulfils. With `--detached`, `detached` carries the sweep's own plan
+ * (dry-run) or full CleanupResult (real run), and its branch hygiene folds into
+ * the same branchesDeleted / branchHygieneSkipped pair.
+ *
+ * `worktreeCount` (issue #238) is printed on BOTH shapes, unconditionally and
+ * with no flag to remember: `{ count, threshold, level, advisory }` straight
+ * from `checkWorktreeCountAdvisory`, with `advisory` carrying the engine's
+ * advisory TEXT verbatim (the E2BIG shape, its subagent scope, and the
+ * cleanup-plus-harness-RESTART recovery) and non-null exactly when `level` is
+ * `'advisory'`. It is read BEFORE any removal, so the number a `--dry-run`
+ * shows is the same starting population the real run reports. Purely advisory:
+ * it never contributes to the exit code (the threshold is a heuristic about a
+ * harness-side limit the engine cannot measure — see the engine constant).
  *
  * Idempotent: a re-run after everything is cleaned reports an empty plan and
  * exits 0 (nothing selected → nothing removed).
@@ -951,13 +1023,15 @@ function resolveBranchFilter(
  * Exit codes:
  *   0 — success (incl. nothing-to-do)
  *   1 — a removal error, a deregistered-but-not-deleted directory, an
- *       errored-yet-still-listed worktree (FOR-73), or an orphan-sweep removal
- *       error
+ *       errored-yet-still-listed worktree (FOR-73) — from the registered GC OR
+ *       (issue #238) from the `--detached` sweep, which rides the same three
+ *       classes — or an orphan-sweep removal error
  *   2 — usage / unexpected error
  */
 function runWorktreeCleanup(args: string[]): number {
   const dryRun = args.includes('--dry-run');
   const orphans = args.includes('--orphans');
+  const detached = args.includes('--detached');
   // Positional args are those that don't start with '--' and are not values of
   // a known flag (--wave / --branches / --config consume the token after
   // them). `--config <path>` is accepted (FOR-87, W25-F2): every sibling verb
@@ -968,7 +1042,7 @@ function runWorktreeCleanup(args: string[]): number {
   // above this function), not merely consumed-and-discarded. Any OTHER
   // unknown `--flag` fails loud below — a flag-shaped token must never
   // silently bind as data.
-  const noValueFlags = new Set(['--dry-run', '--orphans']);
+  const noValueFlags = new Set(['--dry-run', '--orphans', '--detached']);
   const flagsWithValues = new Set(['--wave', '--branches', '--config']);
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -984,7 +1058,7 @@ function runWorktreeCleanup(args: string[]): number {
       process.stderr.write(
         [
           `error: worktree-cleanup: unknown flag ${a}`,
-          'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--config <path>]',
+          'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--detached] [--config <path>]',
           '',
         ].join('\n'),
       );
@@ -1031,6 +1105,67 @@ function runWorktreeCleanup(args: string[]): number {
       ? planOrphanSweep(listOrphanDirs(repoRoot, { disposableNames }))
       : null;
 
+    // Detached-HEAD scratchpad sweep (issue #238), gated on `--detached`. A
+    // THIRD population, disjoint from neither of the two above by construction:
+    // these worktrees ARE registered (so `listOrphanDirs` cannot see them) and
+    // carry no `agent-`/`wf_` name prefix (so `listAgentWorktrees` filters them
+    // out) — the accumulation that fed the live E2BIG incident.
+    //
+    // ONE PLAN, computed HERE — above the --dry-run branch — is the whole point
+    // of this placement. `--dry-run` prints exactly this object's
+    // `selected`/`skipped`, and the real run hands exactly this object to
+    // `executeCleanup`. The orphan-BRANCH pair below still calls its planner
+    // twice (unavoidably: a `worktree-wf_*` branch only reads as eligible AFTER
+    // the orphan directories are physically gone), so its preview and its run
+    // are two calls of one pure function. Here there is no such ordering
+    // dependency, so the stronger form is available and is what ships: preview
+    // and execution cannot disagree, because there is only one plan to disagree
+    // about. This is also why the one-shot `sweepDetachedScratchpadWorktrees`
+    // is NOT the CLI's entry point — it lists, plans and removes inside one
+    // opaque call, and a caller cannot see, print, or share the plan it made.
+    //
+    // De-duplicated against the registered-GC plan above. Without a branch
+    // filter, a `wf_*` dispatch worktree sitting on a DETACHED head qualifies
+    // for BOTH populations, and the two `executeCleanup` calls below would then
+    // remove it twice — the second attempt landing in `errors` for a worktree
+    // that was correctly removed. Excluding anything the first plan already
+    // accounted for (selected OR skipped) also keeps the report one-entry-per-
+    // worktree instead of double-reporting the same path under two keys. With
+    // `--wave`/`--branches` active the question does not arise: `planCleanup`
+    // excludes every detached (branch: null) entry from both of its buckets, so
+    // nothing is filtered out here and the detached sweep is the only reader.
+    const alreadyPlanned = new Set(
+      [...plan.selected, ...plan.skipped].map((wt) => wt.path),
+    );
+    const detachedPlan = detached
+      ? planDetachedScratchpadSweep(
+          listDetachedScratchpadWorktrees({ repoRoot, disposableNames }).filter(
+            (wt) => !alreadyPlanned.has(wt.path),
+          ),
+        )
+      : null;
+
+    // Worktree-count advisory (issue #238) — the measurement half of the same
+    // E2BIG hardening, surfaced unconditionally on BOTH output shapes. It is
+    // deliberately not behind a flag: the engine's own rationale for the number
+    // is that an advisory which only fires at the cliff is useless, and one you
+    // have to remember to ask for is the same defect wearing a flag. Read here,
+    // BEFORE any removal, so the number a `--dry-run` previews is the same
+    // population the real run reports having started from (a post-sweep count
+    // would silently answer a different question in each branch).
+    const countAdvisory = checkWorktreeCountAdvisory({ repoRoot });
+    // `advisory` carries `WorktreeCountAdvisory.message` VERBATIM — the engine
+    // owns that wording (the E2BIG shape, the subagent scope, the
+    // cleanup-plus-RESTART recovery), and this boundary never paraphrases it.
+    // count/threshold/level ride alongside as their own named fields so a
+    // consumer never has to re-derive the verdict from the prose.
+    const worktreeCount = {
+      count: countAdvisory.count,
+      threshold: countAdvisory.threshold,
+      level: countAdvisory.level,
+      advisory: countAdvisory.message,
+    };
+
     if (dryRun) {
       // Orphan-BRANCH preview (issue #148): planOrphanBranchSweep is the SAME
       // pure function the real run below executes via executeOrphanBranchSweep
@@ -1061,6 +1196,17 @@ function runWorktreeCleanup(args: string[]): number {
                   },
                 }
               : {}),
+            // The SAME plan object the real run executes (see its computation
+            // above) — a preview that names `selected` here is a promise the
+            // run below keeps by construction, not by agreement.
+            ...(detachedPlan !== null
+              ? {
+                  detached: {
+                    selected: detachedPlan.selected,
+                    skipped: detachedPlan.skipped,
+                  },
+                }
+              : {}),
             ...(orphanBranchPlan !== null
               ? {
                   orphanBranches: {
@@ -1069,6 +1215,7 @@ function runWorktreeCleanup(args: string[]): number {
                   },
                 }
               : {}),
+            worktreeCount,
           },
           null,
           2,
@@ -1080,6 +1227,15 @@ function runWorktreeCleanup(args: string[]): number {
     const result = executeCleanup(plan, { repoRoot, disposableNames });
     const orphanResult =
       orphanPlan !== null ? executeOrphanSweep(orphanPlan, { repoRoot }) : null;
+
+    // Execute EXACTLY the `detachedPlan` object the `--dry-run` branch above
+    // prints — same `executeCleanup` as every other removal path, so the
+    // bounded retry, the incomplete-removal classification and local-branch
+    // hygiene are inherited rather than reimplemented.
+    const detachedResult =
+      detachedPlan !== null
+        ? executeCleanup(detachedPlan, { repoRoot, disposableNames })
+        : null;
 
     // Standalone orphaned-BRANCH sweep (FOR-72 — W15-F1, 3× reproduced): the
     // counterpart to the orphan-DIRECTORY sweep, gated on the same --orphans
@@ -1103,14 +1259,21 @@ function runWorktreeCleanup(args: string[]): number {
       orphanBranchPlan !== null
         ? executeOrphanBranchSweep(orphanBranchPlan, { repoRoot })
         : null;
-    const branchesDeleted =
-      orphanBranchResult !== null
-        ? [...result.branchesDeleted, ...orphanBranchResult.branchesDeleted]
-        : result.branchesDeleted;
-    const branchHygieneSkipped =
-      orphanBranchResult !== null
-        ? [...result.branchHygieneSkipped, ...orphanBranchResult.branchHygieneSkipped]
-        : result.branchHygieneSkipped;
+    // Every removal path's branch hygiene folds into ONE pair of fields, so a
+    // run can never delete a branch and show nothing (the FOR-67 W15 finding).
+    // The detached sweep goes through the same `executeCleanup`, so it produces
+    // the same two classes and joins them here rather than growing a parallel
+    // reporting key nobody reads.
+    const branchesDeleted = [
+      ...result.branchesDeleted,
+      ...(detachedResult?.branchesDeleted ?? []),
+      ...(orphanBranchResult?.branchesDeleted ?? []),
+    ];
+    const branchHygieneSkipped = [
+      ...result.branchHygieneSkipped,
+      ...(detachedResult?.branchHygieneSkipped ?? []),
+      ...(orphanBranchResult?.branchHygieneSkipped ?? []),
+    ];
 
     // Print the FULL cleanup summary (FOR-67 — W15 finding: branchesDeleted /
     // branchHygieneSkipped were computed by the engine but never surfaced at
@@ -1132,6 +1295,13 @@ function runWorktreeCleanup(args: string[]): number {
           branchesDeleted,
           branchHygieneSkipped,
           ...(orphanResult !== null ? { orphans: orphanResult } : {}),
+          // The detached sweep's own CleanupResult, reported whole (removed /
+          // skipped-with-reason / errors / both ENOTEMPTY-family classes) under
+          // its own key rather than merged into the registered-GC numbers: the
+          // populations answer different questions, and a `live-branch` skip
+          // read as a GC skip would be actively misleading.
+          ...(detachedResult !== null ? { detached: detachedResult } : {}),
+          worktreeCount,
         },
         null,
         2,
@@ -1141,12 +1311,20 @@ function runWorktreeCleanup(args: string[]): number {
     // removal error, a deregistered-but-not-deleted directory (removal did not
     // fully complete), an errored-yet-still-listed worktree (FOR-73 — the
     // removal threw and git still lists it as prunable, a prune/retry case an
-    // operator must see), or an orphan-sweep removal error.
+    // operator must see), or an orphan-sweep removal error. The detached sweep
+    // rides the SAME three incomplete-outcome classes (it goes through the same
+    // `executeCleanup`), so it must contribute to this verdict too — a sweep
+    // whose removals errored while the verb still exited 0 is exactly the
+    // silent-failure shape the class list above exists to prevent.
     const anyFailure =
       result.errors.length > 0 ||
       result.deregisteredNotDeleted.length > 0 ||
       result.erroredStillListed.length > 0 ||
-      (orphanResult !== null && orphanResult.errors.length > 0);
+      (orphanResult !== null && orphanResult.errors.length > 0) ||
+      (detachedResult !== null &&
+        (detachedResult.errors.length > 0 ||
+          detachedResult.deregisteredNotDeleted.length > 0 ||
+          detachedResult.erroredStillListed.length > 0));
     return anyFailure ? 1 : 0;
   } catch (err) {
     process.stderr.write(

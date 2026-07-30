@@ -271,12 +271,34 @@ export {
   // exact-names validator both `wave-config.ts` and the cleanup entry points
   // apply — none of the three were importable from the package root until now.
   normalizeDisposableNames,
+  // The detached-HEAD scratchpad sweep + the worktree-count advisory (issue
+  // #238) — the two halves of the E2BIG hardening, engine-complete and
+  // spec-covered but reachable only via a deep import until now (the same
+  // barrel-gap class as `normalizeDisposableNames` above and the disclosure
+  // surface in issue #177). The trio is exported whole so a consumer can either
+  // take the one-shot `sweepDetachedScratchpadWorktrees` or split it into
+  // list → plan → `executeCleanup` when it needs to PREVIEW the plan before
+  // executing it — the split the `worktree-cleanup --detached --dry-run` CLI
+  // path itself uses, and the only form that gives dry-run parity, since the
+  // one-shot's plan is not observable from outside. The advisory's threshold
+  // constant rides along because it is the authority the operator-facing docs
+  // cite (and are drift-pinned against in skill-schema-drift.spec.ts): a
+  // consumer that wants to state or raise the number must be able to read it.
+  listDetachedScratchpadWorktrees,
+  planDetachedScratchpadSweep,
+  sweepDetachedScratchpadWorktrees,
+  checkWorktreeCountAdvisory,
+  WORKTREE_COUNT_ADVISORY_THRESHOLD,
   type WorktreeEntry,
   type CleanupPlan,
   type CleanupResult,
   type WorktreeRemover,
   type CleanupOptions,
   type OrphanSweepOptions,
+  type SkipReason,
+  type DetachedSweepOptions,
+  type WorktreeCountAdvisory,
+  type WorktreeCountAdvisoryOptions,
 } from './worktree-cleanup';
 
 export {
