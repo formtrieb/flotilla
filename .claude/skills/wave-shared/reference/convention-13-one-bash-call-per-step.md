@@ -42,7 +42,7 @@ Live: in wave `2026-07-29-conventions-wiring` a Worker's compound `&&` command w
 
 Wave `2026-07-30-arm-and-wiring`'s coordinator disclosure `256.4` names three mechanism-(b) refusals across the wave's five dispatched rows — a jq-piped capture with a case guard, a heredoc spec append, and a heredoc commit message — each "correctly re-issued unfused." The disclosure names the shapes categorically; it does not preserve the byte-exact failing commands (the wave's own spine and its per-row disclosure detail live in the archived spine, not a tracked doc — ADR-0027 dispositions a disclosure at routing and archives it with the wave). **Rather than assert a fused/unfused pair from that three-word summary alone, each shape below was independently live-reproduced in this dispatch** (issue #267, 2026-07-30, this worktree) — the standing instruction that a catalog entry claiming a shape is refused needs evidence it was actually observed, not merely asserted. Reproducing them surfaced more than the summary implied: **not all three turn out to be fusion problems**, and the catalog below reports what was actually witnessed rather than filling the gap with a plausible-looking guess.
 
-**1. jq-piped capture with a case guard — NOT a fusion problem. `case`/`esac` is refused categorically.**
+**1. jq-piped capture with a case guard — NOT a fusion problem. `case`/`esac` is refused categorically FROM A `isolation: 'worktree'` DISPATCH — not established as refused outside one.**
 
 Live-reproduced repeatedly in this dispatch: a bare, single-statement, entirely unfused `case … esac` — no variable, no `|` alternation, no redirect, no `;;`, even merely *defined* (never invoked) inside a shell function body — was refused every time, deterministically, across eight separate attempts. An equivalent `if`/`elif`/`else`/`fi`, carrying the identical `||`-chained condition, `>&2` message, and `exit 1`, was **not** refused, standing alone:
 
@@ -60,6 +60,33 @@ fi
 ```
 
 Splitting the capture from the guard (the fix this catalog would have named from the disclosure's summary alone) is still correct **and still necessary** — a capture fused onto either form above is refused for the ordinary fusion reason this file leads with — but it is not **sufficient**: the `case`-guard half, issued as its own call with nothing fused onto it, is refused on its own. `workflow-driver.md`'s Termination step 4 now uses the `if` form for exactly this reason, not only a two-call split.
+
+**Two observers, contradictory results — and the discriminator a later measurement found.** The Worker dispatch above that produced the eight-for-eight refusal runs under `isolation: 'worktree'` — `workflow-driver.md`'s dispatch pipeline Stage 1 calls `agent(workerBrief(issue), { isolation: 'worktree', schema: WORKER_REPORT_SCHEMA, … })`. When the row that first wrote this entry went to review, its own Reviewer tried to reproduce the same refusal independently and **could not**: a bare `case`/`esac`, a PR-URL-shaped guard, and the catalogued form above all ran clean in that Reviewer's own dispatch — zero refusals across three probe shapes. The catalog, at that point, recorded only the Worker's eight-for-eight and asserted categoricity; the Reviewer's contradicting zero-for-three was never written down. That gap is what issue #305 measures.
+
+Issue #305's own Worker dispatch (this worktree, `isolation: 'worktree'`) re-ran the same three probe shapes the Reviewer had used — a bare `case`/`esac`, a PR-URL-shaped guard, and the catalogued form verbatim — as three separate, unfused Bash calls:
+
+```bash
+# probe 1 — bare case/esac, minimal form
+case "x" in
+  x) echo "matched" ;;
+esac
+
+# probe 2 — PR-URL-shaped guard, no STOP/exit
+case "$PR_URL" in
+  '') echo "empty" ;;
+esac
+
+# probe 3 — the catalogued form, verbatim
+case "$PR_URL" in
+  ''|null|undefined) echo "STOP: PR_URL came back empty" >&2; exit 1 ;;
+esac
+```
+
+All three were refused — **three-for-three**, matching the entry-writing Worker's eight-for-eight rather than that row's Reviewer's zero-for-three. The refusal in every case was the harness's own message, not a permission dialog: *"This agent is isolated in the worktree …, but this command is too complex to verify that it stays inside the worktree; break it into plain, separate commands."*
+
+**The discriminating condition, named with evidence: the `isolation: 'worktree'` dispatch option itself — not the command's shape, its content, or the working directory.** `workflow-driver.md`'s dispatch pipeline sets that option explicitly on the Worker's `agent()` call (Stage 1, `isolation: 'worktree'`) and does **not** set it on the Reviewer's `agent()` call (Stage 3: `agentType: 'wave-reviewer', schema: REVIEWER_VERDICT_SCHEMA` — no `isolation` key at all) — even though `reviewerBrief()`'s own prompt text tells the Reviewer "your own worktree also carries tracked files only," as if the two roles were symmetric. In the one place that actually configures which dispatched agents carry the worktree-isolation guard — the driver's own `agent()` calls — they are not: the option is set for the Worker only. That asymmetry is consistent with every data point gathered so far: the entry-writing Worker (`isolation` set, 8/8 refused), that row's Reviewer (`isolation` not set, 0/3 refused), and issue #305's own Worker (`isolation` set, 3/3 refused). Issue #305's own gap description additionally reports a later wave observing four independent Worker-side refusals of the same shape — Worker-side, so consistent with `isolation: 'worktree'` being set — but that wave is not named with a slug or disclosure id accessible from this dispatch, so its count is reported here as background, not independently re-verified.
+
+**Scoped claim, replacing the unscoped one:** a bare `case`/`esac` guard — any of the three shapes above — is refused categorically **from a dispatch that carries `isolation: 'worktree'`** (the Worker role, and by the same driver-code reasoning, any other role a Coordinator dispatches with that option set). It is **not** established as refused — and has been directly observed clean — from a dispatch that does not carry that option (the Reviewer role, as currently dispatched by `workflow-driver.md`). Issue #305's own Reviewer is the second observer for this exact measurement: per this row's design it independently re-runs the same three probes in its own dispatch. Append that result here, in this catalog's own append-in-shape discipline, rather than opening a new prose clause.
 
 **2. Heredoc spec append — narrower than "fusion." Refused when a heredoc redirects straight to a FILE and its body contains `{`/`}`; not refused otherwise.**
 
@@ -162,3 +189,4 @@ Most tools have such a flag (`--prefix`, `-C`, `--root`, `--cwd`, `--project`, `
 - **Mechanism A, on our own allowlist.** The Scribe path is where this was first hit and first documented — a `cd "$REPO_ROOT"` fused onto the engine call that writes the sidecar, against a tracked allowlist that covers the engine call exactly. Same class as the KW-F6 sandbox footgun in [Convention 1](convention-01-auth-preflight.md), where `env -u GITHUB_TOKEN gh …` slips a `gh *` prefix rule because the command the matcher parses is not the one the rule names: a wrapper or a fused step in front of an allowlisted command is not covered by that command's entry.
 - **2026-07-30, this convention's own dispatch — the cwd-reset half.** `cd <worktree>/tools/wave` in one call, `npm ci`'s usage error in the next, `pwd` back at the worktree root in the third. Recorded because the obvious remedy for a fused command ("just split it") is incomplete on the exact path a Worker runs on, and an incomplete remedy is how a rule earns a reputation for not working.
 - **2026-07-30, wave `2026-07-30-arm-and-wiring`, coordinator disclosure `256.4` — mechanism B, three refusals, one wave; live-reproduced at issue #267's own dispatch.** The disclosure named three shapes (jq-piped capture with a case guard, heredoc spec append, heredoc commit message), each "correctly re-issued unfused." The Catalog above reports what live reproduction in this dispatch actually found: shape 1 is a categorical `case`/`esac` refusal, not fusion; shape 2 is narrower than fusion and only partly resolved; shape 3 confirmed as ordinary fusion. This is the occurrence the Catalog section exists to hold, and future refusals append there rather than growing this list.
+- **2026-07-30, issue #305's own dispatch — Catalog entry 1's categorical claim scoped, and the Worker/Reviewer disagreement recorded.** Entry 1 asserted a bare `case`/`esac` guard is refused categorically, evidenced only by the entry-writing Worker's eight-for-eight; that row's own Reviewer had independently reproduced zero-for-three on the same three probe shapes, and the disagreement was never written down. Issue #305's Worker dispatch (`isolation: 'worktree'`) re-ran the same three shapes and got three-for-three refused, matching the original Worker. The two-observer disagreement plus a candidate discriminator (the `isolation: 'worktree'` dispatch option, set for the Worker's `agent()` call in `workflow-driver.md` and not for the Reviewer's) are now recorded in entry 1 itself, and the categorical claim is scoped to a `isolation: 'worktree'` dispatch rather than left unscoped. Issue #305's own Reviewer independently re-runs the same three probes as the second observer for this measurement; append its result to entry 1 rather than growing this list.
