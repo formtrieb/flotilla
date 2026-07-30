@@ -190,7 +190,7 @@ const MIN_ANCHORED_LINKS = 60; // 77 anchored markdown links at landing
 const MIN_BARE_CITATIONS = 70; // 88 bare path citations at landing
 const EXPECTED_RESOLUTION_BLOCKS = 10; // the canonical `{{wave-cli}}` definition sites
 const MIN_SKILL_BODIES = 10; // 12 SKILL.md bodies at landing
-const MIN_BODY_CITATIONS = 130; // 153 ADR/retro/finding citations in those bodies at landing
+const MIN_BODY_CITATIONS = 130; // 146 ADR/retro/finding citations in those bodies at landing
 
 /** The published-package invocation — `{{wave-cli}}`'s canonical resolution. */
 const PUBLISHED_FORM = 'npx @formtrieb/flotilla-engine';
@@ -729,6 +729,14 @@ describe('skill-reference-guard — class (d): Convention 14 citation placement 
     expect(SKILL_BODIES).not.toContain(
       '.claude/skills/wave-shared/reference/convention-14-citation-placement.md',
     );
+    // The agent brief in .claude/agents/ is a dispatched brief, not a skill
+    // body, and is kept out of this class ONLY by the `/SKILL.md` filename
+    // filter above — no file under .claude/agents/ happens to be named
+    // SKILL.md today. Pin the exclusion the same way the reference-file
+    // exclusion is pinned just above, so a future agent brief literally named
+    // SKILL.md cannot silently enter the population (the negative control
+    // below proves this pin is not vacuous).
+    expect(SKILL_BODIES).not.toContain('.claude/agents/wave-reviewer.md');
     expect(ALL_CITATIONS_IN_BODIES.length).toBeGreaterThanOrEqual(MIN_BODY_CITATIONS);
     // The convention codifies what the corpus already does nine times out of
     // ten; if narrative placement were ever the majority the predicate would be
@@ -736,6 +744,23 @@ describe('skill-reference-guard — class (d): Convention 14 citation placement 
     expect(narrativeCitations(ALL_CITATIONS_IN_BODIES).length).toBeLessThan(
       ALL_CITATIONS_IN_BODIES.length / 2,
     );
+  });
+
+  it('negative control — a hypothetical agents-brief literally named SKILL.md would enter the population under the same filter (pins why the exclusion assertion above is needed)', () => {
+    // Same predicate SKILL_BODIES is derived from (`f.endsWith('/SKILL.md')`),
+    // applied to a synthetic path that does not exist in this corpus today.
+    // The exclusion of .claude/agents/ from this class is filename-coincidental,
+    // not structural: plant the one shape that would defeat it and watch it
+    // pass the very filter that is supposed to keep agent briefs out.
+    const hypotheticalAgentBrief = '.claude/agents/SKILL.md';
+    expect(SKILL_DOCS).not.toContain(hypotheticalAgentBrief); // not real today
+    expect(
+      [...SKILL_DOCS, hypotheticalAgentBrief].filter((f) => f.endsWith('/SKILL.md')),
+    ).toContain(hypotheticalAgentBrief);
+    // Which is exactly what the dedicated pin above guards against: had this
+    // hypothetical file been real, `expect(SKILL_BODIES).not.toContain(...)`
+    // for it would have failed instead of silently letting a dispatched agent
+    // brief into the Convention 14 population.
   });
 
   it('no SKILL.md body outside the legacy allowlist carries a citation in narrative prose', () => {
