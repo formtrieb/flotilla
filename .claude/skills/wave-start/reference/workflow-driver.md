@@ -270,7 +270,15 @@ const ISSUES = [
     // The consumer's own dependency-install command(s) — from the wave-setup
     // preconditions answer for "is the dependency dir gitignored?". Empty
     // string only if the consumer confirmed nothing is gitignored there.
-    depsSetup: '<consumer dependency-install command, e.g. "cd <depsDir> && <installCmd>">',
+    // COMPOSE IT UNFUSED (wave-shared Convention 13): this string is the FIRST
+    // command every Worker and Reviewer runs, so a fused `cd <depsDir> &&
+    // <installCmd>` here teaches the shape the briefs' own clause forbids —
+    // and hits both mechanisms it names (a permission gate that requires every
+    // subcommand of a compound to match a rule independently; a worktree-
+    // isolation guard that can reject a fused command as too complex to
+    // verify). Prefer the installer's own directory flag, which is also the
+    // form that survives a cwd reset between an agent's Bash calls.
+    depsSetup: '<consumer dependency-install command, directory carried BY the command, e.g. "npm ci --prefix <depsDir>" / "composer install -d <depsDir>">',
     // The FULL issue spec embedded verbatim — title, body, acceptance criteria,
     // declared Files globs, risk. NOT a tracker id/path: the store config that
     // would resolve one may itself be gitignored and absent from this worktree.
@@ -463,6 +471,7 @@ ${issue.issueSpec}
 8. RUNTIME RESIDUE (wave-shared Convention 10): if your slice starts any runtime resource — a compose project, a container, a background server, anything holding a port, a volume, or a network — tear it down before termination, or explicitly disclose the surviving resource under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) so the Coordinator can clean up after landing.
 9. PROVE THE CHECK CAN FAIL (wave-shared Convention 11): if your slice introduces a NEW check — a test, an assertion, a guard, a smoke probe, a lint rule, a CI gate, a preflight, a validator — break the thing that check exists to catch, run the check, and observe its own FAIL state; then restore the original state and re-verify green. Report the falsification under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`): which check, what you broke, the observed failing output verbatim, and that you restored it. A green check is compatible with "the check works" AND "the check cannot fail", and no acceptance criterion distinguishes them. Two mechanical questions decide whether you are in this class — does a pass/fail check exist after your diff, and is its failing condition new with this slice — and "is the falsification worth the time" is deliberately NOT one of them: an expensive falsification belongs in the disclosure, not outside the class. A check observed only as \`deferred\`/\`skipped\` has NOT been proven to fail (it has been proven not to run) — that is a failed falsification attempt, not a demonstration. If you could not falsify it, say so in the same channel with the reason and what input WOULD falsify it — "could not falsify, and here is why" is a legitimate reported outcome; silence and an unevidenced claim are not. A slice that only changes behaviour already covered by EXISTING checks is not in this class.
 10. UNEXECUTABLE CORE PATH — DECLARE, THEN SELF-COMPARE (ADR-0030): if the core path of your change **cannot be executed from this environment** — it needs a real release, a production credential, a merged PR, a human action, an external service you cannot reach — declare it explicitly under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`), naming WHICH path is unreachable and WHY. Then find the authoritative documented form for that mechanism — the vendor's own documentation, the spec, the reference example — **read it in this dispatch, do not recall it from memory** — compare your change against it, and report EVERY divergence in the same channel, each marked deliberate (you departed on purpose AND commented the reason at the point of departure) or not. A divergence is NOT automatically a defect: deliberate, commented departures are legitimate and must survive review intact. What is not legitimate is an undeclared one. Live occurrence: a release workflow shipped with three divergences from the registry vendor's documented example — a missing \`registry-url\`, dependency caching left on in a release build (which the vendor advises against on supply-chain grounds), and an outdated action version. Every acceptance criterion was verified and every one held; the core path (an OIDC credential exchange that cannot run before a real release exists) was reachable by no test, no local run and no reviewer, so the documented form was the only evidence available — and no acceptance criterion asked for it, because ACs describe what a change should DO and this is a question about what it should LOOK LIKE. Your self-comparison is defense-in-depth; the Reviewer runs its own comparison independently, and that one is the anchor.
+11. ONE BASH CALL PER STEP (wave-shared Convention 13): never fuse a setup step onto the command that matters — \`cd X && <command>\` — into one compound Bash call. **Two unrelated mechanisms break on that shape, with opposite signatures, and knowing only one of them is how the other bites.** (a) **The permission gate.** The harness splits a command on \`&&\`, \`||\`, \`;\`, \`|\`, \`|&\`, \`&\` and newlines and requires EVERY subcommand to match a permission rule independently — so the tracked-allowlist entry covering your engine or verify call carries only THAT subcommand past the gate, never the \`cd\` glued in front of it; and \`cd\` paired with \`git\`, or with an output redirect, prompts even when both halves are read-only commands. A permission dialog mid-AFK-dispatch has nobody to answer it and stalls your row. (b) **The worktree-isolation guard.** A fused command can come back REJECTED as too complex to verify that it stays inside your worktree — no dialog, nothing pending, nothing run. That refusal is about the command's SHAPE, never about the check being unrunnable here: re-issue it as separate calls. **NEVER silently skip a step because its fused form was refused** — a Worker did exactly that, dropping the check it was running and continuing; a verification step that did not run, in a report that reads as complete, is the defect (same family as Convention 12's empty capture). And do not "fix" either mechanism by asking for a \`cd\` allowlist entry — splitting costs nothing, and mechanism (b) would reject the fused form regardless. **Carry the directory IN the command wherever a flag exists** (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`): your cwd is reset between your Bash calls, so a \`cd\` issued as its own call does not necessarily survive into the next one — confirm with \`pwd\` before relying on it, and never buy the guarantee back by re-fusing.
 
 ## Verification gates (run the consumer's verify profile — from wave.config.json verify)
 Run the commands the VerifyGate selects for your changed files; report exact counts.
@@ -537,6 +546,8 @@ re-run the verify commands below without installing first:
 \`\`\`bash
 ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
 \`\`\`
+
+**ONE BASH CALL PER STEP** (wave-shared Convention 13) — it binds you exactly as it binds the Worker, and this install is the first place it bites. Never fuse a setup step onto the command that matters (\`cd X && <command>\`) into one compound Bash call. Two unrelated mechanisms break on that shape, with opposite signatures: **the permission gate** splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY subcommand to match a rule independently — so an allowlisted verify command carries only itself past the gate, never the \`cd\` in front of it, and a dialog mid-dispatch has nobody to answer it; and **the worktree-isolation guard** can REJECT a fused command as too complex to verify that it stays inside your worktree — no dialog, nothing run. A refusal is about the command's SHAPE, not about the check: re-issue it as separate calls. **NEVER drop a verify command or a floor check because its fused form was refused** — reporting a check as run when it was skipped is the exact failure this clause exists to stop, and it is yours to avoid as well as to catch in the Worker's evidence. Your cwd is reset between your Bash calls, so carry the directory in the command where a flag exists (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`) rather than trusting a preceding \`cd\`; confirm with \`pwd\` if in doubt.
 
 ## Original issue spec (embedded — not a tracker reference)
 The store config that would resolve a tracker id may itself be gitignored and
@@ -635,16 +646,22 @@ normalizes that one itself and tells you it did.)
    repo's own does — and an unquoted \`cd\` breaks on one, silently, taking
    the sidecar write down with it). WAVE_CLI below is repo-relative
    (tracked-settings permission match, see Authoring constraints #4); this cd
-   guarantees it resolves regardless of your starting cwd. WHY SEPARATE: the
-   working directory persists between your Bash calls, so splitting loses
-   nothing — but a compound command that STARTS WITH \`cd\` matches no
-   allowlist prefix. The tracked \`.claude/settings.json\` allowlist covers
-   the WAVE_CLI invocation exactly, but only as a command PREFIX; fusing the
-   \`cd\` onto the front of it changes the command's first token to \`cd\`, so
-   the rule never fires and the harness raises a permission dialog mid-AFK-
-   dispatch (same class as the \`env -u ... gh\` footgun that defeats a \`gh *\`
-   allowlist prefix, wave-shared Convention 1's KW-F6 sandbox-footgun note —
-   now observed on our own allowlist).
+   guarantees it resolves regardless of your starting cwd. WHY SEPARATE
+   (wave-shared Convention 13 — the standing rule for every dispatched role,
+   both of whose mechanisms fire on this exact shape): the permission gate
+   splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY
+   subcommand to match a rule independently — the tracked
+   \`.claude/settings.json\` allowlist covers the WAVE_CLI invocation exactly,
+   but that entry covers only THAT subcommand and never a \`cd\` fused in front
+   of it, so the fused form can raise a permission dialog mid-AFK-dispatch
+   with nobody there to answer it (same class as the \`env -u ... gh\` wrapper
+   footgun that defeats a \`gh *\` allowlist prefix, wave-shared Convention 1's
+   KW-F6 sandbox-footgun note — now observed on our own allowlist); and the
+   worktree-isolation guard can REJECT a fused command outright as too complex
+   to verify, with no dialog and nothing run. If step 3 then fails to resolve,
+   your cwd did not survive this call (it is reset between Bash calls in a
+   dispatched-agent thread) — check it with \`pwd\` and report the failure per
+   step 4. Do NOT re-fuse the two calls into one to work around it.
 2. Write this EXACT JSON to a temp file, byte-for-byte via a heredoc (no edits):
 ${JSON.stringify(payload)}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
