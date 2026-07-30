@@ -24,6 +24,27 @@ Then re-run `check-disclosures` — repeat until it reports `0 open`. Only then 
 
 **`filed:<id>` — the existence-not-readiness split (ADR-0027).** `filed:<id>` records only that a **bare** issue now exists for the gap — created inline (`issue-store create`, or the host CLI per the ADR's interim note) with a title, the gap description, and a **provenance line** (wave slug, row id, iteration) — **deliberately without an eligibility label**. That bare issue is not wave-ready yet. Decoration (Risk / Worker / Files / Blocked-by, the eligibility label) is a separate, *later* `to-issues` decorate-mode step, done with the **next** wave's planning context — a wiring-gap follow-up's Files are precisely the call sites outside the old slice, which wants the wider-lens planning pass, not a rushed guess at close time. Do not decorate at disposition time; filing (existence) and deciding wave-readiness (decoration) are two different steps on purpose.
 
+**Filing the bare issue — worked `--input` shape.** A bare issue has no Header-Block to fall back on, so `bodySections` **is** its entire authored content — the Gap text and the provenance line ride there or they ride nowhere. Compose the `--input` file explicitly, never as an afterthought typed alongside the disposition call:
+
+```json
+{
+  "title": "<the disclosure's one-line summary>",
+  "filingHint": "<kebab-slug>",
+  "bodySections": [
+    { "heading": "Gap", "markdown": "<the disclosure's Gap text, verbatim>" },
+    { "heading": "Provenance", "markdown": "<wave slug, row id, iteration>" }
+  ]
+}
+```
+
+```bash
+{{wave-cli}} issue-store create --input <input.json>
+```
+
+`issue-store create` now **rejects** a bare input (no Header-Block) whose `bodySections` is absent, `[]`, or every entry's `markdown` is blank — a usage error (exit 2), before any write (#278). Before this guard, `classifyCreateInput` judged only the Header-Block group and never looked at `bodySections`, so a bare `--input` that forgot the Gap/Provenance prose still filed successfully — silently, with an empty body. That is exactly how it happened: ten dispositions filed from one wave's disclosures all landed on the tracker with **0 body chars**; the text survived only because the spine was still archived, and triage had to reconstruct the Provenance section and Agent Brief from that archive by hand. Read the CLI's usage message on rejection — it names the fix (`bodySections`), not just the failure.
+
+*Considered and set aside:* a second guard where the close flow reads back the filed issue's body before recording `filed:<id>`. The reject-at-create guard above already makes an empty-body bare issue impossible to write in the first place, so a read-back would only re-detect a failure the write path can no longer produce; not worth the extra round trip unless a future gap proves this one insufficient.
+
 **Guard (terminal-only):** archive only when every row is finalised (no row `dispatched`/`reviewing`/etc.). If any row is still pending → do NOT archive; print `wave not yet terminal (skipped)`.
 
 **Guard (idempotent):** `<wave-file>` already under `.flotilla/waves/_archive/` → print `already archived (no-op)`.
@@ -71,3 +92,4 @@ After archiving, print a close summary: wave slug, **which archive mode ran** (`
 - **Archiving to `done/`.** flotilla archives to `_archive/`; there is no `done/` close ceremony.
 - **Assuming `.flotilla/` is (or isn't) git-tracked and always running `git mv`.** A gitignored/untracked spine makes `git mv` fail outright (P-11 — the first live wave hit this and hand-typed a plain `mv` as a manual workaround). Detect the actual tracked status of the spine file for *this* archive, every time — do not assume from the consumer type, and do not assume from what the previous wave's archive did.
 - **Running the archive before the needs-attention phase.** Flag stuck rows first; archive last.
+- **Filing a bare `filed:<id>` issue with no `bodySections`.** `issue-store create` now rejects this loud (exit 2, #278) — but if you hit that rejection, it means the `--input` was composed without the Gap/Provenance prose, not that the guard is wrong. Fix the `--input`, don't route around the check.
