@@ -6,7 +6,9 @@ The engine-CLI plumbing that is genuinely **cross-phase** — the pieces every p
 
 ## `{{wave-cli}}` resolution
 
-**Dual-form (ADR-0031) — published package first, vendored in-repo copy as the documented fallback.** The canonical resolution is the **published npm package**: `npx @formtrieb/flotilla-engine <verb> …` for top-level verbs, `npx @formtrieb/flotilla-engine issue-store <op> …` for issue-store verbs, `npx @formtrieb/flotilla-engine spine <op> …` for spine verbs — the workflow driver's default, and a bare command with no path in it, so it resolves independent of any checkout. The **vendored in-repo form** stays documented for a consumer that still vendors `tools/wave` locally (this repo included, dogfooding its own skills pre-publish): `npx tsx tools/wave/src/cli.ts <verb> …`, with `npx tsx tools/wave/src/spine-cli.ts <op> …` as the direct spine entry the top-level `spine` relay wraps. Both forms reach the identical router. Run from a directory with `wave.config.json`, or append `--config <path>` **after** the subcommand + op. The store (`markdown` or `github`) is selected there — you never name a tracker.
+The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the command string this repo's `wave.config.json` names under `engine.cli`** — read there, resolved host-side when an invocation is composed, and never re-derived here. There is one command string per repo and no invocation-form ordering to weigh: a configured binding that fails is a STOP/needs-attention finding — a broken install, config or release — not a cue to reach for another spelling. An **absent** `engine.cli` is a STOP too: it means `wave-setup` has not finished in this repo, so stop and finish setup before running anything here.
+
+Read every `{{wave-cli}}` below as that one string: `{{wave-cli}} <verb> …` for top-level verbs, `{{wave-cli}} issue-store <op> …` for issue-store verbs, `{{wave-cli}} spine <op> …` for spine verbs — one binding, one router. Run from a directory with `wave.config.json`, or append `--config <path>` **after** the subcommand + op. The store (`markdown` or `github`) is selected there — you never name a tracker.
 
 ## Commands
 
