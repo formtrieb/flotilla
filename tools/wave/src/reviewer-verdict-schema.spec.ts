@@ -31,6 +31,16 @@ import {
   type DocumentedFormTrigger,
   type ReviewerVerdict,
 } from './reviewer-verdict-schema';
+// Same surface, but imported through the PACKAGE ROOT rather than the module
+// file directly — proves the barrel actually re-exports the Documented-Form
+// Comparison names (issue #216's acceptance criteria), aliased to avoid
+// colliding with the direct-module imports above.
+import {
+  DOCUMENTED_FORM_TRIGGER_VALUES as DOCUMENTED_FORM_TRIGGER_VALUES_FROM_ROOT,
+  type DocumentedFormTrigger as DocumentedFormTriggerFromRoot,
+  type DocumentedFormComparison as DocumentedFormComparisonFromRoot,
+  type DocumentedFormDivergence as DocumentedFormDivergenceFromRoot,
+} from './index';
 
 // ─── fixture ────────────────────────────────────────────────────────────────
 
@@ -678,6 +688,64 @@ describe('local enums', () => {
     expect([...DOCUMENTED_FORM_TRIGGER_VALUES]).not.toContain(
       'reviewer-ruled-unexecutable',
     );
+  });
+});
+
+// ─── package-root re-export (issue #216) ────────────────────────────────────
+//
+// The trigger vocabulary constant, the trigger type, the comparison type and
+// the divergence type were engine-complete but reachable only via a deep
+// import into this module — the same barrel-gap class as the disclosure
+// surface (issue #177). This proves a consumer can type a ReviewerVerdict's
+// `documentedFormComparison` field from a PACKAGE-ROOT import alone, with no
+// deep import into './reviewer-verdict-schema' anywhere in this block.
+
+describe('the Documented-Form Comparison surface is reachable from the package root (issue #216)', () => {
+  it('DOCUMENTED_FORM_TRIGGER_VALUES imported from the root is the same vocabulary', () => {
+    expect([...DOCUMENTED_FORM_TRIGGER_VALUES_FROM_ROOT]).toEqual([
+      ...DOCUMENTED_FORM_TRIGGER_VALUES,
+    ]);
+  });
+
+  it('a root-only import types a well-formed comparison and a divergence within it', () => {
+    const trigger: DocumentedFormTriggerFromRoot = 'deferred-core-path';
+    const divergence: DocumentedFormDivergenceFromRoot = {
+      description: 'no --provenance flag on the publish step',
+      deliberate: true,
+    };
+    const comparison: DocumentedFormComparisonFromRoot = {
+      trigger,
+      sources: ['vendor docs, root-typed'],
+      divergences: [divergence],
+    };
+
+    expect(DOCUMENTED_FORM_TRIGGER_VALUES_FROM_ROOT).toContain(comparison.trigger);
+  });
+
+  it('a root-typed comparison round-trips through validateReviewerVerdict (imported directly, per this file convention)', () => {
+    const documentedFormComparison: DocumentedFormComparisonFromRoot = {
+      trigger: 'worker-declared',
+      sources: ['README.md — "Publishing" section, root-typed fixture'],
+      divergences: [],
+    };
+    const verdict: Partial<ReviewerVerdict> = {
+      verdict: 'approve',
+      branchReviewed: 'wave/216-documented-form-type-reexports',
+      riskClass: 'isolated-refactor',
+      workerReportDigest: 'root-typed fixture for the barrel-gap regression',
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'tools/wave/src/index.ts' },
+      ],
+      reviewerFocusItems: [],
+      lintTestSummary: '1/1 green',
+      gitStateSane: true,
+      documentedFormComparison,
+    };
+
+    expect(validateReviewerVerdict(verdict as ReviewerVerdict)).toEqual({
+      valid: true,
+      errors: [],
+    });
   });
 });
 
