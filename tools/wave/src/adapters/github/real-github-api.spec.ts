@@ -301,6 +301,201 @@ describe('RealGitHubApi', () => {
       const { api } = makeApi(() => ({ status: 401, json: { message: 'Bad credentials' } }));
       await expect(api.getPrStatus('b')).rejects.toMatchObject({ name: 'GitHubApiError', status: 401, op: 'getPrStatus' });
     });
+
+    it('reports head.sha + base.ref off the detail payload — the check-attach coordinates, at no extra request', async () => {
+      const { api, http } = makeApi((req) =>
+        req.url.includes('/pulls?')
+          ? { status: 200, json: [{ number: 7, state: 'open', merged_at: null, html_url: 'u7' }] }
+          : {
+              status: 200,
+              json: {
+                number: 7,
+                mergeable_state: 'clean',
+                draft: false,
+                head: { sha: 'c0ffee1', ref: 'wave/256-arm-check-attach' },
+                base: { ref: 'main' },
+              },
+            },
+      );
+      expect(await api.getPrStatus('wave/256-arm-check-attach')).toEqual({
+        state: 'open',
+        number: 7,
+        url: 'u7',
+        mergeability: 'clean',
+        headSha: 'c0ffee1',
+        baseRef: 'main',
+      });
+      expect(http.requests).toHaveLength(2); // still exactly two calls
+    });
+
+    it('omits headSha/baseRef entirely when the payload carries neither (the pre-existing shape)', async () => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/pulls?')
+          ? { status: 200, json: [{ number: 7, state: 'open', merged_at: null, html_url: 'u7' }] }
+          : { status: 200, json: { mergeable_state: 'clean', draft: false } },
+      );
+      const status = await api.getPrStatus('b');
+      expect('headSha' in status).toBe(false);
+      expect('baseRef' in status).toBe(false);
+    });
+  });
+
+  // ─── getReportedChecks (the arm verb's check-ATTACH input) ────────────────
+  //
+  // The read that closes the 2026-07-30 check-attach-latency defect: `host-pr arm`
+  // direct-merged two PRs ~90 s old whose ruleset-required checks ("Engine Tests
+  // (vitest)" / "Engine Typecheck (tsc)") had not attached to the head commit, on
+  // the strength of GitHub reporting `mergeable_state: clean` for both "everything
+  // passed" and "nothing has reported yet". These fixtures pin the request shapes
+  // against GitHub's documented endpoints and the conclusion mapping.
+
+  describe('getReportedChecks (check runs + commit statuses for a ref)', () => {
+    const CHECK_RUNS = '/commits/c0ffee1/check-runs';
+    const COMBINED = '/commits/c0ffee1/status';
+
+    it('reads BOTH documented sources and folds them into one list', async () => {
+      const seen: string[] = [];
+      const { api } = makeApi((req) => {
+        seen.push(req.url);
+        if (req.url.includes('/check-runs')) {
+          const u = new URL(req.url);
+          // `filter=latest` is GitHub's documented default; passed EXPLICITLY so a
+          // re-run can never arrive as two reports for one name.
+          expect(u.searchParams.get('filter')).toBe('latest');
+          expect(u.searchParams.get('per_page')).toBe('100');
+          return {
+            status: 200,
+            json: {
+              total_count: 2,
+              check_runs: [
+                { name: 'Engine Tests (vitest)', status: 'completed', conclusion: 'success' },
+                { name: 'Engine Typecheck (tsc)', status: 'in_progress', conclusion: null },
+              ],
+            },
+          };
+        }
+        return {
+          status: 200,
+          json: { state: 'pending', statuses: [{ context: 'ci/external', state: 'success' }] },
+        };
+      });
+      expect(await api.getReportedChecks('c0ffee1')).toEqual([
+        { name: 'Engine Tests (vitest)', state: 'success' },
+        { name: 'Engine Typecheck (tsc)', state: 'pending' },
+        { name: 'ci/external', state: 'success' },
+      ]);
+      expect(seen[0]).toContain(CHECK_RUNS);
+      expect(seen[1]).toContain(COMBINED);
+    });
+
+    it('an EMPTY answer from both sources is the latency window — [] , not a failure', async () => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { total_count: 0, check_runs: [] } }
+          : { status: 200, json: { state: 'pending', statuses: [] } },
+      );
+      expect(await api.getReportedChecks('c0ffee1')).toEqual([]);
+    });
+
+    it.each([
+      ['success', 'success'],
+      ['skipped', 'success'],
+      ['neutral', 'success'],
+      ['failure', 'failure'],
+      ['cancelled', 'failure'],
+      ['timed_out', 'failure'],
+      ['action_required', 'failure'],
+      [null, 'failure'],
+    ])('a COMPLETED run with conclusion %s maps to %s', async (conclusion, expected) => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [{ name: 'c', status: 'completed', conclusion }] } }
+          : { status: 200, json: { statuses: [] } },
+      );
+      expect(await api.getReportedChecks('c0ffee1')).toEqual([{ name: 'c', state: expected }]);
+    });
+
+    it.each(['queued', 'in_progress', 'waiting', 'requested', 'pending'])(
+      'an UNSETTLED run status %s maps to pending, whatever the conclusion field says',
+      async (status) => {
+        const { api } = makeApi((req) =>
+          req.url.includes('/check-runs')
+            ? { status: 200, json: { check_runs: [{ name: 'c', status, conclusion: 'success' }] } }
+            : { status: 200, json: { statuses: [] } },
+        );
+        expect(await api.getReportedChecks('c0ffee1')).toEqual([{ name: 'c', state: 'pending' }]);
+      },
+    );
+
+    it.each([
+      ['success', 'success'],
+      ['pending', 'pending'],
+      ['failure', 'failure'],
+      ['error', 'failure'],
+    ])('a commit status state %s maps to %s', async (state, expected) => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [] } }
+          : { status: 200, json: { statuses: [{ context: 'ctx', state }] } },
+      );
+      expect(await api.getReportedChecks('c0ffee1')).toEqual([{ name: 'ctx', state: expected }]);
+    });
+
+    it('pages the check-runs list to exhaustion (a 100-item page is followed by another)', async () => {
+      const page1 = Array.from({ length: 100 }, (_, i) => ({ name: `c${i}`, status: 'completed', conclusion: 'success' }));
+      const { api, http } = makeApi((req) => {
+        if (!req.url.includes('/check-runs')) return { status: 200, json: { statuses: [] } };
+        return new URL(req.url).searchParams.get('page') === '1'
+          ? { status: 200, json: { check_runs: page1 } }
+          : { status: 200, json: { check_runs: [{ name: 'last', status: 'completed', conclusion: 'success' }] } };
+      });
+      const out = await api.getReportedChecks('c0ffee1');
+      expect(out).toHaveLength(101);
+      expect(out.at(-1)).toEqual({ name: 'last', state: 'success' });
+      expect(http.requests).toHaveLength(3); // two check-run pages + the combined status
+    });
+
+    it('keeps the slashes of a `heads/<branch>` ref as path separators, encoding each segment', async () => {
+      const { api, http } = makeApi((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [] } }
+          : { status: 200, json: { statuses: [] } },
+      );
+      await api.getReportedChecks('heads/wave/256-arm check-attach');
+      expect(http.requests[0].url).toContain('/commits/heads/wave/256-arm%20check-attach/check-runs');
+    });
+
+    it('THROWS on a non-200 check-runs read — a failed read must never counterfeit "nothing attached"', async () => {
+      const { api } = makeApi(() => ({ status: 502, json: { message: 'Bad gateway' } }));
+      await expect(api.getReportedChecks('c0ffee1')).rejects.toMatchObject({
+        name: 'GitHubApiError',
+        status: 502,
+        op: 'getReportedChecks',
+      });
+    });
+
+    it('THROWS on a non-200 combined-status read too', async () => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [] } }
+          : { status: 403, json: { message: 'Forbidden' } },
+      );
+      await expect(api.getReportedChecks('c0ffee1')).rejects.toMatchObject({ status: 403, op: 'getReportedChecks' });
+    });
+
+    it('drops entries with no usable name/context rather than reporting a nameless check', async () => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [{ status: 'completed', conclusion: 'success' }, { name: '', status: 'completed', conclusion: 'success' }] } }
+          : { status: 200, json: { statuses: [{ state: 'success' }, { context: '', state: 'success' }] } },
+      );
+      expect(await api.getReportedChecks('c0ffee1')).toEqual([]);
+    });
+
+    it('tolerates a body with no check_runs / statuses array at all', async () => {
+      const { api } = makeApi(() => ({ status: 200, json: {} }));
+      expect(await api.getReportedChecks('c0ffee1')).toEqual([]);
+    });
   });
 
   describe('mergePullRequest (REST PUT .../pulls/N/merge)', () => {

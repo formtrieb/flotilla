@@ -23,6 +23,9 @@ import {
   closePhraseLossReason,
   createPr,
   decideArmAction,
+  refineArmDecisionForCheckAttach,
+  compareRequiredToReported,
+  asCheckAttachReader,
   armPullRequest,
   mergePullRequestNow,
   preflightHost,
@@ -31,7 +34,10 @@ import {
   AutoMergeUnavailableError,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
+  type ArmDecision,
   type ArmOptions,
+  type CheckAttachReader,
+  type ReportedCheck,
   type HttpProbe,
   type HttpRequest,
   type HttpResponse,
@@ -1497,6 +1503,495 @@ describe('armPullRequest — --delete-branch (FOR-66-class reproduction, issue #
       outcome: 'armed',
       reason: 'A required check or review is still pending — arm the PR to land itself once it passes.',
     });
+  });
+});
+
+// ─── The check-ATTACH gate: "none reported" is NOT "all required passed" ──────
+//
+// EVIDENCE — two live occurrences, 2026-07-30, both on pull requests ~90 seconds
+// old, both on this repository, whose `main` ruleset names exactly two required
+// checks ("Engine Tests (vitest)" and "Engine Typecheck (tsc)"):
+//
+//   OCCURRENCE 1 — the ops-guards wave's landing round. `host-pr arm` on the
+//   freshly-created row PRs answered `outcome: merged`, `reason: "PR is clean —
+//   no pending required checks"`. The same session's `host-pr preflight` had
+//   listed both required checks minutes earlier, so the ruleset was demonstrably
+//   in force; what had not happened yet was the CHECK ATTACH — no check run was
+//   associated with the head commit at the instant the arm read mergeability, so
+//   GitHub reported `clean` and the arm took the direct-merge branch.
+//
+//   OCCURRENCE 2 — minutes after the defect was filed, arming the retro docs PR
+//   (~90 s old) produced the identical answer: merged, "PR is clean, no pending
+//   required checks". Whether those docs-only checks had genuinely completed or
+//   had simply not attached yet is INDISTINGUISHABLE from the arm output — and
+//   that is itself the defect being fixed here: the caller cannot tell
+//   all-required-passed from none-reported, because both render as `clean`.
+//
+// The specs below pin the distinction the fix draws, against a faked host.
+
+/** A `RequiredChecksInfo` whose effective-rules read found `contexts` in force. */
+const requiredPresent = (...contexts: string[]): RequiredChecksInfo => ({
+  state: 'present',
+  contexts,
+  detail: `fake: required — ${contexts.join(', ')}`,
+});
+
+/** The AUTHORITATIVE "this branch requires no status checks" answer. */
+const requiredAbsent = (): RequiredChecksInfo => ({
+  state: 'absent',
+  contexts: [],
+  detail: 'fake: the effective rules require no status checks',
+});
+
+/** The BLIND answer — the probe could not read the rules either way. */
+const requiredUnknown = (): RequiredChecksInfo => ({
+  state: 'unknown',
+  contexts: [],
+  detail: 'fake: both reads were unavailable',
+});
+
+/** The two required checks named by this repo's live ruleset (both occurrences). */
+const VITEST_CHECK = 'Engine Tests (vitest)';
+const TSC_CHECK = 'Engine Typecheck (tsc)';
+
+/**
+ * The FRESH-PR shape from both live occurrences: an open PR the host reports as
+ * `clean` — not because the required checks passed, but because none has reported
+ * yet. `headSha`/`baseRef` are what the attach comparison is asked about.
+ */
+const freshCleanPr = (): PrLandingStatus => ({
+  state: 'open',
+  number: 42,
+  url: 'https://github.com/acme/widgets/pull/42',
+  mergeability: 'clean',
+  headSha: 'c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1c0ffee',
+  baseRef: 'main',
+});
+
+/**
+ * A {@link fakeLandingHost} that ALSO implements the two optional
+ * {@link CheckAttachReader} reads, so `asCheckAttachReader` finds them. Kept
+ * separate from `fakeLandingHost` on purpose: every existing spec uses a host
+ * WITHOUT these reads, which is itself the "a host that cannot answer keeps
+ * today's behaviour" case, and must stay that way.
+ */
+function fakeAttachAwareHost(opts: {
+  status?: PrLandingStatus;
+  statuses?: PrLandingStatus[];
+  onEnableAutoMerge?: () => void;
+  onMerge?: () => MergeResult;
+  onDeleteBranch?: () => void;
+  required: RequiredChecksInfo;
+  reported?: ReportedCheck[];
+  /** When set, `getReportedChecks` THROWS this message (a failed read). */
+  reportedThrows?: string;
+  /** When set, `getRequiredChecks` THROWS this message (a failed read). */
+  requiredThrows?: string;
+}): { host: LandingHost; calls: string[] } {
+  const base = fakeLandingHost(opts);
+  const host = base.host as LandingHost & CheckAttachReader;
+  host.getRequiredChecks = async (branch?: string) => {
+    base.calls.push(`getRequiredChecks:${branch ?? ''}`);
+    if (opts.requiredThrows !== undefined) throw new Error(opts.requiredThrows);
+    return opts.required;
+  };
+  host.getReportedChecks = async (ref: string) => {
+    base.calls.push(`getReportedChecks:${ref}`);
+    if (opts.reportedThrows !== undefined) throw new Error(opts.reportedThrows);
+    return opts.reported ?? [];
+  };
+  return { host, calls: base.calls };
+}
+
+const green = (name: string): ReportedCheck => ({ name, state: 'success' });
+
+describe('compareRequiredToReported (the pure required-vs-reported comparison)', () => {
+  it('ZERO reported against required checks → every one is unreported, NEVER attached', () => {
+    // The load-bearing claim of the whole fix: an empty report list can never
+    // satisfy "all required checks passed".
+    expect(compareRequiredToReported([VITEST_CHECK, TSC_CHECK], [])).toEqual({
+      required: [VITEST_CHECK, TSC_CHECK],
+      unreported: [VITEST_CHECK, TSC_CHECK],
+      unsettled: [],
+      attached: false,
+    });
+  });
+
+  it('every required check reported green → attached, nothing missing', () => {
+    expect(compareRequiredToReported([VITEST_CHECK, TSC_CHECK], [green(VITEST_CHECK), green(TSC_CHECK)])).toEqual({
+      required: [VITEST_CHECK, TSC_CHECK],
+      unreported: [],
+      unsettled: [],
+      attached: true,
+    });
+  });
+
+  it('NO required checks is vacuously attached (a repo with no CI keeps direct-merging)', () => {
+    expect(compareRequiredToReported([], [])).toMatchObject({ required: [], attached: true });
+  });
+
+  it('a PARTIAL attach — one reported, one not — is not attached, and names only the missing one', () => {
+    expect(compareRequiredToReported([VITEST_CHECK, TSC_CHECK], [green(VITEST_CHECK)])).toMatchObject({
+      unreported: [TSC_CHECK],
+      unsettled: [],
+      attached: false,
+    });
+  });
+
+  it('separates "reported but not green" (unsettled) from "not reported at all" (unreported)', () => {
+    const out = compareRequiredToReported(
+      [VITEST_CHECK, TSC_CHECK],
+      [{ name: VITEST_CHECK, state: 'pending' }],
+    );
+    expect(out).toMatchObject({ unsettled: [VITEST_CHECK], unreported: [TSC_CHECK], attached: false });
+  });
+
+  it('a required check reported as FAILURE is unsettled, never attached', () => {
+    expect(
+      compareRequiredToReported([VITEST_CHECK], [{ name: VITEST_CHECK, state: 'failure' }]),
+    ).toMatchObject({ unsettled: [VITEST_CHECK], attached: false });
+  });
+
+  it('reports for checks that are NOT required are ignored entirely', () => {
+    expect(
+      compareRequiredToReported([VITEST_CHECK], [green(VITEST_CHECK), green('some/optional-lint')]),
+    ).toMatchObject({ required: [VITEST_CHECK], attached: true });
+  });
+
+  it('de-duplicates the required list and reads a duplicate report tolerantly (any green counts)', () => {
+    expect(compareRequiredToReported([VITEST_CHECK, VITEST_CHECK], [
+      { name: VITEST_CHECK, state: 'pending' },
+      green(VITEST_CHECK),
+    ])).toEqual({ required: [VITEST_CHECK], unreported: [], unsettled: [], attached: true });
+  });
+
+  it('matching is EXACT on the name — a near-miss context is not a report for the required check', () => {
+    expect(compareRequiredToReported([VITEST_CHECK], [green('engine tests (vitest)')])).toMatchObject({
+      unreported: [VITEST_CHECK],
+      attached: false,
+    });
+  });
+});
+
+describe('refineArmDecisionForCheckAttach (the clean/pending distinction)', () => {
+  const cleanDecision = (): ArmDecision => decideArmAction('clean');
+
+  it('AC1 (unit): required checks in force + ZERO reported → the merge becomes an ARM', () => {
+    const attach = compareRequiredToReported([VITEST_CHECK, TSC_CHECK], []);
+    const out = refineArmDecisionForCheckAttach(cleanDecision(), attach);
+    expect(out.action).toBe('enable-auto-merge');
+    // The reason must state the distinction in words, not just change the action —
+    // occurrence 2's whole complaint was that the OUTPUT could not be read.
+    expect(out.reason).toMatch(/not "all required checks passed"/i);
+    expect(out.reason).toMatch(/check-attach latency/i);
+    expect(out.reason).toContain(VITEST_CHECK);
+    expect(out.reason).toContain(TSC_CHECK);
+  });
+
+  it('AC2 (unit): all required checks reported green → still a direct merge, and the reason NAMES them', () => {
+    const attach = compareRequiredToReported([VITEST_CHECK, TSC_CHECK], [green(VITEST_CHECK), green(TSC_CHECK)]);
+    const out = refineArmDecisionForCheckAttach(cleanDecision(), attach);
+    expect(out.action).toBe('merge');
+    expect(out.reason).toMatch(/Verified: all 2 required check\(s\) have reported success/);
+  });
+
+  it('AC2 (unit): no required checks configured → direct merge, authoritatively (not a guess)', () => {
+    const out = refineArmDecisionForCheckAttach(cleanDecision(), compareRequiredToReported([], []));
+    expect(out.action).toBe('merge');
+    expect(out.reason).toMatch(/require NO status checks/i);
+  });
+
+  it('no evidence available (null) → direct merge UNCHANGED, but the reason discloses it is unverified', () => {
+    const out = refineArmDecisionForCheckAttach(cleanDecision(), null);
+    expect(out.action).toBe('merge');
+    expect(out.reason).toMatch(/NOT verified/);
+    expect(out.reason).toMatch(/the host's word alone/);
+  });
+
+  it('is a strict IDENTITY on every non-merge decision — the fix must not turn arms/refusals into anything else', () => {
+    const forbidding = compareRequiredToReported([VITEST_CHECK], []);
+    for (const m of ['blocked', 'unstable', 'behind', 'unknown', 'dirty', 'draft'] as PrMergeability[]) {
+      const before = decideArmAction(m);
+      expect(refineArmDecisionForCheckAttach(before, forbidding)).toBe(before);
+      expect(refineArmDecisionForCheckAttach(before, null)).toBe(before);
+    }
+  });
+});
+
+describe('asCheckAttachReader (the optional capability probe)', () => {
+  it('a plain LandingHost is NOT a reader — an existing adapter keeps working unchanged', () => {
+    expect(asCheckAttachReader(fakeLandingHost({ status: openPr('clean') }).host)).toBeNull();
+  });
+
+  it('a host carrying BOTH reads is narrowed to a reader', () => {
+    const { host } = fakeAttachAwareHost({ status: freshCleanPr(), required: requiredAbsent() });
+    expect(asCheckAttachReader(host)).not.toBeNull();
+  });
+
+  it('a host carrying only ONE of the two reads is NOT a reader (no half-answered comparison)', () => {
+    const { host } = fakeLandingHost({ status: openPr('clean') });
+    (host as LandingHost & Partial<CheckAttachReader>).getReportedChecks = async () => [];
+    expect(asCheckAttachReader(host)).toBeNull();
+  });
+});
+
+describe('armPullRequest — the check-attach gate (AC1/AC2, 2026-07-30 live occurrences)', () => {
+  it('AC1: the FRESH-PR shape — required checks configured, ZERO reported for the head — ARMS, never direct-merges', async () => {
+    // This is occurrence 1 and occurrence 2, reproduced: mergeability `clean` on a
+    // PR whose two ruleset-required checks have not attached to the head commit.
+    // Pre-fix this answered `merged` with "PR is clean — no pending required checks".
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK, TSC_CHECK),
+      reported: [], // the check-attach latency window
+    });
+    const out = await armPullRequest(host, 'wave/fresh-pr');
+    expect(out).toMatchObject({ outcome: 'armed', prNumber: 42 });
+    // NEVER a direct merge — the single most important assertion in this file.
+    expect(calls).not.toContain('mergePullRequest:42:squash');
+    expect(calls).toEqual([
+      'getPrStatus:wave/fresh-pr',
+      'getRequiredChecks:main',
+      'getReportedChecks:c0ffee1c0ffee1c0ffee1c0ffee1c0ffee1c0ffee',
+      'enableAutoMerge:42:squash',
+    ]);
+    expect((out as { reason: string }).reason).toMatch(/not "all required checks passed"/i);
+  });
+
+  it('AC1: a PARTIAL attach (one of the two reported green) still arms — every required check must have reported', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK, TSC_CHECK),
+      reported: [green(VITEST_CHECK)],
+    });
+    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'armed' });
+    expect(calls).not.toContain('mergePullRequest:42:squash');
+  });
+
+  it('AC2: ALL required checks reported green → direct merge, UNCHANGED (the fix must not arm every landing)', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK, TSC_CHECK),
+      reported: [green(VITEST_CHECK), green(TSC_CHECK)],
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'merged', prNumber: 42, sha: 'deadbeef' });
+    expect(calls).not.toContain('enableAutoMerge:42:squash');
+    expect(calls).toContain('mergePullRequest:42:squash');
+    // And the direct merge is now EVIDENCED, which is what occurrence 2 lacked.
+    expect((out as { reason: string }).reason).toMatch(/Verified: all 2 required check\(s\) have reported success/);
+  });
+
+  it('AC2: NO required checks configured → direct merge, and the reports are never even asked for', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredAbsent(),
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'merged', prNumber: 42 });
+    expect(calls).toEqual(['getPrStatus:b', 'getRequiredChecks:main', 'mergePullRequest:42:squash']);
+    expect((out as { reason: string }).reason).toMatch(/require NO status checks/i);
+  });
+
+  it('AC2: a host that cannot answer the attach question behaves EXACTLY as before (unchanged direct merge)', async () => {
+    const { host, calls } = fakeLandingHost({ status: openPr('clean') });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'merged', prNumber: 42 });
+    expect(calls).toEqual(['getPrStatus:b', 'mergePullRequest:42:squash']);
+    expect((out as { reason: string }).reason).toMatch(/NOT verified/);
+  });
+
+  it('a BLIND required-checks read (state unknown) never becomes "nothing is required" — merge unchanged, reports not asked for', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredUnknown(),
+      reported: [], // would forbid the merge if `unknown` were read as `absent`
+    });
+    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'merged' });
+    expect(calls).toEqual(['getPrStatus:b', 'getRequiredChecks:main', 'mergePullRequest:42:squash']);
+  });
+
+  it('a FAILED reports read cannot counterfeit "nothing has attached" — it is no evidence, so the merge is unchanged', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK),
+      reportedThrows: 'HTTP 502 from the check-runs read',
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'merged' });
+    expect((out as { reason: string }).reason).toMatch(/NOT verified/);
+    expect(calls).toContain('mergePullRequest:42:squash');
+  });
+
+  it('a FAILED required-checks read is likewise no evidence (never a refusal, never an arm)', async () => {
+    const { host } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK),
+      requiredThrows: 'HTTP 500 from the effective-rules read',
+    });
+    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'merged' });
+  });
+
+  it('falls back to the documented `heads/<branch>` ref form when the host reports no head SHA', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: { state: 'open', number: 42, mergeability: 'clean', baseRef: 'main' },
+      required: requiredPresent(VITEST_CHECK),
+      reported: [green(VITEST_CHECK)],
+    });
+    await armPullRequest(host, 'wave/256-arm-check-attach');
+    expect(calls).toContain('getReportedChecks:heads/wave/256-arm-check-attach');
+  });
+
+  it('with no reported baseRef the required-checks read falls back to the default branch (no arg)', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: { state: 'open', number: 42, mergeability: 'clean', headSha: 'abc' },
+      required: requiredPresent(VITEST_CHECK),
+      reported: [green(VITEST_CHECK)],
+    });
+    await armPullRequest(host, 'b');
+    expect(calls).toContain('getRequiredChecks:');
+  });
+
+  it('a BLOCKED PR arms without paying for the attach read at all (the fast path is untouched)', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: openPr('blocked'),
+      required: requiredPresent(VITEST_CHECK),
+    });
+    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'armed' });
+    expect(calls).toEqual(['getPrStatus:b', 'enableAutoMerge:42:squash']);
+  });
+
+  it('the attach evidence is read ONCE and shared across the legs that could merge', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK),
+      reported: [green(VITEST_CHECK)],
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
+      },
+    });
+    await armPullRequest(host, 'b');
+    expect(calls.filter((c) => c.startsWith('getRequiredChecks'))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith('getReportedChecks'))).toHaveLength(1);
+  });
+
+  it('AC1: the SPIKE-2 clean-status recovery cannot undo the gate — it REFUSES, it does not merge', async () => {
+    // Without this leg the fix would be cosmetic: the refined decision arms, the
+    // host rejects the arm as "clean status" (it genuinely believes the PR is
+    // clean — that is the defect), and the recovery would merge it anyway.
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK, TSC_CHECK),
+      reported: [],
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
+      },
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'refused', prNumber: 42 });
+    expect(calls).not.toContain('mergePullRequest:42:squash');
+    expect((out as { reason: string }).reason).toMatch(/not\s+"all required checks passed"/i);
+    expect((out as { reason: string }).reason).toMatch(/Re-run `host-pr arm`/);
+  });
+
+  it('the clean-status recovery still merges when the attach evidence CONFIRMS all required checks passed', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: openPr('unknown'),
+      required: requiredPresent(VITEST_CHECK),
+      reported: [green(VITEST_CHECK)],
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
+      },
+    });
+    expect(await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep })).toMatchObject({
+      outcome: 'merged',
+    });
+    expect(calls).toContain('mergePullRequest:42:squash');
+  });
+
+  it('AC1: the not-allowed controlled degrade cannot merge past unattached required checks either', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK, TSC_CHECK),
+      reported: [],
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'Auto merge is not allowed for this repository');
+      },
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out).toMatchObject({ outcome: 'refused' });
+    expect(calls).not.toContain('mergePullRequest:42:squash');
+    expect((out as { reason: string }).reason).toMatch(/Allow auto-merge/i);
+    expect((out as { reason: string }).reason).toMatch(/not\s+"all required checks passed"/i);
+  });
+
+  it('the not-allowed controlled degrade still merges when the attach evidence confirms the checks passed', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: openPr('unstable'),
+      required: requiredPresent(VITEST_CHECK),
+      reported: [green(VITEST_CHECK)],
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'The repository does not permit auto-merge');
+      },
+    });
+    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'merged' });
+    expect(calls).toContain('mergePullRequest:42:squash');
+  });
+
+  it('--delete-branch on an arm that the gate turned into an ARM defers the deletion (no synchronous merge to delete after)', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK),
+      reported: [],
+    });
+    const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    expect(out).toMatchObject({ outcome: 'armed' });
+    expect(calls).not.toContain('deleteBranch:b');
+    expect((out as { reason: string }).reason).toMatch(/deferred/i);
+  });
+
+  it('--delete-branch on a VERIFIED direct merge still deletes the branch (KW-F6 parity is preserved)', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK),
+      reported: [green(VITEST_CHECK)],
+    });
+    const out = await armPullRequest(host, 'wave/x', DEFAULT_MERGE_METHOD, { deleteBranch: true });
+    expect(out).toMatchObject({ outcome: 'merged', branchDeletion: { branch: 'wave/x', deleted: true } });
+    expect(calls).toContain('deleteBranch:wave/x');
+  });
+
+  it('an already-merged PR still short-circuits with no attach read and no writes (idempotency preserved)', async () => {
+    const { host, calls } = fakeAttachAwareHost({
+      status: { state: 'merged', number: 42, url: 'u' },
+      required: requiredPresent(VITEST_CHECK),
+    });
+    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'already-merged' });
+    expect(calls).toEqual(['getPrStatus:b']);
+  });
+
+  it('CONVENTION 11 — the fresh-PR shape demonstrated FAILING against the pre-fix decision', async () => {
+    // The pre-fix arm consulted `decideArmAction(mergeability)` and NOTHING else.
+    // Fed the fresh-PR shape, that decision is the defect, verbatim: it picks the
+    // direct merge and its reason asserts "no pending required checks" about a PR
+    // whose required checks have reported nothing at all.
+    const attach = compareRequiredToReported([VITEST_CHECK, TSC_CHECK], []);
+    const preFix = decideArmAction(freshCleanPr().mergeability as PrMergeability);
+    expect(preFix.action).toBe('merge');
+    expect(preFix.reason).toMatch(/no pending required checks/);
+    // …and the evidence available at that very moment contradicts it.
+    expect(attach.attached).toBe(false);
+    expect(attach.unreported).toEqual([VITEST_CHECK, TSC_CHECK]);
+    // The post-fix pipeline reads the same two inputs and answers differently.
+    expect(refineArmDecisionForCheckAttach(preFix, attach).action).toBe('enable-auto-merge');
+    // End to end, on the same shape: armed, and no merge call was ever issued.
+    const { host, calls } = fakeAttachAwareHost({
+      status: freshCleanPr(),
+      required: requiredPresent(VITEST_CHECK, TSC_CHECK),
+      reported: [],
+    });
+    expect(await armPullRequest(host, 'b')).toMatchObject({ outcome: 'armed' });
+    expect(calls.some((c) => c.startsWith('mergePullRequest'))).toBe(false);
   });
 });
 

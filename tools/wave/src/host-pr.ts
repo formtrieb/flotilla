@@ -718,6 +718,20 @@ export interface PrLandingStatus {
   number?: number;
   /** Only set for an open PR; absent is treated as `unknown` (never as clean). */
   mergeability?: PrMergeability;
+  /**
+   * The PR's head commit SHA, when the host reported one. The commit the
+   * check-attach comparison ({@link compareRequiredToReported}) asks about: check
+   * reports are attached to a COMMIT, not to a branch, so a SHA is the precise
+   * subject. Optional — a host that does not surface it degrades to the branch
+   * ref, and a host that surfaces neither contributes no attach evidence at all.
+   */
+  headSha?: string;
+  /**
+   * The PR's BASE branch, when the host reported one — the branch whose required
+   * status checks are in force for this PR. Optional: absent falls back to the
+   * repo's default branch, which is the base for every flotilla wave row.
+   */
+  baseRef?: string;
 }
 
 /** Outcome of a merge write. `merged:false` = the host declined (not an error). */
@@ -815,6 +829,169 @@ export class LandingNotImplementedError extends Error {
   }
 }
 
+// ─── The check-ATTACH comparison: required names vs. reported runs ────────────
+//
+// The defect this closes: a PR's mergeability alone cannot tell "every required
+// check has PASSED" from "no required check has REPORTED YET". GitHub reports
+// `mergeable_state: clean` for both — the second is the CHECK-ATTACH LATENCY
+// WINDOW, the seconds between a push/PR-create and the first check run being
+// attached to the head commit. `decideArmAction('clean')` then picks the direct
+// merge, and the PR lands without the required checks ever having run.
+//
+// LIVE OCCURRENCES (2026-07-30, both on the same day, both on PRs ~90 s old):
+//
+//   1. The ops-guards wave's landing round: `host-pr arm` on the freshly created
+//      row PRs answered `outcome: merged`, `reason: "PR is clean — no pending
+//      required checks"` — while the branch ruleset named the TWO required checks
+//      ("Engine Tests (vitest)" and "Engine Typecheck (tsc)") that the very same
+//      session's `host-pr preflight` had just listed.
+//   2. Minutes after the defect was filed, arming the retro docs PR (~90 s old)
+//      produced the identical answer. Whether those docs-only checks had really
+//      completed or had merely not attached yet is INDISTINGUISHABLE from the arm
+//      output — and that indistinguishability is itself the defect: the caller
+//      cannot tell all-required-passed from none-reported.
+//
+// The fix reuses the facts that already exist rather than inventing new ones: the
+// required check NAMES come from the effective-rules read the preflight sibling
+// already performs ({@link LandingPosture.getRequiredChecks}), and the reports
+// come from one new host read ({@link CheckAttachReader.getReportedChecks}). The
+// COMPARISON is pure and lives here, host-neutral, exactly like the arm intent.
+
+/**
+ * One check the host has REPORTED for a commit — a check run or a commit status,
+ * normalised to the two facts the comparison needs.
+ *
+ * `name` is the identity a required-check context is matched on: GitHub matches a
+ * required context against a check run's `name` OR a commit status's `context`,
+ * so an adapter folds both sources into this one list.
+ *
+ * `state` is three-valued on purpose:
+ *   - `success` — reported AND settled green. GitHub's `conclusion` values
+ *     `success`, `neutral` and `skipped` all land here: a skipped job
+ *     "will report its status as 'Success'. It will not prevent a pull request
+ *     from merging, even if it is a required check" (GitHub, About status checks),
+ *     and `neutral` is its other non-blocking conclusion.
+ *   - `pending` — reported but not settled (queued / in progress).
+ *   - `failure` — reported, settled, and not green.
+ *
+ * NB the ABSENCE of a name from the reported list is the case this whole section
+ * exists for, and it is deliberately NOT a `state`: "not reported" is a fact
+ * about the list, not about a check.
+ */
+export interface ReportedCheck {
+  /** The check run's name, or the commit status's context. */
+  name: string;
+  /** Reported-and-green / reported-but-unsettled / reported-and-not-green. */
+  state: 'success' | 'pending' | 'failure';
+}
+
+/**
+ * The required-vs-reported comparison for one head commit — the evidence the arm
+ * decision needs to tell all-required-passed from none-reported.
+ *
+ * `attached` is the ONE question the decision asks, and it is deliberately
+ * conjunctive: every required context must have a report AND that report must be
+ * green. Zero reports therefore never satisfies it — which is the whole point.
+ * A repo with NO required checks is vacuously `attached` (`required: []`), so it
+ * keeps the direct-merge behaviour it has always had.
+ */
+export interface RequiredCheckAttachment {
+  /** The required check contexts in force for the PR's base branch (de-duplicated). */
+  required: string[];
+  /** Required contexts with NO report at all for the head commit — the latency window. */
+  unreported: string[];
+  /** Required contexts that ARE reported but not settled green (queued / running / failed). */
+  unsettled: string[];
+  /** Whether EVERY required context is reported and green. Vacuously true when none are required. */
+  attached: boolean;
+}
+
+/**
+ * Compare the required check contexts against the checks actually reported for a
+ * head commit. Pure and total — no I/O, safe on empty inputs.
+ *
+ * A required context is satisfied only by a report whose state is `success`. It
+ * lands in `unreported` when the reported list names it nowhere, and in
+ * `unsettled` when it is named but not green. The two are kept apart because they
+ * are different facts about the world that happen to imply the same action: the
+ * first is the latency window this defect is about, the second is an ordinary
+ * pending/failing check.
+ *
+ * Duplicate names (a re-run) are read tolerantly — ANY green report for a name
+ * counts — because the adapter is contracted to return the LATEST report per name
+ * (GitHub's check-runs endpoint does exactly that: its `filter` parameter
+ * defaults to `latest`), so a duplicate is already an unusual shape rather than a
+ * history to re-derive here.
+ */
+export function compareRequiredToReported(
+  required: string[],
+  reported: ReportedCheck[],
+): RequiredCheckAttachment {
+  const green = new Set<string>();
+  const seen = new Set<string>();
+  for (const r of reported) {
+    seen.add(r.name);
+    if (r.state === 'success') green.add(r.name);
+  }
+
+  const names = [...new Set(required.filter((c) => c.length > 0))];
+  const unreported: string[] = [];
+  const unsettled: string[] = [];
+  for (const name of names) {
+    if (!seen.has(name)) unreported.push(name);
+    else if (!green.has(name)) unsettled.push(name);
+  }
+  return {
+    required: names,
+    unreported,
+    unsettled,
+    attached: unreported.length === 0 && unsettled.length === 0,
+  };
+}
+
+/**
+ * The OPTIONAL host capability the check-attach comparison consumes. Deliberately
+ * not folded into {@link LandingHost}: a host that cannot answer it keeps today's
+ * behaviour exactly (and says so in the outcome's `reason`), so the Bitbucket
+ * pilot's `LandingHost` implementation stays valid unchanged (ADR-0023: "new
+ * adapter, no new skills").
+ *
+ * `getRequiredChecks` is the preflight's OWN effective-rules read, reused rather
+ * than duplicated — `GitHubApi extends LandingPosture` already declares it, so
+ * `RealGitHubApi` satisfies this interface structurally the moment it gains
+ * `getReportedChecks`.
+ */
+export interface CheckAttachReader {
+  /**
+   * Required status-check contexts in force for `branch` (default: the repo's
+   * default branch). The preflight's effective-rules read — throw-free, and
+   * `state: 'unknown'` when the probe was blind.
+   */
+  getRequiredChecks(branch?: string): Promise<RequiredChecksInfo>;
+  /**
+   * The checks the host has REPORTED for `ref` — a commit SHA, or a
+   * `heads/<branch>` ref (GitHub's documented `ref` forms for the check-runs and
+   * combined-status reads). MUST throw rather than return `[]` when the read
+   * itself fails: an empty list is EVIDENCE of the latency window, and a failed
+   * read must never be able to counterfeit it.
+   */
+  getReportedChecks(ref: string): Promise<ReportedCheck[]>;
+}
+
+/**
+ * Narrow a {@link LandingHost} to a {@link CheckAttachReader} when it happens to
+ * implement both reads, else `null` ("this host cannot answer the attach
+ * question"). Structural, runtime, and deliberately duck-typed — the alternative,
+ * a required method on `LandingHost`, would break every existing implementer for
+ * a capability that is legitimately optional.
+ */
+export function asCheckAttachReader(host: LandingHost): CheckAttachReader | null {
+  const h = host as Partial<CheckAttachReader>;
+  return typeof h.getRequiredChecks === 'function' && typeof h.getReportedChecks === 'function'
+    ? (h as CheckAttachReader)
+    : null;
+}
+
 /** The deterministic arm intent. */
 export type ArmDecision =
   | { action: 'merge'; reason: string }
@@ -835,6 +1012,14 @@ export type ArmDecision =
  * PR whose checks are still running). If the host then rejects the arm because
  * the PR was in fact clean, {@link armPullRequest} recovers via SPIKE 2's pinned
  * error — the safe order (arm, fall back to merge), not the unsafe one.
+ *
+ * NB `clean` is the one mergeability this function CANNOT settle on its own: the
+ * host reports it both when every required check has passed and when none has
+ * reported yet (the check-attach latency window). The `merge` decision it returns
+ * for `clean` is therefore PROVISIONAL — {@link refineArmDecisionForCheckAttach}
+ * grades it against the required-vs-reported evidence, and `armPullRequest` runs
+ * the two in that order. This function stays a pure function of mergeability
+ * alone, because that is what makes the ambiguity nameable in the first place.
  */
 export function decideArmAction(mergeability: PrMergeability): ArmDecision {
   switch (mergeability) {
@@ -876,6 +1061,80 @@ export function decideArmAction(mergeability: PrMergeability): ArmDecision {
         reason: 'The PR is a draft — mark it ready for review before landing.',
       };
   }
+}
+
+/**
+ * Refine a `merge` decision against the check-ATTACH evidence — the second half of
+ * the arm intent, and the fix for the two live occurrences documented above.
+ *
+ * `decideArmAction` decides from the host's mergeability alone, and `clean` is the
+ * one value that is AMBIGUOUS: it means "nothing required is reported pending",
+ * which is satisfied both by "everything required passed" and by "nothing required
+ * has reported yet". This refinement asks the evidence which one it is, and is a
+ * strict identity on every other decision (`enable-auto-merge`, `refuse`) — the
+ * fix must not turn every landing into an arm.
+ *
+ * Pure and total, so the whole distinction is spec-drivable without a host:
+ *
+ *   - `attach === null` — no evidence available (the host cannot answer, or the
+ *     read was blind). Decision UNCHANGED, and the reason DISCLOSES that `clean`
+ *     is the host's unverified word. Absence of evidence is not a finding
+ *     (the W2-F1c discipline) — but it is also not silence.
+ *   - `required` empty — the branch requires no checks. Direct merge, reason says
+ *     so. This is the "no required checks configured → unchanged" case, and it is
+ *     authoritative, not a guess.
+ *   - anything required unreported or unsettled → `enable-auto-merge`. The PR is
+ *     treated as checks-pending and armed; it lands itself once the checks report.
+ *   - everything required reported green → direct merge, reason NAMES the checks
+ *     it verified. This is the only path on which a direct merge is now evidenced.
+ */
+export function refineArmDecisionForCheckAttach(
+  decision: ArmDecision,
+  attach: RequiredCheckAttachment | null,
+): ArmDecision {
+  if (decision.action !== 'merge') return decision;
+
+  if (attach === null) {
+    return {
+      action: 'merge',
+      reason:
+        `${decision.reason} NOT verified against the required-check names: this host could not report ` +
+        `which checks are required, or which have reported for the head commit — so "clean" is the host's ` +
+        `word alone, not evidence that the required checks ran.`,
+    };
+  }
+
+  if (attach.required.length === 0) {
+    return {
+      action: 'merge',
+      reason:
+        `${decision.reason} Verified: the base branch's effective rules require NO status checks, so there ` +
+        `is genuinely nothing to wait for.`,
+    };
+  }
+
+  const missing = [...attach.unreported, ...attach.unsettled];
+  if (missing.length > 0) {
+    return {
+      action: 'enable-auto-merge',
+      reason:
+        `The host reports nothing pending, but ${missing.length} of ${attach.required.length} required ` +
+        `check(s) have not reported a passing result for the head commit yet (${missing.join(', ')})` +
+        (attach.unreported.length > 0
+          ? ` — ${attach.unreported.length} of them have reported NOTHING AT ALL, which is the ` +
+            `check-attach latency window, not a passing gate`
+          : '') +
+        `. "No pending required checks" is not "all required checks passed", so this PR is treated as ` +
+        `checks-pending: arm it and let it land itself once the checks report.`,
+    };
+  }
+
+  return {
+    action: 'merge',
+    reason:
+      `${decision.reason} Verified: all ${attach.required.length} required check(s) have reported success ` +
+      `for the head commit (${attach.required.join(', ')}).`,
+  };
 }
 
 /** What a landing attempt did. Every variant is terminal + reportable. */
@@ -1054,6 +1313,86 @@ function hasNoPendingRequiredCheck(mergeability: PrMergeability): boolean {
 }
 
 /**
+ * Whether the check-ATTACH evidence FORBIDS an immediate merge: required checks
+ * are in force and at least one has not reported a passing result for the head
+ * commit. `null` (no evidence available) never forbids — absence of evidence is
+ * not a finding, and forbidding on it would break every host that cannot answer.
+ *
+ * This is the gate on the THREE direct merges reachable from an arm, not just the
+ * `clean` decision: the SPIKE-2 `clean-status` recovery and the `not-allowed`
+ * controlled degrade both merge immediately too, and both take the host's word
+ * that nothing is pending — the exact word this defect proved unreliable inside
+ * the latency window. Gating only the first would leave the fix cosmetic: a
+ * refined `clean → enable-auto-merge` on a PR the host still considers clean is
+ * refused with `clean-status`, and the recovery would have merged it anyway.
+ */
+function attachForbidsDirectMerge(
+  attach: RequiredCheckAttachment | null,
+): attach is RequiredCheckAttachment {
+  return attach !== null && attach.required.length > 0 && !attach.attached;
+}
+
+/** The refusal a direct merge becomes when the attach evidence forbids it. */
+function attachRefusalReason(attach: RequiredCheckAttachment, hostSaid: string): string {
+  const missing = [...attach.unreported, ...attach.unsettled];
+  return (
+    `${hostSaid} But ${missing.length} of ${attach.required.length} required check(s) have not reported a ` +
+    `passing result for the head commit yet (${missing.join(', ')}) — "no pending required checks" is not ` +
+    `"all required checks passed". Refusing rather than merging past a gate that has not run. Re-run ` +
+    `\`host-pr arm\` once the checks have attached to the head commit (they normally report within a minute ` +
+    `of the push), or land this row via the advisory merge-order.`
+  );
+}
+
+/**
+ * Read the check-ATTACH evidence for an open PR, or `null` when there is none to
+ * be had. LAZY + memoised by the caller: an arm that never reaches a direct merge
+ * (a `blocked` PR that arms cleanly) issues no extra host read at all, so that
+ * path stays byte-identical in call count.
+ *
+ * Evidence discipline, in the order the reads happen:
+ *   - the host does not implement the two reads → `null` (no evidence).
+ *   - the required-checks read is blind (`state: 'unknown'`) → `null`. It must NOT
+ *     be read as "nothing is required": that is precisely the admin-403 blindness
+ *     the effective-rules read exists to route around.
+ *   - nothing is required (`contexts: []`, authoritatively) → the vacuous
+ *     comparison, WITHOUT asking for reports. There is nothing to compare them to,
+ *     and a repo with no CI must not pay a request for the answer.
+ *   - the reports read throws → `null`. A failed read contributes no evidence; it
+ *     must never be able to counterfeit the empty list that means "nothing has
+ *     attached yet", which is the one input that forces an arm.
+ */
+async function readCheckAttachment(
+  host: LandingHost,
+  status: PrLandingStatus,
+  branch: string,
+): Promise<RequiredCheckAttachment | null> {
+  const reader = asCheckAttachReader(host);
+  if (reader === null) return null;
+  try {
+    const required = await reader.getRequiredChecks(status.baseRef);
+    if (required.state === 'unknown') return null;
+    if (required.contexts.length === 0) return compareRequiredToReported([], []);
+    // Check reports hang off a COMMIT. Prefer the head SHA; fall back to the
+    // branch in GitHub's documented `heads/<branch>` ref form.
+    const ref = status.headSha ?? `heads/${branch}`;
+    return compareRequiredToReported(required.contexts, await reader.getReportedChecks(ref));
+  } catch {
+    return null;
+  }
+}
+
+/** Memoise {@link readCheckAttachment} so the three merge legs share ONE read. */
+function checkAttachmentOnce(
+  host: LandingHost,
+  status: PrLandingStatus,
+  branch: string,
+): () => Promise<RequiredCheckAttachment | null> {
+  let pending: Promise<RequiredCheckAttachment | null> | undefined;
+  return () => (pending ??= readCheckAttachment(host, status, branch));
+}
+
+/**
  * Append a deferred-deletion note to an `armed` outcome's reason when the
  * caller asked for `--delete-branch` (ADR-0023 amendment / FOR-66-class
  * reproduction fix). `armed` means the merge itself has not happened yet — the
@@ -1085,6 +1424,16 @@ function armedReason(reason: string, deleteBranchRequested: boolean): string {
  * zero pending required checks, the arm falls back to a direct merge instead
  * of stopping at `refused`; with a required check still pending it never does
  * (`refused` stays `refused` — arm must never merge past a check).
+ *
+ * Check-attach gate (the 2026-07-30 live occurrences): every leg that merges
+ * IMMEDIATELY — the `clean` decision, the SPIKE-2 `clean-status` recovery, and the
+ * `not-allowed` controlled degrade — first consults the required-vs-reported
+ * evidence through {@link CheckAttachReader}, because all three rest on the host's
+ * "nothing is pending", which is also what the host says when nothing has REPORTED
+ * yet. Required checks in force with any of them unreported → the PR is armed
+ * (never merged), and a host that then refuses the arm as clean is `refused`, not
+ * merged. A host that cannot answer, or a repo with no required checks, behaves
+ * exactly as before — and the outcome's `reason` always says which of those it was.
  */
 export async function armPullRequest(
   host: LandingHost,
@@ -1106,7 +1455,17 @@ export async function armPullRequest(
   const prNumber = status.number as number;
   // An open PR with no reported mergeability is `unknown`, NEVER `clean`.
   const mergeability = status.mergeability ?? 'unknown';
-  const decision = decideArmAction(mergeability);
+  // ONE attach read, shared by every leg that could merge immediately, and taken
+  // only when one of them is actually reached (a `blocked` PR that arms cleanly
+  // never asks). See `checkAttachmentOnce`.
+  const attachOnce = checkAttachmentOnce(host, status, branch);
+  // `clean` is the ambiguous mergeability: "nothing reported pending" is satisfied
+  // by "all required passed" AND by "nothing has reported yet". Ask the evidence.
+  const fromMergeability = decideArmAction(mergeability);
+  const decision =
+    fromMergeability.action === 'merge'
+      ? refineArmDecisionForCheckAttach(fromMergeability, await attachOnce())
+      : fromMergeability;
   // Only an IMMEDIATE merge (below) has a synchronous post-merge moment to
   // delete from — thread the same head branch every merge() call site inside
   // this function shares (FOR-66-class fix, now on the arm route too).
@@ -1134,9 +1493,24 @@ export async function armPullRequest(
   } catch (err) {
     if (err instanceof AutoMergeUnavailableError && err.reason === 'clean-status') {
       // SPIKE 2 (ADR-0023): the host says the PR is already clean — the arm was
-      // the safe guess, the merge is the correct action. This is the ONLY path
-      // that converts an arm into an immediate merge, and the host itself is the
-      // authority that nothing is pending.
+      // the safe guess, the merge is the correct action. The host is the authority
+      // that nothing is pending — EXCEPT inside the check-attach latency window,
+      // where "clean" is exactly the claim this defect proved unreliable. This is
+      // also the leg a refined `clean → enable-auto-merge` lands on (the host
+      // still considers the PR clean and rejects the arm), so without this gate
+      // the refinement above would be undone here and the fix would be cosmetic.
+      const attach = await attachOnce();
+      if (attachForbidsDirectMerge(attach)) {
+        return {
+          outcome: 'refused',
+          prNumber,
+          prUrl: status.url,
+          reason: attachRefusalReason(
+            attach,
+            `The host rejected the arm because it considers this PR already clean (nothing pending) [${err.message}].`,
+          ),
+        };
+      }
       return merge(
         host,
         prNumber,
@@ -1147,6 +1521,21 @@ export async function armPullRequest(
       );
     }
     if (err instanceof AutoMergeUnavailableError && err.reason === 'not-allowed') {
+      // The controlled degrade merges immediately too, on the strength of the same
+      // "nothing required is pending" claim — so it takes the same attach gate.
+      const attach = await attachOnce();
+      if (attachForbidsDirectMerge(attach)) {
+        return {
+          outcome: 'refused',
+          prNumber,
+          prUrl: status.url,
+          reason: attachRefusalReason(
+            attach,
+            `The repository does not permit auto-merge, so this PR cannot be armed [${err.message}]. Enable ` +
+              `"Allow auto-merge" (Settings → General → Pull Requests).`,
+          ),
+        };
+      }
       if (hasNoPendingRequiredCheck(mergeability)) {
         // Controlled degrade (ADR-0023 amendment, W10-F1 live gate): the repo
         // forbids arming, but nothing REQUIRED is reported pending, so there is

@@ -14,6 +14,7 @@ import type {
   ClosingPrState,
   RequiredChecksInfo,
   RulesetChecksInfo,
+  ReportedCheck,
 } from './github-api';
 import {
   AutoMergeUnavailableError,
@@ -209,6 +210,25 @@ export class InMemoryGitHubApi implements GitHubApi {
     contexts: [],
     detail: 'fake: effective-rules not configured',
   };
+
+  /**
+   * Check-ATTACH substrate (the 2026-07-30 check-attach-latency occurrences). Held
+   * per ref, with NO default: an unconfigured ref reports ZERO checks, which is
+   * exactly the latency window the arm verb must not read as "all required checks
+   * passed". `setReportedChecks` is the affordance a spec drives it with — same
+   * stance as setClosingPr / setRequiredChecks (not part of the consumer-visible
+   * behaviour, reached through the injected `api`).
+   */
+  private readonly reportedByRef = new Map<string, ReportedCheck[]>();
+
+  /** Test affordance: register the checks the host has reported for a ref. */
+  setReportedChecks(ref: string, checks: ReportedCheck[]): void {
+    this.reportedByRef.set(ref, [...checks]);
+  }
+
+  async getReportedChecks(ref: string): Promise<ReportedCheck[]> {
+    return [...(this.reportedByRef.get(ref) ?? [])];
+  }
 
   /** Test affordance: register the PR the host knows for a branch. */
   setPrForBranch(branch: string, status: PrLandingStatus): void {
