@@ -148,11 +148,14 @@ describe('echo-guard — the Convention 8 catalogue, occurrence by occurrence', 
     expectBlocked(runGuard('echo "${LINEAR_API_KEY:+yes}${LINEAR_API_KEY:-no}"', CONFIGURED_ENV));
   });
 
-  it('the seventh occurrence (2026-07-28, after the convention rewrite bound every role): bare printenv', () => {
+  it('the seventh occurrence (2026-07-28, after the convention rewrite bound every role): the recorded argful, redirected form', () => {
     // The occurrence that triggered this filing — per the convention's own
     // doctrine, the response to a recurrence is removing the affordance, not an
-    // eighth reminder.
-    expectBlocked(runGuard('printenv', CONFIGURED_ENV));
+    // eighth reminder. Spelled in the LITERAL form the catalogue quotes from the
+    // Worker's own disclosure (`docs/skills/wave-shared/reference/convention-08-secret-safe-briefs.md`),
+    // not the bare-`printenv` family-level stand-in this case used to carry —
+    // the catalogue entry and this regression case now agree byte-for-byte.
+    expectBlocked(runGuard('printenv GITHUB_TOKEN >/dev/null 2>&1; echo exit:$?', CONFIGURED_ENV));
   });
 
   it('the eighth occurrence (2026-07-28, credential-skills-half wave, Worker): the pipe-consumed printenv GITHUB_TOKEN | wc -c', () => {
@@ -287,6 +290,63 @@ describe('echo-guard family 3 — whole-environment dumps', () => {
 
   it('leaves an unrelated command that merely MENTIONS a dump word alone', () => {
     expectAllowed(runGuard('grep -rn printenv docs/', {}));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. Family 3 — position-aware carve-outs (the row-226 / close-time FP cluster)
+// ---------------------------------------------------------------------------
+//
+// Two evidenced false-positive shapes from one wave (2026-07-29-publish-prep-
+// and-guards, rows 216/226, plus a Coordinator close-time reproduction): the
+// dump word appearing in a SEARCH-PATTERN argument or a heredoc BODY was read
+// as an invocation because family 3's head detection didn't know it was inside
+// a literal (never re-parsed-as-a-command) span. Reconstructed here rather
+// than quoted byte-for-byte — the exact live commands are not preserved
+// verbatim in the provenance — but each is a faithful, independently-confirmed
+// reproduction of the reported shape (confirmed against the PRE-FIX matcher
+// before this carve-out existed; see the PR evidence for the falsification
+// transcript, Convention 11).
+describe('echo-guard family 3 — position-aware carve-outs (literal spans are not invocations)', () => {
+  it('a search-PATTERN argument, backtick-quoted inside single quotes, is not a whole-environment dump (row 226)', () => {
+    // The Reviewer's `grep -n` for the literal dump word inside this very spec
+    // file, written with the word backtick-quoted the way the doc catalogue
+    // quotes it — a search PATTERN, never executed as a command.
+    expectAllowed(runGuard("grep -n '`printenv`' tools/wave/src/echo-guard.spec.ts", CONFIGURED_ENV));
+  });
+
+  it('a heredoc BODY that merely mentions the dump word is not a whole-environment dump (Coordinator, close 2026-07-30)', () => {
+    // A `gh issue create --body "$(cat <<'EOF' … EOF)"` construction whose
+    // body PROSE opens a line with the dump word — argument/stdin DATA for
+    // `cat`, never a command in its own right.
+    const body = [
+      'gh issue create --title "echo-guard FP" --body "$(cat <<\'EOF\'',
+      'printenv triggered a false positive when it was the first word of a report line.',
+      "EOF",
+      ')"',
+    ].join('\n');
+    expectAllowed(runGuard(body, CONFIGURED_ENV));
+  });
+
+  it('does NOT weaken a REAL bare backtick command substitution — only a single-quoted one is carved out', () => {
+    // Outside single quotes a backtick pair IS real command substitution in
+    // bash; the carve-out must never reach this shape.
+    expectBlocked(runGuard('echo `printenv`', {}));
+  });
+
+  it('does NOT weaken a REAL command substitution embedded inside a heredoc body', () => {
+    // Real bash evaluates `$(…)` inside a heredoc body before the body reaches
+    // its reader, regardless of whether the delimiter itself is quoted — the
+    // carve-out only folds the newline, never the `$(` split point.
+    const body = ["cat <<'EOF'", 'printenv leaked via $(printenv) on this line', 'EOF'].join('\n');
+    expectBlocked(runGuard(body, {}));
+  });
+
+  it('does NOT let an apostrophe inside DOUBLE-quoted prose pair up with a later quote and swallow a real trailing invocation', () => {
+    // "don't" must never be mistaken for a single-quote delimiter that could
+    // pair with some unrelated LATER quote and blank the real `&& printenv`
+    // sitting between them.
+    expectBlocked(runGuard('git commit -m "don\'t call printenv" && printenv', {}));
   });
 });
 
