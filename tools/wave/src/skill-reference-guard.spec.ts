@@ -241,6 +241,29 @@ const INVOCATION_FORM_PATTERNS: ReadonlyArray<{ readonly label: string; readonly
  * that one is the fallback" (the ADR-0031 shape, now a violation) from "the
  * fallback chain is abolished" (the ADR-0032 rule) and from "flotilla binds
  * engine.cli to the vendored form" (an incidental naming).
+ *
+ * VOCABULARY TRADEOFF — settled, not silent (issue #314, Hole 2). This is a
+ * fixed enumeration, not a parser, so it is necessarily incomplete: a block
+ * that ranks two forms using ONLY out-of-list vocabulary clears this predicate
+ * undetected. The list below is deliberately NOT widened to cover ordinary
+ * ranking words `instead`, `before`, `after`, `default` — each already appears
+ * in the live corpus in a sentence that is a required negative control, and
+ * co-occurs there with a named invocation form:
+ *   - wave-setup's block ends "...every other consumer binds to the pinned
+ *     local package instead." — states WHICH form a consumer binds to; ranks
+ *     nothing.
+ *   - the same block opens its exploration-path sentence with "Before that
+ *     binding exists at all — the one-time window before `wave-setup` has ever
+ *     run..." — temporal scoping of when a form is even reachable, not an
+ *     ordering between two forms.
+ * Adding any of those four words would turn both sentences into false-positive
+ * RANKS violations the moment the hard-wrap fix (above) or any future change
+ * widens what counts as "the same sentence" — which is exactly why the two
+ * holes move together and this list stays as narrow as it is. The residual gap
+ * this leaves is accepted, not hidden: widening this list requires a new
+ * negative-control assertion in the SAME diff proving the added word does not
+ * fire on an innocent sentence already shipped (the two above are exactly that
+ * kind of proof, and both are asserted below) — never a silent addition.
  */
 const FORM_RANKING_LANGUAGE =
   /\bdual[- ]form\b|\bcanonical\b|\bfall(?:s|en)?\s+back\b|\bfallbacks?\b|\bfirst\b|\bsecond\b|\botherwise\b|\bif that fails\b|\beither form\b|\bboth forms?\b|\bboth reach\b|\bwhichever form\b|\bprefer(?:s|red)?\b/i;
@@ -365,6 +388,51 @@ function extractResolutionBlocks(md: string, file: string): ResolutionBlock[] {
 }
 
 /**
+ * A blank line ends a paragraph. So does a blank BLOCKQUOTE line — a line that
+ * is nothing but an optional leading `>` (and whitespace) — since a `>`-prefixed
+ * admonition wraps its own paragraphs the same way plain prose does.
+ */
+const PARAGRAPH_BREAK = /^\s*>?\s*$/;
+
+/**
+ * Fold hard-wrapped markdown lines within one paragraph into a single line, so
+ * a bare editor-wrap line break stops acting as a sentence boundary (issue
+ * #314, Hole 1). Before this fold, `sentences()` split on EVERY raw line break
+ * — including one inserted purely by a wrap column — so a named invocation
+ * form on one physical line and its ranking word on the next were never seen
+ * co-occurring. Demonstrated live: the pre-ADR-0032 `.claude/skills/README.md`
+ * carried "...keeps the vendored `npx tsx tools/wave/src/cli.ts` / local-binary
+ * forms as a\nfallback — both reach the identical router.)" — one authored
+ * sentence, wrapped across two physical lines — and the sweep missed it (see
+ * the regression test below, which reproduces this exact historical text and
+ * pins that the OLD per-line splitter really did miss it).
+ *
+ * A genuine paragraph break — a blank line, or a blank blockquote line (`>`
+ * alone) — is NOT folded: it still starts a new paragraph, which is what keeps
+ * `.claude/skills/wave-shared/reference/convention-01-auth-preflight.md`'s
+ * "documented fallback" sentence and its blockquoted `npx tsx
+ * tools/wave/src/cli.ts` code sample (separated by a blank `>` line, a genuine
+ * paragraph break, not a wrap) from being folded INTO one sentence just because
+ * the wrap-scope widened — that pairing is a real, load-bearing negative
+ * control (its subject is the proxy env flag, never the `engine.cli` binding),
+ * and is asserted below.
+ */
+function joinHardWraps(body: string): string {
+  const paragraphs: string[] = [];
+  let current: string[] = [];
+  for (const raw of body.split('\n')) {
+    if (PARAGRAPH_BREAK.test(raw)) {
+      if (current.length > 0) paragraphs.push(current.join(' '));
+      current = [];
+    } else {
+      current.push(raw.trim());
+    }
+  }
+  if (current.length > 0) paragraphs.push(current.join(' '));
+  return paragraphs.join('\n\n');
+}
+
+/**
  * Split a block body into sentences. A sentence-ender followed by whitespace,
  * or a line break, ends one — and markdown closers (`**`, a backtick, a closing
  * paren) are allowed to sit between the two, since a bolded sentence ends
@@ -375,9 +443,13 @@ function extractResolutionBlocks(md: string, file: string): ResolutionBlock[] {
  * to its consequence in this corpus ("an absent binding is a STOP: finish
  * wave-setup"), and splitting there would tear the absent-binding statement in
  * half and fail a block that states the rule perfectly well.
+ *
+ * The body is folded through `joinHardWraps` FIRST, so only a genuine
+ * paragraph break still counts as a line break here — a hard wrap inside a
+ * paragraph no longer does (issue #314, Hole 1).
  */
 function sentences(body: string): string[] {
-  return body
+  return joinHardWraps(body)
     .replace(/([.!?][)\]*_`"'”’]*)\s+/g, '$1\n') // a sentence break becomes a line break
     .split('\n')
     .map((s) => s.trim())
@@ -817,6 +889,145 @@ describe('skill-reference-guard — class (c): every {{wave-cli}} resolution blo
           'a verb.',
       }),
     ).toBeNull();
+  });
+
+  /**
+   * Verbatim reproduction (git commit `3767cb0`, the ADR-0031 shape, before
+   * PR #313 rewrote it to ADR-0032) of the two violating clauses inside
+   * `.claude/skills/README.md`'s "1. Sync engine ops" list item — hard-wrapped
+   * exactly as authored. Clause 1 ("canonical" + the npx form) sits on one
+   * un-wrapped physical line. Clause 2 ("fallback"/"both reach" + the vendored
+   * form) straddles a wrap: the form is on one physical line, the ranking
+   * words on the next.
+   */
+  const README_PRE_ADR0032_PARAGRAPH =
+    '   Each SKILL.md writes the engine invocation as the token **`{{wave-cli}}`** so\n' +
+    '   it stays portable. The canonical resolution is **`npx @formtrieb/flotilla-engine\n' +
+    '   <subcommand>`** — the published npm package `wave-setup` scaffolds onto the\n' +
+    "   consumer's own allowlist, so a plugin consumer never needs a vendored\n" +
+    '   `tools/wave` path. (This repo is simultaneously the plugin source and a\n' +
+    '   dogfood consumer of its own skills, so its own tracked allowlist additionally\n' +
+    '   keeps the vendored `npx tsx tools/wave/src/cli.ts` / local-binary forms as a\n' +
+    '   fallback — both reach the identical router.)\n' +
+    '   The router (`tools/wave/src/cli.ts`) dispatches to the per-subcommand runner\n' +
+    '   and returns a JSON result + a meaningful exit code. Subcommands:\n' +
+    '   `dor`, `files-drift`, `merge-order`, `closed-by`, `detect-host`,\n' +
+    '   `worktree-cleanup`, `conflict-map`, `cross-wave`, `issue-store`, `spine`,\n' +
+    '   `resume`. The store behind `issue-store` is chosen from `wave.config.json`\n' +
+    '   (Markdown-FS or GitHub Issues), so skills never hard-code a tracker — they\n' +
+    '   stay tracker-agnostic by construction.\n';
+
+  /** Clause 2 alone (the missed one), isolated so a co-located violation can be
+   * attributed to the wrap fix specifically and not to clause 1's presence. */
+  const README_PRE_ADR0032_FALLBACK_CLAUSE =
+    '   `tools/wave` path. (This repo is simultaneously the plugin source and a\n' +
+    '   dogfood consumer of its own skills, so its own tracked allowlist additionally\n' +
+    '   keeps the vendored `npx tsx tools/wave/src/cli.ts` / local-binary forms as a\n' +
+    '   fallback — both reach the identical router.)\n';
+
+  /**
+   * The PRE-FIX sentence splitter (issue #314) — kept ONLY as falsification
+   * evidence (Convention 11). It is `sentences()` exactly as it shipped before
+   * this fix: no hard-wrap fold, so every raw line break — wrap-induced or
+   * not — ends a "sentence".
+   */
+  function preFixSentences(body: string): string[] {
+    return body
+      .replace(/([.!?][)\]*_`"'”’]*)\s+/g, '$1\n')
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
+
+  it('regression — a hard-wrapped named form and its ranking word, reproduced verbatim from the pre-ADR-0032 README, is now detected (AC1, issue #314 Hole 1)', () => {
+    // Falsification (Convention 11): the OLD per-line splitter really did miss
+    // the second clause. It caught clause 1 (the form and "canonical" share an
+    // un-wrapped physical line) but never saw clause 2's form and its ranking
+    // words co-occur, because a bare wrap-induced line break split them apart —
+    // this is the exact day-one miss the issue describes ("the sweep flagged
+    // ONE — the second straddled a wrap").
+    const preFixHits = preFixSentences(README_PRE_ADR0032_PARAGRAPH).filter(
+      (s) => namedForms(s).length > 0 && FORM_RANKING_LANGUAGE.test(s),
+    );
+    expect(preFixHits).toHaveLength(1);
+    expect(preFixHits[0]).toMatch(/canonical/);
+    expect(preFixHits.some((s) => /fallback/.test(s) || /both reach/.test(s))).toBe(false);
+
+    // The fix: through the fold-then-split pipeline, BOTH clauses now surface —
+    // the wrap no longer defeats co-location.
+    const fixedHits = sentences(README_PRE_ADR0032_PARAGRAPH).filter(
+      (s) => namedForms(s).length > 0 && FORM_RANKING_LANGUAGE.test(s),
+    );
+    expect(fixedHits.length).toBeGreaterThanOrEqual(2);
+    expect(fixedHits.some((s) => /canonical/.test(s))).toBe(true);
+    expect(fixedHits.some((s) => /fallback/.test(s) && /both reach/.test(s))).toBe(true);
+
+    // End to end through the real predicate: clause 2 ALONE (no "canonical"
+    // anywhere in scope) is enough to trip a RANKS violation once the wrap is
+    // folded — isolating that the fold, not the vocabulary, is what changed.
+    const isolated: ResolutionBlock = {
+      file: 'x.md',
+      heading: '`{{wave-cli}}` resolution',
+      body:
+        'The wave engine CLI. `{{wave-cli}}` IS the command string `wave.config.json` names ' +
+        'under `engine.cli`. An absent binding is a STOP: finish wave-setup before running ' +
+        'a verb.\n\n' +
+        README_PRE_ADR0032_FALLBACK_CLAUSE,
+    };
+    expect(namedForms(README_PRE_ADR0032_FALLBACK_CLAUSE).length).toBeGreaterThan(0);
+    const why = bindingFormViolation(isolated);
+    expect(why).toMatch(/RANKS invocation forms/);
+    expect(why).toMatch(/vendored in-repo form/);
+  });
+
+  it('negative control — the live wave-setup "instead" sentence and the convention-01 wrapped fallback+invocation pair still pass after the hard-wrap fix (AC2, issue #314)', () => {
+    // wave-setup's own block genuinely co-locates a named vendored form with
+    // "instead" in one (un-wrapped) sentence, and must keep passing: "instead"
+    // states WHICH form a consumer binds to, not an ordering between two forms
+    // (the reason FORM_RANKING_LANGUAGE excludes it — see its docstring).
+    const setup = ALL_BLOCKS.filter(
+      (b) => b.file === '.claude/skills/wave-setup/reference/setup-mechanics.md',
+    );
+    expect(setup).toHaveLength(1);
+    const insteadSentence = sentences(setup[0].body).find(
+      (s) => /\binstead\b/.test(s) && namedForms(s).length > 0,
+    );
+    expect(
+      insteadSentence,
+      'expected a live sentence pairing a named form with "instead" — the negative control is vacuous without it',
+    ).toBeDefined();
+    expect(FORM_RANKING_LANGUAGE.test(insteadSentence as string)).toBe(false);
+    expect(bindingFormViolation(setup[0])).toBeNull();
+
+    // convention-01-auth-preflight.md is NOT a {{wave-cli}} resolution block
+    // (its heading names neither token, so it never enters ALL_BLOCKS) — but it
+    // carries the exact SHAPE the wrap fix could sweep up by accident: a
+    // "documented fallback" sentence and a concrete vendored invocation
+    // (`npx tsx tools/wave/src/cli.ts`) on separate raw lines inside a fenced
+    // code sample. What keeps them apart is a genuine blank BLOCKQUOTE line
+    // between them — a real paragraph break, not a wrap — which
+    // `joinHardWraps` must still respect. Read live off disk, not hardcoded, so
+    // a future edit to this file cannot silently stop exercising the control.
+    const proxyFlagDoc = SOURCES.get(
+      '.claude/skills/wave-shared/reference/convention-01-auth-preflight.md',
+    ) as string;
+    expect(proxyFlagDoc).toMatch(/documented fallback/);
+    expect(namedForms(proxyFlagDoc).length).toBeGreaterThan(0);
+
+    const synthetic: ResolutionBlock = {
+      file: '.claude/skills/wave-shared/reference/convention-01-auth-preflight.md',
+      heading: '`{{wave-cli}}` resolution',
+      body:
+        'The wave engine CLI. `{{wave-cli}}` IS the command string `wave.config.json` names ' +
+        'under `engine.cli`. An absent binding is a STOP: finish wave-setup before running ' +
+        'a verb.\n\n' +
+        proxyFlagDoc,
+    };
+    const ranked = sentences(synthetic.body).filter(
+      (s) => namedForms(s).length > 0 && FORM_RANKING_LANGUAGE.test(s),
+    );
+    expect(ranked).toEqual([]);
+    expect(bindingFormViolation(synthetic)).toBeNull();
   });
 
   it('negative controls — each missing half of the binding statement is named', () => {
