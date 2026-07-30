@@ -272,15 +272,22 @@
  * TWO deliberate boundaries, each documented here where the class rationales
  * already live:
  *
- *   • NO force flag. A `git worktree remove --force` (or an `rmSync` that
- *     ignores errors) cannot add capability past the harness sandbox's own
- *     write-deny — the bytes it is refused permission to delete stay refused
- *     no matter how forcefully we ask. A force path would therefore not
- *     recover anything the bounded retry cannot; it would only RELOCATE the
- *     human decision (from "an operator prunes the genuinely-stuck residual"
- *     to "an operator audits what a force just destroyed"). Whatever survives
- *     the one retry is genuinely stuck and stays a deliberate operator step,
- *     with the dirty-worktree safety invariant at the top of this file intact.
+ *   • Force is SCOPED, not absent (issue #304 narrowed this boundary — see
+ *     the "the classifier's own fallback, scoped" section near the end of
+ *     this comment for the full amendment; {@link WorktreeRemover.remove}'s
+ *     `opts.force` is the mechanism). The reasoning immediately below is
+ *     otherwise UNCHANGED and still governs everywhere force is not
+ *     explicitly, narrowly threaded by that amendment: a bare, unconditional
+ *     `git worktree remove --force` (or an `rmSync` that ignores errors)
+ *     cannot add capability past the harness sandbox's own write-deny — the
+ *     bytes it is refused permission to delete stay refused no matter how
+ *     forcefully we ask. An UNSCOPED force path would therefore not recover
+ *     anything the bounded retry cannot; it would only RELOCATE the human
+ *     decision (from "an operator prunes the genuinely-stuck residual" to "an
+ *     operator audits what a force just destroyed"). Whatever survives the
+ *     one retry AND the #304 scoped fallback is genuinely stuck and stays a
+ *     deliberate operator step, with the dirty-worktree safety invariant at
+ *     the top of this file intact.
  *
  *     RE-SETTLED WITH MEASUREMENT (issue #150 — see that section at the end of
  *     this comment). Force is not merely useless against an obstruction the OS
@@ -307,6 +314,13 @@
  *     #115), never by force: force would answer a question nobody asked while
  *     giving up a safety property that is doing real work. They are named
  *     apart here so the next reader does not re-litigate one as the other.
+ *
+ *     A THIRD obstruction — neither permission nor classification — is the one
+ *     issue #304 names: THIS module's own physical delete leaving a residual
+ *     behind on an entry it had ALREADY classified disposable, so nothing
+ *     downstream ever gets a chance to finish the job. That is answered by the
+ *     scoped `opts.force` amendment near the end of this comment, not by
+ *     loosening this bullet or the two paragraphs above it.
  *
  *   • The retry is bounded at ONE. The race this closes is transient — a single
  *     re-attempt after a re-purge + pause is enough to clear it — so a second
@@ -627,6 +641,75 @@
  * + `git worktree prune` fix the population, but the sandbox profile is already
  * cached for the session, so every Bash spawn keeps failing. **Cleanup AND a
  * harness restart** — in that order — is the recovery; cleanup alone is not.
+ *
+ * ── the classifier's own fallback, scoped (issue #304) ─────────────────────────
+ *
+ * The "NO force flag" stance above answers a DIFFERENT question than issue
+ * #304 raises, and conflating them is what would have kept this module
+ * permanently unable to close the gap it exists to close. That stance is
+ * about OS-level PERMISSION: force cannot make the sandbox grant bytes it has
+ * refused, so an unscoped force never recovers more than the bounded retry
+ * already does, and (measured, issue #150) actively converts a recoverable
+ * `erroredStillListed` into an invisible orphan. Issue #304 is not that case.
+ * A wave close reproduced 17 of 18 worktrees this module had ALREADY,
+ * correctly, classified disposable (the exact `dirtyAllJunk`/`orphanAllJunk`
+ * overrides issue #142/#111 exist to grant) landing in `erroredStillListed`
+ * anyway — the remover invoked `git worktree remove` without `--force`, and
+ * git, knowing nothing of that classification, refused it with its own dirty
+ * check on exactly the content the classifier had already excused. (Negative
+ * result recorded on the same thread: flag ORDERING does not reproduce it —
+ * both flag forms selected identical worktrees on a dry run — so the defect
+ * is the missing flag itself, not where it would sit among others.) The
+ * FOR-34/#150 design's answer up to this point was to THROW rather than ever
+ * hand git an intact directory — correct as a rule (git must never
+ * re-adjudicate a classification this module already made — see the issue
+ * #150 section above), but it meant an entry the classifier had already
+ * vouched disposable was stuck exactly as if it had never been classified at
+ * all, landing back in the same `erroredStillListed` bucket #150 exists to
+ * drain.
+ *
+ * `opts.force` on {@link WorktreeRemover.remove} (see its doc comment) closes
+ * that, scoped narrowly enough that it never re-triggers the #150 measurement:
+ *
+ *   1. It is computed by {@link executeCleanup} alone, per-entry, as
+ *      `dirtyAllJunk || orphanAllJunk` — TRUE only for a worktree
+ *      {@link planCleanup} already selected BECAUSE of the disposable
+ *      override, never because it was plainly clean. A genuinely-dirty,
+ *      non-junk worktree never reaches this seam at all (unchanged,
+ *      `planCleanup`'s dirty-skip runs first), so `force` can structurally
+ *      never apply to one — the negative-control spec for this pins exactly
+ *      that: the remover is never even invoked for such an entry, force or
+ *      not.
+ *   2. Inside {@link defaultWorktreeRemover}, `opts.force` is consulted ONLY
+ *      as a last-resort fallback — AFTER `physicallyDeleteGitLast` has
+ *      already run and the directory is STILL on disk, exactly the point
+ *      that used to be an unconditional throw. `force` false/absent still
+ *      throws there, byte-identical to the pre-#304 contract — the regression
+ *      net for this is a dedicated spec driving the SAME fixture both ways:
+ *      it throws without force, and succeeds (via a real, forced
+ *      `git worktree remove --force` against real leftover content) with it.
+ *      Never a substitute for the physical delete (which still runs first,
+ *      unchanged), and never consulted on the ordinary already-empty path
+ *      (where it would be a no-op anyway — git's dirty check does not fire on
+ *      an absent directory, per the issue #150 section above).
+ *   3. The #150 measurement's danger — force deregistering while leaving the
+ *      directory behind — is still possible here in principle, and is still
+ *      answered the same way it already is everywhere else in this module:
+ *      {@link executeCleanup}'s verify-after-write check (`pathExists`,
+ *      FOR-67) runs on EVERY non-throwing `remove()` return regardless of
+ *      whether force was used, so an incomplete outcome is never silently
+ *      reported `removed` — it lands in the already-existing, already-
+ *      documented {@link CleanupResult.deregisteredNotDeleted} class instead,
+ *      precisely as it would for any other post-removal survivor. Nothing is
+ *      newly invisible; a worktree this module already vouched disposable
+ *      just stops being permanently stuck on a residual its own delete could
+ *      not clear.
+ *
+ * The "NO force flag" bullet's own reasoning — and the classification-vs-
+ * permission distinction right below it — is otherwise UNCHANGED and still
+ * governs everywhere force is not explicitly, narrowly threaded by this
+ * amendment. This is a scoped carve-out of that stance for a THIRD kind of
+ * obstruction the original two paragraphs never named, not a reversal of it.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -836,13 +919,29 @@ export interface WorktreeRemover {
    * {@link planCleanup} selects via those classifications. Eligibility was
    * already decided upstream; this seam's job is to carry it out.
    *
-   * {@link defaultWorktreeRemover} satisfies that by deleting the directory
-   * itself FIRST and using `git worktree remove` purely as the deregistration
-   * step on an already-empty path (see its doc comment, and the file-level
-   * FOR-34 / issue #150 sections). `--force` is deliberately never passed —
-   * see the "NO force flag" bullet for the measured reason.
+   * {@link defaultWorktreeRemover} satisfies that primarily by deleting the
+   * directory itself FIRST and using `git worktree remove` purely as the
+   * deregistration step on an already-empty path (see its doc comment, and
+   * the file-level FOR-34 / issue #150 sections) — `opts.force` is NOT needed
+   * on that ordinary path, since git's dirty check never fires on a directory
+   * that no longer exists.
+   *
+   * `opts.force` (issue #304 — see the file-level "the classifier's own
+   * fallback, scoped" section near the end of this comment) is the SCOPED
+   * fallback for when that physical delete could not fully finish the job on
+   * a worktree this module has ALREADY classified disposable. The caller
+   * (`executeCleanup`) sets it to `true` ONLY for the entry it is currently
+   * removing, and ONLY when that entry reached this seam via the
+   * `dirtyAllJunk`/`orphanAllJunk` override — never for a plain worktree, and
+   * never for a genuinely-dirty one (those never reach this seam at all, see
+   * `planCleanup`'s dirty-skip). Mirrors the `RedispatchCleanupOps.remove`
+   * contract's `{ force?: boolean }` shape above. An implementation MAY use
+   * `opts.force` to pass `--force` to git's own removal ONLY as a last
+   * resort, after its own physical delete has already been attempted — never
+   * as a substitute for it, and never for an entry the caller did not
+   * explicitly mark force-eligible.
    */
-  remove(worktreePath: string): void;
+  remove(worktreePath: string, opts?: { force?: boolean }): void;
 }
 
 export interface CleanupOptions {
@@ -1265,7 +1364,15 @@ export function executeCleanup(
   const branchHygieneSkipped: BranchHygieneSkip[] = [];
 
   for (const wt of plan.selected) {
-    let attempt = attemptWorktreeRemoval(wt.path, remover, pathExists, stillListed);
+    // issue #304 — the classifier-disposable path only: `force` is TRUE
+    // exclusively for an entry `planCleanup` selected BECAUSE of the
+    // `dirtyAllJunk`/`orphanAllJunk` override, never for a plainly-clean
+    // worktree. A genuinely-dirty, non-junk worktree never reaches this loop
+    // at all (planCleanup's dirty-skip already excluded it), so `force` can
+    // never be computed `true` for one — see the file-level "the classifier's
+    // own fallback, scoped" doc section for the full amendment.
+    const forceEligible = Boolean(wt.dirtyAllJunk || wt.orphanAllJunk);
+    let attempt = attemptWorktreeRemoval(wt.path, remover, pathExists, stillListed, forceEligible);
     let retried = false;
 
     // Bounded retry (FOR-84 — W22-F1): the two INCOMPLETE outcomes are the
@@ -1288,7 +1395,7 @@ export function executeCleanup(
     ) {
       purgeJunk(wt.path);
       retryPause();
-      attempt = attemptWorktreeRemoval(wt.path, remover, pathExists, stillListed);
+      attempt = attemptWorktreeRemoval(wt.path, remover, pathExists, stillListed, forceEligible);
       retried = true;
     }
 
@@ -1370,9 +1477,14 @@ function attemptWorktreeRemoval(
   remover: WorktreeRemover,
   pathExists: (path: string) => boolean,
   stillListed: (path: string) => boolean,
+  force: boolean,
 ): RemovalAttempt {
   try {
-    remover.remove(worktreePath);
+    // issue #304: `force` is threaded straight through as the classification
+    // verdict `executeCleanup` already reached (`dirtyAllJunk`/`orphanAllJunk`)
+    // — always passed explicitly (mirrors `RedispatchCleanupOps.remove`'s
+    // `{ force: wt.dirty }` convention), never inferred by the remover itself.
+    remover.remove(worktreePath, { force });
     // Verify-after-write (FOR-67): a non-throwing remover is NOT trusted on its
     // own. The "deregistered-but-not-deleted" ENOTEMPTY class leaves the
     // physical directory on disk even after `git worktree remove` forgot it (a
@@ -2988,7 +3100,7 @@ export function defaultWorktreeRemover(
   // declaration throws at construction, never mid-removal.
   const declared = toDisposableSet(disposableNames);
   return {
-    remove(worktreePath: string): void {
+    remove(worktreePath: string, opts?: { force?: boolean }): void {
       // `git worktree remove`/`prune` require an absolute path or
       // relative-from-cwd. We pass absolute to be unambiguous.
       const abs = nodePath.resolve(worktreePath);
@@ -3035,12 +3147,43 @@ export function defaultWorktreeRemover(
       // racing actor re-creating it, a future edit to the delete phases)
       // therefore fails HERE, at our own step, rather than being handed on —
       // the same verify-after-write discipline FOR-67 applies one layer up.
+      //
+      // issue #304 — the scoped fallback: a caller sets `opts.force` ONLY for
+      // an entry `planCleanup` already selected via `dirtyAllJunk`/
+      // `orphanAllJunk` (see `executeCleanup` and the file-level "the
+      // classifier's own fallback, scoped" doc section). For such an entry, a
+      // step-1 residual this module's own delete could not clear is finished
+      // by handing git its OWN `--force` — the classification verdict was
+      // already reached upstream, so this is carrying it out, not asking git
+      // to re-adjudicate it. `opts.force` absent/false keeps the exact
+      // pre-#304 throw, unconditionally — this is never a substitute for the
+      // physical delete above, only a last-resort completion of it.
       if (existsSync(abs)) {
-        throw new Error(
-          `worktree removal left the directory on disk at ${abs} — refusing to deregister a worktree that was not actually removed`,
-        );
+        if (!opts?.force) {
+          throw new Error(
+            `worktree removal left the directory on disk at ${abs} — refusing to deregister a worktree that was not actually removed`,
+          );
+        }
+        execFileSync('git', ['worktree', 'remove', '--force', abs], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          timeout: 30_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        // Deliberately no post-force existsSync check here: a directory that
+        // is STILL present after a non-throwing forced call is exactly the
+        // #150-measured "deregistered despite failed rm" shape, and it is
+        // caught one layer up — `executeCleanup`'s verify-after-write
+        // (`pathExists`) runs on every non-throwing `remove()` return
+        // regardless of whether force was used, landing an incomplete
+        // outcome in `deregisteredNotDeleted` rather than fabricating
+        // `removed`. Duplicating that check here would only race the same
+        // filesystem twice for the same answer.
+        return;
       }
-      // Step 2 — deregister. Reached only if step 1 fully succeeded.
+      // Step 2 — deregister an already-empty directory. `--force` is never
+      // needed here: git's dirty check does not fire on a path that no
+      // longer exists (issue #150).
       execFileSync('git', ['worktree', 'remove', abs], {
         cwd: repoRoot,
         encoding: 'utf-8',

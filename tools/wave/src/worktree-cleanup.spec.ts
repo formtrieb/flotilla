@@ -492,7 +492,9 @@ describe('executeCleanup', () => {
     const result = executeCleanup(plan, { remover });
 
     expect(removeSpy).toHaveBeenCalledTimes(1);
-    expect(removeSpy).toHaveBeenCalledWith(AGENT_PATH_A);
+    // issue #304: `force` is always threaded explicitly — `false` here since
+    // `cleanA` is plainly clean (never `dirtyAllJunk`/`orphanAllJunk`).
+    expect(removeSpy).toHaveBeenCalledWith(AGENT_PATH_A, { force: false });
     expect(result.removed).toHaveLength(1);
     expect(result.removed[0].path).toBe(AGENT_PATH_A);
   });
@@ -832,7 +834,9 @@ describe('wf_* Workflow-driver worktree recognition (issue #82)', () => {
     const result = executeCleanup(plan, { remover });
 
     expect(removeSpy).toHaveBeenCalledTimes(1);
-    expect(removeSpy).toHaveBeenCalledWith(WF_PATH_CLEAN);
+    // issue #304: `force` is always threaded explicitly — `false` here since
+    // `wfClean` is plainly clean (never `dirtyAllJunk`/`orphanAllJunk`).
+    expect(removeSpy).toHaveBeenCalledWith(WF_PATH_CLEAN, { force: false });
     expect(result.removed).toHaveLength(1);
     expect(result.removed[0].path).toBe(WF_PATH_CLEAN);
   });
@@ -4937,6 +4941,277 @@ describe('a classified-disposable worktree is ACTUALLY removed — real git, rea
     expect(() => defaultWorktreeRemover(mainRoot).remove(worktreePath)).not.toThrow();
     expect(recordedGitArgs()).toContainEqual(['worktree', 'remove', worktreePath]);
     expect(stillRegistered(mainRoot, worktreePath)).toBe(false);
+  });
+});
+
+// ─── 26b. Scoped force on the classifier-disposable removal path (issue #304) ─
+//
+// Issue #150 taught `defaultWorktreeRemover` to verify its OWN physical
+// delete before ever handing git a directory to adjudicate — correct as a
+// rule, but a live wave close showed it also meant an entry the classifier
+// had ALREADY vouched disposable (`dirtyAllJunk`/`orphanAllJunk`) stayed
+// permanently stuck in `erroredStillListed` whenever that physical delete
+// could not fully finish on its own. `opts.force` on `WorktreeRemover.remove`
+// closes that as a SCOPED last-resort fallback — see the file-level "the
+// classifier's own fallback, scoped" doc section for the full amendment.
+//
+// First block: unit-level wiring, no real git/fs — pins exactly WHEN
+// `executeCleanup` computes `force: true` (the reviewer-facing question:
+// "is force scoped to the classifier-disposable path, and nothing else?").
+// Second block: real git/fs — the refusal-shape regression net AC1 asks for
+// (a remover that fails without force, succeeds with it) plus the AC2
+// negative control (genuine non-junk modifications are never force-removed).
+describe('executeCleanup — force is computed from the classifier verdict alone (issue #304)', () => {
+  const baseEntry = {
+    path: AGENT_PATH_A,
+    head: 'a'.repeat(40),
+    dirty: false,
+  };
+
+  it('a plain clean worktree (no dirtyAllJunk/orphanAllJunk) is removed with force: false', () => {
+    const { remover, removeSpy } = fakeRemover();
+    const clean: WorktreeEntry = { ...baseEntry, branch: 'wave/304-clean' };
+
+    executeCleanup({ selected: [clean], skipped: [] }, { remover, skipBranchHygiene: true });
+
+    expect(removeSpy).toHaveBeenCalledWith(AGENT_PATH_A, { force: false });
+  });
+
+  it('a dirtyAllJunk-classified worktree is removed with force: true', () => {
+    const { remover, removeSpy } = fakeRemover();
+    const junky: WorktreeEntry = {
+      ...baseEntry,
+      branch: 'wave/304-junky',
+      dirty: true,
+      dirtyAllJunk: true,
+    };
+
+    executeCleanup({ selected: [junky], skipped: [] }, { remover, skipBranchHygiene: true });
+
+    expect(removeSpy).toHaveBeenCalledWith(AGENT_PATH_A, { force: true });
+  });
+
+  it('an orphanAllJunk-classified worktree is removed with force: true', () => {
+    const { remover, removeSpy } = fakeRemover();
+    const orphanJunky: WorktreeEntry = {
+      ...baseEntry,
+      branch: 'wave/304-orphan',
+      orphan: true,
+      orphanAllJunk: true,
+    };
+
+    executeCleanup({ selected: [orphanJunky], skipped: [] }, { remover, skipBranchHygiene: true });
+
+    expect(removeSpy).toHaveBeenCalledWith(AGENT_PATH_A, { force: true });
+  });
+
+  // AC2's unit-level half: `planCleanup` — not `executeCleanup` — is what
+  // keeps a genuinely-dirty, non-junk worktree away from `force` entirely.
+  // The remover is never even invoked, so `force` is never computed for it.
+  it('negative control: a genuinely-dirty non-junk worktree never reaches the remover at all — force is never computed for it', () => {
+    const { remover, removeSpy } = fakeRemover();
+    const dirtyReal: WorktreeEntry = {
+      path: AGENT_PATH_B,
+      branch: 'wave/304-real',
+      head: 'b'.repeat(40),
+      dirty: true,
+      dirtyAllJunk: false,
+    };
+
+    const plan = planCleanup([dirtyReal]);
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped[0].reason).toBe('dirty');
+
+    executeCleanup(plan, { remover, skipBranchHygiene: true });
+
+    expect(removeSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('defaultWorktreeRemover — scoped force on the classifier-disposable path, real git/fs (issue #304)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  /** Real `git`, bypassing the mock — fixture SETUP and independent verification. */
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /** Is `path` still registered per real `git worktree list --porcelain`? */
+  function stillRegistered(mainRoot: string, worktreePath: string): boolean {
+    return realGit(['worktree', 'list', '--porcelain'], mainRoot)
+      .split('\n')
+      .some((line) => line === `worktree ${worktreePath}`);
+  }
+
+  /** A real repo with a real worktree carrying REAL, non-junk uncommitted content. */
+  function makeDirtyWorktree(name: string): { mainRoot: string; worktreePath: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-304-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    const relPath = join('.claude', 'worktrees', name);
+    realGit(['worktree', 'add', '-q', relPath, '-b', `wave/304-${name}`], mainRoot);
+    const worktreePath = join(mainRoot, relPath);
+    // Genuine uncommitted work — real content, never junk.
+    writeFileSync(join(worktreePath, 'src.ts'), 'export const x = 1;\n', 'utf-8');
+    return { mainRoot, worktreePath };
+  }
+
+  // The regression net AC1 asks for: "a remover that fails without force and
+  // succeeds with it". Both tests sabotage the SAME three-call physical
+  // delete (phase 1's one non-`.git` entry, phase 2's `.git`, phase 3's
+  // parent dir — see `physicallyDeleteGitLast`) so real content survives it,
+  // mirroring the exact no-op-mock technique the issue #150 section already
+  // uses ("the removal is verified before deregistration").
+  it('AC1: the refusal shape — a remover whose OWN physical delete left real content behind THROWS without force', () => {
+    const { mainRoot, worktreePath } = makeDirtyWorktree('wf_304-noforce');
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+
+    const remover = defaultWorktreeRemover(mainRoot);
+    expect(() => remover.remove(worktreePath)).toThrow(/left the directory on disk/);
+
+    // Never told to forget it — the worktree stays fully recoverable.
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(existsSync(join(worktreePath, 'src.ts'))).toBe(true);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
+  });
+
+  it('AC1: the SAME leftover-content shape SUCCEEDS when force is explicitly requested — a real `git worktree remove --force` finishes the job', () => {
+    const { mainRoot, worktreePath } = makeDirtyWorktree('wf_304-force');
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+
+    const remover = defaultWorktreeRemover(mainRoot);
+    expect(() => remover.remove(worktreePath, { force: true })).not.toThrow();
+
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(false);
+  });
+
+  it('force is never consulted on the ordinary already-empty path — no `--force` argv when the physical delete already succeeded', () => {
+    const { mainRoot, worktreePath } = makeDirtyWorktree('wf_304-ordinary');
+    // No sabotage: the real physical delete runs unmodified and succeeds.
+    const remover = defaultWorktreeRemover(mainRoot);
+    remover.remove(worktreePath, { force: true });
+
+    const calls = (execFileSync as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const gitArgvs = calls
+      .filter((args) => args[0] === 'git')
+      .map((args) => (Array.isArray(args[1]) ? (args[1] as string[]) : []));
+    expect(gitArgvs).toContainEqual(['worktree', 'remove', worktreePath]);
+    for (const argv of gitArgvs) {
+      expect(argv).not.toContain('--force');
+    }
+  });
+
+  it('AC1 (integration): a classifier-disposable worktree whose OWN physical delete could not finish is STILL removed end-to-end — never `erroredStillListed`', () => {
+    const { mainRoot, worktreePath } = makeDirtyWorktree('wf_304-e2e-removed');
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+    asRmSyncMock(rmSync).mockImplementationOnce(() => {});
+
+    // Modeling the classifier verdict `dirtyAllJunk: true` already reached
+    // upstream (issue #142/#111) — this test is about the REMOVAL mechanism,
+    // not re-deriving the classification (already covered elsewhere, e.g.
+    // the issue #150 section's live-pair fixture).
+    const entry: WorktreeEntry = {
+      path: worktreePath,
+      branch: 'wave/304-wf_304-e2e-removed',
+      head: 'a'.repeat(40),
+      dirty: true,
+      dirtyAllJunk: true,
+    };
+    const plan = planCleanup([entry]);
+    expect(plan.selected).toHaveLength(1);
+
+    const result = executeCleanup(plan, {
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.erroredStillListed).toHaveLength(0);
+    expect(result.deregisteredNotDeleted).toHaveLength(0);
+    expect(result.removed.map((e) => e.path)).toEqual([worktreePath]);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(false);
+  });
+
+  // AC2's real-git/fs half: a worktree with GENUINE non-junk uncommitted
+  // content, run through the FULL classification pipeline, never reaches the
+  // remover — so `force` can never apply to it, regardless of what the
+  // remover itself is capable of (proven capable, immediately above).
+  it('AC2: negative control — a REAL worktree with GENUINE non-junk uncommitted content is skipped by the classifier and NEVER force-removed', () => {
+    const { mainRoot, worktreePath } = makeDirtyWorktree('wf_304-negative-control');
+    // No sabotage: `src.ts` is real, genuinely uncommitted work.
+
+    const entries = listAgentWorktrees(mainRoot);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].dirty).toBe(true);
+    expect(entries[0].dirtyAllJunk).toBeFalsy();
+
+    const plan = planCleanup(entries);
+    expect(plan.selected).toHaveLength(0);
+    expect(plan.skipped.map((e) => e.path)).toEqual([worktreePath]);
+    expect(plan.skipped[0].reason).toBe('dirty');
+
+    const removeSpy = vi.fn();
+    const result = executeCleanup(plan, {
+      repoRoot: mainRoot,
+      remover: { remove: removeSpy },
+      skipBranchHygiene: true,
+    });
+
+    // The remover — and therefore `force` — is NEVER invoked for this entry.
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(result.removed).toHaveLength(0);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(existsSync(join(worktreePath, 'src.ts'))).toBe(true);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
   });
 });
 
