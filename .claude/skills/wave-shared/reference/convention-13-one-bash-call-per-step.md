@@ -38,6 +38,70 @@ This guard is not the permission system. A dispatched agent runs in an isolated 
 
 Live: in wave `2026-07-29-conventions-wiring` a Worker's compound `&&` command was rejected this way. The Worker **skipped the check it had been trying to run** and proceeded. No harm on that run — but "an agent silently drops a verification step" is the same family as [Convention 12](convention-12-no-command-in-a-shell-variable.md)'s half two (a step that did not run leaving a record that reads as complete) and as the empty-capture class it was written against. The report that comes back from such a run is not wrong about anything it says; it is missing a step nobody asked about.
 
+### Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch
+
+Wave `2026-07-30-arm-and-wiring`'s coordinator disclosure `256.4` names three mechanism-(b) refusals across the wave's five dispatched rows — a jq-piped capture with a case guard, a heredoc spec append, and a heredoc commit message — each "correctly re-issued unfused." The disclosure names the shapes categorically; it does not preserve the byte-exact failing commands (the wave's own spine and its per-row disclosure detail live in the archived spine, not a tracked doc — ADR-0027 dispositions a disclosure at routing and archives it with the wave). **Rather than assert a fused/unfused pair from that three-word summary alone, each shape below was independently live-reproduced in this dispatch** (issue #267, 2026-07-30, this worktree) — the standing instruction that a catalog entry claiming a shape is refused needs evidence it was actually observed, not merely asserted. Reproducing them surfaced more than the summary implied: **not all three turn out to be fusion problems**, and the catalog below reports what was actually witnessed rather than filling the gap with a plausible-looking guess.
+
+**1. jq-piped capture with a case guard — NOT a fusion problem. `case`/`esac` is refused categorically.**
+
+Live-reproduced repeatedly in this dispatch: a bare, single-statement, entirely unfused `case … esac` — no variable, no `|` alternation, no redirect, no `;;`, even merely *defined* (never invoked) inside a shell function body — was refused every time, deterministically, across eight separate attempts. An equivalent `if`/`elif`/`else`/`fi`, carrying the identical `||`-chained condition, `>&2` message, and `exit 1`, was **not** refused, standing alone:
+
+```bash
+# ✗ refused, standing entirely alone — no fusion, no wildcard patterns, no redirect
+case "$PR_URL" in
+  ''|null|undefined) echo "STOP: PR_URL came back empty" >&2; exit 1 ;;
+esac
+
+# ✓ not refused — the identical guard, rewritten without case/esac
+if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ] || [ "$PR_URL" = "undefined" ]; then
+  echo "STOP: PR_URL came back empty — host-pr create produced no url. NOT reporting an empty prUrl." >&2
+  exit 1
+fi
+```
+
+Splitting the capture from the guard (the fix this catalog would have named from the disclosure's summary alone) is still correct **and still necessary** — a capture fused onto either form above is refused for the ordinary fusion reason this file leads with — but it is not **sufficient**: the `case`-guard half, issued as its own call with nothing fused onto it, is refused on its own. `workflow-driver.md`'s Termination step 4 now uses the `if` form for exactly this reason, not only a two-call split.
+
+**2. Heredoc spec append — narrower than "fusion." Refused when a heredoc redirects straight to a FILE and its body contains `{`/`}`; not refused otherwise.**
+
+```bash
+# ✗ refused, standing alone — heredoc-to-file, JSON body
+cat > "$TMPDIR/patch.json" <<'EOF'
+{ "sections": { "Acceptance criteria": "…" } }
+EOF
+
+# not refused, standing alone — heredoc-to-file, NO curly braces in the body
+cat > "$TMPDIR/note.txt" <<'EOF'
+plain text, no braces
+EOF
+
+# not refused, standing alone — the SAME curly-brace body, captured via command
+# substitution instead of landing on a file redirect
+PATCH="$(cat <<'EOF'
+{ "sections": { "Acceptance criteria": "…" } }
+EOF
+)"
+```
+
+Neither the heredoc syntax alone nor brace content alone is the trigger — live-reproduced as the combination of **a literal `{`/`}` in a heredoc body landing on a `>` file redirect**. This means the disclosure's implied fix ("split it into two calls") is unverified for the actual use case this shape names — [Convention 6](convention-06-sanctioned-amend-path.md)'s `issue-store amend <id> --patch <json-file>` — because every real patch IS JSON, so every real instance of this shape carries the trigger regardless of fusion. **This dispatch could not establish a verified end-to-end recipe for landing brace-bearing content on disk via a heredoc-to-file redirect within its own time budget, and is not asserting one it did not verify.** `issue-store amend` is a Coordinator-side call — a Worker has no store access from its isolated worktree — and neither `convention-06-sanctioned-amend-path.md` nor any Coordinator-facing compose doc is inside this issue's declared Files; establishing (and then cataloging) the working recipe is left to the next occurrence or a follow-up issue rather than guessed at here.
+
+**3. Heredoc commit message — a genuine fusion problem, confirming the original name.**
+
+```bash
+# ✗ refused — stage and commit fused across a bare newline
+git add file1 file2
+git commit -m "$(cat <<'EOF'
+docs(conventions): …
+
+EOF
+)"
+```
+
+Live-reproduced in this dispatch: the heredoc-in-command-substitution form standing alone — `MSG="$(cat <<'EOF' … EOF)"`, including with a curly-brace body — was **not** refused; only the fusion with the preceding stage was. Unfused: `git add file1 file2` as one call; `git commit -m "$(cat <<'EOF' … EOF)"` as the next.
+
+**Occurrence:** Wave `2026-07-30-arm-and-wiring`, coordinator disclosure `256.4` — three named shapes, dispositioned `filed:267`. This dispatch (issue #267, 2026-07-30) live-reproduced all three rather than reconstructing them from the disclosure's summary text alone: shape 1 turned out to be a categorical `case`/`esac` refusal, not a fusion problem; shape 2 turned out narrower than "fusion" and remains only partly resolved; shape 3 confirmed as an ordinary fusion instance, matching the original framing. **Flag any future occurrence against this catalog's own reproduction record, not only against the original disclosure's three-word names** — a name alone under-describes the actual trigger, as shapes 1 and 2 here demonstrate.
+
+**Append future occurrences to this catalog, in the same shape — name, what was actually reproduced (not merely asserted), the working form if one was verified, occurrence citation — rather than opening a new prose clause.** [Convention 8](convention-08-secret-safe-briefs.md)'s catalogue treats an eighth secret-echo occurrence as evidence about the mechanism, not about whichever agent hit it eighth; treat a fourth refused shape here the same way — a mechanism finding, never an agent's mistake.
+
 ### The two signatures are not interchangeable — which is why both are named here
 
 A dialog is **loud and blocking**: the wave stops, and whoever finds it knows something needs answering. A refusal is **quiet and non-blocking**: the agent keeps going, and the only trace is a step that never happened.
@@ -79,8 +143,8 @@ Most tools have such a flag (`--prefix`, `-C`, `--root`, `--cwd`, `--project`, `
 
 ### Where the clause lives
 
-- **This file**, under `wave-shared/reference/` — the loader contract reads *every* file in that directory (see `wave-shared/SKILL.md`, "Load every file under reference/"), so a `Convention 13` citation resolves for every back-half skill with **zero loader edits**.
-- **[`workflow-driver.md`](../../wave-start/reference/workflow-driver.md)** — the text dispatched agents actually receive, and therefore the site that matters most: the rule is a numbered policy clause in `workerBrief()`, a workspace-setup clause in `reviewerBrief()`, and — at its original site — `scribeBrief()`'s step 1, now stating the per-subcommand mechanism and citing this convention instead of carrying the whole rationale as an aside addressed to one role.
+- **This file**, under `wave-shared/reference/` — the loader contract reads *every* file in that directory (see `wave-shared/SKILL.md`, "Load every file under reference/"), so a `Convention 13` citation resolves for every back-half skill with **zero loader edits**. The Catalog section above lives here too, for the same reason: one place, reached by every citation, with zero loader edits when a row is appended.
+- **[`workflow-driver.md`](../../wave-start/reference/workflow-driver.md)** — the text dispatched agents actually receive, and therefore the site that matters most: the rule is a numbered policy clause in `workerBrief()`, a workspace-setup clause in `reviewerBrief()`, and — at its original site — `scribeBrief()`'s step 1, now stating the per-subcommand mechanism and citing this convention instead of carrying the whole rationale as an aside addressed to one role. Both `workerBrief()`'s policy clause 11 and `reviewerBrief()`'s Convention 13 paragraph now also point at the Catalog above by name, so a Worker or Reviewer facing a refusal that matches a cataloged shape finds what was actually verified to work — not merely "split it" — without re-deriving it mid-dispatch. `workerBrief()`'s Termination step 4 also stopped USING the refused shape: its `require_capture`-style guard is now the `if`-form Catalog entry 1 verified, not the `case`-form entry 1 names as refused.
 - **`workflow-driver.md`'s `ISSUES` row template** — the `depsSetup` example, which used to *teach* the fused `cd <depsDir> && <installCmd>` form to every Coordinator composing a wave, and now shows the flag-carrying form.
 
 ### Common Mistakes
@@ -97,3 +161,4 @@ Most tools have such a flag (`--prefix`, `-C`, `--root`, `--cwd`, `--project`, `
 - **2026-07-29, wave `2026-07-29-conventions-wiring`, disclosure `184.5` — mechanism B, first written down.** A Worker's compound `&&` command was rejected as too complex to verify staying inside the worktree; the Worker skipped the check it was running and continued. Captured at verdict-routing per [ADR-0027](../../../../docs/adr/0027-disclosures-are-spine-captured-at-routing-and-dispositioned-before-archive.md); the disclosure text, the Worker report and the Reviewer verdict live in that wave's spine and sidecars. This is the occurrence that turned a one-brief aside into a convention.
 - **Mechanism A, on our own allowlist.** The Scribe path is where this was first hit and first documented — a `cd "$REPO_ROOT"` fused onto the engine call that writes the sidecar, against a tracked allowlist that covers the engine call exactly. Same class as the KW-F6 sandbox footgun in [Convention 1](convention-01-auth-preflight.md), where `env -u GITHUB_TOKEN gh …` slips a `gh *` prefix rule because the command the matcher parses is not the one the rule names: a wrapper or a fused step in front of an allowlisted command is not covered by that command's entry.
 - **2026-07-30, this convention's own dispatch — the cwd-reset half.** `cd <worktree>/tools/wave` in one call, `npm ci`'s usage error in the next, `pwd` back at the worktree root in the third. Recorded because the obvious remedy for a fused command ("just split it") is incomplete on the exact path a Worker runs on, and an incomplete remedy is how a rule earns a reputation for not working.
+- **2026-07-30, wave `2026-07-30-arm-and-wiring`, coordinator disclosure `256.4` — mechanism B, three refusals, one wave; live-reproduced at issue #267's own dispatch.** The disclosure named three shapes (jq-piped capture with a case guard, heredoc spec append, heredoc commit message), each "correctly re-issued unfused." The Catalog above reports what live reproduction in this dispatch actually found: shape 1 is a categorical `case`/`esac` refusal, not fusion; shape 2 is narrower than fusion and only partly resolved; shape 3 confirmed as ordinary fusion. This is the occurrence the Catalog section exists to hold, and future refusals append there rather than growing this list.
