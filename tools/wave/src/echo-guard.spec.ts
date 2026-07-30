@@ -352,7 +352,8 @@ describe('echo-guard family 3 — position-aware carve-outs (literal spans are n
 
 // ---------------------------------------------------------------------------
 // 4c. Family 3 — the double-quoted search-PATTERN carve-out (2026-07-30,
-// post-#248 datapoint)
+// post-#248 datapoint), plus its parenthesized-alternation resolution
+// (2026-07-30, same day, one shape further out)
 // ---------------------------------------------------------------------------
 //
 // One step past the row-226 / close-time cluster above: a read-only `rg`
@@ -364,6 +365,14 @@ describe('echo-guard family 3 — position-aware carve-outs (literal spans are n
 // command head that matches family 3's whole-environment-dump check exactly.
 // Reproduces the reported shape: searching skill docs for occurrences of a
 // guarded word, alongside other alternation terms, in a quoted regex.
+//
+// That fix's own docstring flagged one shape it deliberately did not chase: a
+// PARENTHESIZED alternation (`"(printenv|env)"`) still isolated the bare word,
+// because `(`/`)` stayed blanket-live inside double quotes so a genuine
+// `$(...)` would not be blinded. The cases below close that residual with a
+// POSITION-aware rule instead of a blanket one — see the module docstring's
+// paren rule and `neutralizeQuotedSpans()` — and the negative controls prove
+// the narrower rule still catches a real (including nested) `$(...)`.
 describe('echo-guard family 3 — the double-quoted search-PATTERN carve-out (2026-07-30)', () => {
   it('AC1: a guarded word as an alternation term in a DOUBLE-quoted search pattern is not a whole-environment dump', () => {
     expectAllowed(runGuard('rg -n "printenv|env|set" .claude/skills', {}));
@@ -405,14 +414,49 @@ describe('echo-guard family 3 — the double-quoted search-PATTERN carve-out (20
     expectBlocked(runGuard('echo "current token check: `printenv`"', {}));
   });
 
-  it('residual, deliberately NOT chased here: a PARENTHESIZED alternation inside double quotes still isolates the bare word', () => {
-    // "(printenv|env)" still splits on the live ( and ) — the
+  it('AC1 (resolved 2026-07-30): a PARENTHESIZED alternation inside double quotes no longer isolates the bare word', () => {
+    // "(printenv|env)" used to still split on the live ( and ) — the
     // parenthesized-alternation flavor of the same FP family, one shape
-    // further out than the reported occurrence. Recorded as a known,
-    // deliberate residual in the module docstring rather than fixed blind;
-    // pinned here so the limitation is asserted, not merely assumed, and a
-    // future fix has to touch this case on purpose.
-    expectBlocked(runGuard('rg -n "(printenv|env)" .claude/skills', {}));
+    // further out than the row-226/close-time cluster. The resolved rule: a
+    // `(`/`)` inside double quotes is live ONLY when it is provably one half
+    // of a real `$(...)` pair (see the module docstring's paren rule); a bare
+    // `(` with no `$` immediately before it — exactly this shape — carries no
+    // expansion meaning of its own and is now as inert as the `;`/`|` already
+    // carved out. Regression test derived from the live occurrence this
+    // issue records.
+    expectAllowed(runGuard('rg -n "(printenv|env)" .claude/skills', {}));
+  });
+
+  it('AC1: the same parenthesized-alternation shape, single-quoted, still passes (unchanged carve-out)', () => {
+    expectAllowed(runGuard("rg -n '(printenv|env)' .claude/skills", {}));
+  });
+
+  it('AC1: a parenthesized alternation as an argument to a REAL command still leaves that command head reachable', () => {
+    // The double-quoted pattern itself is neutralized to prose, but the
+    // command carrying it — rg — is still the reported head; nothing about
+    // the carve-out swallows the invocation itself.
+    const result = runGuard('printenv | rg -n "(printenv|env)" .claude/skills', {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('AC2 negative control: a NESTED command substitution inside double quotes still blocks', () => {
+    // "$(echo $(printenv))" — every paren here is either a genuine `$(`
+    // opener or a closer with a live opener still outstanding, so the
+    // one-counter paren rule keeps the whole thing live, exactly as before
+    // this carve-out existed. Proves the fix does not blind the guard to a
+    // nested form just because it now tracks paren liveness positionally.
+    const result = runGuard('echo "check: $(echo $(printenv))"', {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('AC2 negative control: a bare parenthesized alternation followed by a REAL trailing command substitution still blocks the substitution', () => {
+    // The now-inert "(printenv|env)" prose must not consume the liveness of
+    // an unrelated, later, genuine $(...) in the same double-quoted string.
+    const result = runGuard('echo "pattern (printenv|env) then $(printenv)"', {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
   });
 });
 

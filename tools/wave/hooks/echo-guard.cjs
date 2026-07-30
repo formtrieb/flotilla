@@ -116,25 +116,34 @@
  *   - **A double-quoted string — but only its genuinely INERT characters.**
  *     Unlike a single-quoted span, `$` and a backtick ARE live inside double
  *     quotes in real bash (`"$(printenv)"` really does run `printenv`), so
- *     those two stay untouched — as do `(` and `)`, deliberately: the
- *     existing head-detection isolates whatever sits inside a real `$(...)`
- *     by splitting on ANY `(`/`)` at the character-class level (see the
- *     "hidden behind ... a command substitution" case below), and giving
- *     that up would need a nested-paren parser this guard is deliberately
- *     not. What DOES get blanked inside a double-quoted span — `;`, `|`,
- *     `&`, `{`, `}`, and a literal embedded newline — has NO special meaning
- *     there at all in real bash; it is exactly as inert as it is inside
- *     single quotes, which is what makes a pipe-joined alternation list in a
- *     quoted search PATTERN (`"printenv|env|set"`) prose, not three separate
- *     command heads. An apostrophe like the one in `"don't …"` is still never
- *     mistaken for a single-quote delimiter, because the double-quote branch
- *     never watches for `'` at all — only its own closing `"` ends it.
- *     **Residual, deliberately not chased here:** a PARENTHESIZED alternation
- *     inside double quotes (`"(printenv|env)"`) still splits on the live
- *     `(`/`)` and can still isolate a bare dump word — the same class, one
- *     shape further out, recorded rather than fixed blind, per this guard's
- *     own "one datapoint, not urgent" filing discipline. Fix it once it is
- *     evidenced, the same way this carve-out was.
+ *     those two stay untouched unconditionally. What DOES get blanked inside
+ *     a double-quoted span — `;`, `|`, `&`, `{`, `}`, and a literal embedded
+ *     newline — has NO special meaning there at all in real bash; it is
+ *     exactly as inert as it is inside single quotes, which is what makes a
+ *     pipe-joined alternation list in a quoted search PATTERN
+ *     (`"printenv|env|set"`) prose, not three separate command heads. An
+ *     apostrophe like the one in `"don't …"` is still never mistaken for a
+ *     single-quote delimiter, because the double-quote branch never watches
+ *     for `'` at all — only its own closing `"` ends it.
+ *     **`(` and `)` are POSITION-aware, resolving the earlier residual.**
+ *     The structural fact that settles this: real command substitution
+ *     requires the `$(` OPENER — a bare `(` sitting in double-quoted prose
+ *     with no `$` immediately before it is not an expansion by itself, in
+ *     real bash, ever. So `neutralizeQuotedSpans()` tracks how many `$(`
+ *     openers are currently outstanding inside the CURRENT double-quoted
+ *     span (one counter, reset per span — not a nested-paren parser): a `(`
+ *     is live and increments the counter ONLY when the character
+ *     immediately before it in the ORIGINAL command is `$`; a `)` is live
+ *     and decrements the counter ONLY while it is still above zero. Every
+ *     other `(`/`)` — a bare opener with nothing live behind it, or a closer
+ *     with no outstanding live opener — is exactly as inert as `;` or `|`
+ *     and gets blanked the same way, which is what turns
+ *     `"(printenv|env)"` into prose instead of an isolated `env` head. A
+ *     REAL `$(...)`, including one nested inside another
+ *     (`"$(echo $(printenv))"`), keeps every one of its parens live, because
+ *     each is either a genuine `$(` opener or a closer with a live opener
+ *     still outstanding — a one-token lookbehind is enough; no lookahead or
+ *     bracket-pairing logic is needed to get that right.
  *   - **A heredoc BODY.** It is argument/stdin DATA for whatever reads it, not
  *     a further sequence of top-level commands, so a bare line that happens to
  *     open with the dump word must not manufacture a fake per-line command
@@ -153,8 +162,8 @@
  * own family (see the KEEP decision above for family 2 specifically). None of
  * the three weakens the piped, command-substitution or command-head
  * invocation forms: those either never enter a quoted or heredoc span, or —
- * for `$(...)` / backtick / bare-paren command substitution specifically —
- * stay deliberately live inside one.
+ * for a genuine `$(...)` / backtick command substitution specifically, the
+ * paren rule above included — stay deliberately live inside one.
  *
  * ============================================================================
  * ## OPERATOR STEP (HITL) — ready to paste, deliberately NOT applied by an agent
@@ -340,22 +349,24 @@ function commandHeads(command) {
 const SEGMENT_SPLIT_CHARS = new Set(['`', '\n', ';', '|', '&', '(', ')', '{', '}', '$']);
 
 /**
- * The subset of SEGMENT_SPLIT_CHARS that stays genuinely LIVE inside a
- * DOUBLE-quoted span in real bash — these still perform real expansion there,
- * so a double-quoted span must never blank them. `$` starts `$var`, `${...}`
- * and `$(...)`; a backtick starts legacy command substitution. `(` and `)`
- * are grouped with them for a narrower reason: they carry no expansion
- * meaning of their own inside double quotes, but the existing head-detection
- * isolates a real `$(...)`'s CONTENTS by splitting on any `(`/`)` at the
- * character-class level (see `commandHeads` via `SEGMENT_SPLIT`), with no
- * pairing or nesting awareness — so blanking them here would blind that
- * detection to `"$(printenv)"` while trying to fix an unrelated character.
- * Leaving them live keeps that detection exactly as reachable as before, at
- * the cost of not closing the PARENTHESIZED-alternation flavor of this same
- * FP family (`"(printenv|env)"`) — recorded, not fixed blind, in the module
- * docstring above.
+ * The subset of SEGMENT_SPLIT_CHARS that stays UNCONDITIONALLY live inside a
+ * DOUBLE-quoted span in real bash, independent of position: `$` starts
+ * `$var`, `${...}` and `$(...)`; a backtick starts legacy command
+ * substitution. Blanking either would blind family 3's head detection to a
+ * genuine `"$(printenv)"`.
+ *
+ * `(` and `)` are deliberately NOT here — they carry no expansion meaning of
+ * their own inside double quotes; they only matter as the two halves of a
+ * `$(...)` pair. `neutralizeQuotedSpans()` decides their liveness
+ * POSITIONALLY instead of by blanket character-class membership: live only
+ * when it is provably one half of a real `$(` / `)` command-substitution
+ * pair (see the paren rule in the module docstring's double-quoted-string
+ * bullet, and the fuller walkthrough on `neutralizeQuotedSpans` itself).
+ * That is what resolves the PARENTHESIZED-alternation flavor of this FP
+ * family (`"(printenv|env)"`) without blinding the guard to a genuine, even
+ * nested, command substitution.
  */
-const DOUBLE_QUOTE_LIVE_CHARS = new Set(['$', '`', '(', ')']);
+const DOUBLE_QUOTE_LIVE_CHARS = new Set(['$', '`']);
 
 /** @param {Set<string>} chars @param {string} text */
 function blankChars(chars, text) {
@@ -368,7 +379,8 @@ function blankChars(chars, text) {
  * Blank every SEGMENT_SPLIT trigger character that falls inside a quoted
  * span — a single-quoted span in full, a double-quoted span for its
  * genuinely inert characters only (`DOUBLE_QUOTE_LIVE_CHARS` stays untouched
- * there).
+ * there, plus a `(`/`)` that is provably one half of a real `$(...)` pair —
+ * see the paren rule below).
  *
  * Bash performs ZERO expansion inside single quotes — no `$`, no backtick
  * command substitution, nothing — so nothing inside one is ever a further
@@ -378,18 +390,38 @@ function blankChars(chars, text) {
  *
  * A double-quoted span is different in kind, not just degree: `$` and a
  * backtick really do expand there (`"$(printenv)"` really runs `printenv`),
- * so those — and, for the reason `DOUBLE_QUOTE_LIVE_CHARS` documents, `(`
- * and `)` — are walked over untouched. Every OTHER SEGMENT_SPLIT character
- * (`;`, `|`, `&`, `{`, `}`, an embedded literal newline) has no special
- * meaning inside double quotes in real bash at all — it is exactly as inert
- * there as it is inside single quotes — so a pipe-joined alternation list in
- * a quoted search PATTERN (`"printenv|env|set"`) is prose, not three command
- * heads, and gets blanked the same way a single-quoted one already is. An
- * apostrophe like the one in `"don't …"` is never mistaken for a
- * single-quote delimiter that could pair with some unrelated LATER quote and
- * blank real command text sitting between them, because the double-quote
- * branch below never treats `'` as special at all — only its own closing
- * `"` ends it.
+ * so those stay untouched unconditionally (`DOUBLE_QUOTE_LIVE_CHARS`). Every
+ * OTHER SEGMENT_SPLIT character (`;`, `|`, `&`, `{`, `}`, an embedded literal
+ * newline) has no special meaning inside double quotes in real bash at all —
+ * it is exactly as inert there as it is inside single quotes — so a
+ * pipe-joined alternation list in a quoted search PATTERN
+ * (`"printenv|env|set"`) is prose, not three command heads, and gets
+ * blanked the same way a single-quoted one already is. An apostrophe like
+ * the one in `"don't …"` is never mistaken for a single-quote delimiter that
+ * could pair with some unrelated LATER quote and blank real command text
+ * sitting between them, because the double-quote branch below never treats
+ * `'` as special at all — only its own closing `"` ends it.
+ *
+ * **The paren rule.** `(` and `)` sit between those two extremes: unlike `$`
+ * and a backtick they are NOT unconditionally live, but unlike `;`/`|`/`&`
+ * they are not unconditionally inert either — real command substitution
+ * genuinely needs them. The structural signal that resolves this: command
+ * substitution requires the `$(` OPENER; a bare `(` with no `$` immediately
+ * before it is not an expansion by itself, in real bash, ever. So this scan
+ * tracks how many `$(` openers are currently outstanding inside the CURRENT
+ * double-quoted span — one counter, reset at the start of each new
+ * double-quoted span, no pairing or nesting parser required. A `(` is live
+ * (and increments the counter) only when the ORIGINAL command's
+ * immediately-preceding character is `$`; a `)` is live (and decrements the
+ * counter) only while it is still above zero. Everything else — a bare `(`
+ * opened from nothing, or a `)` with no live opener outstanding — is exactly
+ * as inert as `;` or `|` and gets blanked the same way, which is what turns
+ * a PARENTHESIZED alternation in a quoted search PATTERN
+ * (`"(printenv|env)"`) into prose instead of an isolated `env` head. A
+ * genuine `$(...)`, even nested (`"$(echo $(printenv))"`), keeps every one
+ * of its parens live, because each is either a real `$(` opener or a closer
+ * with a live opener still outstanding — the one-token lookbehind is
+ * sufficient; no lookahead or bracket-matching is needed.
  *
  * A hand-rolled quote-state scan, not a shell parser — it exists only to
  * defuse the evidenced false-positive shapes without touching a real
@@ -402,12 +434,41 @@ function neutralizeQuotedSpans(command) {
   let out = '';
   /** @type {'none' | 'single' | 'double'} */
   let state = 'none';
+  // Count of `$(` openers seen inside the CURRENT double-quoted span that
+  // have not yet been closed by a live `)` — the paren rule above. Reset at
+  // the start of every new double-quoted span.
+  let liveParenDepth = 0;
   for (let i = 0; i < command.length; i += 1) {
     const ch = command[i];
     if (state === 'double') {
       if (ch === '\\' && i + 1 < command.length) {
         out += ch + command[i + 1];
         i += 1;
+        continue;
+      }
+      if (ch === '(') {
+        // Live ONLY as the opener of a real `$(...)` — i.e. only when the
+        // character immediately before it in the ORIGINAL command (not the
+        // partially-neutralized output) is `$`. A bare `(` with nothing live
+        // behind it carries no expansion meaning inside double quotes at
+        // all, so it is exactly as inert as `;` or `|`.
+        if (command[i - 1] === '$') {
+          liveParenDepth += 1;
+          out += ch;
+        } else {
+          out += ' ';
+        }
+        continue;
+      }
+      if (ch === ')') {
+        // Live only while a `$(` opened above is still outstanding; a `)`
+        // with none outstanding closes nothing live.
+        if (liveParenDepth > 0) {
+          liveParenDepth -= 1;
+          out += ch;
+        } else {
+          out += ' ';
+        }
         continue;
       }
       const blank = SEGMENT_SPLIT_CHARS.has(ch) && !DOUBLE_QUOTE_LIVE_CHARS.has(ch);
@@ -426,7 +487,10 @@ function neutralizeQuotedSpans(command) {
     }
     out += ch;
     if (ch === "'") state = 'single';
-    else if (ch === '"') state = 'double';
+    else if (ch === '"') {
+      state = 'double';
+      liveParenDepth = 0;
+    }
   }
   return out;
 }
