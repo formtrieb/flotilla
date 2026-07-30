@@ -52,7 +52,18 @@ jobs:
         working-directory: tools/wave
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        # PIN BUMPED v6 -> v7 (ADR-0030 documented-form discipline: a divergence gets
+        # a comment; a bump gets its release-notes check recorded here rather than
+        # only in PR evidence). Read live in this dispatch: actions/checkout's own
+        # current basic-usage example (its README) pins @v7, matching the
+        # actions/setup-node trusted-publishing example this job already follows
+        # (which also pins actions/checkout@v7 alongside actions/setup-node@v7 — see
+        # the setup-node step below for that pin's own note). v7's release notes vs
+        # v6.0.3: an ESM + dependency migration, and a security fix blocking checkout
+        # of fork PRs for `pull_request_target`/`workflow_run` events — this workflow
+        # triggers on `release`/`workflow_dispatch` only, so that fix is inert here.
+        # No documented breaking change touches this step's plain, input-free checkout.
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -118,6 +129,18 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # NO BUILD STEP HERE — this is the point of departure, commented per ADR-0030.
+      # The vendor's own trusted-publishing example (read live in this dispatch:
+      # actions/setup-node's docs/advanced-usage.md, "Publishing to npm with Trusted
+      # Publisher (OIDC)") runs `npm run build --if-present` at exactly this spot,
+      # between install and publish. This package has nothing to build: it ships raw
+      # TypeScript source by decision (CLAUDE.md Conventions — "Engine ships raw TS,
+      # no build step"; `main: "./src/index.ts"` in tools/wave/package.json; `tsc
+      # --noEmit` below stands in as the type gate rather than a compile step). No
+      # `build` script exists in package.json, so even the vendor's own `--if-present`
+      # guard would no-op here — the step is omitted rather than kept as a decorative
+      # no-op that nothing satisfies.
 
       - name: "Engine gate: tests (vitest)"
         run: npm test
