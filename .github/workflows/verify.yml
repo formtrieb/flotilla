@@ -15,7 +15,11 @@ jobs:
         working-directory: tools/wave
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        # Bumped v6 -> v7 in lockstep with the release workflow's checkout pin — see
+        # .github/workflows/release.yml for the release-notes check (read live against
+        # the vendor's docs in this dispatch, never carried from memory). Bump both
+        # workflows' checkout pins together.
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -41,7 +45,11 @@ jobs:
         working-directory: tools/wave
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        # Bumped v6 -> v7 in lockstep with the release workflow's checkout pin — see
+        # .github/workflows/release.yml for the release-notes check (read live against
+        # the vendor's docs in this dispatch, never carried from memory). Bump both
+        # workflows' checkout pins together.
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
