@@ -75,9 +75,77 @@ before doing anything else.** Do not tag first and discover this afterwards.
    `npm publish` succeeding; `npm view @formtrieb/flotilla-engine versions` should show
    the new version, and the release should carry a provenance attestation.
 
-If step 5 fails for a transient registry reason, re-run via `workflow_dispatch` rather
-than cutting a second release. If it fails because the version already existed, the
-version is spent — bump and start again from step 2.
+## If step 5 fails
+
+Publishing the Release is what fires the workflow, and the workflow can fail in three
+different ways once it starts — each calling for a different response. Confusing them
+either burns a version number that can never be reused, or leaves a real defect in the
+workflow for the next release to hit again.
+
+**A — Transient registry failure.** A network blip or a registry-side hiccup, nothing
+wrong in the commit or the tag. Re-run via `workflow_dispatch` rather than cutting a
+second release.
+
+**B — The version already exists on the registry.** The publish step is rejected
+because that exact version number is already out there (the check under "Before you
+cut anything" above exists to catch this earlier). The version is spent: bump it and
+start again from step 2. Never re-run toward the same version number.
+
+**C — A non-transient failure in the release workflow or the package itself.** Not a
+network fluke and not a spent version — a real defect the gates didn't catch, surfacing
+at the worst possible moment. This needs a code fix, and it is the one path here that
+touches a tag you already pushed.
+
+**Ordering: fix → merge → move tag → dispatch. Invariant protected: the tag names the
+commit that was actually published — never a commit whose publish attempt failed.**
+
+1. **Fix the defect** and land it on `main` through a PR like any other change —
+   `main` stays protected even mid-release.
+
+2. **Move the tag** you already pushed in step 4 onto the new commit:
+
+   ```bash
+   git tag -f -a v<version> -m "flotilla v<version>" <new-sha>
+   git push origin v<version> --force
+   ```
+
+   This is the one place in this procedure where force-pushing a tag is correct. The
+   commit the tag pointed at before never actually published — its publish attempt
+   failed — so the tag never named published content in the first place; moving it
+   onto the fix commit is what makes "the tag names what's published" true, not a
+   break of it.
+
+   **Side effect, immediate:** a GitHub Release is already published from this tag —
+   publishing that Release is what triggered the failing run — and retargeting the
+   tag underneath it demotes that Release to a **draft**, with an untagged-style URL.
+   This is cosmetic; the npm registry has no idea GitHub Release objects exist. But
+   the version's public release notes are now invisible until a human restores them
+   (step 4).
+
+3. **Re-fire the release via `workflow_dispatch`** — not by touching the Release
+   object. This run publishes from the fix commit the moved tag now points to; confirm
+   it the same way as step 6 above.
+
+4. **Re-publish the demoted draft.** Once the real publish in step 3 has succeeded, a
+   human opens the draft Release from step 2 and publishes it again, restoring it as
+   the visible Release for this version. That action is itself a "Release published"
+   event, so it **fires the workflow a second time** — on the same commit, already
+   published successfully in step 3. This duplicate run reaches `npm publish` and gets
+   rejected under failure mode B, one section up: the version already exists.
+   **Expected. Harmless. Not a signal to re-run anything.** If a run goes red right
+   after a tag move, check `npm view @formtrieb/flotilla-engine versions` before
+   assuming something is actually broken — if the version is already there, this is
+   that duplicate run, not a new failure.
+
+Live occurrence: the `v0.1.0-beta.1` follow-up release took exactly this path. The
+floating npm install this workflow does on purpose (`npm install -g npm@^11.5.1` — a
+floor with no ceiling) had picked up a newer 11.x carrying two publish-time validations
+`0.1.0-beta.0` never hit: a `bin` entry with a `./` prefix is silently stripped at
+publish (the package would have shipped without its binary), and a prerelease version
+is refused without an explicit `--tag`. The `--tag` rejection is what actually stopped
+the run — before the bin-stripping could ship silently broken. Both were fixed in one
+commit, the tag was moved onto it, `workflow_dispatch` completed the publish, and the
+demoted draft was republished by hand exactly as described above.
 
 ## Two strings the registry matches literally
 
