@@ -72,10 +72,16 @@ jobs:
           # it is the risky direction rather than the cautious one. Do not delete this
           # on the reasoning that an unused auth stanza must be harmful.
           #
-          # That example is now published formally, and this step is pinned to the
-          # action major it pins: actions/setup-node, docs/advanced-usage.md,
-          # "Publishing to npm with Trusted Publisher (OIDC)". Read it before changing
-          # anything in this block.
+          # THE PIN BELOW IS NOT A CLAIM OF CURRENT VENDOR CONFORMANCE. The vendor's own
+          # example moves its pin forward independent of this file — it already has,
+          # once, which is why this comment needed rewriting rather than trusting its
+          # own memory. The example lives at actions/setup-node's docs/advanced-usage.md,
+          # under "Publishing to npm with Trusted Publisher (OIDC)" — read THAT page
+          # live before touching this pin or this comment again. As read on 2026-07-30:
+          # the vendor's example pins actions/setup-node@v7 (with actions/checkout@v7
+          # and Node 24) — one major ahead of the actions/setup-node@v6 this step uses.
+          # `registry-url` and `package-manager-cache: false` below still match the
+          # example exactly; only the action major and the Node line have drifted.
           registry-url: "https://registry.npmjs.org"
 
           # DEPENDENCY CACHING IS DELIBERATELY OFF — do not switch it on for speed.
