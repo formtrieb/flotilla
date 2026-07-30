@@ -135,15 +135,27 @@ jobs:
         # `--tag` IS required for a prerelease version — npm (>= the 11.x line this job
         # floats onto via the install step above) refuses `npm publish` of a version
         # with a prerelease suffix unless an explicit dist-tag is given, so a
-        # prerelease can never silently shadow `latest`. Live occurrence: the
+        # prerelease can never ACCIDENTALLY shadow `latest`. Live occurrence: the
         # v0.1.0-beta.1 release run failed exactly here ("You must specify a tag using
         # --tag when publishing a prerelease version") although v0.1.0-beta.0 had
         # published clean three days earlier — the floor-without-ceiling npm install
-        # floats forward, and the requirement arrived with it. A stable version
-        # publishes untagged and lands `latest`, the default.
+        # floats forward, and the requirement arrived with it.
+        #
+        # THE EXPLICIT TAG IS `latest` ON PURPOSE — the pre-1.0 posture, decided by the
+        # operator (2026-07-30): every release of this package so far IS a beta, and
+        # the documented npm-first invocation form is the BARE `npx
+        # @formtrieb/flotilla-engine`, which installs `latest`. A prerelease parked on
+        # a side tag leaves `latest` pointing at an older beta, and the documented
+        # form silently resolves stale — exactly what happened when v0.1.0-beta.1
+        # first published under `--tag beta` and the bare form kept installing
+        # beta.0 (fixed by a manual `npm dist-tag add`). The accidental-shadowing
+        # concern the npm guard protects against does not apply while no stable line
+        # exists. REVISIT AT THE FIRST STABLE RELEASE: once a stable is out, a
+        # continuing beta line moves to `--tag beta` and this comment moves with it.
+        # A stable version publishes untagged and lands `latest`, the default.
         run: |
           VERSION=$(node -p "require('./package.json').version")
           case "$VERSION" in
-            *-*) npm publish --tag beta ;;
+            *-*) npm publish --tag latest ;;
             *)   npm publish ;;
           esac
