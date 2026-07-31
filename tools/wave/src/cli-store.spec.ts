@@ -10,6 +10,13 @@
  * they are mocked here purely to keep this spec hermetic + fast; the
  * factories' own behavior (missing-token errors, preflight wiring) is covered
  * by their own specs (`github-api-factory.spec.ts` / `linear-api-factory.spec.ts`).
+ *
+ * PUBLIC-API PAIRING (issue #325): the store-preflight family is root-exported,
+ * and its pairing spec is `index.spec.ts`, NOT this file — this one mocks the api
+ * factories at module scope, which is exactly the environment a root-import
+ * assertion must not run in, and a barrel assertion buried in a CLI-edge spec
+ * reads as a stray rather than as the contract it is. Behaviour lives here;
+ * "the package root really offers these names" lives there.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

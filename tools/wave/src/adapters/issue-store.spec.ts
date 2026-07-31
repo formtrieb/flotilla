@@ -70,6 +70,12 @@ describe('classifyCreateInput (ADR-0027) — shape classification', () => {
   });
 });
 
+// The typed rejection below is PUBLIC API as of issue #325: `CreateInputError`
+// and `CreateInputFailure` are re-exported from the package root. Its pairing —
+// same class binding across the barrel, so a root consumer's `instanceof` matches
+// what these adapters throw — is asserted in `index.spec.ts`, the file that owns
+// pairings spanning more than one module. These stay the LAYER specs: what the
+// classifier rejects and why, with no barrel in the picture.
 describe('classifyCreateInput — typed rejections (#309: the classifier owns the invariant)', () => {
   /** Run the classifier and return the CreateInputError it threw. */
   function rejectionOf(input: CreateInput): CreateInputError {

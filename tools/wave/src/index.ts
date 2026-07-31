@@ -397,11 +397,17 @@ export {
 //
 // Deliberately NOT re-exported: `engineManifestPath` (every reading already
 // carries the manifest it read as `manifestPath`, so the root surface would
-// gain a second way to ask one question) and `engineVersionPreflightCheck`
-// (its return type belongs to the store-preflight surface — `PreflightCheck`,
-// `StorePreflightReport`, `preflightStore` — none of which is root-reachable
-// today; that is a wider, older gap, and dragging it in behind a version-gate
-// fix would make this a store-preflight API change nobody reviewed as one).
+// gain a second way to ask one question) and `engineVersionPreflightCheck` —
+// whose held-back REASON changed with issue #325 and is therefore re-recorded
+// here rather than inherited. It used to be "its return type belongs to a
+// surface that is not root-reachable"; the store-preflight block directly below
+// makes `PreflightCheck` root-reachable, so that reason is spent. What survives
+// is the other one: `preflightStore`'s `expectedEngineVersion` option already
+// APPENDS exactly this check to the report, so a root consumer that wants the
+// lockstep row asks the probe for it, and one that wants the comparison alone
+// has `compareEngineVersion` above. A standalone constructor between those two
+// would be the same second-way-to-ask-one-question `engineManifestPath` is held
+// back for.
 export {
   readEngineVersion,
   compareEngineVersion,
@@ -409,6 +415,53 @@ export {
   type EngineVersionReading,
   type EngineVersionOutcome,
   type EngineVersionReport,
+} from './cli-store';
+
+// The STORE-PREFLIGHT family (FOR-12, ADR-0020 / the ADR-0023 amendment).
+//
+// RECORDED DECISION (issue #325): this surface IS public. The question was
+// genuinely open — the version-barrel slice above declined to answer it, and
+// "the root surface is deliberately CLI-only for preflight" would have been a
+// legitimate outcome. It is public for two reasons:
+//
+//   - The probe is PURE OVER THE SEAM. `preflightStore(config, store)` reaches a
+//     tracker only through the store's own api, so a root-only consumer can run
+//     it against a fake and get the same report `wave-setup` reads — no network,
+//     no subprocess. A CLI-only stance would have forced that consumer to shell
+//     a verb to ask a question the engine answers in-process.
+//   - The CLI runners are ALREADY a root-exported family — `runConflictMap`,
+//     `runCrossWave`, `runIssueStore`, `runSpine`, `runResume`,
+//     `runCredentialProbe`. `runStorePreflight` being the one missing member was
+//     an omission, not a stance, and leaving it out would have recorded a stance
+//     nobody actually took.
+//
+// The family ships WHOLE because that is the whole job from the root: BUILD the
+// store the config describes at the impure edge (`resolveStore` — which
+// `buildStore` deliberately is not: `resolveStore` injects the real
+// GitHub/Linear api factories, `buildStore` stays pure and demands an injected
+// api), PROBE it (`preflightStore`), or take the runner with its exit-code
+// contract exactly as the CLI does (`runStorePreflight`, plus
+// `runStorePreflightSubcommand` — the router-facing spelling, shipped alongside
+// so a consumer embedding the verb picks the arg shape it already holds rather
+// than re-deriving the `preflight` op token; the two cannot drift, the shim adds
+// no logic of its own). The three types ride along so the report can be
+// annotated and each check's `name` switched on exhaustively.
+//
+// Costs the barrel nothing at load time, for the same reason the version trio
+// above does not: `./cli-store` is already in this graph.
+//
+// Deliberately NOT separately re-exported: `PreflightCheck['status']`, which is
+// `CheckStatus` and owned by `host-pr`. Indexed access already reaches it from
+// the root, and a second name for one type is precisely the drift this barrel
+// keeps declining to buy.
+export {
+  resolveStore,
+  preflightStore,
+  runStorePreflight,
+  runStorePreflightSubcommand,
+  type PreflightCheck,
+  type StorePreflightReport,
+  type StorePreflightOptions,
 } from './cli-store';
 
 export {
@@ -447,6 +500,32 @@ export {
   buildStore,
   type StoreDeps,
 } from './store-factory';
+
+// The TYPED CREATE REJECTION (ADR-0027, the bare-filing path).
+//
+// RECORDED DECISION (issue #325): the typed rejection IS public — a programmatic
+// consumer is NOT expected to catch a generic error. `buildStore` above hands a
+// root-only consumer a live store, and `create()` on EVERY adapter runs the
+// create-input classifier as its first statement, before an id is minted and
+// before any write. So this rejection was already something a root consumer
+// could RECEIVE and could not NAME: catching it meant `instanceof` against a
+// class reachable only by deep import, or string-matching a prose message —
+// exactly the stance ADR-0029 and ADR-0032 already took against message-matching
+// when they exported `CredentialResolutionError` and `EngineCliBindingError`.
+// `CreateInputFailure` ships beside the class as the discriminant a caller
+// routes on (usage-error vs domain-failure, which field to re-author), for the
+// same reason `EngineCliBindingFailure` does.
+//
+// Deliberately NOT re-exported: the classifier itself. Every adapter already
+// runs it first, so a consumer calling it by hand would be asking a question
+// `create()` answers on its behalf — and a hand-run pre-check that can drift
+// from the write path is worse than no pre-check at all. The rejection is
+// inherited; the classifier stays the seam. Same one-way-to-ask discipline as
+// `engineManifestPath` and `engineVersionPreflightCheck` above.
+export {
+  CreateInputError,
+  type CreateInputFailure,
+} from './adapters/issue-store';
 
 export { runConflictMap } from './conflict-map-cli';
 
