@@ -115,6 +115,11 @@ HELD_IDS=$(node -e '
 #     past the exec argument limit every Bash spawn dies with E2BIG, subagents
 #     included. ADVISORY, never a STOP (see the dedicated section below for why,
 #     and for the recovery sequence — which requires a harness RESTART).
+#     TWO TERMS, NOT ONE: this count proxies only the harness-injected half of
+#     the exec argument budget. The command line a spawn carries (argv + env) is
+#     the OTHER, independent term, and a measured occurrence blew the budget on
+#     that term alone with a pristine population — so a count under the
+#     threshold is NOT an E2BIG all-clear. See the section below.
 WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree ')
 #   >12 → print the advisory and sweep before the flip; <=12 → silent, proceed.
 #   12 == WORKTREE_COUNT_ADVISORY_THRESHOLD in tools/wave/src/worktree-cleanup.ts
@@ -124,8 +129,13 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #   changing these lines (or vice versa) and the engine test suite fails.
 #   The engine surfaces the same verdict machine-readably: every
 #   `worktree-cleanup` run (--dry-run included) prints
-#   worktreeCount { count, threshold, level, advisory }. THIS step keeps the raw
-#   git form because the preflight runs before any config/store resolution.
+#   worktreeCount { count, threshold, level, advisory } AND, for the second
+#   term, commandLine { bytes, argvBytes, envBytes, argCount, envCount,
+#   threshold, level, advisory } from the engine's checkCommandLineSizeAdvisory
+#   (its own threshold constant, COMMAND_LINE_ADVISORY_THRESHOLD_BYTES, lives in
+#   the same engine file — read it there, never restate it here). THIS step
+#   keeps the raw git form because the preflight runs before any config/store
+#   resolution.
 #   Deliberately NOT run through step 0's `require_capture`: `grep -c` prints `0`
 #   on no match, so this capture is never empty on a did-not-run — and a repo
 #   with zero registered worktrees is impossible anyway (the primary checkout
@@ -278,7 +288,19 @@ That advisory is also **CLI-reachable**, so nothing downstream has to re-impleme
 
 **Advisory, not a gate — and this is a deliberate asymmetry with step 4.** A failed host-auth or credential probe STOPs the wave because the failure is *measured* (the token really did not authenticate). The worktree threshold is a *heuristic* about a harness-side limit nothing here can measure; converting it into a refusal would block a legitimately wide multi-wave day on a number no one can verify from inside the engine. `> 12` therefore reports and lets the Coordinator decide, and that decision is named in the step-9 report.
 
-**Recovery — the three steps, in order.**
+### Two terms, not one — the count is a proxy for only half the budget
+
+The paragraphs above describe **one** term. A second live occurrence proved that model incomplete, and in the most expensive way available: an operator following it would have swept worktrees and fixed nothing.
+
+**Measured** (wave `2026-07-30-arm-and-wiring`, row 250, worker disclosure 250.3): a real `E2BIG` at **~1019.5 KB of command line across just three argv entries**, with **166 sandbox deny paths of which only 15 were worktree-derived**. It was recovered by **compressing the PR body being passed as an argument** — no worktree was removed, and none needed to be. Two readings fall out of those numbers. The population term was about a *ninth* of the deny paths, and those paths' own bytes are a rounding error next to a megabyte of argv, so sweeping everything could not have brought that spawn under the limit. And three arguments is not an accumulation: a **single** oversized argument — a PR body, a composed agent brief, a file list — reaches the limit on its own, in a session whose worktree count is pristine.
+
+So the exec argument budget is a **sum**: `(harness-injected sandbox profile, proxied by the worktree count) + (the command line this spawn carries: argv + env)`. `E2BIG` fires on the sum, and neither term alone predicts it.
+
+**What that does to the threshold guidance above.** A count at or under the threshold means *this term* is fine; it does not mean the next spawn will succeed. Read both terms, always — the engine prints them side by side (`worktreeCount` and `commandLine`) on every `{{wave-cli}} worktree-cleanup` run, `--dry-run` included, each with its own `level` and its own verbatim `advisory` text. The second term's threshold is `COMMAND_LINE_ADVISORY_THRESHOLD_BYTES` in `tools/wave/src/worktree-cleanup.ts`, alongside the count's; as with the count, the engine owns the number, its rationale and its wording, and this file names the constant rather than restating its value.
+
+**The recovery differs per term, which is the whole point of separating them.** The population term is swept (plus the harness restart below). The command-line term is **shrunk at the caller** — compress the oversized body or brief, or pass it by file — and *no sweep and no restart move it at all*. Diagnose which term blew before reaching for either remedy: a Coordinator that answers every `E2BIG` with a worktree sweep will, on this incident's shape, restart a session and hit the identical failure on the very next call.
+
+**Recovery — the three steps, in order.** (For the *population* term; see the paragraph directly above for the command-line term, which none of these three steps touches.)
 
 ```bash
 {{wave-cli}} worktree-cleanup --orphans --detached "$REPO"   # 1. sweep (wave-close phase 3 = reading guide)

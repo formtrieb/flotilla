@@ -642,6 +642,55 @@
  * cached for the session, so every Bash spawn keeps failing. **Cleanup AND a
  * harness restart** — in that order — is the recovery; cleanup alone is not.
  *
+ * ── the command line is the OTHER, independent E2BIG term (issue #266) ────────
+ *
+ * The advisory above modelled E2BIG with ONE term: the registered-worktree
+ * population, as a proxy for the harness-injected sandbox profile. A second
+ * live occurrence proved that model incomplete, and in the most expensive
+ * possible way — an operator following it would have swept worktrees and fixed
+ * nothing.
+ *
+ * MEASURED (wave `2026-07-30-arm-and-wiring`, row 250 iteration 1, worker
+ * disclosure 250.3): a real `E2BIG` at **~1019.5 KB of command line across just
+ * 3 argv entries**, with **166 sandbox deny paths of which only 15 were
+ * worktree-derived**. The failing spawn was recovered by **compressing the PR
+ * body it was passing as an argument** — no worktree was removed, and none
+ * needed to be. Two independent readings fall out of those numbers:
+ *
+ *   • The population term was ~9 % of the deny paths, and those paths' own
+ *     bytes are a rounding error next to a megabyte of argv — sweeping every
+ *     worktree in the repo could not have brought that spawn under the limit.
+ *   • Three arguments is not an accumulation. A SINGLE oversized argument
+ *     (a PR body, a composed agent brief, a file list) reaches the limit on its
+ *     own, in a session whose worktree count is pristine.
+ *
+ * So the exec argument budget is a SUM — `(harness-injected profile, proxied by
+ * the worktree count) + (the command line this spawn carries: argv + env)` —
+ * and E2BIG fires on the sum. Neither term alone predicts it, and a count at or
+ * under {@link WORKTREE_COUNT_ADVISORY_THRESHOLD} is therefore NOT an
+ * E2BIG all-clear. That is a correction to the threshold guidance above, not a
+ * footnote on it.
+ *
+ * {@link measureExecArgumentBytes} + {@link checkCommandLineSizeAdvisory} are
+ * the second term made measurable, deliberately shaped as a SIBLING of the
+ * count advisory rather than folded into it (they answer different questions,
+ * are moved by different actions, and are over/under threshold independently):
+ * the same `{ level, message }` discipline, the same fire-above-not-at
+ * comparison, the same non-negative-integer threshold validation, the same
+ * advisory-never-a-refusal stance. Its threshold is
+ * {@link COMMAND_LINE_ADVISORY_THRESHOLD_BYTES}.
+ *
+ * The recovery differs per term, which is the whole operational point of
+ * splitting them: the population term is swept (plus the harness RESTART
+ * above); the command-line term is SHRUNK at the caller (compress the body,
+ * or file-back it) and no sweep or restart moves it at all.
+ *
+ * SECRET-SAFETY, since this term measures argv and env: nothing in this module
+ * ever stores, returns, logs or embeds an argument or an environment variable's
+ * NAME or VALUE. {@link measureExecArgumentBytes} reduces both vectors to byte
+ * COUNTS at the point of measurement, and the advisory message quotes only
+ * those counts.
+ *
  * ── the classifier's own fallback, scoped (issue #304) ─────────────────────────
  *
  * The "NO force flag" stance above answers a DIFFERENT question than issue
@@ -2208,11 +2257,35 @@ export interface WorktreeCountAdvisoryOptions {
 }
 
 /**
+ * The measured occurrence that proves the exec budget has TWO terms
+ * (issue #266), written down once and quoted by BOTH advisory messages so
+ * neither can drift from the evidence or from the other.
+ *
+ * It is deliberately part of the advisory TEXT rather than a code comment: an
+ * operator reading `worktreeCount.advisory` at 3am is the person who has to
+ * decide whether sweeping will help, and the numbers are what settle it.
+ */
+const E2BIG_TWO_TERM_EVIDENCE =
+  'COUNT IS ONLY ONE OF TWO TERMS. The exec argument budget is the SUM of the ' +
+  'harness-injected sandbox profile (which this count proxies) and the COMMAND LINE ' +
+  'the spawn itself carries (argv + env); E2BIG fires on the sum, so neither term ' +
+  'alone predicts it. Measured 2026-07-30: a real E2BIG at ~1019.5 KB of command line ' +
+  'across just 3 argv entries, with 166 sandbox deny paths of which only 15 were ' +
+  'worktree-derived — recovered by COMPRESSING the command line (an oversized PR body), ' +
+  'with no worktree removed. A count at or under the threshold is therefore NOT an ' +
+  'E2BIG all-clear: measure the command-line term too (checkCommandLineSizeAdvisory).';
+
+/**
  * Build the advisory text for a count over threshold (issue #238). Kept as its
  * own function so the E2BIG shape and the recovery sequence are written down
  * exactly ONCE in the engine — the operating docs quote this, they do not
  * paraphrase it, and the spec pins the three load-bearing substrings (`E2BIG`,
  * the subagent scope, the restart requirement).
+ *
+ * Issue #266 appends {@link E2BIG_TWO_TERM_EVIDENCE}: the recovery sentence
+ * above ("sweep the worktrees") is correct for THIS term and actively
+ * misleading as a general E2BIG remedy, so the message that carries it also
+ * has to carry the term boundary.
  */
 function worktreeCountAdvisoryMessage(count: number, threshold: number): string {
   return (
@@ -2224,7 +2297,8 @@ function worktreeCountAdvisoryMessage(count: number, threshold: number): string 
     'Sweep the worktrees before dispatching. ' +
     'If E2BIG has ALREADY started, cleanup alone does not recover the session: the profile ' +
     'is cached, so the sequence is worktree cleanup + `git worktree prune` AND a harness ' +
-    'RESTART.'
+    'RESTART. ' +
+    E2BIG_TWO_TERM_EVIDENCE
   );
 }
 
@@ -2273,6 +2347,229 @@ export function checkWorktreeCountAdvisory(
     };
   }
   return { count, threshold, level: 'ok', message: null };
+}
+
+// ─── The command-line term of the SAME E2BIG budget (issue #266) ──────────────
+//
+// The sibling of the count advisory above, for the term that advisory does not
+// model at all. See the file-level "the command line is the OTHER, independent
+// E2BIG term" section for the measured occurrence this exists because of
+// (~1019.5 KB across 3 args; 166 deny paths, 15 worktree-derived; recovered by
+// compressing the command line). Everything here is byte COUNTS: no argument or
+// environment name or value is ever stored, returned or embedded in a message.
+
+/**
+ * Per-entry overhead the kernel pays for each argv/envp string, on top of the
+ * string's own bytes: one NUL terminator plus one pointer in the vector.
+ *
+ * Eight bytes is the 64-bit pointer width every platform this toolkit runs on
+ * uses. It is a small, deliberately CONSERVATIVE correction — including it can
+ * only make the measurement larger, i.e. can only make the advisory fire
+ * earlier, which is the safe direction for a heuristic whose whole purpose is
+ * to warn before the cliff rather than at it.
+ */
+const EXEC_ENTRY_OVERHEAD_BYTES = 9;
+
+/**
+ * The documented command-line advisory threshold in BYTES (issue #266).
+ *
+ * NOT the OS limit — like {@link WORKTREE_COUNT_ADVISORY_THRESHOLD}, and for
+ * the same reason: the exec argument limit is shared with a harness-injected
+ * sandbox profile this engine cannot see, so the real headroom for a given
+ * spawn is always smaller than any published constant. What IS known is the
+ * live shape: the 2026-07-30 occurrence died at ~1019.5 KB of command line —
+ * just under the 1 MiB (1,048,576-byte) `ARG_MAX` that macOS reports, which is
+ * the platform every measured occurrence so far happened on.
+ *
+ * The threshold is set at HALF of that observed cliff (512 KiB), so a caller
+ * gets a full doubling of headroom before the spawn that dies — the same
+ * "an advisory that only fires at the cliff is useless" reasoning that set the
+ * count threshold, expressed in the unit this term is measured in. Below it,
+ * even a large sandbox profile plus a large inherited environment still leaves
+ * room; above it, a single further argument can finish the job.
+ *
+ * Overridable per call ({@link CommandLineSizeAdvisoryOptions.threshold}) for a
+ * platform or harness with a materially different budget.
+ */
+export const COMMAND_LINE_ADVISORY_THRESHOLD_BYTES = 524_288;
+
+/**
+ * What {@link measureExecArgumentBytes} reports — the exec cost of one spawn,
+ * split into the half a caller can shrink and the half it inherits.
+ */
+export interface ExecArgumentMeasurement {
+  /** `argvBytes + envBytes` — the number compared against the threshold. */
+  bytes: number;
+  /**
+   * The argv half. This is the term a caller actually controls: an oversized
+   * `--body`/brief lives here, and compressing it is what the measured
+   * occurrence's recovery did.
+   */
+  argvBytes: number;
+  /**
+   * The env half. Counted because the kernel counts it against the same
+   * buffer — omitting it would understate every spawn by the size of the
+   * inherited environment. Byte count only; no name or value is retained.
+   */
+  envBytes: number;
+  /**
+   * How many argv entries `argvBytes` was measured across. Reported because
+   * the measured occurrence's shape — a megabyte across **3** entries — is the
+   * one that defeats the intuition that E2BIG means "too MANY arguments".
+   */
+  argCount: number;
+  /** How many environment entries `envBytes` was measured across. */
+  envCount: number;
+}
+
+/**
+ * Measure what one spawn costs against the kernel's exec argument buffer
+ * (issue #266): every argv string and every `KEY=VALUE` environment string,
+ * each charged its UTF-8 byte length plus {@link EXEC_ENTRY_OVERHEAD_BYTES}.
+ *
+ * UTF-8 byte length, never `String.length`: a path with non-ASCII segments (this
+ * repo's own checkout has one) costs the kernel its encoded bytes, and a
+ * code-unit count would silently understate exactly the paths that are longest.
+ *
+ * An `env` entry whose value is `undefined` is skipped rather than counted as
+ * the string `"undefined"` — `process.env`'s index signature admits it, and a
+ * key that is not actually in the environment is not in the exec buffer either.
+ *
+ * PURE: no I/O, no process state read unless the caller passes it in. Secret
+ * safety is structural — the return value is five numbers, so there is nothing
+ * for a caller to accidentally print.
+ */
+export function measureExecArgumentBytes(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = {},
+): ExecArgumentMeasurement {
+  let argvBytes = 0;
+  for (const arg of argv) {
+    argvBytes += Buffer.byteLength(arg, 'utf8') + EXEC_ENTRY_OVERHEAD_BYTES;
+  }
+
+  let envBytes = 0;
+  let envCount = 0;
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    envCount += 1;
+    envBytes +=
+      Buffer.byteLength(`${key}=${value}`, 'utf8') + EXEC_ENTRY_OVERHEAD_BYTES;
+  }
+
+  return {
+    bytes: argvBytes + envBytes,
+    argvBytes,
+    envBytes,
+    argCount: argv.length,
+    envCount,
+  };
+}
+
+/**
+ * The advisory {@link checkCommandLineSizeAdvisory} returns (issue #266).
+ *
+ * Shaped as the deliberate sibling of {@link WorktreeCountAdvisory}: `level` is
+ * the machine-readable verdict and `message` is non-null EXACTLY when
+ * `level === 'advisory'`, so a caller prints it on that branch without a null
+ * check and can never print a warning on the `ok` branch.
+ */
+export interface CommandLineSizeAdvisory extends ExecArgumentMeasurement {
+  /** The threshold `bytes` was compared against (the effective one, after any override). */
+  threshold: number;
+  /** `'advisory'` iff `bytes > threshold`; `'ok'` otherwise. */
+  level: 'ok' | 'advisory';
+  /** The advisory text (naming the term, the evidence and the per-term recovery), or `null` when `level` is `'ok'`. */
+  message: string | null;
+}
+
+export interface CommandLineSizeAdvisoryOptions {
+  /**
+   * The argv to measure. Defaults to `process.argv` — the spawn that is
+   * actually running, which is the only command line the engine can observe
+   * first-hand. A caller composing a command line it is ABOUT to spawn passes
+   * that array instead, which is the preflight form.
+   */
+  argv?: readonly string[];
+  /**
+   * The environment to charge alongside `argv`. Defaults to `process.env`,
+   * because the inherited environment is charged to the same buffer for every
+   * spawn in the session. Pass `{}` to measure the argv term in isolation.
+   */
+  env?: Readonly<Record<string, string | undefined>>;
+  /** Override {@link COMMAND_LINE_ADVISORY_THRESHOLD_BYTES}. Must be a non-negative integer. */
+  threshold?: number;
+}
+
+/**
+ * Build the advisory text for a command line over threshold (issue #266). Its
+ * own function for the same reason {@link worktreeCountAdvisoryMessage} is:
+ * the engine owns this wording, the operating docs quote it verbatim, and the
+ * spec pins the load-bearing substrings so a reword cannot drop one.
+ */
+function commandLineSizeAdvisoryMessage(
+  measurement: ExecArgumentMeasurement,
+  threshold: number,
+): string {
+  return (
+    `${measurement.bytes} bytes of command line (${measurement.argvBytes} argv across ` +
+    `${measurement.argCount} entries + ${measurement.envBytes} env across ` +
+    `${measurement.envCount} entries; advisory threshold ${threshold} bytes). ` +
+    'Every spawn passes argv and env through ONE fixed kernel exec buffer, so an ' +
+    'oversized command line fails with E2BIG ("argument list too long") entirely on its ' +
+    'own — no worktree accumulation required, and a single argument is enough. ' +
+    'SWEEPING WORKTREES DOES NOT MOVE THIS TERM: shrink the argument at the caller ' +
+    '(compress an oversized body/brief, or pass it by file), and re-measure. ' +
+    E2BIG_TWO_TERM_EVIDENCE
+  );
+}
+
+/**
+ * Measure this spawn's command line and return a
+ * {@link CommandLineSizeAdvisory} (issue #266) — the second, independent term
+ * of the E2BIG budget the worktree count does not model.
+ *
+ * ADVISORY BY DESIGN, never a refusal, for exactly the reason
+ * {@link checkWorktreeCountAdvisory} is: the remaining headroom depends on a
+ * harness-injected sandbox profile this engine cannot see, so the threshold is
+ * a heuristic and a hard stop on a heuristic would refuse legitimate work. The
+ * caller decides what to do with `level`.
+ *
+ * The comparison is strictly ABOVE the threshold (`bytes > threshold`), the
+ * same boundary the count advisory uses — being exactly at the documented
+ * budget is not yet the thing being warned about, and two sibling checks that
+ * disagreed about their own boundary would be a trap for whoever reads them
+ * side by side.
+ *
+ * @throws when an explicit `threshold` is not a non-negative integer — a
+ *   garbled override must fail loud rather than silently disable the advisory
+ *   (a `NaN` comparison is always false, i.e. it would read as a permanent
+ *   `ok`).
+ */
+export function checkCommandLineSizeAdvisory(
+  opts: CommandLineSizeAdvisoryOptions = {},
+): CommandLineSizeAdvisory {
+  const threshold = opts.threshold ?? COMMAND_LINE_ADVISORY_THRESHOLD_BYTES;
+  if (!Number.isInteger(threshold) || threshold < 0) {
+    throw new Error(
+      `command-line advisory threshold must be a non-negative integer, got ${String(threshold)}`,
+    );
+  }
+
+  const measurement = measureExecArgumentBytes(
+    opts.argv ?? process.argv,
+    opts.env ?? process.env,
+  );
+
+  if (measurement.bytes > threshold) {
+    return {
+      ...measurement,
+      threshold,
+      level: 'advisory',
+      message: commandLineSizeAdvisoryMessage(measurement, threshold),
+    };
+  }
+  return { ...measurement, threshold, level: 'ok', message: null };
 }
 
 // ─── Standalone orphaned-branch sweep (FOR-72 — W15-F1, 3× reproduced) ────────

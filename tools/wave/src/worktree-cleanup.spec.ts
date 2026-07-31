@@ -183,6 +183,11 @@ import {
   sweepDetachedScratchpadWorktrees,
   checkWorktreeCountAdvisory,
   WORKTREE_COUNT_ADVISORY_THRESHOLD,
+  measureExecArgumentBytes,
+  checkCommandLineSizeAdvisory,
+  COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+  type ExecArgumentMeasurement,
+  type CommandLineSizeAdvisory,
   type WorktreeEntry,
   type WorktreeRemover,
   type RedispatchCleanupOps,
@@ -5675,6 +5680,262 @@ describe('checkWorktreeCountAdvisory — counts real `git worktree list` output 
 
     // Same population, a threshold above it → ok.
     expect(checkWorktreeCountAdvisory({ repoRoot: mainRoot, threshold: 4 }).level).toBe('ok');
+  });
+});
+
+// ─── 30a. The command line is the OTHER E2BIG term (issue #266) ───────────────
+//
+// Section 29's advisory models E2BIG with ONE term — the registered-worktree
+// population. The live occurrence this section exists for proved that model
+// incomplete in the most expensive way available: an operator following it
+// would have swept worktrees and fixed nothing. ~1019.5 KB of command line
+// across THREE argv entries, 166 sandbox deny paths of which only 15 were
+// worktree-derived, recovered by compressing the PR body being passed as an
+// argument.
+//
+// Two things are therefore under test here: the new measurement/advisory pair
+// itself, and the correction to the OLD advisory's threshold guidance (a count
+// under threshold is not an E2BIG all-clear).
+//
+// NOTE (barrel): `measureExecArgumentBytes`, `checkCommandLineSizeAdvisory` and
+// `COMMAND_LINE_ADVISORY_THRESHOLD_BYTES` are imported from the module directly,
+// not through `./index` like section 32's symbols — the package-root re-export
+// lies outside this slice's declared file scope and is disclosed as a wiring
+// follow-up. The CONSUMING call-site that ships with them is the CLI's
+// `worktree-cleanup` verb (see cli.spec.ts), which imports the module directly.
+
+/** The measured occurrence's command-line size, in bytes: ~1019.5 KB. */
+const MEASURED_E2BIG_COMMAND_LINE_BYTES = Math.round(1019.5 * 1024); // 1_043_968
+
+/**
+ * The measured occurrence's SHAPE, rebuilt exactly: a megabyte of command line
+ * across three argv entries (`host-pr create <body>`), sized so the engine's own
+ * accounting lands on the observed total rather than merely near it.
+ */
+function measuredOccurrenceArgv(): string[] {
+  const fixed = ['host-pr', 'create'];
+  const overhead = 3 * 9; // three entries × (NUL + pointer)
+  const bodyBytes =
+    MEASURED_E2BIG_COMMAND_LINE_BYTES -
+    overhead -
+    fixed.reduce((n, s) => n + s.length, 0);
+  return [...fixed, 'x'.repeat(bodyBytes)];
+}
+
+describe('measureExecArgumentBytes — the exec argument accounting (issue #266)', () => {
+  it('charges every argv entry its UTF-8 bytes plus a NUL and a pointer', () => {
+    expect(measureExecArgumentBytes([])).toEqual({
+      bytes: 0,
+      argvBytes: 0,
+      envBytes: 0,
+      argCount: 0,
+      envCount: 0,
+    });
+
+    // 'ab' (2) + 9, 'cde' (3) + 9.
+    const two = measureExecArgumentBytes(['ab', 'cde']);
+    expect(two.argvBytes).toBe(2 + 9 + (3 + 9));
+    expect(two.argCount).toBe(2);
+    expect(two.bytes).toBe(two.argvBytes);
+  });
+
+  it('counts UTF-8 BYTES, not code units — the long paths are exactly the non-ASCII ones', () => {
+    // This repo's own checkout path contains an en dash; a `String.length`
+    // accounting would understate precisely the paths that cost the most.
+    const ascii = measureExecArgumentBytes(['a']);
+    const nonAscii = measureExecArgumentBytes(['ä']);
+    expect('ä'.length).toBe(1); // one code unit...
+    expect(nonAscii.argvBytes).toBe(2 + 9); // ...two bytes
+    expect(nonAscii.argvBytes).toBeGreaterThan(ascii.argvBytes);
+  });
+
+  it('charges env as `KEY=VALUE`, and skips a key whose value is undefined', () => {
+    const withEnv = measureExecArgumentBytes([], { A: 'bc' });
+    expect(withEnv.envBytes).toBe('A=bc'.length + 9);
+    expect(withEnv.envCount).toBe(1);
+    expect(withEnv.bytes).toBe(withEnv.envBytes);
+
+    // `process.env`'s index signature admits undefined; a key that is not in
+    // the environment is not in the exec buffer either, and must never be
+    // charged as the literal string "undefined".
+    const sparse = measureExecArgumentBytes([], { A: 'bc', GONE: undefined });
+    expect(sparse).toEqual(withEnv);
+  });
+
+  it('bytes is the SUM of the two halves, and the halves are reported apart', () => {
+    const m: ExecArgumentMeasurement = measureExecArgumentBytes(['arg'], {
+      K: 'v',
+    });
+    expect(m.bytes).toBe(m.argvBytes + m.envBytes);
+    expect(m.argvBytes).toBeGreaterThan(0);
+    expect(m.envBytes).toBeGreaterThan(0);
+  });
+});
+
+describe('checkCommandLineSizeAdvisory — the second E2BIG term (issue #266)', () => {
+  it('the MEASURED occurrence fires: ~1019.5 KB across just 3 argv entries', () => {
+    const argv = measuredOccurrenceArgv();
+    // The fixture reproduces the observed total exactly, by the engine's own
+    // accounting — so this is a test about the real input, not about a number
+    // chosen to pass.
+    expect(measureExecArgumentBytes(argv).bytes).toBe(
+      MEASURED_E2BIG_COMMAND_LINE_BYTES,
+    );
+
+    const advisory: CommandLineSizeAdvisory = checkCommandLineSizeAdvisory({
+      argv,
+      env: {},
+    });
+
+    expect(advisory.level).toBe('advisory');
+    expect(advisory.bytes).toBe(MEASURED_E2BIG_COMMAND_LINE_BYTES);
+    expect(advisory.argCount).toBe(3);
+    expect(advisory.threshold).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    // The load-bearing facts, pinned so a reword cannot silently drop one: the
+    // failure name, that ONE argument suffices, that a sweep is the wrong
+    // remedy, and the evidence that settles it.
+    expect(advisory.message).toContain('E2BIG');
+    expect(advisory.message).toContain('single argument is enough');
+    expect(advisory.message).toContain('SWEEPING WORKTREES DOES NOT MOVE THIS TERM');
+    expect(advisory.message).toContain('~1019.5 KB');
+    expect(advisory.message).toContain('166 sandbox deny paths');
+    expect(advisory.message).toContain(String(MEASURED_E2BIG_COMMAND_LINE_BYTES));
+  });
+
+  it('THE two-term proof: that same command line fires while a pristine worktree count reads `ok`', () => {
+    // The correction itself, mechanically: the term that actually blew the
+    // budget is invisible to the count advisory, so a session with a single
+    // registered worktree (the primary checkout) reads clean while the spawn
+    // is already a megabyte over. Sweeping would have moved nothing.
+    const count = checkWorktreeCountAdvisory({ countWorktrees: () => 1 });
+    expect(count.level).toBe('ok');
+
+    expect(
+      checkCommandLineSizeAdvisory({ argv: measuredOccurrenceArgv(), env: {} })
+        .level,
+    ).toBe('advisory');
+  });
+
+  it('NEGATIVE CONTROL — an ordinary command line is `ok`, with NO message to print', () => {
+    // Without this the advisory could be permanently on and every assertion
+    // above would still pass. An ordinary engine invocation plus a realistic
+    // environment must stay silent.
+    const ordinary = checkCommandLineSizeAdvisory({
+      argv: [
+        '/usr/local/bin/node',
+        '/repo/tools/wave/src/cli.ts',
+        'worktree-cleanup',
+        '--dry-run',
+        '/repo',
+      ],
+      env: { PATH: '/usr/bin:/bin', HOME: '/Users/someone', LANG: 'en_US.UTF-8' },
+    });
+    expect(ordinary.level).toBe('ok');
+    expect(ordinary.message).toBeNull();
+    expect(ordinary.bytes).toBeGreaterThan(0);
+    expect(ordinary.bytes).toBeLessThan(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+  });
+
+  it('fires strictly ABOVE the threshold — exactly at it is still `ok` (the count advisory’s boundary)', () => {
+    const at = checkCommandLineSizeAdvisory({
+      argv: ['x'.repeat(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES - 9)],
+      env: {},
+      threshold: COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+    });
+    expect(at.bytes).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    expect(at.level).toBe('ok');
+    expect(at.message).toBeNull();
+
+    const oneOver = checkCommandLineSizeAdvisory({
+      argv: ['x'.repeat(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES - 8)],
+      env: {},
+    });
+    expect(oneOver.bytes).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES + 1);
+    expect(oneOver.level).toBe('advisory');
+  });
+
+  it('the env half is charged too — a small argv with a huge environment still fires', () => {
+    // The kernel charges argv and envp to ONE buffer; an advisory that ignored
+    // the inherited environment would report `ok` on a spawn that is about to
+    // die, which is the exact failure mode this whole term exists to close.
+    const advisory = checkCommandLineSizeAdvisory({
+      argv: ['flotilla-engine', 'worktree-cleanup'],
+      env: { BIG: 'y'.repeat(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES) },
+    });
+    expect(advisory.level).toBe('advisory');
+    expect(advisory.argvBytes).toBeLessThan(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    expect(advisory.envBytes).toBeGreaterThan(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+  });
+
+  it('SECRET-SAFE — the message quotes byte counts only, never an argument or a variable', () => {
+    const advisory = checkCommandLineSizeAdvisory({
+      argv: ['--body', `sentinel-arg-${'z'.repeat(600_000)}`],
+      env: { SENTINEL_VAR_NAME: 'sentinel-var-value' },
+    });
+    expect(advisory.level).toBe('advisory'); // the message is non-null to inspect
+    expect(advisory.message).not.toContain('sentinel-arg');
+    expect(advisory.message).not.toContain('SENTINEL_VAR_NAME');
+    expect(advisory.message).not.toContain('sentinel-var-value');
+    expect(advisory.message).not.toContain('--body');
+  });
+
+  it('an explicit threshold override is honoured in both directions', () => {
+    const argv = ['x'.repeat(1000)];
+    expect(checkCommandLineSizeAdvisory({ argv, env: {}, threshold: 500 }).level).toBe(
+      'advisory',
+    );
+    expect(
+      checkCommandLineSizeAdvisory({ argv, env: {}, threshold: 500_000 }).level,
+    ).toBe('ok');
+  });
+
+  it('a garbled threshold throws rather than silently disabling the advisory', () => {
+    for (const threshold of [Number.NaN, -1, 2.5]) {
+      expect(() =>
+        checkCommandLineSizeAdvisory({ argv: ['x'], env: {}, threshold }),
+      ).toThrow(/non-negative integer/);
+    }
+  });
+
+  it('defaults to THIS process — argv and env are measured first-hand, not estimated', () => {
+    const observed = checkCommandLineSizeAdvisory();
+    expect(observed.argCount).toBe(process.argv.length);
+    expect(observed.threshold).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    expect(observed.envBytes).toBeGreaterThan(0);
+    // `message` is non-null EXACTLY when level is 'advisory' — the same
+    // contract WorktreeCountAdvisory carries, so a caller can print on the
+    // advisory branch without a null check.
+    expect(observed.message === null).toBe(observed.level === 'ok');
+  });
+});
+
+describe('the count advisory carries the two-term correction (issue #266)', () => {
+  it("the count advisory's own text says count alone is not an E2BIG all-clear", () => {
+    const advisory = checkWorktreeCountAdvisory({
+      countWorktrees: () => WORKTREE_COUNT_ADVISORY_THRESHOLD + 1,
+    });
+    expect(advisory.message).toContain('COUNT IS ONLY ONE OF TWO TERMS');
+    expect(advisory.message).toContain('~1019.5 KB');
+    expect(advisory.message).toContain('166 sandbox deny paths');
+    expect(advisory.message).toContain('checkCommandLineSizeAdvisory');
+    // ...and the pre-existing three facts are untouched by the append.
+    expect(advisory.message).toContain('E2BIG');
+    expect(advisory.message).toContain('subagent');
+    expect(advisory.message).toContain('RESTART');
+  });
+
+  it('both advisories quote ONE evidence sentence, so the two can never drift apart', () => {
+    const fromCount = checkWorktreeCountAdvisory({
+      countWorktrees: () => WORKTREE_COUNT_ADVISORY_THRESHOLD + 1,
+    }).message;
+    const fromCmdline = checkCommandLineSizeAdvisory({
+      argv: measuredOccurrenceArgv(),
+      env: {},
+    }).message;
+    const evidence = 'COUNT IS ONLY ONE OF TWO TERMS.';
+    const shared = fromCount?.slice(fromCount.indexOf(evidence));
+    expect(shared).toBeTruthy();
+    expect(fromCmdline).toContain(shared);
   });
 });
 
