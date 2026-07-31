@@ -37,16 +37,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  main,
-  mainAsync,
-  runDorById,
-  findRepoRoot,
-  // The router-hosted `spine` op list, imported so the parity guard below can
-  // DERIVE the split from the router itself rather than transcribing it — the
-  // same discipline FOR-11 AC2 applies to spine-cli's `available:` list.
-  ROUTER_HOSTED_SPINE_OPS,
-} from './cli';
+import { main, mainAsync, runDorById, findRepoRoot } from './cli';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import type { CreateInput, IssueStore } from './adapters/issue-store';
 import type { IssueView } from './contract';
@@ -3598,8 +3589,13 @@ describe('FOR-11 — top-level usage derives from the real dispatch tables', () 
 
 // ─── the human lane as `spine` subverbs (issue #323, ADR-0012) ──────────────
 //
-// Two ops over one engine predicate, dispatched by cli.ts's own `spine` case
-// rather than by spine-cli's table. Three separable claims are pinned here:
+// Two ops over one engine predicate. They were introduced on cli.ts's own
+// `spine` case; issue #366 folded them into spine-cli's dispatch table as a
+// PURE MOVE, and every assertion below is unchanged across that move — which is
+// what makes this section the regression net for it: same args, same JSON, same
+// exit codes, reached through the same router entry point as before.
+//
+// Three separable claims are pinned here:
 //
 //   1. ROUTING — both ops are reachable via `main(['spine', op, …])`, i.e. via
 //      the very case `spine-cli.ts`'s direct-run block forwards to, so the
@@ -3608,9 +3604,10 @@ describe('FOR-11 — top-level usage derives from the real dispatch tables', () 
 //   2. BEHAVIOUR — the listing always exits 0 on a readable spine (an empty
 //      lane is an answer, not a gate) while the gate is fail-closed in BOTH
 //      directions and must not fire on a parked row (ADR-0022).
-//   3. PARITY — the split between the two dispatch points has exactly one
-//      failure mode, an op handled in both places or in neither, and the guard
-//      at the end of this section derives both sides at runtime to pin it.
+//   3. ONE DISPATCH TABLE — the guard at the end of this section is the INVERSE
+//      of the parity guard that stood here before the fold. That one pinned a
+//      deliberate two-table split; this one pins that no split remains, deriving
+//      spine-cli's vocabulary at runtime exactly as its predecessor did.
 
 /** A spine whose row `11` is human-gated; every row starts `planned`. */
 function writeHumanLaneSpine(rows?: string[]): string {
@@ -3815,46 +3812,76 @@ describe('spine check-awaiting-human — the fail-closed archive gate (issue #32
   });
 });
 
-describe('the router-hosted `spine` ops stay disjoint from spine-cli\'s table (issue #323)', () => {
-  // The split's ONE failure mode is an op handled in both dispatch points or in
-  // neither, and it is silent both ways: a doubly-handled op would let the two
-  // implementations drift, and an unhandled one would 404 on a spelling the
-  // usage advertises. Both sides are derived at runtime here — the router list
-  // from its own export, spine-cli's from its own `default:` message.
+describe('the human-lane ops are dispatched by spine-cli\'s ONE table (issue #366 — the fold)', () => {
+  // The INVERTED parity guard. Its predecessor pinned a deliberate split — each
+  // human-lane op unknown to `runSpine`, intercepted by the router instead — and
+  // once the fold landed, that guard would have been asserting an arrangement
+  // that no longer exists. Same derivation discipline, opposite claim: the ops
+  // come from spine-cli's own `available:` message at runtime, never from a
+  // transcribed list here.
 
-  it('every router-hosted op is UNKNOWN to spine-cli — no op is dispatched twice', () => {
-    for (const op of ROUTER_HOSTED_SPINE_OPS) {
+  /** spine-cli's real op vocabulary, read off its own `default:` message. */
+  function spineCliOps(): string[] {
+    stderrBuf = '';
+    expect(runSpine(['__unknown_op__', '/some/spine/path.md'])).toBe(2);
+    const ops = parseAvailableList(stderrBuf);
+    expect(ops.length).toBeGreaterThan(0);
+    return ops;
+  }
+
+  it('both human-lane ops are IN spine-cli\'s own dispatch vocabulary', () => {
+    // Non-vacuity for everything below: had the fold advertised without
+    // dispatching (or dispatched without advertising), this is where it shows.
+    expect(spineCliOps()).toEqual(
+      expect.arrayContaining(['human-gated', 'check-awaiting-human']),
+    );
+  });
+
+  it('the router intercepts NO spine op — every one reaches runSpine', () => {
+    // The post-fold invariant, stated as a property over the WHOLE vocabulary
+    // rather than over a two-element special case: for every op spine-cli
+    // reports, `main(['spine', op, …])` and `runSpine([op, …])` must be the same
+    // call. A re-introduced interception for any op fails here.
+    for (const op of spineCliOps()) {
       stderrBuf = '';
-      const code = runSpine([op, '/some/spine/path.md']);
-      expect(code).toBe(2);
-      expect(stderrBuf).toContain(`unknown op: ${op}`);
+      stdoutBuf = '';
+      const viaRouter = main(['spine', op]);
+      const routerOut = stdoutBuf;
+      const routerErr = stderrBuf;
+
+      stderrBuf = '';
+      stdoutBuf = '';
+      const direct = runSpine([op]);
+
+      expect(viaRouter, `router vs direct exit code for \`spine ${op}\``).toBe(direct);
+      expect(routerOut, `router vs direct stdout for \`spine ${op}\``).toBe(stdoutBuf);
+      expect(routerErr, `router vs direct stderr for \`spine ${op}\``).toBe(stderrBuf);
     }
   });
 
-  it('no op spine-cli reports is intercepted by the router — the split is one-way', () => {
-    runSpine(['__unknown_op__', '/some/spine/path.md']);
-    const spineCliOps = parseAvailableList(stderrBuf);
-    expect(spineCliOps.length).toBeGreaterThan(0);
-    for (const op of spineCliOps) {
-      expect(ROUTER_HOSTED_SPINE_OPS as readonly string[]).not.toContain(op);
-    }
-  });
-
-  it('both router-hosted ops are named in the top-level usage', () => {
-    // FOR-11 AC2's guard proves spine-cli's ops reach the usage line; it is
-    // structurally blind to these two, because they are absent from the table
-    // it derives from. This is the other half of that claim.
+  it('both are named in the top-level usage — now via the FOR-11 derivation', () => {
+    // Before the fold this claim needed its own guard: the two ops were absent
+    // from the table FOR-11 AC2 derives from, so that guard was structurally
+    // blind to them. They are in that table now, so FOR-11 AC2 covers them — and
+    // this asserts exactly that, rather than re-checking the strings by hand.
+    const ops = spineCliOps();
+    stderrBuf = '';
     main([]);
-    for (const op of ROUTER_HOSTED_SPINE_OPS) {
-      expect(stderrBuf).toContain(op);
+    const spineUsageLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('flotilla-engine spine '));
+    expect(spineUsageLine).toBeDefined();
+    for (const op of ['human-gated', 'check-awaiting-human']) {
+      expect(ops).toContain(op);
+      expect(spineUsageLine).toContain(op);
     }
   });
 
   it('both are reachable through the router case spine-cli.ts forwards to', () => {
     // `spine-cli.ts`'s direct-run block calls `main(['spine', ...process.argv])`,
-    // so this IS the alias path — a router-hosted op reached this way must not
-    // fall through to spine-cli's `unknown op`.
-    for (const op of ROUTER_HOSTED_SPINE_OPS) {
+    // so this IS the alias path — reached this way, neither op may fall through
+    // to spine-cli's `unknown op`.
+    for (const op of ['human-gated', 'check-awaiting-human']) {
       stderrBuf = '';
       stdoutBuf = '';
       const code = main(['spine', op, writeHumanLaneSpine()]);
