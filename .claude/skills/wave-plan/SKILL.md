@@ -9,7 +9,7 @@ Answer "which eligible issues could form the next wave, and can they run alongsi
 
 Your job is the **judgment** — reading the report, flagging what needs attention, and helping the human pick the right set of ids. The CLI plumbing (the four commands, the exact sequence, the worked `CrossWaveResult` sample) lives in [reference/plan-mechanics.md](reference/plan-mechanics.md) — reach for it once you need to drive the engine. You never touch a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`), which selects the configured store.
 
-**M1 scope: candidate draw + cross-wave report + PRD panel. No batch-sizing heuristics** — sizing by worker-mix, risk-mix, or wallclock estimates is a soft CHARTER idea, not an M1 requirement. Do not invent heuristics.
+**M1 scope: candidate draw + cross-wave report + PRD panel + the dispatch-cost estimate. No batch-sizing heuristics** — sizing by worker-mix, risk-mix, or wallclock estimates is a soft CHARTER idea, not an M1 requirement. Do not invent heuristics. The dispatch-cost estimate (step 3c) is **not** an exception to that rule: it is arithmetic over the set in front of you, reported so the human can see the bill. It scores nothing, ranks nothing, filters nothing, and recommends no size.
 
 ## When to Use
 
@@ -68,6 +68,20 @@ The step-3 file-overlap check is structurally blind to *semantic* cross-suite co
 
 So surface it at plan time, the same advisory way intra-wave Blocked-by pairs are surfaced downstream — a pairing the **human decides on**, never an auto-exclusion. When **two or more** candidates in the proposed set carry `Risk: public-API-change`, flag them as an advisory pairing. Derive it skill-side from the candidate `risk` fields already in hand from `listOpen` — no engine call, nothing persisted (see [reference/plan-mechanics.md](reference/plan-mechanics.md)). The advisory reads: *these rows each change a global contract; expect landing rework on the reconciled merge even though their `Files` are disjoint — plan the wave-close reconciled-merge verify, and consider serializing them or splitting them across waves.* The coordinator decides whether to run them together, sequence them, or split them; wave-plan only raises the flag.
 
+### 3c. Dispatch-cost estimate — one line per candidate set
+
+**Report what the set would cost to dispatch, before anyone commits to it.** A wave's price is paid in agent dispatches, and the number is not intuitive from a row count: the driver runs **~4 agents per dispatched row** — `worker → scribe(report) → reviewer → scribe(verdict)` — so a set that reads as "just six small tickets" is roughly two dozen agents, and a `cap=1` re-dispatch on a row adds up to four more. Left un-surfaced, that arithmetic only becomes visible after the day is spent (a measured day: ~150 agents, a quarter of the week's plan, in one sitting).
+
+Report **two numbers plus one exclusion**, derived skill-side from the candidate fields already in hand (see [reference/plan-mechanics.md](reference/plan-mechanics.md) — no engine call, nothing persisted):
+
+- **Dispatchable rows × ~4 agents** — the headline estimate for the set.
+- **Heavy-row count** — rows that will run on the `-heavy` tier on either side: a `-heavy` Worker (`IssueView.worker`, ADR-0012), or a Risk of `cross-feature-refactor` / `public-API-change`, which routes the *Reviewer* to `-heavy` too (ADR-0007 Amendment 2026-07-31). These dominate the spend, so the count travels next to the total rather than inside it — twelve mechanical rows and twelve heavy rows are the same headline and a very different bill.
+- **Rows excluded from the estimate** — `HITL-required` rows cost nothing until a human acts, so name them and leave them out of the multiplication rather than silently folding them in.
+
+Present it as a **line**, alongside the parallel-safety verdict — the human is choosing a set, and this is one of the facts about the set. Then stop: **do not** recommend a size, propose a cheaper subset, rank candidates by cost, or drop a row because the number looks large. The budget decision stays human at planning time; wave-plan's job is that the decision is *informed*, not that it is made.
+
+> **Deliberately no wave-cadence rule.** There is no "N waves per day" guidance to give, because cadence is **pool-shaped**: the conflict map dictates the largest safe set, and the measured cost driver is **row count, not wave count** — splitting the same rows across more waves buys nothing and costs more close ceremonies. Report the cost of the set; never convert it into a rule about how often to run.
+
 ### 4. PRD panel
 
 ```bash
@@ -83,6 +97,7 @@ Present the full picture:
 - Cross-wave result: parallel-safe or serialize (with the conflicting files and issue ids).
 - Intra-wave conflicts, if any, so the coordinator can plan the sequence.
 - Public-API-change pairing advisory (KW-F4): any two-or-more `public-API-change` candidates flagged as a pairing — expect reconciled-merge landing rework even with disjoint `Files`; the human decides whether to serialize or split them across waves.
+- **Dispatch-cost estimate for the set** (step 3c): dispatchable rows × ~4 agents, the heavy-row count beside it, and any `HITL-required` rows named as excluded. If the human is weighing two candidate sets, give the line for each — one per set, so the comparison is visible without re-deriving it.
 - PRD panel: consumed (✓) and un-consumed (needs slicing).
 
 **Persist nothing.** The human picks the ids they want in the wave and hands them to `wave-create`.
@@ -92,7 +107,10 @@ Present the full picture:
 - **Excluding `HITL-required`.** These rows are real wave work. Include and flag them; do not drop them from the report.
 - **Treating a PRD as a candidate.** A PRD is never in `listOpen`; it only appears in the PRD panel via `listDocuments`. Do not include it in the candidate set or cross-wave inputs.
 - **Persisting state from wave-plan.** wave-plan is advisory — it writes nothing. The `queued` claim and the spine creation happen in `wave-create`.
-- **Inventing heuristics.** Do not score, rank, or filter candidates by wallclock, worker-mix, or risk-mix. Present the eligible set; the coordinator decides.
+- **Inventing heuristics.** Do not score, rank, or filter candidates by wallclock, worker-mix, or risk-mix. Present the eligible set; the coordinator decides. The step-3c cost line is not a heuristic — it is arithmetic over the set, reported and then left alone.
+- **Omitting the dispatch-cost line because the set "looks small".** Row count is exactly the intuition the line exists to correct: ~4 agent dispatches per row means six rows is roughly two dozen agents. Report it for every set you present.
+- **Turning the cost line into advice.** Report rows × ~4 agents, the heavy count, and the excluded `HITL-required` rows — then stop. Recommending a smaller wave, proposing a cheaper subset, or dropping a row because the number looks large is the sizing heuristic this skill does not do.
+- **Deriving a wave-cadence rule from the cost line.** Cadence is pool-shaped: the conflict map dictates the largest safe set, and the cost driver is row count, not wave count. Splitting the same rows over more waves adds close ceremonies and saves nothing.
 - **Confusing `crossWaveConflicts` with `intraWaveConflicts`.** Cross-wave overlaps (candidate↔claimed) are the launch-gate concern. Intra-wave overlaps (candidate↔candidate) are a sequencing concern within the wave. Report them distinctly.
 - **Conflating `HITL-required` (Worker) with `ready-for-human` (triage terminal).** `ready-for-human` never enters a wave and never appears in `listOpen`. `HITL-required` is in the eligible set and must be surfaced.
 - **Reaching for raw `gh`.** wave-plan never touches a tracker directly — everything goes through the engine CLI (`{{wave-cli}}`), which selects the configured store.

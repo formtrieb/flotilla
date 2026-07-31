@@ -88,6 +88,17 @@ A supplied `state` or `category` outside the configured vocab is rejected **befo
 
 One call sets the schema's won't-fix state (`wontfix`) **and** natively closes the issue (GitHub `close --reason not_planned`; MarkdownFs move to `done/`). After it, `triage-read` reports `state: wontfix` and `issue-store read` derives `status: done`. The disclaimer is prepended for you. Don't follow it with a separate close — it's already closed.
 
+### The superseded-close — the same verb, a different comment
+
+A wave-provenance issue whose premise has already gone stale on `main` (SKILL step 2) exits through **this same verb**. There is no `superseded` state and none should be invented: the vocabulary is `DEFAULT_TRIAGE_SCHEMA`'s (or the consumer's override), and its only terminal for "will not be actioned" is `unplannedState`. "Superseded" is the **reason**, and the reason lives in the comment:
+
+```bash
+{{wave-cli}} issue-store triage-close <id> \
+  --comment "Premise no longer holds on main: <what the issue asserted>. Superseded by <the change/PR/wave that made it false>. Verified by <what you read or ran>."
+```
+
+The comment is the whole audit trail — the state alone records only that the issue stopped, never why. Name the superseding change and the evidence you checked, so a later reader can tell a superseded-close from an ordinary won't-fix without re-doing the verification.
+
 ## Vocabulary
 
 The triage vocab (states, categories, the entry state, the eligibility set, the won't-fix state) is `DEFAULT_TRIAGE_SCHEMA` in the engine, overridable in `wave.config`. You pass **canonical role names**; the adapter resolves canonical → the store's native representation:

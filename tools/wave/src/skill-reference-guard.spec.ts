@@ -199,6 +199,18 @@ const EXPECTED_RESOLUTION_BLOCKS = 10; // the canonical `{{wave-cli}}` definitio
 const MIN_SKILL_BODIES = 10; // 12 SKILL.md bodies at landing
 const MIN_BODY_CITATIONS = 130; // 146 ADR/retro/finding citations in those bodies at landing
 
+/**
+ * The Convention number currently on top of `wave-shared`'s number-allocation
+ * register. Sibling skills cite conventions BY NUMBER, so numbers are never
+ * re-used and never renumbered — which makes the register the collision-hygiene
+ * mechanism (two slices planned in parallel cannot both silently land "the next
+ * one"). Bumping this const is therefore a three-part edit that must land in one
+ * diff: the new `convention-NN-*.md` reference file, the register's heading
+ * number AND its one-liner (replaced together — see the pairing test below), and
+ * this line.
+ */
+const HIGHEST_ALLOCATED_CONVENTION = 15;
+
 /** The config field every resolution block must name (ADR-0032). */
 const BINDING_FIELD = /\bengine\.cli\b/;
 
@@ -1208,11 +1220,11 @@ describe('skill-reference-guard — class (d): Convention 14 citation placement 
     }
   });
 
-  it('Convention 14 is registered under the number 14, with no same-number collision', () => {
+  it('Convention 15 is registered under the number 15, with no same-number collision', () => {
     const conventionFile =
-      '.claude/skills/wave-shared/reference/convention-14-citation-placement.md';
+      '.claude/skills/wave-shared/reference/convention-15-coordinator-direct-boundary.md';
     expect(SKILL_DOCS).toContain(conventionFile);
-    expect((SOURCES.get(conventionFile) as string).startsWith('## Convention 14 — ')).toBe(true);
+    expect((SOURCES.get(conventionFile) as string).startsWith('## Convention 15 — ')).toBe(true);
 
     // Numbers are cited by siblings and are therefore never re-used and never
     // renumbered: filename number and heading number must agree, and no two
@@ -1222,12 +1234,12 @@ describe('skill-reference-guard — class (d): Convention 14 citation placement 
     );
     const numberOf = (f: string): number => Number(/convention-(\d{2})-/.exec(f)?.[1]);
     const numbers = numbered.map(numberOf);
-    expect(numbers.length).toBeGreaterThanOrEqual(14);
+    expect(numbers.length).toBeGreaterThanOrEqual(15);
     expect(
       new Set(numbers).size,
       `two convention reference files claim the same number: ${numbered.join(', ')}`,
     ).toBe(numbers.length);
-    expect(Math.max(...numbers)).toBe(14);
+    expect(Math.max(...numbers)).toBe(HIGHEST_ALLOCATED_CONVENTION);
     for (const f of numbered) {
       expect(
         (SOURCES.get(f) as string).startsWith(`## Convention ${numberOf(f)} — `),
@@ -1236,10 +1248,42 @@ describe('skill-reference-guard — class (d): Convention 14 citation placement 
     }
 
     // The loader's allocation register names the same number, so two slices
-    // planned in parallel cannot both reach for "the next one" and both land 14.
+    // planned in parallel cannot both reach for "the next one" and both land 15.
     expect(SOURCES.get('.claude/skills/wave-shared/SKILL.md') as string).toContain(
-      'the highest allocated Convention number is **14**',
+      `the highest allocated Convention number is **${HIGHEST_ALLOCATED_CONVENTION}**`,
     );
+  });
+
+  it('the register REPLACED its one-liner along with its counter (the register\'s own rule)', () => {
+    // The register holds exactly two things: the heading's embedded number and
+    // a one-liner for whichever convention currently holds it. Bumping only the
+    // number strands the PREVIOUS convention's description under a heading that
+    // no longer matches it — the defect the content-shape decision closes, and
+    // one a counter-only assertion cannot see. So pin the pairing itself: the
+    // register's one-liner must open with the allocated number and point at the
+    // reference file that carries it.
+    const register = SOURCES.get('.claude/skills/wave-shared/SKILL.md') as string;
+    const n = HIGHEST_ALLOCATED_CONVENTION;
+    const oneLiner = new RegExp(
+      `^\\*\\*${n} — .+\\*\\* \\(\\[convention-${n}-[a-z0-9-]+\\.md\\]\\(reference/convention-${n}-[a-z0-9-]+\\.md\\)\\):`,
+      'm',
+    );
+    expect(
+      oneLiner.test(register),
+      `the number-allocation register names ${n} as the highest allocated Convention number, but ` +
+        `carries no matching "**${n} — <description>** ([convention-${n}-….md](reference/convention-${n}-….md)): …" ` +
+        `one-liner. Replace the heading number AND the one-liner together — a stale description ` +
+        `under a bumped counter is the exact defect the register's content shape exists to prevent.`,
+    ).toBe(true);
+
+    // …and the SUPERSEDED convention's one-liner is gone, so the register never
+    // accumulates a second description (it is a counter, not an index — the
+    // per-convention index line is what ADR-0028 rejected).
+    expect(
+      new RegExp(`^\\*\\*${n - 1} — `, 'm').test(register),
+      `the register still carries a one-liner for Convention ${n - 1}. It holds ONE description — ` +
+        `the newest — never an accumulating index.`,
+    ).toBe(false);
   });
 
   it('negative control — a planted narrative citation fails the same predicate', () => {

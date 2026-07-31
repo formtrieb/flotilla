@@ -75,7 +75,7 @@ Probe each terminal row's closing state via the evidence hierarchy, then land it
 
 ### 6. Archive (the last phase — terminal-only, idempotent, layout-aware)
 
-A fail-closed disclosure gate runs first: `spine check-disclosures` blocks on any `open` entry, and every open disclosure the wave surfaced must carry a disposition — one of exactly `resolved-in-slice | scope-extension | filed:<id> | dropped:<reason>` — before the archive proceeds (ADR-0027). Once that gate is clear and every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
+A fail-closed disclosure gate runs first: `spine check-disclosures` blocks on any `open` entry, and every open disclosure the wave surfaced must carry a disposition — one of exactly `resolved-in-slice | scope-extension | filed:<id> | dropped:<reason>` — before the archive proceeds (ADR-0027). The gate checks existence only and never judges quality, so **which** disposition to reach for is your judgment, guided by the defaults in the phase file: a disclosure earns its own ticket only when it names a mechanism defect with an observed consequence, everything else bundles thematically via a shared `filed:<id>` (N:1, appends only while that bundle is still bare), and a `filed:` body carries the observation — symptom, evidence, provenance — never an unverified diagnosis (ADR-0027 Amendment 2026-07-31). Once that gate is clear and every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
 
 ## Common Mistakes
 
