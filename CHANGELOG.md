@@ -9,6 +9,47 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [0.1.0-beta.2] — 2026-07-31
+
+The release that makes the **bundled echo-guard current** — and the floor version for
+the stage-2 guard scaffold. beta.1's tarball shipped `hooks/echo-guard.cjs` from before
+the family-3 quote-nesting carve-outs: the scaffold's `cp` succeeded and silently
+installed a materially weaker guard (present-but-stale, the failure mode the scaffold
+docs only half-covered). This release ships the current guard, and the scaffold now
+names the stale case and pins this version as the minimum for the guard copy.
+
+### Fixed
+
+- **Bundled echo-guard is current** — includes the quote-nesting state machine (an
+  embedded quote inside a quoted substitution wrapper no longer re-exposes trailing
+  prose) and the dead-code removal.
+- **The Worker brief's PR-URL capture recipe is executable again** for dispatched
+  roles: the primary form is the read-only `host-pr status` re-query whose exit
+  status is the verdict; the file-based fallback survives only in its variable-free
+  spelling. (Measured: shell state — variables, functions, cwd — persists for no
+  dispatched role between Bash calls, and an `isolation: worktree` dispatch refuses
+  any `$VAR` expansion in any position.)
+- The Scribe brief no longer rests on incidental cwd safety (observe-never-set; all
+  path arguments absolute and shell-quoted); the Reviewer dispatch binds to the row's
+  model tier instead of inheriting the session model.
+- Every worked `dor` call-site threads `--config`, so the verify-profile-coverage
+  gate returns real verdicts in live waves instead of deferring.
+
+### Added
+
+- **Package-root surface:** the store-preflight family, the typed create rejection,
+  and the command-line E2BIG advisory family are importable from the package root.
+- **Command-line E2BIG advisory** beside the worktree-count advisory — models the
+  exec-argument total *and* the per-string limit, reported apart.
+- **Allowlist reconciliation guard:** a spec-level check diffing the tracked
+  permission allowlist against the verify gates in both directions.
+- **Skill-pipeline guidance** (plugin half): risk-routed reviewer model tier,
+  disclosure disposition defaults (triviality predicate, thematic bundles),
+  premise-currency verification at triage with pull-triggered cadence, the
+  coordinator-direct boundary (Convention 15), a per-set dispatch-cost estimate in
+  wave-plan with a foreground carve-out, and a measured verify-command baseline
+  recorded at wave-setup.
+
 ## [0.1.0-beta.1] — 2026-07-30
 
 The release that makes the **npm-first invocation form operational**. Every skill's
