@@ -23,7 +23,9 @@ wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state
 
 `"$@"` is the one expansion that preserves argument boundaries in **every** shell, which is exactly why a function survives where a variable does not. Read every `{{wave-cli}}` in the tables below as that function — and read a **list** the same way: iterate a real array (`for x in "${IDS[@]}"`), never a bare `$LIST` in a `for` head.
 
-The convention's second half governs what you do with a verb's **output**: a value you capture and then *use* — a PR URL, an id, a SHA — must be refused when it comes back empty, because an empty capture is indistinguishable from a 127 that never ran. The canonical `require_capture` body and the live call sites are in [convention-12-no-command-in-a-shell-variable.md](./convention-12-no-command-in-a-shell-variable.md).
+**Bind it in the same Bash call that runs the verb.** `wave_cli()` is a shell function, and a shell function is session state: it exists only in the call that defines it. Shell state does not survive from one Bash call to the next, so "define it once per session, before the first verb" is an instruction with no session to hold it — define and call together, or invoke the configured `engine.cli` string directly.
+
+The convention's second half governs what you do with a verb's **output**, and it is the same constraint seen from the other side: a value you capture and then *use* — a PR URL, an id, a SHA — must be refused when it comes back empty, because an empty capture is indistinguishable from a 127 that never ran, **and the refusal only counts if it runs in the same Bash call as the capture**. So: verify in the call that produced the value, or do not capture it at all and re-query its source in the call that needs it — `{{wave-cli}} host-pr status --branch <branch>` re-reads a PR URL from the host, `issue-store read-closing` re-reads a ticket. The two forms, the retired `require_capture` helper and the live call sites are in [convention-12-no-command-in-a-shell-variable.md](./convention-12-no-command-in-a-shell-variable.md).
 
 ## Auth preflight
 

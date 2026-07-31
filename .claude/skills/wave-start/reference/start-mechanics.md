@@ -13,21 +13,23 @@ The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the comman
 ```bash
 SLUG=<2026-06-18-topic>; REPO=<consumer-root>; SPINE=".flotilla/waves/$SLUG.md"
 
-# 0. Define the Convention 12 capture guard ONCE per wave-start shell session,
-#    before the first capture that is later USED (step 7c's PR_URL). Body copied
-#    verbatim from the canonical one in wave-shared's convention-12 reference,
-#    which also carries the rationale: `null`/`undefined` are refused alongside
-#    `''` (jq -r on a missing key prints the four characters `null`), and only
-#    the NAME is ever printed, never the value (a capture may be a credential —
-#    Convention 8).
-require_capture() {   # require_capture <NAME> <captured-value>
-  case "$2" in
-    ''|null|undefined)
-      echo "STOP: $1 came back empty — the command that should have produced it did not run (exit 127? no match? no such key?). Refusing to continue with an empty value." >&2
-      return 1
-      ;;
-  esac
-}
+# 0. THE CALL BOUNDARY (wave-shared Convention 12, half two). There is no setup
+#    step here — deliberately. This file used to define a `require_capture()`
+#    helper "once per wave-start shell session" and invoke it at steps 4b and 7c;
+#    that helper is RETIRED, because a shell function is session state and shell
+#    state does not survive from one Bash call to the next. A guard defined in one
+#    call and invoked in another was never in scope for the value it named.
+#
+#    The rule that replaces it, applied at every capture below:
+#      * verify a captured value IN THE SAME Bash call that produced it —
+#        inline, with `if`, never `case`/`esac` (Convention 13, Catalog entry 1);
+#      * or better, do not capture it at all: re-query its source in the call
+#        that needs it. Step 7c does exactly that — `host-pr status --branch`
+#        instead of a PR URL carried forward from `host-pr create`.
+#    Refuse `null` and `undefined` alongside `''` (jq -r on a missing key prints
+#    the four characters `null`), and print only the NAME, never the value — a
+#    capture may be a credential (Convention 8).
+#
 #    Not every capture below is in the class. `HELD_IDS` (step 3) is empty on the
 #    ordinary "no held rows" wave — a legitimate ANSWER, not a did-not-run — and
 #    is deliberately left unguarded; guarding it would be a false alarm, and
@@ -63,7 +65,7 @@ HELD_IDS=$(node -e '
 #   HELD_IDS is NOT a STOP condition — skip these ids in steps 5 and 6, report them
 #   plainly in step 9. A row leaves HELD_IDS once its blocker's IssueView.status
 #   reaches in-review/done — re-run wave-start to pick it up.
-#   It is also deliberately NOT run through step 0's `require_capture`, and this
+#   It is also deliberately NOT guarded, and this
 #   is the line that says so: an empty HELD_IDS is the ordinary "nothing is held"
 #   ANSWER, not a did-not-run. Guarding it here would be a false alarm, and false
 #   alarms are how guards get deleted — wave-shared Convention 12's "guard the
@@ -136,7 +138,7 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #   the same engine file — read it there, never restate it here). THIS step
 #   keeps the raw git form because the preflight runs before any config/store
 #   resolution.
-#   Deliberately NOT run through step 0's `require_capture`: `grep -c` prints `0`
+#   Deliberately NOT guarded: `grep -c` prints `0`
 #   on no match, so this capture is never empty on a did-not-run — and a repo
 #   with zero registered worktrees is impossible anyway (the primary checkout
 #   always counts). Guarding it would be the false alarm Convention 12 warns
@@ -149,36 +151,45 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #     `tools/wave/src/cli.ts` invocation) the skills and the engine come from
 #     ONE SHA by construction, so the comparison is vacuous and the gate is
 #     SKIPPED. Decide from the binding itself, never by feel.
+#   ONE Bash call — the capture, its guard and the branch it decides all live
+#   together, because a shell variable exists only in the call that set it
+#   (Convention 12, half two, Form 2). `case`/`esac` is gone with the same
+#   change: Convention 13's Catalog entry 1 has it refused outright from a
+#   worktree-isolated dispatch, and one dialect across the skill surface is
+#   worth more than the pattern-match's brevity here.
 WAVE_CONFIG="$REPO/wave.config.json"   # or wherever this consumer keeps it
 ENGINE_CLI=$(node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String((c.engine||{}).cli||""))' "$WAVE_CONFIG")
 #   An empty ENGINE_CLI is never "unbound, carry on": every {{wave-cli}} call in
 #   the steps above already used the binding, so nothing here could have run
-#   without one. Empty means the config could not be read — a did-not-run, and
-#   exactly the class step 0's helper exists for.
-require_capture ENGINE_CLI "$ENGINE_CLI" || exit 1
-case "$ENGINE_CLI" in
-  *tools/wave/src/cli.ts*)
-    : "source form — skills and engine share one SHA; lockstep vacuous, gate skipped" ;;
-  *)
-    #   The EXPECTATION is the PLUGIN's version, read from the plugin manifest at
-    #   THIS skill's own resolution anchor: the plugin clone is a full-repo clone
-    #   and ships `.claude-plugin/plugin.json` (ADR-0031's premise). The engine
-    #   never goes looking for it — it cannot know which clone the running skills
-    #   came from — so it is TOLD. That division of labour IS the design: the
-    #   engine knows only its own version and how to compare.
-    PLUGIN_MANIFEST="<plugin-clone-root>/.claude-plugin/plugin.json"
-    PLUGIN_VERSION=$(node -e 'const fs=require("fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version||""))' "$PLUGIN_MANIFEST")
-    require_capture PLUGIN_VERSION "$PLUGIN_VERSION" || exit 1
-    {{wave-cli}} version --expect "$PLUGIN_VERSION"
-    #   exit 0 → in lockstep; proceed to step 5
-    #   exit 1 → STOP THE WAVE HERE, before the flip. Nothing is dispatched. The
-    #            printed JSON carries `.repair` — the one-line fix, e.g.
-    #            `npm i -D @formtrieb/flotilla-engine@<plugin-version>` — quote
-    #            it verbatim in the STOP so the operator copy-pastes rather than
-    #            derives. exit 2 is a malformed invocation of the gate itself
-    #            (a value-less --expect), not a verdict: fix the call and re-run.
-    ;;
-esac
+#   without one. Empty means the config could not be read — a did-not-run.
+if [ -z "$ENGINE_CLI" ] || [ "$ENGINE_CLI" = "null" ] || [ "$ENGINE_CLI" = "undefined" ]; then
+  echo "STOP: ENGINE_CLI came back empty — wave.config.json could not be read (no such file? no engine.cli key?). Refusing to run the lockstep gate on nothing." >&2
+  exit 1
+fi
+if echo "$ENGINE_CLI" | grep -q 'tools/wave/src/cli\.ts'; then
+  : "source form — skills and engine share one SHA; lockstep vacuous, gate skipped"
+else
+  #   The EXPECTATION is the PLUGIN's version, read from the plugin manifest at
+  #   THIS skill's own resolution anchor: the plugin clone is a full-repo clone
+  #   and ships `.claude-plugin/plugin.json` (ADR-0031's premise). The engine
+  #   never goes looking for it — it cannot know which clone the running skills
+  #   came from — so it is TOLD. That division of labour IS the design: the
+  #   engine knows only its own version and how to compare.
+  PLUGIN_MANIFEST="<plugin-clone-root>/.claude-plugin/plugin.json"
+  PLUGIN_VERSION=$(node -e 'const fs=require("fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version||""))' "$PLUGIN_MANIFEST")
+  if [ -z "$PLUGIN_VERSION" ] || [ "$PLUGIN_VERSION" = "null" ] || [ "$PLUGIN_VERSION" = "undefined" ]; then
+    echo "STOP: PLUGIN_VERSION came back empty — the plugin manifest could not be read. Refusing to pass a value-less --expect." >&2
+    exit 1
+  fi
+  {{wave-cli}} version --expect "$PLUGIN_VERSION"
+  #   exit 0 → in lockstep; proceed to step 5
+  #   exit 1 → STOP THE WAVE HERE, before the flip. Nothing is dispatched. The
+  #            printed JSON carries `.repair` — the one-line fix, e.g.
+  #            `npm i -D @formtrieb/flotilla-engine@<plugin-version>` — quote
+  #            it verbatim in the STOP so the operator copy-pastes rather than
+  #            derives. exit 2 is a malformed invocation of the gate itself
+  #            (a value-less --expect), not a verdict: fix the call and re-run.
+fi
 
 # 5. Mark each NON-HELD row in-flight (WAL: spine first, then rung, in row order).
 #    Skip any id present in HELD_IDS (step 3) — its State stays `planned`. Skip
@@ -401,33 +412,52 @@ WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
 #   ABOVE the store-kind close phrase (Convention 4), the ONLY tracker id the
 #   title/body may name.
 #   github-only in M1 (bitbucket/unknown fail loud + typed); reads GITHUB_TOKEN.
+# CALL 1 — render the verdict and open the PR. The rendered section is captured
+# and CONSUMED in this same call (Convention 12, half two): it is the PR body's
+# own input, so it never crosses a call boundary. An empty VERDICT_SECTION means
+# `render-verdict` did not run, and the body would then be composed WITHOUT the
+# verdict while still reading as complete — so it is guarded here, inline, where
+# the variable actually exists.
 VERDICT_SECTION=$({{wave-cli}} render-verdict "$VERDICTS" "$ID" --anchor "$ANCHOR_SHA")
+if [ -z "$VERDICT_SECTION" ] || [ "$VERDICT_SECTION" = "null" ]; then
+  echo "STOP: VERDICT_SECTION came back empty — render-verdict did not run. Refusing to open a PR whose body silently omits the verdict." >&2
+  exit 1
+fi
 #   $ANCHOR_SHA is the row's roster-bound anchor — the SAME value threaded into
 #   this row's Worker/Reviewer briefs as `issue.anchorSha` (workflow-driver.md).
 #   render-verdict reads the MAX-iter valid verdict sidecar — the LATEST
 #   iteration's verdict, never a stale one from a changes-requested →
 #   re-dispatch cycle.
-PR_URL=$({{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
-  --title "$PR_TITLE" --body "$PR_BODY_WITH_CLOSE_PHRASE_AND_VERDICT" | \
-  jq -r '.url')   # or reuse report.prUrl — both resolve to the one open PR
-#   $PR_BODY_WITH_CLOSE_PHRASE_AND_VERDICT = "<summary>\n\n$VERDICT_SECTION\n\n<close phrase>"
+{{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
+  --title "$PR_TITLE" --body "<summary>
 
-# GUARD THE CAPTURE BEFORE IT REACHES THE SPINE (wave-shared Convention 12; the
-# helper is defined once at step 0). An empty PR_URL never means "this PR has no
-# URL" — it means the value was never produced, and every way that happens is a
-# way you must not continue past: `host-pr create` was never invoked (a command
-# held in a shell variable, exit 127 — the five-occurrence class), it exited
-# non-zero, or `.url` was absent and `jq -r` printed the four characters `null`.
-# Neither `set -e` nor `$?` can see any of them — a pipeline carries the LAST
-# stage's status, so a 127 on the left of the `| jq` is invisible. Without this
-# line the two writes below flip the row to `pr-created` and record an EMPTY PR
-# cell: a row that reads as landed with nothing landed behind it. Both spine
-# writes are below the guard for that reason — the state flip is as wrong as the
-# empty cell when no PR was opened.
-require_capture PR_URL "$PR_URL" || exit 1
+$VERDICT_SECTION
+
+<close phrase>"
+#   Run it BARE — no `| jq`, no `$( )`. find-before-create is idempotent, so this
+#   re-pins the PR the Worker already opened and re-writes its body.
+
+# CALL 2 — RE-QUERY THE HOST FOR THE URL, then write the spine from that answer.
+# The URL is never carried from call 1: shell state does not survive between Bash
+# calls, so a PR_URL captured there would be unset here (wave-shared Convention
+# 12, half two — this is the site whose cross-call `require_capture` could never
+# fire, and the closest in-repo analogue of the `#83` gate failure). `host-pr
+# status` asks the host again and answers with `state` as well as `url`, which
+# distinguishes the two things an empty capture cannot: a PR that exists from one
+# that does not. Everything below runs in THIS one call, so the guard and the two
+# spine writes share the scope of the value they are about.
+PR_URL=$({{wave-cli}} host-pr status --branch "wave/$ID-$SLUG" | jq -r '.url // empty')
+if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ] || [ "$PR_URL" = "undefined" ]; then
+  echo "STOP: host-pr status reports no URL for wave/$ID-$SLUG — no PR exists (state: none) or the verb did not run. NOT flipping the row to pr-created." >&2
+  exit 1
+fi
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" pr-created
-{{wave-cli}} spine set-row-pr    "$SPINE" "$ID" "$PR_URL"   # never reached on an empty capture
+{{wave-cli}} spine set-row-pr    "$SPINE" "$ID" "$PR_URL"   # never reached on an empty re-query
 {{wave-cli}} issue-store transition "$ID" in-review
+#   Without the guard above, the two writes would flip the row to `pr-created`
+#   and record an EMPTY PR cell: a row that reads as landed with nothing landed
+#   behind it. Both writes sit below it for that reason — the state flip is as
+#   wrong as the empty cell when no PR was opened.
 
 # 7d. transition → re-dispatched (cap=1 — enforced by transition() itself):
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" re-dispatched
