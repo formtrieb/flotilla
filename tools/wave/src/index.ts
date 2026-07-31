@@ -329,6 +329,36 @@ export {
   measureExecArgumentBytes,
   checkCommandLineSizeAdvisory,
   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+  // The PER-STRING term of the same E2BIG budget — the barrel-gap class above
+  // recurring exactly ONE TERM LATER, and the reason it recurred is worth
+  // writing down rather than fixing silently. The command-line row directly
+  // above was authored against a wave anchor at which the per-string sibling did
+  // not yet exist, so it shipped the family "whole" as the family stood that
+  // morning; the advisory-hardening row added `MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES`
+  // to the module the same day and the barrel had already been written. A
+  // reconciled-merge probe by that row's reviewer is what surfaced it — neither
+  // branch was wrong on its own, which is precisely the shape a per-branch review
+  // cannot see.
+  //
+  // The asymmetry it leaves behind is the SAME one issue #266 closed, one level
+  // down: `checkCommandLineSizeAdvisory` returns `level: 'advisory'` when EITHER
+  // condition trips, and its message states in so many words that a total safely
+  // under budget is not an all-clear because a single oversized argv/env entry
+  // fails the spawn on its own. A root-only consumer therefore received the
+  // per-string verdict (in `level`), the per-string number (in
+  // `maxEntryBytes`/`maxEntryThreshold`, which cross the barrel already as fields
+  // of the exported result types) and the sentence telling it to compare them —
+  // while the threshold it is told to compare against, state, or raise stayed
+  // behind a deep import. Exporting the constant is what makes the advertised
+  // comparison performable from the root at all.
+  //
+  // No function rides along, deliberately: unlike the count and total terms, the
+  // per-string term has no entry point of its own. It is measured by
+  // `measureExecArgumentBytes` and checked by `checkCommandLineSizeAdvisory`,
+  // both already root-reachable above, so the constant is the whole of what was
+  // missing — and a root surface that grew by more than that would be a
+  // different decision from this one.
+  MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
   type WorktreeEntry,
   type CleanupPlan,
   type CleanupResult,

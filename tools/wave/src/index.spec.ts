@@ -69,10 +69,14 @@ import { classifyCreateInput, CreateInputError } from './adapters/issue-store';
 // terms are imported, not just the new one: the defect this slice closes is an
 // ASYMMETRY between them, so a spec that only knew about the command-line term
 // could not state it.
+// `MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES` joins them (issue #357): the
+// per-string term is the THIRD term of the same budget, and the one the barrel
+// missed because the command-line row was authored before the sibling existed.
 import {
   measureExecArgumentBytes,
   checkCommandLineSizeAdvisory,
   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+  MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
   checkWorktreeCountAdvisory,
   WORKTREE_COUNT_ADVISORY_THRESHOLD,
 } from './worktree-cleanup';
@@ -131,6 +135,11 @@ import {
   measureExecArgumentBytes as measureExecArgumentBytesFromRoot,
   checkCommandLineSizeAdvisory as checkCommandLineSizeAdvisoryFromRoot,
   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES as COMMAND_LINE_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+  // issue #357 — the PER-STRING threshold, the one term of this family the
+  // barrel above missed. Named from the root here because that is the whole
+  // claim: a consumer that cannot import it cannot perform the comparison the
+  // advisory's own message instructs it to perform.
+  MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES as MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
   checkWorktreeCountAdvisory as checkWorktreeCountAdvisoryFromRoot,
   WORKTREE_COUNT_ADVISORY_THRESHOLD as WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT,
   type ExecArgumentMeasurement as ExecArgumentMeasurementFromRoot,
@@ -633,6 +642,24 @@ const COMMAND_LINE_FAMILY_ADDED_AT_ROOT = [
 ];
 
 /**
+ * The value half of the term issue #357 adds — the PER-STRING threshold, kept
+ * as its OWN family rather than appended to the list above even though both
+ * belong to one advisory. The list above records what issue #338 decided at its
+ * anchor, and that decision was complete for the family as it stood then: the
+ * per-string sibling did not exist in the module yet. Folding this name into it
+ * would rewrite that history into "issue #338 shipped four names", and the next
+ * reader would lose the one fact this gap is evidence for — that a barrel row
+ * authored at an anchor goes stale against a module that grew after it.
+ *
+ * Exactly one name, and the singleton is the claim, not an accident of
+ * bookkeeping: the per-string term has no entry point of its own. It is measured
+ * by `measureExecArgumentBytes` and checked by `checkCommandLineSizeAdvisory`,
+ * both already root-reachable, so a second added name here would mean something
+ * beyond the recorded decision rode along.
+ */
+const MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT = ['MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES'];
+
+/**
  * The `wave-md-rw` names the root re-exported BEFORE issue #323, recorded the
  * same way and for the same reason as the worktree-cleanup baseline above:
  * `wave-md-rw` exports far more than the barrel re-exports (every targeted
@@ -684,7 +711,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_BEFORE = 135;
 const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   ROOT_RUNTIME_EXPORT_COUNT_BEFORE +
   COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length +
-  HUMAN_LANE_FAMILY_ADDED_AT_ROOT.length;
+  HUMAN_LANE_FAMILY_ADDED_AT_ROOT.length +
+  MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -819,25 +847,228 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
     expect(rootNames).toContain('COMMAND_LINE_ADVISORY_THRESHOLD_BYTES');
   });
 
-  it('adds EXACTLY the command-line family to the worktree-cleanup names at the root', () => {
+  it('adds EXACTLY the command-line family and the per-string term to the worktree-cleanup names at the root', () => {
     const after = rootNamesOwnedByWorktreeCleanup();
 
     // Nothing was dropped…
     expect(after).toEqual(expect.arrayContaining(WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE));
-    // …and what is new is exactly the family, no stowaway. `worktree-cleanup`
-    // exports far more than the root re-exports (the orphan-branch and
-    // redispatch sweeps among them), so "one more name slipped into the export
-    // block" is a live way to be wrong here, not a hypothetical one.
+    // …and what is new is exactly the two recorded families, no stowaway.
+    // `worktree-cleanup` exports far more than the root re-exports (the
+    // orphan-branch and redispatch sweeps among them), so "one more name slipped
+    // into the export block" is a live way to be wrong here, not a hypothetical
+    // one — and this slice is itself the proof, since the name it adds is one
+    // that slipped OUT of an export block written one commit too early.
     const added = after.filter(
       (name) => !WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE.includes(name),
     );
-    expect(added).toEqual(COMMAND_LINE_FAMILY_ADDED_AT_ROOT);
+    expect(added).toEqual(
+      [...COMMAND_LINE_FAMILY_ADDED_AT_ROOT, ...MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT].sort(),
+    );
 
     expect(after).toEqual(
-      [...WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE, ...COMMAND_LINE_FAMILY_ADDED_AT_ROOT].sort(),
+      [
+        ...WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE,
+        ...COMMAND_LINE_FAMILY_ADDED_AT_ROOT,
+        ...MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT,
+      ].sort(),
     );
   });
 
+});
+
+// ─── issue #357 — the PER-STRING term reaches the package root ────────────────
+//
+// The barrel-gap class of issue #338, recurring exactly one term later. execve
+// documents E2BIG on TWO independent conditions, and the engine models both: a
+// combined argv+envp TOTAL, and a hard cap on any ONE argv/env entry
+// (`MAX_ARG_STRLEN`). Issue #338 exported the family whole as the family stood
+// at ITS anchor — which was one commit before the per-string sibling existed in
+// the module. Nothing about that row was wrong; it simply could not export a
+// constant that had not been written yet, and no per-branch review of either row
+// could see the gap the pair left. A reconciled-merge probe by the barrel row's
+// own reviewer is what found it.
+//
+// What the gap actually costs is not "one fewer constant". A root-only consumer
+// already received the per-string VERDICT (`checkCommandLineSizeAdvisory`
+// returns `level: 'advisory'` when EITHER condition trips), the per-string
+// NUMBERS (`maxEntryBytes` and `maxEntryThreshold`, which cross the barrel as
+// fields of the already-exported result types) and the SENTENCE instructing it
+// to compare them — while the threshold it is told to compare against, state, or
+// raise stayed behind a deep import. That is the same shape issue #338 closed
+// for the total term: the root shipped a correction's premise while withholding
+// the correction.
+//
+// The same three kinds of assertion carry it — IDENTITY, COMPILE TIME,
+// ENUMERATION — because a public-API claim needs all three: a named import
+// cannot see an absent name, an export block can list a name it does not
+// re-bind, and only a DELTA against a recorded baseline can say "and nothing
+// else rode along".
+
+describe('the per-string E2BIG threshold is reachable from the PACKAGE ROOT (issue #357)', () => {
+  it('re-exports the same binding, not a lookalike', () => {
+    expect(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT).toBe(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
+    );
+  });
+
+  it('is a distinct constant from its total-term sibling, not the same number under two names', () => {
+    // The one way a "re-export" of this name could be present and still useless:
+    // pointing at the total threshold. Both are root-reachable, so the two terms
+    // can be told apart from the root — which is the entire operational point of
+    // modelling them separately.
+    expect(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT).not.toBe(
+      COMMAND_LINE_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+    );
+  });
+
+  it('re-exports the per-string RESULT FIELDS, so a root-only consumer can read and override them', () => {
+    // Compile-time half — every annotation here resolves only if the barrel
+    // really re-exports the type that declares the field. `tsc --noEmit` is the
+    // assertion; the runtime expectations keep the values from being dead code.
+    //
+    // The fields are the other half of AC1 alongside the constant: a consumer
+    // holding the threshold but unable to read `maxEntryBytes` off the
+    // measurement, or unable to name `maxEntryThreshold` on the options it
+    // passes, still cannot perform the comparison.
+    // One argv/env pair, measured and then checked, so `maxEntryBytes` can be
+    // compared across the two entry points rather than merely being non-zero on
+    // each. The env entry is deliberately the largest string in the pair: the
+    // per-string condition is charged across BOTH vectors, and a fixture whose
+    // widest entry was always an argv one could not tell that apart from an
+    // argv-only implementation.
+    const argv = ['node', 'cli.ts'];
+    const env = { PATH: '/usr/bin:/usr/local/bin' };
+
+    const measurement: ExecArgumentMeasurementFromRoot =
+      measureExecArgumentBytesFromRoot(argv, env);
+    const largestEntry: number = measurement.maxEntryBytes;
+    // Larger than the ENTIRE argv half, so it demonstrably came from the env
+    // vector — the assertion that would fail against an argv-only max.
+    expect(largestEntry).toBeGreaterThan(measurement.argvBytes);
+
+    const opts: CommandLineSizeAdvisoryOptionsFromRoot = {
+      argv,
+      env,
+      maxEntryThreshold: MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+    };
+    const advisory: CommandLineSizeAdvisoryFromRoot =
+      checkCommandLineSizeAdvisoryFromRoot(opts);
+    const effective: number = advisory.maxEntryThreshold;
+    expect(effective).toBe(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT);
+    expect(advisory.maxEntryBytes).toBe(largestEntry);
+    expect(advisory.level).toBe('ok');
+  });
+
+  it('the DEFAULT the root advertises is the one the check actually applies', () => {
+    // Guards the failure mode a constant export invites: a root-reachable number
+    // that documents nothing, because the check defaults to a different one.
+    // Asked without passing `maxEntryThreshold` at all, so the value read back is
+    // the check's own default.
+    const defaulted = checkCommandLineSizeAdvisoryFromRoot({ argv: [], env: {} });
+    expect(defaulted.maxEntryThreshold).toBe(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+    );
+  });
+});
+
+describe('a ROOT-ONLY consumer can measure the PER-STRING term end to end (issue #357)', () => {
+  it('a single oversized entry trips the advisory while the TOTAL sits comfortably under budget', () => {
+    // The exact shape the per-string term exists for, and the one the total-only
+    // model calls `ok`: one argument larger than the per-string threshold, in a
+    // command line whose total is nowhere near the total threshold. Sized from
+    // the ROOT-imported constants, never from a typed number, so this story
+    // cannot drift away from the engine's own budget.
+    const oversized = 'x'.repeat(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT + 1);
+    const argv = ['node', 'cli.ts', `--body=${oversized}`];
+
+    const measurement = measureExecArgumentBytesFromRoot(argv, {});
+    // The total really is under budget — without this the story would prove
+    // nothing the total term did not already catch.
+    expect(measurement.bytes).toBeLessThan(
+      COMMAND_LINE_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+    );
+    expect(measurement.maxEntryBytes).toBeGreaterThan(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+    );
+
+    const advisory = checkCommandLineSizeAdvisoryFromRoot({ argv, env: {} });
+    expect(advisory.level).toBe('advisory');
+    // …and the wording names the per-string condition, so a root consumer gets
+    // the same load-bearing substrings the CLI prints rather than a bare level.
+    expect(advisory.message).toContain('MAX_ARG_STRLEN');
+    expect(advisory.message).toContain('TWO INDEPENDENT CONDITIONS');
+  });
+
+  it('the same command line reads `ok` under a total-only model — the mismeasure this term ends', () => {
+    // The negative control for the story above, expressed as the model a
+    // root-only consumer was stuck with before this slice: it could read the
+    // total and its threshold, and had no per-string threshold to compare
+    // against. Raising `maxEntryThreshold` out of the way reproduces that model
+    // exactly, and it returns `ok` on a command line that kills the spawn.
+    const oversized = 'x'.repeat(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT + 1);
+    const argv = ['node', 'cli.ts', `--body=${oversized}`];
+
+    const totalOnly = checkCommandLineSizeAdvisoryFromRoot({
+      argv,
+      env: {},
+      maxEntryThreshold: Number.MAX_SAFE_INTEGER,
+    });
+    expect(totalOnly.level).toBe('ok');
+    expect(totalOnly.message).toBeNull();
+  });
+
+  it('carries the fail-loud guarantee for the per-string override across the barrel', () => {
+    // The total threshold's guarantee, pinned for its sibling: a `NaN`
+    // per-string override would compare false forever, i.e. read as a permanent
+    // `ok` — a root consumer that inherited a silently-disabled second condition
+    // is back to the one-term mismeasure with a green check on top.
+    expect(() =>
+      checkCommandLineSizeAdvisoryFromRoot({
+        argv: [],
+        env: {},
+        maxEntryThreshold: Number.NaN,
+      }),
+    ).toThrow(/non-negative integer/);
+  });
+});
+
+describe('the per-string term at the root — runtime enumeration (issue #357)', () => {
+  it('the advisory message names MAX_ARG_STRLEN, and the constant carrying it is root-reachable', () => {
+    // The enumeration in its sharpest form, mirroring the issue-#338 probe: the
+    // required name is READ OUT of the running engine rather than typed here.
+    // The engine's own advisory text names the kernel condition; the constant
+    // that models it must be reachable from the root, or the root ships the
+    // instruction without the means to follow it.
+    const oversized = 'x'.repeat(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES_FROM_ROOT + 1);
+    const advisory = checkCommandLineSizeAdvisoryFromRoot({
+      argv: ['node', `--body=${oversized}`],
+      env: {},
+    });
+    expect(advisory.level).toBe('advisory');
+
+    const namedInMessage = [
+      ...new Set(advisory.message?.match(/\bMAX_ARG_STRLEN\b/g) ?? []),
+    ];
+    // Guards the regex itself: an empty match set would make the assertion below
+    // pass vacuously, the one way this could rot silently.
+    expect(namedInMessage).toEqual(['MAX_ARG_STRLEN']);
+
+    const rootNames = Object.keys(rootExports);
+    for (const named of namedInMessage) {
+      expect(rootNames.some((name) => name.startsWith(named))).toBe(true);
+    }
+    expect(rootNames).toContain('MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES');
+  });
+
+  it('all THREE E2BIG thresholds are root-reachable together', () => {
+    // The whole point of the family, stated as one assertion: an operator or a
+    // consumer reading one term and not the others is exactly the failure both
+    // this slice and issue #338 exist to end.
+    const rootNames = Object.keys(rootExports);
+    expect(rootNames).toContain('WORKTREE_COUNT_ADVISORY_THRESHOLD');
+    expect(rootNames).toContain('COMMAND_LINE_ADVISORY_THRESHOLD_BYTES');
+    expect(rootNames).toContain('MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES');
+  });
 });
 
 // ─── the human lane at the root (issue #323, ADR-0012) ───────────────────────

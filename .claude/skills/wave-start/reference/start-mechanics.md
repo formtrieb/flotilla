@@ -153,9 +153,15 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #   `worktree-cleanup` run (--dry-run included) prints
 #   worktreeCount { count, threshold, level, advisory } AND, for the second
 #   term, commandLine { bytes, argvBytes, envBytes, argCount, envCount,
-#   threshold, level, advisory } from the engine's checkCommandLineSizeAdvisory
-#   (its own threshold constant, COMMAND_LINE_ADVISORY_THRESHOLD_BYTES, lives in
-#   the same engine file — read it there, never restate it here). THIS step
+#   threshold, level, advisory } from the engine's checkCommandLineSizeAdvisory.
+#   That one call checks TWO independent execve conditions and owns a NAMED
+#   threshold constant for each, both in the same engine file:
+#   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES for the argv+env TOTAL, and its
+#   sibling MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES for the PER-STRING cap on
+#   any ONE argv/env entry. Read both numbers there, never restate either here.
+#   `level` is `advisory` when EITHER trips, so a printed `level: ok` is a
+#   two-condition all-clear — but the printed `threshold` is the TOTAL one
+#   alone, so never read that field as the per-string budget. THIS step
 #   keeps the raw git form because the preflight runs before any config/store
 #   resolution.
 #   Deliberately NOT guarded: `grep -c` prints `0`
@@ -356,7 +362,18 @@ So the exec argument budget is a **sum**: `(harness-injected sandbox profile, pr
 
 **What that does to the threshold guidance above.** A count at or under the threshold means *this term* is fine; it does not mean the next spawn will succeed. Read both terms, always — the engine prints them side by side (`worktreeCount` and `commandLine`) on every `{{wave-cli}} worktree-cleanup` run, `--dry-run` included, each with its own `level` and its own verbatim `advisory` text. The second term's threshold is `COMMAND_LINE_ADVISORY_THRESHOLD_BYTES` in `tools/wave/src/worktree-cleanup.ts`, alongside the count's; as with the count, the engine owns the number, its rationale and its wording, and this file names the constant rather than restating its value.
 
-**The recovery differs per term, which is the whole point of separating them.** The population term is swept (plus the harness restart below). The command-line term is **shrunk at the caller** — compress the oversized body or brief, or pass it by file — and *no sweep and no restart move it at all*. Diagnose which term blew before reaching for either remedy: a Coordinator that answers every `E2BIG` with a worktree sweep will, on this incident's shape, restart a session and hit the identical failure on the very next call.
+### The command-line term is itself TWO conditions — total, and per-string
+
+`execve` documents `E2BIG` on **two independent conditions**, not one, and a command line trips it by satisfying *either*:
+
+- the **TOTAL** — the combined argv+envp bytes the spawn carries. This is the condition the measured occurrence above blew, and its advisory threshold is `COMMAND_LINE_ADVISORY_THRESHOLD_BYTES`.
+- the **PER-STRING** cap — the kernel's `MAX_ARG_STRLEN`, a hard limit on any **single** argv or env entry. Its advisory threshold is the sibling constant `MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES`, in the same engine file.
+
+Both constants live in `tools/wave/src/worktree-cleanup.ts`, which owns each number, its rationale and the advisory wording; this file names the two constants and deliberately restates *neither* value — a number copied into prose here is a number that can drift, which is exactly what the pin in `tools/wave/src/skill-schema-drift.spec.ts` exists to prevent for the count. Both constants are also reachable from the engine's **package root**, so a consumer can state or raise either budget without a deep import (pinned in `tools/wave/src/index.spec.ts`).
+
+**Why an operator needs the second condition and not just the first.** A total safely under budget is *not* an all-clear. One oversized argument — a PR body, a composed agent brief, a pasted file list — can exceed the per-string cap on its own while the total sits nowhere near the total threshold, and the spawn dies anyway. `checkCommandLineSizeAdvisory` checks both and returns `level: advisory` when **either** trips, so reading `level` is sufficient; reading the printed `commandLine.threshold` is **not**, because that field carries the total threshold alone.
+
+**The recovery differs per term, which is the whole point of separating them.** The population term is swept (plus the harness restart below). The command-line term is **shrunk at the caller** — compress the oversized body or brief, or pass it by file — and *no sweep and no restart move it at all*. Diagnose which term blew before reaching for either remedy: a Coordinator that answers every `E2BIG` with a worktree sweep will, on this incident's shape, restart a session and hit the identical failure on the very next call. Within the command-line term the two conditions refine that further: for the total, shrink the command line *overall*; for the per-string cap, shrink **the one oversized entry** — split it, compress it, or pass it by file. Trimming several small arguments is a real fix for the total and does nothing at all for the per-string cap.
 
 **Recovery — the three steps, in order.** (For the *population* term; see the paragraph directly above for the command-line term, which none of these three steps touches.)
 
