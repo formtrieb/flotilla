@@ -184,26 +184,52 @@
  *     token that is really just prose inside an unrelated quoted string can
  *     still be folded as if it opened a real heredoc — a pre-existing,
  *     separate residual this fix does not touch.
- *   - **A heredoc BODY.** It is argument/stdin DATA for whatever reads it, not
- *     a further sequence of top-level commands, so a bare line that happens to
- *     open with the dump word must not manufacture a fake per-line command
- *     head the way a real top-level newline would. `neutralizeHeredocBodies()`
- *     folds a heredoc's body lines into the line that opened it (spaces
- *     standing in for the newlines) before family 3 runs. Nothing inside the
- *     body other than the newline itself is touched — an embedded `$(…)`
- *     command substitution, which real bash DOES evaluate before the body
- *     reaches its reader, stays exactly as reachable as it was before this
- *     carve-out existed.
+ *   - **A heredoc BODY — and, since 2026-07-31 (issue #347), QUOTED-delimiter
+ *     awareness.** A heredoc body is argument/stdin DATA for whatever reads
+ *     it, not a further sequence of top-level commands, so a bare line that
+ *     happens to open with the dump word must not manufacture a fake
+ *     per-line command head the way a real top-level newline would.
+ *     `neutralizeHeredocBodies()` folds a heredoc's body lines into the line
+ *     that opened it (spaces standing in for the newlines) before family 3
+ *     runs.
+ *     **The corrected rule, empirically verified against real bash
+ *     (`cat <<'EOF'` vs `cat <<EOF`, each wrapping a `$(echo …)`): whether an
+ *     embedded `$(…)`/backtick/`;`/`|`/`&`/paren/brace inside the body is
+ *     reachable depends on whether the heredoc's OWN delimiter was quoted.**
+ *     The PRE-#347 version of this function got this backwards — its own
+ *     docstring claimed real bash evaluates an embedded `$(…)` "regardless
+ *     of whether the delimiter itself is quoted", and left every
+ *     SEGMENT_SPLIT character in the folded body live unconditionally to
+ *     honor that claim. That claim is false: POSIX/bash suppress EVERY
+ *     expansion inside a heredoc body — parameter, command substitution,
+ *     arithmetic, all of it — the instant any part of the delimiter word is
+ *     quoted (`<<'EOF'`, `<<"EOF"`, `<<\EOF`), exactly as inside a
+ *     single-quoted string; only an UNQUOTED delimiter (`<<EOF`) undergoes
+ *     real expansion. A body fed to `cat <<'EOF' … EOF` that merely MENTIONS
+ *     `$(printenv)` or `` `printenv` `` as prose — precisely the shape a
+ *     ReviewerVerdict's own evidence text takes when the evidence IS this
+ *     guard's carve-outs, the live #347 occurrence — is therefore CONTENT,
+ *     never a command, and blanking only the newline while leaving `$(`,
+ *     backtick and the rest live inside it was over-blocking a body the
+ *     shell itself guarantees is inert. **The fix:** when the opening
+ *     delimiter was quoted, every SEGMENT_SPLIT character inside that body
+ *     is now ALSO blanked (`blankSegmentSplitChars()`) before folding — the
+ *     body becomes as inert to family 3 as it already is to the real shell.
+ *     When the delimiter is UNQUOTED, nothing changes: the body still
+ *     undergoes real expansion in bash, so an embedded `$(…)` stays exactly
+ *     as reachable to family 3 as it was before this fix (pinned by a
+ *     dedicated regression test, `echo-guard.spec.ts`).
  *
- * All three carve-outs are scoped to family 3's own head detection only —
+ * All these carve-outs are scoped to family 3's own head detection only —
  * families 1, 2 and 4 still scan the ORIGINAL command text unchanged, so a
  * genuine credential expansion or wrapped Lookup-Command hidden inside any of
  * them is none of family 3's business to begin with and stays caught by its
  * own family (see the KEEP decision above for family 2 specifically). None of
- * the three weakens the piped, command-substitution or command-head
- * invocation forms: those either never enter a quoted or heredoc span, or —
- * for a genuine `$(...)` / backtick command substitution specifically, the
- * paren rule above included — stay deliberately live inside one.
+ * them weakens the piped, command-substitution or command-head invocation
+ * forms: those either never enter a quoted or heredoc span, or — for a
+ * genuine `$(...)` / backtick command substitution specifically, the paren
+ * rule above and the quoted-vs-unquoted heredoc-delimiter rule included —
+ * stay deliberately live inside one.
  *
  * ============================================================================
  * ## OPERATOR STEP (HITL) — ready to paste, deliberately NOT applied by an agent
@@ -612,6 +638,29 @@ function neutralizeQuotedSpans(command) {
 const HEREDOC_INTRO_SRC = "<<-?\\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\\1";
 
 /**
+ * Blank every SEGMENT_SPLIT trigger character in a string, unconditionally —
+ * reused only for a heredoc body whose OWN delimiter was quoted (see
+ * `neutralizeHeredocBodies` below, issue #347). Real bash performs literally
+ * ZERO expansion inside such a body — no `$var`, no `$(...)`, no backtick
+ * substitution, no arithmetic, nothing — the exact same rule that makes a
+ * single-quoted STRING fully inert, just spelled with a heredoc delimiter
+ * instead of a pair of `'` characters. Unlike a double-quoted span, `$` and a
+ * backtick are NOT excepted here: there is no live-expansion carve-out for
+ * either of them inside a quoted-delimiter heredoc body, because real bash
+ * has none.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function blankSegmentSplitChars(text) {
+  let out = '';
+  for (const ch of text) {
+    out += SEGMENT_SPLIT_CHARS.has(ch) ? ' ' : ch;
+  }
+  return out;
+}
+
+/**
  * Fold every heredoc's BODY lines into the line that opened it, spaces
  * standing in for the newlines that separated them.
  *
@@ -619,12 +668,21 @@ const HEREDOC_INTRO_SRC = "<<-?\\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\\1";
  * further sequence of top-level commands — so a body line that happens to
  * open with a dump word (`printenv leaked in row 226…`, the first word of a
  * `gh issue create` heredoc BODY paragraph) must not manufacture a fake
- * per-line command head the way a real top-level newline would. Nothing
- * inside the body OTHER than the newline is touched: an embedded `$(…)`
- * command substitution — which real bash DOES evaluate before the body
- * reaches its reader, regardless of whether the delimiter itself is quoted —
- * stays exactly as reachable to family 3 as it was before this carve-out
- * existed, because its own `$(` split point is untouched by this function.
+ * per-line command head the way a real top-level newline would.
+ *
+ * **QUOTED-delimiter awareness (2026-07-31, issue #347).** Whether anything
+ * ELSE inside the body — an embedded `$(…)`, a backtick, `;`, `|`, `&`, a
+ * paren, a brace — is reachable depends on whether the heredoc's OWN
+ * delimiter was quoted, empirically verified against real bash: `cat <<'EOF'`
+ * wrapping a `$(echo …)` body prints the substitution's SOURCE TEXT
+ * unevaluated, while `cat <<EOF` (unquoted) genuinely runs it. A quoted
+ * delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF` — `HEREDOC_INTRO_SRC`'s captured
+ * group 1) therefore makes the WHOLE body as inert as a single-quoted string;
+ * every SEGMENT_SPLIT character in it is blanked via
+ * `blankSegmentSplitChars()` before folding, exactly as it would be inside a
+ * real single-quoted span. An UNQUOTED delimiter changes nothing here: the
+ * body still undergoes real expansion in bash, so an embedded `$(…)` stays
+ * exactly as reachable to family 3 as before this fix.
  *
  * @param {string} command
  * @returns {string}
@@ -640,12 +698,16 @@ function neutralizeHeredocBodies(command) {
     i += 1;
     // A line can open more than one heredoc in real bash; tracking only the
     // LAST delimiter on the line is an adequate simplification for a guard
-    // whose job here is just "don't manufacture a fake per-line head."
+    // whose job here is just "don't manufacture a fake per-line head." The
+    // same applies to `delimQuoted`: the LAST heredoc's own quoting decides
+    // how ITS body is treated.
     let delim = null;
+    let delimQuoted = false;
     let remainder = line;
     let match;
     while ((match = introRe.exec(remainder))) {
       delim = match[2];
+      delimQuoted = match[1] !== '';
       remainder = remainder.slice(match.index + match[0].length);
     }
     if (delim === null) continue;
@@ -656,7 +718,8 @@ function neutralizeHeredocBodies(command) {
       i += 1;
     }
     if (bodyLines.length > 0) {
-      out[out.length - 1] += ' ' + bodyLines.join(' ');
+      const body = bodyLines.join(' ');
+      out[out.length - 1] += ' ' + (delimQuoted ? blankSegmentSplitChars(body) : body);
     }
     if (i < lines.length) {
       out.push(lines[i]); // the closing delimiter line itself, untouched
@@ -869,5 +932,6 @@ module.exports = {
   MIN_LOOKUP_VALUE_LENGTH,
   neutralizeQuotedSpans,
   neutralizeHeredocBodies,
+  blankSegmentSplitChars,
   literalSpanNeutralized,
 };
