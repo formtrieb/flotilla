@@ -113,6 +113,18 @@ Then re-run `check-awaiting-human` and confirm `0 awaiting` before touching the 
 
 Its `rows[]` carries every human-gated row with its `state` and an `awaitingHuman` flag; `awaitingHumanIds` is the gate's own set. An **empty** lane is a legitimate answer, not a failure — do not put an emptiness guard on it.
 
+## Scratch confirmation — the last place the Scribe scratch sweep can still be caught (issue #355)
+
+**Confirm, then archive.** Phase 3 is where the Scribe scratch directory (`.flotilla/tmp/`) is actually swept — on the `--orphans` pass, reported under `orphans.scratch` ([phase 3's reading guide](phase-3-worktree-cleanup.md#the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-lifecycle-issue-355)). This phase does not re-sweep; it is where the close **states which of the three readings it got**, because this is the last step before the wave's own record is moved out of reach:
+
+- `orphans.scratch.removed` non-empty → name the count in the close summary.
+- `orphans.scratch.present: false` → the directory did not exist. An honest no-op; say so rather than saying nothing.
+- **the `scratch` key was ABSENT, or phase 3's output was never read** → the sweep's outcome is *unknown*, not clean. Re-run phase 3's execute command now (it is idempotent) and read the key, before the move below.
+
+**Why the confirmation belongs to the archive and not to phase 3 alone.** `.flotilla/tmp/` sits beside `.flotilla/waves/`, so it is the archive step — not the cleanup step — that operates in the same directory the residue lives in, and it is the archive step that (in a **tracked** `.flotilla/` consumer) makes a `git mv` + `git commit`. The commit itself only carries what `git mv` staged, so an unswept payload does **not** ride into the archive commit — but it does stay behind as untracked litter in the tree the *next* wave's gates read, in exactly the directory a `git add .flotilla` would sweep whole. This step is cheap because it is a read of output phase 3 already produced; the reason it exists is that "cleanup ran" and "cleanup's scratch result was read" are two different claims, and only the second one is evidence.
+
+**This never blocks the archive.** Unlike the two gates above, this is a reporting obligation, not a fail-closed gate — a payload left on disk costs a stale file, not a stranded claim. Report it; do not hold the wave open for it.
+
 **Guard (terminal-only):** archive only when every row is finalised (no row `dispatched`/`reviewing`/etc.). If any row is still pending → do NOT archive; print `wave not yet terminal (skipped)`.
 
 **Guard (idempotent):** `<wave-file>` already under `.flotilla/waves/_archive/` → print `already archived (no-op)`.
@@ -151,7 +163,7 @@ Archive moves the spine **and** its sidecar folder together, side by side in `_a
 
 **Durability consequence (report, don't decide):** an **untracked/ignored `.flotilla/`** means the wave's spine, sidecars, and archive exist **only on the machine that ran the wave** — a fresh clone (a teammate, CI, a new machine) has no wave history at all, only whatever landed in the actual PRs. A **tracked `.flotilla/`** carries that history along with the repo. This slice only makes the archive mechanics honest about whichever answer a consumer has already chosen (via `.gitignore`) — it does **not** recommend one default over the other. That recommendation (should `wave.config.json` / `.flotilla/waves/` be tracked by default for a new consumer) is explicitly deferred to the publication/onboarding PRD, where the wider "what does a new consumer see on `git clone`" question is decided.
 
-After archiving, print a close summary: wave slug, **which archive mode ran** (`tracked (git mv + commit)` or `untracked/ignored (plain mv, no commit)`), per-row final state, advisory merge order, any `needs-attention` flags, next human steps (merge PRs in the printed order).
+After archiving, print a close summary: wave slug, **which archive mode ran** (`tracked (git mv + commit)` or `untracked/ignored (plain mv, no commit)`), per-row final state, advisory merge order, any `needs-attention` flags, **the Scribe scratch reading from the confirmation step above** (N payloads swept / directory absent / outcome unknown and re-run), next human steps (merge PRs in the printed order).
 
 ## Common Mistakes
 
@@ -169,3 +181,4 @@ After archiving, print a close summary: wave slug, **which archive mode ran** (`
 - **Writing a causal diagnosis into a `filed:` body to "save the next agent time".** An unverified cause written at close time is faithfully implemented, because the ticket reads as settled. Author symptom + evidence + provenance; mark any hypothesis as one.
 - **Verifying a disclosure's premise before filing it.** That check belongs to `triage`, on the bare→ready transition, against current `main` — not to the close ceremony, which is the worst hour for the highest-judgment work.
 - **Filing a bare `filed:<id>` issue with no `bodySections`.** `issue-store create` now rejects this loud (exit 2, #278) — but if you hit that rejection, it means the `--input` was composed without the Gap/Provenance prose, not that the guard is wrong. Fix the `--input`, don't route around the check.
+- **Archiving without stating the Scribe scratch reading.** "Phase 3 ran" is not the same claim as "phase 3's `orphans.scratch` was read." An absent key means the sweep never looked — re-run phase 3's execute command (idempotent) and read it before the move. This is a reporting obligation, never a reason to hold the wave open.

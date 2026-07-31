@@ -27,6 +27,16 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 - **A Scribe failure never discards the in-band tuple.** The stage wraps its `agent()` in try/catch, **passes the report/verdict through regardless**, and `log()`s loud (`SIDECAR-WRITE FAILED <id>`). A `pipeline()` stage that *throws* drops the row to `null` — which would convert a *successful* Worker into a `worker-failed` STOP and discard finished work. Structurally forbidden here: the Scribe stage returns its passthrough value in every branch, and the Scribe itself retries the CLI call once, byte-identical.
 - **`SCRIBE_RESULT_SCHEMA` is driver-local — deliberately NOT drift-pinned.** No engine const corresponds to it (unlike the two `*_SCHEMA` copies), so `skill-schema-drift.spec.ts` does not — and must not — pin it. It is a plain `{ ok, path, error?, notice? }` shape with no top-level `anyOf`/`oneOf`/`allOf` (boundary-safe, W5-F1). `notice` is the exit-0 channel: the write verb reports a normalized decorated id or misnamed litter on stderr while still succeeding, and the Scribe reports a cwd that did not match the compose-time `REPO_ROOT` on a write that succeeded anyway (§The Scribe's cwd) — `error` may only be set on failure, so without `notice` each of those exit-0 findings would die at the one stage that saw it.
 
+### The Scribe scratch location has a lifecycle — it is swept, ignored, and never durable
+
+The payload file step 2 writes is a **hand-off**, not a record: the durable sidecar is what step 3's verb persists under `.flotilla/waves/<slug>/reports|verdicts/`. The moment step 3 returns, the payload under `.flotilla/tmp/` is residue. Three properties close the loop, and they are deliberately split across three owners rather than piled onto the Scribe:
+
+- **The name is deterministic** (`<kind>-<row id>-<iteration>.json`), so the Scribe's own retry overwrites rather than accumulates. That is the *within-a-row* half, and it is all the brief itself needs to know.
+- **The close sweeps it.** A wave still leaves two files per row behind, forever, and for several wave-generations **no cleanup path touched them at all** — not wave-close, not wave-resume, not start-mechanics (measured by a repo-wide grep: four driver sites, two spec sites, zero cleanup sites). The engine now sweeps the directory on the `--orphans` pass every close already runs, reporting under `orphans.scratch` — [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md#the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-lifecycle-issue-355) owns the reading guide, and [phase 6](../../wave-close/reference/phase-6-archive.md) is where the close confirms it actually ran.
+- **The consumer ignores it.** flotilla's own repo gitignores `.flotilla/` wholesale, so this gap is invisible here — but the recommended consumer posture is to **track** `.flotilla/` (the spine is the durable WAL, committed for resume), and there a payload written mid-wave is untracked litter in the tree a `git add .flotilla` would sweep into a commit. [wave-setup's `.gitignore` scaffold](../../wave-setup/reference/setup-mechanics.md#gitignore-scaffold--the-scribe-scratch-path-issue-355) records the one line that closes it.
+
+The sweep and the ignore rule are belt and braces on purpose: the sweep runs once, at close, while a wave is in flight for hours before that — the ignore line is what protects the window.
+
 ## The Scribe's cwd — a precondition observed once, never a `cd` carried forward
 
 The Scribe is the one role in this pipeline that is **not** worktree-isolated: it runs in the session cwd. Its brief used to open by `cd`-ing to the absolute `REPO_ROOT` and then call the repo-relative `WAVE_CLI` two steps later. That split read as Convention-13-clean (nothing fused, one call per step) and was in fact resting on **incidental safety**: the `cd` never reached the engine call at all, and the call resolved anyway because the Scribe's dispatch cwd already *was* the repo root. Nothing in the design said so, nothing checked it, and the step that looked like it established the precondition was the one step that could not.
@@ -44,8 +54,23 @@ So the Scribe brief below **opens with a bare `pwd`** and compares it against th
 
 | configured form | what a wrong dispatch cwd does to the Scribe's step-3 call |
 |---|---|
-| **path-free, npm-first** (`npx @scope/<engine-package> …`) | the command names no path, so nothing resolves *against* the cwd — but the package lookup behind it still begins at the cwd and walks up before falling back to a registry fetch, so a wrong cwd changes **which copy answers**, not whether one does. That is a silent wrong-version write, the one failure shape no exit code reports. |
+| **path-free, npm-first** (`npx @scope/<engine-package> …`) | **Measured, not inferred** (see the measurement below): the command names no path, so nothing resolves *against* the cwd — but the package lookup behind it begins at the cwd and walks up, so a wrong cwd changes **which copy answers**, not whether one does. Two cwds, one byte-identical command, two different engine copies, **both exit 0 with nothing on stderr**: a silent wrong-version write, the one failure shape no exit code reports. |
 | **repo-relative, vendored** (`./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts` — flotilla's own binding) | the path resolves against the cwd, so a wrong cwd fails loud and immediately, nothing is written, and the Scribe reports it through `ok:false`. |
+
+**The measurement behind row 1 (2026-07-31, issue #355 — npm/npx 11.12.1, macOS).** The npm-first row above was **asserted** from first principles for several waves before anyone ran it. It has now been exercised: two sibling "consumer checkouts" were each given their own local copy of the *same* bin name under `node_modules/.bin/`, each printing a distinct identity, and one identical `npx --no-install <bin>` was invoked from four cwds.
+
+| cwd the identical command was run from | which copy answered | exit |
+|---|---|---|
+| `consumerA/` (holds copy **A**) | **A** | `0` |
+| `consumerB/` (holds copy **B**) | **B** | `0`, stderr empty |
+| `consumerA/sub/deeper/` (holds none) | **A** — the lookup walked **up** | `0` |
+| a directory with no copy anywhere up-tree | none locally; npx reached the registry (`npm error code E404 … GET https://registry.npmjs.org/…`) | `1` |
+
+Three readings, and the third is a **correction** the asserted wording did not carry:
+
+1. **The claim holds where it matters.** Rows 1–2 are the same command differing only in cwd, and they bound different engine copies. Nothing in the exit code, and nothing on stderr, distinguishes them. A Scribe that wrote its sidecar through the wrong copy would report `ok:true` and a real path.
+2. **"Walks up" is literal.** Row 3 answered from a directory two levels above the cwd — so a wrong cwd *inside* the right repo is still the right copy, and the failure needs a wrong cwd in a *different* tree (a sibling checkout, another worktree with its own install). That is exactly the shape a multi-worktree wave session produces.
+3. **The silence is CONDITIONAL on a rival copy existing.** Row 4 — no copy anywhere up-tree — did not silently do the wrong thing; it failed loud, exit `1`. So the npm-first form is not universally silent, as the pre-measurement wording implied. It is silent precisely when a *different* valid copy is reachable from the wrong cwd, which is why the `pwd` check stays: the dangerous case is the one that looks like success.
 
 Neither form is rescued by a `cd` (it does not survive), by fusing one on (Convention 13, both mechanisms), or by making `WAVE_CLI` absolute: the config layer validates `engine.cli` as **repo-relative and non-absolute** precisely so the tracked-settings allowlist can match it (Authoring constraint #4), so an absolute form trades a checkable cwd precondition for a permission dialog mid-AFK-dispatch with nobody to answer it. What *does* generalize is the part the resolved design uses — make every argument absolute, and observe the one thing left that cannot be.
 

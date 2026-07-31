@@ -37,8 +37,8 @@ The `--wave` flag scopes the registered-worktree removal to branches in this spi
 
 **Reading the result: `0/0/0` on `removed`/`skipped`/`errors` is not evidence of "nothing to do."** It is evidence only that `planCleanup` received no registered worktrees for this wave to consider — the harness may have already removed them. Check `branchesDeleted` / `branchHygieneSkipped` / `orphans` / `detached` in the **same** output before reporting a no-op:
 
-- Every field — `removed`, `skipped`, `errors`, `branchesDeleted`, `branchHygieneSkipped`, `orphans.removed`, `orphans.skipped`, `detached.removed`, `detached.skipped` — empty → genuinely nothing to do. Report **"cleanup: nothing to do — no worktrees, no orphaned branches or directories, no detached scratch checkouts."**
-- The worktree triple empty but `branchesDeleted` and/or `orphans.removed` and/or `detached.removed` non-empty → the harness had already removed the worktree(s), and this run's orphan and/or detached sweep is what caught the leftover branches/directories/checkouts. Report this distinctly, e.g. **"cleanup: no worktrees were registered for this wave (already removed) — swept N orphaned branch(es) [list], M orphaned director(ies), and K detached checkout(s)."** This is a normal, non-alarming outcome — the residue was found and cleaned, not silently ignored.
+- Every field — `removed`, `skipped`, `errors`, `branchesDeleted`, `branchHygieneSkipped`, `orphans.removed`, `orphans.skipped`, `orphans.scratch.removed`, `orphans.scratch.skipped`, `detached.removed`, `detached.skipped` — empty → genuinely nothing to do. Report **"cleanup: nothing to do — no worktrees, no orphaned branches or directories, no detached scratch checkouts, no Scribe scratch payloads."**
+- The worktree triple empty but `branchesDeleted` and/or `orphans.removed` and/or `orphans.scratch.removed` and/or `detached.removed` non-empty → the harness had already removed the worktree(s), and this run's orphan, scratch and/or detached sweep is what caught the leftover branches/directories/payloads/checkouts. Report this distinctly, e.g. **"cleanup: no worktrees were registered for this wave (already removed) — swept N orphaned branch(es) [list], M orphaned director(ies), P Scribe scratch payload(s), and K detached checkout(s)."** This is a normal, non-alarming outcome — the residue was found and cleaned, not silently ignored.
 
 **A clean `git worktree list` is not evidence the directories are gone — and `errors` alone is not the full state machine.** Git can **deregister** a worktree from its list while still failing to delete the on-disk directory (`Directory not empty` / `Operation not permitted`), and each of the two ways that happens is its own distinct, separately-actionable JSON field — read them by name, not just by scanning `errors`:
 
@@ -76,6 +76,36 @@ git worktree remove <path>                             # per confirmed-clean lef
 
 That manual loop is retired — `--detached` now reaches the same population through the engine's own safety invariants (dirty / locked / live-branch refusals) rather than a human eyeballing `git worktree list --porcelain` and deciding by hand what looks safe. If a detached leftover still shows up after `worktree-cleanup --orphans --detached` (e.g. it sits outside every declared containment root), that is the exception to investigate — check the run's `detached.skipped` / `detached.errors` first, rather than reaching straight for the manual loop above.
 
+## The Scribe scratch sweep — a repo-internal location that had no lifecycle (issue #355)
+
+**Not a worktree at all, and that is why it went unswept for so long.** Every population above is a worktree that some sweep could not *see*; this one accumulated because **no sweep was ever written for it**. `wave-start`'s Scribe (ADR-0024) writes each already-validated report/verdict payload to a deterministic file under the repo's **`.flotilla/tmp/`** and immediately hands it to the engine's `write-report`/`write-verdict` verb, which persists the real record under `.flotilla/waves/<slug>/reports|verdicts/`. The payload is pure hand-off — residue the instant the verb returns. A repo-wide grep found the path at **four driver sites and two spec sites, and in no cleanup path at all** (not wave-close, not wave-resume, not start-mechanics). The name is deterministic per `(kind, row id, iteration)`, so a Scribe *retry* overwrites — but a *wave* does not: two files per row, every wave, forever.
+
+**It rides `--orphans`, which is exactly why it is reached on every close.** No new flag: `--orphans` is the one thing this phase already mandates unconditionally (see the top of this file), and again after phase 4a's pull. Its result is reported **whole under `orphans.scratch`**, not merged into the orphan-directory numbers — the same not-merged reasoning `detached` carries:
+
+```jsonc
+"orphans": {
+  "removed": [], "skipped": [], "errors": [],
+  "scratch": {
+    "dir": "<abs repo root>/.flotilla/tmp",
+    "present": true,                       // the directory existed and was read
+    "removed": [ { "path": "…/report-<id>-1.json", "scribePayload": true } ],
+    "skipped": [ { "path": "…/operator-notes.md", "scribePayload": false,
+                   "reason": "not-a-scribe-payload" } ],
+    "errors": []
+  }
+}
+```
+
+**Three fields carry the whole reading, and two of them exist to stop a false all-clear:**
+
+- **`scratch` ABSENT entirely** → the sweep **did not look**. It runs only when the call carried a repo root, which the CLI always supplies — so an absent key on a `worktree-cleanup` run means something upstream of this phase is wrong, not that the directory was clean. Do not read it as `0`.
+- **`present: false`** → the sweep looked and the directory does not exist. A legitimate no-op (no wave has dispatched in this checkout), and **distinguishable from an empty sweep**, which is the whole point of carrying the field.
+- **`skipped` with `reason: "not-a-scribe-payload"`** → an entry the sweep **refused**, and it is still on disk. Only a *file* whose basename matches the Scribe's own `<kind>-<row id>-<iteration>.json` shape is ever removed; a differently-named file, a subdirectory of any content, anything a human parked there — reported, never touched. The allowlist is on the **name**, not on the content, because unlike a worktrees root this containment root is a plain repo path a human may legitimately use. A non-empty `skipped` here is worth a glance: it is either deliberate (someone parked something) or a sign the payload naming drifted from the driver.
+
+**The sweep is not the whole answer, and must not be reported as one.** It runs once, at close; a wave is in flight for hours before that, and in a consumer that **tracks** `.flotilla/` (the recommended posture — the spine is the durable WAL, committed for resume) an in-flight payload is untracked litter in the tree. The other half is a `.gitignore` line, scaffolded at setup — see [wave-setup's `.gitignore` scaffold](../../wave-setup/reference/setup-mechanics.md#gitignore-scaffold--the-scribe-scratch-path-issue-355). If a close reports scratch payloads swept in a repo whose `.gitignore` lacks that line, say so: the sweep cleaned up after a gap it does not close.
+
+**`--dry-run` does not preview this population.** The preview prints the orphan-directory *plan*, and the scratch sweep is executed rather than planned at that layer, so a dry run shows no `orphans.scratch` key at all. Read a dry run as silent on scratch, never as "clean" — the real run below is the one that reports it.
+
 ## Common Mistakes
 
 - **Removing a dirty worktree.** A worktree with uncommitted changes is reported and skipped, never removed.
@@ -86,3 +116,5 @@ That manual loop is retired — `--detached` now reaches the same population thr
 - **Treating a worktree sweep as recovery for a session that is ALREADY throwing `E2BIG`.** The sandbox profile is cached per session, so removing the worktrees fixes the population while the running session keeps its oversized deny list — every Bash spawn keeps dying. The sequence is sweep + `git worktree prune` + **restart the harness**; verified live, cleanup alone did not restore the session. (Before the limit is hit, the sweep alone is enough — the restart is the cure for an already-cached profile, not a ritual.)
 - **Passing `--orphans` without `--detached` (or vice versa).** An agent's own `git worktree add --detach` scratch checkout under the worktrees root is registered (so `--orphans` cannot see it) and un-prefixed (so the `agent-`/`wf_` name allowlist skips it) — only `--detached` reaches it, and it still costs a sandbox deny entry until swept. Pass both flags on the SAME call, every time, for the same reason `--orphans` alone must never be skipped as a "conditional follow-up."
 - **Reporting a close as clean while leaving worktree residue for the next dispatch to pay for.** The accumulation that produced the `E2BIG` incident came from earlier runs of the same day plus a prior session; `wave-start`'s step-4a count is where that bill arrives. A between-waves audit belongs to the close, not to the next wave's preflight.
+- **Reading an ABSENT `orphans.scratch` key as "no Scribe payloads".** Absent means the sweep never looked; `present: false` means it looked and there was no directory. Only the second is an all-clear. A `--dry-run` is likewise silent on this population by construction — it previews plans, and the scratch sweep is executed rather than planned.
+- **Treating the scratch sweep as the whole fix for a consumer that tracks `.flotilla/`.** The sweep runs once, at close; the payloads sit in the tree for the whole wave before that. The `.gitignore` line from wave-setup's scaffold is what covers the in-flight window — if a close sweeps payloads in a repo missing that line, report the gap rather than the cleanup.

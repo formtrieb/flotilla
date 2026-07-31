@@ -449,6 +449,35 @@ Exit 0 from each means every check passed / is `not-applicable` / is `advisory`/
 
 Pass `--expect <plugin-version>` on this run too, for an installed-form consumer (a plugin clone): it surfaces a version skew as an advisory `engine-version` check right here, at setup time, rather than leaving it to surface only when `wave-start`'s gate phase STOPs a wave over the identical comparison later (see the Store-preflight section above). It stays advisory here by design — it never turns this exit 0 into a 1.
 
+## `.gitignore` scaffold — the Scribe scratch path (issue #355)
+
+**One line, and it is the only flotilla-owned `.gitignore` entry a consumer needs.** Write it into the consumer repo's `.gitignore` at setup time, beside whatever else that file already carries:
+
+```gitignore
+# flotilla — the Scribe's per-stage hand-off payloads (wave-start, ADR-0024).
+# Transient by construction: the DURABLE record is the sidecar the engine writes
+# under .flotilla/waves/<slug>/reports|verdicts/, and this file is residue the
+# moment that write returns. Ignored so an in-flight wave cannot leak payloads
+# into a commit; SWEPT at close by `worktree-cleanup --orphans` (reported under
+# `orphans.scratch`). Do not ignore `.flotilla/` wholesale — see below.
+.flotilla/tmp/
+```
+
+**Why this line exists at all, given that flotilla's own repo never needed it.** This repo gitignores `.flotilla/` **wholesale** — it is the toolkit, not a consumer, and a stray in-repo spine must never land here. That blanket ignore silently covers the scratch path too, which is exactly why the gap was invisible for several wave-generations: the one repo that dogfoods the pipeline is the one repo the problem cannot appear in.
+
+A consumer is the opposite case. The recommended posture is to **track** `.flotilla/` — the spine is the durable WAL, and committing it is what makes `wave-resume` work from a fresh clone (see the archive's own durability note in [wave-close phase 6](../../wave-close/reference/phase-6-archive.md)). With `.flotilla/` tracked and no narrower rule, every Scribe payload written during a wave is an untracked file sitting in the consumer's tree, in the same directory the consumer runs `git add .flotilla` over to commit the spine. Two files per row, for the whole in-flight duration of the wave.
+
+**Why the ignore line does not make the close-time sweep redundant, and vice versa.** They cover different windows, and neither covers the other's:
+
+| | covers | does not cover |
+|---|---|---|
+| **`.gitignore` line** | the whole **in-flight** window — a payload can never enter a commit, from the moment the Scribe writes it | the files themselves: they accumulate on disk forever, unignored-but-unremoved |
+| **close-time sweep** (`worktree-cleanup --orphans`, reported at `orphans.scratch`) | the **accumulation** — payloads are physically removed once the wave closes | the hours between the write and the close, where the consumer is committing spine updates |
+
+Scaffold both. A consumer that has only the sweep will commit a payload sooner or later; a consumer that has only the ignore line grows the directory without bound.
+
+**Never widen it to `.flotilla/`.** Ignoring the whole directory in a consumer repo is not a stronger version of this rule — it is a different, and wrong, decision: it discards the spine's durability (the point of tracking it) to solve a scratch-file problem one line already solves. If a consumer *does* choose the gitignored posture deliberately, this line is simply redundant there, not harmful.
+
 ## AFK harness config scaffold: env block + permission allowlist (`.claude/settings.json`)
 
 The SKILL.md "Scaffolding the tracked permission allowlist and env block" precondition owns the **judgment** (what must be in the env block and on the allowlist, and why `docker` stays off it); this is the concrete scaffold. Write it to the consumer repo's **tracked** `.claude/settings.json` — the ONLY permission *and* environment source an AFK Worker/Reviewer worktree inherits (a worktree carries tracked files only, so the gitignored `.claude/settings.local.json` never reaches it). This is a separate file from `wave.config.json` and is not validated by any engine verb; it is a harness config the consumer commits.

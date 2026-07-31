@@ -178,6 +178,12 @@ import {
   executeOrphanBranchSweep,
   defaultOrphanBranchSweepOps,
   normalizeDisposableNames,
+  SCRIBE_SCRATCH_RELATIVE_DIR,
+  listScribeScratchEntries,
+  planScribeScratchSweep,
+  sweepScribeScratch,
+  defaultScratchRemover,
+  type ScratchRemover,
   listDetachedScratchpadWorktrees,
   planDetachedScratchpadSweep,
   sweepDetachedScratchpadWorktrees,
@@ -6148,5 +6154,337 @@ describe('the detached-sweep + count-advisory surface is reachable from the pack
     expect(advisory.level).toBe('advisory');
     expect(advisory.threshold).toBe(WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT);
     expect(advisory.message).toContain('E2BIG');
+  });
+});
+
+// ─── 33. The Scribe scratch sweep — a location with no lifecycle (issue #355) ─
+//
+// Every other population in this file is a WORKTREE that some sweep could not
+// SEE. This one accumulated because no sweep was ever written for it: a
+// repo-wide grep found `.flotilla/tmp` at four wave-start driver sites and two
+// spec sites, and in NO cleanup path at all.
+//
+// These tests use REAL directories and REAL files throughout (only the
+// module-wide `execFileSync` stub stays in place, so `listOrphanDirs`'s
+// `git worktree list` call answers empty) — the sweep's whole job is a
+// filesystem outcome, and a fixture that never touched disk would prove the
+// classifier and nothing about the outcome.
+describe('Scribe scratch sweep — listing + classification (issue #355)', () => {
+  const tempRoots: string[] = [];
+
+  function makeRepo(): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'scribe-scratch-')));
+    tempRoots.push(root);
+    return root;
+  }
+
+  /** Create `<root>/.flotilla/tmp` and drop the named entries into it. */
+  function seedScratch(root: string, names: string[]): string {
+    const dir = join(root, '.flotilla', 'tmp');
+    mkdirSync(dir, { recursive: true });
+    for (const name of names) writeFileSync(join(dir, name), '{"ok":true}');
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const root of tempRoots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('an absent scratch directory reads as present:false with no entries — never an error', () => {
+    const root = makeRepo();
+
+    const listing = listScribeScratchEntries(root);
+
+    expect(listing.present).toBe(false);
+    expect(listing.entries).toEqual([]);
+    expect(listing.dir).toBe(join(root, SCRIBE_SCRATCH_RELATIVE_DIR));
+  });
+
+  it('an EMPTY scratch directory reads present:true — "looked and found nothing" is not "did not look"', () => {
+    const root = makeRepo();
+    seedScratch(root, []);
+
+    const listing = listScribeScratchEntries(root);
+
+    expect(listing.present).toBe(true);
+    expect(listing.entries).toEqual([]);
+  });
+
+  it('classifies both Scribe payload kinds as payloads', () => {
+    const root = makeRepo();
+    seedScratch(root, ['report-355-1.json', 'verdict-355-2.json']);
+
+    const listing = listScribeScratchEntries(root);
+
+    expect(listing.entries.map((e) => e.scribePayload)).toEqual([true, true]);
+  });
+
+  it('an opaque row id with dashes and non-numeric segments is still a payload — the id is never parsed', () => {
+    const root = makeRepo();
+    seedScratch(root, ['report-FOR-90-3.json', 'verdict-abc-def-12.json']);
+
+    const listing = listScribeScratchEntries(root);
+
+    expect(listing.entries.every((e) => e.scribePayload)).toBe(true);
+  });
+
+  it('anything NOT matching the payload shape is classified non-payload — a human-parked file is never a payload', () => {
+    const root = makeRepo();
+    const dir = seedScratch(root, [
+      'notes.md',
+      'report-355.json', // no iteration segment
+      'report-355-1.txt', // wrong extension
+      'draft-355-1.json', // an unknown kind
+    ]);
+    mkdirSync(join(dir, 'a-subdir'), { recursive: true });
+    writeFileSync(join(dir, 'a-subdir', 'report-355-1.json'), '{}');
+
+    const listing = listScribeScratchEntries(root);
+
+    expect(listing.entries.every((e) => e.scribePayload === false)).toBe(true);
+    // Never recursive: the payload nested one level down is not even listed.
+    expect(listing.entries.map((e) => e.path)).not.toContain(
+      join(dir, 'a-subdir', 'report-355-1.json'),
+    );
+  });
+
+  it('planScribeScratchSweep selects payloads and skips everything else with a reason', () => {
+    const root = makeRepo();
+    seedScratch(root, ['report-355-1.json', 'notes.md']);
+
+    const plan = planScribeScratchSweep(listScribeScratchEntries(root));
+
+    expect(plan.selected.map((e) => e.path.endsWith('report-355-1.json'))).toEqual([true]);
+    expect(plan.skipped).toHaveLength(1);
+    expect(plan.skipped[0].reason).toBe('not-a-scribe-payload');
+    expect(plan.present).toBe(true);
+    expect(plan.dir).toBe(join(root, SCRIBE_SCRATCH_RELATIVE_DIR));
+  });
+
+  it('honours a scratchDir override', () => {
+    const root = makeRepo();
+    const dir = join(root, 'custom', 'scratch');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'report-355-1.json'), '{}');
+
+    const listing = listScribeScratchEntries(root, { scratchDir: 'custom/scratch' });
+
+    expect(listing.present).toBe(true);
+    expect(listing.entries).toHaveLength(1);
+    expect(listing.entries[0].scribePayload).toBe(true);
+  });
+});
+
+describe('Scribe scratch sweep — removal outcome on real files (issue #355)', () => {
+  const tempRoots: string[] = [];
+
+  function makeRepoWithPayloads(names: string[]): { root: string; dir: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'scribe-scratch-rm-')));
+    tempRoots.push(root);
+    const dir = join(root, '.flotilla', 'tmp');
+    mkdirSync(dir, { recursive: true });
+    for (const name of names) writeFileSync(join(dir, name), '{"ok":true}');
+    return { root, dir };
+  }
+
+  afterEach(() => {
+    for (const root of tempRoots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('sweepScribeScratch physically deletes the payloads and leaves everything else on disk', () => {
+    const { root, dir } = makeRepoWithPayloads([
+      'report-355-1.json',
+      'verdict-355-1.json',
+      'notes.md',
+    ]);
+
+    const result = sweepScribeScratch({ repoRoot: root });
+
+    expect(result.removed.map((e) => e.path).sort()).toEqual(
+      [join(dir, 'report-355-1.json'), join(dir, 'verdict-355-1.json')].sort(),
+    );
+    expect(result.errors).toEqual([]);
+    expect(existsSync(join(dir, 'report-355-1.json'))).toBe(false);
+    expect(existsSync(join(dir, 'verdict-355-1.json'))).toBe(false);
+    // The refusal half, verified on disk rather than only in the report.
+    expect(result.skipped.map((e) => e.reason)).toEqual(['not-a-scribe-payload']);
+    expect(existsSync(join(dir, 'notes.md'))).toBe(true);
+  });
+
+  it('is idempotent — a second sweep removes nothing and reports present:true, no errors', () => {
+    const { root } = makeRepoWithPayloads(['report-355-1.json']);
+
+    sweepScribeScratch({ repoRoot: root });
+    const second = sweepScribeScratch({ repoRoot: root });
+
+    expect(second.present).toBe(true);
+    expect(second.removed).toEqual([]);
+    expect(second.errors).toEqual([]);
+  });
+
+  it('a throwing remover lands the payload in errors, never removed', () => {
+    const { root, dir } = makeRepoWithPayloads(['report-355-1.json']);
+    const remover: ScratchRemover = {
+      remove(): void {
+        throw new Error('sandbox denied the delete');
+      },
+    };
+
+    const result = sweepScribeScratch({ repoRoot: root, remover });
+
+    expect(result.removed).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toMatch(/sandbox denied the delete/);
+    expect(existsSync(join(dir, 'report-355-1.json'))).toBe(true);
+  });
+
+  it('verify-after-write: a file still present after a "successful" remove → errors, not removed', () => {
+    const { root } = makeRepoWithPayloads(['report-355-1.json']);
+    const remover: ScratchRemover = { remove: () => {} }; // reports success, deletes nothing
+
+    const result = sweepScribeScratch({ repoRoot: root, remover });
+
+    expect(result.removed).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toMatch(/still present after removal/);
+  });
+
+  it('defaultScratchRemover is non-recursive — a directory handed to it throws rather than being torn down', () => {
+    const { dir } = makeRepoWithPayloads([]);
+    mkdirSync(join(dir, 'a-subdir'), { recursive: true });
+    writeFileSync(join(dir, 'a-subdir', 'kept.json'), '{}');
+
+    expect(() => defaultScratchRemover().remove(join(dir, 'a-subdir'))).toThrow();
+    expect(existsSync(join(dir, 'a-subdir', 'kept.json'))).toBe(true);
+  });
+});
+
+// ─── 33b. The close path actually REACHES the scratch dir (issue #355) ────────
+//
+// AC1 is an OUTCOME claim, so it is tested as one: a stray payload is left on
+// disk, the close path's own call composition is run, and the cleanup output is
+// read. The composition below is byte-for-byte the one `cli.ts`'s
+// `runWorktreeCleanup` performs for `--orphans` —
+// `executeOrphanSweep(planOrphanSweep(listOrphanDirs(repoRoot, …)), { repoRoot })`
+// — so this pins the reachability of the sweep through the ONE flag the close
+// ceremony passes unconditionally, not merely the sweep function in isolation.
+describe('the --orphans close path reaches the Scribe scratch dir (issue #355)', () => {
+  const tempRoots: string[] = [];
+
+  function makeRepo(): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'scribe-close-path-')));
+    tempRoots.push(root);
+    return root;
+  }
+
+  afterEach(() => {
+    for (const root of tempRoots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a stray payload left before the close is reported and gone after it', () => {
+    const root = makeRepo();
+    const dir = join(root, '.flotilla', 'tmp');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'report-355-1.json'), '{"issue":"355"}');
+    writeFileSync(join(dir, 'verdict-355-1.json'), '{"issue":"355"}');
+
+    // EXACTLY the cli.ts `--orphans` composition.
+    const result = executeOrphanSweep(
+      planOrphanSweep(listOrphanDirs(root, {})),
+      { repoRoot: root },
+    );
+
+    expect(result.scratch).toBeDefined();
+    expect(result.scratch?.present).toBe(true);
+    expect(result.scratch?.dir).toBe(dir);
+    expect(result.scratch?.removed.map((e) => e.path).sort()).toEqual(
+      [join(dir, 'report-355-1.json'), join(dir, 'verdict-355-1.json')].sort(),
+    );
+    expect(result.scratch?.errors).toEqual([]);
+    expect(existsSync(join(dir, 'report-355-1.json'))).toBe(false);
+    expect(existsSync(join(dir, 'verdict-355-1.json'))).toBe(false);
+  });
+
+  it('the scratch sweep runs even when the orphan-DIRECTORY plan is empty — the two are independent', () => {
+    const root = makeRepo();
+    const dir = join(root, '.flotilla', 'tmp');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'report-355-1.json'), '{}');
+
+    const orphanPlan = planOrphanSweep(listOrphanDirs(root, {}));
+    expect(orphanPlan.selected).toEqual([]);
+    expect(orphanPlan.skipped).toEqual([]);
+
+    const result = executeOrphanSweep(orphanPlan, { repoRoot: root });
+
+    expect(result.removed).toEqual([]);
+    expect(result.scratch?.removed).toHaveLength(1);
+  });
+
+  it('a repo where no wave ever dispatched reports present:false — an honest no-op, not silence', () => {
+    const root = makeRepo();
+
+    const result = executeOrphanSweep({ selected: [], skipped: [] }, { repoRoot: root });
+
+    expect(result.scratch?.present).toBe(false);
+    expect(result.scratch?.removed).toEqual([]);
+    expect(result.scratch?.dir).toBe(join(root, SCRIBE_SCRATCH_RELATIVE_DIR));
+  });
+
+  it('NEGATIVE CONTROL — without an explicit repoRoot the sweep does not look at all, and the key is absent', () => {
+    // The safety gate: a file-deleting sweep never guesses its root from
+    // process.cwd(). This is what keeps every pre-existing `executeOrphanSweep`
+    // caller (and this very test file's fixture-only sections) from reaching
+    // the REAL repo's scratch directory.
+    const result = executeOrphanSweep({ selected: [], skipped: [] });
+
+    expect(result.scratch).toBeUndefined();
+    expect('scratch' in result).toBe(false);
+  });
+
+  it('an entry the sweep refuses survives the close path on disk', () => {
+    const root = makeRepo();
+    const dir = join(root, '.flotilla', 'tmp');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'operator-notes.md'), 'do not delete me');
+
+    const result = executeOrphanSweep(
+      planOrphanSweep(listOrphanDirs(root, {})),
+      { repoRoot: root },
+    );
+
+    expect(result.scratch?.removed).toEqual([]);
+    expect(result.scratch?.skipped).toHaveLength(1);
+    expect(result.scratch?.skipped[0].reason).toBe('not-a-scribe-payload');
+    expect(existsSync(join(dir, 'operator-notes.md'))).toBe(true);
+  });
+
+  it('the scratchRemover seam is threaded through the --orphans pass, separate from the orphan-dir remover', () => {
+    const root = makeRepo();
+    const dir = join(root, '.flotilla', 'tmp');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'report-355-1.json'), '{}');
+
+    const scratchRemoveSpy = vi.fn((p: string) => rmSync(p));
+    const orphanRemoveSpy = vi.fn();
+
+    const result = executeOrphanSweep(
+      { selected: [], skipped: [] },
+      {
+        repoRoot: root,
+        remover: { remove: orphanRemoveSpy },
+        scratchRemover: { remove: scratchRemoveSpy },
+      },
+    );
+
+    expect(orphanRemoveSpy).not.toHaveBeenCalled();
+    expect(scratchRemoveSpy).toHaveBeenCalledTimes(1);
+    expect(result.scratch?.removed).toHaveLength(1);
   });
 });
