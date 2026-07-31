@@ -37,13 +37,26 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, mainAsync, runDorById, findRepoRoot } from './cli';
+import {
+  main,
+  mainAsync,
+  runDorById,
+  findRepoRoot,
+  // The router-hosted `spine` op list, imported so the parity guard below can
+  // DERIVE the split from the router itself rather than transcribing it — the
+  // same discipline FOR-11 AC2 applies to spine-cli's `available:` list.
+  ROUTER_HOSTED_SPINE_OPS,
+} from './cli';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import type { CreateInput, IssueStore } from './adapters/issue-store';
 import type { IssueView } from './contract';
 // Imported ONLY to derive the real op vocab from the actual dispatch tables
 // (FOR-11 AC2) — never to duplicate a hand-maintained list in this spec.
 import { runSpine } from './spine-cli';
+// The human-lane token, imported rather than typed: the whole point of issue
+// #323 is that no second copy of `HITL-required` may exist unpinned, and a
+// spec fixture is exactly the kind of second copy that rots quietly.
+import { HUMAN_GATED_WORKER } from './wave-md-rw';
 import { runIssueStore } from './issue-store-cli';
 // Imported to DERIVE the expected router output from the standalone runners
 // themselves (issue #77) — the router-vs-standalone parity assertions below
@@ -3579,6 +3592,275 @@ describe('FOR-11 — top-level usage derives from the real dispatch tables', () 
       // Whatever this op does next (usage-2 on a missing id/flag, or a clean
       // 0/1 against the stub store), it must NEVER be reported as unknown.
       expect(stderrBuf).not.toMatch(new RegExp(`unknown op "${op}"`));
+    }
+  });
+});
+
+// ─── the human lane as `spine` subverbs (issue #323, ADR-0012) ──────────────
+//
+// Two ops over one engine predicate, dispatched by cli.ts's own `spine` case
+// rather than by spine-cli's table. Three separable claims are pinned here:
+//
+//   1. ROUTING — both ops are reachable via `main(['spine', op, …])`, i.e. via
+//      the very case `spine-cli.ts`'s direct-run block forwards to, so the
+//      documented alias spelling reaches them exactly as it reaches spine-cli's
+//      own ops.
+//   2. BEHAVIOUR — the listing always exits 0 on a readable spine (an empty
+//      lane is an answer, not a gate) while the gate is fail-closed in BOTH
+//      directions and must not fire on a parked row (ADR-0022).
+//   3. PARITY — the split between the two dispatch points has exactly one
+//      failure mode, an op handled in both places or in neither, and the guard
+//      at the end of this section derives both sides at runtime to pin it.
+
+/** A spine whose row `11` is human-gated; every row starts `planned`. */
+function writeHumanLaneSpine(rows?: string[]): string {
+  const dir = mkdtempSync(join(tmpdir(), 'cli-human-lane-'));
+  const path = join(dir, 'WAVE.md');
+  writeFileSync(
+    path,
+    [
+      '# Wave 2026-07-31 — human lane',
+      '',
+      '**Status:** in-flight',
+      '',
+      '## Plan-Table',
+      '',
+      '| ID  | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+      '| --- | ----- | ------ | ---- | -------- | -- | ----- | ---- | ------------------ |',
+      ...(rows ?? [
+        '| 10 | Ordinary AFK row | background | mechanical | quick-verify | — | planned | 1 | — |',
+        // Deliberately space-padded well past the column width: the on-disk
+        // shape a renderer produces, and the shape a substring match would miss.
+        `| 11 | Rotate the credential by hand |   ${HUMAN_GATED_WORKER}   | cross-feature-refactor | quick-verify | — | planned | 1 | — |`,
+        '| 12 | Another AFK row | background-heavy | isolated-refactor | quick-verify | — | pr-created | 1 | — |',
+      ]),
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+  return path;
+}
+
+describe('spine human-gated — the human-lane listing (issue #323)', () => {
+  it('lists every human-gated row with its awaiting-human verdict, exit 0', () => {
+    const code = main(['spine', 'human-gated', writeHumanLaneSpine()]);
+
+    expect(code).toBe(0);
+    const out = JSON.parse(stdoutBuf);
+    expect(out.ok).toBe(true);
+    expect(out.humanGatedWorkers).toEqual([HUMAN_GATED_WORKER]);
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0]).toMatchObject({
+      id: '11',
+      worker: HUMAN_GATED_WORKER,
+      state: 'planned',
+      awaitingHuman: true,
+    });
+    expect(out.awaitingHumanIds).toEqual(['11']);
+  });
+
+  it('a wave with NO human lane is exit 0 with an empty listing — an answer, not a gate', () => {
+    // The non-guard rule, at the CLI edge. A caller that treated `rows: []` as
+    // a failure would turn "this wave has no human lane" into a stop, which is
+    // exactly what `humanHeldRowIds`' own doc forbids.
+    const code = main([
+      'spine',
+      'human-gated',
+      writeHumanLaneSpine([
+        '| 10 | Ordinary AFK row | background | mechanical | quick-verify | — | planned | 1 | — |',
+      ]),
+    ]);
+
+    expect(code).toBe(0);
+    const out = JSON.parse(stdoutBuf);
+    expect(out.rows).toEqual([]);
+    expect(out.awaitingHumanIds).toEqual([]);
+  });
+
+  it('reports a RELEASED human-gated row as still in the lane but no longer awaiting', () => {
+    // The state-blind view and the conjunction, side by side in one payload —
+    // the reason both engine readers are exported rather than just the second.
+    const code = main([
+      'spine',
+      'human-gated',
+      writeHumanLaneSpine([
+        `| 11 | Rotate the credential by hand | ${HUMAN_GATED_WORKER} | cross-feature-refactor | quick-verify | — | dispatched | 1 | — |`,
+      ]),
+    ]);
+
+    expect(code).toBe(0);
+    const out = JSON.parse(stdoutBuf);
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0].awaitingHuman).toBe(false);
+    expect(out.awaitingHumanIds).toEqual([]);
+  });
+
+  it('honours --workers (Worker is a config-governed enum, ADR-0007)', () => {
+    const path = writeHumanLaneSpine([
+      '| 30 | gated on a human | needs-a-human | mechanical | quick-verify | — | planned | 1 | — |',
+    ]);
+
+    expect(main(['spine', 'human-gated', path])).toBe(0);
+    expect(JSON.parse(stdoutBuf).rows).toEqual([]);
+
+    stdoutBuf = '';
+    expect(main(['spine', 'human-gated', path, '--workers', 'needs-a-human'])).toBe(0);
+    const out = JSON.parse(stdoutBuf);
+    expect(out.humanGatedWorkers).toEqual(['needs-a-human']);
+    expect(out.awaitingHumanIds).toEqual(['30']);
+  });
+
+  it('exits 1 on an unreadable spine and 2 on a missing path', () => {
+    expect(main(['spine', 'human-gated', join(root, 'no-such-spine.md')])).toBe(1);
+    expect(stderrBuf).toMatch(/error:/);
+
+    stderrBuf = '';
+    expect(main(['spine', 'human-gated', '--workers', 'x'])).toBe(2);
+    expect(stderrBuf).toMatch(/requires a <spine-path>/);
+  });
+});
+
+describe('spine check-awaiting-human — the fail-closed archive gate (issue #323)', () => {
+  it('BLOCKS an archive over a human-gated row with a live claim, naming both exits', () => {
+    const code = main(['spine', 'check-awaiting-human', writeHumanLaneSpine()]);
+
+    expect(code).toBe(1);
+    expect(stdoutBuf).toContain('archive gate BLOCKED');
+    expect(stdoutBuf).toContain('row 11');
+    // The hazard has to be named, not just the count — an operator who reads
+    // only this output must learn WHY it is not skippable.
+    expect(stdoutBuf).toMatch(/LIVE `queued` claim/);
+    // …and both documented exits, or the block is a dead end.
+    expect(stdoutBuf).toMatch(/THE HUMAN ACTS/);
+    expect(stdoutBuf).toMatch(/PARK \+ UNCLAIM/);
+    expect(stdoutBuf).toContain('spine set-row-state');
+    expect(stdoutBuf).toContain('issue-store unclaim');
+  });
+
+  it('CLEARS a wave with no human lane at all', () => {
+    const code = main([
+      'spine',
+      'check-awaiting-human',
+      writeHumanLaneSpine([
+        '| 10 | Ordinary AFK row | background | mechanical | quick-verify | — | pr-created | 1 | — |',
+      ]),
+    ]);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toContain('archive gate CLEAR');
+  });
+
+  it('NEGATIVE CONTROL — a PARKED human-gated row does NOT block (ADR-0022)', () => {
+    // The one false positive that would make this gate worse than nothing.
+    // `parked` is terminal AND claim-releasing (the claim was dropped at park
+    // time), so a parked row is precisely the shape an archive may proceed
+    // past — and it is one of the two exits the block message offers. A gate
+    // that fired on it would refuse to archive a wave that had already taken
+    // the remedy the gate itself prescribed.
+    const code = main([
+      'spine',
+      'check-awaiting-human',
+      writeHumanLaneSpine([
+        `| 11 | Rotate the credential by hand | ${HUMAN_GATED_WORKER} | cross-feature-refactor | quick-verify | — | parked | 1 | — |`,
+      ]),
+    ]);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toContain('archive gate CLEAR');
+    // …and the row is still visibly IN the lane — cleared by its state, never
+    // by having fallen out of the human-gated set.
+    stdoutBuf = '';
+    main([
+      'spine',
+      'human-gated',
+      writeHumanLaneSpine([
+        `| 11 | Rotate the credential by hand | ${HUMAN_GATED_WORKER} | cross-feature-refactor | quick-verify | — | parked | 1 | — |`,
+      ]),
+    ]);
+    expect(JSON.parse(stdoutBuf).rows[0]).toMatchObject({
+      id: '11',
+      state: 'parked',
+      awaitingHuman: false,
+    });
+  });
+
+  it('NEGATIVE CONTROL — a RELEASED (dispatched) human-gated row does NOT block', () => {
+    const code = main([
+      'spine',
+      'check-awaiting-human',
+      writeHumanLaneSpine([
+        `| 11 | Rotate the credential by hand | ${HUMAN_GATED_WORKER} | cross-feature-refactor | quick-verify | — | dispatched | 1 | — |`,
+      ]),
+    ]);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toContain('archive gate CLEAR');
+  });
+
+  it('is fail-closed on an UNREADABLE spine — exit 1, exactly like a held row', () => {
+    // The second direction, and the one a "count the matches" gate gets wrong:
+    // a spine that cannot be read is not "no held rows", it is "unknown", and
+    // an archive gate must treat unknown as blocked. Same stance as
+    // `spine check-disclosures`.
+    const code = main(['spine', 'check-awaiting-human', join(root, 'no-such-spine.md')]);
+
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/error:/);
+    expect(stdoutBuf).not.toContain('CLEAR');
+  });
+
+  it('exits 2 on a missing <spine-path>', () => {
+    expect(main(['spine', 'check-awaiting-human'])).toBe(2);
+    expect(stderrBuf).toMatch(/requires a <spine-path>/);
+  });
+});
+
+describe('the router-hosted `spine` ops stay disjoint from spine-cli\'s table (issue #323)', () => {
+  // The split's ONE failure mode is an op handled in both dispatch points or in
+  // neither, and it is silent both ways: a doubly-handled op would let the two
+  // implementations drift, and an unhandled one would 404 on a spelling the
+  // usage advertises. Both sides are derived at runtime here — the router list
+  // from its own export, spine-cli's from its own `default:` message.
+
+  it('every router-hosted op is UNKNOWN to spine-cli — no op is dispatched twice', () => {
+    for (const op of ROUTER_HOSTED_SPINE_OPS) {
+      stderrBuf = '';
+      const code = runSpine([op, '/some/spine/path.md']);
+      expect(code).toBe(2);
+      expect(stderrBuf).toContain(`unknown op: ${op}`);
+    }
+  });
+
+  it('no op spine-cli reports is intercepted by the router — the split is one-way', () => {
+    runSpine(['__unknown_op__', '/some/spine/path.md']);
+    const spineCliOps = parseAvailableList(stderrBuf);
+    expect(spineCliOps.length).toBeGreaterThan(0);
+    for (const op of spineCliOps) {
+      expect(ROUTER_HOSTED_SPINE_OPS as readonly string[]).not.toContain(op);
+    }
+  });
+
+  it('both router-hosted ops are named in the top-level usage', () => {
+    // FOR-11 AC2's guard proves spine-cli's ops reach the usage line; it is
+    // structurally blind to these two, because they are absent from the table
+    // it derives from. This is the other half of that claim.
+    main([]);
+    for (const op of ROUTER_HOSTED_SPINE_OPS) {
+      expect(stderrBuf).toContain(op);
+    }
+  });
+
+  it('both are reachable through the router case spine-cli.ts forwards to', () => {
+    // `spine-cli.ts`'s direct-run block calls `main(['spine', ...process.argv])`,
+    // so this IS the alias path — a router-hosted op reached this way must not
+    // fall through to spine-cli's `unknown op`.
+    for (const op of ROUTER_HOSTED_SPINE_OPS) {
+      stderrBuf = '';
+      stdoutBuf = '';
+      const code = main(['spine', op, writeHumanLaneSpine()]);
+      expect(stderrBuf).not.toContain('unknown op');
+      // 0 (the listing) or 1 (the gate, blocked by row 11) — never a usage 2.
+      expect([0, 1]).toContain(code);
     }
   });
 });

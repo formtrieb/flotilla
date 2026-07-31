@@ -1260,6 +1260,14 @@ export const HUMAN_GATED_WORKER = 'HITL-required';
  * skills actually ask: a human-gated row that has moved PAST `planned` was
  * released by a human on an earlier pass and is ordinary in-flight work — it
  * must not read as "still awaiting a human".
+ *
+ * `parked` is the corollary's most load-bearing instance (ADR-0022). A parked
+ * row is terminal AND its tracker claim has already been released, so it is
+ * exactly the shape an archive may safely proceed past — and it is past
+ * `planned`, so it drops out of {@link humanHeldRowIds} for free. That is why
+ * the archive-time awaiting-human gate needs no `parked` special case: park is
+ * one of the gate's two documented exits precisely because taking it makes the
+ * row stop matching this state.
  */
 const HELD_ROW_STATE: RowState = 'planned';
 
@@ -1305,6 +1313,16 @@ export function humanGatedRows(
  * An **empty** result is a legitimate answer ("no row is awaiting a human"),
  * not a did-not-run — which is why callers must not put an emptiness guard on
  * it, exactly as they must not guard the intra-wave HELD set.
+ *
+ * **Two passes read this, at opposite ends of a wave.** `wave-start` reads it
+ * to decide what to hold back from the fan-out. `wave-close` phase 6 reads the
+ * SAME set as a fail-closed archive gate (`spine check-awaiting-human`,
+ * `cli.ts`): a non-empty answer at archive time means a row is about to be
+ * filed away while its tracker claim is still live (`queued` — it was never
+ * dispatched and nothing released it), which leaves the issue reading as
+ * claimed to every future `wave-plan` with no live spine to reconcile against.
+ * One predicate, one owner, two readings — see {@link HELD_ROW_STATE} for why
+ * a `parked` row is already excluded and needs no special case.
  */
 export function humanHeldRowIds(
   spine: Spine,

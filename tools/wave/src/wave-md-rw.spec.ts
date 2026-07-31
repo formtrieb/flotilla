@@ -1503,6 +1503,22 @@ describe('human-gated rows — the dispatch-time human lane', () => {
     }
   });
 
+  it('NEGATIVE CONTROL — a PARKED human-gated row is not held (the archive gate\'s second exit, ADR-0022)', () => {
+    // Named on its own rather than left inside the released-states loop above,
+    // because a SECOND reader now depends on this one state specifically:
+    // wave-close phase 6's fail-closed archive gate (`spine check-awaiting-human`)
+    // blocks on this set, and `park + unclaim` is one of the two exits it
+    // offers. `parked` is terminal AND claim-releasing, so a parked row must
+    // stop matching — a gate that still held it would refuse to archive a wave
+    // that had already taken the gate's own prescribed remedy.
+    const spine = readSpine(setRowState(spineOf(MIXED), '11', 'parked'));
+    expect(spine.planTable.find((r) => r.id === '11')?.state).toBe('parked');
+    // still IN the lane (the state-blind view keeps describing it) …
+    expect(humanGatedRows(spine).map((r) => r.id)).toEqual(['11']);
+    // … and cleared BY ITS STATE, never by having left the human-gated set.
+    expect(humanHeldRowIds(spine)).toEqual([]);
+  });
+
   it('reads a heavily space-padded Worker cell (the on-disk shape)', () => {
     const rendered = spineOf(MIXED);
     const padded = rendered.replace(

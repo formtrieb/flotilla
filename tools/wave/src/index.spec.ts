@@ -77,13 +77,26 @@ import {
   WORKTREE_COUNT_ADVISORY_THRESHOLD,
 } from './worktree-cleanup';
 
-// The two surfaces as NAMESPACE OBJECTS, for the enumeration probe. `./index`
-// is the surface under test; `./worktree-cleanup` is the module whose export
-// block this slice edits, and comparing bindings by identity across the two is
-// what makes "which root names does THIS module own?" a runtime question
-// instead of a reading of the barrel's source.
+// The human-lane family as the MODULE FILE defines it (issue #323, ADR-0012).
+// All three are imported, not just the predicate: the constant is what the
+// skills' worker literal is drift-pinned against, and a root that shipped the
+// readers without it would leave an out-of-tree caller re-typing the token.
+// `readSpine`/`renderSpine`/`setRowState` ride along so the ROOT-ONLY story
+// below can build and mutate a real spine without importing the module.
+import {
+  HUMAN_GATED_WORKER,
+  humanGatedRows,
+  humanHeldRowIds,
+} from './wave-md-rw';
+
+// The surfaces as NAMESPACE OBJECTS, for the enumeration probe. `./index` is
+// the surface under test; `./worktree-cleanup` and `./wave-md-rw` are the
+// modules whose export blocks the two enumerated slices edit, and comparing
+// bindings by identity across them is what makes "which root names does THIS
+// module own?" a runtime question instead of a reading of the barrel's source.
 import * as rootNamespace from './index';
 import * as worktreeCleanupNamespace from './worktree-cleanup';
+import * as waveMdRwNamespace from './wave-md-rw';
 
 // ...and the same surface as the PACKAGE ROOT offers it. Aliased so the two can
 // be compared in one file; `package.json`'s `main` is `./src/index.ts`, so this
@@ -123,6 +136,19 @@ import {
   type ExecArgumentMeasurement as ExecArgumentMeasurementFromRoot,
   type CommandLineSizeAdvisory as CommandLineSizeAdvisoryFromRoot,
   type CommandLineSizeAdvisoryOptions as CommandLineSizeAdvisoryOptionsFromRoot,
+  // issue #323 — the human lane (ADR-0012). The spine reader/renderer/mutator
+  // are named here (they were already root-reachable) so the ROOT-ONLY story
+  // below can run the whole hold-decision job without importing wave-md-rw.
+  HUMAN_GATED_WORKER as HUMAN_GATED_WORKER_FROM_ROOT,
+  humanGatedRows as humanGatedRowsFromRoot,
+  humanHeldRowIds as humanHeldRowIdsFromRoot,
+  readSpine as readSpineFromRoot,
+  renderSpine as renderSpineFromRoot,
+  setRowState as setRowStateFromRoot,
+  ROW_STATES as ROW_STATES_FROM_ROOT,
+  type PlanTableRow as PlanTableRowFromRoot,
+  type RowState as RowStateFromRoot,
+  type Spine as SpineFromRoot,
 } from './index';
 
 /** Write a package manifest to a fresh tmp dir and hand back its path. */
@@ -545,6 +571,9 @@ const worktreeCleanupExports = worktreeCleanupNamespace as unknown as Record<
   unknown
 >;
 
+/** …and for the human lane's module (issue #323). */
+const waveMdRwExports = waveMdRwNamespace as unknown as Record<string, unknown>;
+
 /**
  * Which root names does `./worktree-cleanup` OWN? Answered by binding identity,
  * never by name: a root name that merely collided with a worktree-cleanup name
@@ -557,6 +586,17 @@ function rootNamesOwnedByWorktreeCleanup(): string[] {
       (name) =>
         Object.hasOwn(rootExports, name) &&
         rootExports[name] === worktreeCleanupExports[name],
+    )
+    .sort();
+}
+
+/** The same question, asked of `./wave-md-rw` (issue #323). */
+function rootNamesOwnedByWaveMdRw(): string[] {
+  return Object.keys(waveMdRwExports)
+    .filter(
+      (name) =>
+        Object.hasOwn(rootExports, name) &&
+        rootExports[name] === waveMdRwExports[name],
     )
     .sort();
 }
@@ -585,11 +625,38 @@ const WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE = [
   'sweepDetachedScratchpadWorktrees',
 ];
 
-/** The value half of the family this slice adds — sorted, as the probe sorts. */
+/** The value half of the family issue #338 adds — sorted, as the probe sorts. */
 const COMMAND_LINE_FAMILY_ADDED_AT_ROOT = [
   'COMMAND_LINE_ADVISORY_THRESHOLD_BYTES',
   'checkCommandLineSizeAdvisory',
   'measureExecArgumentBytes',
+];
+
+/**
+ * The `wave-md-rw` names the root re-exported BEFORE issue #323, recorded the
+ * same way and for the same reason as the worktree-cleanup baseline above:
+ * `wave-md-rw` exports far more than the barrel re-exports (every targeted
+ * writer and every parser helper), so "one more name slipped into the export
+ * block" is a live way to be wrong here too.
+ */
+const WAVE_MD_RW_NAMES_AT_ROOT_BEFORE = [
+  'ROW_STATES',
+  'branchesByIssueId',
+  'readSpine',
+  'renderSpine',
+  'replaceClosedByBlock',
+  'setRowPrCell',
+  'setRowState',
+  'upsertDispatchLogEntry',
+  'upsertDispatchLogModel',
+  'upsertPrLogRow',
+];
+
+/** The value half of the family issue #323 adds — sorted, as the probe sorts. */
+const HUMAN_LANE_FAMILY_ADDED_AT_ROOT = [
+  'HUMAN_GATED_WORKER',
+  'humanGatedRows',
+  'humanHeldRowIds',
 ];
 
 /**
@@ -604,6 +671,20 @@ const COMMAND_LINE_FAMILY_ADDED_AT_ROOT = [
  * precisely the change nobody would have reviewed.
  */
 const ROOT_RUNTIME_EXPORT_COUNT_BEFORE = 135;
+
+/**
+ * The whole-root total as of the newest recorded slice. Deliberately written as
+ * ARITHMETIC over the per-slice families rather than as a fresh absolute number:
+ * `135` stays anchored to the commit it was measured at, and each later slice
+ * appends its own family's length, so the expression keeps saying WHICH decision
+ * each addition belongs to. Re-typing an absolute total would erase exactly
+ * that, and the next reader would have no way to tell an intended growth from a
+ * stowaway that had already been absorbed into the number.
+ */
+const ROOT_RUNTIME_EXPORT_COUNT_NOW =
+  ROOT_RUNTIME_EXPORT_COUNT_BEFORE +
+  COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length +
+  HUMAN_LANE_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -757,12 +838,169 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
     );
   });
 
-  it('grows the WHOLE root surface by exactly those three names', () => {
-    // The widest net: the assertion above is scoped to one module's bindings, so
-    // it would not see an unrelated export riding along in the same edit. This
-    // one would.
-    expect(Object.keys(rootExports)).toHaveLength(
-      ROOT_RUNTIME_EXPORT_COUNT_BEFORE + COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length,
+});
+
+// ─── the human lane at the root (issue #323, ADR-0012) ───────────────────────
+//
+// A row whose `Worker` is human-gated is real wave work that no agent may pick
+// up until a human acts. The engine owns the token and the predicate; before
+// this slice it owned them PRIVATELY — the three symbols existed, were
+// spec-covered in wave-md-rw.spec.ts, and were reachable from neither the
+// package root nor any CLI verb. The consequence was not "slightly less
+// convenient": the skills reached the same predicate by grepping the Worker
+// cell and carrying the literal `HITL-required` in their own prose, so the
+// engine constant and the skill literal could drift apart with nothing
+// asserting they still agreed. Root-reachability is one half of closing that
+// (the drift pin in skill-schema-drift.spec.ts is the other).
+//
+// The family is exported WHOLE for the same reason it is pinned whole: a root
+// that shipped `humanHeldRowIds` without `HUMAN_GATED_WORKER` would hand a
+// consumer the predicate while making them re-type the token it defaults to —
+// which is the divergence, re-created one layer out.
+
+describe('the human-lane family is reachable from the PACKAGE ROOT (issue #323)', () => {
+  it('re-exports the same bindings, not lookalikes', () => {
+    expect(humanGatedRowsFromRoot).toBe(humanGatedRows);
+    expect(humanHeldRowIdsFromRoot).toBe(humanHeldRowIds);
+    expect(HUMAN_GATED_WORKER_FROM_ROOT).toBe(HUMAN_GATED_WORKER);
+  });
+
+  it('the identity assertion is exactly what a behaviourally-identical WRAPPER fails', () => {
+    // Same non-vacuity demonstration the two blocks above make. `wrapper`
+    // delegates, so every behavioural expectation in this block passes against
+    // it — same ids, same order, same defaulting. Only `toBe` separates them.
+    const wrapper: typeof humanHeldRowIds = (spine, workers) =>
+      humanHeldRowIds(spine, workers);
+
+    const spine = readSpineFromRoot(spineWithHumanLane());
+    expect(wrapper(spine)).toEqual(humanHeldRowIdsFromRoot(spine));
+    expect(wrapper).not.toBe(humanHeldRowIdsFromRoot);
+    expect(humanHeldRowIdsFromRoot).toBe(humanHeldRowIds);
+  });
+
+  it('re-exports the row and state types, so a root-only consumer can annotate them', () => {
+    // Compile-time half — these annotations resolve only if the barrel really
+    // re-exports the types; `tsc --noEmit` is the assertion, and the runtime
+    // expectations keep the values from being dead code.
+    const spine: SpineFromRoot = readSpineFromRoot(spineWithHumanLane());
+    const rows: PlanTableRowFromRoot[] = humanGatedRowsFromRoot(spine);
+    expect(rows.map((r) => r.id)).toEqual(['11']);
+
+    // `PlanTableRow.state` is `RowState | string` (a spine may carry a token
+    // the enum has not learned yet), so a root-only consumer narrowing it needs
+    // BOTH the union and the row type across the barrel.
+    const held: RowStateFromRoot = 'planned';
+    expect(rows[0].state).toBe(held);
+    expect(ROW_STATES_FROM_ROOT).toContain(held);
+  });
+});
+
+/**
+ * A rendered spine carrying one human-gated row among ordinary ones. Built with
+ * ROOT-imported `renderSpine` so the stories below import nothing but the
+ * package root — the point of a pairing spec is that the consumer's whole job
+ * is reachable from there.
+ */
+function spineWithHumanLane(): string {
+  return renderSpineFromRoot(
+    {
+      slug: 'human-lane-at-root',
+      description: 'a wave carrying a human-gated row',
+      coordinator: 'at',
+      model: 'Opus 4.8',
+      created: '2026-07-31',
+      lastUpdated: '2026-07-31',
+    },
+    [
+      { id: '10', title: 'Ordinary AFK row', worker: 'background', risk: 'mechanical' },
+      {
+        id: '11',
+        title: 'Rotate the credential by hand',
+        worker: HUMAN_GATED_WORKER_FROM_ROOT,
+        risk: 'cross-feature-refactor',
+      },
+      { id: '12', title: 'Another AFK row', worker: 'background-heavy', risk: 'isolated-refactor' },
+    ],
+    { issues: [], cells: [] },
+    'all self-content gates pass.',
+  );
+}
+
+describe('a ROOT-ONLY consumer can decide the hold end to end (issue #323)', () => {
+  it('render → read → hold, importing nothing but the package root', () => {
+    const spine = readSpineFromRoot(spineWithHumanLane());
+
+    // The state-BLIND view describes the lane…
+    expect(humanGatedRowsFromRoot(spine).map((r) => r.id)).toEqual(['11']);
+    // …and the CONJUNCTION is the dispatch answer. Both are needed: a caller
+    // with only the first would hold a released row forever.
+    expect(humanHeldRowIdsFromRoot(spine)).toEqual(['11']);
+    // The wave runs AROUND the hold — the siblings are untouched.
+    expect(spine.planTable.map((r) => r.id)).toEqual(['10', '11', '12']);
+  });
+
+  it('carries the released-row corollary across the barrel: past `planned` is not held', () => {
+    // The guarantee that keeps the gate from becoming permanent. A root-only
+    // consumer that inherited a weaker predicate ("human-gated, forever") would
+    // have a wave that can never reach terminal, and nothing else in this file
+    // would notice.
+    const released = setRowStateFromRoot(spineWithHumanLane(), '11', 'dispatched');
+    const spine = readSpineFromRoot(released);
+    expect(humanGatedRowsFromRoot(spine).map((r) => r.id)).toEqual(['11']);
+    expect(humanHeldRowIdsFromRoot(spine)).toEqual([]);
+  });
+
+  it('carries the parked corollary too — the archive gate\'s second exit (ADR-0022)', () => {
+    // `parked` is terminal AND claim-releasing, so a parked row must stop
+    // reading as "awaiting a human". This is the property wave-close phase 6's
+    // fail-closed gate rests on: park is one of its two documented exits
+    // precisely because taking it makes the row drop out of the predicate.
+    const parked = setRowStateFromRoot(spineWithHumanLane(), '11', 'parked');
+    const spine = readSpineFromRoot(parked);
+    expect(spine.planTable.find((r) => r.id === '11')?.state).toBe('parked');
+    expect(humanHeldRowIdsFromRoot(spine)).toEqual([]);
+  });
+
+  it('carries the config-governed vocabulary across the barrel (ADR-0007)', () => {
+    // `Worker` is a consumer-configurable enum, so the root constant is a
+    // DEFAULT. A root-only consumer must be able to substitute its own set —
+    // and to see the default stop matching when it does, or the argument is
+    // decorative.
+    const spine = readSpineFromRoot(spineWithHumanLane());
+    expect(humanHeldRowIdsFromRoot(spine, ['needs-a-human'])).toEqual([]);
+    expect(humanHeldRowIdsFromRoot(spine, [HUMAN_GATED_WORKER_FROM_ROOT])).toEqual(['11']);
+    expect(humanHeldRowIdsFromRoot(spine, [])).toEqual([]);
+  });
+});
+
+describe('the human lane at the root — runtime enumeration (issue #323)', () => {
+  it('adds EXACTLY the human-lane family to the wave-md-rw names at the root', () => {
+    const after = rootNamesOwnedByWaveMdRw();
+
+    // Nothing was dropped…
+    expect(after).toEqual(expect.arrayContaining(WAVE_MD_RW_NAMES_AT_ROOT_BEFORE));
+    // …and what is new is exactly the family, no stowaway.
+    const added = after.filter(
+      (name) => !WAVE_MD_RW_NAMES_AT_ROOT_BEFORE.includes(name),
     );
+    expect(added).toEqual(HUMAN_LANE_FAMILY_ADDED_AT_ROOT);
+
+    expect(after).toEqual(
+      [...WAVE_MD_RW_NAMES_AT_ROOT_BEFORE, ...HUMAN_LANE_FAMILY_ADDED_AT_ROOT].sort(),
+    );
+  });
+});
+
+describe('the WHOLE root surface grows only by recorded decisions', () => {
+  it('carries exactly the recorded per-slice families and nothing else', () => {
+    // The widest net in the file, and the reason it lives in its own block
+    // rather than inside either slice's: the per-module assertions above are
+    // each scoped to ONE module's bindings, so neither would see an unrelated
+    // export riding along in the same edit. This one would.
+    //
+    // A slice that deliberately adds a root export appends its family above and
+    // this arithmetic follows — a failure here means either a stowaway or an
+    // addition nobody recorded, and both are the check working.
+    expect(Object.keys(rootExports)).toHaveLength(ROOT_RUNTIME_EXPORT_COUNT_NOW);
   });
 });
