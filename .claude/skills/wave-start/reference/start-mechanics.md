@@ -279,7 +279,34 @@ Each matching line is a whole Plan-Table row — its first cell is the id and it
 
 **Release is an explicit human "yes, it is done", asked once per pass — and its default is hold.** The unattended case is the one this gate exists for, and in it there is nobody to answer, so the row is held. A gate whose default fires only when a human happens to be watching is not a gate. Nothing durable records the release: the row simply dispatches, moves past `planned`, and stops matching the predicate.
 
+### Release semantics — the standing rule, not a provisional shape
+
+The paragraph above is a **settled decision**, re-confirmed after the gate landed, and it is worth stating as a rule because its cost is real and someone will eventually propose paying it down. The rule has three parts, and they hold together:
+
+1. **Per-pass confirmation.** The release question is asked fresh on every `wave-start` pass over the wave. It is never inherited from an earlier pass.
+2. **HOLD is the unattended default.** No answer means held. This is the whole point: the gate must behave correctly when nobody is watching, which is the condition it exists for.
+3. **No durable release marker.** Nothing is written when a human says yes — no state, no label, no spine field, no sidecar. Release is expressed by the row simply *dispatching*: it moves past `planned` and stops matching the predicate.
+
+**The cost, stated plainly:** an **attended** Coordinator re-answers the same question on every pass over a wave that still holds a human-gated row. On a wave re-entered several times in a day that is a small, repeated tax on the one person who is present.
+
+**Why we pay it anyway.** A durable "released" marker would be a second source of truth about whether a human has acted, and it would be **stale by default** — written once, then read on every later pass, including passes where the world has moved (the credential was rotated back, the sandbox policy changed, the row was re-planned). The gate's whole value is that its answer is *current*. This is the same reasoning the HELD seam already uses one level up: `wave-start` re-derives the intra-wave `resolved` set fresh on every entry rather than recording it, for exactly this reason. Two seams, one rule — and the state the gate reads (`planned`) is already durable, in the spine, which is the WAL authority. Adding a marker would not make anything more durable; it would only make one of the two records able to lie.
+
+**What would change the decision.** Not "it was asked twice today" — that is the cost, already priced in. It would take a measured case where the *per-pass* question produced a **wrong** answer that a durable marker would have prevented: a human who said yes, and whose yes was then lost in a way that cost a wave. Until that exists, per-pass + HOLD + no marker is the rule, and a proposal to add a release marker should be read as a proposal to add a second source of truth.
+
 **Nothing is written for a held row.** No new state, no label, no tracker call — `State` stays `planned`, the `ClaimRung` stays where `wave-create` left it, and step 9 reports the row plainly (with the human action it waits on) rather than flagging it. A held row is ordinary sequencing.
+
+**The held row is also a close-time obligation.** Because nothing is written and the claim is never released, a row still held when the wave reaches close is carrying a **live `queued` claim** into the archive. [wave-close phase 6](../../wave-close/reference/phase-6-archive.md) blocks on exactly that (`spine check-awaiting-human`), with the same two exits — the human acts, or the row is parked and unclaimed. Holding a row is cheap during a wave and is *not* cheap past the end of one.
+
+### Reading the lane through the engine
+
+The grep above is the operator-facing detector, kept raw because step 3b runs before any config resolution. Once a config is in hand — at step 9's report, at close, or any time you want structured output — the same predicate is reachable as a CLI verb, so nothing downstream has to re-implement the conjunction:
+
+```bash
+{{wave-cli}} spine human-gated "$SPINE"        # JSON listing; exit 0 on a readable spine
+{{wave-cli}} spine check-awaiting-human "$SPINE"  # the fail-closed gate; exit != 0 iff a row still holds a live claim
+```
+
+`human-gated` emits `rows[]` (every human-gated row with its `state` and an `awaitingHuman` flag) plus `awaitingHumanIds`. Both verbs take `--workers <a,b>` for a consumer-configured vocabulary and default to the engine's own token. Both read `humanHeldRowIds` — the same engine owner this section's grep is a copy of — so the shell form, the CLI and the archive gate cannot quietly disagree.
 
 ### Why the human lane exists — the measured constraint, not the folk version
 

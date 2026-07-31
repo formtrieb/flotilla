@@ -73,6 +73,46 @@ The Coordinator may **promote** a bundle-default item to its own ticket on judgm
 
 *Considered and set aside:* a second guard where the close flow reads back the filed issue's body before recording `filed:<id>`. The reject-at-create guard above already makes an empty-body bare issue impossible to write in the first place, so a read-back would only re-detect a failure the write path can no longer produce; not worth the extra round trip unless a future gap proves this one insufficient.
 
+## Awaiting-human gate — BEFORE the archive move, beside the disclosure gate (ADR-0012)
+
+**Run this second, every time, after `check-disclosures` and before either Guard below.** Like the disclosure gate it is a mechanical existence check, not a judgment call, and like it you read the **exit code only**:
+
+```bash
+{{wave-cli}} spine check-awaiting-human <wave-file>
+```
+
+Exit `0` → `awaiting-human: 0 of N human-gated rows — archive gate CLEAR`, continue to the Guards below. **Non-zero exit → BLOCKED: do not archive.**
+
+**Why a human-gated row needs its own gate, when the terminality Guard already exists.** The two gates catch different things and the terminality Guard genuinely does not catch this one on its own: an awaiting-human row is `planned`, and `planned` is neither a running state nor a finalised one, so a Coordinator reading "no row is `dispatched`/`reviewing`" can talk itself into archiving. What makes that specifically dangerous is the **claim**, and this is the one property that separates an awaiting-human row from every other non-terminal shape:
+
+> Its tracker claim is **still live** (`queued`). The row was never dispatched, so nothing ever released it.
+
+Archive past it and the issue reads as **claimed** to every future `wave-plan`, with **no live spine left to reconcile against** — the wave that could have released it is in `_archive/`. There is no self-healing path from there; the claim has to be found and dropped by hand. That is why this is fail-closed rather than an advisory, and why the check is structural (shaped like the disclosure gate) rather than a line in the Common Mistakes list. Phase 5 already **names** the hazard when it reconciles; this is where the wave is actually stopped.
+
+**Fail-closed in both directions.** An awaiting-human row blocks the archive, and so does a spine that cannot be read or parsed — unreadable is *unknown*, and an archive gate must treat unknown as blocked. Same stance as `check-disclosures`.
+
+**Two exits, and only these two.** The gate's own output prints both; neither is a default, and the Coordinator picks:
+
+1. **The human acts.** Do the gated work, then let `wave-start` dispatch the row on a later pass. It leaves `planned`, stops matching the gate, and the wave finishes normally. Choose this when the wave is still live and the human action is imminent.
+2. **Park + unclaim** (ADR-0022) — the row leaves this wave for re-planning:
+   ```bash
+   {{wave-cli}} spine set-row-state <wave-file> <id> parked
+   {{wave-cli}} issue-store unclaim <id>
+   ```
+   `parked` is terminal **and** claim-releasing, so the row drops out of the gate *and* out of the terminality Guard's pending set. Choose this when the human action is not going to happen on this wave's clock. The issue comes back in a future wave, drawn fresh from the pool.
+
+Then re-run `check-awaiting-human` and confirm `0 awaiting` before touching the archive move.
+
+**The gate does NOT fire on a parked row, and that is load-bearing** (ADR-0022). A parked row's claim was already released at park time, so it is precisely the shape an archive may proceed past. A gate that still blocked on it would refuse to archive a wave that had already taken the gate's own prescribed remedy — exit 2 would become a trap instead of an exit. The engine gets this for free rather than by special case: the predicate is *human-gated **∧** still `planned`* (`humanHeldRowIds`, `tools/wave/src/wave-md-rw.ts`), and parking moves the row off `planned`. A **released** human-gated row — one a human acted on, which then dispatched on an earlier pass — drops out for exactly the same reason.
+
+**Listing without gating.** To see the wave's human lane without branching on it (step 9's report, a mid-wave look), use the sibling listing verb, which emits JSON and always exits `0` on a readable spine:
+
+```bash
+{{wave-cli}} spine human-gated <wave-file>
+```
+
+Its `rows[]` carries every human-gated row with its `state` and an `awaitingHuman` flag; `awaitingHumanIds` is the gate's own set. An **empty** lane is a legitimate answer, not a failure — do not put an emptiness guard on it.
+
 **Guard (terminal-only):** archive only when every row is finalised (no row `dispatched`/`reviewing`/etc.). If any row is still pending → do NOT archive; print `wave not yet terminal (skipped)`.
 
 **Guard (idempotent):** `<wave-file>` already under `.flotilla/waves/_archive/` → print `already archived (no-op)`.
@@ -117,6 +157,8 @@ After archiving, print a close summary: wave slug, **which archive mode ran** (`
 
 - **Archiving over an open disclosure.** The gate (`spine check-disclosures`) demands **that** a disposition exists for every disclosed entry — it never judges its quality; `dropped:<reason>` passes exactly like `resolved-in-slice` does. Do not hand-wave past a non-zero exit, do not hand-edit the spine's `## Disclosures` table to make it read clear, and do not skip the re-check after dispositioning — disposition every open entry through `spine set-disposition`, then re-run `check-disclosures` and confirm `0 open` before touching the archive move.
 - **Archiving before terminal.** The terminality gate (all rows `pr-created`/`approved`/`failed`/`abandoned`/`parked`) must hold. A row still `dispatched`/`reviewing` means the wave isn't done.
+- **Archiving past an awaiting-human row and stranding its live claim.** This is *not* covered by the terminality Guard: the row sits at `planned`, which is neither running nor finalised, so "nothing is `dispatched`" reads as safe when it is not. Its `queued` claim was never released (nothing ever dispatched it), and once the spine is in `_archive/` no future `wave-plan` has anything to reconcile the claim against — it has to be found and dropped by hand. Run `spine check-awaiting-human` and take one of the two exits it prints (the human acts, or park + unclaim); do not hand-wave past a non-zero exit, and do not hand-edit the spine's `State` cell to make it read clear.
+- **Treating a `parked` row as an awaiting-human blocker.** It is not one, and the gate deliberately does not fire on it (ADR-0022): parking releases the tracker claim, which is the whole hazard. Blocking on a parked row would refuse to archive a wave that had already taken the gate's own prescribed exit.
 - **Archiving to `done/`.** flotilla archives to `_archive/`; there is no `done/` close ceremony.
 - **Assuming `.flotilla/` is (or isn't) git-tracked and always running `git mv`.** A gitignored/untracked spine makes `git mv` fail outright (P-11 — the first live wave hit this and hand-typed a plain `mv` as a manual workaround). Detect the actual tracked status of the spine file for *this* archive, every time — do not assume from the consumer type, and do not assume from what the previous wave's archive did.
 - **Running the archive before the needs-attention phase.** Flag stuck rows first; archive last.

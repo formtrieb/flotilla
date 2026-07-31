@@ -36,6 +36,7 @@ import { describe, expect, it } from 'vitest';
 import { WORKER_REPORT_JSON_SCHEMA } from './worker-report-schema';
 import { REVIEWER_VERDICT_JSON_SCHEMA } from './reviewer-verdict-schema';
 import { WORKTREE_COUNT_ADVISORY_THRESHOLD } from './worktree-cleanup';
+import { HUMAN_GATED_WORKER } from './wave-md-rw';
 
 const SKILL_MD = join(
   __dirname,
@@ -55,6 +56,20 @@ const START_MECHANICS_MD = join(
 const WAVE_START_SKILL_MD = join(
   __dirname,
   '../../../.claude/skills/wave-start/SKILL.md',
+);
+
+// The wave-create half of the human lane (issue #323). A row is CLASSIFIED
+// human-gated at create time and HELD at start time, so the token is written
+// out on both sides of the wave and both sides need pinning — a pin that
+// covered only wave-start would leave the classification prose free to drift.
+const WAVE_CREATE_SKILL_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-create/SKILL.md',
+);
+
+const CREATE_MECHANICS_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-create/reference/create-mechanics.md',
 );
 
 const DRIVER_WORKER_REPORT_ANCHOR =
@@ -637,83 +652,95 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
   });
 });
 
-describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FIELDS assertion (FOR-139)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
-
-  /**
-   * Finds `openCh` at or after `fromIdx` and walks bracket depth to the
-   * matching `closeCh`, returning the balanced substring (inclusive of both
-   * delimiters). Shares the brace-walking idea `extractInlinedSchema` above
-   * uses for object literals, generalized to any single delimiter pair so it
-   * can also pull a `[...]` array literal or a `{...}` function body.
-   */
-  function extractBalanced(
-    md: string,
-    fromIdx: number,
-    openCh: string,
-    closeCh: string,
-  ): string {
-    const openIdx = md.indexOf(openCh, fromIdx);
-    if (openIdx < 0) {
-      throw new Error(`no "${openCh}" found at/after index ${fromIdx} in workflow-driver.md`);
-    }
-    let depth = 0;
-    for (let i = openIdx; i < md.length; i++) {
-      const ch = md[i];
-      if (ch === openCh) depth++;
-      else if (ch === closeCh) {
-        depth--;
-        if (depth === 0) return md.slice(openIdx, i + 1);
-      }
-    }
-    throw new Error(`unbalanced ${openCh}/${closeCh} starting at index ${openIdx} in workflow-driver.md`);
+/**
+ * Finds `openCh` at or after `fromIdx` and walks bracket depth to the
+ * matching `closeCh`, returning the balanced substring (inclusive of both
+ * delimiters). Shares the brace-walking idea `extractInlinedSchema` above
+ * uses for object literals, generalized to any single delimiter pair so it
+ * can also pull a `[...]` array literal or a `{...}` function body.
+ *
+ * Hoisted to module scope (issue #323) because a SECOND compose-time assertion
+ * in the same file is now extracted the same way — `assertNotHumanGated`, the
+ * human-gate backstop that sits directly beside `assertRequiredRowFields` in
+ * the driver script. Two extractors walking braces slightly differently is
+ * precisely the kind of near-duplicate that rots one copy silently.
+ */
+function extractBalanced(
+  md: string,
+  fromIdx: number,
+  openCh: string,
+  closeCh: string,
+): string {
+  const openIdx = md.indexOf(openCh, fromIdx);
+  if (openIdx < 0) {
+    throw new Error(`no "${openCh}" found at/after index ${fromIdx} in workflow-driver.md`);
   }
-
-  /**
-   * Loads the CURRENT compose-time assertion (REQUIRED_ROW_FIELDS,
-   * isMissingField, assertRequiredRowFields) straight out of the shipped
-   * workflow-driver.md source, the same eval-the-literal approach the
-   * schema-drift tests above use for the `*_SCHEMA` literals — the driver has
-   * no importable module (it is pasted into a Workflow `script` sandbox with
-   * no filesystem/import). A rename or reshape of any of the three
-   * declarations fails this extraction loudly rather than silently testing a
-   * stale copy hard-coded into this spec.
-   */
-  function loadAssertionModule(md: string): {
-    REQUIRED_ROW_FIELDS: string[];
-    isMissingField: (value: unknown) => boolean;
-    assertRequiredRowFields: (issue: Record<string, unknown>) => void;
-  } {
-    const constNeedle = 'const REQUIRED_ROW_FIELDS = ';
-    const constIdx = md.indexOf(constNeedle);
-    if (constIdx < 0) {
-      throw new Error('const REQUIRED_ROW_FIELDS = [...] not found in workflow-driver.md');
+  let depth = 0;
+  for (let i = openIdx; i < md.length; i++) {
+    const ch = md[i];
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
+      depth--;
+      if (depth === 0) return md.slice(openIdx, i + 1);
     }
-    const constSrc = extractBalanced(md, constIdx + constNeedle.length, '[', ']');
+  }
+  throw new Error(`unbalanced ${openCh}/${closeCh} starting at index ${openIdx} in workflow-driver.md`);
+}
 
-    const missingNeedle = 'function isMissingField(value) ';
-    const missingIdx = md.indexOf(missingNeedle, constIdx);
-    if (missingIdx < 0) {
-      throw new Error('function isMissingField(value) {...} not found in workflow-driver.md');
-    }
-    const missingSrc = extractBalanced(md, missingIdx + missingNeedle.length, '{', '}');
+/**
+ * Loads the CURRENT compose-time assertion (REQUIRED_ROW_FIELDS,
+ * isMissingField, assertRequiredRowFields) straight out of the shipped
+ * workflow-driver.md source, the same eval-the-literal approach the
+ * schema-drift tests above use for the `*_SCHEMA` literals — the driver has
+ * no importable module (it is pasted into a Workflow `script` sandbox with
+ * no filesystem/import). A rename or reshape of any of the three
+ * declarations fails this extraction loudly rather than silently testing a
+ * stale copy hard-coded into this spec.
+ *
+ * Hoisted to module scope alongside `extractBalanced` (issue #323): the
+ * human-gate block at the foot of this file needs this SIBLING assertion to
+ * state its own non-redundancy — the negative control there is precisely
+ * "a fully-populated human-gated row passes `assertRequiredRowFields`", and it
+ * has to run the real one to say so.
+ */
+function loadAssertionModule(md: string): {
+  REQUIRED_ROW_FIELDS: string[];
+  isMissingField: (value: unknown) => boolean;
+  assertRequiredRowFields: (issue: Record<string, unknown>) => void;
+} {
+  const constNeedle = 'const REQUIRED_ROW_FIELDS = ';
+  const constIdx = md.indexOf(constNeedle);
+  if (constIdx < 0) {
+    throw new Error('const REQUIRED_ROW_FIELDS = [...] not found in workflow-driver.md');
+  }
+  const constSrc = extractBalanced(md, constIdx + constNeedle.length, '[', ']');
 
-    const assertNeedle = 'function assertRequiredRowFields(issue) ';
-    const assertIdx = md.indexOf(assertNeedle, missingIdx);
-    if (assertIdx < 0) {
-      throw new Error('function assertRequiredRowFields(issue) {...} not found in workflow-driver.md');
-    }
-    const assertSrc = extractBalanced(md, assertIdx + assertNeedle.length, '{', '}');
+  const missingNeedle = 'function isMissingField(value) ';
+  const missingIdx = md.indexOf(missingNeedle, constIdx);
+  if (missingIdx < 0) {
+    throw new Error('function isMissingField(value) {...} not found in workflow-driver.md');
+  }
+  const missingSrc = extractBalanced(md, missingIdx + missingNeedle.length, '{', '}');
 
-    const src = `
+  const assertNeedle = 'function assertRequiredRowFields(issue) ';
+  const assertIdx = md.indexOf(assertNeedle, missingIdx);
+  if (assertIdx < 0) {
+    throw new Error('function assertRequiredRowFields(issue) {...} not found in workflow-driver.md');
+  }
+  const assertSrc = extractBalanced(md, assertIdx + assertNeedle.length, '{', '}');
+
+  const src = `
       const REQUIRED_ROW_FIELDS = ${constSrc};
       function isMissingField(value) ${missingSrc}
       function assertRequiredRowFields(issue) ${assertSrc}
       return { REQUIRED_ROW_FIELDS, isMissingField, assertRequiredRowFields };
     `;
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    return Function(src)();
-  }
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  return Function(src)();
+}
+
+describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FIELDS assertion (FOR-139)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
 
   /** A row with every REQUIRED_ROW_FIELDS entry present and valid. */
   const VALID_ROW: Record<string, unknown> = {
@@ -1088,5 +1115,394 @@ describe('skill-schema-drift — the worktree-count threshold literal pins WORKT
       12, 12,
     ]);
     expect(thresholdComparisons('#   >12 → advisory; <=12 → silent\n')).toEqual([12, 12]);
+  });
+});
+
+// ─── the human-gated Worker literal is pinned to HUMAN_GATED_WORKER ──────────
+//
+// Third class of pin in this file, after the schema objects and the threshold
+// number: a STRING TOKEN. The engine owns `HUMAN_GATED_WORKER`
+// (tools/wave/src/wave-md-rw.ts) and its `humanHeldRowIds` owns the predicate;
+// the skills reach that same predicate by grepping the Plan-Table `Worker` cell
+// and therefore carry the literal `HITL-required` in their own prose, code
+// blocks and the driver script. A skill cannot `import` a TS const, so before
+// this pin nothing coupled the two: re-spelling the constant would leave five
+// documents instructing an operator to hold on a token the engine no longer
+// recognises — and the failure mode is the worst available, because a grep for
+// a token nothing matches reports "no human-gated rows" and the wave dispatches
+// straight past the gate.
+//
+// ── Why a CENSUS and not a pattern ───────────────────────────────────────────
+//
+// The threshold pin above could key on a comparison operator (`> 12`), which
+// gave it a discriminator independent of the number itself. A bare token has no
+// such syntax around it, and the obvious substitutes were MEASURED and rejected
+// in this slice rather than assumed:
+//
+//   - A shape-derived regex (the constant's own segment lengths, i.e.
+//     `\b\w{4}[-_]\w{8}\b`) was run against the shipped skills tree and matched
+//     70+ unrelated tokens — `file-conflict`, `wave-reviewer`, `hand-composed`,
+//     `with-concerns`. A pin that noisy is a pin that gets deleted.
+//   - A "contains requir/hitl" net fails from the other side: `public-api-approval-required`,
+//     `require_capture` and `REQUIRED_ROW_FIELDS` are all live, legitimate
+//     tokens in these very files.
+//
+// So the pin counts EXACT occurrences of the engine constant per document, and
+// records the counts. That is the same stance `index.spec.ts` takes for the root
+// export surface, and it catches both directions:
+//
+//   - ENGINE MOVES, docs do not → every count collapses to 0 and every document
+//     fails. This is the direction that matters; the engine is the authority.
+//   - A DOC MOVES, engine does not → that document's count drops and it fails,
+//     whatever the drifted spelling is — a shape-BLIND check, which is exactly
+//     the property the two rejected patterns could not offer.
+//   - A doc grows a NEW mention → the count rises and the pin fails. That is the
+//     check working, not a false positive: a sixth place carrying the token is a
+//     decision someone should have typed a number for.
+//
+// The two EXECUTABLE copies get an exact structural pin on top of the census —
+// the padded-cell grep one-liner and the driver's `HUMAN_GATED_WORKERS` array
+// are extracted by their surrounding syntax and compared token-for-token, so
+// they cannot drift even within an unchanged count.
+
+/**
+ * Every document that writes the human-gated Worker literal out, with how many
+ * times it does so. A wrong number here fails loudly and names the file; see the
+ * block comment above for why the count is the pin.
+ */
+const HUMAN_GATE_LITERAL_CENSUS: ReadonlyArray<{
+  label: string;
+  path: string;
+  occurrences: number;
+}> = [
+  { label: 'wave-start/SKILL.md', path: WAVE_START_SKILL_MD, occurrences: 4 },
+  { label: 'wave-start/reference/start-mechanics.md', path: START_MECHANICS_MD, occurrences: 5 },
+  { label: 'wave-start/reference/workflow-driver.md', path: WORKFLOW_DRIVER_MD, occurrences: 3 },
+  { label: 'wave-create/SKILL.md', path: WAVE_CREATE_SKILL_MD, occurrences: 3 },
+  { label: 'wave-create/reference/create-mechanics.md', path: CREATE_MECHANICS_MD, occurrences: 2 },
+];
+
+/** How many times `token` occurs in `md` (plain substring, non-overlapping). */
+function countOccurrences(md: string, token: string): number {
+  if (token.length === 0) throw new Error('countOccurrences: empty token');
+  let n = 0;
+  let from = 0;
+  for (;;) {
+    const at = md.indexOf(token, from);
+    if (at < 0) return n;
+    n += 1;
+    from = at + token.length;
+  }
+}
+
+/**
+ * Every token written into a PADDED PLAN-TABLE CELL grep pattern, i.e. the
+ * operator-facing detector `grep -E '\|[[:space:]]*<token>[[:space:]]*\|'`.
+ * Keyed entirely on the surrounding POSIX bracket-expression syntax, never on
+ * the token's own spelling — a pin that searched for the engine's current value
+ * could only ever find agreement with itself.
+ */
+function paddedCellGrepTokens(md: string): string[] {
+  return [
+    ...md.matchAll(/\\\|\[\[:space:\]\]\*(.+?)\[\[:space:\]\]\*\\\|/g),
+  ].map((m) => m[1]);
+}
+
+/**
+ * Load the driver's compose-time human gate (`HUMAN_GATED_WORKERS` +
+ * `assertNotHumanGated`) straight out of the shipped workflow-driver.md — the
+ * same eval-the-source approach {@link loadAssertionModule} uses for its sibling
+ * assertion, and for the same reason: the driver is pasted into a Workflow
+ * `script` sandbox with no filesystem and no imports, so there is no module to
+ * require. A rename or reshape of either declaration fails this extraction
+ * loudly rather than silently testing a stale copy hard-coded into this spec.
+ */
+function loadHumanGateModule(md: string): {
+  HUMAN_GATED_WORKERS: string[];
+  assertNotHumanGated: (issue: Record<string, unknown>) => void;
+} {
+  const constNeedle = 'const HUMAN_GATED_WORKERS = ';
+  const constIdx = md.indexOf(constNeedle);
+  if (constIdx < 0) {
+    throw new Error('const HUMAN_GATED_WORKERS = [...] not found in workflow-driver.md');
+  }
+  const constSrc = extractBalanced(md, constIdx + constNeedle.length, '[', ']');
+
+  const assertNeedle = 'function assertNotHumanGated(issue) ';
+  const assertIdx = md.indexOf(assertNeedle, constIdx);
+  if (assertIdx < 0) {
+    throw new Error('function assertNotHumanGated(issue) {...} not found in workflow-driver.md');
+  }
+  const assertSrc = extractBalanced(md, assertIdx + assertNeedle.length, '{', '}');
+
+  const src = `
+    const HUMAN_GATED_WORKERS = ${constSrc};
+    function assertNotHumanGated(issue) ${assertSrc}
+    return { HUMAN_GATED_WORKERS, assertNotHumanGated };
+  `;
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  return Function(src)();
+}
+
+describe("skill-schema-drift — the skills' human-gated Worker literal pins HUMAN_GATED_WORKER", () => {
+  it.each(HUMAN_GATE_LITERAL_CENSUS.map((d) => [d.label, d] as const))(
+    '%s carries exactly the recorded number of engine-constant occurrences',
+    (_label, doc) => {
+      const md = readFileSync(doc.path, 'utf-8');
+      const found = countOccurrences(md, HUMAN_GATED_WORKER);
+      // Non-vacuity first: a census entry that dropped to zero must read as a
+      // drift, never as "this file was simply not about the gate after all".
+      expect(found).toBeGreaterThan(0);
+      expect(found).toBe(doc.occurrences);
+    },
+  );
+
+  it.each(HUMAN_GATE_LITERAL_CENSUS.map((d) => [d.label, d] as const))(
+    '%s cites the engine constant by NAME as the authority',
+    (_label, doc) => {
+      // The literal alone would leave a reader with a magic string and nowhere
+      // to look. Naming the constant is what makes the copy legible AS a copy —
+      // and it is what tells the next editor which side is authoritative.
+      const md = readFileSync(doc.path, 'utf-8');
+      expect(md).toContain('HUMAN_GATED_WORKER');
+    },
+  );
+
+  it('NEGATIVE CONTROL — a single drifted mention in any document is caught', () => {
+    // The realistic shape of this defect is a PARTIAL edit: one sentence
+    // re-spelled, the others left alone. Drift exactly one occurrence per
+    // document and require every document to notice.
+    for (const doc of HUMAN_GATE_LITERAL_CENSUS) {
+      const md = readFileSync(doc.path, 'utf-8');
+      const drifted = md.replace(HUMAN_GATED_WORKER, 'HITL_required');
+      expect(drifted).not.toEqual(md); // the replace actually matched
+      expect(countOccurrences(drifted, HUMAN_GATED_WORKER)).toBe(doc.occurrences - 1);
+      expect(countOccurrences(drifted, HUMAN_GATED_WORKER)).not.toBe(doc.occurrences);
+    }
+  });
+
+  it('NEGATIVE CONTROL — an engine-side rename alone is caught (the other direction)', () => {
+    // The likelier real-world order, and the dangerous one: the constant is
+    // re-spelled, the docs are not. Every document must then read as ZERO
+    // occurrences of the new value — i.e. every document fails, rather than the
+    // gate quietly grepping for a token no spine will ever carry.
+    const renamed = 'needs-a-human';
+    expect(renamed).not.toBe(HUMAN_GATED_WORKER);
+    for (const doc of HUMAN_GATE_LITERAL_CENSUS) {
+      const md = readFileSync(doc.path, 'utf-8');
+      expect(countOccurrences(md, renamed)).toBe(0);
+      expect(countOccurrences(md, renamed)).not.toBe(doc.occurrences);
+    }
+  });
+
+  it('NEGATIVE CONTROL — the counter itself is not vacuous', () => {
+    expect(countOccurrences('a-b a-b a-b', 'a-b')).toBe(3);
+    expect(countOccurrences('nothing here', 'a-b')).toBe(0);
+    expect(() => countOccurrences('x', '')).toThrow(/empty token/);
+  });
+});
+
+/**
+ * The two regions of start-mechanics.md that carry the WORKER-cell detector, by
+ * stable anchors — the step-3b shell block and its prose section.
+ *
+ * Scoping matters here and the unscoped version was measured wrong before it was
+ * fixed: the padded-cell grep shape is a house idiom, and step 2's in-flight
+ * detector uses the identical syntax over the STATE cell
+ * (`\|[[:space:]]*(dispatched|re-dispatched)[[:space:]]*\|`). A whole-file
+ * extraction therefore pulled a state alternation into a worker-token pin. The
+ * regions below are the two places the WORKER axis is detected, and nowhere else.
+ */
+const HUMAN_GATE_GREP_REGIONS: ReadonlyArray<{
+  label: string;
+  start: string;
+  end: string;
+}> = [
+  {
+    label: 'start-mechanics.md step-3b shell block',
+    start: '# 3b. The HUMAN gate',
+    end: '# 4. Host auth-preflight',
+  },
+  {
+    label: 'start-mechanics.md human-gate section',
+    start: '## The human gate (step 3b)',
+    end: '## The worktree-count advisory (step 4a)',
+  },
+];
+
+describe('skill-schema-drift — the padded-cell grep detector pins HUMAN_GATED_WORKER', () => {
+  const mechanicsMd = readFileSync(START_MECHANICS_MD, 'utf-8');
+
+  it.each(HUMAN_GATE_GREP_REGIONS.map((r) => [r.label, r] as const))(
+    'every token in the padded Worker-cell grep in %s equals the engine constant',
+    (_label, region) => {
+      const slice = regionBetween(mechanicsMd, region.label, region.start, region.end);
+      const tokens = paddedCellGrepTokens(slice);
+      // Non-vacuity: the detector is the operator's copy of the predicate and it
+      // must actually be present. An extractor that quietly found nothing would
+      // pass the equality below forever — which is exactly what a doc
+      // restructure that moved the grep out of this region would produce.
+      expect(tokens.length).toBeGreaterThan(0);
+      expect(new Set(tokens)).toEqual(new Set([HUMAN_GATED_WORKER]));
+    },
+  );
+
+  it('NEGATIVE CONTROL — a drifted token inside a grep pattern is caught', () => {
+    for (const region of HUMAN_GATE_GREP_REGIONS) {
+      const slice = regionBetween(mechanicsMd, region.label, region.start, region.end);
+      const regressed = slice.replace(
+        `[[:space:]]*${HUMAN_GATED_WORKER}[[:space:]]*`,
+        '[[:space:]]*HITL_required[[:space:]]*',
+      );
+      expect(regressed).not.toEqual(slice); // the replace actually matched
+      const tokens = paddedCellGrepTokens(regressed);
+      expect(tokens).toContain('HITL_required');
+      expect(new Set(tokens)).not.toEqual(new Set([HUMAN_GATED_WORKER]));
+    }
+  });
+
+  it('NEGATIVE CONTROL — a re-titled or emptied region fails loud instead of passing vacuously', () => {
+    expect(() =>
+      regionBetween('# nothing\n', 'fixture', '# 3b. The HUMAN gate', '# 4.'),
+    ).toThrow(/start anchor missing/);
+    expect(() =>
+      regionBetween('# 3b. The HUMAN gate\nbody\n', 'fixture', '# 3b. The HUMAN gate', '# 4.'),
+    ).toThrow(/end anchor missing/);
+  });
+
+  it('the extractor reads the token by its SURROUNDINGS, not by its spelling', () => {
+    // Proves the discriminator is independent of the constant's current value —
+    // the property that lets this pin see a drift at all.
+    expect(
+      paddedCellGrepTokens(
+        "grep -E '\\|[[:space:]]*anything-at-all[[:space:]]*\\|'\n",
+      ),
+    ).toEqual(['anything-at-all']);
+    expect(paddedCellGrepTokens('no grep here\n')).toEqual([]);
+  });
+
+  it("the step-2 STATE detector is deliberately OUT of scope — it is a different axis", () => {
+    // Guards the scoping decision itself, so a later widening of the regions
+    // re-breaks this test rather than silently re-importing the state
+    // alternation into a worker-token pin.
+    const stateRegion = regionBetween(
+      mechanicsMd,
+      'start-mechanics.md in-flight detector',
+      '## The in-flight row detector (step 2, verified)',
+      '## The human gate (step 3b)',
+    );
+    const stateTokens = paddedCellGrepTokens(stateRegion);
+    expect(stateTokens.length).toBeGreaterThan(0);
+    expect(stateTokens).not.toContain(HUMAN_GATED_WORKER);
+    expect(stateTokens.join(' ')).toMatch(/dispatched/);
+  });
+});
+
+// ─── the driver's compose-time human gate is pinned by extraction ────────────
+//
+// `assertNotHumanGated` is the structural backstop for start-mechanics step 3b:
+// a human-gated row that reaches `agent()` has no failure of its own to hit —
+// every field interpolates, the worktree checks out, the Worker runs to
+// completion against a blocker an agent cannot clear by construction, and the
+// wave spends a full agent budget on a report that reads ordinary.
+//
+// Its sibling `assertRequiredRowFields` has been pinned by extraction since
+// FOR-139. This one was not: it was falsified only by a one-off scratch script
+// in its landing dispatch, so nothing committed kept it honest. Same extraction,
+// same file, same reason — the driver has no importable module, so the shipped
+// markdown IS the source of truth and this spec runs it.
+
+describe('skill-schema-drift — workflow-driver.md compose-time human gate (issue #323)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  it("the driver's HUMAN_GATED_WORKERS array pins the engine constant", () => {
+    // The compose-time-filled copy of the token, extracted from the shipped
+    // script rather than transcribed. This is the strongest of the three literal
+    // pins: an exact array comparison against the engine value.
+    const { HUMAN_GATED_WORKERS } = loadHumanGateModule(driverMd);
+    expect(HUMAN_GATED_WORKERS).toEqual([HUMAN_GATED_WORKER]);
+  });
+
+  it('a human-gated row THROWS, naming both the row id and the offending worker', () => {
+    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    const row = { id: '11', worker: HUMAN_GATED_WORKER };
+    expect(() => assertNotHumanGated(row)).toThrow(/11/);
+    expect(() => assertNotHumanGated(row)).toThrow(new RegExp(HUMAN_GATED_WORKER));
+    // …and says what to DO, or the throw is a puzzle rather than a backstop.
+    expect(() => assertNotHumanGated(row)).toThrow(/remove it from ISSUES/);
+  });
+
+  it('an ordinary AFK row passes without throwing', () => {
+    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    expect(() => assertNotHumanGated({ id: '42', worker: 'background' })).not.toThrow();
+    expect(() => assertNotHumanGated({ id: '43', worker: 'background-heavy' })).not.toThrow();
+    expect(() => assertNotHumanGated({ id: '44', worker: 'foreground' })).not.toThrow();
+  });
+
+  it("a MISSING worker is not this predicate's business (the documented split)", () => {
+    // The driver documents these as deliberately separate predicates:
+    // REQUIRED_ROW_FIELDS asks "is this field present enough to interpolate?"
+    // and this one asks "may this row be dispatched at all?". Merging them would
+    // make a missing `worker` read as a human gate — a wiring bug reported as a
+    // hold, sending the Coordinator to look for a human who does not exist.
+    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    expect(() => assertNotHumanGated({ id: '45' })).not.toThrow();
+    expect(() => assertNotHumanGated({ id: '46', worker: undefined })).not.toThrow();
+  });
+
+  it('the match is EXACT — a worker that merely contains the token is not gated', () => {
+    // The engine-side reader matches the parsed Worker CELL exactly (never a
+    // substring of the row's line); the driver's `includes` over an array of
+    // whole tokens is the same discipline, and this pins it. A row whose worker
+    // is `background` while its TITLE mentions the gate must dispatch normally.
+    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    expect(() =>
+      assertNotHumanGated({ id: '47', worker: `not-${HUMAN_GATED_WORKER}` }),
+    ).not.toThrow();
+    expect(() =>
+      assertNotHumanGated({
+        id: '48',
+        worker: 'background',
+        title: `wire the ${HUMAN_GATED_WORKER} gate through wave-start`,
+      }),
+    ).not.toThrow();
+  });
+
+  it('NEGATIVE CONTROL — the SIBLING assertion does not catch this, so the pin is not redundant', () => {
+    // The exact evidence Convention 11 asks for, in the shape FOR-139's own AC4
+    // control uses: the new check must be seen to catch something the
+    // already-pinned neighbour lets through. `assertRequiredRowFields` inspects
+    // PRESENCE only, so a fully-populated human-gated row sails past it — which
+    // is why a second, separate assertion exists at all.
+    const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+    const gatedButComplete: Record<string, unknown> = {
+      id: '11',
+      slug: 'rotate-the-credential',
+      branch: 'wave/11-rotate-the-credential',
+      risk: 'cross-feature-refactor',
+      model: 'sonnet',
+      anchorSha: 'deadbeefcafe',
+      coordinatorBranch: 'main',
+      issueSpec: 'Rotate the PAT in the keychain.',
+      prTitle: 'chore: rotate the credential',
+      closePhrase: 'Closes #11',
+      siblingBranches: '(none — last in-flight issue)',
+      worker: HUMAN_GATED_WORKER,
+    };
+
+    // The pinned neighbour is silent about it…
+    expect(() => assertRequiredRowFields(gatedButComplete)).not.toThrow();
+    // …and the gate this block pins is not.
+    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    expect(() => assertNotHumanGated(gatedButComplete)).toThrow(/human-gated/);
+  });
+
+  it('NEGATIVE CONTROL — loadHumanGateModule fails loud if either declaration is renamed/removed', () => {
+    expect(() => loadHumanGateModule('# no gate here\n')).toThrow(
+      /HUMAN_GATED_WORKERS.*not found/,
+    );
+    expect(() =>
+      loadHumanGateModule("const HUMAN_GATED_WORKERS = ['x']\n# and nothing else\n"),
+    ).toThrow(/assertNotHumanGated.*not found/);
   });
 });

@@ -286,7 +286,20 @@ import {
   type MergeOrderResult,
   type ComputeMergeOrderOptions,
 } from './merge-order';
-import { readSpine, requireBranchesByIssueId } from './wave-md-rw';
+import {
+  readSpine,
+  requireBranchesByIssueId,
+  // The human-lane readers (ADR-0012). `humanGatedRows` is the state-BLIND
+  // view (describe the lane) and `humanHeldRowIds` is the CONJUNCTION
+  // (human-gated ∧ still `planned`) that both the dispatch hold and the
+  // archive gate below branch on. Imported as a pair on purpose: the two
+  // `spine` ops added here differ only in which of them is the verdict, and
+  // deriving "awaiting" from the pair keeps `planned` from being re-typed as a
+  // literal at a second site.
+  humanGatedRows,
+  humanHeldRowIds,
+  HUMAN_GATED_WORKER,
+} from './wave-md-rw';
 import { classifyClosedBy, needsPin } from './closed-by';
 import { detectHost } from './host-pr';
 import { runHostPr } from './host-pr-cli';
@@ -450,10 +463,17 @@ function printUsage(): void {
       // This ONE line must name every op spine-cli's own dispatch table reports
       // — cli.spec.ts's FOR-11 guard reads the first `flotilla-engine spine `
       // line and asserts each real op appears in it. Detail lines may follow.
-      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures> <spine-path> [...args]',
+      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures|human-gated|check-awaiting-human> <spine-path> [...args]',
       '    spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>   # ADR-0027: capture at verdict-routing',
       '    spine set-disposition <spine-path> <disclosure-ref> <resolved-in-slice|scope-extension|filed:ID|dropped:REASON>',
       '    spine check-disclosures <spine-path>   # fail-closed archive gate: exit != 0 iff an `open` disclosure remains',
+      // The two ROUTER-HOSTED spine ops (ADR-0012 human lane). They are
+      // dispatched by this file's `spine` case, not by spine-cli's table — see
+      // `ROUTER_HOSTED_SPINE_OPS` below for why, and cli.spec.ts's parity guard
+      // for what keeps the split from drifting. They still belong on the `spine`
+      // usage line: an operator reads ONE list of spine ops, not two.
+      '    spine human-gated <spine-path> [--workers <a,b>]   # ADR-0012: list the wave\'s human lane (JSON); empty is a legitimate answer, never a gate',
+      '    spine check-awaiting-human <spine-path> [--workers <a,b>]   # fail-closed archive gate: exit != 0 iff a human-gated row still holds a live claim',
       '  flotilla-engine config validate <path>',
       '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
       '  flotilla-engine store-preflight [--config <path>]',
@@ -801,6 +821,208 @@ function runClosedBy(args: string[]): number {
     JSON.stringify({ class: cls, needsPin: pin }, null, 2) + '\n',
   );
   return pin ? 1 : 0;
+}
+
+// ─── the human lane, CLI-side (ADR-0012) ─────────────────────────────────────
+//
+// Two `spine` ops over one engine predicate, dispatched from THIS file's
+// `spine` router case rather than from spine-cli's own table. That split is
+// deliberate and bounded — see `ROUTER_HOSTED_SPINE_OPS` at the router for the
+// reason and the parity guard that keeps the two dispatch points honest.
+//
+// They differ in kind, not just in output, and that difference is the whole
+// design:
+//
+//   - `human-gated` is a LISTING. It describes the lane and always exits 0 on
+//     a readable spine. An empty lane is a legitimate answer, never a gate —
+//     the same non-guard rule `humanHeldRowIds`' own doc states.
+//   - `check-awaiting-human` is a GATE, shaped exactly like `check-disclosures`
+//     (spine-cli.ts): its RESULT is the exit code, it is fail-closed in both
+//     directions (a held row blocks; so does a spine that cannot be read), and
+//     `wave-close` phase 6 branches on that code alone — never on this prose.
+
+/**
+ * The `spine` ops this file dispatches, in place of spine-cli's table.
+ *
+ * EXPORTED so cli.spec.ts's parity guard can DERIVE the split from the router
+ * itself instead of transcribing a second copy of it — the same discipline the
+ * FOR-11 usage guard applies to spine-cli's `available:` list. Not public API:
+ * the package barrel re-exports only `main`/`mainAsync` from this module.
+ */
+export const ROUTER_HOSTED_SPINE_OPS = [
+  'human-gated',
+  'check-awaiting-human',
+] as const;
+type RouterHostedSpineOp = (typeof ROUTER_HOSTED_SPINE_OPS)[number];
+
+/**
+ * Resolve the accepted human-gated Worker token set for one invocation.
+ * `Worker` is a config-governed enum (ADR-0007), so the engine constant is a
+ * DEFAULT, never a law: `--workers a,b` substitutes a consumer's own spelling.
+ * An explicitly EMPTY `--workers ''` is honoured as the empty set (a fully
+ * trimmed vocabulary holds nothing) rather than silently re-defaulting.
+ */
+function humanGatedWorkerSet(args: string[]): readonly string[] {
+  const raw = flag(args, '--workers');
+  if (raw === undefined) return [HUMAN_GATED_WORKER];
+  return raw
+    .split(',')
+    .map((w) => w.trim())
+    .filter((w) => w.length > 0);
+}
+
+/** The one row shape both ops below report — the lane, as data. */
+interface HumanLaneRow {
+  id: string;
+  title: string;
+  worker: string;
+  state: string;
+  /** human-gated ∧ still `planned` — i.e. no human has released it yet. */
+  awaitingHuman: boolean;
+}
+
+/**
+ * Read `spinePath` and project its human lane. Throws whatever `readSpine`
+ * throws — both callers turn that into their own fail-closed exit.
+ *
+ * `awaitingHuman` is derived by JOINING the two engine readers rather than by
+ * re-testing `state === 'planned'` here: the held-state literal has exactly one
+ * owner (`HELD_ROW_STATE`, wave-md-rw.ts) and a second copy at this call site
+ * is precisely the drift this issue's sibling half exists to stop.
+ */
+function readHumanLane(
+  spinePath: string,
+  workers: readonly string[],
+): HumanLaneRow[] {
+  const spine = readSpine(readFileSync(spinePath, 'utf-8'));
+  const held = new Set(humanHeldRowIds(spine, workers));
+  return humanGatedRows(spine, workers).map((row) => ({
+    id: row.id,
+    title: row.title,
+    worker: row.worker,
+    state: String(row.state),
+    awaitingHuman: held.has(row.id),
+  }));
+}
+
+/**
+ * Run `spine human-gated <spine-path> [--workers <a,b>]` — the listing.
+ *
+ * Emits one JSON object: the accepted token set, every human-gated row with its
+ * state and its `awaitingHuman` verdict, and the ids still awaiting a human.
+ * A wave with no human lane emits `rows: []` and exits 0 — that is the answer,
+ * not a failure, so nothing downstream may guard on emptiness.
+ *
+ * Exit codes:
+ *   0 — the spine was read (with OR without a human lane)
+ *   1 — the spine could not be read or parsed
+ *   2 — missing <spine-path>
+ */
+function runSpineHumanGated(args: string[]): number {
+  const spinePath = args[0];
+  if (!spinePath || spinePath.startsWith('--')) {
+    process.stderr.write(
+      [
+        'error: spine human-gated requires a <spine-path>',
+        'usage: flotilla-engine spine human-gated <spine-path> [--workers <a,b>]',
+        '',
+      ].join('\n'),
+    );
+    return 2;
+  }
+  const workers = humanGatedWorkerSet(args);
+  let rows: HumanLaneRow[];
+  try {
+    rows = readHumanLane(resolve(spinePath), workers);
+  } catch (err) {
+    process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
+    return 1;
+  }
+  printJson({
+    ok: true,
+    verb: 'spine human-gated',
+    spine: resolve(spinePath),
+    humanGatedWorkers: workers,
+    rows,
+    awaitingHumanIds: rows.filter((r) => r.awaitingHuman).map((r) => r.id),
+  });
+  return 0;
+}
+
+/**
+ * Run `spine check-awaiting-human <spine-path> [--workers <a,b>]` — the
+ * fail-closed ARCHIVE gate for the human lane (wave-close phase 6).
+ *
+ * The hazard it closes is specific, and it is what separates an awaiting-human
+ * row from every other non-terminal shape: the row's tracker claim is STILL
+ * LIVE (`queued`). It was never dispatched, so nothing ever released it.
+ * Archive past it and the issue reads as claimed to every future `wave-plan`,
+ * with no live spine left to reconcile against — a leak with no self-healing
+ * path, which is why this is a gate and not an advisory.
+ *
+ * It deliberately does NOT fire on a `parked` row (ADR-0022): park is terminal
+ * AND claim-releasing, so a parked row has already left `planned` and dropped
+ * out of the predicate. That is not a special case here — it is the reason park
+ * is one of the two exits the block message names.
+ *
+ * Fail-closed in both directions, exactly like `spine check-disclosures`: a held
+ * row blocks the archive, and so does a spine that cannot be read or parsed.
+ *
+ * Exit codes:
+ *   0 — no human-gated row holds a live claim; the archive gate is CLEAR
+ *   1 — at least one row is awaiting a human, OR the spine is unreadable
+ *   2 — missing <spine-path>
+ */
+function runSpineCheckAwaitingHuman(args: string[]): number {
+  const spinePath = args[0];
+  if (!spinePath || spinePath.startsWith('--')) {
+    process.stderr.write(
+      [
+        'error: spine check-awaiting-human requires a <spine-path>',
+        'usage: flotilla-engine spine check-awaiting-human <spine-path> [--workers <a,b>]',
+        '',
+      ].join('\n'),
+    );
+    return 2;
+  }
+  const workers = humanGatedWorkerSet(args);
+  const abs = resolve(spinePath);
+  let rows: HumanLaneRow[];
+  try {
+    rows = readHumanLane(abs, workers);
+  } catch (err) {
+    process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
+    return 1;
+  }
+
+  const awaiting = rows.filter((r) => r.awaitingHuman);
+  if (awaiting.length === 0) {
+    process.stdout.write(
+      `awaiting-human: 0 of ${rows.length} human-gated rows — archive gate CLEAR\n`,
+    );
+    return 0;
+  }
+
+  process.stdout.write(
+    [
+      `awaiting-human: ${awaiting.length} of ${rows.length} human-gated rows — archive gate BLOCKED (ADR-0012)`,
+      ...awaiting.map(
+        (r) => `  row ${r.id}  worker ${r.worker}  state ${r.state}  ${r.title}`,
+      ),
+      // The claim is the hazard, so the message leads with it — an operator who
+      // reads only the first line must still learn WHY this is not skippable.
+      "each row above still holds a LIVE `queued` claim: it was never dispatched, so nothing released it. Archiving now leaves the issue reading as claimed to every future wave-plan, with no live spine to reconcile against.",
+      'two exits, and only these two:',
+      '  1. THE HUMAN ACTS — do the gated work, then let wave-start dispatch the row.',
+      '     It leaves `planned`, stops matching this gate, and the wave finishes normally.',
+      `  2. PARK + UNCLAIM (ADR-0022) — the row leaves the wave for re-planning:`,
+      `       flotilla-engine spine set-row-state ${abs} <id> parked`,
+      '       flotilla-engine issue-store unclaim <id>',
+      '     `parked` is terminal AND claim-releasing, so the row drops out of this gate.',
+      '',
+    ].join('\n'),
+  );
+  return 1;
 }
 
 /**
@@ -1673,6 +1895,34 @@ export function main(argv: string[] = process.argv.slice(2)): number {
       case 'config':
         return runConfig(rest);
       case 'spine':
+        // Two `spine` ops are dispatched HERE rather than from spine-cli's own
+        // table (ADR-0012's human lane: `human-gated`, `check-awaiting-human`).
+        //
+        // WHY the split. Both ops are pure readers over `wave-md-rw`'s human-lane
+        // predicate and neither touches the byte-preserving SpineStore that
+        // spine-cli exists to route — but the honest reason is narrower than
+        // that: the slice that added them had `cli.ts` in its declared file
+        // scope and `spine-cli.ts` outside it. Folding them into spine-cli's
+        // switch later is a PURE MOVE (same args, same JSON, same exit codes),
+        // and this comment is the note that says so.
+        //
+        // WHAT KEEPS IT HONEST. The split has one failure mode — an op handled
+        // in both places, or in neither — and cli.spec.ts's parity guard pins
+        // exactly that: every `ROUTER_HOSTED_SPINE_OPS` entry must be unknown to
+        // `runSpine`, every op `runSpine` reports must NOT be intercepted here,
+        // and both sets must appear in the top-level usage. Reachability is
+        // unaffected either way: `spine-cli.ts`'s direct-run block forwards to
+        // this very case, so the documented alias spelling reaches these two ops
+        // exactly as it reaches spine-cli's own.
+        if (
+          (ROUTER_HOSTED_SPINE_OPS as readonly string[]).includes(rest[0] ?? '')
+        ) {
+          const spineOp = rest[0] as RouterHostedSpineOp;
+          const spineArgs = rest.slice(1);
+          return spineOp === 'human-gated'
+            ? runSpineHumanGated(spineArgs)
+            : runSpineCheckAwaitingHuman(spineArgs);
+        }
         return runSpine(rest);
       case 'credential-probe':
         // ADR-0029 — the value-free auth preflight probe. SYNC: the lookup

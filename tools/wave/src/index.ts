@@ -179,6 +179,16 @@ export {
   branchesByIssueId,
   renderSpine,
   ROW_STATES,
+  // The human lane (ADR-0012). Root-reachable as a FAMILY, and deliberately so:
+  // the constant alone would let an out-of-tree caller name the token while
+  // re-deriving the predicate by hand, which is the divergence the whole gate
+  // exists to prevent. `humanGatedRows` is the state-blind view (describe the
+  // lane); `humanHeldRowIds` is the conjunction both the dispatch hold and the
+  // archive gate branch on. Their row/state types (`PlanTableRow`, `RowState`)
+  // already cross the barrel just below.
+  HUMAN_GATED_WORKER,
+  humanGatedRows,
+  humanHeldRowIds,
   type RowState,
   type Spine,
   type Frontmatter,
