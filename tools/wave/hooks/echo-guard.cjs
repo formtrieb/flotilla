@@ -408,13 +408,6 @@ const SEGMENT_SPLIT_CHARS = new Set(['`', '\n', ';', '|', '&', '(', ')', '{', '}
  */
 const DOUBLE_QUOTE_LIVE_CHARS = new Set(['$', '`']);
 
-/** @param {Set<string>} chars @param {string} text */
-function blankChars(chars, text) {
-  let out = '';
-  for (const ch of text) out += chars.has(ch) ? ' ' : ch;
-  return out;
-}
-
 /**
  * Blank every SEGMENT_SPLIT trigger character that falls inside a quoted
  * span — a single-quoted span in full, a double-quoted span for its
