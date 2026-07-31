@@ -49,6 +49,24 @@
  * module would put a second owner between the verb and the preflight, which is
  * the drift ADR-0032 exists to end. The router verb is the usual thin case
  * router; the logic is here. See {@link compareEngineVersion}.
+ *
+ * ── The ROOT SURFACE of this module (issue #325) ─────────────────────────────
+ * RECORDED DECISION, so the next reader does not have to re-derive it from the
+ * absence of an export line: the store-preflight family — {@link resolveStore},
+ * {@link preflightStore}, {@link runStorePreflight},
+ * {@link runStorePreflightSubcommand}, {@link PreflightCheck},
+ * {@link StorePreflightReport}, {@link StorePreflightOptions} — is PUBLIC API,
+ * re-exported from the package root (`src/index.ts`) and pinned there by
+ * `index.spec.ts`. The probe is pure over the store's own api seam, so a
+ * root-only consumer can run it against a fake and get the report `wave-setup`
+ * reads without shelling a verb; and the CLI runners were already a
+ * root-exported family, so this one's absence was an omission rather than a
+ * stance. Public-API rules apply: a change to any of those seven shapes is a
+ * consumer-visible change, and the root pairing spec is where it must be seen.
+ *
+ * {@link engineVersionPreflightCheck} is the one member of this module's
+ * preflight vocabulary that stays engine-internal — see its own doc comment for
+ * why, which is no longer "its return type is not root-reachable".
  */
 
 import { readFileSync } from 'node:fs';
@@ -370,6 +388,19 @@ export function engineVersionExitCode(report: EngineVersionReport): number {
  * doing it. Setup/plan time is the moment to NOTICE a version skew, not the
  * moment to refuse; the refusal lives in wave-start's gate phase, where the
  * next action is a dispatch (ADR-0032).
+ *
+ * **Deliberately NOT public API (issue #325).** It is not re-exported from the
+ * package root, and the reason is recorded here rather than left to the barrel's
+ * export list. The ORIGINAL reason — its return type, {@link PreflightCheck},
+ * was itself unreachable from the root — is spent: that family is public now.
+ * The surviving reason is one-way-to-ask. A root consumer that wants the
+ * lockstep row IN a preflight report passes
+ * {@link StorePreflightOptions.expectedEngineVersion} to {@link preflightStore},
+ * which appends exactly this check; a consumer that wants the comparison ALONE
+ * calls {@link compareEngineVersion}. Exporting the constructor between those
+ * two would add a third spelling of one question and a second place for the
+ * `pass`/`advisory` mapping to drift — the same reason
+ * {@link engineManifestPath} is held back.
  */
 export function engineVersionPreflightCheck(
   report: EngineVersionReport,

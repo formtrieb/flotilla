@@ -214,6 +214,20 @@ export type CreateInputFailure =
  * Every caller inherits the rejection because every adapter runs the classifier
  * as the FIRST statement of `create()`: the rule cannot be reached around by
  * calling a store directly instead of through the CLI.
+ *
+ * **PUBLIC API (issue #325).** This class and {@link CreateInputFailure} are
+ * re-exported from the package root (`../index`) and pinned there by
+ * `index.spec.ts`. The decision is recorded here because the alternative was
+ * live: a programmatic consumer could have been expected to catch a generic
+ * `Error` and read its message. It is not, and the sentence above is why — the
+ * rejection is INHERITED by every root-only consumer that calls `create()`
+ * through a `buildStore` handle, so it was already something such a consumer
+ * receives and, until now, could not name. Naming it is the whole point of the
+ * structure: `instanceof` across the barrel, then route on `failure`. That works
+ * only if the root-imported class is the SAME binding the adapters throw, which
+ * the root pairing spec asserts by identity, not by behaviour. Same fail-loud,
+ * do-not-match-on-message stance as `CredentialResolutionError` (ADR-0029) and
+ * `EngineCliBindingError` (ADR-0032), which are root-exported for this reason.
  */
 export class CreateInputError extends Error {
   readonly name = 'CreateInputError';
@@ -291,6 +305,17 @@ export type CreateShape =
  * any write, so moving the requirement here makes it a property of the create
  * contract rather than of one entrypoint. The CLI keeps only the RENDERING of
  * the rejection (its exit-code choice and its message); the rule is inherited.
+ *
+ * **Deliberately NOT public API (issue #325)**, unlike the
+ * {@link CreateInputError} it throws. Recorded here so the asymmetry reads as a
+ * decision rather than an oversight, and the paragraph above is the reason: this
+ * function runs as the first statement of every adapter's `create()`, so a
+ * root-only consumer that calls `create()` has already had it run. Calling it by
+ * hand first would be asking a question the write path answers on that
+ * consumer's behalf, and a hand-run pre-check that can drift from the write path
+ * is worse than no pre-check at all — that drift is exactly what #309 moved the
+ * body rule here to end. What a root-only consumer needs is to CATCH the
+ * rejection typed, which the root export of {@link CreateInputError} gives it.
  */
 export function classifyCreateInput(input: CreateInput): CreateShape {
   const missing = HEADER_BLOCK_FIELDS.filter((f) => input[f] === undefined);
