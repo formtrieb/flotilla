@@ -104,6 +104,36 @@ apiChangers = candidates.filter(c => c.risk === 'public-API-change')
 
 When `apiChangers` has **two or more** members, surface them as an advisory pairing — the same human-decided, never-auto-excluded treatment `intraWaveBlockedByPairs` get downstream (wave-create). The advisory: each row changes a global contract, so expect reconciled-merge landing rework even though the `Files` are disjoint; plan the wave-close reconciled-merge verify, and consider serializing the pair or splitting it across waves. The coordinator decides; wave-plan only raises it.
 
+## Dispatch-cost estimate derivation (SKILL step 3c)
+
+Derived **skill-side** from the `worker` and `risk` fields already loaded by `listOpen` — there is no engine call, no new verb, and nothing is persisted (wave-plan writes nothing). The multiplier is the driver's own per-row pipeline: `worker → scribe(report) → reviewer → scribe(verdict)` is **four agent dispatches for every row that is actually sent out** (ADR-0024 put the two Scribe stages in that pipeline; ADR-0018 owns the driver). A `cap=1` re-dispatch repeats the whole tuple, so a row that fails once costs up to eight.
+
+```
+dispatchable = candidates.filter(c => c.worker !== 'HITL-required')
+agents       = dispatchable.length * 4          // the headline estimate
+
+heavy = dispatchable.filter(c =>
+  c.worker.endsWith('-heavy') ||                 // heavy Worker (ADR-0012)
+  c.risk === 'cross-feature-refactor' ||         // heavy Reviewer tier …
+  c.risk === 'public-API-change')                // … (ADR-0007 Amendment 2026-07-31)
+
+excluded = candidates.filter(c => c.worker === 'HITL-required')
+```
+
+Three numbers, reported as one line per candidate set:
+
+| Figure | Meaning |
+|---|---|
+| `dispatchable.length × ~4` | agent dispatches the set would spend if every row goes out once |
+| `heavy.length` | rows running on the `-heavy` tier on the Worker side, the Reviewer side, or both |
+| `excluded` (by id) | `HITL-required` rows — they cost nothing until a human acts, so they are named, not multiplied |
+
+**`~` is load-bearing.** Four is the happy-path tuple; re-dispatches, a `blocked` Worker that never reaches its Reviewer, and rows held at the human gate all move the real number. Report it as an estimate and never as a budget the Coordinator is then held to.
+
+**Heavy is counted, never weighted.** There is deliberately no cost multiplier per tier and no currency conversion — the moment the line produces a single scalar "score", it becomes the sizing heuristic wave-plan does not do. Two numbers side by side keep the judgment where it belongs.
+
+**Nothing here filters the candidate set.** `dispatchable` exists to keep `HITL-required` rows out of a multiplication they do not belong in — those rows are still drawn, still reported, and still flagged (SKILL step 1). Excluding a row from the *estimate* is not excluding it from the *set*.
+
 ## Exit codes for `cross-wave`
 
 | Code | Meaning |

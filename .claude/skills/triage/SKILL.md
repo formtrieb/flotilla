@@ -13,6 +13,7 @@ Your job is the **judgment** — categorize, reproduce, grill if underspecified,
 
 - An untriaged / `needs-triage` issue needs to be evaluated, classified, and routed.
 - A reported bug needs reproduction before it can be acted on.
+- A **wave-born** issue — one carrying a wave-provenance line, filed bare at a wave's close — needs its premise verified against current `main` before it is recommended for anything (step 2).
 - An underspecified issue needs grilling into a fully-specified spec.
 - An issue is ready to be marked grabbable for an AFK agent (`ready-for-agent`) or routed to a human (`ready-for-human`).
 
@@ -60,19 +61,33 @@ The `TriageView` carries the reported content (title + body) **and** the comment
 
 If `triage-read` shows no state, the issue is at entry — treat it as `needs-triage`.
 
-### 2. Recommend
+### 2. Premise currency — for any wave-provenance issue, whatever its category
+
+**Trigger: the issue body carries a wave-provenance line** — a wave slug, a row id, an iteration — i.e. it was filed from a wave's disclosure rather than reported by a user. That line marks an issue written at a wave's close about something a wave *observed*, and the observation ages: the premise can be repaired, refactored away, or superseded by a later wave before anyone triages the ticket.
+
+**Verify the premise against current `main` before you recommend anything.** Read the claim the issue rests on, then go and look: does the code, the guard, the doc, or the behaviour it describes still look that way on `main` today? A wave-born issue is triaged against the tree as it is now, never against the tree the closing Coordinator was looking at.
+
+**This check is category-independent — that is the whole point.** The reproduce step below is deliberately bugs-only, and a wave-born issue is frequently enhancement-shaped (a wiring gap, a missing guard, a doc reconciliation), so it walks past reproduction untouched. Applying the premise check only to `bug` reproduces exactly the hole this step exists to close: an issue whose premise was **already false on `main` at filing time** was triaged, decorated, dispatched and implemented anyway. Run it on every wave-provenance issue regardless of the category you are about to recommend.
+
+**A stale premise has a cheap exit: the superseded-close.** If the premise no longer holds, do not grill it into shape and do not send it back to the reporter — there is no reporter. Close it through `triage-close` (the configured won't-fix terminal), with a comment that names *what* superseded it: the change, PR, or wave that made the premise false, and the evidence you looked at. That comment is the whole audit trail; the state is just the terminal. This is a cheap, expected outcome for a wave-born ticket, not a failure of the wave that filed it.
+
+**Partially stale is not stale.** If the premise still holds but the details have drifted, keep the issue and fold the current reading into the brief you post in step 6 — the correction belongs in the Agent Brief, not in a fresh ticket.
+
+This closes the bare→ready transition's missing verification step: an issue filed bare at a wave's close (ADR-0027) had no premise check anywhere in its lifecycle until it reached here. Do **not** push the check back to close time — the disposition step deliberately authors observations rather than verified diagnoses, and verification is this skill's job, done with a fresh head.
+
+### 3. Recommend
 
 Tell the maintainer your **category** and **state** recommendation with reasoning, plus a short codebase summary relevant to the issue. Wait for direction unless this is a direct override (see Quick state override).
 
-### 3. Reproduce (bugs only)
+### 4. Reproduce (bugs only)
 
 Before any grilling, attempt reproduction: follow the reporter's steps, trace the relevant code, run the tests/commands. Report the outcome — a confirmed repro (with the code path) makes a far stronger agent brief; a failed or under-detailed repro is a strong `needs-info` signal.
 
-### 4. Grill (if underspecified)
+### 5. Grill (if underspecified)
 
-If the issue needs fleshing out before it can be `ready-for-agent` / `ready-for-human`, run a `/grill-with-docs` session. Capture everything resolved into the comment you post in step 5 — fold what the grilling settled into the **Agent Brief** (for `ready-for-agent` / `ready-for-human`) or the **Triage Notes** ("established so far", for `needs-info`). The grilling output is not durable on its own; it only survives if it lands in that comment.
+If the issue needs fleshing out before it can be `ready-for-agent` / `ready-for-human`, run a `/grill-with-docs` session. Capture everything resolved into the comment you post in step 6 — fold what the grilling settled into the **Agent Brief** (for `ready-for-agent` / `ready-for-human`) or the **Triage Notes** ("established so far", for `needs-info`). The grilling output is not durable on its own; it only survives if it lands in that comment.
 
-### 5. Apply the outcome
+### 6. Apply the outcome
 
 Apply the state, category, and matching comment in **one** `triage-apply` call (or `triage-close` for `wontfix`). The facet **prepends the AI-provenance disclaimer to every comment for you** — never add it by hand. Exact input shapes per outcome: [reference/triage-mechanics.md](reference/triage-mechanics.md).
 
@@ -175,4 +190,8 @@ Put everything resolved during grilling under "established so far" so it isn't l
 - **File paths / line numbers in the agent brief.** They go stale. Describe interfaces and behavioral contracts instead.
 - **Re-asking resolved questions.** Read the prior comments in the `TriageView` first.
 - **Skipping reproduction on a bug.** A confirmed repro is the difference between a strong brief and a `needs-info` round-trip.
+- **Triaging a wave-provenance issue without checking its premise against current `main`.** The observation was written at a wave's close and ages between then and now — a premise that has already been repaired, refactored away, or superseded produces a decorated, dispatched, implemented ticket for work that no longer exists.
+- **Running the premise check on bugs only.** It is category-independent by design (step 2). Reproduction is the bugs-only step; a wave-born issue is usually enhancement-shaped and would sail past both checks if this one inherited that gate.
+- **Grilling a stale-premise issue into shape instead of superseded-closing it.** There is no reporter to round-trip with. Take the cheap exit: `triage-close` with a comment naming what superseded the premise and the evidence you looked at.
+- **Inventing a `superseded` state.** The vocabulary is config-defined and has no such value — a superseded-close is the ordinary won't-fix terminal; "superseded" is the *reason*, and it lives in the comment.
 - **Reaching for raw `gh` (or a markdown-files-as-tracker / `git mv`-to-`done/` ritual).** triage never touches a tracker directly — every read and write goes through the engine CLI (`{{wave-cli}} issue-store triage-*`), which selects the configured store.
