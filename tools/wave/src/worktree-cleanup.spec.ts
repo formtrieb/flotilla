@@ -186,6 +186,7 @@ import {
   measureExecArgumentBytes,
   checkCommandLineSizeAdvisory,
   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+  MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
   type ExecArgumentMeasurement,
   type CommandLineSizeAdvisory,
   type WorktreeEntry,
@@ -5722,6 +5723,25 @@ function measuredOccurrenceArgv(): string[] {
   return [...fixed, 'x'.repeat(bodyBytes)];
 }
 
+/**
+ * Build argv whose `measureExecArgumentBytes(...).bytes` equals EXACTLY
+ * `totalBytes`, split across `entryCount` roughly-equal entries rather than
+ * one giant string (issue #340). This is what isolates a TOTAL-threshold
+ * boundary test from the PER-STRING (`MAX_ARG_STRLEN`) condition introduced
+ * alongside it: every entry this returns is sized to stay far under
+ * {@link MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES}, so only the SUM crosses a
+ * boundary in the caller's test — never any one entry.
+ */
+function argvTotalling(totalBytes: number, entryCount = 8): string[] {
+  const overheadTotal = entryCount * 9; // EXEC_ENTRY_OVERHEAD_BYTES per entry
+  const payloadTotal = totalBytes - overheadTotal;
+  const base = Math.floor(payloadTotal / entryCount);
+  const remainder = payloadTotal - base * entryCount;
+  const argv = new Array(entryCount).fill(0).map(() => 'x'.repeat(base));
+  argv[argv.length - 1] = 'x'.repeat(base + remainder);
+  return argv;
+}
+
 describe('measureExecArgumentBytes — the exec argument accounting (issue #266)', () => {
   it('charges every argv entry its UTF-8 bytes plus a NUL and a pointer', () => {
     expect(measureExecArgumentBytes([])).toEqual({
@@ -5730,6 +5750,7 @@ describe('measureExecArgumentBytes — the exec argument accounting (issue #266)
       envBytes: 0,
       argCount: 0,
       envCount: 0,
+      maxEntryBytes: 0,
     });
 
     // 'ab' (2) + 9, 'cde' (3) + 9.
@@ -5737,6 +5758,9 @@ describe('measureExecArgumentBytes — the exec argument accounting (issue #266)
     expect(two.argvBytes).toBe(2 + 9 + (3 + 9));
     expect(two.argCount).toBe(2);
     expect(two.bytes).toBe(two.argvBytes);
+    // maxEntryBytes is the LARGEST single entry (with its own overhead), not
+    // a sum — 'cde' (3+9=12) beats 'ab' (2+9=11).
+    expect(two.maxEntryBytes).toBe(3 + 9);
   });
 
   it('counts UTF-8 BYTES, not code units — the long paths are exactly the non-ASCII ones', () => {
@@ -5769,6 +5793,20 @@ describe('measureExecArgumentBytes — the exec argument accounting (issue #266)
     expect(m.bytes).toBe(m.argvBytes + m.envBytes);
     expect(m.argvBytes).toBeGreaterThan(0);
     expect(m.envBytes).toBeGreaterThan(0);
+  });
+
+  it('maxEntryBytes is the largest SINGLE entry across BOTH argv and env, not a sum (issue #340)', () => {
+    const argvWins = measureExecArgumentBytes(['x'.repeat(1000)], { K: 'v' });
+    expect(argvWins.maxEntryBytes).toBe(1000 + 9);
+
+    const envWins = measureExecArgumentBytes(['a'], { BIG: 'y'.repeat(1000) });
+    expect(envWins.maxEntryBytes).toBe('BIG='.length + 1000 + 9);
+
+    // Neither half's TOTAL leaks in: a small argv with a small env has a
+    // small maxEntryBytes, however many entries are summed elsewhere.
+    const manySmall = measureExecArgumentBytes(['a', 'b', 'c', 'd', 'e']);
+    expect(manySmall.maxEntryBytes).toBe(1 + 9);
+    expect(manySmall.argvBytes).toBeGreaterThan(manySmall.maxEntryBytes);
   });
 });
 
@@ -5834,24 +5872,112 @@ describe('checkCommandLineSizeAdvisory — the second E2BIG term (issue #266)', 
     expect(ordinary.message).toBeNull();
     expect(ordinary.bytes).toBeGreaterThan(0);
     expect(ordinary.bytes).toBeLessThan(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    // Both conditions must read clean, not just the total (issue #340) — a
+    // negative control that only cleared one term would let the other stay
+    // permanently on without any assertion here noticing.
+    expect(ordinary.maxEntryBytes).toBeLessThan(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
+    );
   });
 
   it('fires strictly ABOVE the threshold — exactly at it is still `ok` (the count advisory’s boundary)', () => {
+    // Spread across several entries (argvTotalling), each far under
+    // MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES, so this test isolates the
+    // TOTAL-threshold boundary from the per-string condition introduced
+    // alongside it (issue #340) — a single giant string here would trip the
+    // per-string condition regardless of the total and make this assertion
+    // about the wrong term.
     const at = checkCommandLineSizeAdvisory({
-      argv: ['x'.repeat(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES - 9)],
+      argv: argvTotalling(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES),
       env: {},
       threshold: COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
     });
     expect(at.bytes).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    expect(at.maxEntryBytes).toBeLessThan(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES);
     expect(at.level).toBe('ok');
     expect(at.message).toBeNull();
 
     const oneOver = checkCommandLineSizeAdvisory({
-      argv: ['x'.repeat(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES - 8)],
+      argv: argvTotalling(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES + 1),
       env: {},
     });
     expect(oneOver.bytes).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES + 1);
+    expect(oneOver.maxEntryBytes).toBeLessThan(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES);
     expect(oneOver.level).toBe('advisory');
+  });
+
+  // ─── The PER-STRING (MAX_ARG_STRLEN) condition (issue #340) ────────────────
+  //
+  // execve documents E2BIG on TWO independent conditions: the combined total
+  // (above) AND a hard cap on any ONE argv/env entry. A reviewer probe
+  // demonstrated the gap directly: a single oversized string that passes the
+  // total-only advisory comfortably and still kills the spawn. These tests
+  // pin the SECOND condition the same way the total is pinned above:
+  // strictly-above-threshold boundary, a fires-alone proof, and a negative
+  // control.
+
+  it('a SINGLE oversized argv entry trips the advisory even while the TOTAL is comfortably under budget (issue #340)', () => {
+    // One entry alone breaches the per-string cap...
+    const singleString = 'x'.repeat(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES + 1);
+    const advisory = checkCommandLineSizeAdvisory({ argv: [singleString], env: {} });
+
+    // ...while the TOTAL sits nowhere near its own, much larger threshold —
+    // this is the exact shape the total-only advisory could not catch.
+    expect(advisory.bytes).toBeLessThan(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    expect(advisory.maxEntryBytes).toBeGreaterThan(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
+    );
+    expect(advisory.level).toBe('advisory');
+    expect(advisory.message).toContain('PER-STRING');
+    expect(advisory.message).toContain('MAX_ARG_STRLEN');
+    expect(advisory.message).toContain(
+      String(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES),
+    );
+  });
+
+  it('a SINGLE oversized ENV entry trips the advisory the same way an argv entry does', () => {
+    const advisory = checkCommandLineSizeAdvisory({
+      argv: ['flotilla-engine'],
+      env: { BIG: 'y'.repeat(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES + 1) },
+    });
+    expect(advisory.bytes).toBeLessThan(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    expect(advisory.level).toBe('advisory');
+  });
+
+  it('the per-string condition fires strictly ABOVE its own threshold — exactly at it is still `ok`', () => {
+    const at = checkCommandLineSizeAdvisory({
+      argv: ['x'.repeat(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES - 9)],
+      env: {},
+    });
+    expect(at.maxEntryBytes).toBe(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES);
+    expect(at.level).toBe('ok');
+    expect(at.message).toBeNull();
+
+    const oneOver = checkCommandLineSizeAdvisory({
+      argv: ['x'.repeat(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES - 8)],
+      env: {},
+    });
+    expect(oneOver.maxEntryBytes).toBe(MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES + 1);
+    expect(oneOver.level).toBe('advisory');
+  });
+
+  it('an explicit maxEntryThreshold override is honoured in both directions', () => {
+    const argv = ['x'.repeat(1000)];
+    expect(
+      checkCommandLineSizeAdvisory({ argv, env: {}, maxEntryThreshold: 500 }).level,
+    ).toBe('advisory');
+    expect(
+      checkCommandLineSizeAdvisory({ argv, env: {}, maxEntryThreshold: 500_000 })
+        .level,
+    ).toBe('ok');
+  });
+
+  it('a garbled maxEntryThreshold throws rather than silently disabling the advisory', () => {
+    for (const maxEntryThreshold of [Number.NaN, -1, 2.5]) {
+      expect(() =>
+        checkCommandLineSizeAdvisory({ argv: ['x'], env: {}, maxEntryThreshold }),
+      ).toThrow(/non-negative integer/);
+    }
   });
 
   it('the env half is charged too — a small argv with a huge environment still fires', () => {
@@ -5933,8 +6059,26 @@ describe('the count advisory carries the two-term correction (issue #266)', () =
       env: {},
     }).message;
     const evidence = 'COUNT IS ONLY ONE OF TWO TERMS.';
-    const shared = fromCount?.slice(fromCount.indexOf(evidence));
-    expect(shared).toBeTruthy();
+
+    // Guard the EXTRACTION itself, not just its eventual result (issue #340):
+    // `String.prototype.slice` does not throw on a missing marker —
+    // `indexOf` silently returns -1, and `slice(-1)` returns just the
+    // message's LAST CHARACTER, which then trivially satisfies `toContain`
+    // against the other message below (a lone `.` matches almost anything).
+    // That silent fallback is the exact vacuous direction a dropped
+    // evidence sentence in the COUNT message would exploit — asserting the
+    // index explicitly, before slicing, turns it into a hard failure.
+    expect(fromCount).not.toBeNull();
+    const countIdx = fromCount!.indexOf(evidence);
+    expect(countIdx).toBeGreaterThan(-1);
+
+    const shared = fromCount!.slice(countIdx);
+    // A meaningful shared BLOCK, not a coincidental token — this is what
+    // makes the assertion below meaningful in the SYMMETRIC direction too: if
+    // the CMDLINE message instead dropped the evidence, `toContain` fails on
+    // its own merits, because `shared` is far too long for a coincidental
+    // substring match to paper over.
+    expect(shared.length).toBeGreaterThan(200);
     expect(fromCmdline).toContain(shared);
   });
 });

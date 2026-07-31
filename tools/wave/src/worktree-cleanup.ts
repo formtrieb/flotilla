@@ -691,6 +691,31 @@
  * COUNTS at the point of measurement, and the advisory message quotes only
  * those counts.
  *
+ * ── the command-line term ITSELF has two independent halves (issue #340) ──────
+ *
+ * {@link checkCommandLineSizeAdvisory} above modelled the command-line term
+ * with ONE condition: the argv+envp TOTAL against
+ * {@link COMMAND_LINE_ADVISORY_THRESHOLD_BYTES}. A reviewer probe (wave
+ * `2026-07-31-tier-guidance-and-guards`, row 266, disclosures 266.1/266.2)
+ * demonstrated that model incomplete too, the same shape as the correction
+ * above one level up: `execve` documents E2BIG on TWO independent
+ * conditions, not one — the combined total AND a hard PER-STRING cap on any
+ * ONE argv or envp entry (`MAX_ARG_STRLEN`, 32 pages == 131,072 bytes on a
+ * 4-KiB-page Linux). The probe built a single argument comfortably under the
+ * total threshold that nonetheless overflows `MAX_ARG_STRLEN` on its own —
+ * an advisory checking only the total reads that spawn as `ok` while it is
+ * already doomed.
+ *
+ * {@link ExecArgumentMeasurement.maxEntryBytes} +
+ * {@link MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES} are the per-string
+ * condition made measurable, folded into the SAME `{ level, message }` this
+ * term already returns (not a third sibling check) — `level` is
+ * `'advisory'` if EITHER condition trips, because both are independent ways
+ * for the identical spawn to fail. Per-string headroom is NOT halved the way
+ * the total is: `MAX_ARG_STRLEN` is a fixed OS-documented constant, not a
+ * proxy for an unobservable sandbox profile, so there is no uncertainty to
+ * hedge against by halving it.
+ *
  * ── the classifier's own fallback, scoped (issue #304) ─────────────────────────
  *
  * The "NO force flag" stance above answers a DIFFERENT question than issue
@@ -2394,11 +2419,36 @@ const EXEC_ENTRY_OVERHEAD_BYTES = 9;
 export const COMMAND_LINE_ADVISORY_THRESHOLD_BYTES = 524_288;
 
 /**
+ * The documented PER-STRING advisory threshold in BYTES (issue #340) — the
+ * OTHER, independent execve E2BIG condition {@link COMMAND_LINE_ADVISORY_THRESHOLD_BYTES}
+ * does not model at all. execve fails with E2BIG on TWO separate conditions,
+ * not one: the combined argv+envp TOTAL (the sibling threshold above) and a
+ * hard per-string cap on any ONE argv or envp entry, `MAX_ARG_STRLEN`. A
+ * reviewer probe (issue #340) demonstrated a single oversized string that
+ * passes the total-only advisory comfortably and still kills the spawn —
+ * exactly the gap this constant closes.
+ *
+ * UNLIKE {@link COMMAND_LINE_ADVISORY_THRESHOLD_BYTES}, this is NOT halved for
+ * headroom: `MAX_ARG_STRLEN` is a fixed, OS-documented kernel constant — 32
+ * pages, i.e. `32 * 4096` on a 4-KiB-page Linux — not a proxy for a
+ * harness-injected sandbox profile this engine cannot see. There is no
+ * uncertainty to hedge against by halving; a string either fits in 32 pages or
+ * it does not, deterministically, on the platform the constant documents. The
+ * threshold is therefore set at the documented cliff itself.
+ *
+ * Still ADVISORY, not a hard stop, for the same reason every check in this
+ * file is: the running kernel's actual page size and `MAX_ARG_STRLEN` value
+ * are not observable from here, so a caller on a materially different
+ * platform overrides it ({@link CommandLineSizeAdvisoryOptions.maxEntryThreshold}).
+ */
+export const MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES = 32 * 4096; // 131_072
+
+/**
  * What {@link measureExecArgumentBytes} reports — the exec cost of one spawn,
  * split into the half a caller can shrink and the half it inherits.
  */
 export interface ExecArgumentMeasurement {
-  /** `argvBytes + envBytes` — the number compared against the threshold. */
+  /** `argvBytes + envBytes` — the number compared against the TOTAL threshold. */
   bytes: number;
   /**
    * The argv half. This is the term a caller actually controls: an oversized
@@ -2420,6 +2470,17 @@ export interface ExecArgumentMeasurement {
   argCount: number;
   /** How many environment entries `envBytes` was measured across. */
   envCount: number;
+  /**
+   * The single LARGEST argv or env entry, in bytes (issue #340) — the number
+   * compared against {@link MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES}. This is
+   * the OTHER, independent E2BIG condition: a command line whose {@link bytes}
+   * total sits nowhere near the total threshold can still fail the spawn on
+   * this alone, if a SINGLE argument or environment value is oversized.
+   * Charged the same UTF-8-bytes-plus-{@link EXEC_ENTRY_OVERHEAD_BYTES} way as
+   * every entry folded into {@link argvBytes}/{@link envBytes}, for the same
+   * deliberately-conservative reason. `0` when both `argv` and `env` are empty.
+   */
+  maxEntryBytes: number;
 }
 
 /**
@@ -2435,8 +2496,12 @@ export interface ExecArgumentMeasurement {
  * the string `"undefined"` — `process.env`'s index signature admits it, and a
  * key that is not actually in the environment is not in the exec buffer either.
  *
+ * Also tracks {@link ExecArgumentMeasurement.maxEntryBytes} — the single
+ * largest entry seen across BOTH argv and env (issue #340) — because the
+ * per-string E2BIG condition is charged per ENTRY, never per total.
+ *
  * PURE: no I/O, no process state read unless the caller passes it in. Secret
- * safety is structural — the return value is five numbers, so there is nothing
+ * safety is structural — the return value is six numbers, so there is nothing
  * for a caller to accidentally print.
  */
 export function measureExecArgumentBytes(
@@ -2444,8 +2509,11 @@ export function measureExecArgumentBytes(
   env: Readonly<Record<string, string | undefined>> = {},
 ): ExecArgumentMeasurement {
   let argvBytes = 0;
+  let maxEntryBytes = 0;
   for (const arg of argv) {
-    argvBytes += Buffer.byteLength(arg, 'utf8') + EXEC_ENTRY_OVERHEAD_BYTES;
+    const entryBytes = Buffer.byteLength(arg, 'utf8') + EXEC_ENTRY_OVERHEAD_BYTES;
+    argvBytes += entryBytes;
+    if (entryBytes > maxEntryBytes) maxEntryBytes = entryBytes;
   }
 
   let envBytes = 0;
@@ -2453,8 +2521,10 @@ export function measureExecArgumentBytes(
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
     envCount += 1;
-    envBytes +=
+    const entryBytes =
       Buffer.byteLength(`${key}=${value}`, 'utf8') + EXEC_ENTRY_OVERHEAD_BYTES;
+    envBytes += entryBytes;
+    if (entryBytes > maxEntryBytes) maxEntryBytes = entryBytes;
   }
 
   return {
@@ -2463,11 +2533,13 @@ export function measureExecArgumentBytes(
     envBytes,
     argCount: argv.length,
     envCount,
+    maxEntryBytes,
   };
 }
 
 /**
- * The advisory {@link checkCommandLineSizeAdvisory} returns (issue #266).
+ * The advisory {@link checkCommandLineSizeAdvisory} returns (issue #266;
+ * per-string term added issue #340).
  *
  * Shaped as the deliberate sibling of {@link WorktreeCountAdvisory}: `level` is
  * the machine-readable verdict and `message` is non-null EXACTLY when
@@ -2475,11 +2547,23 @@ export function measureExecArgumentBytes(
  * check and can never print a warning on the `ok` branch.
  */
 export interface CommandLineSizeAdvisory extends ExecArgumentMeasurement {
-  /** The threshold `bytes` was compared against (the effective one, after any override). */
+  /** The TOTAL threshold `bytes` was compared against (the effective one, after any override). */
   threshold: number;
-  /** `'advisory'` iff `bytes > threshold`; `'ok'` otherwise. */
+  /**
+   * The PER-STRING threshold `maxEntryBytes` was compared against (issue
+   * #340; the effective one, after any override). The sibling of `threshold`
+   * for the OTHER independent E2BIG condition.
+   */
+  maxEntryThreshold: number;
+  /**
+   * `'advisory'` iff EITHER condition trips — `bytes > threshold` (the total)
+   * OR `maxEntryBytes > maxEntryThreshold` (a single oversized entry, issue
+   * #340); `'ok'` only when NEITHER does. A total safely under budget is not
+   * an all-clear by itself: a single oversized argv/env string kills the
+   * spawn on its own, independent of the total.
+   */
   level: 'ok' | 'advisory';
-  /** The advisory text (naming the term, the evidence and the per-term recovery), or `null` when `level` is `'ok'`. */
+  /** The advisory text (naming the term(s) that tripped, the evidence and the per-term recovery), or `null` when `level` is `'ok'`. */
   message: string | null;
 }
 
@@ -2499,22 +2583,39 @@ export interface CommandLineSizeAdvisoryOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /** Override {@link COMMAND_LINE_ADVISORY_THRESHOLD_BYTES}. Must be a non-negative integer. */
   threshold?: number;
+  /** Override {@link MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES} (issue #340). Must be a non-negative integer. */
+  maxEntryThreshold?: number;
 }
 
 /**
- * Build the advisory text for a command line over threshold (issue #266). Its
- * own function for the same reason {@link worktreeCountAdvisoryMessage} is:
- * the engine owns this wording, the operating docs quote it verbatim, and the
- * spec pins the load-bearing substrings so a reword cannot drop one.
+ * Build the advisory text for a command line that tripped EITHER E2BIG
+ * condition (issue #266; per-string term issue #340). Its own function for
+ * the same reason {@link worktreeCountAdvisoryMessage} is: the engine owns
+ * this wording, the operating docs quote it verbatim, and the spec pins the
+ * load-bearing substrings so a reword cannot drop one.
+ *
+ * Always states BOTH numbers and BOTH thresholds — even when only one
+ * condition tripped — so a reader never has to wonder whether the other term
+ * was checked at all.
  */
 function commandLineSizeAdvisoryMessage(
   measurement: ExecArgumentMeasurement,
   threshold: number,
+  maxEntryThreshold: number,
 ): string {
+  const totalOver = measurement.bytes > threshold;
+  const maxEntryOver = measurement.maxEntryBytes > maxEntryThreshold;
   return (
     `${measurement.bytes} bytes of command line (${measurement.argvBytes} argv across ` +
     `${measurement.argCount} entries + ${measurement.envBytes} env across ` +
-    `${measurement.envCount} entries; advisory threshold ${threshold} bytes). ` +
+    `${measurement.envCount} entries; advisory TOTAL threshold ${threshold} bytes` +
+    `${totalOver ? ', OVER' : ''}). Largest single argv/env entry: ` +
+    `${measurement.maxEntryBytes} bytes (advisory PER-STRING threshold ${maxEntryThreshold} ` +
+    `bytes${maxEntryOver ? ', OVER' : ''}). ` +
+    'execve documents E2BIG on TWO INDEPENDENT CONDITIONS: the combined argv+envp TOTAL ' +
+    'and a PER-STRING limit on any ONE entry (MAX_ARG_STRLEN); a total safely under budget ' +
+    'is NOT an all-clear by itself — a single oversized argument or environment value fails ' +
+    'the spawn on its own. ' +
     'Every spawn passes argv and env through ONE fixed kernel exec buffer, so an ' +
     'oversized command line fails with E2BIG ("argument list too long") entirely on its ' +
     'own — no worktree accumulation required, and a single argument is enough. ' +
@@ -2529,22 +2630,36 @@ function commandLineSizeAdvisoryMessage(
  * {@link CommandLineSizeAdvisory} (issue #266) — the second, independent term
  * of the E2BIG budget the worktree count does not model.
  *
+ * Checks TWO independent conditions (issue #340), because execve documents
+ * E2BIG on both and modelling only one leaves the other free to kill a spawn
+ * the advisory called `ok`:
+ *   1. the TOTAL — `bytes > threshold` — the term this check modelled first; and
+ *   2. the PER-STRING limit — `maxEntryBytes > maxEntryThreshold` — a SINGLE
+ *      oversized argv/env entry, which can trip on its own even while the
+ *      total sits comfortably under budget. A reviewer probe (issue #340)
+ *      demonstrated exactly that: a single oversized string that passed a
+ *      total-only advisory and still killed the spawn.
+ * `level` is `'advisory'` if EITHER condition trips; `'ok'` only if NEITHER
+ * does — a clean total is therefore never read as a per-string all-clear, and
+ * vice versa.
+ *
  * ADVISORY BY DESIGN, never a refusal, for exactly the reason
  * {@link checkWorktreeCountAdvisory} is: the remaining headroom depends on a
- * harness-injected sandbox profile this engine cannot see, so the threshold is
- * a heuristic and a hard stop on a heuristic would refuse legitimate work. The
- * caller decides what to do with `level`.
+ * harness-injected sandbox profile (for the total) and the running kernel's
+ * exact page size (for the per-string limit), neither of which this engine
+ * can see, so both thresholds are heuristics and a hard stop on a heuristic
+ * would refuse legitimate work. The caller decides what to do with `level`.
  *
- * The comparison is strictly ABOVE the threshold (`bytes > threshold`), the
- * same boundary the count advisory uses — being exactly at the documented
- * budget is not yet the thing being warned about, and two sibling checks that
- * disagreed about their own boundary would be a trap for whoever reads them
- * side by side.
+ * Both comparisons are strictly ABOVE their threshold (`> `, never `>=`), the
+ * same boundary the count advisory uses — being exactly at a documented
+ * budget is not yet the thing being warned about, and checks that disagreed
+ * about their own boundary would be a trap for whoever reads them side by
+ * side.
  *
- * @throws when an explicit `threshold` is not a non-negative integer — a
- *   garbled override must fail loud rather than silently disable the advisory
- *   (a `NaN` comparison is always false, i.e. it would read as a permanent
- *   `ok`).
+ * @throws when an explicit `threshold` OR `maxEntryThreshold` is not a
+ *   non-negative integer — a garbled override must fail loud rather than
+ *   silently disable the advisory (a `NaN` comparison is always false, i.e.
+ *   it would read as a permanent `ok`).
  */
 export function checkCommandLineSizeAdvisory(
   opts: CommandLineSizeAdvisoryOptions = {},
@@ -2555,21 +2670,32 @@ export function checkCommandLineSizeAdvisory(
       `command-line advisory threshold must be a non-negative integer, got ${String(threshold)}`,
     );
   }
+  const maxEntryThreshold =
+    opts.maxEntryThreshold ?? MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES;
+  if (!Number.isInteger(maxEntryThreshold) || maxEntryThreshold < 0) {
+    throw new Error(
+      `command-line per-string advisory threshold must be a non-negative integer, got ${String(maxEntryThreshold)}`,
+    );
+  }
 
   const measurement = measureExecArgumentBytes(
     opts.argv ?? process.argv,
     opts.env ?? process.env,
   );
 
-  if (measurement.bytes > threshold) {
+  const totalOver = measurement.bytes > threshold;
+  const maxEntryOver = measurement.maxEntryBytes > maxEntryThreshold;
+
+  if (totalOver || maxEntryOver) {
     return {
       ...measurement,
       threshold,
+      maxEntryThreshold,
       level: 'advisory',
-      message: commandLineSizeAdvisoryMessage(measurement, threshold),
+      message: commandLineSizeAdvisoryMessage(measurement, threshold, maxEntryThreshold),
     };
   }
-  return { ...measurement, threshold, level: 'ok', message: null };
+  return { ...measurement, threshold, maxEntryThreshold, level: 'ok', message: null };
 }
 
 // ─── Standalone orphaned-branch sweep (FOR-72 — W15-F1, 3× reproduced) ────────
