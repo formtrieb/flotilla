@@ -279,6 +279,8 @@ const ISSUES = [
     worker: 'background',          // background | background-heavy | foreground | HITL-required
     risk: 'mechanical',            // mechanical | isolated-refactor | cross-feature-refactor | public-API-change
     iteration: 1,
+    // Binds BOTH the Worker (Stage 1) and the Reviewer (Stage 3, ADR-0007
+    // Amendment 2026-07-31) — one Risk-derived tier for the whole row.
     model: 'sonnet',               // 'opus' for cross-feature-refactor / public-API-change, else 'sonnet'
     anchorSha: '<COORDINATOR_HEAD_SHA>',   // git rev-parse HEAD at dispatch time — the wave anchor
     coordinatorBranch: 'feat/<slug>',
@@ -750,10 +752,24 @@ const results = await pipeline(
   // Stage 2 — Scribe(report): durable BEFORE the review even starts. Passes the
   // report through unchanged so the Reviewer stage still receives it.
   (report, issue) => scribe('report', issue, issue.iteration, report, report),
-  // Stage 3 — Reviewer: universal dispatch, schema-validated ReviewerVerdict
+  // Stage 3 — Reviewer: universal dispatch, schema-validated ReviewerVerdict.
+  // Risk routes the Reviewer's model tier: standard for mechanical/isolated-
+  // refactor, heavy otherwise; scope, checklist, and universal dispatch stay
+  // unchanged — this binds WHICH model, never WHETHER or WHAT the Reviewer
+  // reviews, and decouples the Reviewer's cost from whichever model happens
+  // to coordinate the session (ADR-0007 Amendment 2026-07-31).
+  //
+  // CURRENCY CHECK for a re-extracted/reused copy of this script: this call
+  // must carry `model: issue.model` verbatim, mirroring the Worker's Stage-1
+  // binding above. A Stage-3 `agent()` call with no `model` key at all is the
+  // tell for a copy that predates this binding — it silently re-inherits the
+  // Coordinator's own session model for every Reviewer, mechanical rows
+  // included, which was a first-order driver of the 2026-07-30 cost
+  // measurement this amendment answers.
   (report, issue) => agent(reviewerBrief(issue, report), {
     label: `review:${issue.id}`, phase: 'Review',
     agentType: 'wave-reviewer', schema: REVIEWER_VERDICT_SCHEMA,
+    model: issue.model,
   }).then((verdict) => ({ report, verdict })),
   // Stage 4 — Scribe(verdict): persist the verdict, then build the routing tuple.
   (rv, issue) => scribe('verdict', issue, issue.iteration, rv.verdict,
