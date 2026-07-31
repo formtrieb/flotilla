@@ -22,12 +22,9 @@
   },
   "permissions": {
     "allow": [
-      "Bash(npx @formtrieb/flotilla-engine:*)",
-      "Bash(npx tsx tools/wave/src/cli.ts:*)",
       "Bash(./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
-      "Bash(NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine:*)",
-      "Bash(NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts:*)",
       "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
+      "Bash(jq -e -r '.url':*)",
       "Bash(git merge-tree:*)",
       "Bash(npm ci)",
       "Bash(npm ci --prefix:*)",
