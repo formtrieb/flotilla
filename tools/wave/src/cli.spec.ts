@@ -60,6 +60,11 @@ import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
 import {
   WORKTREE_COUNT_ADVISORY_THRESHOLD,
   checkWorktreeCountAdvisory,
+  // The SECOND E2BIG term (issue #266) — same rule: the constant plus the
+  // function, so the router-level expectation is DERIVED from the engine and
+  // this file never restates the wording the engine owns.
+  COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+  checkCommandLineSizeAdvisory,
 } from './worktree-cleanup';
 
 // Mock node:child_process so files-drift integration tests can control the
@@ -2277,6 +2282,16 @@ describe('worktree-cleanup --detached — CLI wiring + dry-run parity (issues #2
       level: string;
       advisory: string | null;
     };
+    commandLine: {
+      bytes: number;
+      argvBytes: number;
+      envBytes: number;
+      argCount: number;
+      envCount: number;
+      threshold: number;
+      level: string;
+      advisory: string | null;
+    };
   };
 
   function parse(): CleanupJson {
@@ -2485,6 +2500,116 @@ describe('worktree-cleanup --detached — CLI wiring + dry-run parity (issues #2
 
     expect(code).toBe(0);
     expect(parse().worktreeCount.level).toBe('advisory');
+  });
+
+  // ─── the command-line term rides beside it (issue #266) ────────────────────
+  //
+  // The count above models only the harness-injected half of the exec argument
+  // budget. The live occurrence blew the OTHER half — ~1019.5 KB of command
+  // line across 3 args, with only 15 of 166 sandbox deny paths worktree-derived
+  // — so this verb's own sweep would have moved nothing. Both terms therefore
+  // print side by side, and these specs pin that they do.
+
+  /** The name is spec-local and its VALUE is never asserted on — only its size. */
+  const BIG_ENV_KEY = 'FLOTILLA_SPEC_E2BIG_PROBE';
+
+  /** Run `body` with an oversized environment entry, always removed afterwards. */
+  function withOversizedEnv<T>(body: () => T): T {
+    process.env[BIG_ENV_KEY] = 'z'.repeat(
+      COMMAND_LINE_ADVISORY_THRESHOLD_BYTES + 1,
+    );
+    try {
+      return body();
+    } finally {
+      delete process.env[BIG_ENV_KEY];
+    }
+  }
+
+  it('commandLine rides BOTH output shapes with every measured field named', () => {
+    const mainRoot = makeRepo('cmdline-shape');
+
+    expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    const preview = parse();
+    expect(preview.commandLine.threshold).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    expect(preview.commandLine.bytes).toBe(
+      preview.commandLine.argvBytes + preview.commandLine.envBytes,
+    );
+    expect(preview.commandLine.argCount).toBeGreaterThan(0);
+    expect(preview.commandLine.envCount).toBeGreaterThan(0);
+    // The same message-null-iff-ok contract `worktreeCount.advisory` carries.
+    expect(preview.commandLine.advisory === null).toBe(
+      preview.commandLine.level === 'ok',
+    );
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', mainRoot])).toBe(0);
+    // Unconditional — no flag to remember, and present on the real-run shape too.
+    expect(parse().commandLine.threshold).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+  });
+
+  it('NEGATIVE CONTROL — an ordinary invocation reports commandLine `ok` with no advisory', () => {
+    // Without this the field could be permanently firing and the assertions
+    // below would still pass. The engine's own test suite runs with a normal
+    // environment, so this is the honest baseline.
+    const mainRoot = makeRepo('cmdline-quiet');
+    expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    const parsed = parse();
+    expect(parsed.commandLine.level).toBe('ok');
+    expect(parsed.commandLine.advisory).toBeNull();
+  });
+
+  it('THE two-term proof at the CLI boundary: a clean worktreeCount beside a firing commandLine', () => {
+    // Exactly the live occurrence's shape, at the seam an operator actually
+    // reads: the population this verb sweeps is pristine, and the spawn is
+    // already over budget. A report that printed only `worktreeCount` here
+    // would have said "all clear" to a session that could not spawn.
+    const mainRoot = makeRepo('cmdline-fires');
+
+    const parsed = withOversizedEnv(() => {
+      expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+      const json = parse();
+      // Derived from the engine IN THE SAME process/env, so the CLI boundary
+      // can never paraphrase the wording the engine owns.
+      expect(json.commandLine.advisory).toBe(checkCommandLineSizeAdvisory().message);
+      return json;
+    });
+
+    expect(parsed.worktreeCount.level).toBe('ok');
+    expect(parsed.commandLine.level).toBe('advisory');
+    expect(parsed.commandLine.envBytes).toBeGreaterThan(
+      COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+    );
+    expect(parsed.commandLine.advisory).toContain('E2BIG');
+    expect(parsed.commandLine.advisory).toContain(
+      'SWEEPING WORKTREES DOES NOT MOVE THIS TERM',
+    );
+    // ...and the count advisory, when it does fire, now says the same thing
+    // from its own side (the correction to its threshold guidance).
+    expect(
+      checkWorktreeCountAdvisory({
+        repoRoot: mainRoot,
+        threshold: 0,
+      }).message,
+    ).toContain('COUNT IS ONLY ONE OF TWO TERMS');
+  });
+
+  it('the command-line advisory is ADVISORY too: an over-threshold spawn still exits 0', () => {
+    const mainRoot = makeRepo('cmdline-not-a-gate');
+    const code = withOversizedEnv(() => main(['worktree-cleanup', mainRoot]));
+    expect(code).toBe(0);
+    expect(parse().commandLine.level).toBe('advisory');
+  });
+
+  it('SECRET-SAFE — the printed JSON carries byte counts, never an argument or a variable', () => {
+    const mainRoot = makeRepo('cmdline-secret-safe');
+    withOversizedEnv(() => {
+      expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    });
+    // The whole stdout buffer, not just the parsed field: nothing anywhere in
+    // the output names the environment entry that tripped the advisory.
+    expect(stdoutBuf).not.toContain(BIG_ENV_KEY);
+    expect(stdoutBuf).not.toContain('zzzzzzzzzz');
+    expect(parse().commandLine.level).toBe('advisory');
   });
 });
 

@@ -309,6 +309,13 @@ import {
   listDetachedScratchpadWorktrees,
   planDetachedScratchpadSweep,
   checkWorktreeCountAdvisory,
+  // The SECOND E2BIG term (issue #266). The count advisory above models only
+  // the harness-injected half of the exec argument budget; this one measures
+  // the command line the spawn itself carries. Imported next to its sibling
+  // because the whole point of the correction is that the two are read
+  // together — a `worktreeCount` printed alone is the model that sent an
+  // operator sweeping worktrees for a megabyte-of-argv failure.
+  checkCommandLineSizeAdvisory,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
@@ -1050,6 +1057,17 @@ function resolveBranchFilter(
  * it never contributes to the exit code (the threshold is a heuristic about a
  * harness-side limit the engine cannot measure — see the engine constant).
  *
+ * `commandLine` (issue #266) rides beside it on both shapes, under the same
+ * unconditional rule: `{ bytes, argvBytes, envBytes, argCount, envCount,
+ * threshold, level, advisory }` from `checkCommandLineSizeAdvisory`, again with
+ * the engine's text verbatim and non-null exactly when `level` is `'advisory'`.
+ * It is the OTHER term of the same exec argument budget — the command line this
+ * spawn carries — and it is printed here precisely because the count alone
+ * misled once: the live occurrence blew the budget with ~1019.5 KB across 3
+ * args while only 15 of 166 sandbox deny paths were worktree-derived, so the
+ * sweep this verb performs would have moved nothing. Advisory too, on the same
+ * grounds, and likewise never part of the exit code.
+ *
  * Idempotent: a re-run after everything is cleaned reports an empty plan and
  * exits 0 (nothing selected → nothing removed).
  *
@@ -1199,6 +1217,36 @@ function runWorktreeCleanup(args: string[]): number {
       advisory: countAdvisory.message,
     };
 
+    // The SECOND E2BIG term (issue #266), printed as `worktreeCount`'s sibling
+    // on both output shapes and under the same no-flag-to-remember rule. The
+    // count above proxies only the harness-injected half of the exec argument
+    // budget; this measures the command line THIS spawn carries (argv + env),
+    // which the live occurrence proved can blow the budget on its own — ~1019.5
+    // KB across 3 args with only 15 of 166 deny paths worktree-derived, fixed
+    // by compressing the argument and by no sweep at all. Reporting the two
+    // terms side by side is what stops an operator reading a clean `count` as
+    // an E2BIG all-clear, and what makes visible that this verb's own work
+    // moves exactly one of them.
+    //
+    // Measured from `process.argv`/`process.env` — a real, first-hand
+    // observation of the exec that is running, not an estimate: the env half is
+    // what EVERY sibling spawn in this session also pays. Byte counts only; the
+    // engine never returns an argument or a variable's name or value, so
+    // nothing here can leak one into the JSON.
+    const cmdlineAdvisory = checkCommandLineSizeAdvisory();
+    // `advisory` carries `CommandLineSizeAdvisory.message` VERBATIM, exactly as
+    // `worktreeCount.advisory` does — same engine-owns-the-wording boundary.
+    const commandLine = {
+      bytes: cmdlineAdvisory.bytes,
+      argvBytes: cmdlineAdvisory.argvBytes,
+      envBytes: cmdlineAdvisory.envBytes,
+      argCount: cmdlineAdvisory.argCount,
+      envCount: cmdlineAdvisory.envCount,
+      threshold: cmdlineAdvisory.threshold,
+      level: cmdlineAdvisory.level,
+      advisory: cmdlineAdvisory.message,
+    };
+
     if (dryRun) {
       // Orphan-BRANCH preview (issue #148): planOrphanBranchSweep is the SAME
       // pure function the real run below executes via executeOrphanBranchSweep
@@ -1249,6 +1297,7 @@ function runWorktreeCleanup(args: string[]): number {
                 }
               : {}),
             worktreeCount,
+            commandLine,
           },
           null,
           2,
@@ -1335,6 +1384,7 @@ function runWorktreeCleanup(args: string[]): number {
           // read as a GC skip would be actively misleading.
           ...(detachedResult !== null ? { detached: detachedResult } : {}),
           worktreeCount,
+          commandLine,
         },
         null,
         2,
