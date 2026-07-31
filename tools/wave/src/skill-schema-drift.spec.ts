@@ -652,6 +652,83 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
   });
 });
 
+describe('skill-schema-drift — the retired Scribe cd-to-REPO_ROOT split stays a documented dead end (#356)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  /**
+   * The exact, quoted prose mention `scribeBrief()` step 1 names as retired
+   * (workflow-driver.md §The Scribe's cwd / step 1's own "DEAD END" clause,
+   * in the "path constants are shell-quoted" describe block's own comment
+   * above). That #251 re-pin correctly stopped asserting this string as
+   * something that SHIPS — but in doing so dropped the ONLY assertion that
+   * the dead-end NOTE ITSELF still exists. A reviewer probe has since
+   * unquoted this exact mention (`cd ${REPO_ROOT}` for `cd "${REPO_ROOT}"`)
+   * with nothing here to fail — this describe block restores that coverage.
+   */
+  const DEAD_END_MENTION = 'cd "${REPO_ROOT}"';
+
+  /**
+   * Every ```bash fence in the rendered brief text. Because the whole driver
+   * script is itself one big ```js markdown fence, a NESTED ```bash fence —
+   * the shape an ACTUAL, runnable step takes — has its backticks individually
+   * escaped in the SOURCE (`\`\`\`bash`, since a bare backtick would close the
+   * enclosing JS template literal); that escaping is exactly what this regex
+   * matches. There is no literal, unescaped ```bash fence anywhere in this
+   * file — the driver has exactly one outer fence, the whole script.
+   */
+  function bashFenceBodies(md: string): string[] {
+    const out: string[] = [];
+    const re = /\\`\\`\\`bash\n([\s\S]*?)\\`\\`\\`/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(md))) out.push(m[1]);
+    return out;
+  }
+
+  /**
+   * True iff the dead-end mention is present verbatim AND never inside a
+   * runnable bash fence. Both halves matter: dropping the mention (or
+   * corrupting it, e.g. unquoting) fails the first half; moving it INTO a
+   * fence — re-adopting the retired split as a live step rather than merely
+   * naming it as one to avoid — fails the second half, even though the
+   * plain substring would still be present somewhere in the document.
+   */
+  function deadEndStillADeadEnd(md: string): boolean {
+    if (!md.includes(DEAD_END_MENTION)) return false;
+    return bashFenceBodies(md).every(
+      (body) => !body.includes('cd "${REPO_ROOT}"') && !body.includes('cd ${REPO_ROOT}'),
+    );
+  }
+
+  it('the dead-end mention is present, quoted, in prose — never inside a runnable bash fence', () => {
+    expect(deadEndStillADeadEnd(driverMd)).toBe(true);
+  });
+
+  it('negative control — the check fails when the mention leaves prose, and when it turns executable (Convention 11 falsification)', () => {
+    // Probe A — "leaves prose": the exact quoted mention is altered. A
+    // reviewer probe already did exactly this, unquoted, live, with no check
+    // here to catch it before this re-pin.
+    const unquoted = driverMd.replace(DEAD_END_MENTION, 'cd ${REPO_ROOT}');
+    expect(unquoted).not.toEqual(driverMd); // the replace actually matched
+    expect(deadEndStillADeadEnd(unquoted)).toBe(false);
+
+    // Probe A2 — the mention leaves prose a second way: deleted outright
+    // rather than merely corrupted.
+    const deleted = driverMd.replace(DEAD_END_MENTION, '');
+    expect(deleted).not.toEqual(driverMd);
+    expect(deadEndStillADeadEnd(deleted)).toBe(false);
+
+    // Probe B — "turns executable": the retired form is re-adopted as a
+    // live step inside an actual runnable bash fence, rather than merely
+    // named in prose as one to avoid. The plain substring is still present
+    // (Probe A's check alone would miss this), which is exactly why the
+    // fence check exists as its own half of the predicate.
+    const fenceMarker = '\\`\\`\\`bash\ncd "${REPO_ROOT}"\n\\`\\`\\`';
+    const reAdopted = `${driverMd}\n${fenceMarker}\n`;
+    expect(reAdopted.includes(DEAD_END_MENTION)).toBe(true); // substring alone still present
+    expect(deadEndStillADeadEnd(reAdopted)).toBe(false); // but the fence check catches it
+  });
+});
+
 /**
  * Finds `openCh` at or after `fromIdx` and walks bracket depth to the
  * matching `closeCh`, returning the balanced substring (inclusive of both
