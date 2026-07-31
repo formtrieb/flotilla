@@ -60,7 +60,16 @@ Convention 4 governs *closing* the issue; this governs *informing the merge deci
 `{{wave-cli}} render-verdict <verdictsDir> <id> --anchor <sha>` is the single-owner render (`renderVerdictSection()`, `reviewer-verdict-schema.ts`): it reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` — the same `sidecar.ts` reader `verdict-acked` uses — and prints a compact `## Reviewer verdict` markdown section (verdict + iteration, the per-AC table, re-run verify counts, anchor SHA, advisories) to stdout. Call it at the `approved → pr-created` terminator (wave-start's PR-open step, right where the store-kind close phrase above is composed) and fold its output into the `--body` passed to `host-pr create`. Because the sidecar reader always resolves the LATEST iteration, a changes-requested → re-dispatch cycle's PR body carries the verdict that actually approved the row, never the stale first one:
 
 ```bash
+# ONE Bash call. The render is captured and CONSUMED here, in the call that
+# produced it — it is the PR body's own input, so it never crosses a call
+# boundary (Convention 12, half two). The guard is INLINE for that reason: a
+# check issued in a later call would inspect a variable that is unset in its own
+# shell, which is not a weaker guard but no guard at all.
 VERDICT_SECTION=$({{wave-cli}} render-verdict "$VERDICTS" "$ID" --anchor "$ANCHOR_SHA")
+if [ -z "$VERDICT_SECTION" ] || [ "$VERDICT_SECTION" = "null" ]; then
+  echo "STOP: VERDICT_SECTION came back empty — render-verdict did not run. Refusing to open a PR whose body silently omits the verdict." >&2
+  exit 1
+fi
 {{wave-cli}} host-pr create --branch <branch> --title "<title>" \
   --body "<summary>
 
@@ -68,5 +77,7 @@ $VERDICT_SECTION
 
 <the store-kind close phrase, on its own line>"
 ```
+
+**Why this capture is in the guarded class.** An empty `VERDICT_SECTION` never means "there was no verdict" — `render-verdict` either finds a valid MAX-iter sidecar and prints a section, or it fails. So emptiness means the verb *did not run*, and the `--body` above would then be composed **without** the render while still reading as a complete PR body: the close phrase present, the summary present, and the one section the human lands the PR on silently gone. That is the same failure shape as the empty PR URL of the `#83` gate run — a missing value that looks exactly like a legitimate one — which is why it stops the terminator rather than degrading quietly. `wave-start/reference/start-mechanics.md`'s step 7c is this same site inside the live dispatch sequence and carries the identical guard; the two are one shape and must not diverge.
 
 Kept compact by construction — this is a projection of the sidecar, not the full typed payload — because a re-dispatch Worker or a rebase resolver reading PR context reads this render too.

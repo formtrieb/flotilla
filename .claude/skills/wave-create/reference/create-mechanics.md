@@ -26,7 +26,8 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 ## Exact sequence
 
 ```bash
-T=$(mktemp -d)
+# A LITERAL scratch dir, deliberately NOT `T=$(mktemp -d)` — see the note below.
+mkdir -p "/tmp/flotilla-create-$SLUG"
 # SLUG  = e.g. "2026-06-18-triage-engine"
 # REPO  = consumer repo root (dir containing wave.config.json)
 # IDS   = space-separated list of chosen issue ids
@@ -53,23 +54,31 @@ T=$(mktemp -d)
 
 # 4. Cross-wave
 #   Write chosen IssueViews (id+files suffice; extra fields ignored) as candidates
-{{wave-cli}} issue-store listClaimed > "$T/claimed.json"
+{{wave-cli}} issue-store listClaimed > "/tmp/flotilla-create-$SLUG/claimed.json"
 {{wave-cli}} cross-wave \
-  --candidates "$T/candidates.json" \
-  --claimed    "$T/claimed.json" \
+  --candidates "/tmp/flotilla-create-$SLUG/candidates.json" \
+  --claimed    "/tmp/flotilla-create-$SLUG/claimed.json" \
   --repo-root  "$REPO"
 
 # 5. Render the spine (WAL — authority first). Create the sidecar dirs FIRST so
 #    `.flotilla/waves/` exists: `spine create` does NOT mkdir its parent (ENOENT otherwise).
 mkdir -p ".flotilla/waves/$SLUG/reports" ".flotilla/waves/$SLUG/verdicts"
-{{wave-cli}} spine create ".flotilla/waves/$SLUG.md" "$T/payload.json"
+{{wave-cli}} spine create ".flotilla/waves/$SLUG.md" "/tmp/flotilla-create-$SLUG/payload.json"
 touch    ".flotilla/waves/$SLUG/reports/.gitkeep" ".flotilla/waves/$SLUG/verdicts/.gitkeep"
 
 # 6. Claim (per id — after spine is flushed)
 {{wave-cli}} issue-store transition "$ID" queued
 ```
 
-`$T` is a temp dir scoped to this run. `candidates.json` is the array of chosen `IssueView`s — built in step 2 by accumulating the `issue-store read` outputs. You can pipe them directly; `IssueView` is a structural superset of `ScopedIssue` (`{id, files}`), so extra fields are ignored by `cross-wave`.
+`/tmp/flotilla-create-$SLUG` is a scratch dir scoped to this wave by its slug. `candidates.json` is the array of chosen `IssueView`s — built in step 2 by accumulating the `issue-store read` outputs. You can pipe them directly; `IssueView` is a structural superset of `ScopedIssue` (`{id, files}`), so extra fields are ignored by `cross-wave`.
+
+**Why that path is written out rather than captured (Convention 12, Form 1).** This sequence used to open with `T=$(mktemp -d)`. That capture is in the **guarded** class, not the legitimate-empty one — `mktemp -d` either prints a path or fails, so an empty `T` means the command did not run, and `> "$T/claimed.json"` with `T` unset writes to `/claimed.json`, at the filesystem root.
+
+Here, though, an inline guard was never even *available*. The value has to reach steps 4, 5 and beyond, and this sequence provably spans many Bash calls: step 2 loops per id, **step 2a stops and asks a human**, and step 4's `candidates.json` is composed by hand between calls. Shell state does not survive any of those boundaries, so `T` would be unset at every point it is used no matter what step 0 checked. A capture whose scope cannot reach its consumers is not a capture to guard — it is one to **remove**, which is the form the convention prefers anyway.
+
+`$SLUG` and `$REPO` remain variables, and that is not an inconsistency: they are **operator-held constants** you already know and retype in each call — the file names `$SLUG` literally in `.flotilla/waves/$SLUG.md` two steps later for exactly that reason. A `mktemp` output is the opposite: a value nobody can retype, because it only ever existed in one shell's memory. The convention is about that difference, not about the `$` sigil.
+
+Scoping by slug keeps two waves created in the same session off each other's scratch files. Keep it **outside** the repo: step 3's `dor` runs working-tree gates against the coordinator's checkout, and in a consumer repo `.flotilla/` is *not* gitignored (the spine is branch-local committed for resume), so scratch JSON parked there would both dirty the tree that gate reads and follow the spine into a commit.
 
 **`--config` on the step-3 `dor` call is not the same convenience as elsewhere in this sequence.** `issue-store`/`cross-wave` fall back to a `wave.config.json` in the working directory when `--config` is omitted; `dor`'s Gate 8 (`verify-profile-coverage`) does not share that fallback — it only sees the consumer's `verify` block when `--config` names it explicitly on *this* call, no matter which directory you're running from. Two outcomes share the `deferred` status text but mean different things: **resolvable** (this call passed `--config`, the file loaded, and `verify.profiles` — empty or not — were actually weighed against the row's files) versus **genuinely absent** (no `--config` reached this call, so the gate never had a `verify` block to look at, and the `defer` says nothing about the row's actual coverage). Pass `--config` as shown; the sequence above should land in the resolvable state on every ordinary run.
 
