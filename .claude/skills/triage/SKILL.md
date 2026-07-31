@@ -75,6 +75,8 @@ If `triage-read` shows no state, the issue is at entry — treat it as `needs-tr
 
 This closes the bare→ready transition's missing verification step: an issue filed bare at a wave's close (ADR-0027) had no premise check anywhere in its lifecycle until it reached here. Do **not** push the check back to close time — the disposition step deliberately authors observations rather than verified diagnoses, and verification is this skill's job, done with a fresh head.
 
+**When to triage a wave-born bare issue at all: pull-triggered, never on a clock.** A bare issue costs nothing while it sits — no claim, no eligibility, invisible to `wave-plan` — and while it stays bare it keeps *ripening*: later waves append evidence to a still-bare thematic bundle (ADR-0027 Amendment 2026-07-31), and a premise that was going to die does so before anyone spends decoration on it (live: a bare issue filed at one wave's close was largely superseded by the next wave the same morning). So triage a bare wave-born issue when a planning pass wants its theme or the pool needs depth — not reflexively at close, and not on a fixed wait. The one exception is a mechanism defect the **next** wave would hit: fast-track that one, or thread its evidence into the brief of a row that already touches the area.
+
 ### 3. Recommend
 
 Tell the maintainer your **category** and **state** recommendation with reasoning, plus a short codebase summary relevant to the issue. Wait for direction unless this is a direct override (see Quick state override).
