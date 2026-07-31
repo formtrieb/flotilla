@@ -49,7 +49,7 @@ The reports/verdicts dirs are **not stored in the spine** — there is no `sidec
 
 The reconciler is a **router subverb** — `{{wave-cli}} resume`, reached through the same one binding as every other call in this skill, exactly like `spine` and `issue-store`. Invoke it as:
 
-`{{wave-cli}} resume --spine <spine-path> --reports <reports-dir> --verdicts <verdicts-dir> --repo-root <consumer-root> [--marker <m>] [--force]` → `{ rows, fatals, cleanup }`.
+`{{wave-cli}} resume --spine <spine-path> --reports <reports-dir> --verdicts <verdicts-dir> [--repo-root <consumer-root>] [--marker <m>] [--force]` → `{ rows, fatals, cleanup }`.
 
 Each `rows[]` entry carries `reconstructedState`, a `decision` (`adopt`/`redispatch`/`keep`/`needs-attention`), the `coarse` rung to re-project, the joined `worktree`, and the latest report/verdict + iters. `fatals[]` lists rows needing manual disposition (orphaned in-flight claim, corrupt sidecar). **Disk beats a non-landed spine flip** — a row's reconstructed state is whatever the newest sidecar proves, not what the spine claims. `{{wave-cli}} resume` is store-free: it reads only the spine + worktrees + sidecars and never touches the tracker.
 

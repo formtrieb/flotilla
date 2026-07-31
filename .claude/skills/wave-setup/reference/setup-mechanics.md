@@ -36,12 +36,14 @@ On exit 1, read the error, fix the named field in the JSON, and re-run. Do not p
 > **Unified subcommand form.** `store-preflight` is a `{{wave-cli}}` (`cli.ts` router) subcommand — issue #77 folded the once-separate `cli-store.ts` entrypoint into the router, so invoke it exactly like every other engine op:
 >
 > ```bash
-> {{wave-cli}} store-preflight [--config wave.config.json]
+> {{wave-cli}} store-preflight [--config wave.config.json] [--expect <plugin-version>]
 > ```
 >
 > `--config` selects the store config (default `wave.config.json`). Like the other store-touching verbs, this one builds the real store — a `github` config needs `GITHUB_TOKEN`, a `linear` config needs `LINEAR_API_KEY`, resolved through the engine's credential seam (`credential-resolver.ts`, ADR-0029): a configured `<VAR>_CMD` first, the ambient `<VAR>` otherwise. On Node ≥ 24 under a proxied sandbox this needs `NODE_USE_ENV_PROXY=1` so the raw-fetch adapters honour the harness proxy — the tracked env block below is the standing source for that flag once it's scaffolded; prefix it explicitly (dogfood in the sandbox) only where no tracked env block applies yet.
 >
 > **This resolution is also the credential live-gate.** Re-running `store-preflight` right after scaffolding a `<VAR>_CMD` entry ([Credential lookup-command scaffold](#credential-lookup-command-scaffold-adr-0029) below) proves the newly-wired lookup command resolves ahead of any stray ambient variable — nothing extra to run.
+>
+> **`--expect <plugin-version>` (ADR-0032) additionally reports the plugin/engine lockstep comparison, as an ADVISORY-ONLY `engine-version` check.** It never fails the preflight and never moves `ok` — a version skew is a setup-time NOTICE here, not a refusal; the hard version gate that STOPs a wave over the identical comparison lives in `wave-start`'s gate phase instead (`{{wave-cli}} version --expect <plugin-version>` — see [wave-start's reference](../../wave-start/reference/start-mechanics.md)). Supply the SAME plugin version that gate derives — read from `.claude-plugin/plugin.json` at this skill's own resolution anchor (the installed-form consumer's plugin clone) — so setup and dispatch compare against one source, never two; on the source-form repo (skills and engine sharing one SHA by construction) the comparison is vacuous and `--expect` is omitted. A value-less or blank `--expect` is a usage error (exit 2, below), never a silent "no expectation" — see [Exit codes for `store-preflight`](#exit-codes-for-store-preflight).
 
 ### What it checks (per store kind)
 
@@ -69,11 +71,11 @@ The report is JSON on stdout:
 
 | Code | Meaning |
 |---|---|
-| `0` | every check passed or is `not-applicable` — safe to hand off to `wave-plan`/`wave-create` |
+| `0` | every check passed or is `not-applicable`/`advisory` — safe to hand off to `wave-plan`/`wave-create` |
 | `1` | a precondition FAILED loudly (read the failing check's `detail` — it names the gap), **or** the probe/host itself threw (bad token, unreachable host) |
-| `2` | usage error, or the config was unreadable/invalid |
+| `2` | usage error, the config was unreadable/invalid, or `--expect` was supplied without a usable `<plugin-version>` value |
 
-On exit 1 from a `fail`, fix the named gap (create the missing Linear state, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0.
+On exit 1 from a `fail`, fix the named gap (create the missing Linear state, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0. The `--expect` lockstep check (above) is advisory-only by construction — it can only be `pass`/`advisory`, so it never turns a `0` into a `1`; only a value-less/blank `--expect` moves the exit code, and it moves it to `2`, not `1`.
 
 ## Host-preflight (`host-pr preflight`) — code-host posture
 
@@ -439,11 +441,13 @@ Exit 0 means the engine will accept it. Any other exit code means there is a pro
 Then, once `config validate` passes, prove the live **tracker** preconditions (integration, state catalog) with the store-preflight, and the live **code-host** posture (merge token, allow-auto-merge, required-checks) with the host-preflight:
 
 ```bash
-{{wave-cli}} store-preflight --config wave.config.json   # tracker facts
+{{wave-cli}} store-preflight --config wave.config.json [--expect <plugin-version>]   # tracker facts (+ the ADR-0032 lockstep advisory, if supplied)
 {{wave-cli}} host-pr preflight                            # code-host posture (store-blind)
 ```
 
 Exit 0 from each means every check passed / is `not-applicable` / is `advisory`/`unknown`. On exit 1, the failing check's `detail` names the exact gap — fix it in Linear/GitHub or the config and re-run. Only after `config validate` **and both preflights** exit 0 is the config ready for `wave-plan`/`wave-create`.
+
+Pass `--expect <plugin-version>` on this run too, for an installed-form consumer (a plugin clone): it surfaces a version skew as an advisory `engine-version` check right here, at setup time, rather than leaving it to surface only when `wave-start`'s gate phase STOPs a wave over the identical comparison later (see the Store-preflight section above). It stays advisory here by design — it never turns this exit 0 into a 1.
 
 ## AFK harness config scaffold: env block + permission allowlist (`.claude/settings.json`)
 
