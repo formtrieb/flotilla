@@ -106,33 +106,40 @@ When `apiChangers` has **two or more** members, surface them as an advisory pair
 
 ## Dispatch-cost estimate derivation (SKILL step 3c)
 
-Derived **skill-side** from the `worker` and `risk` fields already loaded by `listOpen` — there is no engine call, no new verb, and nothing is persisted (wave-plan writes nothing). The multiplier is the driver's own per-row pipeline: `worker → scribe(report) → reviewer → scribe(verdict)` is **four agent dispatches for every row that is actually sent out** (ADR-0024 put the two Scribe stages in that pipeline; ADR-0018 owns the driver). A `cap=1` re-dispatch repeats the whole tuple, so a row that fails once costs up to eight.
+Derived **skill-side** from the `worker` and `risk` fields already loaded by `listOpen` — there is no engine call, no new verb, and nothing is persisted (wave-plan writes nothing). The multiplier is the driver's own per-row pipeline: `worker → scribe(report) → reviewer → scribe(verdict)` is **four agent dispatches for every row that runs the full tuple** (ADR-0024 put the two Scribe stages in that pipeline; ADR-0018 owns the driver). A `cap=1` re-dispatch repeats the whole tuple, so a row that fails once costs up to eight.
+
+**A `foreground` row does not run the full tuple.** Per the coordinator-direct boundary (ADR-0033): the Coordinator implements the row itself, so Worker-side cost is zero — but the row still closes a tracker issue, so its Reviewer still dispatches, followed by the verdict Scribe. A `foreground` row therefore costs **Reviewer + verdict Scribe — two agent dispatches, not four** (there is no Worker report to scribe, so `scribe(report)` does not run either). Folding these rows into the `× 4` headline is exactly the overstatement this carve-out exists to fix.
 
 ```
 dispatchable = candidates.filter(c => c.worker !== 'HITL-required')
-agents       = dispatchable.length * 4          // the headline estimate
+foreground   = dispatchable.filter(c => c.worker === 'foreground')     // ADR-0033: zero Worker-side
+fullPipeline = dispatchable.filter(c => c.worker !== 'foreground')
+
+agents           = fullPipeline.length * 4      // the headline estimate
+foregroundAgents = foreground.length * 2        // Reviewer + verdict Scribe only — named beside the headline, never folded in
 
 heavy = dispatchable.filter(c =>
-  c.worker.endsWith('-heavy') ||                 // heavy Worker (ADR-0012)
+  c.worker.endsWith('-heavy') ||                 // heavy Worker (ADR-0012) — a foreground row never matches here
   c.risk === 'cross-feature-refactor' ||         // heavy Reviewer tier …
-  c.risk === 'public-API-change')                // … (ADR-0007 Amendment 2026-07-31)
+  c.risk === 'public-API-change')                // … (ADR-0007 Amendment 2026-07-31) — a foreground row can still land here on Risk
 
 excluded = candidates.filter(c => c.worker === 'HITL-required')
 ```
 
-Three numbers, reported as one line per candidate set:
+Four figures, reported as one line per candidate set:
 
 | Figure | Meaning |
 |---|---|
-| `dispatchable.length × ~4` | agent dispatches the set would spend if every row goes out once |
-| `heavy.length` | rows running on the `-heavy` tier on the Worker side, the Reviewer side, or both |
+| `fullPipeline.length × ~4` | the headline estimate — agent dispatches the full-tuple rows would spend if every one goes out once |
+| `foreground.length` (× ~2 each) | Coordinator-implemented rows, named beside the headline at their reduced cost: Reviewer + verdict Scribe only, zero Worker-side (ADR-0033) |
+| `heavy.length` | rows running on the `-heavy` tier on the Worker side, the Reviewer side, or both — a `foreground` row can still land here via Risk even though its Worker side is free |
 | `excluded` (by id) | `HITL-required` rows — they cost nothing until a human acts, so they are named, not multiplied |
 
-**`~` is load-bearing.** Four is the happy-path tuple; re-dispatches, a `blocked` Worker that never reaches its Reviewer, and rows held at the human gate all move the real number. Report it as an estimate and never as a budget the Coordinator is then held to.
+**`~` is load-bearing on both figures.** Four is the happy-path full tuple and two is the happy-path Reviewer-only tuple; re-dispatches, a `blocked` Worker that never reaches its Reviewer, and rows held at the human gate all move the real number. Report both as estimates and never as a budget the Coordinator is then held to.
 
-**Heavy is counted, never weighted.** There is deliberately no cost multiplier per tier and no currency conversion — the moment the line produces a single scalar "score", it becomes the sizing heuristic wave-plan does not do. Two numbers side by side keep the judgment where it belongs.
+**Heavy is counted, never weighted. Foreground is carved out, never dropped.** There is deliberately no cost multiplier per tier and no currency conversion — the moment the line produces a single scalar "score", it becomes the sizing heuristic wave-plan does not do. Naming `foreground` rows beside the headline is the same discipline applied to a second axis: it corrects the arithmetic, and it scores nothing, ranks nothing, filters nothing, and recommends nothing about the set — those rows are still drawn in step 1, still reported, and still eligible for the heavy flag. Figures side by side (plus the foreground carve-out and the excluded list) keep the judgment where it belongs.
 
-**Nothing here filters the candidate set.** `dispatchable` exists to keep `HITL-required` rows out of a multiplication they do not belong in — those rows are still drawn, still reported, and still flagged (SKILL step 1). Excluding a row from the *estimate* is not excluding it from the *set*.
+**Nothing here filters the candidate set.** `dispatchable` exists to keep `HITL-required` rows out of a multiplication they do not belong in, and `foreground` exists to keep Coordinator-implemented rows out of the `× 4` multiplication they no longer belong in either — those rows are still drawn, still reported (at their own reduced cost), and still flagged (SKILL step 1). Excluding a row from one multiplication is not excluding it from the *set*.
 
 ## Exit codes for `cross-wave`
 
