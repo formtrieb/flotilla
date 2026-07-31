@@ -217,6 +217,25 @@ else
   #            (a value-less --expect), not a verdict: fix the call and re-run.
 fi
 
+# 4c. Anchor resolvability gate — a well-formed but FABRICATED anchorSha
+#     (workflow-driver.md's own compose-time assertion only checks
+#     presence/non-emptiness, not resolvability — see "The anchor-
+#     resolvability gate" below) fails once here, host-side, instead of
+#     reaching every Worker + Reviewer brief individually. Per row, before
+#     ISSUES is composed:
+git -C "$REPO" rev-parse --verify "${ANCHOR_SHA}^{commit}" > /dev/null
+#   exit 0    → resolves to a real commit in this checkout; proceed.
+#   non-zero  → STOP `(blocking) anchorSha for row $ID does not resolve — re-
+#   derive it (git rev-parse HEAD at dispatch time) before composing ISSUES.
+
+# 4d. Driver compose-currency gate — confirm the Workflow script about to be
+#     dispatched is either freshly extracted from workflow-driver.md's current
+#     `## The script` fence, or (if reused) has passed its seeded currency-
+#     assertion checklist — see "The driver compose-currency gate" below and
+#     workflow-driver.md's "The compose-fresh-or-verify rule". No engine verb
+#     backs this one; it is a Coordinator discipline, run before ANY row is
+#     composed into ISSUES.
+
 # 5. Mark each NON-HELD row in-flight (WAL: spine first, then rung, in row order).
 #    Skip any id present in HELD_IDS (step 3) — its State stays `planned`. Skip
 #    every HUMAN-HELD id (step 3b) for the identical reason and by the identical
@@ -412,6 +431,35 @@ Single-owner, deliberately: the command lives in the engine (`tools/wave/src/cli
 
 **The same comparison, earlier and softer.** `{{wave-cli}} store-preflight --expect <plugin-version>` reports the identical check as an `advisory` entry in its `checks` array at setup/plan time. It never fails the preflight and never moves its exit code: at plan time a skew is information, and refusing there would block a `wave-plan` on a fact that only bites at dispatch. The refusal belongs *here*, where the next action is a dispatch.
 
+## The anchor-resolvability gate (step 4c) — a fabricated SHA fails once, host-side
+
+**What is checked, and why the existing compose-time assertion cannot catch it.** `workflow-driver.md`'s `assertRequiredRowFields` runs `isMissingField` over every row before any brief is composed — but that predicate tests presence/non-emptiness only (`undefined`, `null`, the literal string `"undefined"`, or a blank/whitespace-only value). A well-formed anchor SHA that simply does not name a real commit in this checkout — a fabricated value with a correct-looking short prefix, a copy-paste of the wrong hash, a stale value left over from an earlier session — is present and non-empty, so it passes that check exactly as a real anchor does. Nothing inside the composed script can catch the gap either: a Workflow `script` has no filesystem or git access (§Harness constraint, `workflow-driver.md`), so resolvability can only be checked host-side, by the Coordinator, before compose.
+
+**Why this is a STOP and not left to the Reviewer.** A bad anchor reaches every row's Worker (`git reset --hard <anchorSha>`) AND every row's Reviewer (the diff base) individually — the defect is discovered N times, once per dispatched agent, instead of once. §Recovery protocol below already documents the cost of a bad anchor caught only downstream (two Reviewers returning spurious `questions-blocking` against the literal string `"undefined"`); an unresolvable-but-well-formed SHA is the same failure shape one layer earlier, and the check is one `git` invocation host-side.
+
+```bash
+git -C "$REPO" rev-parse --verify "${ANCHOR_SHA}^{commit}" > /dev/null
+```
+
+`--verify … ^{commit}` fails (non-zero) on anything that is not a real, resolvable commit object in this checkout — a fabricated hash, a real-looking prefix with no match, a SHA that belongs to a different remote/fork entirely — while passing on any resolvable commit-ish (full SHA, unique abbreviation, tag, branch). Run it per row, before `ISSUES` is composed and before step 5 flips anything.
+
+**Live occurrence.** A fabricated anchor SHA with a correct 7-character prefix passed compose and reached four parallel Worker/Reviewer briefs; all four Workers independently caught it themselves during their own workspace-setup `git rev-parse HEAD` confirmation (workflow-driver.md's own step-2 check) — four agent budgets spent discovering, individually, a defect this one host-side check would have caught once, before any of them ran.
+
+**Layered on top of, never a replacement for, the presence-only check.** `REQUIRED_ROW_FIELDS`/`isMissingField` in `workflow-driver.md` still catches an absent/blank/`"undefined"` `anchorSha` — that check is unchanged, and stays exactly as narrow as it was (Authoring constraint #7 there names why: it asks "is this field present enough to interpolate", not "does this value resolve"). This gate is the ONLY place that catches a well-formed value that does not exist.
+
+## The driver compose-currency gate (step 4d) — the composed script is a copy, and copies go stale
+
+Every dispatch composes the Workflow script from `workflow-driver.md`'s current `## The script` fence. That composition is a COPY, and — unlike a bad row (caught by step 4c above, or by `workflow-driver.md`'s own compose-time assertions) — a stale COPY of the whole driver is a defect nothing INSIDE the copy can detect: a copy's own assertions are exactly as out of date as the rest of it.
+
+**The gate.** Before any row is composed into `ISSUES`, confirm the script about to be dispatched is either:
+
+1. **freshly extracted** from `workflow-driver.md`'s current `## The script` fence at this compose time, or
+2. **currency-checked**, if a previously-composed copy is being reused instead (a scratch file, a compose carried over from an earlier wave in the same session) — diffed against the document's CURRENT script and walked against the seeded currency-assertion checklist in `workflow-driver.md`'s "The compose-fresh-or-verify rule".
+
+A copy that is neither is not eligible to dispatch. There is no engine verb behind this one and no exit code to read — it is a Coordinator discipline, the same shape as step 3b's per-pass human confirmation: asked fresh, every time, because the fact it checks (does this copy match the document) is exactly as perishable as that gate's own "has a human acted yet."
+
+**Why this is a gate here and not just a note in `workflow-driver.md`.** The rule lives with its full rationale and its currency-assertion checklist in `workflow-driver.md` (where a Coordinator composing the script is already reading); this file names it as a required step in the dispatch sequence, in the same place the other pre-fan-out gates (4a, 4b, 4c) live, so a Coordinator following the phase sequence mechanically cannot skip past it the way a note living only in prose elsewhere could be skimmed over. Both motivating occurrences — a frozen template that outlived the cwd-persistence fix, and the compose-fresh anchor-diff that caught a falsified reviewer-isolation claim one wave later — are recorded as evidence in `workflow-driver.md`'s own section.
+
 ## Routing a tuple `{ id, risk, iteration, report, verdict }`
 
 ```bash
@@ -479,7 +527,10 @@ WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
 #   the Worker-opened PR (last-writer-wins). --body carries the rendered
 #   `## Reviewer verdict` section (wave-shared "the reviewer-verdict render")
 #   ABOVE the store-kind close phrase (Convention 4), the ONLY tracker id the
-#   title/body may name.
+#   title/body may name. Because that render always carries the close phrase,
+#   `create`'s reuse-refusal guard should never legitimately fire here — the
+#   CREATE_EXIT check below interprets it as a compose defect if it does
+#   (workflow-driver.md "PR-open reuse-refusal"), never routes around it.
 #   github-only in M1 (bitbucket/unknown fail loud + typed); reads GITHUB_TOKEN.
 # CALL 1 — render the verdict and open the PR. The rendered section is captured
 # and CONSUMED in this same call (Convention 12, half two): it is the PR body's
@@ -503,8 +554,20 @@ fi
 $VERDICT_SECTION
 
 <close phrase>"
-#   Run it BARE — no `| jq`, no `$( )`. find-before-create is idempotent, so this
-#   re-pins the PR the Worker already opened and re-writes its body.
+CREATE_EXIT=$?
+#   Run the CALL ITSELF bare — no `| jq`, no `$( )` around it — so its JSON
+#   lands directly in this session's own output; find-before-create is
+#   idempotent, so this re-pins the PR the Worker already opened and re-writes
+#   its body. `$?` above is the exit status of THAT bare call, read in the
+#   SAME call it ran in — not a value captured across a call boundary
+#   (Convention 12 governs the latter, not this).
+#
+#   INTERPRET THE OUTCOME BEFORE CALL 2 — a non-zero exit here is not a case
+#   CALL 2's re-query papers over (workflow-driver.md "PR-open reuse-refusal"):
+if [ "$CREATE_EXIT" -ne 0 ]; then
+  echo "STOP: host-pr create exited $CREATE_EXIT for wave/$ID-$SLUG — read its printed JSON's .outcome before doing anything else (create-failed | reuse-refused; workflow-driver.md 'PR-open reuse-refusal'). A reuse-refused response still names the existing PR's .url — the refusal made NO write, so that URL is not evidence the rendered verdict landed. Never pass --allow-close-phrase-loss to get past this: the body composed above already carries the close phrase (Convention 4), so a refusal here means THIS body is malformed, not that the guard is wrong. Fix the composition and re-run create (idempotent) before CALL 2." >&2
+  exit 1
+fi
 
 # CALL 2 — RE-QUERY THE HOST FOR THE URL, then write the spine from that answer.
 # The URL is never carried from call 1: shell state does not survive between Bash
@@ -514,7 +577,11 @@ $VERDICT_SECTION
 # status` asks the host again and answers with `state` as well as `url`, which
 # distinguishes the two things an empty capture cannot: a PR that exists from one
 # that does not. Everything below runs in THIS one call, so the guard and the two
-# spine writes share the scope of the value they are about.
+# spine writes share the scope of the value they are about. This call ALONE only
+# ever answers "does a PR exist for this branch" — it is reached at all only
+# because the CREATE_EXIT check above already interpreted CALL 1's own outcome,
+# so a reuse-refused rewrite can no longer flow through to a silent pr-created
+# flip via this re-query's mere presence-of-a-url answer.
 PR_URL=$({{wave-cli}} host-pr status --branch "wave/$ID-$SLUG" | jq -r '.url // empty')
 if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ] || [ "$PR_URL" = "undefined" ]; then
   echo "STOP: host-pr status reports no URL for wave/$ID-$SLUG — no PR exists (state: none) or the verb did not run. NOT flipping the row to pr-created." >&2
