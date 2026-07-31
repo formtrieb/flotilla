@@ -9,6 +9,56 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.0.0] — 2026-07-31
+
+The first stable release. What changes with the number: **the package-root export
+surface and the `wave.config.json` schema are now semver contracts** — from here,
+removing or reshaping either is a major bump. What made the freeze possible is that the
+surface is now *deliberate*: every engine module export is either public at the package
+root or named on a reason-carrying module-local allowlist, and a drift spec fails on any
+symbol that is neither.
+
+### Added
+
+- **The deliberate public API.** ~85 previously root-unreachable symbols are exported
+  on purpose — the `IssueStore` contract itself, `GitHubIssuesStore`, `MarkdownFsStore`,
+  `RealGitHubApi`, the host-pr landing family, and the route/config/DoR CLI runners among
+  them. An installed-form consumer imports the engine's real seams by name instead of
+  reaching through module paths.
+- **Barrel-drift guard**: a spec comparing every source module's exports against the
+  package root via TypeScript-compiler **symbol identity** (not name matching, which two
+  real re-export/alias cases in this repo would defeat), with permanent negative
+  controls. A new module with neither barrel nor allowlist coverage fails loudly, naming
+  module and symbol.
+- **Reuse-refusal semantics reach the caller docs** (plugin half): `host-pr create`'s
+  close-phrase guard (`reuse-refused`) is documented at both PR-opening call sites, with
+  the exit-code interpretation that keeps a refused rewrite from reading as success —
+  the refusal payload deliberately still carries the PR URL, and a later existence
+  re-query is not proof the rewrite landed.
+- **Compose-currency rule** (plugin half): a composed workflow driver is coupled to the
+  document it was extracted from — compose fresh, or walk the seeded currency-assertion
+  checklist before reuse; the dispatch mechanics carry it as a named gate step, with
+  host-side anchor-resolvability beside it (a fabricated SHA fails once at compose, not
+  in every brief).
+
+### Fixed
+
+- **The verify-profile scaffold pins both halves of resolution** — the binary
+  (lockfile-pinned local form) *and* the discovery root — with a live measurement of
+  what each half's absence does (a registry-fetched runner at a different version; a
+  repo-root test-file sweep failing the suite). The three-occurrence recurrence arc is
+  recorded: a prose warning demonstrably does not close this class; the profile itself
+  must name the pinned form.
+
+### Not yet proven
+
+- The stable contract covers the engine package root and the `wave.config.json` schema.
+  The plugin's skill prose is versioned in lockstep but keeps evolving at minor cadence —
+  it is operating guidance, not API.
+- The beta line was exercised by one external consumer stack (Linear store, nested Node
+  tree) across live waves; the 1.0.0 surface as frozen here has not yet been imported by
+  an external consumer.
+
 ## [0.1.0-beta.2] — 2026-07-31
 
 The release that makes the **bundled echo-guard current** — and the floor version for
