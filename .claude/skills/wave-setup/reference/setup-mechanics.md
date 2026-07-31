@@ -243,6 +243,56 @@ Each `VerifyProfile`:
 
 `cwd` is optional on each command; if absent, the command runs from the repo root.
 
+#### Measure before recording — resolution proven by execution, not inspection
+
+A profile's `commands` describes the consumer's build gate; it is not, automatically, the exact spelling that resolves once a Worker or Reviewer is standing inside a fresh worktree checkout rather than the consumer's own already-populated working copy. Composing the JSON straight from that description and treating the string as final is exactly the trap a live wave hit at compose time (Wave `2026-07-30-arm-and-wiring`, coordinator disclosure 254.3): the bare `npx vitest run` / `npx tsc --noEmit` form looked like the obvious spelling of "run the tests, run the type-gate" and resolved to **nothing** — no local binary at the repo root, so `npx` reached for the npm registry instead of failing loud — on a consumer whose dependency directory is **nested**, not at the repo root.
+
+**Measure it: run the command for real, and observe it resolve the local binary.** Never treat a `commands` entry as final on the strength of reading the config — that is inspection, not proof, and this is the same standard `config validate`/both preflights already hold every other precondition to.
+
+**flotilla's own repo, worked (the nested-dependency-directory case) — confirmed live in this dispatch.** The engine lives at `tools/wave/`, not the repo root, so its dependency directory (`tools/wave/node_modules`) is nested. Convention 13 rules out papering over this with a fused `cd tools/wave && npx vitest run` (the same two mechanisms — the permission gate, the worktree-isolation guard — that refuse a fused Worker step refuse a fused verify command too, wave-shared Convention 13). The measured, resolving forms carry the directory IN the command instead:
+
+```json
+{
+  "verify": {
+    "profiles": [
+      {
+        "name": "engine",
+        "appliesTo": ["tools/wave/**"],
+        "commands": [
+          { "command": "npm ci --prefix tools/wave" },
+          { "command": "./tools/wave/node_modules/.bin/vitest run" },
+          { "command": "./tools/wave/node_modules/.bin/tsc -p tools/wave --noEmit" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+confirmed by execution in this dispatch: the vitest form resolved and ran **2675 passing tests across 62 files**; the tsc form resolved and exited **0**. The plausible-looking bare-form profile below is what a Coordinator re-deriving the spelling by hand, per wave, tends to compose instead — and it is exactly the one that resolves to nothing on this repo's own shape:
+
+```json
+{
+  "verify": {
+    "profiles": [
+      {
+        "name": "engine",
+        "appliesTo": ["tools/wave/**"],
+        "commands": [
+          { "command": "npm ci --prefix tools/wave" },
+          { "command": "npx vitest run" },
+          { "command": "npx tsc --noEmit" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Three further spellings of this same pair are measured, with real call counts, in ["2026-07-31 pass"](#2026-07-31-pass--the-used-but-absent-direction-issue-291) below — that pass audited them from the allowlist-reconciliation angle (which spellings are *used* vs. *allowlisted*); this section is the same measured fact read from the setup angle (which spelling actually *resolves*, and is it recorded before a wave ever needs it).
+
+**The recorded forms are the compose-time source for the driver's verify constants.** Once measured, record the exact resolved command strings alongside the config — SKILL.md's "Worktree-brief inputs" precondition, item 3 — the same way `depsSetup` and `engine.cli` are recorded from their own items. `workflow-driver.md`'s per-row brief quotes this recorded shape when it renders the row's Verification-gates step, rather than a Coordinator re-deriving a plausible form from `wave.config.json`'s own profile description at every wave's compose time. **That re-derivation loop is retired** (issue #272): the form is proven once, here, at setup — not re-guessed, per wave, at dispatch.
+
 ### `CleanupConfig`
 
 | Field | Required | Shape |
@@ -561,6 +611,8 @@ An entry landing without either is exactly the drift this issue exists to close.
 ### 2026-07-31 pass — the used-but-absent direction (issue #291)
 
 **The #269 reconciliation above runs in exactly one direction: live entry → is it cited?** It classified what the file *carried*; it never asked what the file *lacked*. Issue #291's guard inherits that asymmetry verbatim — its failing condition is "a live allowlist entry that is neither in the scaffold's canonical set nor dogfood-documented", which no amount of green can tell you about a command a dispatched agent runs a hundred times without an entry. A one-directional check and a complete one are indistinguishable from their output; this is the Convention 9 wiring-gap shape applied to the allowlist itself.
+
+This pass reads the same measured facts through the allowlist lens (is the spelling on the permission surface?). ["Measure before recording"](#measure-before-recording--resolution-proven-by-execution-not-inspection) above reads the identical trap through the wave-setup PROCEDURE lens (was the resolving spelling ever measured and recorded before a Coordinator needed it?) — the gap that lens closes is issue #272, and it is why this pass's own findings below double as that section's worked evidence rather than being re-measured from scratch.
 
 **Method (converse of the #269 method).** Every `Bash` tool call in this repo's session transcripts since 2026-07-26 was extracted from the on-disk JSONL — coordinator sessions *and* the per-worktree AFK Worker/Reviewer transcripts, which live under their own `~/.claude/projects/<worktree-path>/` roots and are missed entirely by a scan of the coordinator's project directory alone. 694 transcripts, 644 of them worker-side, 12,337 Bash calls. Each leading command form was then matched against the live `permissions.allow`.
 
