@@ -275,9 +275,14 @@ const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // variable in command position.
 const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 <engine.cli from wave.config.json, verbatim>'
 // REPORTS_DIR / VERDICTS_DIR stay ABSOLUTE regardless — sidecar dirs are
-// addressed independent of whatever cwd the Scribe's REPO_ROOT `cd` leaves it
-// in. Like REPO_ROOT, both are interpolated SHELL-QUOTED wherever they reach a
-// brief (the Scribe's `--dir "${dir}"` call, below) for the same reason.
+// addressed independent of the cwd the Scribe was dispatched into, and there is
+// no `cd` anywhere in its brief for that cwd to have been moved by: the Scribe
+// OBSERVES its cwd once and never sets it (§The Scribe's cwd, above). Absolute
+// is what makes these two dirs indifferent to the observation's outcome — a
+// cwd mismatch is a finding to report, never a reason `--dir` resolves
+// somewhere else. Like REPO_ROOT, both are interpolated SHELL-QUOTED wherever
+// they reach a brief (the Scribe's `--dir "${dir}"` call, below) for the same
+// reason.
 const REPORTS_DIR = '<absolute .flotilla/waves/<slug>/reports>'
 const VERDICTS_DIR = '<absolute .flotilla/waves/<slug>/verdicts>'
 
@@ -770,17 +775,25 @@ normalizes that one itself and tells you it did.)
    Coordinator's precondition — dispatch the wave from the repo root — never a workaround
    of yours.
 2. Write the payload below — the single line that follows this paragraph — EXACTLY,
-   byte-for-byte (no edits), to this ABSOLUTE path:
-   \`${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json\`
-   Absolute because the verb reads that argument against the process cwd, so a bare
+   byte-for-byte (no edits), to this ABSOLUTE path, spelled here shell-quoted exactly
+   as step 3 spells it:
+   \`"${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json"\`
+   ABSOLUTE because the verb reads that argument against the process cwd, so a bare
    relative name would put back into step 3 exactly the dependency step 1 exists to
-   retire. Prefer your file-writing TOOL over a shell heredoc: it takes the absolute path
-   directly, creates the parent directory, and involves no shell at all — which also
-   sidesteps the heredoc-to-file-with-braces shape Convention 13's Catalog records as
-   refused, and every JSON payload carries braces by construction. If you do use a
-   heredoc, its redirect target must be that same absolute path and the directory must
-   already exist (\`mkdir -p\` in its own prior call). The name is deterministic, so a
-   retry overwrites rather than accumulates.
+   retire. QUOTED because an absolute repo root is precisely where spaces and non-ASCII
+   characters live — this repo's own checkout path carries both a space and a
+   typographic en-dash — and an unquoted path argument breaks on one; every shell
+   position this path reaches therefore keeps its quotes, the payload file no less than
+   the sidecar \`--dir\`. Prefer your file-writing TOOL over a shell heredoc: it takes
+   the path directly — WITHOUT those quotes, which are the shell spelling and not part
+   of the filename — creates the parent directory, and involves no shell at all, which
+   also sidesteps the heredoc-to-file-with-braces shape Convention 13's Catalog records
+   as refused (and every JSON payload carries braces by construction). If you do use a
+   heredoc, its redirect target is that same path, quoted —
+   \`cat > "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" <<'EOF'\` — and
+   the directory must already exist, from an equally quoted
+   \`mkdir -p "${REPO_ROOT}/.flotilla/tmp"\` in its own prior call. The name is
+   deterministic, so a retry overwrites rather than accumulates.
 ${JSON.stringify(payload)}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
