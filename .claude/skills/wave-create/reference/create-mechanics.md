@@ -17,7 +17,7 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 | `issue-store read <id>` | `IssueView` — worker, risk, files |
 | `issue-store triage-read <id>` | `TriageView` — `.title` (tracker-native title, triaged or not) |
 | `issue-store listClaimed` | `IssueView[]` — all currently queued + in-flight issues |
-| `dor --id <id> --repo-root <dir>` | DoR gate; working-tree gates run against the coordinator's checkout |
+| `dor --id <id> --repo-root <dir> --config <path>` | DoR gate; working-tree gates run against the coordinator's checkout, and `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring |
 | `cross-wave --candidates <f.json> --claimed <f.json> --repo-root <dir>` | `CrossWaveResult` — parallel-safety check |
 | `spine create <out-path> <payload.json>` | render and write the `WAVE.md` spine |
 | `issue-store transition <id> queued` | set the soft claim |
@@ -46,8 +46,10 @@ T=$(mktemp -d)
 #     Default = include-and-hold (NOT abort): the row is materialized and claimed
 #     like any other, and wave-start holds it in the human lane at dispatch.
 
-# 3. DoR (per id) — working-tree gates run with --repo-root
-{{wave-cli}} dor --id "$ID" --repo-root "$REPO"
+# 3. DoR (per id) — working-tree gates run with --repo-root; --config is what
+#    lets Gate 8 (verify-profile-coverage) see the consumer's verify block at
+#    all, on THIS call, regardless of cwd (see note below the sequence)
+{{wave-cli}} dor --id "$ID" --repo-root "$REPO" --config "$REPO/wave.config.json"
 
 # 4. Cross-wave
 #   Write chosen IssueViews (id+files suffice; extra fields ignored) as candidates
@@ -68,6 +70,8 @@ touch    ".flotilla/waves/$SLUG/reports/.gitkeep" ".flotilla/waves/$SLUG/verdict
 ```
 
 `$T` is a temp dir scoped to this run. `candidates.json` is the array of chosen `IssueView`s — built in step 2 by accumulating the `issue-store read` outputs. You can pipe them directly; `IssueView` is a structural superset of `ScopedIssue` (`{id, files}`), so extra fields are ignored by `cross-wave`.
+
+**`--config` on the step-3 `dor` call is not the same convenience as elsewhere in this sequence.** `issue-store`/`cross-wave` fall back to a `wave.config.json` in the working directory when `--config` is omitted; `dor`'s Gate 8 (`verify-profile-coverage`) does not share that fallback — it only sees the consumer's `verify` block when `--config` names it explicitly on *this* call, no matter which directory you're running from. Two outcomes share the `deferred` status text but mean different things: **resolvable** (this call passed `--config`, the file loaded, and `verify.profiles` — empty or not — were actually weighed against the row's files) versus **genuinely absent** (no `--config` reached this call, so the gate never had a `verify` block to look at, and the `defer` says nothing about the row's actual coverage). Pass `--config` as shown; the sequence above should land in the resolvable state on every ordinary run.
 
 ## Building `conflict` from `CrossWaveResult.intraWaveConflicts`
 
