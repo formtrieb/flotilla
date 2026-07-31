@@ -461,6 +461,95 @@ describe('echo-guard family 3 — the double-quoted search-PATTERN carve-out (20
 });
 
 // ---------------------------------------------------------------------------
+// 4e. Family 3 — the quote-NESTING fix (2026-07-31): an embedded quote inside
+// a live `$(...)` substitution opens its OWN nested scope instead of closing
+// the OUTER double-quoted wrapper
+// ---------------------------------------------------------------------------
+//
+// One shape further out than 4c/4d, and a distinct residual from the
+// parenthesized-alternation fix above: that fix is POSITION-aware liveness
+// for `(`/`)`; this is quote-STATE nesting. Observed live during wave
+// 2026-07-30-hitl-gate-and-guards, on the very row that landed the
+// parenthesized-alternation fix: a Worker's commit message, written with the
+// system-recommended `git commit -m "$(cat <<'EOF' … EOF)"` heredoc form,
+// quoted that fix's own guarded example — "(printenv|env)" — straight inside
+// the heredoc BODY as prose. The OLD single-level double-quote scanner read
+// that embedded `"` as CLOSING the outer `-m "..."` wrapper, re-exposing the
+// rest of the commit message as unprotected top-level text and isolating
+// `printenv` and `env` as bare command heads (reproduced against the PRE-FIX
+// matcher below, Convention 11). Reconstructed here rather than quoted
+// byte-for-byte — the exact live commit message is not preserved verbatim in
+// the provenance — but it is a faithful, independently-confirmed reproduction
+// of the reported shape: the same quoted-substitution commit form, quoting
+// the same guarded example this repo's own history introduced.
+describe('echo-guard family 3 — the quote-nesting fix (2026-07-31)', () => {
+  it('AC: the live-observed shape — a guarded example quoted inside a heredoc-wrapped commit message — passes the guard', () => {
+    const body = [
+      'git commit -m "$(cat <<\'EOF\'',
+      'fix(echo-guard): parenthesized alternation in double quotes passes without blinding substitution detection',
+      '',
+      'Regression test derived from a rg search whose pattern was "(printenv|env)" -- previously',
+      'isolated as a bare env head.',
+      '',
+      'Closes #318',
+      'EOF',
+      ')"',
+    ].join('\n');
+    expectAllowed(runGuard(body, {}));
+  });
+
+  it('AC: a simpler, single-line version of the same shape — a RAW (unescaped) quote nested inside a live $(...) — passes', () => {
+    // The minimal reproduction of the exact mechanism, without a heredoc:
+    // `echo "..."` genuinely nested inside `$(...)`, itself inside the outer
+    // `-m "..."` wrapper — real bash re-parses `$(...)`'s content from
+    // scratch, so the inner `"..."` is its own independent quoted string,
+    // not a character that closes the outer one.
+    expectAllowed(runGuard('git commit -m "$(echo "note: (printenv|env) example")"', {}));
+  });
+
+  it('negative control: a genuinely UNBALANCED embedded quote does not hide a REAL trailing dump outside the whole construct', () => {
+    // The heredoc body's embedded quote never closes ("unterminated example)
+    // — a malformed shape a Worker should never intentionally write, but the
+    // safety invariant must hold anyway: `&& printenv`, genuinely at the top
+    // level AFTER the whole `-m "$(...)" ` argument, must still be reachable.
+    // Proves the nesting fix can only WIDEN what counts as inert prose on a
+    // malformed input, never SUPPRESS a real invocation sitting outside it.
+    const body = [
+      'git commit -m "$(cat <<\'EOF\'',
+      'see "unterminated example',
+      'EOF',
+      ')" && printenv',
+    ].join('\n');
+    const result = runGuard(body, {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('negative control: a REAL command substitution alongside the quoted example, inside the same heredoc body, still blocks', () => {
+    // The quoted "(printenv|env)" example stays inert prose, but a genuine
+    // $(printenv) sitting right next to it in the same message must still be
+    // caught — the nesting fix must not blind family 3 to the one construct
+    // it exists to keep reachable.
+    const body = [
+      'git commit -m "$(cat <<\'EOF\'',
+      'see "(printenv|env)" for the pattern, and confirm via $(printenv) locally',
+      'EOF',
+      ')"',
+    ].join('\n');
+    const result = runGuard(body, {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('negative control: the pre-existing single-line REAL command substitution inside double quotes is unaffected', () => {
+    // Same shape as the 4c negative control above, re-asserted here so this
+    // describe block also pins the property in isolation from the heredoc
+    // form specifically.
+    expectBlocked(runGuard('echo "current token check: $(printenv)"', {}));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 4d. Family 2 — the KEEP decision for the value-substituting-expansion
 // shape in quoted/prose position (2026-07-30, same-day sibling datapoint)
 // ---------------------------------------------------------------------------

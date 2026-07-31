@@ -113,7 +113,8 @@
  *     file`) is never a real invocation. `neutralizeQuotedSpans()` blanks
  *     every SEGMENT_SPLIT trigger character it finds there before family 3's
  *     head detection runs.
- *   - **A double-quoted string — but only its genuinely INERT characters.**
+ *   - **A double-quoted string — but only its genuinely INERT characters —
+ *     and now ONE LEVEL OF QUOTE NESTING inside a live substitution.**
  *     Unlike a single-quoted span, `$` and a backtick ARE live inside double
  *     quotes in real bash (`"$(printenv)"` really does run `printenv`), so
  *     those two stay untouched unconditionally. What DOES get blanked inside
@@ -125,25 +126,64 @@
  *     apostrophe like the one in `"don't …"` is still never mistaken for a
  *     single-quote delimiter, because the double-quote branch never watches
  *     for `'` at all — only its own closing `"` ends it.
- *     **`(` and `)` are POSITION-aware, resolving the earlier residual.**
- *     The structural fact that settles this: real command substitution
- *     requires the `$(` OPENER — a bare `(` sitting in double-quoted prose
- *     with no `$` immediately before it is not an expansion by itself, in
- *     real bash, ever. So `neutralizeQuotedSpans()` tracks how many `$(`
- *     openers are currently outstanding inside the CURRENT double-quoted
- *     span (one counter, reset per span — not a nested-paren parser): a `(`
- *     is live and increments the counter ONLY when the character
- *     immediately before it in the ORIGINAL command is `$`; a `)` is live
- *     and decrements the counter ONLY while it is still above zero. Every
- *     other `(`/`)` — a bare opener with nothing live behind it, or a closer
- *     with no outstanding live opener — is exactly as inert as `;` or `|`
- *     and gets blanked the same way, which is what turns
- *     `"(printenv|env)"` into prose instead of an isolated `env` head. A
- *     REAL `$(...)`, including one nested inside another
- *     (`"$(echo $(printenv))"`), keeps every one of its parens live, because
- *     each is either a genuine `$(` opener or a closer with a live opener
- *     still outstanding — a one-token lookbehind is enough; no lookahead or
- *     bracket-pairing logic is needed to get that right.
+ *     **`(` and `)` are POSITION-aware.** Real command substitution requires
+ *     the `$(` OPENER — a bare `(` sitting in double-quoted prose with no
+ *     `$` immediately before it is not an expansion by itself, in real
+ *     bash, ever. `neutralizeQuotedSpans()` pushes a fresh, independent
+ *     parsing FRAME onto a stack the moment it sees a live `$(` — the same
+ *     thing real bash does, because `$(...)` genuinely starts a nested
+ *     command line, re-parsed from scratch, with no memory of the quote
+ *     that was open around it. `"(printenv|env)"` still becomes prose, not
+ *     an isolated `env` head, because its parens are bare (no `$` behind
+ *     them); `"$(echo $(printenv))"` still keeps every paren live, because
+ *     each is either a genuine `$(` opener or the closer of one still
+ *     outstanding — the STACK (not a flat counter) is what makes an
+ *     arbitrary nesting depth of that come out right without a real
+ *     bracket-matcher.
+ *     **The quote-NESTING fix (2026-07-31, this issue).** The flaw the
+ *     stack closes: a `"..."` quoted INSIDE that live `$(...)` frame — e.g.
+ *     an example like `"(printenv|env)"` quoted straight inside a
+ *     `git commit -m "$(cat <<'EOF' … EOF)"` message, the live-observed
+ *     shape — used to be read by the OLD single-level
+ *     scanner as CLOSING the outer double quote, because there was only one
+ *     `state` variable and any `"` flipped it. That re-exposed the rest of
+ *     the Worker's own prose as unprotected top-level text and isolated the
+ *     guarded words inside the quoted example as bare command heads —
+ *     exactly the false positive this fix removes. Because a live `$(` now
+ *     pushes its OWN frame, an embedded `"` encountered while that frame is
+ *     on top opens an INDEPENDENT nested quote scope instead of touching
+ *     the outer one — exactly what real bash does, since `$(...)`'s content
+ *     is parsed as its own command line — and popping back out to the outer
+ *     double quote happens only once that nested frame's own bookkeeping
+ *     says its `$(...)` has genuinely closed (a bare, non-`$`-prefixed
+ *     paren pair encountered INSIDE that frame — plain prose like
+ *     `fix(echo-guard):` — is tracked on that frame's own counter first, so
+ *     it cannot masquerade as the frame's real closing paren either).
+ *     **The safety invariant that makes this survive a MALFORMED nesting,
+ *     not just a well-formed one:** `$` and a backtick stay live at EVERY
+ *     stack depth, unconditionally, never gated behind whether a frame
+ *     above them balanced — so a genuinely UNBALANCED embedded quote can at
+ *     worst leave a frame open for the rest of the command, which only
+ *     WIDENS what this scan treats as inert prose (the same failure mode a
+ *     single unclosed top-level quote already had before this fix); it can
+ *     never hide a genuine `$(...)`/backtick invocation, because reaching
+ *     one always still pushes/pops a live frame regardless of what quote
+ *     state surrounds it. Both directions are pinned as regression tests:
+ *     the live shape now passes, and a genuinely unbalanced embedded quote
+ *     still leaves a REAL trailing dump — outside the whole construct —
+ *     reachable.
+ *     **Residual, named rather than assumed away.** This is still a
+ *     character scanner, not a shell grammar, and two gaps survive this
+ *     fix: (1) backslash-escape handling exists only for the OUTERMOST
+ *     double-quote branch, so an escaped quote (`\"`) encountered INSIDE a
+ *     live `$(...)` frame can still mis-open or mis-close a nested frame —
+ *     the same gap the top-level (unquoted) branch already had before this
+ *     fix, now simply inherited one level in, not newly introduced; (2)
+ *     `neutralizeHeredocBodies()` still runs as one flat pre-pass over the
+ *     WHOLE command before any quote scope is known, so a heredoc-looking
+ *     token that is really just prose inside an unrelated quoted string can
+ *     still be folded as if it opened a real heredoc — a pre-existing,
+ *     separate residual this fix does not touch.
  *   - **A heredoc BODY.** It is argument/stdin DATA for whatever reads it, not
  *     a further sequence of top-level commands, so a bare line that happens to
  *     open with the dump word must not manufacture a fake per-line command
@@ -407,21 +447,67 @@ function blankChars(chars, text) {
  * they are not unconditionally inert either — real command substitution
  * genuinely needs them. The structural signal that resolves this: command
  * substitution requires the `$(` OPENER; a bare `(` with no `$` immediately
- * before it is not an expansion by itself, in real bash, ever. So this scan
- * tracks how many `$(` openers are currently outstanding inside the CURRENT
- * double-quoted span — one counter, reset at the start of each new
- * double-quoted span, no pairing or nesting parser required. A `(` is live
- * (and increments the counter) only when the ORIGINAL command's
- * immediately-preceding character is `$`; a `)` is live (and decrements the
- * counter) only while it is still above zero. Everything else — a bare `(`
- * opened from nothing, or a `)` with no live opener outstanding — is exactly
- * as inert as `;` or `|` and gets blanked the same way, which is what turns
- * a PARENTHESIZED alternation in a quoted search PATTERN
- * (`"(printenv|env)"`) into prose instead of an isolated `env` head. A
- * genuine `$(...)`, even nested (`"$(echo $(printenv))"`), keeps every one
- * of its parens live, because each is either a real `$(` opener or a closer
- * with a live opener still outstanding — the one-token lookbehind is
- * sufficient; no lookahead or bracket-matching is needed.
+ * before it is not an expansion by itself, in real bash, ever. A `(` is live
+ * only when the ORIGINAL command's immediately-preceding character is `$`;
+ * everything else — a bare `(` opened from nothing, or a `)` with no live
+ * opener outstanding — is exactly as inert as `;` or `|` and gets blanked
+ * the same way, which is what turns a PARENTHESIZED alternation in a quoted
+ * search PATTERN (`"(printenv|env)"`) into prose instead of an isolated
+ * `env` head. A genuine `$(...)`, even nested (`"$(echo $(printenv))"`),
+ * keeps every one of its parens live.
+ *
+ * **Quote NESTING — one level, via a frame STACK, not a flat counter
+ * (2026-07-31).** A live `$(` does not just make its own two parens live —
+ * it starts a wholly new, independent parsing context, exactly as real bash
+ * does: `$(...)`'s content is re-parsed from scratch, with no memory of
+ * whatever quote was open around it. So a `"..."` quoted INSIDE that live
+ * substitution (`git commit -m "$(cat <<'EOF' … "(printenv|env)" … EOF)"`,
+ * the live-observed shape this fix exists for) must open its OWN nested
+ * double-quoted span, not be read as the character that closes the OUTER
+ * one — which is exactly the bug the OLD implementation had: a single flat
+ * `state` variable with no stack meant ANY `"`, wherever it sat, closed
+ * whatever double-quoted span was currently open, re-exposing the rest of
+ * the Worker's own prose as unprotected top-level text and isolating the
+ * guarded words inside the quoted example as bare command heads. The fix:
+ * push a fresh FRAME — `{ quote: 'none', isSubst: true, bareParenDepth: 0 }`
+ * — onto a stack the moment a live `$(` is seen (from a `'double'` frame or
+ * from inside another such frame, so nesting composes to arbitrary depth,
+ * not just one level in practice); pop it only when its OWN closing `)` is
+ * reached — gated by `bareParenDepth`, so a bare, non-`$`-prefixed paren
+ * PAIR encountered inside it (plain prose like `fix(echo-guard):`) is
+ * absorbed by that counter first and can never masquerade as the frame's
+ * real close. A `'`/`"` seen while that frame is on top pushes its own
+ * `'single'`/`'double'` child frame, reusing the EXACT SAME blanking rules
+ * as the outermost quote (so a bare paren or pipe inside the nested example
+ * is exactly as inert there as at the top level) — which is what makes
+ * `"(printenv|env)"`, quoted inside the live substitution, prose again
+ * instead of two isolated heads.
+ *
+ * **The safety invariant that survives a MALFORMED nesting, not just a
+ * well-formed one:** `$` and a backtick stay live at EVERY frame depth,
+ * unconditionally — never gated behind whether some frame above them ever
+ * balances. So a genuinely UNBALANCED embedded quote (one that never finds
+ * its close) can, at worst, leave a frame open for the remainder of the
+ * command — which only WIDENS what this scan treats as inert prose, the
+ * same failure mode a single unclosed top-level quote already had before
+ * this fix — it can never SUPPRESS a genuine `$(...)`/backtick invocation,
+ * because reaching one always still pushes or pops a live frame regardless
+ * of what quote state surrounds it. Both directions are pinned as
+ * regression tests in `../src/echo-guard.spec.ts`: the live shape now
+ * passes, and a genuinely unbalanced embedded quote still leaves a REAL
+ * trailing dump — sitting outside the whole construct — reachable.
+ *
+ * **Residual, named rather than assumed away.** Still a character scanner,
+ * not a shell grammar: (1) backslash-escape handling exists only for the
+ * OUTERMOST double-quote branch below, so an escaped quote (`\"`)
+ * encountered INSIDE a live `$(...)` frame can still mis-open or mis-close
+ * a nested frame — the same gap the unquoted (`'none'`) branch already had
+ * before this fix, now simply inherited one level in, not newly
+ * introduced; (2) `neutralizeHeredocBodies()` still runs as one flat
+ * pre-pass over the WHOLE command before any quote scope is known, so a
+ * heredoc-looking token that is really just prose inside an unrelated
+ * quoted string can still be folded as if it opened a real heredoc — a
+ * pre-existing, separate residual this fix does not touch.
  *
  * A hand-rolled quote-state scan, not a shell parser — it exists only to
  * defuse the evidenced false-positive shapes without touching a real
@@ -431,16 +517,29 @@ function blankChars(chars, text) {
  * @returns {string}
  */
 function neutralizeQuotedSpans(command) {
+  /**
+   * @typedef {{ quote: 'none' | 'single' | 'double', isSubst: boolean, bareParenDepth: number }} Frame
+   */
+  /**
+   * A stack of parsing frames. `stack[0]` is the BASE frame — genuinely
+   * top-level, unquoted text — and is never popped. Every other frame is
+   * pushed either by a quote character (`'single'`/`'double'`) or by a LIVE
+   * `$(` command-substitution opener (a `'none'`-quote frame marked
+   * `isSubst`, representing the fresh parsing context real bash starts
+   * inside `$(...)` — see the quote-nesting note above). `bareParenDepth`
+   * lives only on `'none'`-quote frames: it counts BARE (non-`$`-prefixed)
+   * `(`/`)` pairs seen while that frame is on top, so one of those pairs
+   * (ordinary prose, e.g. `fix(echo-guard):`) can never be mistaken for the
+   * frame's own closing paren.
+   * @type {Frame[]}
+   */
+  const stack = [{ quote: 'none', isSubst: false, bareParenDepth: 0 }];
   let out = '';
-  /** @type {'none' | 'single' | 'double'} */
-  let state = 'none';
-  // Count of `$(` openers seen inside the CURRENT double-quoted span that
-  // have not yet been closed by a live `)` — the paren rule above. Reset at
-  // the start of every new double-quoted span.
-  let liveParenDepth = 0;
   for (let i = 0; i < command.length; i += 1) {
     const ch = command[i];
-    if (state === 'double') {
+    const frame = stack[stack.length - 1];
+
+    if (frame.quote === 'double') {
       if (ch === '\\' && i + 1 < command.length) {
         out += ch + command[i + 1];
         i += 1;
@@ -449,11 +548,11 @@ function neutralizeQuotedSpans(command) {
       if (ch === '(') {
         // Live ONLY as the opener of a real `$(...)` — i.e. only when the
         // character immediately before it in the ORIGINAL command (not the
-        // partially-neutralized output) is `$`. A bare `(` with nothing live
-        // behind it carries no expansion meaning inside double quotes at
-        // all, so it is exactly as inert as `;` or `|`.
+        // partially-neutralized output) is `$`. Live: push the substitution's
+        // own frame (the quote-nesting fix). Not live: exactly as inert as
+        // `;` or `|` inside double quotes.
         if (command[i - 1] === '$') {
-          liveParenDepth += 1;
+          stack.push({ quote: 'none', isSubst: true, bareParenDepth: 0 });
           out += ch;
         } else {
           out += ' ';
@@ -461,35 +560,56 @@ function neutralizeQuotedSpans(command) {
         continue;
       }
       if (ch === ')') {
-        // Live only while a `$(` opened above is still outstanding; a `)`
-        // with none outstanding closes nothing live.
-        if (liveParenDepth > 0) {
-          liveParenDepth -= 1;
-          out += ch;
-        } else {
-          out += ' ';
-        }
+        // A `)` reached while the TOP frame is still `'double'` can never be
+        // the close of a live substitution — if one were open here, ITS
+        // frame would be on top, not this one — so it is always exactly as
+        // inert as `;` or `|`.
+        out += ' ';
         continue;
       }
       const blank = SEGMENT_SPLIT_CHARS.has(ch) && !DOUBLE_QUOTE_LIVE_CHARS.has(ch);
       out += blank ? ' ' : ch;
-      if (ch === '"') state = 'none';
+      if (ch === '"') stack.pop(); // close THIS frame, resume whatever it interrupted
       continue;
     }
-    if (state === 'single') {
+
+    if (frame.quote === 'single') {
       if (ch === "'") {
-        state = 'none';
+        stack.pop();
         out += ch;
         continue;
       }
       out += SEGMENT_SPLIT_CHARS.has(ch) ? ' ' : ch;
       continue;
     }
+
+    // frame.quote === 'none' — either the BASE (unquoted top level) or a
+    // live `$(...)` substitution's own fresh parsing context. Real bash
+    // performs no blanking of its own here (an unquoted `;`/`|`/`&` genuinely
+    // separates commands), so every character passes through unchanged; a
+    // nested `'`/`"` opens its own independent quote frame, and — for a
+    // subst frame specifically — a BALANCED `)` pops back to whatever this
+    // substitution interrupted.
     out += ch;
-    if (ch === "'") state = 'single';
-    else if (ch === '"') {
-      state = 'double';
-      liveParenDepth = 0;
+    if (ch === "'") {
+      stack.push({ quote: 'single', isSubst: false, bareParenDepth: 0 });
+    } else if (ch === '"') {
+      stack.push({ quote: 'double', isSubst: false, bareParenDepth: 0 });
+    } else if (ch === '(') {
+      if (command[i - 1] === '$') {
+        stack.push({ quote: 'none', isSubst: true, bareParenDepth: 0 });
+      } else {
+        frame.bareParenDepth += 1;
+      }
+    } else if (ch === ')') {
+      if (frame.bareParenDepth > 0) {
+        frame.bareParenDepth -= 1;
+      } else if (frame.isSubst) {
+        stack.pop();
+      }
+      // else: the BASE frame, nothing outstanding — pass through unchanged,
+      // matching the pre-existing top-level behaviour (an unmatched `)` at
+      // top level is just ordinary text to this scanner).
     }
   }
   return out;
