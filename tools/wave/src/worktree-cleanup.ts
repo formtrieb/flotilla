@@ -784,6 +784,25 @@
  * governs everywhere force is not explicitly, narrowly threaded by this
  * amendment. This is a scoped carve-out of that stance for a THIRD kind of
  * obstruction the original two paragraphs never named, not a reversal of it.
+ *
+ * ── a repo-internal location with no lifecycle at all (issue #355) ────────────
+ *
+ * Every population above is a WORKTREE, and every one of them accumulated
+ * because some sweep could not SEE it. The Scribe scratch directory accumulated
+ * for a simpler reason: no sweep was ever written for it. A repo-wide grep
+ * (wave `2026-07-31-hub-docs-and-e2big-family`, iteration-2 reviewer probe,
+ * disclosure 251.4) found the path at four `wave-start` driver sites and two
+ * spec sites and in NO cleanup path — not wave-close, not wave-resume, not
+ * start-mechanics.
+ *
+ * {@link listScribeScratchEntries} / {@link planScribeScratchSweep} /
+ * {@link executeScribeScratchSweep} / {@link sweepScribeScratch} close that,
+ * as a file sweep with a NAME allowlist rather than a directory sweep with a
+ * content allowlist — the full rationale, including why the containment root
+ * is not evidence here the way a worktrees root is, sits at that section's own
+ * heading. It rides the existing `--orphans` pass ({@link executeOrphanSweep})
+ * so it is reached on every close path the ceremony already runs, and reports
+ * whole under {@link OrphanSweepResult.scratch}.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -1762,6 +1781,24 @@ export interface OrphanSweepResult {
    * disk (so nothing an orphan sweep did to disk ever vanishes silently).
    */
   errors: Array<{ path: string; message: string }>;
+  /**
+   * The Scribe scratch sweep's own whole result (issue #355), carried here as
+   * an ADDITIVE, OPTIONAL field rather than merged into the three above — the
+   * two populations answer different questions and a scratch skip read as an
+   * orphan-directory skip would be actively misleading, exactly the reasoning
+   * that keeps the detached sweep under its own `detached` key.
+   *
+   * Present **exactly when** {@link OrphanSweepOptions.repoRoot} was supplied
+   * explicitly. That gate is a safety property, not an ergonomic one: the
+   * scratch sweep deletes FILES at a path derived from a repo root, so it
+   * refuses to guess one from `process.cwd()` — a guessed root would let any
+   * caller standing anywhere (a unit test, a nested tool) reach a real
+   * payload directory it never named. Absent field → the sweep did not look;
+   * present field → it looked, and {@link ScratchSweepResult.present} says
+   * whether the directory was even there. "Did not look" and "looked and found
+   * nothing" are therefore never the same reading.
+   */
+  scratch?: ScratchSweepResult;
 }
 
 /**
@@ -1808,6 +1845,20 @@ export interface OrphanSweepOptions {
    * {@link OrphanRemover}'s junk purge.
    */
   disposableNames?: readonly string[];
+  /**
+   * Repo-relative Scribe scratch directory override (issue #355). Defaults to
+   * {@link SCRIBE_SCRATCH_RELATIVE_DIR}. Only ever consulted when `repoRoot`
+   * is supplied — see {@link OrphanSweepResult.scratch}.
+   */
+  scratchDir?: string;
+  /**
+   * Injectable removal seam for the Scribe scratch sweep (issue #355) —
+   * defaults to {@link defaultScratchRemover}. Deliberately its OWN option
+   * rather than a reuse of {@link OrphanSweepOptions.remover}: that one removes
+   * whole directories, this one removes single payload files, and a test that
+   * fakes one must not silently fake the other.
+   */
+  scratchRemover?: ScratchRemover;
 }
 
 /**
@@ -1923,6 +1974,14 @@ export function planOrphanSweep(orphans: OrphanDir[]): OrphanSweepPlan {
  * untouched. A per-item failure — a throw, OR a directory still present after
  * the remover reported success (verify-after-write) — is collected in `errors`
  * and never silently dropped.
+ *
+ * ALSO runs the Scribe scratch sweep (issue #355) and reports it whole under
+ * {@link OrphanSweepResult.scratch} — but ONLY when `opts.repoRoot` was given
+ * explicitly. The two sweeps are independent (an empty orphan plan still gets
+ * a scratch sweep), and the repoRoot gate is the safety rule that keeps a
+ * file-deleting sweep from ever guessing its own root. See
+ * {@link OrphanSweepResult.scratch} and the section comment on
+ * {@link sweepScribeScratch}.
  */
 export function executeOrphanSweep(
   plan: OrphanSweepPlan,
@@ -1950,7 +2009,28 @@ export function executeOrphanSweep(
     }
   }
 
-  return { removed, skipped: plan.skipped, errors };
+  // The Scribe scratch sweep rides this same `--orphans` pass (issue #355).
+  // Riding it, rather than growing a flag of its own, is deliberate: the flag
+  // this repo's own close ceremony already passes UNCONDITIONALLY on every
+  // phase-3 call — and again after phase 4a's pull — is the one place a sweep
+  // can be added and actually be reached on every close, which is the whole
+  // failure this closes (a scratch dir nothing swept, in any cleanup path).
+  const scratch =
+    opts.repoRoot !== undefined
+      ? sweepScribeScratch({
+          repoRoot: opts.repoRoot,
+          scratchDir: opts.scratchDir,
+          remover: opts.scratchRemover,
+          pathExists: opts.pathExists,
+        })
+      : undefined;
+
+  return {
+    removed,
+    skipped: plan.skipped,
+    errors,
+    ...(scratch !== undefined ? { scratch } : {}),
+  };
 }
 
 /**
@@ -1984,6 +2064,295 @@ export function defaultOrphanRemover(
   return {
     remove(dirPath: string): void {
       physicallyDeleteWithJunkPurge(nodePath.resolve(dirPath), declared);
+    },
+  };
+}
+
+// ─── The Scribe scratch sweep — a location with no lifecycle (issue #355) ─────
+//
+// Every sweep above answers a question about a WORKTREE. This one does not: it
+// answers the same question about the one repo-internal directory the wave
+// pipeline writes to and nothing ever cleans.
+//
+// The shape. `wave-start`'s Workflow driver dispatches a **Scribe** per stage
+// (ADR-0024): a Workflow script has no filesystem of its own, so the durable
+// sidecar write is delegated to a small agent that (1) writes the
+// already-schema-validated payload to a deterministic file under the repo's
+// Scribe scratch directory and (2) hands that file to the engine's
+// `write-report`/`write-verdict` verb, which persists the REAL record under
+// `.flotilla/waves/<slug>/reports|verdicts/`. Step 1's file is pure hand-off:
+// the moment step 2 returns, it is residue. Nothing has ever deleted it.
+//
+// MEASURED (wave `2026-07-31-hub-docs-and-e2big-family`, iteration-2 reviewer
+// probe, disclosure 251.4): a repo-wide grep found the scratch path at four
+// driver sites and two spec sites, and **in no cleanup path at all** — not
+// wave-close, not wave-resume, not start-mechanics. The name is deterministic
+// per `(kind, row id, iteration)`, so a retry overwrites rather than
+// accumulates — but a WAVE does not: every row of every wave leaves two files
+// behind, forever, in a directory a consumer that TRACKS `.flotilla/` would
+// otherwise commit.
+//
+// Why this sweep is a file sweep and not a directory sweep, and why that
+// changes the safety rule. Every other population in this module is a
+// directory whose disposability is decided by SCANNING its contents against a
+// junk allowlist. Here the containment root is not evidence of anything — the
+// scratch directory is a plain repo path a human can just as easily park a
+// file in. So the allowlist moves from the CONTENT to the NAME, and it is the
+// narrowest one available: only a basename matching the Scribe's own
+// deterministic payload shape is ever removed. Anything else under that
+// directory — a differently-named file, a subdirectory of any content — is
+// reported with `reason: 'not-a-scribe-payload'` and left exactly where it is.
+// This is the same "small, fixed allowlist, never a wildcard" discipline
+// `FINDER_JUNK_NAMES`/`JUNK_DIR_NAMES` hold, applied to the one population
+// where a content scan would prove nothing.
+//
+// Why it rides `--orphans` rather than a flag of its own: see the comment at
+// the fold site in {@link executeOrphanSweep}. Its result is reported WHOLE
+// under {@link OrphanSweepResult.scratch}, never merged into the
+// orphan-directory numbers — the same not-merged reasoning the `detached` key
+// already carries.
+
+/**
+ * The repo-relative directory the `wave-start` Scribe writes its hand-off
+ * payloads into (issue #355). A caller may override it
+ * ({@link ScratchSweepOptions.scratchDir}) but never needs to: the driver
+ * spells this exact path, and the sweep and the writer must agree by
+ * construction, not by coincidence.
+ */
+export const SCRIBE_SCRATCH_RELATIVE_DIR = '.flotilla/tmp';
+
+/**
+ * The Scribe payload basename shape — `<kind>-<row id>-<iteration>.json`, with
+ * `kind` one of the two the driver emits.
+ *
+ * The row id is OPAQUE (ADR-0001), so this pattern deliberately does NOT parse
+ * it — it only requires that SOMETHING sits between the kind prefix and the
+ * numeric iteration suffix. That is the whole point: an id this module cannot
+ * interpret is still an id this module can refuse to invent a meaning for.
+ */
+const SCRIBE_PAYLOAD_NAME_PATTERN = /^(?:report|verdict)-.+-\d+\.json$/;
+
+/** Machine-readable cause a Scribe-scratch skip is tagged with (issue #355). */
+export type ScratchSkipReason = 'not-a-scribe-payload';
+
+/** One entry found directly inside the Scribe scratch directory (issue #355). */
+export interface ScratchEntry {
+  /** Absolute path to the entry. */
+  path: string;
+  /**
+   * Whether the entry is a FILE whose basename matches the Scribe's
+   * deterministic payload shape. `true` → selected for removal; `false` →
+   * skipped, never touched.
+   */
+  scribePayload: boolean;
+  /**
+   * Present only on a skipped entry (`scribePayload: false`): the
+   * machine-readable skip cause. Absent on a selected/removed entry.
+   */
+  reason?: ScratchSkipReason;
+}
+
+/** What {@link listScribeScratchEntries} found, and where it looked. */
+export interface ScratchListing {
+  /** Absolute path of the scratch directory this listing looked in. */
+  dir: string;
+  /**
+   * Whether that directory exists and is readable. `false` → `entries` is
+   * empty because there was nothing to read, NOT because it was empty. Keeping
+   * the two apart is what stops "swept nothing" from reading like "swept".
+   */
+  present: boolean;
+  /** Every entry directly inside the directory, classified. Never recursive. */
+  entries: ScratchEntry[];
+}
+
+/** The Scribe-scratch sweep plan — what is removed, what is left (issue #355). */
+export interface ScratchSweepPlan {
+  /** Absolute path of the scratch directory the plan was computed from. */
+  dir: string;
+  /** Whether that directory existed at plan time — carried through verbatim. */
+  present: boolean;
+  /** Entries selected for removal (Scribe payload files only). */
+  selected: ScratchEntry[];
+  /** Entries skipped, each carrying a `reason`. */
+  skipped: ScratchEntry[];
+}
+
+/** Result of executing a Scribe-scratch sweep (issue #355). */
+export interface ScratchSweepResult {
+  /** Absolute path of the scratch directory that was swept. */
+  dir: string;
+  /** Whether that directory existed — an absent directory is a legitimate no-op. */
+  present: boolean;
+  /** Payload files successfully removed. */
+  removed: ScratchEntry[];
+  /** Entries skipped (never removed) — each carries a `reason`. */
+  skipped: ScratchEntry[];
+  /**
+   * Errors encountered during removal — including the verify-after-write case
+   * where the remover reported success but the file is STILL on disk, the same
+   * discipline {@link executeOrphanSweep} applies to a directory.
+   */
+  errors: Array<{ path: string; message: string }>;
+}
+
+/**
+ * Physical-removal seam for one Scribe payload file (issue #355), mirroring
+ * the {@link OrphanRemover} injection pattern one level down: a single file,
+ * no git registration, no junk purge (there is no subtree to purge).
+ */
+export interface ScratchRemover {
+  /** Physically delete one payload file by absolute path. Throws on failure. */
+  remove(filePath: string): void;
+}
+
+/** Options for the Scribe-scratch sweep (issue #355). */
+export interface ScratchSweepOptions {
+  /**
+   * Absolute repo root the scratch directory resolves under. Defaults to
+   * `process.cwd()` for the standalone entry points — but note that
+   * {@link executeOrphanSweep} deliberately refuses to apply that default on
+   * the caller's behalf (see {@link OrphanSweepResult.scratch}).
+   */
+  repoRoot?: string;
+  /** Repo-relative scratch dir override. Defaults to {@link SCRIBE_SCRATCH_RELATIVE_DIR}. */
+  scratchDir?: string;
+  /** Injectable removal seam. Defaults to {@link defaultScratchRemover}. */
+  remover?: ScratchRemover;
+  /**
+   * Injectable on-disk existence probe (verify-after-write) — mirrors
+   * {@link OrphanSweepOptions.pathExists}. Called AFTER a remover reports
+   * success; `true` means the file is still present (recorded as an error,
+   * never as a silent success). Defaults to `fs.existsSync`.
+   */
+  pathExists?: (path: string) => boolean;
+}
+
+/**
+ * List every entry directly inside the Scribe scratch directory, classified
+ * against the payload-name allowlist (issue #355). Never recursive: the driver
+ * writes flat into this directory, so a subdirectory is by definition not a
+ * payload and is reported rather than descended into.
+ *
+ * An absent/unreadable directory is a legitimate answer (`present: false`,
+ * no entries), not an error — a repo where no wave has ever dispatched has no
+ * scratch directory at all.
+ */
+export function listScribeScratchEntries(
+  repoRoot = process.cwd(),
+  opts: { scratchDir?: string } = {},
+): ScratchListing {
+  const dir = nodePath.resolve(
+    repoRoot,
+    opts.scratchDir ?? SCRIBE_SCRATCH_RELATIVE_DIR,
+  );
+
+  let raw: Dirent[];
+  try {
+    raw = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return { dir, present: false, entries: [] };
+  }
+
+  const entries: ScratchEntry[] = raw.map((entry) => ({
+    path: nodePath.join(dir, entry.name),
+    scribePayload: entry.isFile() && SCRIBE_PAYLOAD_NAME_PATTERN.test(entry.name),
+  }));
+
+  return { dir, present: true, entries };
+}
+
+/**
+ * Build the Scribe-scratch sweep plan: a payload file is selected; anything
+ * else is skipped with `reason: 'not-a-scribe-payload'` — the same
+ * report-but-never-remove refusal `planOrphanSweep` applies to a directory
+ * holding real files.
+ */
+export function planScribeScratchSweep(
+  listing: ScratchListing,
+): ScratchSweepPlan {
+  const selected: ScratchEntry[] = [];
+  const skipped: ScratchEntry[] = [];
+  for (const entry of listing.entries) {
+    if (entry.scribePayload) {
+      selected.push(entry);
+    } else {
+      skipped.push({ ...entry, reason: 'not-a-scribe-payload' });
+    }
+  }
+  return { dir: listing.dir, present: listing.present, selected, skipped };
+}
+
+/**
+ * Execute a Scribe-scratch sweep: physically remove each selected payload file
+ * (a dry run simply never calls this). The remover is invoked ONLY for
+ * `selected` entries. A per-item failure — a throw, OR a file still present
+ * after the remover reported success (verify-after-write) — is collected in
+ * `errors` and never silently dropped.
+ */
+export function executeScribeScratchSweep(
+  plan: ScratchSweepPlan,
+  opts: ScratchSweepOptions = {},
+): ScratchSweepResult {
+  const remover = opts.remover ?? defaultScratchRemover();
+  const pathExists = opts.pathExists ?? existsSync;
+
+  const removed: ScratchEntry[] = [];
+  const errors: Array<{ path: string; message: string }> = [];
+
+  for (const entry of plan.selected) {
+    try {
+      remover.remove(entry.path);
+      if (pathExists(nodePath.resolve(entry.path))) {
+        errors.push({
+          path: entry.path,
+          message: `scribe scratch payload still present after removal: ${entry.path}`,
+        });
+        continue;
+      }
+      removed.push(entry);
+    } catch (err) {
+      errors.push({ path: entry.path, message: describeError(err) });
+    }
+  }
+
+  return {
+    dir: plan.dir,
+    present: plan.present,
+    removed,
+    skipped: plan.skipped,
+    errors,
+  };
+}
+
+/**
+ * High-level Scribe-scratch convenience: list → plan → execute in one call
+ * (issue #355), mirroring {@link sweepOrphanWorktrees}. This is what
+ * {@link executeOrphanSweep} folds in, so the sweep reaches every close path
+ * that already passes `--orphans` — which the close ceremony passes
+ * unconditionally, by its own documented rule.
+ */
+export function sweepScribeScratch(
+  opts: ScratchSweepOptions = {},
+): ScratchSweepResult {
+  const listing = listScribeScratchEntries(opts.repoRoot ?? process.cwd(), {
+    scratchDir: opts.scratchDir,
+  });
+  return executeScribeScratchSweep(planScribeScratchSweep(listing), opts);
+}
+
+/**
+ * Default {@link ScratchRemover} — a plain single-file delete. No `recursive`,
+ * deliberately: a selected entry is always a FILE (the classifier requires
+ * `isFile()`), so a recursive delete could only ever widen the blast radius of
+ * a future classification bug from one file to a whole subtree. No `force`
+ * either — a file that vanished between listing and removal is a real,
+ * reportable divergence, not something to swallow.
+ */
+export function defaultScratchRemover(): ScratchRemover {
+  return {
+    remove(filePath: string): void {
+      rmSync(nodePath.resolve(filePath));
     },
   };
 }
