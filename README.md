@@ -2,7 +2,7 @@
 
 > **Portable, Claude-Code-native wave-orchestration toolkit.** Plan a batch of independently-grabbable issues, dispatch parallel AFK agents in isolated worktrees, review each with a schema-validated verdict, land via PRs — with cross-wave **conflict/parallelism reasoning** as the universal core.
 
-**Status: beta** — `0.1.0-beta.0`. The orchestration is not new; it has been driving flotilla's own development across thirty-plus live waves. What is new is that it is installable by someone else. The distribution is what carries the beta label, and [CHANGELOG.md](CHANGELOG.md) names precisely which parts of it have not been proven yet.
+**Status: stable** — `1.0.0`. The orchestration has been driving flotilla's own development across fifty-plus live waves; with 1.0.0, the **engine's package-root export surface and the `wave.config.json` schema are semver contracts** — the public API is a deliberate, drift-guarded list, not an accident of history. [CHANGELOG.md](CHANGELOG.md) names what each release added and what remains unproven.
 
 ## What flotilla is
 
@@ -22,7 +22,7 @@ The thing that stays true regardless of stack or tracker is the **conflict/paral
 
 flotilla is two layers: a pure engine that is already harness-agnostic, and adapters that diverge freely per consumer.
 
-- **Engine** (`tools/wave/`) — plain TypeScript importing only `node:*` + `fast-glob` + `micromatch`. It ships as raw source with no build step (`tsc --noEmit` is the type gate). It owns the state machine, the conflict-map math, the merge-order algorithm, the DoR (definition-of-ready) validator, and the schemas that a Worker's report and a Reviewer's verdict must satisfy.
+- **Engine** (`tools/wave/`) — plain TypeScript importing only `node:*` + `fast-glob` + `micromatch`. It ships as raw source with no build step (`tsc --noEmit` is the type gate). It owns the state machine, the conflict-map math, the merge-order algorithm, the DoR (definition-of-ready) validator, and the schemas that a Worker's report and a Reviewer's verdict must satisfy. Since 1.0.0 its package-root export surface is the semver contract, held in place by a drift spec: every module export is either deliberately public at the root or on a reason-carrying module-local allowlist — a symbol in neither fails the suite.
 - **Canonical contract: `IssueView`.** The engine never knows where an issue comes from — every adapter's whole job is `read(id) → IssueView` (id, risk, worker, declared files, blocked-by, acceptance criteria, coarse status). Field-mapping to a tracker's native shape (labels, body sections, custom fields) is entirely the adapter's business.
 - **`IssueStore`** — `create · read · transition · close · listOpen`, plus facets for triage state, needs-attention flagging, closing-probe reads, and minimal authored-content amends. Shipped implementations: `MarkdownFsStore` (local dev/dogfood), `GitHubIssuesStore`, and `LinearIssuesStore` — the same conformance suite passes unchanged across all three.
 - **`SpineStore`** — the per-wave orchestration spine, kept as durable local markdown rather than tracker-native state. It is the write-ahead log a killed Coordinator resumes from.
@@ -41,10 +41,10 @@ flotilla installs as two pieces: the **skills** as a Claude Code plugin, and the
 
 Then run the `wave-setup` skill. It interviews you on your tracker, your eligibility labels, and your verify commands, writes `wave.config.json`, and scaffolds the permission allowlist a wave needs to run unattended.
 
-You do not install the engine separately. The skills resolve it as `npx @formtrieb/flotilla-engine`, which requires nothing in your repo and no vendored copy:
+The engine binds at **setup time, not at call time** (ADR-0032): `wave-setup` installs `@formtrieb/flotilla-engine` into your repo and records the one invocation form every skill uses under `engine.cli` in `wave.config.json` — for a Node consumer, the pinned `./node_modules/.bin/flotilla-engine`. Before that binding exists, you can explore the verb list with the unpinned bootstrap form:
 
 ```bash
-npx @formtrieb/flotilla-engine        # prints the verb list
+npx @formtrieb/flotilla-engine        # exploration only — unpinned and slow; wave-setup replaces it with the pinned binding
 ```
 
 The full path — what `wave-setup` asks you, the preconditions that fail silently if skipped, and the vendor-copy fallback for repos that cannot install a plugin — is **[docs/ONBOARDING.md](docs/ONBOARDING.md)**.
