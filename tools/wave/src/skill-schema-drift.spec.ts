@@ -555,19 +555,64 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
   const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
 
   /**
-   * True iff the bare, UNQUOTED interpolation form (`cd ${NAME}`, `--dir
-   * ${name}`) is present anywhere in the source. A quoted form (`cd
-   * "${NAME}"`) does NOT contain this exact substring, because the `"`
-   * character sits between the literal prefix and the `${` — so this is a
-   * precise discriminator between the two forms, not a fuzzy heuristic.
+   * True iff the bare, UNQUOTED interpolation form (`--dir ${name}`) is
+   * present anywhere in the source. A quoted form (`--dir "${name}"`) does
+   * NOT contain this exact substring, because the `"` character sits between
+   * the literal prefix and the `${` — so this is a precise discriminator
+   * between the two forms, not a fuzzy heuristic. It works wherever the
+   * literal prefix is fixed; where it is not, scan instead (see
+   * `unquotedRepoRootPaths` below).
    */
   function hasUnquotedInterpolation(md: string, needle: string): boolean {
     return md.includes(needle);
   }
 
-  it('the Scribe brief cd interpolates REPO_ROOT shell-quoted', () => {
-    expect(hasUnquotedInterpolation(driverMd, 'cd ${REPO_ROOT}')).toBe(false);
-    expect(driverMd).toContain('cd "${REPO_ROOT}"');
+  /**
+   * Every `${REPO_ROOT}/…` PATH interpolation in the driver that is NOT
+   * immediately preceded by a `"`. Returns a small context window around each
+   * offender so a failure names the site instead of just asserting `false`.
+   *
+   * Why a scan rather than a fixed-prefix substring: after the Scribe's `cd`
+   * was retired (#251) the literal prefix differs per call site — the engine
+   * call's is a JS interpolation (`${verb} `), the payload declaration's is a
+   * markdown backtick, the heredoc fallback's is `> `. A `hasUnquotedInterpolation`
+   * needle can only express one of them, and the iteration-1 defect this
+   * replaces was the backtick one. The invariant itself is uniform, so assert
+   * it uniformly: REPO_ROOT reaching a shell as part of a path is always
+   * quoted. (The one REPO_ROOT occurrence that is legitimately bare — step 1's
+   * `pwd`-comparison literal — has no `/` after it and is correctly not
+   * matched: it is a value to compare against, never a shell word.)
+   */
+  function unquotedRepoRootPaths(md: string): string[] {
+    const needle = '${REPO_ROOT}/';
+    const out: string[] = [];
+    for (let i = md.indexOf(needle); i !== -1; i = md.indexOf(needle, i + 1)) {
+      if (md[i - 1] !== '"') out.push(md.slice(Math.max(0, i - 40), i + 40));
+    }
+    return out;
+  }
+
+  it('the Scribe brief interpolates REPO_ROOT shell-quoted at every path position', () => {
+    /*
+     * RE-PINNED (#251). This assertion used to read
+     *   expect(driverMd).toContain('cd "${REPO_ROOT}"')
+     * because the Scribe brief's step 1 was a `cd` to the repo root. That step
+     * is RETIRED: a dispatched agent's cwd is reset to its dispatch root before
+     * every Bash call, so the `cd` never reached the step-3 engine call, which
+     * resolved only because the Scribe's dispatch root already WAS the repo
+     * root (workflow-driver.md §The Scribe's cwd). Step 1 is now a bare `pwd`
+     * compared against the compose-time literal.
+     *
+     * The old pin kept PASSING across that retirement — the driver still spells
+     * `cd "${REPO_ROOT}"` in prose, naming the retired split as a dead end so it
+     * cannot be re-adopted — while pinning nothing that ships. What ships, and
+     * what the DA-F2 regression was actually about, is REPO_ROOT reaching a
+     * shell as part of a PATH: step 2's payload file (primary spelling and
+     * heredoc-fallback redirect target) and step 3's payload argument.
+     */
+    expect(driverMd).toContain('Read your working directory — one bare ');
+    expect(unquotedRepoRootPaths(driverMd)).toEqual([]);
+    expect(driverMd).toContain('"${REPO_ROOT}/.flotilla/tmp/');
   });
 
   it('the Scribe brief --dir interpolates the sidecar dir shell-quoted', () => {
@@ -575,19 +620,19 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
     expect(driverMd).toContain('--dir "${dir}"');
   });
 
-  it('negative control — hasUnquotedInterpolation actually detects the unquoted form (would have failed pre-fix, DA-F2)', () => {
+  it('negative control — both detectors actually fire on the unquoted forms (would have failed pre-fix, DA-F2)', () => {
     // The exact live regression (DA-F2): this repo's own checkout path
-    // contains a space and a typographic en-dash; `cd ${REPO_ROOT}` (no
-    // quotes) breaks on it silently — the Scribe stage logs loud and passes
-    // its payload through rather than failing the wave, so the sidecar stops
+    // contains a space and a typographic en-dash; an unquoted interpolation
+    // breaks on it silently — the Scribe stage logs loud and passes its
+    // payload through rather than failing the wave, so the sidecar stops
     // being written durably at exactly the moment ADR-0024 exists to
-    // guarantee it is. If this detector stopped firing on the unquoted form,
-    // that regression could reappear and this spec would not catch it.
+    // guarantee it is. If these detectors stopped firing on the unquoted
+    // form, that regression could reappear and this spec would not catch it.
     const regressed = driverMd
-      .replace('cd "${REPO_ROOT}"', 'cd ${REPO_ROOT}')
+      .replace('"${REPO_ROOT}/.flotilla/tmp/', '${REPO_ROOT}/.flotilla/tmp/')
       .replace('--dir "${dir}"', '--dir ${dir}');
     expect(regressed).not.toEqual(driverMd); // both replacements actually matched
-    expect(hasUnquotedInterpolation(regressed, 'cd ${REPO_ROOT}')).toBe(true);
+    expect(unquotedRepoRootPaths(regressed).length).toBeGreaterThan(0);
     expect(hasUnquotedInterpolation(regressed, '--dir ${dir}')).toBe(true);
   });
 });
