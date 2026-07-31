@@ -289,6 +289,36 @@ export {
   sweepDetachedScratchpadWorktrees,
   checkWorktreeCountAdvisory,
   WORKTREE_COUNT_ADVISORY_THRESHOLD,
+  // The COMMAND-LINE term of the same E2BIG budget (issue #266) — the second
+  // half of a two-term measurement whose first half was already root-reachable
+  // (the count advisory directly above). That asymmetry was the sharp edge, not
+  // merely another barrel gap: the count advisory's own message says in so many
+  // words that a count under threshold is NOT an E2BIG all-clear and names
+  // `checkCommandLineSizeAdvisory` as the term to measure next — so the root
+  // shipped the correction's PREMISE while withholding the correction, and an
+  // out-of-tree consumer importing from the root reproduced exactly the
+  // one-term mismeasure the second term exists to end (the measured 2026-07-30
+  // occurrence: ~1019.5 KB of command line across 3 argv entries, only 15 of
+  // 166 sandbox deny paths worktree-derived, recovered with no worktree
+  // removed).
+  //
+  // The family ships WHOLE because that is the whole job from the root: MEASURE
+  // a command line the consumer is about to spawn (`measureExecArgumentBytes` —
+  // pure, five numbers out, nothing to accidentally print), CHECK it against
+  // the documented budget (`checkCommandLineSizeAdvisory`), and READ or RAISE
+  // that budget (`COMMAND_LINE_ADVISORY_THRESHOLD_BYTES` — the same reason its
+  // count-side sibling rides along: a consumer that wants to state or override
+  // the number must be able to read it). The measurement is exported beside the
+  // check rather than folded into it because the preflight form — measure a
+  // command line that does not exist yet — is the one a dispatching consumer
+  // actually needs, and the check's `argv` default (`process.argv`) answers a
+  // different question.
+  //
+  // The three result types ride along so a root-only consumer can annotate the
+  // options it passes and switch on the `level` it gets back.
+  measureExecArgumentBytes,
+  checkCommandLineSizeAdvisory,
+  COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
   type WorktreeEntry,
   type CleanupPlan,
   type CleanupResult,
@@ -299,6 +329,9 @@ export {
   type DetachedSweepOptions,
   type WorktreeCountAdvisory,
   type WorktreeCountAdvisoryOptions,
+  type ExecArgumentMeasurement,
+  type CommandLineSizeAdvisory,
+  type CommandLineSizeAdvisoryOptions,
 } from './worktree-cleanup';
 
 export {

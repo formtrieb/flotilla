@@ -26,6 +26,17 @@
  * a lookalike. The identity assertions are what give the behaviour tests below
  * their meaning: they run against the root import, and the root import is
  * proven to be the module's own binding.
+ *
+ * A THIRD half joined the two above with the command-line advisory family
+ * (issue #338): the ENUMERATION probe. A named import can only prove that the
+ * names it asks for are present — it is structurally blind to a name that is
+ * ABSENT (nobody wrote the import) and to a stowaway that rode along (nobody
+ * would have named it). Reading the export block instead of running it is the
+ * same blindness with an extra step, since a block can list a name the barrel
+ * does not actually re-bind. So the root surface is also inspected as a runtime
+ * namespace object, and the claim asserted there is a DELTA against a recorded
+ * baseline — which is the only form in which "nothing else rode along" is
+ * checkable at all.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -54,6 +65,26 @@ import {
 // which is the contract a consumer actually depends on.
 import { classifyCreateInput, CreateInputError } from './adapters/issue-store';
 
+// The E2BIG advisory pair as the MODULE FILE defines it (issue #338). Both
+// terms are imported, not just the new one: the defect this slice closes is an
+// ASYMMETRY between them, so a spec that only knew about the command-line term
+// could not state it.
+import {
+  measureExecArgumentBytes,
+  checkCommandLineSizeAdvisory,
+  COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+  checkWorktreeCountAdvisory,
+  WORKTREE_COUNT_ADVISORY_THRESHOLD,
+} from './worktree-cleanup';
+
+// The two surfaces as NAMESPACE OBJECTS, for the enumeration probe. `./index`
+// is the surface under test; `./worktree-cleanup` is the module whose export
+// block this slice edits, and comparing bindings by identity across the two is
+// what makes "which root names does THIS module own?" a runtime question
+// instead of a reading of the barrel's source.
+import * as rootNamespace from './index';
+import * as worktreeCleanupNamespace from './worktree-cleanup';
+
 // ...and the same surface as the PACKAGE ROOT offers it. Aliased so the two can
 // be compared in one file; `package.json`'s `main` is `./src/index.ts`, so this
 // import is the literal thing an npm consumer's `from '@formtrieb/flotilla-engine'`
@@ -80,6 +111,18 @@ import {
   // ROOT-ONLY, so neither has to name a type the barrel does not offer.
   buildStore as buildStoreFromRoot,
   type WaveConfig as WaveConfigFromRoot,
+  // issue #338 — the command-line advisory family, plus the count-advisory pair
+  // it was asymmetric with. The count side was already root-reachable before
+  // this slice; it is named here so the closed asymmetry can be asserted from
+  // ONE import list rather than inferred across two spec files.
+  measureExecArgumentBytes as measureExecArgumentBytesFromRoot,
+  checkCommandLineSizeAdvisory as checkCommandLineSizeAdvisoryFromRoot,
+  COMMAND_LINE_ADVISORY_THRESHOLD_BYTES as COMMAND_LINE_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+  checkWorktreeCountAdvisory as checkWorktreeCountAdvisoryFromRoot,
+  WORKTREE_COUNT_ADVISORY_THRESHOLD as WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT,
+  type ExecArgumentMeasurement as ExecArgumentMeasurementFromRoot,
+  type CommandLineSizeAdvisory as CommandLineSizeAdvisoryFromRoot,
+  type CommandLineSizeAdvisoryOptions as CommandLineSizeAdvisoryOptionsFromRoot,
 } from './index';
 
 /** Write a package manifest to a fresh tmp dir and hand back its path. */
@@ -461,6 +504,265 @@ describe('the typed create rejection is reachable from the PACKAGE ROOT (issue #
 
     await expect(store.create({ ...BODYLESS_BARE })).rejects.toBeInstanceOf(
       CreateInputErrorFromRoot,
+    );
+  });
+});
+
+// ─── issue #338 — the COMMAND-LINE ADVISORY family reaches the package root ────
+//
+// The E2BIG budget has TWO terms (issue #266): the registered-worktree count
+// that the harness turns into sandbox deny paths, and the command line the
+// spawn itself carries. Before this slice the package root shipped the FIRST
+// term whole (`checkWorktreeCountAdvisory` + `WORKTREE_COUNT_ADVISORY_THRESHOLD`,
+// issue #250) and none of the second — while the first term's own advisory text
+// tells its reader, in so many words, that a count under threshold is not an
+// all-clear and names `checkCommandLineSizeAdvisory` as the thing to measure
+// next. A root-only consumer therefore received the correction's premise and
+// could not reach the correction: it reproduced exactly the one-term mismeasure
+// the second term exists to end.
+//
+// Three assertions carry this block, and they are different in kind:
+//
+//   - IDENTITY, per name — the root binding IS the module's binding (the
+//     file-header pairing standard).
+//   - COMPILE TIME — the three result types really cross the barrel; `tsc
+//     --noEmit` is the assertion.
+//   - ENUMERATION — the root's runtime namespace is inspected as data. This is
+//     the only one of the three that can see an ABSENT name or a stowaway,
+//     because a named import cannot fail to mention what nobody thought to
+//     import, and an export block can list a name it does not actually re-bind.
+
+/**
+ * The root surface as DATA. A module namespace object's own enumerable keys are
+ * exactly its runtime (value) exports — types are erased, which is why the type
+ * half of this family is pinned by annotation above rather than counted here.
+ */
+const rootExports = rootNamespace as unknown as Record<string, unknown>;
+
+/** The same, for the module whose export block this slice edits. */
+const worktreeCleanupExports = worktreeCleanupNamespace as unknown as Record<
+  string,
+  unknown
+>;
+
+/**
+ * Which root names does `./worktree-cleanup` OWN? Answered by binding identity,
+ * never by name: a root name that merely collided with a worktree-cleanup name
+ * while pointing at some other module's value is not a re-export, and would be
+ * counted as one by a name-only match.
+ */
+function rootNamesOwnedByWorktreeCleanup(): string[] {
+  return Object.keys(worktreeCleanupExports)
+    .filter(
+      (name) =>
+        Object.hasOwn(rootExports, name) &&
+        rootExports[name] === worktreeCleanupExports[name],
+    )
+    .sort();
+}
+
+/**
+ * The worktree-cleanup names the root re-exported BEFORE this slice, recorded
+ * from the wave anchor commit by running the same enumeration this spec runs.
+ * It is a baseline, not a wish list: the delta assertions below are what turn
+ * "exactly the named family was added" into a checkable claim, and no smaller
+ * form of this check can make it — a probe with nothing to subtract from can
+ * only ever say "these names are present".
+ */
+const WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE = [
+  'DEFAULT_AGENT_PATH_MARKERS',
+  'WORKTREE_COUNT_ADVISORY_THRESHOLD',
+  'checkWorktreeCountAdvisory',
+  'cleanAgentWorktrees',
+  'defaultWorktreeRemover',
+  'executeCleanup',
+  'listAgentWorktrees',
+  'listDetachedScratchpadWorktrees',
+  'normalizeDisposableNames',
+  'parseWorktreeList',
+  'planCleanup',
+  'planDetachedScratchpadSweep',
+  'sweepDetachedScratchpadWorktrees',
+];
+
+/** The value half of the family this slice adds — sorted, as the probe sorts. */
+const COMMAND_LINE_FAMILY_ADDED_AT_ROOT = [
+  'COMMAND_LINE_ADVISORY_THRESHOLD_BYTES',
+  'checkCommandLineSizeAdvisory',
+  'measureExecArgumentBytes',
+];
+
+/**
+ * How many runtime names the package root carried before this slice, recorded
+ * the same way. This is the widest net in the file: it catches a stowaway from
+ * ANY module, including one that has nothing to do with worktree-cleanup.
+ *
+ * A later slice that deliberately adds a root export updates this number, and
+ * that is the check working rather than a false positive — every addition to
+ * this barrel is a recorded decision (see the export block's own comments), so
+ * a root-surface change that could land without anyone typing a number here is
+ * precisely the change nobody would have reviewed.
+ */
+const ROOT_RUNTIME_EXPORT_COUNT_BEFORE = 135;
+
+describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
+  it('re-exports the same bindings, not lookalikes', () => {
+    expect(measureExecArgumentBytesFromRoot).toBe(measureExecArgumentBytes);
+    expect(checkCommandLineSizeAdvisoryFromRoot).toBe(checkCommandLineSizeAdvisory);
+    expect(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES_FROM_ROOT).toBe(
+      COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
+    );
+  });
+
+  it('the identity assertion is exactly what a behaviourally-identical WRAPPER fails', () => {
+    // Same non-vacuity demonstration the store-preflight block above makes, for
+    // the same reason: `wrapper` delegates, so every behavioural expectation in
+    // this block passes against it — same advisory object, same level, same
+    // message, same threshold. Only `toBe` separates them.
+    const wrapper: typeof checkCommandLineSizeAdvisory = (opts) =>
+      checkCommandLineSizeAdvisory(opts);
+
+    const opts = { argv: ['node', 'x'], env: {}, threshold: 0 };
+    expect(wrapper(opts)).toEqual(checkCommandLineSizeAdvisoryFromRoot(opts));
+    expect(wrapper).not.toBe(checkCommandLineSizeAdvisoryFromRoot);
+    expect(checkCommandLineSizeAdvisoryFromRoot).toBe(checkCommandLineSizeAdvisory);
+  });
+
+  it('re-exports the measurement, advisory and options types, so a root-only consumer can annotate them', () => {
+    // Compile-time half — these annotations resolve only if the barrel really
+    // re-exports the types; `tsc --noEmit` is the assertion, and the runtime
+    // expectations below just keep the values from being dead code.
+    const measurement: ExecArgumentMeasurementFromRoot =
+      measureExecArgumentBytesFromRoot(['node', 'cli.ts'], { PATH: '/usr/bin' });
+    expect(measurement.argCount).toBe(2);
+    expect(measurement.envCount).toBe(1);
+    expect(measurement.bytes).toBe(measurement.argvBytes + measurement.envBytes);
+
+    const opts: CommandLineSizeAdvisoryOptionsFromRoot = {
+      argv: ['node', 'cli.ts'],
+      env: {},
+      threshold: COMMAND_LINE_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+    };
+    const advisory: CommandLineSizeAdvisoryFromRoot =
+      checkCommandLineSizeAdvisoryFromRoot(opts);
+    expect(advisory.level).toBe('ok');
+    expect(advisory.message).toBeNull();
+    expect(advisory.threshold).toBe(524_288);
+  });
+
+  it('re-exports the level union WHOLE, so it can be switched on exhaustively', () => {
+    // The `never` arm is the real assertion and it is a compile-time one: it
+    // typechecks only while the root-imported union has exactly these two
+    // members. A third level added in worktree-cleanup.ts — or a barrel
+    // re-export that narrowed the union on its way out — fails `tsc` here.
+    const label = (level: CommandLineSizeAdvisoryFromRoot['level']): string => {
+      switch (level) {
+        case 'ok':
+          return 'under budget';
+        case 'advisory':
+          return 'over budget';
+        default: {
+          const exhaustive: never = level;
+          return exhaustive;
+        }
+      }
+    };
+    expect(label('ok')).toBe('under budget');
+    expect(label('advisory')).toBe('over budget');
+  });
+});
+
+describe('a ROOT-ONLY consumer can measure the command-line term end to end (issue #338)', () => {
+  it('measure → check → act, importing nothing but the package root', () => {
+    // The preflight form: a command line the consumer is ABOUT to spawn, which
+    // is why the measurement ships beside the check. Nothing here reads
+    // `process.argv`, so the story is deterministic.
+    const body = 'x'.repeat(600_000);
+    const argv = ['node', 'cli.ts', `--body=${body}`];
+
+    const measurement = measureExecArgumentBytesFromRoot(argv, {});
+    expect(measurement.argCount).toBe(3);
+    expect(measurement.bytes).toBeGreaterThan(
+      COMMAND_LINE_ADVISORY_THRESHOLD_BYTES_FROM_ROOT,
+    );
+
+    const advisory = checkCommandLineSizeAdvisoryFromRoot({ argv, env: {} });
+    expect(advisory.level).toBe('advisory');
+    expect(advisory.bytes).toBe(measurement.bytes);
+    // The wording is the engine's, quoted rather than paraphrased by callers —
+    // so a root consumer must get the same load-bearing substrings the CLI
+    // prints, including the per-term recovery that separates this term from the
+    // count term.
+    expect(advisory.message).toContain('E2BIG');
+    expect(advisory.message).toContain('SWEEPING WORKTREES DOES NOT MOVE THIS TERM');
+  });
+
+  it('carries the fail-loud guarantee across the barrel: a garbled threshold throws', () => {
+    // The non-vacuity guarantee this advisory rests on. A `NaN` threshold would
+    // compare false forever, i.e. read as a permanent `ok` — a root consumer
+    // that inherited a weaker check would have a silently-green preflight.
+    expect(() =>
+      checkCommandLineSizeAdvisoryFromRoot({ argv: [], env: {}, threshold: Number.NaN }),
+    ).toThrow(/non-negative integer/);
+  });
+});
+
+describe('the E2BIG asymmetry is closed at the root — runtime enumeration (issue #338)', () => {
+  it('ships BOTH terms, with the second one derived from the first term\'s own message', () => {
+    // The sharpest form of the claim, and the reason this is an enumeration and
+    // not a name list: the required name is READ OUT of the running engine
+    // rather than typed here. The count advisory's message names the function a
+    // reader must call next; every function name it names must be root-reachable,
+    // or the root ships a correction's premise while withholding the correction.
+    const countAdvisory = checkWorktreeCountAdvisoryFromRoot({
+      threshold: WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT,
+      countWorktrees: () => WORKTREE_COUNT_ADVISORY_THRESHOLD_FROM_ROOT + 1,
+    });
+    expect(countAdvisory.level).toBe('advisory');
+
+    const namedInMessage = [
+      ...new Set(countAdvisory.message?.match(/\bcheck[A-Za-z]+Advisory\b/g) ?? []),
+    ];
+    // Guards the regex itself: an empty match set would make the loop below
+    // pass vacuously, which is the one way this assertion could rot silently.
+    expect(namedInMessage).toContain('checkCommandLineSizeAdvisory');
+
+    const rootNames = Object.keys(rootExports);
+    for (const named of namedInMessage) {
+      expect(rootNames).toContain(named);
+    }
+
+    // And both terms' thresholds, since a consumer that cannot read the number
+    // cannot state or raise the budget it is being warned about.
+    expect(rootNames).toContain('WORKTREE_COUNT_ADVISORY_THRESHOLD');
+    expect(rootNames).toContain('COMMAND_LINE_ADVISORY_THRESHOLD_BYTES');
+  });
+
+  it('adds EXACTLY the command-line family to the worktree-cleanup names at the root', () => {
+    const after = rootNamesOwnedByWorktreeCleanup();
+
+    // Nothing was dropped…
+    expect(after).toEqual(expect.arrayContaining(WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE));
+    // …and what is new is exactly the family, no stowaway. `worktree-cleanup`
+    // exports far more than the root re-exports (the orphan-branch and
+    // redispatch sweeps among them), so "one more name slipped into the export
+    // block" is a live way to be wrong here, not a hypothetical one.
+    const added = after.filter(
+      (name) => !WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE.includes(name),
+    );
+    expect(added).toEqual(COMMAND_LINE_FAMILY_ADDED_AT_ROOT);
+
+    expect(after).toEqual(
+      [...WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE, ...COMMAND_LINE_FAMILY_ADDED_AT_ROOT].sort(),
+    );
+  });
+
+  it('grows the WHOLE root surface by exactly those three names', () => {
+    // The widest net: the assertion above is scoped to one module's bindings, so
+    // it would not see an unrelated export riding along in the same edit. This
+    // one would.
+    expect(Object.keys(rootExports)).toHaveLength(
+      ROOT_RUNTIME_EXPORT_COUNT_BEFORE + COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length,
     );
   });
 });
