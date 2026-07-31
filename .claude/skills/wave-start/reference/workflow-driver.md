@@ -25,7 +25,29 @@ The single sharpest live-gate finding (retro P-1) was that sidecars — the dura
 
 - **`pipeline()` gains two cheap Scribe stages**: `worker → scribe(report) → reviewer → scribe(verdict)`. Each Scribe is a small `agent()` (`model: 'haiku', effort: 'low'`) whose brief carries the **already-schema-validated** payload byte-exact (`JSON.stringify`-interpolated — the `agent({schema})` boundary validated it; nothing is re-typed from prose) plus the exact `write-report`/`write-verdict` invocation. The report is durable **before the review even starts**; each record exists seconds after its agent returns, before any Coordinator routing.
 - **A Scribe failure never discards the in-band tuple.** The stage wraps its `agent()` in try/catch, **passes the report/verdict through regardless**, and `log()`s loud (`SIDECAR-WRITE FAILED <id>`). A `pipeline()` stage that *throws* drops the row to `null` — which would convert a *successful* Worker into a `worker-failed` STOP and discard finished work. Structurally forbidden here: the Scribe stage returns its passthrough value in every branch, and the Scribe itself retries the CLI call once, byte-identical.
-- **`SCRIBE_RESULT_SCHEMA` is driver-local — deliberately NOT drift-pinned.** No engine const corresponds to it (unlike the two `*_SCHEMA` copies), so `skill-schema-drift.spec.ts` does not — and must not — pin it. It is a plain `{ ok, path, error?, notice? }` shape with no top-level `anyOf`/`oneOf`/`allOf` (boundary-safe, W5-F1). `notice` is the exit-0 channel: the write verb reports a normalized decorated id or misnamed litter on stderr while still succeeding, and `error` may only be set on failure, so without `notice` an exit-0 finding would die at the one stage that saw it.
+- **`SCRIBE_RESULT_SCHEMA` is driver-local — deliberately NOT drift-pinned.** No engine const corresponds to it (unlike the two `*_SCHEMA` copies), so `skill-schema-drift.spec.ts` does not — and must not — pin it. It is a plain `{ ok, path, error?, notice? }` shape with no top-level `anyOf`/`oneOf`/`allOf` (boundary-safe, W5-F1). `notice` is the exit-0 channel: the write verb reports a normalized decorated id or misnamed litter on stderr while still succeeding, and the Scribe reports a cwd that did not match the compose-time `REPO_ROOT` on a write that succeeded anyway (§The Scribe's cwd) — `error` may only be set on failure, so without `notice` each of those exit-0 findings would die at the one stage that saw it.
+
+## The Scribe's cwd — a precondition observed once, never a `cd` carried forward
+
+The Scribe is the one role in this pipeline that is **not** worktree-isolated: it runs in the session cwd. Its brief used to open by `cd`-ing to the absolute `REPO_ROOT` and then call the repo-relative `WAVE_CLI` two steps later. That split read as Convention-13-clean (nothing fused, one call per step) and was in fact resting on **incidental safety**: the `cd` never reached the engine call at all, and the call resolved anyway because the Scribe's dispatch cwd already *was* the repo root. Nothing in the design said so, nothing checked it, and the step that looked like it established the precondition was the one step that could not.
+
+**The measured fact this file and [wave-shared Convention 13](../../wave-shared/reference/convention-13-one-bash-call-per-step.md) state identically: a dispatched agent's cwd is reset to its dispatch root before *every* Bash call** — the worktree root for a worktree-isolated role, the session cwd for one (like the Scribe) without isolation. Two consequences, and the second is the useful one:
+
+1. A `cd` issued in call N is invisible in call N+1. It can never establish a precondition for a later step, so a `cd`-then-engine-call split is not a *safe* version of the fused form — it is a *silent* one.
+2. Because the reset target is identical for every call, **cwd is a per-agent constant, not carried state.** One bare `pwd` therefore characterizes every Bash call the agent will ever make. That is what lets the resolved design *verify* the cwd without ever *setting* it — and it is why the remedy is not "re-check it before each call" either.
+
+So the Scribe brief below **opens with a bare `pwd`** and compares it against the compose-time `REPO_ROOT` literal rendered into its own text — no `cd`, and no shell variable (Convention 13's Catalog entry 1: a `$VAR` expansion is refused outright from a worktree-isolated dispatch, and a brief must not teach a shape that cannot run for the roles that inherit it); **passes every path argument absolute** — `--dir` always was, and the payload `<json-file>` now is too, because the verb resolves that argument with `readFileSync(file)` against the process cwd (`tools/wave/src/route-cli.ts`, `runWriteSidecar`), which made a bare relative temp name the same cwd dependency wearing a different hat; and **treats a cwd mismatch as a finding to report, never as something to `cd` around.**
+
+**What remains is a precondition, not a persistence assumption — and that difference is the whole repair.** A persistence assumption is unobservable and defaults to "it worked last time"; a precondition is stated, checked in one call, and attributable when it fails. It is also not the Scribe's to fix: it belongs to the Coordinator, which dispatches from the repo root and fills `REPO_ROOT` from that same root (`git rev-parse --show-toplevel`).
+
+**Both configured `engine.cli` forms (ADR-0032) are covered, and they fail differently — which is why the `pwd` stays even where the binding carries no path:**
+
+| configured form | what a wrong dispatch cwd does to the Scribe's step-3 call |
+|---|---|
+| **path-free, npm-first** (`npx @scope/<engine-package> …`) | the command names no path, so nothing resolves *against* the cwd — but the package lookup behind it still begins at the cwd and walks up before falling back to a registry fetch, so a wrong cwd changes **which copy answers**, not whether one does. That is a silent wrong-version write, the one failure shape no exit code reports. |
+| **repo-relative, vendored** (`./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts` — flotilla's own binding) | the path resolves against the cwd, so a wrong cwd fails loud and immediately, nothing is written, and the Scribe reports it through `ok:false`. |
+
+Neither form is rescued by a `cd` (it does not survive), by fusing one on (Convention 13, both mechanisms), or by making `WAVE_CLI` absolute: the config layer validates `engine.cli` as **repo-relative and non-absolute** precisely so the tracked-settings allowlist can match it (Authoring constraint #4), so an absolute form trades a checkable cwd precondition for a permission dialog mid-AFK-dispatch with nobody to answer it. What *does* generalize is the part the resolved design uses — make every argument absolute, and observe the one thing left that cannot be.
 
 ## The bare-id contract — why the id is fixed at both ends of the write
 
@@ -45,7 +67,7 @@ The live incident (`2026-07-27-consumer-gaps`): three of six Workers decorated t
 1. **Embed per-row data in the script body** as `const ISSUES = [...]` — the Workflow `args` channel does not reliably deliver a large nested payload. Never depend on external `args` for structured input.
 2. **Compose briefs in-script** via a helper that string-interpolates the structured fields — a function field cannot survive JSON serialization through `args`.
 3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`.
-4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute, and **shell-quoted** wherever it is interpolated into a brief — see its own note below), `WAVE_CLI` (**filled from the consumer's configured `engine.cli`**, read out of `wave.config.json` at compose time — see its comment below), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts` — likewise shell-quoted wherever interpolated), just as you fill `depsSetup`. `WAVE_CLI` has **no default of its own**: the binding lives in exactly one place per repo, and the driver reads it rather than restating a form (ADR-0032). An **absent** `engine.cli` is a STOP, not a cue to pick a spelling — `wave-setup` has not finished in that repo, and nothing should be dispatched until it has. The engine validates the field as **repo-relative and non-absolute** on the consumer's behalf, which is exactly the property this constant needs: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe would hit the permission gate mid-wave and break AFK dispatch, which is why the config refuses one outright. A Worker's worktree needs no extra step for the configured binding to resolve: its post-checkout cwd already *is* a repo-relative root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same guarantee by shell-quoted `cd`-ing to `REPO_ROOT` first (its brief, below) before any `WAVE_CLI` call. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of whatever cwd that `cd` leaves the Scribe in.
+4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute, and **shell-quoted** wherever it is interpolated into a brief — see its own note below), `WAVE_CLI` (**filled from the consumer's configured `engine.cli`**, read out of `wave.config.json` at compose time — see its comment below), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts` — likewise shell-quoted wherever interpolated), just as you fill `depsSetup`. `WAVE_CLI` has **no default of its own**: the binding lives in exactly one place per repo, and the driver reads it rather than restating a form (ADR-0032). An **absent** `engine.cli` is a STOP, not a cue to pick a spelling — `wave-setup` has not finished in that repo, and nothing should be dispatched until it has. The engine validates the field as **repo-relative and non-absolute** on the consumer's behalf, which is exactly the property this constant needs: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe would hit the permission gate mid-wave and break AFK dispatch, which is why the config refuses one outright. A Worker's worktree needs no extra step for the configured binding to resolve: its post-checkout cwd already *is* a repo-relative root, and every one of its Bash calls starts back at that root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same property from the same mechanism — **not** from a `cd`, which never reaches the call that would need it (§The Scribe's cwd, above). Its brief therefore *observes* the cwd once with a bare `pwd` and reports a mismatch instead of `cd`-ing around it; `REPO_ROOT` is the literal that `pwd` output is compared against and the base of the payload's absolute path, never a directory the Scribe changes into. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of the Scribe's cwd entirely.
 5. **Never backslash-escape an apostrophe inside a single-quoted JS string when composing a brief.** Composed brief text (`reviewerHints`, `issueSpec`, `prTitle`, and any other free-form field interpolated into the script body) is natural language and will routinely contain apostrophes — a `\'` inside a `'...'`-delimited literal parses fine to the human eye but is exactly the kind of thing to get wrong under compose pressure. Use a double-quoted string for that literal, or rephrase to drop the apostrophe. **Observed failure shape (W17-F1):** the first Workflow launch of a wave failed at the script parser — not at any `agent()` call — because a composed `reviewerHint` carried a backslash-escaped apostrophe inside a single-quoted string; the parser's error pointed at the escaped quote. Cost was zero (no agent had started, no state was touched), but the whole compose round was lost and had to be redone.
 6. **Never hold the engine CLI — or any command — in a shell variable in your own Coordinator shell, and never let an empty capture flow onward (wave-shared Convention 12).** This constraint is about the shell *you* type into while composing and routing, not about the script: `CLI="<the configured engine.cli value>"; $CLI spine set-row-state …` exits **127** under zsh (no word-splitting of an unquoted expansion) and runs **nothing** — five occurrences, the most recent of which produced an empty PR URL that was then written to the spine as a value. Bind a function instead (`wave_cli() { … "$@"; }`) and iterate a real array rather than `for x in $LIST`. **And obey the call boundary on every capture you subsequently *use*** — a PR URL, an id, a SHA: verify it in the SAME Bash call that produced it, or do not capture it at all and re-query its source in the call that needs it (`host-pr status --branch <b>` for a PR URL). A shell function and a shell variable are both session state, and shell state does not survive between Bash calls — which is why the retired `require_capture` helper, defined at one step and invoked at another, could never fire on the value it named. The `WAVE_CLI` constant below is the safe shape by contrast, and stays that way precisely because it is a compose-time JS string that no shell ever expands (see its own comment).
 7. **Check a composed row against `REQUIRED_ROW_FIELDS`, not against a re-derived reading of every brief.** The full set of scalar fields the briefs below interpolate is named in exactly one place — the `REQUIRED_ROW_FIELDS` array right before `assertRequiredRowFields` — so a Coordinator wiring a new row never has to grep every `workerBrief`/`reviewerBrief` for `${issue.*}` to find out what it must supply. A field added to a brief but not to that array is exactly how the narrow `assertAnchorSha` (anchorSha-only) predecessor of this assertion missed `branch` one wave-generation later.
@@ -155,28 +177,38 @@ const SCRIBE_RESULT_SCHEMA = {
   required: ['ok', 'path'],
   properties: {
     ok: { type: 'boolean' }, path: { type: 'string' }, error: { type: 'string' },
-    // `notice` carries an EXIT-0 stderr line through — a normalized decorated id,
-    // or misnamed litter the write verb found in the sidecar dir. Without it the
-    // only channel the Scribe has is `error`, which it may only set on failure,
-    // so an exit-0 finding would be dropped at exactly the stage that saw it.
+    // `notice` carries an EXIT-0 finding through — a normalized decorated id or
+    // misnamed litter the write verb printed on stderr, and (brief step 1) a cwd
+    // that did not match the compose-time REPO_ROOT even though the write still
+    // succeeded, which on a path-free engine binding is the ONLY signal that the
+    // wrong engine copy may have answered. Without it the only channel the Scribe
+    // has is `error`, which it may only set on failure, so an exit-0 finding would
+    // be dropped at exactly the stage that saw it.
     notice: { type: 'string' },
   },
 }
 
 // ── Scribe compose-time constants (Coordinator-filled, like depsSetup) ──
 // REPO_ROOT is the one ABSOLUTE-by-necessity constant: Scribes run in the
-// session cwd (no worktree isolation), so their brief `cd`s here first
-// (step 1, below) before any WAVE_CLI call. It is interpolated SHELL-QUOTED
-// wherever it reaches a brief — always shell-quoted, never bare — because
-// an absolute repo path is precisely where spaces and non-ASCII characters
-// live, and an unquoted `cd` breaks silently on one: the Scribe stage logs
-// loud and passes its payload through rather than failing the wave (ADR-0024
-// exists so the sidecar becomes durable the moment the work does; an
-// unquoted REPO_ROOT quietly reopens exactly that window). Live-verified
-// against a checkout path containing both a space and a typographic en-dash
-// (this repo's own worktree path) — the unquoted form fails the `cd` outright
-// (`cd: ...: No such file or directory`) and silently stays in the prior cwd;
-// the quoted form succeeds.
+// session cwd (no worktree isolation), so their brief carries this literal
+// twice — as the cwd its step-1 `pwd` is compared against, and as the base of
+// the ABSOLUTE payload path its step-3 engine call passes. It is NEVER a
+// directory the Scribe changes into: a `cd` cannot reach step 3 (cwd is reset
+// to the dispatch root before every Bash call), and the brief names that
+// retired step as a dead end rather than leaving it to be re-derived
+// (§The Scribe's cwd, above). Fill it from `git rev-parse --show-toplevel` in
+// the Coordinator's own session — the same root the wave is dispatched from.
+// It is interpolated SHELL-QUOTED wherever it reaches a brief — always
+// shell-quoted, never bare — because an absolute repo path is precisely where
+// spaces and non-ASCII characters live, and an unquoted interpolation breaks
+// silently on one: the Scribe stage logs loud and passes its payload through
+// rather than failing the wave (ADR-0024 exists so the sidecar becomes durable
+// the moment the work does; an unquoted REPO_ROOT quietly reopens exactly that
+// window). Live-verified against a checkout path containing both a space and a
+// typographic en-dash (this repo's own worktree path) — the unquoted form
+// fails outright (`No such file or directory`) on the retired `cd` and on any
+// path argument built from it alike; the quoted form succeeds. That is why the
+// payload path below is quoted too, not only the sidecar `--dir`.
 const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // WAVE_CLI IS FILLED FROM THE CONSUMER'S CONFIGURED BINDING — `engine.cli` in
 // its `wave.config.json`, read once at compose time and pasted here verbatim.
@@ -424,7 +456,14 @@ ISSUES.forEach(assertNotHumanGated)
 // checkout target, which now reads the derived `issue.branch` (FOR-139)
 // rather than re-interpolating `wave/${issue.id}-${issue.slug}` inline.
 const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
-1. \`pwd\` — confirm you are in a worktree (not the parent path).
+1. \`pwd\` — confirm you are in a worktree (not the parent path). **This is the one cwd
+   check you need and the only one you can have:** your cwd is reset to this same dispatch
+   root before EVERY Bash call you make, so what \`pwd\` prints here is where each step
+   below starts — the git commands in step 2, the checkout, the install, every verify
+   command, and every Termination step alike. It is a constant you OBSERVE, not state you
+   can SET: a \`cd\` in one call is invisible in the next (wave-shared Convention 13,
+   §Splitting is not always a preceding \`cd\`), so never issue one to set up a later step,
+   and never fuse one onto the command that matters.
 2. Anchor to the wave anchor SHA:
    \`\`\`bash
    git fetch origin ${issue.coordinatorBranch} 2>&1 | tail -3
@@ -455,7 +494,14 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 // this branch (start-mechanics.md step 7d), so the checkout below is never
 // blocked by a stale `git worktree` registration.
 const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) — RE-DISPATCH, iteration ${issue.iteration}
-1. \`pwd\` — confirm you are in a worktree (not the parent path).
+1. \`pwd\` — confirm you are in a worktree (not the parent path). **This is the one cwd
+   check you need and the only one you can have:** your cwd is reset to this same dispatch
+   root before EVERY Bash call you make, so what \`pwd\` prints here is where each step
+   below starts — the fetch and checkout in step 2, the install, every verify command, and
+   every Termination step alike. It is a constant you OBSERVE, not state you can SET: a
+   \`cd\` in one call is invisible in the next (wave-shared Convention 13, §Splitting is
+   not always a preceding \`cd\`), so never issue one to set up a later step, and never
+   fuse one onto the command that matters.
 2. This is a re-dispatch: \`${issue.branch}\` ALREADY EXISTS,
    carrying your iteration-1 commits — do not discard them, do not re-anchor to
    the wave anchor SHA and branch fresh. Land on the existing branch with a
@@ -516,10 +562,11 @@ ${issue.issueSpec}
 8. RUNTIME RESIDUE (wave-shared Convention 10): if your slice starts any runtime resource — a compose project, a container, a background server, anything holding a port, a volume, or a network — tear it down before termination, or explicitly disclose the surviving resource under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) so the Coordinator can clean up after landing.
 9. PROVE THE CHECK CAN FAIL (wave-shared Convention 11): if your slice introduces a NEW check — a test, an assertion, a guard, a smoke probe, a lint rule, a CI gate, a preflight, a validator — break the thing that check exists to catch, run the check, and observe its own FAIL state; then restore the original state and re-verify green. Report the falsification under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`): which check, what you broke, the observed failing output verbatim, and that you restored it. A green check is compatible with "the check works" AND "the check cannot fail", and no acceptance criterion distinguishes them. Two mechanical questions decide whether you are in this class — does a pass/fail check exist after your diff, and is its failing condition new with this slice — and "is the falsification worth the time" is deliberately NOT one of them: an expensive falsification belongs in the disclosure, not outside the class. A check observed only as \`deferred\`/\`skipped\` has NOT been proven to fail (it has been proven not to run) — that is a failed falsification attempt, not a demonstration. If you could not falsify it, say so in the same channel with the reason and what input WOULD falsify it — "could not falsify, and here is why" is a legitimate reported outcome; silence and an unevidenced claim are not. A slice that only changes behaviour already covered by EXISTING checks is not in this class.
 10. UNEXECUTABLE CORE PATH — DECLARE, THEN SELF-COMPARE (ADR-0030): if the core path of your change **cannot be executed from this environment** — it needs a real release, a production credential, a merged PR, a human action, an external service you cannot reach — declare it explicitly under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`), naming WHICH path is unreachable and WHY. Then find the authoritative documented form for that mechanism — the vendor's own documentation, the spec, the reference example — **read it in this dispatch, do not recall it from memory** — compare your change against it, and report EVERY divergence in the same channel, each marked deliberate (you departed on purpose AND commented the reason at the point of departure) or not. A divergence is NOT automatically a defect: deliberate, commented departures are legitimate and must survive review intact. What is not legitimate is an undeclared one. Live occurrence: a release workflow shipped with three divergences from the registry vendor's documented example — a missing \`registry-url\`, dependency caching left on in a release build (which the vendor advises against on supply-chain grounds), and an outdated action version. Every acceptance criterion was verified and every one held; the core path (an OIDC credential exchange that cannot run before a real release exists) was reachable by no test, no local run and no reviewer, so the documented form was the only evidence available — and no acceptance criterion asked for it, because ACs describe what a change should DO and this is a question about what it should LOOK LIKE. Your self-comparison is defense-in-depth; the Reviewer runs its own comparison independently, and that one is the anchor.
-11. ONE BASH CALL PER STEP (wave-shared Convention 13): never fuse a setup step onto the command that matters — \`cd X && <command>\` — into one compound Bash call. **Two unrelated mechanisms break on that shape, with opposite signatures, and knowing only one of them is how the other bites.** (a) **The permission gate.** The harness splits a command on \`&&\`, \`||\`, \`;\`, \`|\`, \`|&\`, \`&\` and newlines and requires EVERY subcommand to match a permission rule independently — so the tracked-allowlist entry covering your engine or verify call carries only THAT subcommand past the gate, never the \`cd\` glued in front of it; and \`cd\` paired with \`git\`, or with an output redirect, prompts even when both halves are read-only commands. A permission dialog mid-AFK-dispatch has nobody to answer it and stalls your row. (b) **The worktree-isolation guard.** A fused command can come back REJECTED as too complex to verify that it stays inside your worktree — no dialog, nothing pending, nothing run. That refusal is about the command's SHAPE, never about the check being unrunnable here: re-issue it as separate calls. **NEVER silently skip a step because its fused form was refused** — a Worker did exactly that, dropping the check it was running and continuing; a verification step that did not run, in a report that reads as complete, is the defect (same family as Convention 12's empty capture). And do not "fix" either mechanism by asking for a \`cd\` allowlist entry — splitting costs nothing, and mechanism (b) would reject the fused form regardless. **Carry the directory IN the command wherever a flag exists** (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`): your cwd is reset between your Bash calls, so a \`cd\` issued as its own call does not necessarily survive into the next one — confirm with \`pwd\` before relying on it, and never buy the guarantee back by re-fusing. **Mechanism (b) is not limited to \`&&\`, and most refusals are not fusion at all.** Three shapes have been live-reproduced as refused with nothing fused onto them: a bare \`case\`/\`esac\`; an \`if\`-guard testing a shell variable; and any other command naming a shell variable, including a lone \`test -n "$VAR"\` — whether that variable was set in an earlier Bash call or in the same one. **The discriminator is the \`$VAR\` expansion, not the punctuation**, so "split it" is not a general remedy and re-fusing is not either. Your cwd and every shell variable are reset between your Bash calls regardless, which is why a value must never be carried from one call to the next: re-query its source in the call that needs it (your own Termination step 4 below does exactly that, via \`host-pr status\`), or use a single command whose exit status is the answer. Before re-deriving a fix by hand, read the "Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch" section in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\` — entry 1's evidence arc records three remedies that looked right and could not run, so you do not re-adopt one of them.
+11. ONE BASH CALL PER STEP (wave-shared Convention 13): never fuse a setup step onto the command that matters — \`cd X && <command>\` — into one compound Bash call. **Two unrelated mechanisms break on that shape, with opposite signatures, and knowing only one of them is how the other bites.** (a) **The permission gate.** The harness splits a command on \`&&\`, \`||\`, \`;\`, \`|\`, \`|&\`, \`&\` and newlines and requires EVERY subcommand to match a permission rule independently — so the tracked-allowlist entry covering your engine or verify call carries only THAT subcommand past the gate, never the \`cd\` glued in front of it; and \`cd\` paired with \`git\`, or with an output redirect, prompts even when both halves are read-only commands. A permission dialog mid-AFK-dispatch has nobody to answer it and stalls your row. (b) **The worktree-isolation guard.** A fused command can come back REJECTED as too complex to verify that it stays inside your worktree — no dialog, nothing pending, nothing run. That refusal is about the command's SHAPE, never about the check being unrunnable here: re-issue it as separate calls. **NEVER silently skip a step because its fused form was refused** — a Worker did exactly that, dropping the check it was running and continuing; a verification step that did not run, in a report that reads as complete, is the defect (same family as Convention 12's empty capture). And do not "fix" either mechanism by asking for a \`cd\` allowlist entry — splitting costs nothing, and mechanism (b) would reject the fused form regardless. **Carry the directory IN the command wherever a flag exists** (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`): your cwd is reset to your dispatch root before every Bash call, so a \`cd\` issued as its own call does NOT reach the next one — splitting a fused \`cd X && <cmd>\` into two calls leaves the command running in the wrong directory, which is a quieter defect than the fusion was. Your workspace-setup \`pwd\` is the one cwd fact you have, it holds for every call, and you never buy anything back by re-fusing. **Mechanism (b) is not limited to \`&&\`, and most refusals are not fusion at all.** Three shapes have been live-reproduced as refused with nothing fused onto them: a bare \`case\`/\`esac\`; an \`if\`-guard testing a shell variable; and any other command naming a shell variable, including a lone \`test -n "$VAR"\` — whether that variable was set in an earlier Bash call or in the same one. **The discriminator is the \`$VAR\` expansion, not the punctuation**, so "split it" is not a general remedy and re-fusing is not either. Your cwd and every shell variable are reset between your Bash calls regardless, which is why a value must never be carried from one call to the next: re-query its source in the call that needs it (your own Termination step 4 below does exactly that, via \`host-pr status\`), or use a single command whose exit status is the answer. Before re-deriving a fix by hand, read the "Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch" section in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\` — entry 1's evidence arc records three remedies that looked right and could not run, so you do not re-adopt one of them.
 
 ## Verification gates (run the consumer's verify profile — from wave.config.json verify)
 Run the commands the VerifyGate selects for your changed files; report exact counts.
+**Carry the directory IN each command** — \`npm test --prefix <dir>\`, \`npx vitest run --root <dir>\`, \`git -C <dir> …\` — because every one of these calls starts at the dispatch root your workspace-setup \`pwd\` printed, never wherever a previous call ended up. A verify command written as \`cd <dir> && <cmd>\` is two faults at once: a fusion (policy clause 11, both mechanisms) AND a cwd-persistence assumption — and re-issuing it as \`cd <dir>\` then \`<cmd>\` in two calls fixes neither, because the second call starts back at the dispatch root and runs the gate in the wrong directory (live: a \`cd <worktree>/tools/wave\` returned success and the very next call's \`npm ci\` still ran at the worktree root). If the consumer's profile hands you a fused or \`cd\`-prefixed command, run its flag-carrying equivalent and say so in your report — but never drop a gate because its literal form was refused, and never report a count for a command that did not run.
 
 ## Termination
 1. Commit all work in one commit.
@@ -530,7 +577,9 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
    # config layer validated as repo-relative — so it resolves from this
    # worktree's own root: a worktree checkout is a full copy of tracked files,
    # and step 4 above (depsSetup) already installed whatever binary the binding
-   # resolves through.
+   # resolves through. That root is where THIS call starts too, because every
+   # Bash call of yours starts there (workspace setup step 1) — not because an
+   # earlier call left you in it. Do not prefix a cd; there is nothing to set up.
    ${WAVE_CLI} host-pr create \\
      --branch ${issue.branch} \\
      --title "${issue.prTitle}" \\
@@ -555,7 +604,7 @@ ${issue.closePhrase}"
 
    **Why a re-query and not a capture guard — read this before you improvise a shorter form.** Three earlier versions of this step prescribed a capture plus a guard, and all three were unrunnable from a worktree-isolated dispatch. \`case\`/\`esac\` is refused standing alone. Splitting the capture into call 1 and the guard into call 2 fails twice over: shell state does not survive between your Bash calls, so the guard would inspect an unset variable — and the isolation check refuses that guard call outright for naming a variable it cannot resolve. Fusing them back into one call is refused too. The discriminator is not fusion and not the control structure: it is the **\`$VAR\` expansion**, refused in any position, in any call. The full station-by-station reproduction is Catalog entry 1 in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\`. \`host-pr status\` sidesteps every one of them by carrying nothing across a call boundary — the host is asked again, and answers again.
 
-   If you need the URL on disk rather than in your tool output, redirect the re-query to a relative-path file in your worktree and read it back with a **single command whose exit status is the verdict** — still no shell variable: \`${WAVE_CLI} host-pr status --branch ${issue.branch} > pr-status.json\` in one call, then \`jq -e -r '.url' pr-status.json\` in the next (it exits non-zero when \`.url\` is absent or null). Delete the file before you commit.
+   If you need the URL on disk rather than in your tool output, redirect the re-query to a relative-path file in your worktree — it lands in your dispatch root, which is where the reading call starts too — and read it back with a **single command whose exit status is the verdict** — still no shell variable: \`${WAVE_CLI} host-pr status --branch ${issue.branch} > pr-status.json\` in one call, then \`jq -e -r '.url' pr-status.json\` in the next (it exits non-zero when \`.url\` is absent or null). Delete the file before you commit.
 
 ## Report — emit as your FINAL message, matching the WorkerReport schema:
 outcome, issue, branch, worktree, commitShas, prUrl, filesChanged{new,modified,renamed},
@@ -597,7 +646,7 @@ re-run the verify commands below without installing first:
 ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
 \`\`\`
 
-**ONE BASH CALL PER STEP** (wave-shared Convention 13) — it binds you exactly as it binds the Worker, and this install is the first place it bites. Never fuse a setup step onto the command that matters (\`cd X && <command>\`) into one compound Bash call. Two unrelated mechanisms break on that shape, with opposite signatures: **the permission gate** splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY subcommand to match a rule independently — so an allowlisted verify command carries only itself past the gate, never the \`cd\` in front of it, and a dialog mid-dispatch has nobody to answer it; and **the worktree-isolation guard** can REJECT a fused command as too complex to verify that it stays inside your worktree — no dialog, nothing run. A refusal is about the command's SHAPE, not about the check: re-issue it as separate calls. **NEVER drop a verify command or a floor check because its fused form was refused** — reporting a check as run when it was skipped is the exact failure this clause exists to stop, and it is yours to avoid as well as to catch in the Worker's evidence. Your cwd is reset between your Bash calls, so carry the directory in the command where a flag exists (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`) rather than trusting a preceding \`cd\`; confirm with \`pwd\` if in doubt. **A bare newline joining two statements in one call is the same shape as \`&&\`, just quieter — and most refusals are not fusion at all:** \`case\`/\`esac\` has been observed refused standing entirely alone, and so has any command naming a **shell variable** — an \`if\`-guard on one, or a lone \`test -n "$VAR"\` — whether the variable was set in an earlier Bash call or in the same one. Shell state does not survive between your Bash calls either, so a value must be re-queried in the call that needs it rather than carried. Before re-deriving a split by hand, check the "Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch" section in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\` for what was actually verified — entry 1's evidence arc records three remedies that looked right and could not run. When reviewing a Worker's evidence for THIS convention, treat a Worker's own citation of that catalog as legitimate rather than a shortcut — including a Worker reporting it COULD NOT verify a working form for a cataloged shape (the catalog's own heredoc-spec-append entry is exactly that outcome, honestly reported rather than guessed). **And check what the Worker's PR evidence rests on:** its Termination step now confirms the PR with a \`host-pr status --branch\` re-query, so a report whose \`prUrl\` traces back to a shell-variable capture is following a recipe the brief no longer carries.
+**ONE BASH CALL PER STEP** (wave-shared Convention 13) — it binds you exactly as it binds the Worker, and this install is the first place it bites. Never fuse a setup step onto the command that matters (\`cd X && <command>\`) into one compound Bash call. Two unrelated mechanisms break on that shape, with opposite signatures: **the permission gate** splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY subcommand to match a rule independently — so an allowlisted verify command carries only itself past the gate, never the \`cd\` in front of it, and a dialog mid-dispatch has nobody to answer it; and **the worktree-isolation guard** can REJECT a fused command as too complex to verify that it stays inside your worktree — no dialog, nothing run. A refusal is about the command's SHAPE, not about the check: re-issue it as separate calls. **NEVER drop a verify command or a floor check because its fused form was refused** — reporting a check as run when it was skipped is the exact failure this clause exists to stop, and it is yours to avoid as well as to catch in the Worker's evidence. Your cwd is reset to your dispatch root before every one of your Bash calls, so one \`pwd\` characterizes all of them and a preceding \`cd\` characterizes none: carry the directory in the command where a flag exists (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`) rather than trusting a \`cd\` to reach the next call. **A bare newline joining two statements in one call is the same shape as \`&&\`, just quieter — and most refusals are not fusion at all:** \`case\`/\`esac\` has been observed refused standing entirely alone, and so has any command naming a **shell variable** — an \`if\`-guard on one, or a lone \`test -n "$VAR"\` — whether the variable was set in an earlier Bash call or in the same one. Shell state does not survive between your Bash calls either, so a value must be re-queried in the call that needs it rather than carried. Before re-deriving a split by hand, check the "Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch" section in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\` for what was actually verified — entry 1's evidence arc records three remedies that looked right and could not run. When reviewing a Worker's evidence for THIS convention, treat a Worker's own citation of that catalog as legitimate rather than a shortcut — including a Worker reporting it COULD NOT verify a working form for a cataloged shape (the catalog's own heredoc-spec-append entry is exactly that outcome, honestly reported rather than guessed). **And check what the Worker's PR evidence rests on:** its Termination step now confirms the PR with a \`host-pr status --branch\` re-query, so a report whose \`prUrl\` traces back to a shell-variable capture is following a recipe the brief no longer carries.
 
 **SECRET-SAFE** (wave-shared Convention 8): never echo any environment variable's VALUE — not even with fallback syntax like \${VAR:-no}. Never run whole-environment dumps (\`printenv\`, \`env\`, bare \`set\`). Never read a gitignored settings/secret file (e.g. \`cat .claude/settings.local.json\`, any \`.env\`-class file) — not even "to check config". Tool output must never contain a secret. **AS A WORKTREE-ISOLATED ROLE, YOU DO NOT PROBE, EITHER** (wave-shared Convention 8's isolated-role rule): you never check whether a credential is set — sanctioned presence-test form or not. The Coordinator's own value-free credential-probe preflight already proved every configured credential resolves, once, before this row was dispatched, so there is nothing left here for a worktree-isolated Reviewer to check. That sanctioned form (\`[ -n "$VAR" ] && echo set\`) is exactly the command the worktree-isolation guard above has rejected outright, live, when a dispatched role ran it — so the answer is not a guard-passing rephrasing of the check; it is not running the check at all. Nothing in your own review touches a credential regardless: you never call \`host-pr\` and never read a secret.
 
@@ -692,36 +741,55 @@ exit 2, so the workaround fails loudly instead of half-working — do not go hun
 spelling that gets past it. A decorated id in the PAYLOAD is a different matter: the verb
 normalizes that one itself and tells you it did.)
 
-1. As its OWN Bash call — NEVER combined with step 3 into one compound command —
-   run \`cd "${REPO_ROOT}"\`: the compose-time absolute repo root, SHELL-QUOTED
-   (a checkout path may contain a space or a non-ASCII character — this
-   repo's own does — and an unquoted \`cd\` breaks on one, silently, taking
-   the sidecar write down with it). WAVE_CLI below is repo-relative
-   (tracked-settings permission match, see Authoring constraints #4); this cd
-   guarantees it resolves regardless of your starting cwd. WHY SEPARATE
-   (wave-shared Convention 13 — the standing rule for every dispatched role,
-   both of whose mechanisms fire on this exact shape): the permission gate
-   splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY
-   subcommand to match a rule independently — the tracked
-   \`.claude/settings.json\` allowlist covers the WAVE_CLI invocation exactly,
-   but that entry covers only THAT subcommand and never a \`cd\` fused in front
-   of it, so the fused form can raise a permission dialog mid-AFK-dispatch
-   with nobody there to answer it (same class as the \`env -u ... gh\` wrapper
-   footgun that defeats a \`gh *\` allowlist prefix, wave-shared Convention 1's
-   KW-F6 sandbox-footgun note — now observed on our own allowlist); and the
-   worktree-isolation guard can REJECT a fused command outright as too complex
-   to verify, with no dialog and nothing run. If step 3 then fails to resolve,
-   your cwd did not survive this call (it is reset between Bash calls in a
-   dispatched-agent thread) — check it with \`pwd\` and report the failure per
-   step 4. Do NOT re-fuse the two calls into one to work around it.
-2. Write this EXACT JSON to a temp file, byte-for-byte via a heredoc (no edits):
+1. **Read your working directory — one bare \`pwd\`, as its own Bash call, and never a \`cd\`.**
+   Expected output, exactly: \`${REPO_ROOT}\` (the compose-time absolute repo root).
+   Your cwd is **reset to your dispatch root before every Bash call you make**, so it is a
+   constant you OBSERVE, not state you can SET: this one \`pwd\` characterizes step 3 as
+   surely as it characterizes this step, and nothing you run here can change what step 3
+   starts in. That is also why the retired form of this step — \`cd "${REPO_ROOT}"\` as
+   call 1, the engine call as call 3 — is a DEAD END and must not be re-added: it never
+   reached step 3 (it only ever looked like it did, because the dispatch root already was
+   the repo root), and fusing it onto step 3 so that it would reach is refused twice over
+   (wave-shared Convention 13, both mechanisms — the standing rule for every dispatched
+   role). The permission gate splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and
+   requires EVERY subcommand to match a rule independently — the tracked
+   \`.claude/settings.json\` allowlist covers the WAVE_CLI invocation exactly, but that
+   entry covers only THAT subcommand and never a \`cd\` fused in front of it, so the fused
+   form can raise a permission dialog mid-AFK-dispatch with nobody there to answer it
+   (same class as the \`env -u ... gh\` wrapper footgun that defeats a \`gh *\` allowlist
+   prefix, wave-shared Convention 1's KW-F6 sandbox-footgun note — now observed on our
+   own allowlist); and the worktree-isolation guard can REJECT a fused command outright as
+   too complex to verify, with no dialog and nothing run.
+   **If \`pwd\` prints anything else:** do NOT \`cd\`, do NOT vary the command, and do NOT
+   skip the write — every path argument in step 3 is absolute, so the only cwd-sensitive
+   part left is the WAVE_CLI binding itself. Run step 3 anyway and report the mismatch
+   verbatim: in \`notice\` (prefixed \`cwd-mismatch:\`) if the verb still exits 0, in
+   \`error\` if it does not. A repo-relative binding fails loud there and writes nothing;
+   a path-free one may quietly succeed against a DIFFERENT engine copy than this repo's,
+   and your \`notice\` is then the only trace it happened. Either way the fix is the
+   Coordinator's precondition — dispatch the wave from the repo root — never a workaround
+   of yours.
+2. Write the payload below — the single line that follows this paragraph — EXACTLY,
+   byte-for-byte (no edits), to this ABSOLUTE path:
+   \`${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json\`
+   Absolute because the verb reads that argument against the process cwd, so a bare
+   relative name would put back into step 3 exactly the dependency step 1 exists to
+   retire. Prefer your file-writing TOOL over a shell heredoc: it takes the absolute path
+   directly, creates the parent directory, and involves no shell at all — which also
+   sidesteps the heredoc-to-file-with-braces shape Convention 13's Catalog records as
+   refused, and every JSON payload carries braces by construction. If you do use a
+   heredoc, its redirect target must be that same absolute path and the directory must
+   already exist (\`mkdir -p\` in its own prior call). The name is deterministic, so a
+   retry overwrites rather than accumulates.
 ${JSON.stringify(payload)}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
-   ${WAVE_CLI} ${verb} <that-temp-file> --dir "${dir}" --id ${issue.id} --iter ${iter}
+   ${WAVE_CLI} ${verb} "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --dir "${dir}" --id ${issue.id} --iter ${iter}
    (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, or a payload naming a DIFFERENT row than --id; exit 2 → usage/unreadable, or a --id that is not a bare id)
+   Every path in that command is absolute and shell-quoted; nothing in it depends on a
+   previous call having moved you anywhere.
 4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same --dir, same --iter. If it fails again, report the failure; never vary an argument to buy a zero.
-Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim — a normalized decoration or a misnamed leftover in the sidecar dir is a finding the Coordinator must see, and an exit-0 run is exactly where it would otherwise be dropped> }.`
+Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure — and the step-1 cwd mismatch too, if there was one>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim, plus a \`cwd-mismatch:\` line if step 1 found one — a normalized decoration, a misnamed leftover in the sidecar dir, or a write made from the wrong cwd is a finding the Coordinator must see, and an exit-0 run is exactly where it would otherwise be dropped> }.`
 }
 
 // The stage wrapper ALWAYS returns `passthrough` — a throw here would drop the
