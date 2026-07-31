@@ -7,7 +7,7 @@ import { runSpine } from './spine-cli';
 // The router, imported to pin that its `spine` case is the ONE dispatch path
 // this module's ops now flow through (issue #77).
 import { main } from './cli';
-import { readSpine } from './wave-md-rw';
+import { readSpine, HUMAN_GATED_WORKER } from './wave-md-rw';
 import { readDisclosures } from './spine-store';
 
 const FIXTURE = readFileSync(
@@ -630,5 +630,256 @@ describe('spine-cli — the direct-module invocation is collapsed onto the route
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('the human lane reaches the standalone entrypoint too — the gate BLOCKS through the alias', () => {
+    // The fold's end-to-end claim, on the one path no in-process spec can
+    // execute. `check-awaiting-human` is the gate wave-close phase 6 runs, so a
+    // spawn is the only proof that the whole documented spelling — argv →
+    // direct-run block → router → spine-cli's table — still produces the
+    // fail-closed exit an operator branches on.
+    const path = writeHumanLaneSpine();
+    const { code, stdout } = runAlias(['check-awaiting-human', path]);
+    expect(code).toBe(1);
+    expect(stdout).toContain('archive gate BLOCKED');
+    expect(stdout).toContain('row 11');
+
+    const listing = runAlias(['human-gated', path]);
+    expect(listing.code).toBe(0);
+    expect(JSON.parse(listing.stdout).awaitingHumanIds).toEqual(['11']);
+  });
+});
+
+// ─── the advertised op vocabulary is DERIVED, not transcribed (issue #366) ────
+//
+// Both of this runner's advertising surfaces — `printUsage()` and the `default:`
+// case's `available:` list — are rendered from the single `SPINE_OP_ARGS` table.
+// Before that table each carried its own hand-typed copy of the op names, which
+// is the drift the FOR-11 live-gate retro found (`set-status` advertised in one
+// place and not the other). These specs read both surfaces back at RUNTIME and
+// pin that they agree with each other and with what the dispatch actually
+// accepts — a second transcribed list here would only ever agree with itself.
+
+/** This runner's op vocabulary, read off its own `default:` message. */
+function advertisedSpineOps(stderr: () => string, reset: () => void): string[] {
+  reset();
+  expect(runSpine(['__unknown_op__', '/some/spine/path.md'])).toBe(2);
+  const m = /available:\s*([^\n]+)/.exec(stderr());
+  expect(m, 'no `available: a, b, c` op list in the unknown-op message').not.toBeNull();
+  const ops = (m as RegExpExecArray)[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  expect(ops.length).toBeGreaterThan(0);
+  return ops;
+}
+
+describe('spine-cli — the op vocabulary is one list, advertised twice', () => {
+  let stderrOut = '';
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stderrOut = '';
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderrOut += String(c);
+      return true;
+    });
+  });
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  const ops = () => advertisedSpineOps(() => stderrOut, () => { stderrOut = ''; });
+
+  it('advertises the ADR-0012 human-lane pair alongside every pre-existing op', () => {
+    // The claim the fold has to make good on: after moving `human-gated` and
+    // `check-awaiting-human` off the router, THIS runner is the one that names
+    // them. Remove either from `SPINE_OP_ARGS` and this fails by name.
+    const advertised = ops();
+    expect(advertised).toContain('human-gated');
+    expect(advertised).toContain('check-awaiting-human');
+    // …without having dropped anything on the way in.
+    expect(advertised).toContain('check-disclosures');
+    expect(advertised).toContain('set-status');
+  });
+
+  it('every advertised op is genuinely dispatchable — nothing advertised 404s', () => {
+    // Advertising and dispatch are separate code paths, so "it is in the list"
+    // is not "it is wired". Each op is invoked WITH a <spine-path> on purpose:
+    // invoked bare, an op falls into the shared missing-path guard and never
+    // reaches the `default:` case, so the phantom this test exists to catch
+    // would slip through. With a path it reaches dispatch, and whatever happens
+    // next is a USAGE or DOMAIN failure (missing args, unreadable spine) —
+    // never a "not an op" one.
+    for (const op of ops()) {
+      stderrOut = '';
+      runSpine([op, join(tmpdir(), 'no-such-spine-vocab.md')]);
+      expect(stderrOut, `advertised op \`${op}\` is not dispatched`).not.toContain(
+        'unknown op',
+      );
+    }
+  });
+
+  it('the usage block names every advertised op — the two surfaces cannot disagree', () => {
+    // `printUsage()` and the `available:` list are rendered from the same table,
+    // and this is the assertion that would catch a re-split into two lists.
+    const advertised = ops();
+    stderrOut = '';
+    expect(runSpine([])).toBe(2);
+    const usage = stderrOut;
+    expect(usage.startsWith('usage:')).toBe(true);
+    for (const op of advertised) {
+      expect(usage, `\`${op}\` is advertised but missing from the usage block`).toContain(
+        `  spine ${op} `,
+      );
+    }
+  });
+});
+
+// ─── the human lane, in its post-fold home (issue #366, ADR-0012) ────────────
+//
+// Behaviour belongs to cli.spec.ts's `spine human-gated` / `spine
+// check-awaiting-human` sections, whose assertions are unchanged across the
+// fold. What is pinned HERE is the fold's own claim: the two ops now dispatch
+// from this table, and reaching them through the router is the same call. The
+// expectation is derived by RUNNING the other path, never from a fixture — a
+// transcribed JSON blob would pass a fold that quietly changed both sides.
+
+/** A spine whose row `11` is human-gated and still `planned` (i.e. awaiting). */
+function writeHumanLaneSpine(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'spine-cli-human-lane-'));
+  const path = join(dir, 'WAVE.md');
+  writeFileSync(
+    path,
+    [
+      '# Wave 2026-07-31 — human lane',
+      '',
+      '**Status:** in-flight',
+      '',
+      '## Plan-Table',
+      '',
+      '| ID  | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+      '| --- | ----- | ------ | ---- | -------- | -- | ----- | ---- | ------------------ |',
+      '| 10 | Ordinary AFK row | background | mechanical | quick-verify | — | planned | 1 | — |',
+      `| 11 | Rotate the credential by hand | ${HUMAN_GATED_WORKER} | cross-feature-refactor | quick-verify | — | planned | 1 | — |`,
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+  return path;
+}
+
+describe('spine-cli dispatches the human lane (issue #366 — the fold)', () => {
+  let stdoutOut = '';
+  let stderrOut = '';
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stdoutOut = '';
+    stderrOut = '';
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: unknown) => {
+      stdoutOut += String(c);
+      return true;
+    });
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderrOut += String(c);
+      return true;
+    });
+  });
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  /** Run one spelling of an op and capture everything an operator can observe. */
+  function capture(run: () => number): { code: number; stdout: string; stderr: string } {
+    stdoutOut = '';
+    stderrOut = '';
+    const code = run();
+    return { code, stdout: stdoutOut, stderr: stderrOut };
+  }
+
+  it.each([
+    ['human-gated', 0],
+    ['check-awaiting-human', 1],
+  ] as const)(
+    '`%s` dispatches from THIS table with the documented exit code',
+    (op, expected) => {
+      const path = writeHumanLaneSpine();
+      const { code, stderr } = capture(() => runSpine([op, path]));
+      expect(stderr).not.toContain('unknown op');
+      expect(code).toBe(expected);
+    },
+  );
+
+  it.each(['human-gated', 'check-awaiting-human'] as const)(
+    '`%s` is byte-identical through the router and through this runner',
+    (op) => {
+      // The fold's parity claim, both directions of it: same exit code, same
+      // stdout, same stderr. The expectation is the OTHER path's own output.
+      const path = writeHumanLaneSpine();
+      const direct = capture(() => runSpine([op, path]));
+      const viaRouter = capture(() => main(['spine', op, path]));
+
+      expect(viaRouter.code).toBe(direct.code);
+      expect(viaRouter.stdout).toBe(direct.stdout);
+      expect(viaRouter.stderr).toBe(direct.stderr);
+      // Non-vacuity: an op that printed nothing at all would satisfy the three
+      // equalities above and prove nothing.
+      expect(direct.stdout.length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each(['human-gated', 'check-awaiting-human'] as const)(
+    '`%s` keeps its OWN missing-path usage message, not the shared one',
+    (op) => {
+      // Each op names itself and its `--workers` flag on a missing path — the
+      // reason both are handled ahead of the generic `<spine-path>` guard. The
+      // shared `printUsage()` block would name neither.
+      const { code, stderr } = capture(() => runSpine([op]));
+      expect(code).toBe(2);
+      expect(stderr).toContain(`spine ${op} requires a <spine-path>`);
+      expect(stderr).toContain('--workers');
+    },
+  );
+
+  it('a flag in the <spine-path> slot is a usage error, not a domain one', () => {
+    const { code, stderr } = capture(() => runSpine(['human-gated', '--workers', 'x']));
+    expect(code).toBe(2);
+    expect(stderr).toContain('requires a <spine-path>');
+  });
+
+  it('the gate is fail-closed on an unreadable spine — exit 1, like a held row', () => {
+    const { code, stdout } = capture(() =>
+      runSpine(['check-awaiting-human', join(tmpdir(), 'no-such-spine-366.md')]),
+    );
+    expect(code).toBe(1);
+    expect(stdout).not.toContain('CLEAR');
+  });
+
+  it('reads through the injected SpineIo, like every other op in this runner', () => {
+    // The one deliberate divergence from a literal move: the lane reader now
+    // takes its bytes from `io.read` instead of a direct `readFileSync`. The
+    // default io IS `readFileSync(p, 'utf-8')`, so behaviour is unchanged — and
+    // this is the assertion that says the seam is real rather than decorative.
+    const source = readFileSync(writeHumanLaneSpine(), 'utf-8');
+    const reads: string[] = [];
+    const io = {
+      read: (p: string) => {
+        reads.push(p);
+        return source;
+      },
+      write: () => {
+        throw new Error('the human lane must never write');
+      },
+    };
+    const { code, stdout } = capture(() => runSpine(['human-gated', 'WAVE.md'], io));
+    expect(code).toBe(0);
+    expect(reads).toHaveLength(1);
+    expect(JSON.parse(stdout).awaitingHumanIds).toEqual(['11']);
   });
 });
