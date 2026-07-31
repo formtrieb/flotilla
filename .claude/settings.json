@@ -30,8 +30,13 @@
       "Bash(NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts:*)",
       "Bash(git merge-tree:*)",
       "Bash(npm ci)",
+      "Bash(npm ci --prefix:*)",
       "Bash(npx vitest run:*)",
       "Bash(npx tsc --noEmit)",
+      "Bash(npm test)",
+      "Bash(npm run typecheck)",
+      "Bash(./tools/wave/node_modules/.bin/vitest run:*)",
+      "Bash(./tools/wave/node_modules/.bin/tsc -p tools/wave --noEmit)",
       "Bash(git fetch origin:*)",
       "Bash(git reset --hard:*)",
       "Bash(git checkout:*)",
@@ -42,8 +47,6 @@
       "Bash(mkdir -p:*)"
     ],
     "deny": [
-      "Read(.claude/settings.local.json)",
-      "Read(**/.claude/settings.local.json)",
       "Read(.env)",
       "Read(.env.*)",
       "Read(**/.env)",
