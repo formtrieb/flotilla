@@ -24,23 +24,32 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 ## Exact sequence
 
 ```bash
-T=$(mktemp -d)
+# A LITERAL scratch dir, deliberately NOT `T=$(mktemp -d)` — see the note below.
+mkdir -p /tmp/flotilla-plan
 
 # 1. Draw candidates (eligibility OR-set is config-driven; no eligibility arg)
-{{wave-cli}} issue-store listOpen    > "$T/candidates.json"   # IssueView[]
+{{wave-cli}} issue-store listOpen    > /tmp/flotilla-plan/candidates.json   # IssueView[]
 
 # 2. Draw current claims (queued + in-flight across all waves)
-{{wave-cli}} issue-store listClaimed > "$T/claimed.json"      # IssueView[]
+{{wave-cli}} issue-store listClaimed > /tmp/flotilla-plan/claimed.json      # IssueView[]
 
 # 3. Cross-wave check
 {{wave-cli}} cross-wave \
-  --candidates "$T/candidates.json" \
-  --claimed    "$T/claimed.json" \
+  --candidates /tmp/flotilla-plan/candidates.json \
+  --claimed    /tmp/flotilla-plan/claimed.json \
   --repo-root  "$REPO"                                        # CrossWaveResult
 
 # 4. PRD panel
 {{wave-cli}} issue-store listDocuments                        # DocumentView[]
 ```
+
+**Why the scratch path is written out rather than captured (Convention 12, Form 1).** This sequence used to open with `T=$(mktemp -d)` and then name `"$T/…"` in steps 1–3. That capture is in the **guarded** class, not the legitimate-empty one: `mktemp -d` either creates a directory and prints its path or it fails, so an empty `T` never means "no temp dir was needed" — it means the command did not run. And the consequence is worse than a silent skip, because `> "$T/candidates.json"` with `T` unset is `> "/candidates.json"`: a **write at the filesystem root**, attempted twice.
+
+Guarding it inline would not have been enough either, because the value is consumed across *several* steps and shell state does not survive from one Bash call to the next — `T` is unset in the shell that runs step 2 whether or not step 0 checked it. So this site takes the convention's **preferred** form: it does not guard the capture, it **removes** it. A literal path is retypeable in every call, needs nothing to survive a boundary, and has no empty state to check.
+
+`$REPO` stays a variable because it is an **operator-held constant** — a value you already know and can retype in each call — which is the opposite of a `mktemp` output that only ever existed in one shell's memory. That distinction, not the `$` sigil, is what the convention is about.
+
+The dir is fixed rather than per-run, so a second planning pass **overwrites** both files; each `>` rewrites its file wholesale, so a re-run is always self-consistent. Keep it outside the repo: planning runs against a checkout whose cleanliness other gates read, and scratch JSON inside `.flotilla/` would be committed in a consumer repo (there it is *not* gitignored — the spine is branch-local committed for resume).
 
 `$REPO` is the consumer repo root (the dir containing `wave.config.json`). **Always pass `--repo-root` explicitly** (FOR-38) — a live finding showed the same candidate roster produce 17 conflict cells without it vs. 40 with it, purely from glob `Files` patterns that silently failed to expand. Omitting it does not fall back to `process.cwd()` (that silent-guess behavior was the bug); it instead degrades glob comparison to exact-pattern-text matching and returns a `warnings` array naming every unexpanded pattern — treat any non-empty `warnings` as a sign the report is incomplete, not as a clean parallel-safe read.
 

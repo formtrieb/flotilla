@@ -12,6 +12,13 @@ The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the comman
 
 ```bash
 SLUG=<2026-06-18-topic>; REPO=<consumer-root>; SPINE=".flotilla/waves/$SLUG.md"
+# Operator-held constants: values you already know and RETYPE in each Bash call.
+# That is what makes them safe to name below, and it is the property a captured
+# value lacks — not the `$` sigil (Convention 12). The scratch dir is a literal
+# path for the same reason, never `T=$(mktemp -d)`: nothing to capture, nothing
+# to guard, nothing that has to survive a call boundary. Outside the repo, so it
+# never dirties the tree the working-tree gates read.
+mkdir -p "/tmp/flotilla-start-$SLUG"
 
 # 0. THE CALL BOUNDARY (wave-shared Convention 12, half two). There is no setup
 #    step here — deliberately. This file used to define a `require_capture()`
@@ -61,15 +68,17 @@ done   # sum MUST be 0; >0 → STOP (another wave is in-flight)
 #   verify block to check — the defer says nothing about the row's coverage,
 #   only that this invocation didn't ask). Passing --config as shown lands
 #   this re-check in the resolvable state on every ordinary run.
-{{wave-cli}} issue-store listClaimed > "$T/claimed.json"
-{{wave-cli}} cross-wave --candidates "$T/cands.json" --claimed "$T/claimed.json" --repo-root "$REPO" \
-  > "$T/cross-wave-result.json"
+{{wave-cli}} issue-store listClaimed > "/tmp/flotilla-start-$SLUG/claimed.json"
+{{wave-cli}} cross-wave --candidates "/tmp/flotilla-start-$SLUG/cands.json" --claimed "/tmp/flotilla-start-$SLUG/claimed.json" --repo-root "$REPO" \
+  > "/tmp/flotilla-start-$SLUG/cross-wave-result.json"
+#   cands.json is this wave's roster IssueViews, written out the same way
+#   create-mechanics builds its own (accumulate the `issue-store read` outputs).
 #   compare result.intraWaveConflicts vs spine ## Conflict-Map — any NEW cell → STOP
 #   result.intraWaveBlockedByPairs: { blocked, blocker, resolved }[] — engine-resolved
 #   (cross-wave.ts findIntraWaveBlockedByPairs). Any pair with resolved==false marks
 #   its `blocked` id HELD — collect the HELD id set from this file, e.g.:
 HELD_IDS=$(node -e '
-  const r = require("'"$T"'/cross-wave-result.json");
+  const r = require("'"/tmp/flotilla-start-$SLUG"'/cross-wave-result.json");
   const held = new Set(r.intraWaveBlockedByPairs.filter(p => !p.resolved).map(p => p.blocked));
   console.log([...held].join(" "));
 ')
@@ -394,9 +403,9 @@ Single-owner, deliberately: the command lives in the engine (`tools/wave/src/cli
 #      one through the SAME verb — never hand-format, never bundle.
 REPORTS=".flotilla/waves/$SLUG/reports"; VERDICTS=".flotilla/waves/$SLUG/verdicts"
 [ -f "$REPORTS/$ID-$ITER.md" ] || \
-  {{wave-cli}} write-report  "$T/report-$ID.json"  --dir "$REPORTS"  --id "$ID" --iter "$ITER"
+  {{wave-cli}} write-report  "/tmp/flotilla-start-$SLUG/report-$ID.json"  --dir "$REPORTS"  --id "$ID" --iter "$ITER"
 [ -f "$VERDICTS/$ID-$ITER.md" ] || \
-  {{wave-cli}} write-verdict "$T/verdict-$ID.json" --dir "$VERDICTS" --id "$ID" --iter "$ITER"
+  {{wave-cli}} write-verdict "/tmp/flotilla-start-$SLUG/verdict-$ID.json" --dir "$VERDICTS" --id "$ID" --iter "$ITER"
 #   write-* validates-then-writes: exit 1 = invalid payload / report.issue↔--id
 #   mismatch → NOTHING written (re-collect); exit 0 prints the absolute path.
 #   That same write also sweeps its target dir for a MISNAMED sidecar (a filename
@@ -415,9 +424,9 @@ REPORTS=".flotilla/waves/$SLUG/reports"; VERDICTS=".flotilla/waves/$SLUG/verdict
 #       it — the verb is source-neutral, Worker/Reviewer/Coordinator land
 #       identically:
 {{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source worker \
-  --text "$(jq -r '.judgmentCalls[0]' "$T/report-$ID.json")"       # one call per disclosed item in report.judgmentCalls
+  --text "$(jq -r '.judgmentCalls[0]' "/tmp/flotilla-start-$SLUG/report-$ID.json")"       # one call per disclosed item in report.judgmentCalls
 {{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source reviewer \
-  --text "$(jq -r '.reviewerFocusItems[0]' "$T/verdict-$ID.json")" # a Reviewer-raised item the Worker didn't already flag
+  --text "$(jq -r '.reviewerFocusItems[0]' "/tmp/flotilla-start-$SLUG/verdict-$ID.json")" # a Reviewer-raised item the Worker didn't already flag
 {{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source coordinator \
   --text "<what you, the Coordinator, noticed routing this tuple>"
 #   Each call prints the created ref (`<row-id>.<ordinal>`, e.g. `01.1`) AFTER
