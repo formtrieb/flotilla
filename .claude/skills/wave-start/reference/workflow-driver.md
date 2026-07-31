@@ -87,11 +87,46 @@ Two values feed the write, and they come from opposite places — so the driver 
 
 The live incident (`2026-07-27-consumer-gaps`): three of six Workers decorated the field. Two sidecars landed under a name the reader could not resolve, and would have read as "no durable record" on a resume while the operator stared at a populated directory; the third was refused outright and only existed because a human noticed. Both directions are now closed at the boundary, and the routing-time recovery reports misnamed litter it used to walk past (wave-shared Convention 5).
 
+## PR-open reuse-refusal — what `host-pr create` guarantees (and refuses) the caller
+
+Two call sites in this pipeline open a PR through the engine's find-before-create seam (`host-pr create`, ADR-0019) — the Worker's own Termination step 3 below, and the terminator's CALL 1 (`start-mechanics.md` step 7c). Both used to read only the exit-0 happy path (parse `.url`, move on) and discard everything else the verb can return. That silently converted one specific failure into a false success: a refused rewrite reaching a later "does a PR exist for this branch?" re-query, which answers yes — because the PR does exist — while the caller's own intended content never landed on it.
+
+**The contract, stated once.** `create` is find-before-create: a branch with no open PR gets one created (exit 0, `outcome: "created"`); a branch that already has one open gets it REUSED, with its title/body RE-WRITTEN to the passed values (exit 0, `outcome: "reused"`, `updated: true`) — last-writer-wins, so a cap=1 re-dispatch onto the same branch never opens a duplicate. The one rewrite `create` refuses outright is the one whose damage is silent: dropping the close phrase (wave-shared Convention 4) the LIVE body currently carries, by passing a new body that carries none. That refusal is `exit 1`, `outcome: "reuse-refused"`, a `reason`, and — the detail that matters most for a caller reading the JSON quickly — **no write at all**: the live PR's title and body are exactly what they were before the call. `--allow-close-phrase-loss` is the deliberate override that permits that one rewrite anyway.
+
+**Why a composed render should never legitimately trigger it.** The refusal fires on the body the CALLER passes, not on the branch's history: it is `hasClosePhrase(newBody) === false` while the live body already carries one. Every body either caller here composes carries the close phrase by construction — the Worker's under policy clause 6 below, the terminator's as the rendered `## Reviewer verdict` section above the store-kind close phrase (`start-mechanics.md` step 7c). **A composed render always passes this guard.** A `reuse-refused` reaching either call site is therefore not a routine branch of the happy path to route around — it is evidence that THIS call's own composed body is missing its close phrase, a compose defect. Neither caller ever has a legitimate reason to reach for `--allow-close-phrase-loss`: doing so would deliberately ship the exact damage the guard exists to stop, in response to a signal that the real bug is upstream, in the body that was passed.
+
+**The refused payload still carries the PR's URL — on purpose, and that is the trap.** `create`'s refusal response includes the reused PR's `url` (`alignedPrRef`), because the PR genuinely is this branch's PR; the rewrite was refused, not the PR's existence. That is exactly what makes the refusal payload resemble the success payload at a glance, and exactly why "does a PR exist at this URL" is the wrong question to ask next. Both call sites below now read `create`'s own exit code / `outcome` FIRST, before any later status re-query's answer is allowed to stand in for "did my rewrite land."
+
+## The compose-fresh-or-verify rule — a composed driver copy is coupled to this document
+
+Every wave dispatch composes the Workflow script from this file — the `## The script` fence below, with the current wave's rows filled into `ISSUES` and the compose-time constants (Authoring constraints below) filled in. That composition is a COPY, and a copy can go stale the instant this document is edited out from under it: a Coordinator session that keeps a previously-extracted copy around (a scratch file, a re-used compose from an earlier wave in the same session) is dispatching against what this document USED to say, not what it says now.
+
+**The rule.** At every dispatch, the Coordinator either:
+
+1. **Composes fresh** — extracts the script verbatim from this document's current `## The script` fence at compose time, or
+2. **Verifies a reused copy's currency** — if a previously-composed copy is reused rather than freshly extracted, diffs it against this document's CURRENT script and walks the currency-assertion checklist below BEFORE that copy is dispatched.
+
+A copy that is neither freshly extracted nor currency-checked is not eligible to dispatch. This is deliberately a RULE, not a single mechanical check like `assertRequiredRowFields` — it targets drift between the DOCUMENT and a COPY of it, which nothing inside the copy itself can detect (a stale copy's own assertions are exactly as stale as the rest of it). `start-mechanics.md` step 4d names this rule as a gate before any row is composed into `ISSUES`.
+
+**The seeded currency-assertion checklist.** Each item below is a drift signal this document has already paid for once, either by a live incident or by the very fix that answers it — this list exists so the next one is checked instead of re-discovered:
+
+- **Stage-3 (Reviewer) `agent()` call carries `model: issue.model`.** A missing `model` key is the tell for a copy that predates the ADR-0007 Amendment 2026-07-31 model-tier binding — it silently re-inherits the Coordinator's own session model for every Reviewer (the pre-existing "CURRENCY CHECK" comment beside the pipeline's Stage-3 call, below, is this exact item — do not delete that comment when re-extracting).
+- **The workspace-setup `pwd` step states cwd as a RESET CONSTANT, never a persisted one.** The correct premise: cwd is reset to the dispatch root before every Bash call, so one `pwd` characterizes every later call and a `cd` never reaches a later step. A copy whose Scribe brief (or Worker workspace-setup) still opens with a `cd` to `REPO_ROOT` "so a later call resolves against it" is carrying the falsified premise §The Scribe's cwd exists to retire (Occurrence 1 below).
+- **`reviewerBrief()`'s SECRET-SAFE clause states the Reviewer's OWN measured isolation posture** — no `isolation` key on the Reviewer's `agent()` call (Stage 3) — never the Worker's (`isolation: 'worktree'`, Stage 1). A copy that states the Worker's posture for the Reviewer is carrying the falsified claim `#356` corrected (Occurrence 2 below).
+- **Termination step 4 is the `host-pr status --branch` re-query recipe**, never a `PR_URL=$(...)` capture-then-guard shape. A copy still prescribing a capture-plus-guard predates the Convention-12/13 fix and will teach the Worker a shape the worktree-isolation guard refuses outright.
+- **The two inlined `*_SCHEMA` literals deep-equal the exported engine consts**, `anyOf`-free. `skill-schema-drift.spec.ts` is the automated form of this one for what ships on `main`; the checklist item is for a HAND diff when comparing two composed copies that may not both be on `main` yet.
+- **`REQUIRED_ROW_FIELDS` names every scalar field the copy's OWN `workerBrief`/`reviewerBrief` actually interpolate.** A field added to a brief but not to that array is exactly how the narrow `anchorSha`-only predecessor of this assertion missed `branch` one wave-generation later (Authoring constraint #7 below).
+
+**Both motivating occurrences, recorded as evidence.**
+
+- **Occurrence 1 — a frozen template outlived the cwd-persistence fix.** `docs/retros/2026-07-30-beta1-double-wave.md` (finding DW-F3): a Convention-13 row and, independently, the Echo-Guard row both measured that cwd does NOT persist between a dispatched subagent's Bash calls that same wave — yet the Scribe brief actually dispatched that wave still opened with a `cd` to `REPO_ROOT` in call 1 and ran its engine verb in call 3, resting on the incidental fact that the dispatch root already was the repo root, not on anything the brief itself established. The wave's own Coordinator compensated by hand, per row, rather than by re-extracting a corrected copy — the ten ad-hoc currency assertions this rule exists to replace with a mechanism. `#353` (the fix carried in this document today: step 1 is a bare `pwd` compared against the compose-time literal, never a `cd`) is what closed it.
+- **Occurrence 2 — the rule's first measured payoff, one wave later.** `#356` (landed as commit `e41c016`, "restore the dead-end assertion, reconcile the reviewer-isolation posture, bound the shell-function remedy"): `reviewerBrief()`'s SECRET-SAFE clause stated the Reviewer's `agent()` call carried the WORKER's measured isolation posture (`isolation: 'worktree'`) instead of its own (no `isolation` key at all, Stage 3) — a claim the repo had just falsified by adding the Worker-scoped posture note in the first place. A **compose-fresh anchor-diff** — diffing the freshly-extracted script against the previous compose before that wave's dispatch — caught the mismatch before it reached a Reviewer brief. This is the first occasion the rule (informally applied) paid for itself measurably, rather than being argued for in the abstract.
+
 ## Authoring constraints
 
 1. **Embed per-row data in the script body** as `const ISSUES = [...]` — the Workflow `args` channel does not reliably deliver a large nested payload. Never depend on external `args` for structured input.
 2. **Compose briefs in-script** via a helper that string-interpolates the structured fields — a function field cannot survive JSON serialization through `args`.
-3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`.
+3. **Anchor every Worker to the wave-anchor SHA** (`git reset --hard <anchorSha>`) so the Reviewer (wave-reviewer) can diff against that SHA, not `main`. **This is presence-checked here (Authoring constraint #7's `REQUIRED_ROW_FIELDS`), never resolvability-checked** — `isMissingField` only tests presence/non-emptiness, so a well-formed but FABRICATED SHA (a correct-looking short prefix that names no real commit) passes it exactly like a real one and reaches every brief individually. `start-mechanics.md` step 4c is the host-side gate that catches that case once, before compose — the Workflow script itself has no filesystem/git access to check it from inside (§Harness constraint above), so this cannot be folded into the compose-time JS assertion; it stays a Coordinator-side precondition instead. Live occurrence: a fabricated anchor SHA with a correct 7-char prefix passed compose and reached four parallel briefs; all four Workers independently caught it themselves.
 4. **Fill the Scribe compose-time constants** — `REPO_ROOT` (absolute, and **shell-quoted** wherever it is interpolated into a brief — see its own note below), `WAVE_CLI` (**filled from the consumer's configured `engine.cli`**, read out of `wave.config.json` at compose time — see its comment below), and the two **absolute** sidecar dirs (`REPORTS_DIR` / `VERDICTS_DIR`, `.flotilla/waves/<slug>/reports|verdicts` — likewise shell-quoted wherever interpolated), just as you fill `depsSetup`. `WAVE_CLI` has **no default of its own**: the binding lives in exactly one place per repo, and the driver reads it rather than restating a form (ADR-0032). An **absent** `engine.cli` is a STOP, not a cue to pick a spelling — `wave-setup` has not finished in that repo, and nothing should be dispatched until it has. The engine validates the field as **repo-relative and non-absolute** on the consumer's behalf, which is exactly the property this constant needs: the tracked `.claude/settings.json` permission allowlist a dispatched agent inherits can only match **repo-relative** invocation prefixes — an absolute form would embed a machine- and client-specific path that a public repo's tracked settings must never carry. Worker and Reviewer worktrees carry **tracked files only** (see "A worktree carries tracked files only" below), so that tracked allowlist is the *only* permission source they inherit; an absolute-form engine call from a Worker's termination step or a Scribe would hit the permission gate mid-wave and break AFK dispatch, which is why the config refuses one outright. A Worker's worktree needs no extra step for the configured binding to resolve: its post-checkout cwd already *is* a repo-relative root, and every one of its Bash calls starts back at that root. A Scribe, running in the **session cwd** (no worktree isolation), gets the same property from the same mechanism — **not** from a `cd`, which never reaches the call that would need it (§The Scribe's cwd, above). Its brief therefore *observes* the cwd once with a bare `pwd` and reports a mismatch instead of `cd`-ing around it; `REPO_ROOT` is the literal that `pwd` output is compared against and the base of the payload's absolute path, never a directory the Scribe changes into. `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless — sidecar dirs are addressed independent of the Scribe's cwd entirely.
 5. **Never backslash-escape an apostrophe inside a single-quoted JS string when composing a brief.** Composed brief text (`reviewerHints`, `issueSpec`, `prTitle`, and any other free-form field interpolated into the script body) is natural language and will routinely contain apostrophes — a `\'` inside a `'...'`-delimited literal parses fine to the human eye but is exactly the kind of thing to get wrong under compose pressure. Use a double-quoted string for that literal, or rephrase to drop the apostrophe. **Observed failure shape (W17-F1):** the first Workflow launch of a wave failed at the script parser — not at any `agent()` call — because a composed `reviewerHint` carried a backslash-escaped apostrophe inside a single-quoted string; the parser's error pointed at the escaped quote. Cost was zero (no agent had started, no state was touched), but the whole compose round was lost and had to be redone.
 6. **Never hold the engine CLI — or any command — in a shell variable in your own Coordinator shell, and never let an empty capture flow onward (wave-shared Convention 12).** This constraint is about the shell *you* type into while composing and routing, not about the script: `CLI="<the configured engine.cli value>"; $CLI spine set-row-state …` exits **127** under zsh (no word-splitting of an unquoted expansion) and runs **nothing** — five occurrences, the most recent of which produced an empty PR URL that was then written to the spine as a value. Bind a function instead (`wave_cli() { … "$@"; }`) and iterate a real array rather than `for x in $LIST`. **And obey the call boundary on every capture you subsequently *use*** — a PR URL, an id, a SHA: verify it in the SAME Bash call that produced it, or do not capture it at all and re-query its source in the call that needs it (`host-pr status --branch <b>` for a PR URL). A shell function and a shell variable are both session state, and shell state does not survive between Bash calls — which is why the retired `require_capture` helper, defined at one step and invoked at another, could never fire on the value it named. The `WAVE_CLI` constant below is the safe shape by contrast, and stays that way precisely because it is a compose-time JS string that no shell ever expands (see its own comment).
@@ -624,6 +659,24 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 
 ${issue.closePhrase}"
    # exit 0 → stdout is one JSON object; its .url (outcome: created | reused) is your prUrl.
+   #
+   # exit NON-ZERO → READ .outcome IN THAT SAME JSON BEFORE DOING ANYTHING ELSE.
+   # This is not a case step 4 papers over — see "PR-open reuse-refusal" earlier
+   # in this document.
+   #   outcome create-failed → the create attempt itself failed; .fallbackPrefillUrl
+   #     is the manual-open fallback. Report blocked.
+   #   outcome reuse-refused → the close-phrase guard stopped a REWRITE: the body
+   #     you just passed above is missing ${issue.closePhrase} (re-read it — the
+   #     guard checks the body YOU pass, never the live one). .url still names
+   #     the branch's existing PR, but the refusal made NO write at all — the PR
+   #     is exactly as it was before this call, and that URL is not evidence
+   #     anything landed. Never reach for --allow-close-phrase-loss to get past
+   #     this: it deliberately discards the close phrase, the one outcome this
+   #     guard exists to stop, and your composed body above is supposed to carry
+   #     it already. Fix the body so it genuinely carries the close phrase and
+   #     re-run create (idempotent, find-before-create); if it refuses again,
+   #     report blocked with the printed .reason — never let step 4's re-query
+   #     of that same URL read as success for a rewrite that never happened.
    \`\`\`
    The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline, policy clause 6): do not reference any other issue id anywhere.
 
@@ -634,8 +687,10 @@ ${issue.closePhrase}"
    # → { ok, verb, host, branch, state: open|merged|closed-unmerged|none, url?, prUrl? }
    \`\`\`
    Read the answer off that JSON:
-   - \`state\` is \`open\` (or \`merged\`/\`closed-unmerged\`) **and** \`url\` is present → the PR exists and the host says so. **That \`url\` is your prUrl.**
+   - \`state\` is \`open\` (or \`merged\`/\`closed-unmerged\`) **and** \`url\` is present → the PR exists and the host says so. **That \`url\` is your prUrl — carry it into your Report verbatim (see below).**
    - \`state\` is \`none\`, or no \`url\` came back → **no PR was created.** Step 3 did not do what it looked like it did. Re-run \`host-pr create\` (it is find-before-create, so re-running is safe and never duplicates) and re-query; if it still reports \`none\`, report \`blocked\` with what the two calls printed.
+
+   **This step confirms the PR EXISTS — it is not, on its own, proof that step 3's rewrite landed as intended.** A \`reuse-refused\` outcome at step 3 makes NO write, so of course the PR is still there and this re-query still finds it — that is expected, not evidence of success. If step 3 returned a non-zero exit or \`outcome: reuse-refused\`, this step's \`state: open\`/\`url\`-present answer does not override that: carry step 3's own outcome forward (see its comment above), never let this step's mere confirmation that a PR exists stand in for "my rewrite succeeded."
 
    Never report \`outcome: done\` with a missing, empty, \`null\`, or \`undefined\` \`prUrl\`. An honest \`blocked\` is a correct answer; a \`done\` carrying an empty URL is not.
 
@@ -656,6 +711,16 @@ unfindable, and it fails in the quietest way available: the file exists, an \`ls
 it, and a resume asking for row \`${issue.id}\` gets nothing back. Live occurrence: three
 of six Workers in one wave decorated this field; two records landed under a name nothing
 could resolve, and the third was not written at all.
+
+**On \`done\`/\`done-with-concerns\`, \`prUrl\` MUST be exactly the \`url\` value Termination
+step 4's \`host-pr status\` re-query answered — never omitted, never re-typed from memory,
+never left blank because you already saw it once during Termination.** There is no other
+legitimate source for this field and no legitimate reason for it to be absent on these two
+outcomes. Live occurrence (the W3-F2 recurrence class): two Workers in consecutive waves
+ran the fresh re-query correctly, read a \`url\` back, and then wrote a \`done\` report with
+\`prUrl\` absent anyway — step 4 told them how to CONFIRM the PR, not, explicitly enough,
+how to CARRY that value into THIS field of THIS report. State it here, as the one place it
+counts: the value is that re-query's \`url\`, verbatim, or the report is not \`done\`.
 
 ## Reviewer-handoff hints (from Coordinator)
 ${j(issue.reviewerHints)}`
@@ -826,6 +891,27 @@ normalizes that one itself and tells you it did.)
    the directory must already exist, from an equally quoted
    \`mkdir -p "${REPO_ROOT}/.flotilla/tmp"\` in its own prior call. The name is
    deterministic, so a retry overwrites rather than accumulates.
+
+   **The heredoc alternative is measured, not merely asserted.** The
+   three write shapes on record for an echo-guard false positive on this exact
+   write path — a quoted heredoc (the fallback form above), an inline node-eval
+   string literal, and a tee-fed heredoc — were re-run against the CURRENT
+   \`tools/wave/hooks/echo-guard.cjs\` with a guarded-pattern payload (a sidecar
+   whose own evidence text quotes the guard's dump-word examples — \`$(printenv)\`,
+   \`\`printenv\`\` — as prose, mirroring the live #347 trigger). All three passed
+   unmodified: the guard's quote-nesting fix and its quoted-heredoc-body
+   inertness fix (both documented in Convention 8) together clear every one of
+   them for this payload class, and each write also verified byte-exact once
+   allowed through. The pre-settled decision rule for this measurement (if any
+   shape still blocked, the payload write would become unconditionally
+   file-first for the guarded-pattern class, with the heredoc alternative
+   removed) therefore does not fire — the prefer-file-first text above stays
+   exactly as written, and this paragraph is where the measurement is recorded,
+   per that rule. A negative control (the identical payload through an
+   UNQUOTED heredoc delimiter, where the guard's quoted-body inertness fix does
+   NOT apply) was blocked as expected, confirming the harness can observe a
+   block and the all-pass result above is not an artifact of a check that
+   cannot fail.
 ${JSON.stringify(payload)}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
