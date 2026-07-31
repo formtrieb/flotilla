@@ -16,9 +16,18 @@
  *   documented flotilla-own vendored-form substitution), (b) named
  *   dogfood-only in setup-mechanics.md's "2026-07-31 pass" table, or
  *   (c) a member of the SHRINK-ONLY seeded-legacy list below (the AC2
- *   allowance for known-stale entries the operator has not yet removed —
- *   `.claude/settings.json` sits outside this issue's declared Files globs,
- *   so removing them live is a separate operator PR, not this slice's).
+ *   allowance for known-stale entries an operator PR has not yet removed).
+ *   That list started with four entries #291 could not remove itself
+ *   (`.claude/settings.json` sat outside its declared Files globs); issue
+ *   #345 *did* declare that file and performed the removal, so the list is
+ *   empty as of this pass — see SEEDED_LEGACY_ALLOW's own comment below for
+ *   the disposition of each of the four.
+ *
+ *   Issue #345 also folded a fifth generic-scaffold entry in
+ *   (`jq -e -r '.url':*`, the driver's on-disk PR-URL-confirmation fallback,
+ *   `workflow-driver.md` Termination step 4) — canonical, not dogfood-only,
+ *   because every consumer's Worker can reach for that fallback, not only
+ *   this repo's own.
  *
  *   Direction 2 (2026-07-31 amendment) — DECLARED GATE → IS IT ALLOWED?
  *   The converse a one-directional check cannot see: a command a dispatched
@@ -287,43 +296,40 @@ function extractDogfoodOnlyEntries(md: string): string[] {
 }
 
 /**
- * Known-stale live allowlist entries that predate this guard and are not yet
+ * Known-stale live allowlist entries that predate this guard and were not yet
  * removed from `.claude/settings.json` nor folded into a scaffold/dogfood-only
- * classification in setup-mechanics.md. `.claude/settings.json` sits outside
- * this issue's declared Files globs (setup-mechanics.md + this spec only), so
- * removing them live is a separate operator PR — exactly the shape AC2
- * anticipates: "a named, shrink-only seeded legacy list for the known-stale
- * entries if the operator removal has not landed first."
+ * classification in setup-mechanics.md — SHRINK-ONLY, so the list may lose
+ * entries but must never grow (a genuinely NEW unclassified entry must fail
+ * the guard, not be quietly seeded away).
  *
- * Provenance of each pair:
+ * **Emptied by issue #345.** `.claude/settings.json` sat outside issue #291's
+ * declared Files globs (setup-mechanics.md + this spec only), so removing the
+ * four entries below was left as a separate operator PR. Issue #345 declared
+ * `.claude/settings.json` in its own Files globs and performed exactly that
+ * removal — both pairs were confirmed dead (grepped across `.claude/**` and
+ * `docs/**`) and dropped from the live file in the same change:
+ *
  *  - `npx @formtrieb/flotilla-engine` (+ its `NODE_USE_ENV_PROXY` twin): the
  *    pre-setup bootstrap form (ADR-0032). setup-mechanics.md's own binding
  *    rule states this is "never an ongoing allowlist entry" once Procedure
- *    step 3 has run, which it has in this repo — these two entries never
- *    stopped being live, and the doc's own reconciliation narrative says so
- *    explicitly ("the `npx` pair no longer matches anything in the current
- *    scaffold at all").
+ *    step 3 has run, which it has in this repo, and the doc's own
+ *    reconciliation narrative already said so explicitly ("the `npx` pair no
+ *    longer matches anything in the current scaffold at all").
  *  - `npx tsx tools/wave/src/cli.ts` (+ its `NODE_USE_ENV_PROXY` twin): a
- *    THIRD, never-scaffolded engine-invocation spelling — traced to the
- *    pre-ADR-0032 `convention-01-auth-preflight.md` example command and the
- *    pre-#313 README dual-form text (both superseded). This repo's
+ *    THIRD, never-scaffolded engine-invocation spelling. This repo's
  *    documented exception is the DOTTED
  *    `./tools/wave/node_modules/.bin/tsx …` form, never the bare `npx tsx`
- *    spelling.
+ *    spelling — confirmed live-referenced nowhere except one stale,
+ *    already-flagged example in `wave-shared/reference/convention-01-auth-
+ *    preflight.md` (outside issue #345's Files globs; noted as a residual
+ *    follow-up, not fixed here, since that doc's own scenario condition — "no
+ *    tracked env block (yet) applies" — is false for this repo).
  *
- * SHRINK-ONLY: this list may lose entries (once an operator removes them from
- * the live file, or a future edit folds them into a dogfood-only note) but
- * must never grow — a genuinely NEW unclassified entry must fail the guard,
- * not be quietly seeded away. The tests below pin the exact set, not merely a
- * count, and assert every seeded entry is still both live and still
- * genuinely uncited.
+ * The list is intentionally left in place, empty, rather than deleted: a
+ * future stale entry re-seeds here the same way, and the shrink-only
+ * discipline (and the tests below) carry forward unchanged.
  */
-const SEEDED_LEGACY_ALLOW: readonly string[] = [
-  'Bash(npx @formtrieb/flotilla-engine:*)',
-  'Bash(NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine:*)',
-  'Bash(npx tsx tools/wave/src/cli.ts:*)',
-  'Bash(NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts:*)',
-];
+const SEEDED_LEGACY_ALLOW: readonly string[] = [];
 
 interface ClassificationSets {
   canonical: Set<string>;
@@ -437,10 +443,10 @@ describe('allowlist-scaffold-guard — direction 1: every live allow entry is ci
   });
 
   it('extracts the generic scaffold, the documented exception, and the dogfood-only table with non-trivial populations', () => {
-    expect(extractGenericScaffoldAllow(setupMd).length).toBe(14);
+    expect(extractGenericScaffoldAllow(setupMd).length).toBe(15); // 14 + jq (issue #345)
     expect(extractVendoredExceptionEntries(setupMd).length).toBe(2);
     expect(extractDogfoodOnlyEntries(setupMd).length).toBe(5);
-    expect(sets.canonical.size).toBe(14); // 14 generic - 2 replaced + 2 exception
+    expect(sets.canonical.size).toBe(15); // 15 generic - 2 replaced + 2 exception
   });
 
   it('every live allow entry classifies as canonical, dogfood-only, or seeded-legacy (AC1/AC2, real assertion)', () => {
@@ -463,6 +469,17 @@ describe('allowlist-scaffold-guard — direction 1: every live allow entry is ci
         `seeded-legacy entry ${entry} now has a real citation — drop it from SEEDED_LEGACY_ALLOW`,
       ).toBe(false);
     }
+  });
+
+  it('the seeded-legacy set is empty (AC2, issue #345) — the four #291-era entries were removed live, not merely re-cited', () => {
+    expect(SEEDED_LEGACY_ALLOW).toEqual([]);
+    // The two pairs SEEDED_LEGACY_ALLOW used to name are gone from the live
+    // file entirely — not reclassified as canonical/dogfood-only, which would
+    // make this assertion pass for the wrong reason.
+    expect(liveAllow).not.toContain('Bash(npx @formtrieb/flotilla-engine:*)');
+    expect(liveAllow).not.toContain('Bash(NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine:*)');
+    expect(liveAllow).not.toContain('Bash(npx tsx tools/wave/src/cli.ts:*)');
+    expect(liveAllow).not.toContain('Bash(NODE_USE_ENV_PROXY=1 npx tsx tools/wave/src/cli.ts:*)');
   });
 
   it('negative control (AC1) — a planted uncited entry fails the same classification predicate', () => {
