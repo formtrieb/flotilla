@@ -334,12 +334,29 @@ describe('echo-guard family 3 — position-aware carve-outs (literal spans are n
     expectBlocked(runGuard('echo `printenv`', {}));
   });
 
-  it('does NOT weaken a REAL command substitution embedded inside a heredoc body', () => {
-    // Real bash evaluates `$(…)` inside a heredoc body before the body reaches
-    // its reader, regardless of whether the delimiter itself is quoted — the
-    // carve-out only folds the newline, never the `$(` split point.
+  it('a QUOTED-delimiter heredoc body mentioning $(printenv) as prose is not a whole-environment dump (issue #347)', () => {
+    // Corrected 2026-07-31 (issue #347): this case used to assert the
+    // opposite — that real bash evaluates `$(…)` here "regardless of whether
+    // the delimiter itself is quoted". Empirically false: `cat <<'EOF'`
+    // (quoted delimiter) suppresses EVERY expansion inside its body, exactly
+    // like a single-quoted string — verified against real bash by running
+    // both spellings side by side (`<<'EOF'` prints the literal source text,
+    // `<<EOF` genuinely runs it). A body fed to a quoted-delimiter heredoc
+    // that merely MENTIONS `$(printenv)` as prose is therefore CONTENT, never
+    // a command, and must not block — this was the live #347 false positive.
     const body = ["cat <<'EOF'", 'printenv leaked via $(printenv) on this line', 'EOF'].join('\n');
-    expectBlocked(runGuard(body, {}));
+    expectAllowed(runGuard(body, {}));
+  });
+
+  it('the SAME body, with an UNQUOTED heredoc delimiter, DOES still block — real bash genuinely expands it there', () => {
+    // The mirror image of the case above: an unquoted delimiter (`<<EOF`)
+    // undergoes real parameter/command substitution in bash, so `$(printenv)`
+    // in this body really would run. The quoted-delimiter carve-out must
+    // never widen to cover this shape too.
+    const body = ['cat <<EOF', 'printenv leaked via $(printenv) on this line', 'EOF'].join('\n');
+    const result = runGuard(body, {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
   });
 
   it('does NOT let an apostrophe inside DOUBLE-quoted prose pair up with a later quote and swallow a real trailing invocation', () => {
@@ -525,13 +542,38 @@ describe('echo-guard family 3 — the quote-nesting fix (2026-07-31)', () => {
     expect(result.stderr).toContain('whole-environment dump');
   });
 
-  it('negative control: a REAL command substitution alongside the quoted example, inside the same heredoc body, still blocks', () => {
-    // The quoted "(printenv|env)" example stays inert prose, but a genuine
-    // $(printenv) sitting right next to it in the same message must still be
-    // caught — the nesting fix must not blind family 3 to the one construct
-    // it exists to keep reachable.
+  it('corrected 2026-07-31 (issue #347): a QUOTED-delimiter heredoc body mentioning $(printenv) as prose is not a dump, even nested inside a live outer $(cat …)', () => {
+    // This case used to assert BLOCKED under the same mistaken premise as the
+    // heredoc-carve-out test above: that an embedded `$(printenv)` here is a
+    // "REAL command substitution". It is not — the heredoc's OWN delimiter
+    // ('EOF', quoted) suppresses every expansion in its body before `cat`
+    // ever reads it, verified against real bash by running the exact
+    // `$(cat <<'EOF' … EOF)` construction and confirming the embedded
+    // `$(echo …)` prints as literal source text, not its evaluated output.
+    // `cat` itself IS genuinely invoked by the outer `$(...)`, but it only
+    // ever echoes inert data — this is precisely the shape a Scribe's
+    // `cat > "<path>" <<'EOF' … EOF` sidecar write takes when the JSON
+    // payload's own evidence text quotes `$(printenv)` as an ILLUSTRATIVE
+    // EXAMPLE (the live #347 occurrence: a ReviewerVerdict whose subject was
+    // this guard's own quote-nesting fix, and whose evidence necessarily
+    // cited the FP shapes that fix carves out).
     const body = [
       'git commit -m "$(cat <<\'EOF\'',
+      'see "(printenv|env)" for the pattern, and confirm via $(printenv) locally',
+      'EOF',
+      ')"',
+    ].join('\n');
+    expectAllowed(runGuard(body, {}));
+  });
+
+  it('the SAME shape, with the inner heredoc delimiter UNQUOTED, still blocks — real bash genuinely expands it there before cat ever runs', () => {
+    // The mirror image: an unquoted delimiter (`<<EOF`) makes the shell
+    // expand `$(printenv)` INSIDE the heredoc body before feeding it to
+    // `cat` at all — verified against real bash (the same construction with
+    // `<<EOF` prints the substitution's evaluated output, not its source
+    // text). The quoted-delimiter carve-out must never widen to swallow this.
+    const body = [
+      'git commit -m "$(cat <<EOF',
       'see "(printenv|env)" for the pattern, and confirm via $(printenv) locally',
       'EOF',
       ')"',
@@ -547,6 +589,95 @@ describe('echo-guard family 3 — the quote-nesting fix (2026-07-31)', () => {
     // form specifically.
     expectBlocked(runGuard('echo "current token check: $(printenv)"', {}));
   });
+});
+
+// ---------------------------------------------------------------------------
+// 4f. Family 3 — the QUOTED-delimiter heredoc-body fix (2026-07-31, issue
+// #347): a heredoc whose OWN delimiter is quoted is 100% inert, and family 3
+// must treat it that way
+// ---------------------------------------------------------------------------
+//
+// Provenance: wave 2026-07-31-tier-guidance-and-guards, disclosure 326.1. A
+// Scribe persisting row 326's own ReviewerVerdict (a verdict ABOUT the 4e
+// quote-nesting fix above, whose evidence text necessarily cites that fix's
+// own guarded examples — `$(printenv)` and `` `printenv` `` — as illustrative
+// prose) was hard-blocked twice, byte-identical, by family 3. The Scribe's
+// own diagnosis named the dump word "as literal evidence text in the heredoc
+// payload" as the trigger, but two synthetic reproductions at triage — a
+// mid-string mention, and the word at a folded line head — both PASS the
+// pre-#347 matcher (see `family 3 — whole-environment dumps` /
+// `position-aware carve-outs` above: both shapes were already carved out by
+// the row-226/close-time and 2026-07-29 fixes). The recorded diagnosis did
+// not reproduce. Reproducing instead from the archived verdict sidecar's
+// byte-exact payload (`.flotilla/waves/_archive/2026-07-31-tier-guidance-and-
+// guards/verdicts/326-1.md`, not committed to this repo — `.flotilla/` is
+// toolkit-local gitignored runtime state, `.gitignore`'s own comment: "flotilla
+// is the toolkit, not a consumer; a stray in-repo spine … must never land in
+// the toolkit repo") surfaced the REAL trigger: the evidence text quotes the
+// dump word wrapped in a live-LOOKING
+// `$(printenv)` / `` `printenv` `` span — exactly the shape the 4e fix
+// exists to discuss — inside a `cat > "<path>" <<'EOF' … EOF` sidecar write
+// (the Scribe brief's own prescribed heredoc fallback form,
+// `wave-start/reference/workflow-driver.md`). That heredoc's delimiter IS
+// quoted, so its body is (per real bash, empirically verified below) 100%
+// literal — never a command — yet family 3's OWN pre-#347 code (see the
+// `neutralizeHeredocBodies` docstring before this fix) asserted the opposite:
+// that an embedded `$(…)` there is reachable "regardless of whether the
+// delimiter itself is quoted". That claim was simply false, and two EXISTING
+// regression tests baked the false claim in as an assertion (corrected above,
+// in the 4b and 4e blocks respectively, rather than duplicated here).
+describe('echo-guard family 3 — the QUOTED-delimiter heredoc-body fix (2026-07-31, issue #347)', () => {
+  it('AC: the byte-exact archived row-326 ReviewerVerdict, persisted via the Scribe brief\'s prescribed heredoc form, now passes', () => {
+    // A faithful reconstruction of the live shape: the verdict's own
+    // "evidence" field quotes the guard's carve-out mechanism using the exact
+    // punctuation that trips family 3 pre-fix — a bare $(printenv) mention
+    // and a backtick-wrapped `&& printenv` mention — both purely as prose
+    // describing the 4e fix, inside a quoted-delimiter heredoc that a Scribe
+    // uses to write the sidecar JSON file verbatim.
+    const evidence =
+      'three negative-control tests (unbalanced embedded quote leaving a real trailing `&& printenv` reachable; ' +
+      'a real $(printenv) alongside the quoted example inside the same heredoc body; the pre-existing single-line ' +
+      'real-substitution control re-asserted)';
+    const payload = JSON.stringify({
+      acVerification: [{ ac: 'Negative controls still block', met: 'met', evidence }],
+      branchReviewed: 'wave/326-echo-guard-quote-nesting',
+      riskClass: 'isolated-refactor',
+      verdict: 'approve',
+      workerReportDigest: 'digest',
+      gitStateSane: true,
+      lintTestSummary: 'summary',
+      reviewerFocusItems: [],
+    });
+    const body = ['cat > "/tmp/verdict-326-1.json" <<\'EOF\'', payload, 'EOF'].join('\n');
+    expectAllowed(runGuard(body, {}));
+  });
+
+  it('AC: the same evidence text, with the heredoc delimiter UNQUOTED, still blocks — real bash genuinely expands it there', () => {
+    const payload = JSON.stringify({ evidence: 'a real $(printenv) alongside the quoted example' });
+    const body = ['cat > "/tmp/verdict-326-1.json" <<EOF', payload, 'EOF'].join('\n');
+    const result = runGuard(body, {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('negative control: a REAL trailing dump after the quoted-heredoc construct closes still blocks', () => {
+    const body = ['cat > file <<\'EOF\'', 'just prose here, nothing live', 'EOF', '&& printenv'].join('\n');
+    const result = runGuard(body, {});
+    expectBlocked(result);
+    expect(result.stderr).toContain('whole-environment dump');
+  });
+
+  it('negative control: family 1 (credential-name expansion) still scans the RAW command text inside a quoted heredoc body', () => {
+    // The quoted-delimiter carve-out is scoped to family 3's own head
+    // detection only (per the module docstring) — families 1/2/4 must never
+    // be blinded by it, even though the SAME body text is now inert to
+    // family 3.
+    const body = ['cat > file <<\'EOF\'', 'token: $GITHUB_TOKEN', 'EOF'].join('\n');
+    const result = runGuard(body, CONFIGURED_ENV);
+    expectBlocked(result);
+    expect(result.stderr).toContain('credential-name expansion');
+  });
+
 });
 
 // ---------------------------------------------------------------------------
