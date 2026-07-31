@@ -18,7 +18,7 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 | `issue-store annotate <id> --patch <f.json>` | decorate an existing issue |
 | `issue-store read <id>` | dump the `IssueView` (verify round-trip) |
 | `issue-store parse-ref <id>` | invert an opaque id → `IssueRef` JSON (for `blockedBy`/`parent`) |
-| `dor <path>... ` / `dor --id <id>` | Definition-of-Ready gate; self-content gates run on a path *or* a github id (ADR-0014) |
+| `dor <path>... --config <path>` / `dor --id <id> --config <path>` | Definition-of-Ready gate; self-content gates run on a path *or* a github id (ADR-0014); `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring |
 | `conflict-map <path>...` / `conflict-map --id <id> [--id <id> ...]` | file-overlap cells across issues; `--id` is the store-backed (non-file) form — reads each id's `Files` from the `IssueStore` (ADR-0014) |
 | any command, no args | usage |
 
@@ -115,18 +115,20 @@ Either way, decorating an issue does not by itself grant wave-eligibility (the e
 - **Self-content gates** (`header-parseable`, `ac-section`, `risk-file-count`, `ac-files-coverage`) need only the issue's own fields and run **everywhere** — markdown file or github id alike. They prove the slice is grabbable *now*, in the slicing context. Only a self-content **FAIL** blocks.
 - **Working-tree gates** (`files-glob`, `literal-files-exist`) need a repo checkout. On the markdown file path the checkout is present, so they **run** (a `literal-files-exist` warn for a not-yet-created file is expected and doesn't block). On a bare github id there is no checkout, so they **defer** — re-run at `wave-create`, where a worktree exists.
 - **Cross-issue gate** (`blocked-by-chain`) needs the *other* issues, not a worktree. On markdown it reads the sibling issue files; on a bare github id it **defers** in M1 — resolving it on github needs a store-membership lookup, re-homed onto `IssueStore` in P2a (ADR-0001/0014).
+- **`verify-profile-coverage` (Gate 8, advisory)** needs the consumer's `wave.config.json` `verify` block, which `dor` only ever sees when **this call** names `--config` explicitly — unlike `issue-store`/`conflict-map`, it does not fall back to a `wave.config.json` in the working directory. Two states share the same `deferred` status text but are not the same fact: **genuinely absent** — no `--config` reached this call, so the gate never had a `verify` block to weigh at all, and the defer says nothing about the row's coverage — versus **resolvable** — `--config` was passed and `verify.profiles` were actually weighed: an empty profile list `pass`es silently, a non-empty one with no `--repo-root` (the triage-time norm on a bare id, same as the working-tree gates above) legitimately **defers** pending `wave-create`'s checkout, and only a real repo root with non-empty profiles yields a concrete `pass`/`warn`. Pass `--config` as shown below so a triage-time check lands in the resolvable state rather than the genuinely-absent one.
 
 A deferred gate is neither pass nor fail — it shows as `deferred` in the report and never blocks. Only a self-content-gate **FAIL** does.
 
-On a **markdown** store, `create` writes each issue to `<repoRoot>/.scratch/<slug>/issues/<NN>-<filingHint>.md` — pass those paths. On **github** (and any other store-backed tracker, e.g. `linear`), pass the issue id with `--id` (the non-file entrypoint) — **both** `dor` and `conflict-map` take it, so a store-backed batch never needs a path export or a tsx one-off:
+On a **markdown** store, `create` writes each issue to `<repoRoot>/.scratch/<slug>/issues/<NN>-<filingHint>.md` — pass those paths. On **github** (and any other store-backed tracker, e.g. `linear`), pass the issue id with `--id` (the non-file entrypoint) — **both** `dor` and `conflict-map` take it, so a store-backed batch never needs a path export or a tsx one-off. Thread `--config <path-to-wave.config.json>` on every `dor` call regardless of form (per Gate 8 above):
 
 ```bash
-{{wave-cli}} dor <repoRoot>/.scratch/<slug>/issues/<NN>-*.md ...   # or: dor --id <id>
+{{wave-cli}} dor <repoRoot>/.scratch/<slug>/issues/<NN>-*.md --config <repoRoot>/wave.config.json ...  # path form
+{{wave-cli}} dor --id <id> --config <repoRoot>/wave.config.json                                        # store-backed form
 {{wave-cli}} conflict-map <issue> <issue> ...                      # file form: overlap cells → serialized lanes
 {{wave-cli}} conflict-map --id <id> --id <id> [--repo-root <dir>]  # store-backed form: same cells, reads Files from the IssueStore
 ```
 
-Report the published list with ids and their Risk/Worker, plus any conflict-map overlap cells.
+Report the published list with ids and their Risk/Worker, plus any conflict-map overlap cells; name any `verify-profile-coverage` `warn` explicitly, same as the working-tree/cross-issue defers above.
 
 ## Header-Block fields
 
