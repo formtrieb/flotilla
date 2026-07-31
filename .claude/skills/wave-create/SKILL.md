@@ -30,9 +30,9 @@ Abort (never overwrite) if `.flotilla/waves/<slug>.md` already exists. Slug shap
 
 Per chosen id, call two engine verbs:
 - `issue-store read <id>` → `IssueView` (worker, risk, files)
-- `issue-store triage-read <id>` → `TriageView` (.title)
+- `issue-store triage-read <id>` → `TriageView` (`.title` for the roster row; `.body` for later)
 
-Build each roster row as `{ id, title, worker, risk }`. The title comes from the **Triage facet** (`triage-read`) because `IssueView` carries no title — it is wave-header-only (ADR-0015). `triage-read` returns the native tracker title whether or not the issue was ever explicitly triaged.
+Build each roster row as `{ id, title, worker, risk }`. The title comes from the **Triage facet** (`triage-read`) because `IssueView` carries no title — it is wave-header-only (ADR-0015). `triage-read` returns the native tracker title whether or not the issue was ever explicitly triaged. The same `TriageView` also carries `.body` — the full reported content — which is the **sanctioned source for embedding an issue's spec into a Worker brief at compose time** (`wave-start`), never a raw tracker API call reached for around it.
 
 ### 2a. Human-gate surface (surface + ask) — the row no agent may pick up
 

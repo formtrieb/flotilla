@@ -372,6 +372,11 @@ REPORTS=".flotilla/waves/$SLUG/reports"; VERDICTS=".flotilla/waves/$SLUG/verdict
   {{wave-cli}} write-verdict "$T/verdict-$ID.json" --dir "$VERDICTS" --id "$ID" --iter "$ITER"
 #   write-* validates-then-writes: exit 1 = invalid payload / report.issue↔--id
 #   mismatch → NOTHING written (re-collect); exit 0 prints the absolute path.
+#   That same write also sweeps its target dir for a MISNAMED sidecar (a filename
+#   id that fails the bare-id rule — present to `ls`, invisible to the `[ -f … ]`
+#   probe above for the same reason a missing file is) and reports it on stderr,
+#   naming the file's path, the row it belongs to, and the name it should have
+#   carried — it never rewrites or deletes it.
 
 # 7.0a. Disclosure capture (ADR-0027) — for EVERY tuple, BEFORE the outcome/
 #       verdict branch below (7a-7c), source-neutral. Routing is the moment of
