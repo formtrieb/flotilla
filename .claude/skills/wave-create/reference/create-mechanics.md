@@ -15,7 +15,7 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 | Call | Purpose |
 |---|---|
 | `issue-store read <id>` | `IssueView` — worker, risk, files |
-| `issue-store triage-read <id>` | `TriageView` — `.title` (tracker-native title, triaged or not) |
+| `issue-store triage-read <id>` | `TriageView` — `.title` (tracker-native title, triaged or not) and `.body` (the sanctioned source for embedding the issue spec into a Worker brief at compose time) |
 | `issue-store listClaimed` | `IssueView[]` — all currently queued + in-flight issues |
 | `dor --id <id> --repo-root <dir> --config <path>` | DoR gate; working-tree gates run against the coordinator's checkout, and `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring |
 | `cross-wave --candidates <f.json> --claimed <f.json> --repo-root <dir>` | `CrossWaveResult` — parallel-safety check |
@@ -36,7 +36,7 @@ T=$(mktemp -d)
 
 # 2. Roster (per id)
 {{wave-cli}} issue-store read "$ID"          # IssueView → worker, risk, files
-{{wave-cli}} issue-store triage-read "$ID"   # TriageView → .title
+{{wave-cli}} issue-store triage-read "$ID"   # TriageView → .title (roster) + .body (sanctioned brief-composition source)
 
 # 2a. Human-gate surface (surface + ask). No CLI call of its own: the answer is
 #     already in the `issue-store read` output from step 2 — `.worker`. Compare it
@@ -149,6 +149,8 @@ Before you classify a row `HITL-required`, or read one that already is, know wha
 | `title` | string | from `triage-read` (not `IssueView`) |
 | `worker` | string | from `IssueView.worker` |
 | `risk` | string | from `IssueView.risk` |
+
+The roster row itself only ever holds `.title` — but the same `triage-read` call already returned `.body` too, and that field (not a separate tracker fetch) is the sanctioned source `wave-start` reads from when it composes a Worker's brief.
 
 ## What `spine create` renders
 
