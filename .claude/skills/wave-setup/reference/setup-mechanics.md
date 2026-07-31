@@ -464,6 +464,48 @@ The SKILL.md "Scaffolding the tracked permission allowlist and env block" precon
 - **Sidecar/archive directory creation — Coordinator-side, not part of the dispatched-agent surface above.** `Bash(mkdir -p:*)` traces to two literal shell calls the **Coordinator** itself runs against this same tracked file, never a Worker/Reviewer worktree: `wave-create`'s materialization step (`mkdir -p .flotilla/waves/<slug>/reports .flotilla/waves/<slug>/verdicts` — `.claude/skills/wave-create/SKILL.md`, mirrored in `.claude/skills/wave-create/reference/create-mechanics.md`), needed because `spine create` does not mkdir its own parent (ENOENT otherwise); and `wave-close`'s archive phase (`mkdir -p ".flotilla/waves/_archive"`, unconditional — `.claude/skills/wave-close/reference/phase-6-archive.md`) before the spine moves in. The archive form is not hypothetical: a *missing* `mkdir -p` in that exact snippet was a live-reproduced Reviewer finding in Wave 6, predating this scaffold (`docs/retros/2026-07-19-hardening-w6.md`, FOR-21). Both calls rode along in the same NF-F1 commit as the dispatched-agent entries above even though neither runs inside a Worker/Reviewer worktree — untraced here until now. This is a different case from the engine's own internal `mkdir -p` inside `write-report`/`write-verdict` (ADR-0024, wave-shared Convention 5): that one runs inside an already-allowlisted CLI invocation — the engine process's own filesystem call, not a Bash-tool shell command — the same way `credential-resolver.ts`'s `child_process` spawn needs no allowlist entry of its own; it is not what this entry covers.
 - **`deny` block — the secret-echo structural anchor (wave-shared Convention 8, FOR-81).** Convention 8 binds every role that produces tool output, the Coordinator included, and its own live-occurrences catalogue keeps growing past whatever prose the previous occurrence had hardened — a Worker's flawed `${VAR:-no}` echo, a Worker's `printenv` whole-environment dump, a Reviewer's `cat` of the gitignored `.claude/settings.local.json` while hunting a config precedent, and more since (see wave-shared's Convention 8 reference for the current, still-growing count). A brief clause depends on an agent having read and internalized it — and reaches only the roles that read one; a `permissions.deny` entry does not. These entries block the `Read` tool, and — as far as the permission syntax can express it — Bash's read-shaped command forms (`cat`/`less`/`more`/`head`/`tail`), against the two file classes every consumer's harness can hold live credentials in: the gitignored local settings file and any `.env`-class file. Scaffold this **identically** to flotilla's own tracked `.claude/settings.json` — the vector is universal, not consumer-specific, so there is no per-consumer judgment to exercise here (unlike the allow-list, which does vary by the consumer's own engine-invocation path). The brief clause (wave-start's `workerBrief()` policy clause 5) stays in place as defense-in-depth on top of this anchor for the roles it reaches, not a replacement for it.
 
+### Echo-Guard hook scaffold — `hooks.PreToolUse` block + script copy (Convention 8 stage 2 — gate MET)
+
+Convention 8's stage-2 gate (wave-shared's Convention 8 reference, "The structural speed bump — the PreToolUse Echo-Guard") is **met**: wave `2026-07-29-conventions-wiring` ran 12 agents (3 Workers, 3 Reviewers, 6 Scribes) across 374 tool calls with **zero Echo-Guard rejections and zero false positives** — including two rows editing documentation that quotes the unsafe forms as prose, the one false-positive class the convention names and budgets for. The scaffold below therefore ships **unconditionally, for every consumer**, on the same footing as the `permissions.deny` anchors above — there is no per-consumer judgment to exercise here either.
+
+**Two artifacts, both required — a hooks block pointing at a script the consumer does not have is worse than no block at all:**
+
+1. **The script copy, into a TRACKED path.** `node_modules` is gitignored, so a dispatched Worker/Reviewer worktree (tracked files only, same rule as everywhere else in this scaffold) never sees a script left there. Copy the guard out of the pinned engine package into a tracked location and commit it:
+
+   ```bash
+   mkdir -p .claude/hooks
+   cp node_modules/@formtrieb/flotilla-engine/hooks/echo-guard.cjs .claude/hooks/echo-guard.cjs
+   git add .claude/hooks/echo-guard.cjs
+   ```
+
+   `node_modules/@formtrieb/flotilla-engine/hooks/echo-guard.cjs` is the sibling `hooks/` directory the pinned package ships alongside the binary `engine.cli` already resolves to — the same installed package, a different subdirectory of it.
+
+2. **The `hooks.PreToolUse` block**, merged into the consumer's tracked `.claude/settings.json` as a sibling of `env` and `permissions` — the same file the scaffold above already writes:
+
+   ```json
+   {
+     "hooks": {
+       "PreToolUse": [
+         {
+           "matcher": "Bash",
+           "hooks": [
+             {
+               "type": "command",
+               "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/echo-guard.cjs\""
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+**flotilla's own repo is the one documented exception, not a second scaffold form** — the same shape as every other exception this file records for its own dogfood config. Its `engine.cli` binds to the vendored `tools/wave/` tree, already tracked, so step 1's copy is a no-op here; the `command` above names `tools/wave/hooks/echo-guard.cjs` directly instead of the per-consumer destination from step 1, exactly matching what this repo's own tracked `.claude/settings.json` already carries.
+
+**Read this as landed, not as the vector being closed.** The gate being met means the hooks block and the script copy roll out everywhere; it says nothing about what the guard itself is. It remains, unchanged, what `tools/wave/hooks/echo-guard.cjs`'s own header and wave-shared's Convention 8 document: a **text matcher over the command string** — a speed bump, not an anchor. A deliberate bypass walks straight past it (`V=GITHUB_TOKEN; echo "${!V}"` is a pinned *passing* spec case, not a gap left to close). Two vectors are deliberately **not** the guard's own and do not become "handled" by this rollout: reading a gitignored settings/secrets file, and the *direct* invocation of a configured `<VAR>_CMD` lookup command — both stay owned by the `permissions.deny` entries this same scaffold already writes (the `deny` block bullet above, and [Credential lookup-command scaffold](#credential-lookup-command-scaffold-adr-0029) below). Scaffolding the guard everywhere widens *where* the speed bump sits; it does not change *what* it is.
+
+**Landing-order note (issue #215).** Step 1 assumes the published `@formtrieb/flotilla-engine` package's installed tarball ships its `hooks/` directory — true of the package's own `files` manifest (`tools/wave/package.json`) at the time of writing, but a fact about the *published* artifact's currency on a given consumer, not about this doc. On a consumer whose installed package predates that fix, the `cp` source is simply absent and the copy fails loudly (a missing-file error), never silently — re-run `npm install` against a current version first.
+
 ### Scaffold-vs-live allowlist reconciliation (issue #269)
 
 > **This reconciliation predates the ADR-0032 scaffold rewrite above** — it diffed the live file against a scaffold that still named six engine-CLI forms (the published package, the local `tsx` binary, and the `resume-cli.ts`/`spine-cli.ts` aliases, each with and without the proxy prefix). The generic scaffold now names exactly one form, and the four `resume-cli.ts`/`spine-cli.ts` rows below have since been **removed from this repo's live tracked file** — dropped in the same change that respelled their last two call-sites to the unified subverb form (see the reconciled bullet above). Read those four rows as history: they record what the live file carried and why it stopped, not entries to look for today. Everything else this table found and dispositioned (the 16-entry stale-pre-router-path removal) is unaffected and already actioned. A fresh reconciliation pass against the new single-form baseline is a follow-up outside this slice's declared scope.
