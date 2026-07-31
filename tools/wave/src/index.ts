@@ -23,6 +23,15 @@ export {
   type WaveSchema,
   type SchemaGovernedFields,
   type HeaderValidation,
+  // The Triage facet's own schema-governed surface (issue #376 barrel-drift
+  // reconciliation) — TriageView/TriageSchema/TriageComment sit beside
+  // IssueView/WaveSchema/HeaderValidation as the same kind of contract type,
+  // engine-complete but unreachable from the root until now.
+  type TriageSchema,
+  DEFAULT_TRIAGE_SCHEMA,
+  type TriageComment,
+  type TriageView,
+  type ApplyTriageInput,
 } from './contract';
 
 export { coarse } from './coarse-projection';
@@ -60,6 +69,17 @@ export {
 export {
   readSidecars,
   parseSidecarName,
+  // The sidecar-naming hygiene surface (issue #376 barrel-drift
+  // reconciliation): `isBareIssueId`/`normalizeIssueRef`/`bareIssueIdViolation`
+  // are the same OPAQUE-id discipline (ADR-0001) the Worker/Reviewer report
+  // schemas' `issue` field states in prose — exported so a root-only caller can
+  // check a candidate id itself; `findMisnamedSidecars` is the sweep that
+  // applies them across a directory of on-disk report/verdict files.
+  isBareIssueId,
+  normalizeIssueRef,
+  bareIssueIdViolation,
+  findMisnamedSidecars,
+  type MisnamedSidecar,
   type SidecarReader,
   type SidecarIndex,
   type ReportHit,
@@ -97,6 +117,9 @@ export {
   type CrossWaveInput,
   type CrossWaveResult,
   type ScopedIssue,
+  // The intra-wave Blocked-by pair shape `CrossWaveInput`/`CrossWaveResult`
+  // already reference (issue #376 barrel-drift reconciliation).
+  type IntraWaveBlockedByPair,
 } from './cross-wave';
 
 export {
@@ -108,6 +131,18 @@ export {
   type GateStatus,
   type ValidateOptions,
   type AcFilesCoverageWarn,
+  // The IssueView-shaped sibling of `validateIssue` (issue #376 barrel-drift
+  // reconciliation) — `validateIssue` gates a markdown/spine ValidateOptions
+  // input, `validateIssueView` gates the canonical IssueView contract
+  // directly, which is the shape a store-backed (GitHub/Linear) caller
+  // actually holds. `dirname`/`resolve` are NOT re-exported here: they are an
+  // incidental re-export of the `node:path` builtins this module imports for
+  // its own use (dor-gate.ts's own `export { resolve, dirname };`), not an
+  // engine surface — see barrel-drift.spec.ts's allowlist entry for the
+  // reasoning (dor-gate.ts sits outside this issue's declared Files scope, so
+  // the accidental re-export itself is left in place, only NOT propagated).
+  validateIssueView,
+  type ValidateViewOptions,
 } from './dor-gate';
 
 export {
@@ -117,6 +152,12 @@ export {
   type ConflictCell,
   type ConflictMap,
   type ComputeOptions,
+  // `conflict-map.ts` declares its OWN `extractIssueId`, structurally
+  // identical to (but a separate declaration from) `merge-order.ts`'s —
+  // aliased here for the same reason `extractMergeOrderIssueId` below is:
+  // two same-named root exports cannot coexist (issue #376 barrel-drift
+  // reconciliation).
+  extractIssueId as extractConflictMapIssueId,
 } from './conflict-map';
 
 export {
@@ -153,6 +194,11 @@ export {
   parseWaveSpine,
   defaultGitProbe,
   extractIssueId as extractMergeOrderIssueId,
+  // The lower-level PR-ordering primitive `computeMergeOrder` itself calls
+  // (issue #376 barrel-drift reconciliation) — a root-only consumer that
+  // already has a `PR[]` (not a spine to parse) can order it directly.
+  orderPrs,
+  type OrderPrsExtra,
   type PR,
   type MergeOrderResult,
   type GitProbe,
@@ -189,6 +235,22 @@ export {
   HUMAN_GATED_WORKER,
   humanGatedRows,
   humanHeldRowIds,
+  // The rest of the targeted-writer/predicate surface (issue #376
+  // barrel-drift reconciliation): `renderConflictMap` is `computeConflictMap`'s
+  // own rendering counterpart (the `ConflictMap` type it takes is already
+  // root-reachable via the conflict-map block above); `setFrontmatterStatus`
+  // is the spine `Status:` writer `wave-start`'s auto-flip and `wave-close`'s
+  // archive both need; `setRowIter` writes a row's cap=1 re-dispatch counter;
+  // `requireBranchesByIssueId` is `branchesByIssueId`'s throwing sibling for a
+  // caller that has already established every row must have a branch;
+  // `SPINE_STATUSES`/`SpineStatus` are the vocabulary `setFrontmatterStatus`
+  // writes and a caller validates against.
+  renderConflictMap,
+  requireBranchesByIssueId,
+  setFrontmatterStatus,
+  setRowIter,
+  SPINE_STATUSES,
+  type SpineStatus,
   type RowState,
   type Spine,
   type Frontmatter,
@@ -208,12 +270,67 @@ export {
   type ClosedByClass,
 } from './closed-by';
 
+// The host-pr LANDING family (ADR-0023) — issue #376 barrel-drift
+// reconciliation. Only the auth/open/create slice of this module was
+// root-reachable before now; the arm/merge/preflight verbs `host-pr arm`,
+// `host-pr merge`, and `host-pr preflight` actually run — and every
+// supporting type they and their callers pass around — were not, which is
+// the same barrel-gap class as the store-preflight and version-lockstep
+// families below. Shipped whole, grouped by the sub-surface it belongs to,
+// because that mirrors how the module itself is organized:
+//
+//   - auth / open / create (already exported) — `verifyAuth`, `findOpenPr`,
+//     `createPr`.
+//   - close-phrase reading — `findClosePhrase`/`hasClosePhrase` (Convention 4)
+//     and `closePhraseLossReason`, the typed reason a rewrite would drop it
+//     (the `reuse-refused` guard's own vocabulary).
+//   - updating an already-open PR — `updateOpenPr` + its request/result types
+//     and `findOpenPrRef`/`OpenPrRef` (the narrower ref shape it reads).
+//   - the arm decision — `armPullRequest`, `decideArmAction`,
+//     `refineArmDecisionForCheckAttach`, `alignedPrRef`, and every type their
+//     signatures carry (`ArmOptions`, `ArmDecision`, `AlignedPrRef`,
+//     `LandingOutcome`, `PrMergeability`).
+//   - checks-attached comparison — `compareRequiredToReported`,
+//     `asCheckAttachReader`, `CheckAttachReader`, `ReportedCheck`,
+//     `RequiredCheckAttachment` (the 2026-07-30 direct-merge-before-checks-
+//     attach live gap this closed).
+//   - merge — `mergePullRequestNow`, `MergeOptions`, `MergeMethod`,
+//     `DEFAULT_MERGE_METHOD`, `MergeResult`, `BranchDeletionResult`.
+//   - the host-adapter contract — `LandingHost`, `LandingPosture`,
+//     `AutoMergeUnavailableError`, `LandingNotImplementedError` (a Bitbucket
+//     or other host adapter implements these).
+//   - preflight — `preflightHost`, `mergeRequiredChecks`, `HostPreflightCheck`,
+//     `HostPreflightReport`, `HostCheckName`, `CheckStatus`,
+//     `RequiredChecksInfo`, `RulesetChecksInfo`, `AutoMergeSetting`,
+//     `PrLandingStatus`.
+//
+// `github-api.ts` re-exports `RequiredChecksInfo`/`RulesetChecksInfo`/
+// `AutoMergeSetting`/`ReportedCheck` from THIS module rather than declaring
+// its own (its own file-header comment says so) — so exporting them here
+// satisfies both modules' barrel-drift check under one name; no alias needed.
 export {
   detectHost,
   verifyAuth,
   findOpenPr,
   createPr,
   defaultHttpProbe,
+  findClosePhrase,
+  hasClosePhrase,
+  closePhraseLossReason,
+  findOpenPrRef,
+  updateOpenPr,
+  armPullRequest,
+  decideArmAction,
+  refineArmDecisionForCheckAttach,
+  alignedPrRef,
+  compareRequiredToReported,
+  asCheckAttachReader,
+  mergePullRequestNow,
+  DEFAULT_MERGE_METHOD,
+  preflightHost,
+  mergeRequiredChecks,
+  AutoMergeUnavailableError,
+  LandingNotImplementedError,
   type Host,
   type HostInfo,
   type Creds,
@@ -224,7 +341,35 @@ export {
   type AuthResult,
   type CreatePrRequest,
   type CreatePrResult,
+  type OpenPrRef,
+  type PrUpdateFields,
+  type UpdateOpenPrResult,
+  type UpdateOpenPrOptions,
+  type MergeMethod,
+  type PrMergeability,
+  type PrLandingStatus,
+  type MergeResult,
+  type BranchDeletionResult,
+  type LandingHost,
+  type ReportedCheck,
+  type RequiredCheckAttachment,
+  type CheckAttachReader,
+  type ArmDecision,
+  type LandingOutcome,
+  type AlignedPrRef,
+  type ArmOptions,
+  type MergeOptions,
+  type AutoMergeSetting,
+  type RequiredChecksInfo,
+  type RulesetChecksInfo,
+  type LandingPosture,
+  type CheckStatus,
+  type HostCheckName,
+  type HostPreflightCheck,
+  type HostPreflightReport,
 } from './host-pr';
+
+export { type HostPrDeps, runHostPr } from './host-pr-cli';
 
 // The ONE credential seam (ADR-0029). Consumed inside the engine by
 // `adapters/github/github-api-factory`, `adapters/linear/linear-api-factory`,
@@ -374,16 +519,104 @@ export {
   type CommandLineSizeAdvisoryOptions,
 } from './worktree-cleanup';
 
+// The rest of worktree-cleanup.ts's surface (issue #376 barrel-drift
+// reconciliation) — the largest single gap the drift spec measured (46
+// symbols on the wave anchor this reconciliation ran against). Four cohesive
+// sub-sweeps, each already exported "whole" above for its own family; these
+// four were simply never carried across when the module grew past its
+// original worktree/detached-scratchpad scope:
+//
+//   - the ORPHAN worktree sweep (`Worktree count == 0` findings with real
+//     files still on disk) — `listOrphanDirs`, `planOrphanSweep`,
+//     `executeOrphanSweep`, `sweepOrphanWorktrees`, `defaultOrphanRemover`,
+//     plus `listAllWorktrees`, the unfiltered read the orphan/agent listers
+//     both narrow.
+//   - the SCRIBE scratch sweep (`.flotilla/tmp` payload files) —
+//     `SCRIBE_SCRATCH_RELATIVE_DIR`, `listScribeScratchEntries`,
+//     `planScribeScratchSweep`, `executeScribeScratchSweep`,
+//     `sweepScribeScratch`, `defaultScratchRemover`.
+//   - the ORPHAN BRANCH sweep (a merged/closed row's now-stale `wave/<id>-*`
+//     branch) — `planOrphanBranchSweep`, `executeOrphanBranchSweep`,
+//     `sweepOrphanBranches`, `defaultOrphanBranchSweepOps`.
+//   - REDISPATCH cleanup (tearing down a crashed row's worktree/branch before
+//     a cap=1 re-dispatch reuses its slot) — `cleanupCrashedRowForRedispatch`,
+//     `cleanupRedispatchRows`, `defaultRedispatchCleanupOps`.
+//   - BRANCH HYGIENE (the remote-ref probe `defaultBranchHygieneOps`
+//     implements, and the still-listed check `defaultStillListedProbe`
+//     answers) — both default op bundles the sweeps above inject.
+//
+// Every result/options/ops/skip-reason type each function's signature carries
+// rides along, for the same reason the rest of this barrel does: a type a
+// root-only caller cannot name is a type it cannot annotate its own call
+// site's return value with.
+export {
+  listAllWorktrees,
+  listOrphanDirs,
+  planOrphanSweep,
+  executeOrphanSweep,
+  sweepOrphanWorktrees,
+  defaultOrphanRemover,
+  SCRIBE_SCRATCH_RELATIVE_DIR,
+  listScribeScratchEntries,
+  planScribeScratchSweep,
+  executeScribeScratchSweep,
+  sweepScribeScratch,
+  defaultScratchRemover,
+  planOrphanBranchSweep,
+  executeOrphanBranchSweep,
+  sweepOrphanBranches,
+  defaultOrphanBranchSweepOps,
+  cleanupCrashedRowForRedispatch,
+  cleanupRedispatchRows,
+  defaultRedispatchCleanupOps,
+  defaultBranchHygieneOps,
+  defaultStillListedProbe,
+  type OrphanSkipReason,
+  type OrphanDir,
+  type OrphanSweepPlan,
+  type OrphanSweepResult,
+  type OrphanRemover,
+  type ScratchSkipReason,
+  type ScratchEntry,
+  type ScratchListing,
+  type ScratchSweepPlan,
+  type ScratchSweepResult,
+  type ScratchRemover,
+  type ScratchSweepOptions,
+  type OrphanBranchSweepResult,
+  type OrphanBranchSweepOps,
+  type OrphanBranchSweepOptions,
+  type OrphanBranchSweepPlan,
+  type RedispatchCleanupOps,
+  type RedispatchCleanupInput,
+  type RedispatchCleanupOptions,
+  type RedispatchCleanupResult,
+  type RedispatchRow,
+  type RemoteRefProbeResult,
+  type BranchHygieneSkipReason,
+  type BranchHygieneSkip,
+  type BranchHygieneOps,
+} from './worktree-cleanup';
+
 export {
   detectDrift,
   deriveProjectScopes,
   pathToScopeDir,
   isInsideScope,
   getChangedFilesFromGit,
+  // The bookkeeping-path predicate `detectDrift` filters through internally
+  // (issue #376 barrel-drift reconciliation) — exported so a root-only
+  // consumer can apply the same exclusion to its own file list.
+  isIssueTrackerBookkeeping,
   type DriftStatus,
   type DriftResult,
   type DetectDriftOptions,
 } from './files-drift';
+
+export {
+  type FindScratchRootOptions,
+  findScratchRoot,
+} from './find-repo-root';
 
 // NOTE: `gate-runner` (the check layer / the Ur's Pure-I/O check) is deliberately
 // NOT seeded in P0 — it is the consumer-specific check surface, rebuilt generic in
@@ -411,6 +644,17 @@ export {
   // disclosure surface above: engine-complete, unreachable from the package
   // root until now.
   DOCUMENTED_FORM_TRIGGER_VALUES,
+  // The verdict-RENDERING surface (issue #376 barrel-drift reconciliation) —
+  // the counterpart to `validateReviewerVerdict` above: `renderVerdictSection`
+  // turns a validated `ReviewerVerdict` back into the markdown block the wave
+  // spine and PR comments carry, `metAcIndexes` reads which ACs it marked met,
+  // and `neutralizeForeignTrackerIds` is the mention-discipline scrub the
+  // renderer applies before the section leaves the engine. `RenderVerdictOptions`
+  // is `renderVerdictSection`'s own parameter type.
+  metAcIndexes,
+  neutralizeForeignTrackerIds,
+  renderVerdictSection,
+  type RenderVerdictOptions,
   type AcStatus,
   type AcVerification,
   type ReviewerVerdict,
@@ -442,6 +686,10 @@ export {
   type GitHubStoreConfig,
   type LinearStoreConfig,
   type LinearStateMapConfig,
+  // `WaveConfig`'s own cleanup-policy field shape (issue #376 barrel-drift
+  // reconciliation) — a root-only consumer reading `config.cleanup` needs the
+  // type to annotate it.
+  type CleanupConfig,
 } from './wave-config';
 
 // The plugin/engine LOCKSTEP COMPARISON (ADR-0032) — the other half of the same
@@ -540,6 +788,12 @@ export {
 export {
   LinearIssuesStore,
   DEFAULT_LINEAR_STATES,
+  // The typed transition-verify rejection (issue #376 barrel-drift
+  // reconciliation) — same one-way-to-catch discipline as
+  // `CreateInputError`/`EngineCliBindingError`/`CredentialResolutionError`
+  // elsewhere in this barrel: a consumer catching a typed class instead of
+  // string-matching a message.
+  LinearTransitionVerifyError,
   type LinearIssuesStoreOptions,
   type LinearStateMap,
 } from './adapters/linear/linear-issues-store';
@@ -569,10 +823,121 @@ export {
   type LinearApiFactoryOptions,
 } from './adapters/linear/linear-api-factory';
 
+// The GitHub adapter's PARITY with the Linear adapter above (issue #376
+// barrel-drift reconciliation) — CLAUDE.md names GitHub Issues and Linear as
+// flotilla's two shipped tracker adapters, but only Linear's full module set
+// was ever carried across this barrel; GitHub's was not exported AT ALL.
+// Mirrors the Linear grouping exactly: the store, the domain-seam contract +
+// its wire types, the HTTP seam, and the real implementation + its typed
+// error and arm-related message constants (`ARM_*`, the strings
+// `RealGitHubApi`'s arm-decision reads match against).
+//
+// Deliberately NOT re-exported, matching the Linear side's own omission:
+// `InMemoryGitHubApi`/`githubConformanceHooks` (github-api-fake.ts) and
+// `FakeGitHubHttp` (github-http-fake.ts) — test fakes for this adapter's own
+// conformance suite, not the public IssueStore-level testing surface (see
+// barrel-drift.spec.ts's allowlist for the `linear-api-fake.ts`/
+// `linear-http-fake.ts` twins, held to the same standard).
+export {
+  GitHubIssuesStore,
+  type GitHubIssuesStoreOptions,
+} from './adapters/github/github-issues-store';
+
+export {
+  type GitHubApi,
+  type GhIssue,
+  type GhState,
+  type GhStateReason,
+  type ClosingPrState,
+  type CreateIssueInput,
+} from './adapters/github/github-api';
+
+export {
+  defaultGitHubHttp,
+  type GitHubHttp,
+  type GitHubHttpRequest,
+  type GitHubHttpResponse,
+} from './adapters/github/github-http';
+
+export {
+  RealGitHubApi,
+  GitHubApiError,
+  ARM_CLEAN_STATUS_ERROR,
+  ARM_NOT_ALLOWED_ERROR,
+  ARM_FORBIDDEN_ERROR_TYPE,
+  ARM_TOKEN_REQUIREMENTS,
+} from './adapters/github/real-github-api';
+
+export {
+  createGitHubApiFromEnv,
+  type GitHubApiFactoryOptions,
+} from './adapters/github/github-api-factory';
+
+// The third shipped IssueStore impl (issue #376 barrel-drift reconciliation)
+// — CHARTER names `MarkdownFsStore` (local dev/dogfood) alongside
+// `GitHubIssuesStore`/`LinearIssuesStore` as one of the three shipped impls;
+// it was the only one of the three entirely unreachable from the root before
+// now. `markdownConformanceHooks` stays module-local (barrel-drift.spec.ts),
+// matching its GitHub/Linear fixture-data twins.
+export {
+  MarkdownFsStore,
+  type MarkdownFsStoreOptions,
+} from './adapters/markdown-fs-store';
+
 export {
   buildStore,
   type StoreDeps,
 } from './store-factory';
+
+// The IssueStore CONTRACT ITSELF (issue #376 barrel-drift reconciliation) —
+// CHARTER names `IssueStore` (`create · read · transition · close ·
+// listOpen`, plus the triage/needs-attention/closing-probe/amend facets) as
+// THE canonical engine contract, and until now only its typed create
+// rejection (below) and its conformance-hook TYPE (via the fakes, themselves
+// module-local — see barrel-drift.spec.ts) were reachable from the root. A
+// third-party adapter author implementing a custom `IssueStore` — the exact
+// scenario `runIssueStoreConformance` exists to validate against, per CHARTER
+// — could not even NAME the interface they were implementing from outside
+// this package.
+//
+// Shipped whole: the interface itself, its facet input/output shapes
+// (`CreateInput`/`CreateShape`/`DecoratedCreateInput`, `AmendPatch`/
+// `AnnotatePatch` + the validator that gates them, `ClosingState`,
+// `NeedsAttentionPayload`, `PublishDocumentInput`/`DocumentView`), the
+// eligibility vocabulary (`DEFAULT_ELIGIBILITY`, `RUNG_PRECEDENCE`,
+// `HEADER_BLOCK_FIELDS`, `ListScope`), the Triage-facet disclaimer helpers
+// (`TRIAGE_DISCLAIMER`, `withTriageDisclaimer`), and the conformance-hooks
+// TYPE a custom adapter's own test harness would implement
+// (`IssueStoreConformanceHooks` — the concrete in-memory hook VALUES stay
+// module-local, see barrel-drift.spec.ts).
+//
+// Deliberately NOT re-exported: `classifyCreateInput`. This is the ORIGINAL
+// barrel decision (predates this reconciliation) — every adapter's `create()`
+// already runs it first, so a consumer calling it by hand would be asking a
+// question `create()` answers on its behalf, and a hand-run pre-check that
+// can drift from the write path is worse than no pre-check at all. The
+// rejection (`CreateInputError`/`CreateInputFailure`, exported below) is
+// inherited; the classifier stays the seam.
+export {
+  type IssueStore,
+  type CreateInput,
+  type CreateShape,
+  type DecoratedCreateInput,
+  type AmendPatch,
+  type AnnotatePatch,
+  validateAmendPatch,
+  type ClosingState,
+  type NeedsAttentionPayload,
+  type PublishDocumentInput,
+  type DocumentView,
+  type ListScope,
+  type IssueStoreConformanceHooks,
+  DEFAULT_ELIGIBILITY,
+  RUNG_PRECEDENCE,
+  HEADER_BLOCK_FIELDS,
+  TRIAGE_DISCLAIMER,
+  withTriageDisclaimer,
+} from './adapters/issue-store';
 
 // The TYPED CREATE REJECTION (ADR-0027, the bare-filing path).
 //
@@ -600,7 +965,14 @@ export {
   type CreateInputFailure,
 } from './adapters/issue-store';
 
-export { runConflictMap } from './conflict-map-cli';
+export {
+  runConflictMap,
+  // The by-id variant `runConflictMap` itself dispatches to for a single
+  // named issue (issue #376 barrel-drift reconciliation) — same omission
+  // class as `runStorePreflight` was before issue #325: the by-id CLI verb
+  // runner was never carried across when its parent was.
+  runConflictMapById,
+} from './conflict-map-cli';
 
 export { runCrossWave } from './cross-wave-cli';
 
@@ -610,7 +982,35 @@ export { runSpine } from './spine-cli';
 
 export {
   runResume,
+  // `runResume`'s own default dependency bundle (issue #376 barrel-drift
+  // reconciliation) — exported so a root-only caller can partially override
+  // it (spread `defaultDeps` with one seam replaced) instead of
+  // reconstructing the whole bundle from scratch.
+  defaultDeps,
   type ResumeDeps,
 } from './resume-cli';
 
-export { main, mainAsync } from './cli';
+// `dor <id>` and the CLI's own repo-root walker (issue #376 barrel-drift
+// reconciliation) — `runDorById` was already deliberately exported from
+// cli.ts (every other `run*` verb there is module-private); it simply never
+// crossed this barrel. `findRepoRoot` is cli.ts's own walker, distinct from
+// `findScratchRoot` above (find-repo-root.ts) — different question, same
+// "walk up looking for a marker" shape.
+export { findRepoRoot, runDorById, main, mainAsync } from './cli';
+
+export { runConfig } from './config-cli';
+
+// The `route` CLI verb family (issue #376 barrel-drift reconciliation) — the
+// whole module was unreachable from the root before now, matching the CLI
+// runner precedent already established elsewhere in this barrel
+// (`runStorePreflight`, `runConflictMapById` above): a route verdict/outcome
+// through a report/verdict sidecar pair, and the write-side pair that
+// produces one.
+export {
+  runRouteVerdict,
+  runRouteOutcome,
+  runValidateReport,
+  runValidateVerdict,
+  runWriteReport,
+  runWriteVerdict,
+} from './route-cli';

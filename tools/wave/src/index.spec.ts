@@ -660,6 +660,41 @@ const COMMAND_LINE_FAMILY_ADDED_AT_ROOT = [
 const MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT = ['MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES'];
 
 /**
+ * The VALUE half of worktree-cleanup.ts's second reconciliation wave (issue
+ * #376 barrel-drift.spec.ts) — four cohesive sub-sweeps (orphan worktrees,
+ * Scribe scratch, orphan branches, redispatch cleanup + branch hygiene) that
+ * were simply never carried across when the module grew past its original
+ * worktree/detached-scratchpad scope. Sorted, as the probe sorts. The TYPE
+ * half (25 more names — `OrphanDir`, `ScratchEntry`, `RedispatchRow`, etc.)
+ * is erased at runtime and so is invisible to THIS enumeration; it is pinned
+ * instead by `tsc --noEmit` via barrel-drift.spec.ts's own AC4 import block
+ * and by that spec's identity-based comparison directly.
+ */
+const WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT = [
+  'SCRIBE_SCRATCH_RELATIVE_DIR',
+  'cleanupCrashedRowForRedispatch',
+  'cleanupRedispatchRows',
+  'defaultBranchHygieneOps',
+  'defaultOrphanBranchSweepOps',
+  'defaultOrphanRemover',
+  'defaultRedispatchCleanupOps',
+  'defaultScratchRemover',
+  'defaultStillListedProbe',
+  'executeOrphanBranchSweep',
+  'executeOrphanSweep',
+  'executeScribeScratchSweep',
+  'listAllWorktrees',
+  'listOrphanDirs',
+  'listScribeScratchEntries',
+  'planOrphanBranchSweep',
+  'planOrphanSweep',
+  'planScribeScratchSweep',
+  'sweepOrphanBranches',
+  'sweepOrphanWorktrees',
+  'sweepScribeScratch',
+];
+
+/**
  * The `wave-md-rw` names the root re-exported BEFORE issue #323, recorded the
  * same way and for the same reason as the worktree-cleanup baseline above:
  * `wave-md-rw` exports far more than the barrel re-exports (every targeted
@@ -687,6 +722,23 @@ const HUMAN_LANE_FAMILY_ADDED_AT_ROOT = [
 ];
 
 /**
+ * The rest of wave-md-rw.ts's targeted-writer/predicate surface (issue #376
+ * barrel-drift.spec.ts) — `renderConflictMap` is `computeConflictMap`'s own
+ * rendering counterpart, `setFrontmatterStatus`/`setRowIter` are spine
+ * writers, `requireBranchesByIssueId` is `branchesByIssueId`'s throwing
+ * sibling, `SPINE_STATUSES` is the vocabulary `setFrontmatterStatus` writes
+ * (its type half, `SpineStatus`, is erased at runtime). Sorted, as the probe
+ * sorts.
+ */
+const WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT = [
+  'SPINE_STATUSES',
+  'renderConflictMap',
+  'requireBranchesByIssueId',
+  'setFrontmatterStatus',
+  'setRowIter',
+];
+
+/**
  * How many runtime names the package root carried before this slice, recorded
  * the same way. This is the widest net in the file: it catches a stowaway from
  * ANY module, including one that has nothing to do with worktree-cleanup.
@@ -698,6 +750,87 @@ const HUMAN_LANE_FAMILY_ADDED_AT_ROOT = [
  * precisely the change nobody would have reviewed.
  */
 const ROOT_RUNTIME_EXPORT_COUNT_BEFORE = 135;
+
+/**
+ * The VALUE-level names issue #376's barrel-drift reconciliation adds that do
+ * NOT belong to worktree-cleanup.ts or wave-md-rw.ts — those two already have
+ * their own per-module ownership helpers above
+ * (`rootNamesOwnedByWorktreeCleanup`/`rootNamesOwnedByWaveMdRw`) and their own
+ * named families (`WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT`,
+ * `WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT`), so their share of the
+ * count is not duplicated here.
+ *
+ * Unlike every family above, this single reconciliation touched roughly
+ * twenty otherwise-unrelated modules at once (the drift spec measured the gap
+ * across the WHOLE barrel, not one module) — a per-module ownership helper
+ * and named constant for each would be a large amount of machinery this file
+ * did not already have and that barrel-drift.spec.ts is the actual authority
+ * for (it pins EVERY module/symbol pair by identity, not just a name count).
+ * This one consolidated, alphabetically-sorted list exists ONLY to keep this
+ * file's pre-existing "whole root surface" arithmetic honest; it is not
+ * re-deriving barrel-drift.spec.ts's own, stronger guarantee.
+ */
+const BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT = [
+  'ARM_CLEAN_STATUS_ERROR',
+  'ARM_FORBIDDEN_ERROR_TYPE',
+  'ARM_NOT_ALLOWED_ERROR',
+  'ARM_TOKEN_REQUIREMENTS',
+  'AutoMergeUnavailableError',
+  'DEFAULT_ELIGIBILITY',
+  'DEFAULT_MERGE_METHOD',
+  'DEFAULT_TRIAGE_SCHEMA',
+  'GitHubApiError',
+  'GitHubIssuesStore',
+  'HEADER_BLOCK_FIELDS',
+  'LandingNotImplementedError',
+  'LinearTransitionVerifyError',
+  'MarkdownFsStore',
+  'RUNG_PRECEDENCE',
+  'RealGitHubApi',
+  'TRIAGE_DISCLAIMER',
+  'alignedPrRef',
+  'armPullRequest',
+  'asCheckAttachReader',
+  'bareIssueIdViolation',
+  'closePhraseLossReason',
+  'compareRequiredToReported',
+  'createGitHubApiFromEnv',
+  'decideArmAction',
+  'defaultDeps',
+  'defaultGitHubHttp',
+  'extractConflictMapIssueId',
+  'findClosePhrase',
+  'findMisnamedSidecars',
+  'findOpenPrRef',
+  'findRepoRoot',
+  'findScratchRoot',
+  'hasClosePhrase',
+  'isBareIssueId',
+  'isIssueTrackerBookkeeping',
+  'mergePullRequestNow',
+  'mergeRequiredChecks',
+  'metAcIndexes',
+  'neutralizeForeignTrackerIds',
+  'normalizeIssueRef',
+  'orderPrs',
+  'preflightHost',
+  'refineArmDecisionForCheckAttach',
+  'renderVerdictSection',
+  'runConfig',
+  'runConflictMapById',
+  'runDorById',
+  'runHostPr',
+  'runRouteOutcome',
+  'runRouteVerdict',
+  'runValidateReport',
+  'runValidateVerdict',
+  'runWriteReport',
+  'runWriteVerdict',
+  'updateOpenPr',
+  'validateAmendPatch',
+  'validateIssueView',
+  'withTriageDisclaimer',
+].sort();
 
 /**
  * The whole-root total as of the newest recorded slice. Deliberately written as
@@ -712,7 +845,10 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   ROOT_RUNTIME_EXPORT_COUNT_BEFORE +
   COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length +
   HUMAN_LANE_FAMILY_ADDED_AT_ROOT.length +
-  MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT.length;
+  MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT.length +
+  WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT.length +
+  WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT.length +
+  BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -862,7 +998,13 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
       (name) => !WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE.includes(name),
     );
     expect(added).toEqual(
-      [...COMMAND_LINE_FAMILY_ADDED_AT_ROOT, ...MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT].sort(),
+      [
+        ...COMMAND_LINE_FAMILY_ADDED_AT_ROOT,
+        ...MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT,
+        // The second reconciliation wave (issue #376) — see that constant's
+        // own doc comment.
+        ...WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT,
+      ].sort(),
     );
 
     expect(after).toEqual(
@@ -870,6 +1012,7 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
         ...WORKTREE_CLEANUP_NAMES_AT_ROOT_BEFORE,
         ...COMMAND_LINE_FAMILY_ADDED_AT_ROOT,
         ...MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT,
+        ...WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT,
       ].sort(),
     );
   });
@@ -1210,14 +1353,20 @@ describe('the human lane at the root — runtime enumeration (issue #323)', () =
 
     // Nothing was dropped…
     expect(after).toEqual(expect.arrayContaining(WAVE_MD_RW_NAMES_AT_ROOT_BEFORE));
-    // …and what is new is exactly the family, no stowaway.
+    // …and what is new is exactly the two recorded families, no stowaway.
     const added = after.filter(
       (name) => !WAVE_MD_RW_NAMES_AT_ROOT_BEFORE.includes(name),
     );
-    expect(added).toEqual(HUMAN_LANE_FAMILY_ADDED_AT_ROOT);
+    expect(added).toEqual(
+      [...HUMAN_LANE_FAMILY_ADDED_AT_ROOT, ...WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT].sort(),
+    );
 
     expect(after).toEqual(
-      [...WAVE_MD_RW_NAMES_AT_ROOT_BEFORE, ...HUMAN_LANE_FAMILY_ADDED_AT_ROOT].sort(),
+      [
+        ...WAVE_MD_RW_NAMES_AT_ROOT_BEFORE,
+        ...HUMAN_LANE_FAMILY_ADDED_AT_ROOT,
+        ...WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT,
+      ].sort(),
     );
   });
 });
