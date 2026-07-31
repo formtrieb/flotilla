@@ -251,7 +251,9 @@ A profile's `commands` describes the consumer's build gate; it is not, automatic
 
 **Measure it: run the command for real, and observe it resolve the local binary.** Never treat a `commands` entry as final on the strength of reading the config — that is inspection, not proof, and this is the same standard `config validate`/both preflights already hold every other precondition to.
 
-**flotilla's own repo, worked (the nested-dependency-directory case) — confirmed live in this dispatch.** The engine lives at `tools/wave/`, not the repo root, so its dependency directory (`tools/wave/node_modules`) is nested. Convention 13 rules out papering over this with a fused `cd tools/wave && npx vitest run` (the same two mechanisms — the permission gate, the worktree-isolation guard — that refuse a fused Worker step refuse a fused verify command too, wave-shared Convention 13). The measured, resolving forms carry the directory IN the command instead:
+**Resolution has two halves, and both must be measured — the binary AND the discovery root.** Naming the pinned local binary (`./tools/wave/node_modules/.bin/vitest`) closes only the first half: which vitest *executable* runs. It says nothing about which *files* that executable then goes looking for — and a correctly-pinned binary can still discover the wrong set, silently, with no non-zero exit forcing the miss into view. Evidence, measured live in this dispatch (issue #372): the pinned local binary, invoked from the repo root with **no discovery root**, resolves vitest 4.1.8 and runs — but sweeps in `scripts/check-client-refs.test.mjs`, a repo-root `node:test` file the vitest runner cannot parse as a suite, and reports **63 test files (1 failed, 62 passed)** while all **2789** vitest-owned tests still pass — a failed-suite verdict for a reason that has nothing to do with the code under test. Pinning the discovery root (`--root tools/wave`) removes the stray file from the walk entirely: **62 test files, 2789 passing tests**, matching baseline exactly. Naming the binary without naming `--root`/`-p tools/wave` reproduces this exact miss — measuring only the first half looks like a clean pass right up until a stray root-level file lands, then fails with a count that reads as a code regression rather than a discovery-root gap.
+
+**flotilla's own repo, worked (the nested-dependency-directory case) — confirmed live in this dispatch.** The engine lives at `tools/wave/`, not the repo root, so its dependency directory (`tools/wave/node_modules`) is nested. Convention 13 rules out papering over this with a fused `cd tools/wave && npx vitest run` (the same two mechanisms — the permission gate, the worktree-isolation guard — that refuse a fused Worker step refuse a fused verify command too, wave-shared Convention 13). The measured, resolving forms carry BOTH the directory and the discovery root IN the command:
 
 ```json
 {
@@ -262,7 +264,7 @@ A profile's `commands` describes the consumer's build gate; it is not, automatic
         "appliesTo": ["tools/wave/**"],
         "commands": [
           { "command": "npm ci --prefix tools/wave" },
-          { "command": "./tools/wave/node_modules/.bin/vitest run" },
+          { "command": "./tools/wave/node_modules/.bin/vitest run --root tools/wave" },
           { "command": "./tools/wave/node_modules/.bin/tsc -p tools/wave --noEmit" }
         ]
       }
@@ -271,7 +273,7 @@ A profile's `commands` describes the consumer's build gate; it is not, automatic
 }
 ```
 
-confirmed by execution in this dispatch: the vitest form resolved and ran **2675 passing tests across 62 files**; the tsc form resolved and exited **0**. The plausible-looking bare-form profile below is what a Coordinator re-deriving the spelling by hand, per wave, tends to compose instead — and it is exactly the one that resolves to nothing on this repo's own shape:
+confirmed by execution in this dispatch (2026-07-31, issue #372): with the discovery root pinned, the vitest form resolved **vitest 4.1.8** and ran **62 test files, 2789 passing tests**; the tsc form resolved and exited **0**. (The stale prior recording here — 2675 tests — predates the repo-root file whose presence is exactly the two-halves gap this section now documents; it is superseded by this measurement, not merely refreshed.) The plausible-looking bare-form profile below is what a Coordinator re-deriving the spelling by hand, per wave, tends to compose instead — and it is exactly the one that resolves to nothing on this repo's own shape:
 
 ```json
 {
@@ -292,6 +294,14 @@ confirmed by execution in this dispatch: the vitest form resolved and ran **2675
 ```
 
 Three further spellings of this same pair are measured, with real call counts, in ["2026-07-31 pass"](#2026-07-31-pass--the-used-but-absent-direction-issue-291) below — that pass audited them from the allowlist-reconciliation angle (which spellings are *used* vs. *allowlisted*); this section is the same measured fact read from the setup angle (which spelling actually *resolves*, and is it recorded before a wave ever needs it).
+
+**The recurrence arc — why the profile itself has to name the pinned form, not a prose warning beside it (issue #372).** The identical underlying gap — an unpinned or under-specified verify spelling standing in for the pinned one — recurred in three distinct shapes, on three separate occasions, and a warning survived none of them:
+
+1. **The compose trap**, above: a bare `npx vitest run` / `npx tsc --noEmit` form, composed straight from the profile description and never measured, resolved to **nothing** on this repo's nested dependency directory (Wave `2026-07-30-arm-and-wiring`, coordinator disclosure 254.3).
+2. **An unpinned download, even where the bare form DOES resolve.** The original filing of this issue observed the verify profile's literal `npx vitest run --root tools/wave` — note it already named the discovery root — still reach past the pinned local binary and download **vitest 4.1.10** from the network, against **4.1.8** installed under `tools/wave/node_modules`; independently reproduced by the row's own Reviewer, who re-ran both. Both versions agreed on counts that day (2760/2760 across 62 files), so no verdict was affected then — but the root half being correct did nothing to pin the binary half: the two halves fail independently, not sequentially, which is the same fact the two-halves paragraph above states from the discovery-root side.
+3. **A Reviewer re-spelled the bare form anyway, despite a verbatim warning in hand.** On 2026-07-31, a wave Reviewer issued a bare `npx vitest run` mid-review — again fetching the unpinned 4.1.10 — before re-running the identical spec through the pinned `npm test` form (4.1.8, lockfile); both agreed on counts, so no verdict was affected this time either. What makes this occurrence the decisive one: the Reviewer's own brief *carried the warning against exactly this form*, and the bare form was reached for anyway.
+
+Three occurrences, one root cause, and the third happened to someone who had just read the warning. A prose warning demonstrably does not close this — the fix has to remove the bare spelling from reach entirely, which is exactly what naming the pinned, discovery-rooted form directly inside `commands` does: there is no shorter, more-obvious-looking alternative left to compose or reach for, because the command that actually runs already **is** the correct one.
 
 **The recorded forms are the compose-time source for the driver's verify constants.** Once measured, record the exact resolved command strings alongside the config — SKILL.md's "Worktree-brief inputs" precondition, item 3 — the same way `depsSetup` and `engine.cli` are recorded from their own items. `workflow-driver.md`'s per-row brief quotes this recorded shape when it renders the row's Verification-gates step, rather than a Coordinator re-deriving a plausible form from `wave.config.json`'s own profile description at every wave's compose time. **That re-derivation loop is retired** (issue #272): the form is proven once, here, at setup — not re-guessed, per wave, at dispatch.
 
