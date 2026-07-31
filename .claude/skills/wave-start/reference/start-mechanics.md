@@ -49,7 +49,18 @@ for s in .flotilla/waves/*.md; do
 done   # sum MUST be 0; >0 → STOP (another wave is in-flight)
 
 # 3. Drift gate (per row) + Blocked-by membership resolution (FOR-8)
-{{wave-cli}} dor --id "$ID" --repo-root "$REPO"           # overall MUST stay PASS
+{{wave-cli}} dor --id "$ID" --repo-root "$REPO" --config "$REPO/wave.config.json"   # overall MUST stay PASS
+#   --config here is not the same convenience as line 5's "run from a dir
+#   containing wave.config.json, or append --config" — that equivalence does
+#   NOT hold for Gate 8 (verify-profile-coverage): it only sees the consumer's
+#   verify block when THIS call names --config explicitly, regardless of cwd.
+#   Two outcomes share the `deferred` status text but are not the same fact —
+#   RESOLVABLE (--config passed, wave.config.json loaded, verify.profiles
+#   actually weighed against this row's files → a real pass/warn) vs
+#   GENUINELY ABSENT (no --config reached this call, so the gate never had a
+#   verify block to check — the defer says nothing about the row's coverage,
+#   only that this invocation didn't ask). Passing --config as shown lands
+#   this re-check in the resolvable state on every ordinary run.
 {{wave-cli}} issue-store listClaimed > "$T/claimed.json"
 {{wave-cli}} cross-wave --candidates "$T/cands.json" --claimed "$T/claimed.json" --repo-root "$REPO" \
   > "$T/cross-wave-result.json"
