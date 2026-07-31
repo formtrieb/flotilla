@@ -40,19 +40,6 @@ Any hit means this wave is a self-repair case: **note it in the close summary** 
 Run this after every merge in the advisory order, before starting phase 5, regardless of whether the check above found a hit:
 
 ```bash
-# Define the Convention 12 capture guard once per wave-close shell session,
-# before the first capture below (wave-shared/reference/convention-12-…md carries
-# the canonical body + the rationale for rejecting `null`/`undefined` and for
-# printing only the NAME, never the captured value):
-require_capture() {   # require_capture <NAME> <captured-value>
-  case "$2" in
-    ''|null|undefined)
-      echo "STOP: $1 came back empty — the command that should have produced it did not run. Refusing to continue with an empty value." >&2
-      return 1
-      ;;
-  esac
-}
-
 git fetch origin main
 
 # Know before you run it, not after: does the incoming diff touch a harness
@@ -66,15 +53,23 @@ git pull --ff-only origin main
 # Verify the fast-forward MECHANICALLY, not by eyeballing two printed SHAs — and
 # refuse an EMPTY capture rather than comparing two blanks and calling it equal
 # (wave-shared Convention 12: `git rev-parse` writes its error to stderr and
-# leaves stdout empty, so `[ "$A" = "$B" ]` on two failed captures reads TRUE):
-MERGED_TIP=$(git rev-parse origin/main)
-LOCAL_HEAD=$(git rev-parse HEAD)
-require_capture MERGED_TIP "$MERGED_TIP" || exit 1     # Convention 12 helper
-require_capture LOCAL_HEAD "$LOCAL_HEAD" || exit 1
-[ "$LOCAL_HEAD" = "$MERGED_TIP" ] || {
+# leaves stdout empty, so `[ "$A" = "$B" ]` on two failed captures reads TRUE).
+#
+# ISSUE THIS AS ONE BASH CALL. The two captures and both checks share one scope
+# on purpose: shell state does not survive between Bash calls, so a guard issued
+# separately would inspect two unset variables and compare them — passing exactly
+# where it is meant to stop (Convention 12, half two, Form 2). `--verify` makes
+# an unresolvable ref exit non-zero as well, so the empty case is caught twice.
+MERGED_TIP=$(git rev-parse --verify origin/main)
+LOCAL_HEAD=$(git rev-parse --verify HEAD)
+if [ -z "$MERGED_TIP" ] || [ -z "$LOCAL_HEAD" ]; then
+  echo "STOP: a rev-parse came back empty — the command that should have produced a SHA did not run. Refusing to compare two blanks. Do NOT start phase 5." >&2
+  exit 1
+fi
+if [ "$LOCAL_HEAD" != "$MERGED_TIP" ]; then
   echo "STOP: HEAD is not at the merged main tip — the fast-forward did not complete (see the half-applied-pull symptom below). Do NOT start phase 5." >&2
   exit 1
-}
+fi
 ```
 
 **Sandbox precondition — disable the sandbox for this pull whenever this wave's rows touch anything under `.claude/skills/**`, or `.claude/settings.json`.** The sandbox denies writes to both, unconditionally: a fast-forward that includes a skill-file change OR a `.claude/settings.json` change stops mid-apply with `error: unable to unlink old '.claude/skills/<path>': Operation not permitted` (or the same error naming `.claude/settings.json`). Everything outside the denied paths (e.g. `tools/wave/src/**`) still lands — only the denied path doesn't. (`.claude/settings.local.json` is gitignored in this repo — never part of any commit, so it cannot itself fail a pull this way — but the identical harness rule denies writing it directly, so never hand-edit it from an agent either.)
@@ -108,5 +103,6 @@ git reset --hard origin/main   # sandbox disabled: needs write access under .cla
 - **Trusting a `git pull`/`git reset` that touched `.claude/skills/**` or `.claude/settings.json` without checking `HEAD`.** The sandbox can deny the denied-path half of a fast-forward while the rest applies silently — no error past the failed unlink, `git status` reads as ordinary pending changes, and `HEAD` stays on the pre-merge SHA. This is a harness-level deny, not something either file's content or the operator's own config controls, and it never goes away since flotilla must keep `.claude/settings.json` tracked. Disable the sandbox for that pull whenever this wave's rows touch `.claude/skills/**` or `.claude/settings.json`, and confirm `git rev-parse HEAD` against the merged tip before trusting the checkout.
 - **Running the pull blind, then diagnosing the `unable to unlink` failure after the fact.** `git diff --name-only HEAD origin/main | grep -E '^\.claude/(skills/|settings\.json$)'` against the incoming diff, run BEFORE the pull, tells you in advance whether to disable the sandbox — don't wait for the mid-apply error to find out.
 - **Iterating the dispatch-log branches out of a space-separated variable (`for BRANCH in $BRANCHES`).** zsh does not word-split, so the loop runs **once**, against a branch name that does not exist, and every self-repair hazard in the wave goes unreported — with no error louder than one `unknown revision` line (wave-shared Convention 12; live: W5-F5, W18-F3). Write the branches out or iterate a real array, as above.
-- **Comparing `HEAD` to the merged tip by reading two printed SHAs.** Two *failed* `git rev-parse` calls both leave stdout empty, and an eyeball comparison of two blanks — or a bare `[ "$A" = "$B" ]` over them — reads as a match. Capture both, run them through the Convention 12 `require_capture` guard, and only then compare; the exact half-applied-pull case this step exists to catch is the one where a capture is most likely to be the thing that goes wrong.
+- **Comparing `HEAD` to the merged tip by reading two printed SHAs.** Two *failed* `git rev-parse` calls both leave stdout empty, and an eyeball comparison of two blanks — or a bare `[ "$A" = "$B" ]` over them — reads as a match. Capture both, check them for emptiness, and only then compare; the exact half-applied-pull case this step exists to catch is the one where a capture is most likely to be the thing that goes wrong.
+- **Splitting that verification across two Bash calls.** Shell state does not survive between them, so a guard issued after the capture inspects two *unset* variables — and reports them equal, which is the one answer that lets phase 5 start on a half-applied pull. Capture and check in ONE call, as the block above does (wave-shared Convention 12, half two). The same rule retired the `require_capture()` helper this file used to define: a shell function is session state too.
 - **Discarding the leftover denied-path file without comparing it to what's committed first.** The write-deny can only leave the file unchanged (byte-identical to what `HEAD` already claims) or, if something else touched it, genuinely different. Compare with `git show HEAD:<path> | diff - <path>` before any `reset --hard` or manual removal — never assume the leftover copy is safe to discard.

@@ -96,19 +96,14 @@ SPINE=".flotilla/waves/$SLUG.md"
 REPORTS=".flotilla/waves/$SLUG/reports"
 VERDICTS=".flotilla/waves/$SLUG/verdicts"
 
-# 0. Define the Convention 12 capture guard once per wave-resume shell session,
-#    before the step-5 capture below. Body copied verbatim from the canonical one
-#    in wave-shared's convention-12 reference (which carries the rationale for
-#    refusing `null`/`undefined` alongside `''`, and for printing only the NAME
-#    and never the captured value):
-require_capture() {   # require_capture <NAME> <captured-value>
-  case "$2" in
-    ''|null|undefined)
-      echo "STOP: $1 came back empty — the command that should have produced it did not run (exit 127? no match? no such key?). Refusing to continue with an empty value." >&2
-      return 1
-      ;;
-  esac
-}
+# 0. THE CALL BOUNDARY (wave-shared Convention 12, half two). No setup step —
+#    deliberately. This file used to define a `require_capture()` helper here and
+#    invoke it at step 5; that helper is RETIRED, because a shell function is
+#    session state and shell state does not survive from one Bash call to the
+#    next, so the guard was never in scope for the value it named. Step 5's
+#    capture now carries its check inline, in the same call. Refuse `null` and
+#    `undefined` alongside `''`, and print only the NAME, never the value
+#    (a capture may be a credential — Convention 8).
 
 # 1. Spine first (WAL authority)
 {{wave-cli}} spine read "$SPINE"
@@ -132,11 +127,15 @@ require_capture() {   # require_capture <NAME> <captured-value>
 # merged → derive --acked from the FINAL verdict (FOR-17, single-owner engine
 # derivation — NEVER hand-parse a verdict sidecar here), then land it done via
 # the existing close verb (NOT `transition … done`):
+# ISSUE THE FOUR LINES BELOW AS ONE BASH CALL — capture, guard, derive, close.
+# They share one scope because that is the only scope the variables exist in
+# (wave-shared Convention 12, half two, Form 2), and the close path's
+# done-reconcile carries the identical block.
 ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" "$ID")   # { acked: [...], iter, corrupt }
 
-# GUARD THE CAPTURE THAT PROVES THE VERB RAN (wave-shared Convention 12; helper
-# at step 0). This is the SAME shape the close path's done-reconcile guards, and
-# the two must not diverge. An empty ACKED_JSON does not mean "no ACs were met" —
+# GUARD THE CAPTURE THAT PROVES THE VERB RAN (wave-shared Convention 12). This is
+# the SAME shape the close path's done-reconcile guards, and the two must not
+# diverge. An empty ACKED_JSON does not mean "no ACs were met" —
 # it means `verdict-acked` produced nothing, and the only ways that happens are
 # ways you must not continue past: the engine CLI was never invoked (a command
 # held in a shell variable, exit 127 — the five-occurrence class), or it exited
@@ -144,7 +143,10 @@ ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" "$ID")   # { acked: [...], i
 # would accept it as a legitimate "nothing met" and tick nothing — a silent wrong
 # answer written to the tracker. Resume is the path that runs AFTER something
 # already went wrong, which makes it the worst place to accept a silent empty.
-require_capture ACKED_JSON "$ACKED_JSON" || exit 1        # helper: Convention 12 / step 0
+if [ -z "$ACKED_JSON" ] || [ "$ACKED_JSON" = "null" ] || [ "$ACKED_JSON" = "undefined" ]; then
+  echo "STOP: ACKED_JSON came back empty — verdict-acked did not run. Refusing to derive an empty --acked from nothing." >&2
+  exit 1
+fi
 
 ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf-8")).acked.join(","))')
 # ACKED itself is deliberately NOT guarded: "" is a documented, legitimate value

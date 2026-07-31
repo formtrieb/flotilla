@@ -26,6 +26,12 @@ Probe each terminal row's closing state, then either **land it `done`** (a merge
 # CLI prints the acked/iter/corrupt object as JSON on stdout; extract just the
 # comma-joined acked array before passing it through (never hand-parse
 # acVerification[] instead of using this verb's output):
+# ISSUE THE FOUR LINES BELOW AS ONE BASH CALL. The capture, its guard, the
+# derivation and the consuming `close` all share one scope because that is the
+# only scope the variables exist in — shell state does not survive between Bash
+# calls, so a guard issued separately would inspect an unset ACKED_JSON and stop
+# a run that was fine, while a `close` issued separately would pass an unset
+# ACKED and tick nothing (wave-shared Convention 12, half two, Form 2).
 ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" <id>)   # → { "acked": [...], "iter": ..., "corrupt": ... }
 
 # GUARD THE CAPTURE THAT PROVES THE VERB RAN (wave-shared Convention 12). An
@@ -35,7 +41,10 @@ ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" <id>)   # → { "acked": [..
 # variable, exit 127 — the five-occurrence class), or it exited non-zero. The
 # next line would derive ACKED="" from it, and `close` would accept that as a
 # legitimate "nothing met" and tick nothing — a silent wrong answer.
-require_capture ACKED_JSON "$ACKED_JSON" || exit 1        # helper: Convention 12 / phase-4a
+if [ -z "$ACKED_JSON" ] || [ "$ACKED_JSON" = "null" ] || [ "$ACKED_JSON" = "undefined" ]; then
+  echo "STOP: ACKED_JSON came back empty — verdict-acked did not run. Refusing to derive an empty --acked from nothing." >&2
+  exit 1
+fi
 
 ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf-8")).acked.join(","))')
 # ACKED itself is deliberately NOT guarded: "" is a documented, legitimate value
@@ -89,6 +98,7 @@ The flag is **orthogonal to the coarse rung** — the row stays at its current r
 - **Re-implementing close.** `close` is the existing `IssueStore.close()` verb — idempotent no-op-or-reconcile, and the FOR-13 fallback lives inside it. Call the verb; never hand-roll a state transition or a "done" write in the skill.
 - **Calling `close` without `--acked` (FOR-17 — the dead wire).** `close` has always accepted `--acked 0,2,3`; every closed issue used to read "not done yet" on the tracker because no skill ever passed it. On every merged row, derive the indexes first via `{{wave-cli}} verdict-acked <verdictsDir> <id>` (the single-owner engine verb) and pass them straight through — never hand-parse `acVerification[]` in the skill, and never skip the flag because "it's optional".
 - **Deriving `ACKED` from an unguarded `ACKED_JSON` capture (wave-shared Convention 12).** If the `verdict-acked` call never executed — the five-occurrence "command held in a shell variable, exit 127" class — its capture is empty, `ACKED` derives to `""`, and `close` lands the row `done` with nothing ticked while looking exactly like the legitimate "nothing met" case. Guard the JSON (the capture that proves the verb *ran*); leave the derived `ACKED` unguarded (its emptiness is a real answer).
+- **Spreading that capture, its guard and the `close` across separate Bash calls.** Shell state does not survive between them, so the guard would inspect an unset `ACKED_JSON` and stop a healthy run, and a separately-issued `close` would pass an unset `ACKED` and tick nothing — the exact silent wrong answer the guard exists to prevent, now caused by the guard's own placement. Keep the block above in ONE call (wave-shared Convention 12, half two).
 - **Deriving `--acked` at verdict-in instead of at close.** The tick fires at `close`, once a merge is confirmed — never earlier. An `approve` verdict whose PR later closes unmerged must never have ticked anything; deriving `--acked` any earlier than the merged-row close call would overstate what actually landed.
 - **Re-reading the AC tick as gate input anywhere.** The ADR-0004 boundary holds unconditionally: the tick `--acked` writes is cosmetic/human-facing only. No gate, probe, or later wave may read it back — `acVerification[]` on the Reviewer verdict stays the sole ground truth.
 - **Auto-moving `closed-unmerged` back to `available`.** A rejected PR re-grabbed by another wave redoes deliberately-rejected work. Flag it `recoverable-stop`; the human disposes.

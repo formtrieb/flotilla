@@ -59,7 +59,9 @@ if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ] || [ "$PR_URL" = "undefined" ]; th
 fi
 ```
 
-Splitting the capture from the guard (the fix this catalog would have named from the disclosure's summary alone) is still correct **and still necessary** — a capture fused onto either form above is refused for the ordinary fusion reason this file leads with — but it is not **sufficient**: the `case`-guard half, issued as its own call with nothing fused onto it, is refused on its own. `workflow-driver.md`'s Termination step 4 now uses the `if` form for exactly this reason, not only a two-call split.
+Splitting the capture from the guard (the fix this catalog would have named from the disclosure's summary alone) is still correct **and still necessary** — a capture fused onto either form above is refused for the ordinary fusion reason this file leads with — but it is not **sufficient**: the `case`-guard half, issued as its own call with nothing fused onto it, is refused on its own.
+
+**That `if`-form rewrite was itself only the second station of four.** It was adopted into `workflow-driver.md`'s Termination step 4 on the strength of the comparison above — and the comparison was sound as far as it went, because the `if` form really is accepted *when its condition names no shell variable*. What the probe pair above never tested is the half that turned out to matter: whether the **captured variable** reaches the guard at all. It does not. The full arc is below.
 
 **Two observers, contradictory results — and the discriminator a later measurement found.** The Worker dispatch above that produced the eight-for-eight refusal runs under `isolation: 'worktree'` — `workflow-driver.md`'s dispatch pipeline Stage 1 calls `agent(workerBrief(issue), { isolation: 'worktree', schema: WORKER_REPORT_SCHEMA, … })`. When the row that first wrote this entry went to review, its own Reviewer tried to reproduce the same refusal independently and **could not**: a bare `case`/`esac`, a PR-URL-shaped guard, and the catalogued form above all ran clean in that Reviewer's own dispatch — zero refusals across three probe shapes. The catalog, at that point, recorded only the Worker's eight-for-eight and asserted categoricity; the Reviewer's contradicting zero-for-three was never written down. That gap is what issue #305 measures.
 
@@ -87,6 +89,82 @@ All three were refused — **three-for-three**, matching the entry-writing Worke
 **The discriminating condition, named with evidence: the `isolation: 'worktree'` dispatch option itself — not the command's shape, its content, or the working directory.** `workflow-driver.md`'s dispatch pipeline sets that option explicitly on the Worker's `agent()` call (Stage 1, `isolation: 'worktree'`) and does **not** set it on the Reviewer's `agent()` call (Stage 3: `agentType: 'wave-reviewer', schema: REVIEWER_VERDICT_SCHEMA` — no `isolation` key at all) — even though `reviewerBrief()`'s own prompt text tells the Reviewer "your own worktree also carries tracked files only," as if the two roles were symmetric. In the one place that actually configures which dispatched agents carry the worktree-isolation guard — the driver's own `agent()` calls — they are not: the option is set for the Worker only. That asymmetry is consistent with every data point gathered so far: the entry-writing Worker (`isolation` set, 8/8 refused), that row's Reviewer (`isolation` not set, 0/3 refused), and issue #305's own Worker (`isolation` set, 3/3 refused). Issue #305's own gap description additionally reports a later wave observing four independent Worker-side refusals of the same shape — Worker-side, so consistent with `isolation: 'worktree'` being set — but that wave is not named with a slug or disclosure id accessible from this dispatch, so its count is reported here as background, not independently re-verified.
 
 **Scoped claim, replacing the unscoped one:** a bare `case`/`esac` guard — any of the three shapes above — is refused categorically **from a dispatch that carries `isolation: 'worktree'`** (the Worker role, and by the same driver-code reasoning, any other role a Coordinator dispatches with that option set). It is **not** established as refused — and has been directly observed clean — from a dispatch that does not carry that option (the Reviewer role, as currently dispatched by `workflow-driver.md`). Issue #305's own Reviewer is the second observer for this exact measurement: per this row's design it independently re-runs the same three probes in its own dispatch. Append that result here, in this catalog's own append-in-shape discipline, rather than opening a new prose clause.
+
+##### The evidence arc — four stations, three of them dead ends
+
+Each station below was adopted as *the* fix, shipped into the Worker brief, and then failed in the field. They are recorded together because the sequence is the finding: three plausible remedies for "the guard is refused" all left the guard unable to run, and the reason is the same one each time — **the guard was still being asked to inspect a shell variable.**
+
+| # | Shape | What happened | Evidence |
+|---|---|---|---|
+| 1 | **`case`/`esac` guard** | **REFUSED** by the isolation guard, standing entirely alone | 8/8 (issue #267), 3/3 (issue #305), 4 of 9 rows in wave `2026-07-30-adr-0032-wave-b` (267, 278, 279, 288), 3/3 again here |
+| 2 | **Two-call `if` form** — capture in call 1, `if`-guard in call 2 | **INERT, then REFUSED.** Shell state does not survive between Bash calls (the #251 class), so the guard's variable is unset in its own shell; and the isolation guard refuses the guard call outright for referencing a variable it cannot resolve | 5 of 6 Workers in wave `2026-07-31-tier-guidance-and-guards`; re-reproduced here |
+| 3 | **One-call fusion** — capture and `if`-guard joined by a newline in a single call | **REFUSED.** Same call, same variable, same refusal — fusion was never the discriminator | reproduced here |
+| 4 | **Host re-query** — `host-pr create` bare, then `host-pr status --branch` as a separate read-only confirmation | **WORKS.** No variable crosses anything, because no variable exists | first reached at issue #277 (PR #313), where env-vars-do-not-survive-Bash-calls was diagnosed and `host-pr status` was the resolution; re-verified end-to-end in this dispatch |
+
+**Live-reproduced in this dispatch (issue #303, 2026-07-31, `isolation: 'worktree'`), probe by probe.** Every line below was issued as its own Bash call; the refusal in each refused case was the harness's own *"too complex to verify that it stays inside the worktree"* message, never a permission dialog.
+
+```bash
+# ✗ REFUSED — station 1, bare case/esac (fourth independent confirmation)
+case "x" in
+  x) echo "matched" ;;
+esac
+
+# — station 2, in two calls —
+# ✓ accepted (call 1): a bare assignment, nothing referenced
+PROBE_VAL=$(echo "hello-probe")
+# ✗ REFUSED (call 2): the if-guard on that variable
+if [ -z "$PROBE_VAL" ]; then
+  echo "EMPTY" >&2
+  exit 1
+fi
+# ✗ REFUSED (call 2, minimal): even the barest reference, no output, no redirect
+test -n "$PROBE_VAL"
+
+# ✗ REFUSED — station 3, capture and guard fused into one call
+FUSED_VAL=$(echo "hello-probe")
+if [ -z "$FUSED_VAL" ]; then
+  echo "STOP: came back empty" >&2
+  exit 1
+fi
+```
+
+**The discriminator, isolated by three further probes: a `$VAR` expansion, not the control structure, not the fusion, not the redirect.** The refusal message's closing hint (*"without the redirect"*) is boilerplate and misleads here — a redirect is neither necessary nor sufficient for the refusal:
+
+```bash
+# ✓ ACCEPTED — a multiline `if` whose condition is a COMMAND, not a variable
+if jq -e -r '.url' probe-capture.json > /dev/null; then
+  echo "url present"
+fi
+
+# ✗ REFUSED — the same multiline `if`, with a variable in the condition,
+#   captured in this very call, and with no stderr redirect at all
+VAL=$(jq -r '.url' probe-capture.json)
+if [ -n "$VAL" ]; then
+  echo "url present"
+fi
+
+# ✗ REFUSED — a same-call variable in a plain, non-guard position
+VAL2=$(jq -r '.url' probe-capture.json)
+printf 'captured: %s\n' "$VAL2"
+```
+
+So the rule a dispatched role can actually follow: **name no shell variable.** Two shapes satisfy it, and both are accepted here —
+
+```bash
+# ✓ the re-query (station 4) — the source answers again, in this call
+<engine.cli> host-pr status --branch <branch>
+
+# ✓ a single command whose EXIT STATUS is the verdict — `jq -e` exits non-zero
+#   when the key is absent or null, which is the exact discrimination the
+#   retired require_capture guard was written to make
+jq -e -r '.url' pr-create.json
+```
+
+Its failing branch was observed, not assumed: against a payload carrying `{"ok":false,"error":"boom"}` and no `.url`, `jq -e -r '.url'` printed `null` and exited **1**.
+
+**A two-observer disagreement, recorded rather than resolved.** The Coordinator routing evidence that motivated this repair reports that five of six Workers in wave `2026-07-31-tier-guidance-and-guards` succeeded with a **file-based** substitute: capture `host-pr create`'s output to an in-worktree relative-path file, then "guard-and-read it in one self-contained second call (verified including its failing branch)". This dispatch reproduced the first half (a bare `> probe-capture.json` redirect to a relative path is accepted) but **not** the second: the self-contained guard-and-read call was refused here, because the form tried was `PROBE_URL=$(jq -r '.url' probe-capture.json)` followed by an `if` on `$PROBE_URL` — a shell variable, and therefore station 3 wearing a file. The likeliest reconciliation is that those Workers' second call named no variable either; but that is inference, not observation, so it is written as such. **The prescription this catalog carries is the one that survives both accounts**: no shell variable, in any call, in any position — which the `jq -e` form and the re-query both satisfy.
+
+**Occurrence:** issue #303 (2026-07-31), repairing the collision between Convention 12's prescribed remedy and this convention's documented refusal. The Worker-brief Termination step that carried stations 1–3 in turn now carries station 4.
 
 **2. Heredoc spec append — narrower than "fusion." Refused when a heredoc redirects straight to a FILE and its body contains `{`/`}`; not refused otherwise.**
 
@@ -171,7 +249,7 @@ Most tools have such a flag (`--prefix`, `-C`, `--root`, `--cwd`, `--project`, `
 ### Where the clause lives
 
 - **This file**, under `wave-shared/reference/` — the loader contract reads *every* file in that directory (see `wave-shared/SKILL.md`, "Load every file under reference/"), so a `Convention 13` citation resolves for every back-half skill with **zero loader edits**. The Catalog section above lives here too, for the same reason: one place, reached by every citation, with zero loader edits when a row is appended.
-- **[`workflow-driver.md`](../../wave-start/reference/workflow-driver.md)** — the text dispatched agents actually receive, and therefore the site that matters most: the rule is a numbered policy clause in `workerBrief()`, a workspace-setup clause in `reviewerBrief()`, and — at its original site — `scribeBrief()`'s step 1, now stating the per-subcommand mechanism and citing this convention instead of carrying the whole rationale as an aside addressed to one role. Both `workerBrief()`'s policy clause 11 and `reviewerBrief()`'s Convention 13 paragraph now also point at the Catalog above by name, so a Worker or Reviewer facing a refusal that matches a cataloged shape finds what was actually verified to work — not merely "split it" — without re-deriving it mid-dispatch. `workerBrief()`'s Termination step 4 also stopped USING the refused shape: its `require_capture`-style guard is now the `if`-form Catalog entry 1 verified, not the `case`-form entry 1 names as refused.
+- **[`workflow-driver.md`](../../wave-start/reference/workflow-driver.md)** — the text dispatched agents actually receive, and therefore the site that matters most: the rule is a numbered policy clause in `workerBrief()`, a workspace-setup clause in `reviewerBrief()`, and — at its original site — `scribeBrief()`'s step 1, now stating the per-subcommand mechanism and citing this convention instead of carrying the whole rationale as an aside addressed to one role. Both `workerBrief()`'s policy clause 11 and `reviewerBrief()`'s Convention 13 paragraph now also point at the Catalog above by name, so a Worker or Reviewer facing a refusal that matches a cataloged shape finds what was actually verified to work — not merely "split it" — without re-deriving it mid-dispatch. `workerBrief()`'s Termination steps 3–4 also stopped USING the refused shapes: they no longer capture a PR URL into a shell variable at all — the create runs bare and a separate `host-pr status --branch` re-query confirms it (Catalog entry 1, station 4). The `if`-form that briefly stood there was station 2, and it is named in the arc as a dead end so it cannot be re-adopted as a fix.
 - **`workflow-driver.md`'s `ISSUES` row template** — the `depsSetup` example, which used to *teach* the fused `cd <depsDir> && <installCmd>` form to every Coordinator composing a wave, and now shows the flag-carrying form.
 
 ### Common Mistakes
@@ -182,6 +260,8 @@ Most tools have such a flag (`--prefix`, `-C`, `--root`, `--cwd`, `--project`, `
 - **Assuming a preceding `cd` survives into your next Bash call.** In a dispatched-agent thread it does not. Carry the directory in the command, or verify with `pwd`.
 - **Believing only `&&` counts.** The documented separator set is `&&`, `||`, `;`, `|`, `|&`, `&`, and newlines — a `;`-joined pair of steps is the same shape wearing different punctuation.
 - **Over-applying this to a single command's pipeline.** `… | jq -r '.url'` is one step. Splitting a genuine pipeline into two calls does not make it safer; it makes it broken.
+- **Assuming a refusal means fusion, and that unfusing fixes it.** Catalog entry 1's arc is three counter-examples in a row: a lone `case`/`esac`, a lone `if`-guard on a variable, and a same-call capture-plus-guard were all refused with nothing to unfuse. Read the entry before re-deriving a split.
+- **Handing a dispatched role a recipe that names a shell variable.** From an `isolation: 'worktree'` dispatch, any `$VAR` expansion is refused in any position — so the recipe cannot run, and the role is left to improvise the step it was supposed to follow exactly.
 
 ### Live occurrences (evidence)
 
@@ -189,4 +269,5 @@ Most tools have such a flag (`--prefix`, `-C`, `--root`, `--cwd`, `--project`, `
 - **Mechanism A, on our own allowlist.** The Scribe path is where this was first hit and first documented — a `cd "$REPO_ROOT"` fused onto the engine call that writes the sidecar, against a tracked allowlist that covers the engine call exactly. Same class as the KW-F6 sandbox footgun in [Convention 1](convention-01-auth-preflight.md), where `env -u GITHUB_TOKEN gh …` slips a `gh *` prefix rule because the command the matcher parses is not the one the rule names: a wrapper or a fused step in front of an allowlisted command is not covered by that command's entry.
 - **2026-07-30, this convention's own dispatch — the cwd-reset half.** `cd <worktree>/tools/wave` in one call, `npm ci`'s usage error in the next, `pwd` back at the worktree root in the third. Recorded because the obvious remedy for a fused command ("just split it") is incomplete on the exact path a Worker runs on, and an incomplete remedy is how a rule earns a reputation for not working.
 - **2026-07-30, wave `2026-07-30-arm-and-wiring`, coordinator disclosure `256.4` — mechanism B, three refusals, one wave; live-reproduced at issue #267's own dispatch.** The disclosure named three shapes (jq-piped capture with a case guard, heredoc spec append, heredoc commit message), each "correctly re-issued unfused." The Catalog above reports what live reproduction in this dispatch actually found: shape 1 is a categorical `case`/`esac` refusal, not fusion; shape 2 is narrower than fusion and only partly resolved; shape 3 confirmed as ordinary fusion. This is the occurrence the Catalog section exists to hold, and future refusals append there rather than growing this list.
+- **2026-07-31, issue #303's own dispatch — the capture-guard collision resolved, and three failed remedies recorded as an arc.** Convention 12 prescribed a compound capture guard; this convention documents that shape as refused; the two met inside one Worker-brief step, and the consequence was observed (two rows reporting `done` with an empty `prUrl` while their PRs existed). Catalog entry 1 now carries all four stations — `case`/`esac` refused, the two-call `if` form inert *and* refused, the one-call fusion refused, the host re-query working — each live-reproduced here rather than inferred, plus the probe series isolating the actual discriminator (a `$VAR` expansion, not fusion and not the control structure). The Coordinator's file-based substitute is recorded as a two-observer disagreement rather than folded into the prescription.
 - **2026-07-30, issue #305's own dispatch — Catalog entry 1's categorical claim scoped, and the Worker/Reviewer disagreement recorded.** Entry 1 asserted a bare `case`/`esac` guard is refused categorically, evidenced only by the entry-writing Worker's eight-for-eight; that row's own Reviewer had independently reproduced zero-for-three on the same three probe shapes, and the disagreement was never written down. Issue #305's Worker dispatch (`isolation: 'worktree'`) re-ran the same three shapes and got three-for-three refused, matching the original Worker. The two-observer disagreement plus a candidate discriminator (the `isolation: 'worktree'` dispatch option, set for the Worker's `agent()` call in `workflow-driver.md` and not for the Reviewer's) are now recorded in entry 1 itself, and the categorical claim is scoped to a `isolation: 'worktree'` dispatch rather than left unscoped. Issue #305's own Reviewer independently re-runs the same three probes as the second observer for this measurement; append its result to entry 1 rather than growing this list.
