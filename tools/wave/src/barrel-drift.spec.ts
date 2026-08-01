@@ -303,11 +303,6 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     flag: "Internal CLI argv-flag lookup (`--name value` extraction) for this engine's own verb parsers — not a consumer-facing API; a root-only consumer parses its own argv.",
     printJson: "Internal CLI stdout-JSON helper for this engine's own verb output — not a consumer-facing API.",
   },
-  './dor-gate': {
-    dirname:
-      "Accidental re-export of the node:path builtin dor-gate.ts imports for its own use (its own `export { resolve, dirname };` line) — not an engine surface. dor-gate.ts sits outside issue #376's declared Files scope, so the re-export itself is left in place there; only NOT propagated to the root barrel.",
-    resolve: 'Same as dirname above — accidental node:path re-export, not engine surface.',
-  },
 };
 
 // ─── the real check ────────────────────────────────────────────────────────
