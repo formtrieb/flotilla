@@ -1,8 +1,15 @@
 /**
  * verdict-to-event.ts — deterministic Reviewer-Verdict → WaveEvent adapter.
  *
- * Canonical spec: .scratch/wave-orchestration/issues/64-verdict-to-event-adapter.md
- * Audit source:   .scratch/wave-orchestration/autonomy-audit-2026-06-03.md §2 (G3)
+ * Provenance:     the verdict-to-event adapter slice, and the autonomy audit
+ *                 whose §2 finding G3 motivated it — both planned in the
+ *                 predecessor wave-orchestration system flotilla was seeded from.
+ *                 Named, not pathed: that system's planning tree (which these two
+ *                 lines used to cite as `Canonical spec` and `Audit source`) never
+ *                 existed in THIS repo and is in no published tarball, so the
+ *                 pointers resolved only where they were written. G3 itself is
+ *                 restated in full below, which is the whole of what they carried
+ *                 (`shipped-citation-guard.spec.ts`).
  *
  * The wave-loop's Reviewer-Subagent emits a 3-value Verdict
  * (`approve | changes-requested | questions-blocking`). The Stop-Condition

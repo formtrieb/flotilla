@@ -1,8 +1,15 @@
 /**
  * reviewer-verdict-schema.ts — typed, schema-validated Reviewer-Verdict contract.
  *
- * Canonical spec: .scratch/wave-orchestration/issues/61-wave-start-workflow-driver.md
- * PRD source:     .scratch/wave-orchestration/wave-start-workflow-migration-PRD.md (§Solution 2-3, US-4/5)
+ * Provenance:     the wave-start workflow-driver migration, planned in the
+ *                 predecessor wave-orchestration system flotilla was seeded from.
+ *                 Named, not pathed: that system's planning tree (its issue files
+ *                 and its migration PRD, which these two lines used to cite as
+ *                 `Canonical spec` and `PRD source`) never existed in THIS repo
+ *                 and is in no published tarball, so the pointers resolved only
+ *                 where they were written. The live specification is this module
+ *                 plus its spec; the rationale it carried is restated below
+ *                 (`shipped-citation-guard.spec.ts`).
  * Mirrors:        .claude/agents/wave-reviewer.md §"Output schema", restated at
  *                 dispatch time by `reviewerBrief()` in the wave-start skill's
  *                 workflow driver. Named, not pathed: the standalone

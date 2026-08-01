@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
  * documents that had been folded into their owning SKILL and mechanics documents
  * and existed under no spelling at all.
  *
- * ## Two rules, one subject: the artifact a consumer actually installs
+ * ## Four rules; rules 1–3 share one subject, the artifact a consumer installs
  *
  * 1. **No form-dependent path in the guard's REFUSAL OUTPUT** — checked by
  *    running the hook *out of a freshly packed tarball*, not out of the repo
@@ -40,6 +40,13 @@ import { tmpdir } from 'node:os';
  * 2. **No doc-comment in a shipped engine source citing a skill document that
  *    does not exist** — every such citation must resolve, or must not be a path
  *    at all.
+ * 3. **No LABELED HEADER POINTER in a shipped engine source aiming at a markdown
+ *    document that does not exist** — the same resolution demand as rule 2, over
+ *    a shape rule 2 structurally could not see (see below).
+ * 4. **A SPEC file is held to rules 2 and 3 as well** — the one rule here whose
+ *    subject is the maintainer-facing surface rather than the shipped one. It is
+ *    a decision this file records rather than a scope it inherited; the reasoning
+ *    is under "The spec-file question" below.
  *
  * Rule 2's second branch is deliberate and is where the fix for the three dead
  * citations went: the repair is to **name the subject** ("the Worker brief's
@@ -47,7 +54,72 @@ import { tmpdir } from 'node:os';
  * driver") rather than to re-spell the path. A citation with no path in it has
  * nothing for the extractor below to find, and that is the intended pass — the
  * same division of labour Convention 14's own guard draws: placement is
- * machine-checkable, compression is the author's.
+ * machine-checkable, compression is the author's. Rules 3 and 4 keep that branch
+ * unchanged, and the repairs made under them took it.
+ *
+ * ## Rule 3 — the shape rules 1 and 2 both walked past
+ *
+ * Rule 1 scopes itself to the refusal OUTPUT; rule 2 matches only a `.claude/…md`
+ * target. Between them sat a third shape, ten instances strong across five
+ * shipped modules: a module-header line of the form `<Label>: <path>.md` aiming
+ * at a **predecessor-system scratch tree** (`Canonical spec`, `PRD source`,
+ * `Audit source`, `Parent PRD`) or at an **agents-docs tree** (`Playbook`).
+ * Neither tree is in the tarball, neither is reachable by any consumer, and the
+ * scratch tree never existed in this repo at all — so those pointers were dead
+ * for every reader including this repo's own maintainers.
+ *
+ * The near-miss that proves the gap was structural rather than careless: the
+ * pass that landed rule 2 corrected a citation line in three of those five
+ * modules — the `Mirrors:` line in two of them, the `Canonical spec:` line in
+ * the third — and left the `PRD source` / `Playbook` / `Parent PRD` lines
+ * *directly beside them, in the same docstring* untouched, because rule 2
+ * matches a `.claude/…md` target and none of those had one.
+ *
+ * **The rule resolves rather than pattern-matching a tree.** A prefix table
+ * (".scratch/ and docs/agents/ are banned") would close exactly today's two
+ * trees and miss tomorrow's third; and it would wrongly fire on a pointer at a
+ * tree that is form-dependent but genuinely present for the reader who follows
+ * it. Asking "does this document exist" is the same question rule 2 asks, and it
+ * is the question that has no maintenance burden. Requiring a `.md` target is
+ * what keeps it honest in the other direction: a labeled line whose value is a
+ * module specifier (`Costs nothing at load time: ./cli`) or plain prose
+ * (`Escape a markdown-table cell: pipes/newlines`) is not a document pointer, and
+ * a rule that resolved those would be a false-positive machine.
+ *
+ * ## The spec-file question — DECIDED here, so nobody has to re-open it
+ *
+ * A dead citation was also found in a SPEC file's docstring
+ * (`stop-condition-state-machine.spec.ts`, pointing at a wave-start reference
+ * document that exists under no spelling). Spec files are excluded from the
+ * package's `files` manifest — correctly, since a consumer never receives one —
+ * which meant rules 1–3, all of which read the packed tarball, structurally
+ * could not see it, and no other check ever would either.
+ *
+ * **Decision: EXTEND the net (rule 4), rather than fix the one occurrence and
+ * move on.** Three things settled it:
+ *
+ * - *The rot is the same rot.* A spec docstring is the first thing a maintainer
+ *   or an agent reads before editing the module it guards. A dead pointer there
+ *   mis-teaches exactly as much as a shipped one; only the blast radius differs.
+ * - *The cost was measured, not assumed.* Applying rules 2 and 3 to every spec
+ *   file surfaced exactly one genuine dead pointer — the one above — plus this
+ *   file's OWN prose mentions of `.claude/loop.md`, and nothing else anywhere.
+ *   The surface was already clean; the rule is a ratchet, not a migration.
+ * - *The machinery already existed.* Rule 4 reuses both extractors verbatim.
+ *
+ * **The one exemption, and why it is not a hole being dug.** This file is
+ * exempt from rule 4, because a guard cannot be its own subject: its fixtures
+ * *plant* dead citations on purpose, and its prose must *name* the absent paths
+ * whose absence it asserts (`.claude/loop.md` is the live example — the whole
+ * point of the carve-out control is that this path does not exist). The
+ * exemption is one named file, and a control below pins that it stays one.
+ *
+ * **What rule 4 is NOT.** It does not read the tarball (spec files are not in
+ * it — asserted, not assumed, by the packing test below), and it does not
+ * inherit rule 1: a spec file emits nothing, so form-dependence is not its
+ * problem. `echo-guard.spec.ts`'s header names this repo's vendored path for the
+ * hook it spawns, and that is correct — it is a fact about the repo the reader
+ * of that file is standing in.
  *
  * ## Scope boundaries, stated so they are not read as oversights
  *
@@ -166,6 +238,107 @@ function extractSkillDocCitations(source: string): { path: string; line: number 
   });
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Rule 3 — labeled header pointers at a markdown document
+// ---------------------------------------------------------------------------
+
+/**
+ * A LABELED HEADER POINTER: a comment line that opens with a short `Label:` and
+ * continues straight into a repo-relative path ending in `.md`.
+ *
+ * Three constraints, each earning its place against a measured false positive:
+ *
+ * - **The label must be word-shaped** (letters, digits, spaces, hyphens — no
+ *   dots, no slashes, no brackets). That is what separates a pointer line
+ *   (`Playbook: …`) from ordinary prose that merely contains a colon, and from
+ *   a markdown link opener (`([ADR-0030](…))`) or a footnote fixture
+ *   (`[^tch-06]: …`), neither of which is a pointer this repo wrote as a
+ *   citation.
+ * - **The target must contain a slash**, so a bare filename mentioned in prose
+ *   is not mistaken for a repo-relative path.
+ * - **The target must end in `.md`.** Measured: without it the extractor
+ *   reports module specifiers (`./cli`) and plain prose (`pipes/newlines`) as
+ *   dead documents. A pointer at a *document* is the subject; anything else is
+ *   not this rule's business.
+ *
+ * An optional opening backtick is tolerated because several live pointers spell
+ * their target in code quotes.
+ */
+const HEADER_POINTER =
+  /^\s*(?:\/\*+|\*+|\/\/)\s*([A-Za-z][A-Za-z0-9 -]{0,40}?):\s+`?([A-Za-z0-9._][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)+\.md)\b/;
+
+/** Every labeled header pointer in `source`, with its 1-indexed line. */
+function extractHeaderPointers(source: string): { label: string; path: string; line: number }[] {
+  const out: { label: string; path: string; line: number }[] = [];
+  source.split('\n').forEach((line, index) => {
+    if (!isCommentLine(line)) return;
+    const m = HEADER_POINTER.exec(line);
+    if (m) out.push({ label: m[1], path: m[2], line: index + 1 });
+  });
+  return out;
+}
+
+/**
+ * The ten pointers this row removed, verbatim as they stood in the five shipped
+ * modules. They are the negative control that keeps rule 3 able to fail: if the
+ * extractor ever stops finding these, it has stopped finding anything.
+ */
+const REMOVED_HEADER_POINTERS: { module: string; line: string }[] = [
+  {
+    module: 'worker-report-schema.ts',
+    line: ' * Canonical spec: .scratch/wave-orchestration/issues/61-wave-start-workflow-driver.md',
+  },
+  {
+    module: 'worker-report-schema.ts',
+    line: ' * PRD source:     .scratch/wave-orchestration/wave-start-workflow-migration-PRD.md (§Solution 1, US-3)',
+  },
+  {
+    module: 'reviewer-verdict-schema.ts',
+    line: ' * Canonical spec: .scratch/wave-orchestration/issues/61-wave-start-workflow-driver.md',
+  },
+  {
+    module: 'reviewer-verdict-schema.ts',
+    line: ' * PRD source:     .scratch/wave-orchestration/wave-start-workflow-migration-PRD.md (§Solution 2-3, US-4/5)',
+  },
+  {
+    module: 'stop-condition-state-machine.ts',
+    line: ' * PRD source: .scratch/wave-orchestration/PRD.md §L1',
+  },
+  {
+    module: 'stop-condition-state-machine.ts',
+    line: ' * Playbook: docs/agents/wave-playbook.md §2 (Stop-Conditions)',
+  },
+  {
+    module: 'closed-by.ts',
+    line: ' * Canonical spec: .scratch/wave-orchestration/issues/55-closed-by-classifier.md',
+  },
+  {
+    module: 'closed-by.ts',
+    line: ' * Parent PRD:     .scratch/wave-orchestration/wave-close-skill-PRD.md (stories 21, 3, 4, 6)',
+  },
+  {
+    module: 'verdict-to-event.ts',
+    line: ' * Canonical spec: .scratch/wave-orchestration/issues/64-verdict-to-event-adapter.md',
+  },
+  {
+    module: 'verdict-to-event.ts',
+    line: ' * Audit source:   .scratch/wave-orchestration/autonomy-audit-2026-06-03.md §2 (G3)',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Rule 4 — the spec-file surface (the decided extension; see the header)
+// ---------------------------------------------------------------------------
+
+/**
+ * The one file exempt from rule 4, and the whole of the exemption.
+ *
+ * A guard cannot be its own subject: this file plants dead citations as
+ * fixtures and its prose has to NAME the absent paths whose absence it
+ * asserts. Everything else under `src/` is in scope.
+ */
+const RULE_4_EXEMPT_SPECS = ['shipped-citation-guard.spec.ts'];
 
 // ---------------------------------------------------------------------------
 // The packed artifact
@@ -419,5 +592,226 @@ describe('rule 2 — no shipped doc-comment cites a skill document that does not
     expect(extractSkillDocCitations(' * see .claude/loop.md\n').map((c) => c.path)).toEqual([
       '.claude/loop.md',
     ]);
+  });
+});
+
+describe('rule 3 — no shipped header pointer aims at a document that does not exist', () => {
+  it('every labeled header pointer in a shipped engine source resolves — the count is ZERO', () => {
+    const sources = walk(shippedRoot).filter((p) => SOURCE_EXTENSIONS.some((e) => p.endsWith(e)));
+    expect(sources.length).toBeGreaterThan(20);
+
+    const dead: string[] = [];
+    let checked = 0;
+    for (const rel of sources) {
+      const body = readFileSync(join(shippedRoot, rel), 'utf-8');
+      for (const { label, path, line } of extractHeaderPointers(body)) {
+        checked += 1;
+        if (!existsSync(join(REPO_ROOT, path))) dead.push(`${rel}:${line} [${label}] → ${path}`);
+      }
+    }
+
+    // The scan proves nothing if the extractor matched nothing at all: several
+    // pointers in shipped sources DO resolve (`Mirrors:` and `Source:` both
+    // aim at `.claude/agents/wave-reviewer.md`, which is real and maintained),
+    // and finding them is what shows the rule is still looking.
+    expect(checked).toBeGreaterThan(0);
+    expect(
+      dead,
+      'shipped header pointers aiming at a markdown document that exists under no ' +
+        'spelling. Ten of these were removed by the row that added this rule; the fix ' +
+        'is to NAME the subject, not to re-spell the path:\n' +
+        dead.join('\n'),
+    ).toEqual([]);
+  });
+
+  it.each(REMOVED_HEADER_POINTERS)(
+    'NEGATIVE CONTROL — the pointer removed from $module is still detected and still dead',
+    ({ line }) => {
+      const found = extractHeaderPointers(`/**\n${line}\n */\n`);
+      expect(found, `the extractor no longer sees: ${line}`).toHaveLength(1);
+      expect(existsSync(join(REPO_ROOT, found[0].path))).toBe(false);
+    },
+  );
+
+  it('NEGATIVE CONTROL — the removed set was exactly TEN, across five modules', () => {
+    // The count this row's acceptance criterion names, pinned so "zero now"
+    // cannot quietly become "zero because the extractor broke".
+    expect(REMOVED_HEADER_POINTERS).toHaveLength(10);
+    expect(new Set(REMOVED_HEADER_POINTERS.map((p) => p.module)).size).toBe(5);
+    // Every one of them aimed at a scratch tree or an agents-docs tree, and
+    // neither tree exists in this repo at all — which is what made them dead
+    // for every reader, not merely form-dependent for some.
+    for (const { line } of REMOVED_HEADER_POINTERS) {
+      expect(line).toMatch(/(?:\.scratch|docs\/agents)\//);
+    }
+    expect(existsSync(join(REPO_ROOT, '.scratch'))).toBe(false);
+    expect(existsSync(join(REPO_ROOT, 'docs/agents'))).toBe(false);
+  });
+
+  it('does NOT fire on the shapes that only look like a header pointer', () => {
+    // Each of these was measured as a false positive of a looser rule, and each
+    // is the reason for one of `HEADER_POINTER`'s three constraints.
+    expect(extractHeaderPointers(' * Costs the barrel nothing at load time: ./cli\n')).toEqual([]);
+    expect(extractHeaderPointers(' * Escape a markdown-table cell: pipes/newlines\n')).toEqual([]);
+    expect(extractHeaderPointers(' * ([ADR-0030](../../../docs/adr/0030-x.md))\n')).toEqual([]);
+    expect(extractHeaderPointers(' *   [^tch-06]: `.scratch/x/issues/06-e2e.md`\n')).toEqual([]);
+    // ...and a pointer that names its subject instead of pathing it — the
+    // intended repair, and the shape every one of the ten was rewritten into.
+    expect(
+      extractHeaderPointers(
+        " * Provenance: the wave-start workflow-driver migration, planned in the\n" +
+          " *             predecessor system flotilla was seeded from.\n",
+      ),
+    ).toEqual([]);
+  });
+
+  it('DOES fire on a live pointer shape that resolves — proving it reads real lines, not just fixtures', () => {
+    const real = ' * Mirrors:        .claude/agents/wave-reviewer.md §"Output schema", restated at\n';
+    const found = extractHeaderPointers(real);
+    expect(found.map((p) => p.path)).toEqual(['.claude/agents/wave-reviewer.md']);
+    expect(existsSync(join(REPO_ROOT, found[0].path))).toBe(true);
+  });
+});
+
+describe('rule 4 — a spec file is held to the same resolution rule (the DECIDED extension)', () => {
+  /** Every spec file under the package's `src/`, as package-relative paths. */
+  function specFiles(): string[] {
+    return walk(join(PACKAGE_ROOT, 'src'))
+      .map((rel) => `src/${rel}`)
+      .filter((rel) => rel.endsWith('.spec.ts'))
+      .filter((rel) => !RULE_4_EXEMPT_SPECS.some((name) => rel.endsWith(name)));
+  }
+
+  it('reads the REPO tree, not the tarball — spec files are not in the shipped artifact', () => {
+    // Rules 1-3 pack first, on purpose. Rule 4 cannot: its subject is excluded
+    // from the package's own `files` manifest. Stating that here keeps the
+    // difference a decision rather than an inconsistency someone later
+    // "corrects".
+    expect(walk(shippedRoot).some((p) => p.endsWith('.spec.ts'))).toBe(false);
+    expect(specFiles().length).toBeGreaterThan(20);
+  });
+
+  it('every skill-document citation in a spec doc-comment resolves', () => {
+    const dead: string[] = [];
+    for (const rel of specFiles()) {
+      const body = readFileSync(join(PACKAGE_ROOT, rel), 'utf-8');
+      for (const { path, line } of extractSkillDocCitations(body)) {
+        if (!existsSync(join(REPO_ROOT, path))) dead.push(`${rel}:${line} → ${path}`);
+      }
+    }
+    expect(
+      dead,
+      'spec doc-comments citing a document that exists under no spelling. A spec is ' +
+        'the first thing an editor of its module reads, which is why this rule exists ' +
+        "(see this file's \"The spec-file question\" note):\n" + dead.join('\n'),
+    ).toEqual([]);
+  });
+
+  it('every labeled header pointer in a spec doc-comment resolves', () => {
+    const dead: string[] = [];
+    for (const rel of specFiles()) {
+      const body = readFileSync(join(PACKAGE_ROOT, rel), 'utf-8');
+      for (const { label, path, line } of extractHeaderPointers(body)) {
+        if (!existsSync(join(REPO_ROOT, path))) dead.push(`${rel}:${line} [${label}] → ${path}`);
+      }
+    }
+    expect(dead, `dead header pointers in spec files:\n${dead.join('\n')}`).toEqual([]);
+  });
+
+  it('the reflexivity exemption is exactly ONE file, and it is this one', () => {
+    // The exemption is the only hole rule 4 has. Pinning its size is what keeps
+    // "exempt the file that fails" from becoming the way this rule is satisfied.
+    expect(RULE_4_EXEMPT_SPECS).toEqual(['shipped-citation-guard.spec.ts']);
+    expect(existsSync(join(PACKAGE_ROOT, 'src', RULE_4_EXEMPT_SPECS[0]))).toBe(true);
+    expect(specFiles().some((rel) => rel.endsWith(RULE_4_EXEMPT_SPECS[0]))).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL — a dead citation planted in a NON-exempt spec is found', () => {
+    // The exact occurrence this row repaired, as it stood in
+    // `stop-condition-state-machine.spec.ts`.
+    const planted =
+      '/**\n * Covers all 143 cells of the 11-state × 13-event matrix documented in\n' +
+      ' * .claude/skills/wave-start/references/stop-condition-handling.md §Fixture-matrix.\n */\n';
+    const found = extractSkillDocCitations(planted);
+    expect(found.map((c) => c.path)).toEqual([
+      '.claude/skills/wave-start/references/stop-condition-handling.md',
+    ]);
+    expect(existsSync(join(REPO_ROOT, found[0].path))).toBe(false);
+    // ...and the repaired spec no longer carries it, under either spelling.
+    const repaired = readFileSync(join(PACKAGE_ROOT, 'src/stop-condition-state-machine.spec.ts'), 'utf-8');
+    expect(repaired).not.toContain('stop-condition-handling.md');
+  });
+});
+
+describe('CARVE-OUT CONTROLS — the deliberate non-members stay out of every rule\'s reach', () => {
+  it('worktree-cleanup.ts\'s functional path constants are code, and no rule touches them', () => {
+    // These are DATA the sweep matches against — including `.claude/loop.md`, a
+    // harness-owned file that legitimately does not exist here. A naive
+    // path-resolution scan goes red on them; the comment-line classifier is the
+    // whole of what keeps them out, so this reads the REAL file rather than a
+    // synthetic sample of it.
+    const rel = 'src/worktree-cleanup.ts';
+    const body = readFileSync(join(PACKAGE_ROOT, rel), 'utf-8');
+    expect(body).toContain("'.claude/loop.md'");
+    expect(existsSync(join(REPO_ROOT, '.claude/loop.md'))).toBe(false);
+
+    for (const { path } of extractSkillDocCitations(body)) {
+      expect(existsSync(join(REPO_ROOT, path)), `${rel} cites ${path}`).toBe(true);
+    }
+    for (const { path } of extractHeaderPointers(body)) {
+      expect(existsSync(join(REPO_ROOT, path)), `${rel} points at ${path}`).toBe(true);
+    }
+  });
+
+  it('this file\'s own planted fixtures sit in CODE lines, invisible to both extractors', () => {
+    // The fixtures are deliberately dead paths. They must stay dead AND stay
+    // unreachable — if a future edit moved one into a doc-comment, the rules
+    // would start failing on the guard's own evidence.
+    const body = readFileSync(join(PACKAGE_ROOT, 'src/shipped-citation-guard.spec.ts'), 'utf-8');
+
+    // Planted for their DEADNESS — each is the target of a negative control
+    // that would stop meaning anything if the document came back.
+    const plantedDead = [
+      '.claude/skills/wave-shared/references/worker-brief-template.md',
+      '.scratch/wave-orchestration/PRD.md',
+    ];
+    // Planted for its FORM-DEPENDENCE, not its deadness: rule 1's regression
+    // fixture is the refusal's former last line, whose document is real and
+    // maintained. Asserting it exists is what keeps the two reasons distinct —
+    // a fixture that fails for the wrong reason teaches the wrong lesson.
+    const plantedLive = ['.claude/skills/wave-shared/reference/convention-08-secret-safe-briefs.md'];
+
+    for (const p of [...plantedDead, ...plantedLive]) {
+      expect(body, `fixture went missing: ${p}`).toContain(p);
+    }
+    for (const p of plantedDead) {
+      expect(existsSync(join(REPO_ROOT, p)), `fixture stopped being dead: ${p}`).toBe(false);
+    }
+    for (const p of plantedLive) {
+      expect(existsSync(join(REPO_ROOT, p)), `fixture stopped resolving: ${p}`).toBe(true);
+    }
+
+    const inComments = [
+      ...extractSkillDocCitations(body).map((c) => c.path),
+      ...extractHeaderPointers(body).map((c) => c.path),
+    ];
+    for (const p of [...plantedDead, ...plantedLive]) expect(inComments).not.toContain(p);
+  });
+
+  it('merge-order.spec.ts\'s conflict-map glob fixtures are fixtures, not citations', () => {
+    // That spec uses `.scratch/…` document names as conflict-map GLOB inputs.
+    // They are values under test, and they are reached by no rule here: rules
+    // 1-3 read the tarball (which holds no spec file) and rule 4's extractors
+    // read comment lines only.
+    const rel = 'src/merge-order.spec.ts';
+    const body = readFileSync(join(PACKAGE_ROOT, rel), 'utf-8');
+    expect(body).toContain('.scratch/wave-orchestration/issues/');
+    expect(walk(shippedRoot)).not.toContain('src/merge-order.spec.ts');
+    for (const { path } of extractSkillDocCitations(body)) {
+      expect(existsSync(join(REPO_ROOT, path)), `${rel} cites ${path}`).toBe(true);
+    }
+    for (const { path } of extractHeaderPointers(body)) {
+      expect(existsSync(join(REPO_ROOT, path)), `${rel} points at ${path}`).toBe(true);
+    }
   });
 });

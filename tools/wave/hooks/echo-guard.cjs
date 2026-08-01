@@ -237,8 +237,24 @@
  *
  * `.claude/settings.json` is agent-write-denied, so the wiring is an
  * operator-present step. An agent that pre-applies it has committed a defect.
- * Merge this `hooks` block into `.claude/settings.json` as a sibling of `env`
- * and `permissions`:
+ *
+ * **Two artifacts, both required** — a hooks block pointing at a script the repo
+ * does not have is worse than no block at all:
+ *
+ * 1. **This script, copied to a TRACKED path in the repo being wired**, namely
+ *    `.claude/hooks/echo-guard.cjs`. That destination is the fixed convention,
+ *    and it is deliberately NOT the installed package's own copy: `node_modules`
+ *    is gitignored, so a dispatched, worktree-isolated role — which checks out
+ *    tracked files only — would never see a script left there.
+ *
+ *    ```bash
+ *    mkdir -p .claude/hooks
+ *    cp node_modules/@formtrieb/flotilla-engine/hooks/echo-guard.cjs .claude/hooks/echo-guard.cjs
+ *    git add .claude/hooks/echo-guard.cjs
+ *    ```
+ *
+ * 2. **This `hooks` block**, merged into `.claude/settings.json` as a sibling of
+ *    `env` and `permissions`:
  *
  * ```json
  * "hooks": {
@@ -248,7 +264,7 @@
  *       "hooks": [
  *         {
  *           "type": "command",
- *           "command": "node \"$CLAUDE_PROJECT_DIR/tools/wave/hooks/echo-guard.cjs\""
+ *           "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/echo-guard.cjs\""
  *         }
  *       ]
  *     }
@@ -261,19 +277,51 @@
  *
  * ```bash
  * printf '%s' '{"tool_name":"Bash","tool_input":{"command":"printenv"}}' \
- *   | node tools/wave/hooks/echo-guard.cjs; echo "exit=$?"   # expect exit=2
+ *   | node .claude/hooks/echo-guard.cjs; echo "exit=$?"   # expect exit=2
  * ```
  *
- * ## STAGE-2 GATE — the consumer scaffold is NOT shipped by this slice
+ * **Why a `.claude/…` path belongs HERE and not in the refusal message.** The
+ * paths above are not a citation of flotilla's own tree — they name the READER'S
+ * OWN destination, the one their scaffold just created in their own repo, so
+ * they resolve wherever this file is read. The refusal message at the bottom of this
+ * module carries no path at all, for the opposite reason: what it would have to
+ * point at is doctrine, which lives somewhere different in each distribution
+ * form (see `rejectionMessage()`'s own note on why that pointer was dropped).
+ * A path that names the reader's repo travels; a path that names the author's
+ * does not.
  *
- * `wave-setup`'s tracked-settings scaffold gains the identical hooks block plus
- * a script copy for every consumer — unconditionally, like the deny anchors
- * (the vector is universal, no per-consumer judgment) — but **only after this
- * guard has survived one real flotilla wave with no false-positive incident**.
- * That is the FOR-81 / ADR-0029 live-gate pattern: dogfood first, scaffold
- * second. Until that gate is met, the block above stays a flotilla-local
- * operator step. The gate is restated in Convention 8 so the next wave planner
- * reads it where they already look.
+ * **flotilla's own repo is the one documented exception, not a second scaffold
+ * form.** Its engine is the vendored in-repo tree rather than an installed
+ * package, so artifact 1's copy is a no-op there and its own tracked settings
+ * point the hook at that vendored script instead. That exception — including the
+ * exact spelling its settings carry — is recorded in the `wave-setup` skill's
+ * setup-mechanics reference, alongside the scaffold it is an exception to. It is
+ * deliberately not respelled here, because this file is read from inside every
+ * consumer's repo too, where that spelling resolves to nothing.
+ *
+ * ## STAGE-2 GATE — MET; the consumer scaffold ships unconditionally
+ *
+ * This section used to say the opposite, and stayed behind after the fact
+ * changed. The gate it held open — "the scaffold rolls out only after this guard
+ * has survived one real flotilla wave with no false-positive incident", the
+ * ADR-0029 live-gate pattern of dogfood first, scaffold second — **is met**: a
+ * conventions-wiring wave ran 12 agents across 374 tool calls with zero
+ * Echo-Guard rejections and zero false positives, including two rows editing
+ * documentation that quotes the unsafe forms as prose (the one false-positive
+ * class Convention 8 names and budgets for).
+ *
+ * So `wave-setup`'s tracked-settings scaffold now writes BOTH artifacts above for
+ * **every** consumer, unconditionally, on the same footing as the
+ * `permissions.deny` anchors — the vector is universal and there is no
+ * per-consumer judgment left to exercise. The rollout steps, the live-gate
+ * evidence, and the version floor a consumer's copy must clear all live in the
+ * `wave-setup` skill's setup-mechanics reference; Convention 8 in `wave-shared`
+ * states the rule itself.
+ *
+ * Read that as landed, not as the vector being closed. The gate governs WHERE the
+ * speed bump sits, never WHAT it is: everything under "Honest scope" above holds
+ * unchanged, and the two vectors named there stay owned by the `permissions.deny`
+ * entries and the ADR-0029 Lookup-Command indirection.
  */
 
 // ---------------------------------------------------------------------------

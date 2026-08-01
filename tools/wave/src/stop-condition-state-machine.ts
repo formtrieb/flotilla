@@ -8,8 +8,15 @@
  *                 standalone stop-condition-handling document this line used to
  *                 cite was folded into those two homes and exists under no
  *                 spelling (`shipped-citation-guard.spec.ts`).
- * PRD source: .scratch/wave-orchestration/PRD.md §L1
- * Playbook: docs/agents/wave-playbook.md §2 (Stop-Conditions)
+ * Provenance: requirement L1 of the predecessor wave-orchestration system's PRD,
+ *             and §2 (Stop-Conditions) of that system's agent playbook. Named,
+ *             not pathed, for the same reason as the line above: neither document
+ *             exists in THIS repo under any spelling — the PRD lived in that
+ *             system's planning tree and the playbook under an agents-docs tree
+ *             this repo has never had — and neither is in any published tarball,
+ *             so both pointers resolved only where they were written. What they
+ *             carried is the transition table below, which supersedes them
+ *             (`shipped-citation-guard.spec.ts`).
  *
  * Usage:
  *   import { transition } from './stop-condition-state-machine';

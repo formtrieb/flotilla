@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -859,5 +860,98 @@ describe('echo-guard — the honest scope, asserted rather than assumed', () => 
     // anyone remembering the rule, and worth not overselling. If someone later
     // believes the guard closes the vector, this case says otherwise in one line.
     expectAllowed(runGuard('V=GITHUB_TOKEN; echo "${!V}"', CONFIGURED_ENV));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. The module's own OPERATOR BLOCK — the text a consumer pastes
+// ---------------------------------------------------------------------------
+
+/**
+ * The hook is not only executed by a consumer, it is READ by one: this module
+ * ships in the tarball, so its header docstring is consumer-facing text. Two
+ * failure modes had both landed there, and neither is reachable by running the
+ * guard — only by reading it.
+ *
+ * 1. **A path that resolved only in flotilla's own tree.** The paste-ready
+ *    `hooks` block and the verify line beneath it both named the vendored
+ *    engine's copy of the script. A consumer pasting that wires their session
+ *    to a file they do not have — the same class as the refusal message's dead
+ *    doctrine pointer, one level up, and outside the shipped-citation guard's
+ *    reach because that rule reads the refusal OUTPUT.
+ * 2. **A self-description that outlived its fact.** The stage-2 section said the
+ *    consumer scaffold was NOT shipped by its slice, while the setup-mechanics
+ *    reference recorded the gate as met and the scaffold as shipping
+ *    unconditionally. Two shipped artifacts contradicting each other about the
+ *    same distribution question.
+ *
+ * These assertions read BOTH documents and require them to agree. Reading only
+ * the hook would pin its wording; reading both is what makes drift on either
+ * side red, which is the property that was missing.
+ */
+describe('the shipped operator block reads true wherever it is read', () => {
+  const HOOK_SOURCE = readFileSync(GUARD, 'utf-8');
+  const SETUP_MECHANICS = readFileSync(
+    join(__dirname, '..', '..', '..', '.claude/skills/wave-setup/reference/setup-mechanics.md'),
+    'utf-8',
+  );
+
+  /** The consumer's own tracked destination — the fixed convention for the copy. */
+  const CONSUMER_DESTINATION = '.claude/hooks/echo-guard.cjs';
+  /** The vendored spelling, correct ONLY for this repo's documented exception. */
+  const SOURCE_FORM_PATH = 'tools/wave/hooks/echo-guard.cjs';
+
+  it('the paste-ready hooks block names the consumer destination', () => {
+    expect(HOOK_SOURCE).toContain(`"node \\"$CLAUDE_PROJECT_DIR/${CONSUMER_DESTINATION}\\""`);
+  });
+
+  it('the verify line beneath it names the same destination', () => {
+    expect(HOOK_SOURCE).toContain(`| node ${CONSUMER_DESTINATION}; echo "exit=$?"`);
+  });
+
+  it('the block stays USABLE — it also says how the script gets to that destination', () => {
+    // "Inoffensive" is not the bar: a hooks block pointing at a script the repo
+    // does not have is worse than no block at all, so the copy step ships with it.
+    expect(HOOK_SOURCE).toContain(
+      `cp node_modules/@formtrieb/flotilla-engine/hooks/echo-guard.cjs ${CONSUMER_DESTINATION}`,
+    );
+    expect(HOOK_SOURCE).toContain(`git add ${CONSUMER_DESTINATION}`);
+  });
+
+  it('no form-dependent spelling of the script survives in the shipped module', () => {
+    // The exception is RECORDED here (flotilla's own repo binds the vendored
+    // tree) but deliberately not RESPELLED here, because this file is read from
+    // inside every consumer's repo too.
+    expect(HOOK_SOURCE).not.toContain(SOURCE_FORM_PATH);
+    expect(HOOK_SOURCE).toContain("flotilla's own repo is the one documented exception");
+  });
+
+  it('the setup-mechanics reference carries that exception, with the spelling', () => {
+    // The claim above is only honest if the exception really is written down
+    // somewhere a scaffold author meets it.
+    expect(SETUP_MECHANICS).toContain('the one documented exception');
+    expect(SETUP_MECHANICS).toContain(SOURCE_FORM_PATH);
+  });
+
+  it('both documents agree that the consumer destination is the same one', () => {
+    expect(SETUP_MECHANICS).toContain(CONSUMER_DESTINATION);
+  });
+
+  it('the stage-2 self-description agrees with setup-mechanics: gate MET, scaffold unconditional', () => {
+    // Before this pass these two were in direct contradiction.
+    expect(HOOK_SOURCE).toContain('STAGE-2 GATE — MET');
+    expect(HOOK_SOURCE).not.toContain('the consumer scaffold is NOT shipped by this slice');
+    expect(HOOK_SOURCE).toMatch(/\*\*is met\*\*/);
+    expect(HOOK_SOURCE).toMatch(/\*\*every\*\* consumer, unconditionally/);
+
+    expect(SETUP_MECHANICS).toMatch(/stage-2 gate[^\n]*is \*\*met\*\*/i);
+    expect(SETUP_MECHANICS).toContain('ships **unconditionally, for every consumer**');
+  });
+
+  it('the gate being met is not read as the vector being closed', () => {
+    // Both documents carry the same caveat, and it is the load-bearing half:
+    // rollout widens WHERE the speed bump sits, never WHAT it is.
+    expect(HOOK_SOURCE).toContain('Read that as landed, not as the vector being closed');
+    expect(SETUP_MECHANICS).toContain('Read this as landed, not as the vector being closed');
   });
 });
