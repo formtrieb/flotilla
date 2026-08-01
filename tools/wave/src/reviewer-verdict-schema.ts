@@ -3,8 +3,12 @@
  *
  * Canonical spec: .scratch/wave-orchestration/issues/61-wave-start-workflow-driver.md
  * PRD source:     .scratch/wave-orchestration/wave-start-workflow-migration-PRD.md (§Solution 2-3, US-4/5)
- * Mirrors:        .claude/agents/wave-reviewer.md §"Output schema"
- *                 (synced copy: .claude/skills/wave-shared/references/reviewer-brief-template.md)
+ * Mirrors:        .claude/agents/wave-reviewer.md §"Output schema", restated at
+ *                 dispatch time by `reviewerBrief()` in the wave-start skill's
+ *                 workflow driver. Named, not pathed: the standalone
+ *                 reviewer-brief-template document this line used to cite as the
+ *                 synced copy was folded into that driver and exists under no
+ *                 spelling (`shipped-citation-guard.spec.ts`).
  *
  * The Wave-Reviewer subagent emitted its Verdict as free-text Markdown the
  * Coordinator chat re-read by eye to derive the routing event (G3: a forgotten
