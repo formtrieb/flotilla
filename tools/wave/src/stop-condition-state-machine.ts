@@ -1,7 +1,13 @@
 /**
  * Stop-Condition state-machine — pure transition function for `/wave start`.
  *
- * Canonical spec: .claude/skills/wave-start/references/stop-condition-handling.md
+ * Canonical spec: this module. The transition table below IS the specification —
+ *                 the skills consume it through the engine's `route-verdict` /
+ *                 `route-outcome` verbs (wave-shared's deterministic-routing
+ *                 convention) rather than restating it. Named, not pathed: the
+ *                 standalone stop-condition-handling document this line used to
+ *                 cite was folded into those two homes and exists under no
+ *                 spelling (`shipped-citation-guard.spec.ts`).
  * PRD source: .scratch/wave-orchestration/PRD.md §L1
  * Playbook: docs/agents/wave-playbook.md §2 (Stop-Conditions)
  *

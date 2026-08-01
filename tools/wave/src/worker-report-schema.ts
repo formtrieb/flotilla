@@ -3,7 +3,12 @@
  *
  * Canonical spec: .scratch/wave-orchestration/issues/61-wave-start-workflow-driver.md
  * PRD source:     .scratch/wave-orchestration/wave-start-workflow-migration-PRD.md (§Solution 1, US-3)
- * Mirrors:        .claude/skills/wave-shared/references/worker-brief-template.md §Block 5
+ * Mirrors:        the Worker brief's Report block — composed by `workerBrief()` in
+ *                 the wave-start skill's workflow driver. Named, not pathed: the
+ *                 standalone worker-brief-template document this line used to cite
+ *                 was folded into that driver and exists under no spelling, and the
+ *                 skills themselves sit wherever the reader's distribution form puts
+ *                 them (`shipped-citation-guard.spec.ts`).
  *
  * The prose loop parsed Block-5 free-text by eye — the documented fabrication
  * class (L18: a Worker reported `162/162` where the truth was `20/20`). The #61

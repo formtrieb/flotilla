@@ -838,9 +838,40 @@ function evaluateCommand(command, env) {
 }
 
 /**
- * The teaching rejection message: what fired, why it is a leak, and the two
- * sanctioned alternatives — a presence test for an ambient variable, and the
- * engine's value-free preflight probe for "can the credential be resolved?".
+ * The teaching rejection message — deliberately SELF-CONTAINED.
+ *
+ * Four things it must carry, each load-bearing rather than decorative: WHAT
+ * fired (the per-family findings), WHY that is a leak (tool output is a durable
+ * transcript, and the remedy afterwards is rotation), WHAT to do instead (the
+ * two sanctioned alternatives, plus the isolated-role rule saying a dispatched
+ * role runs neither), and the honest SCOPE (this matches the command TEXT before
+ * the command runs — it is not an anchor on the command's behavior, so passing
+ * is not proof of safety).
+ *
+ * ## Why there is no pointer to a doctrine document
+ *
+ * This message used to end on a path to the wave-shared Convention 8 reference
+ * document. That path resolves only in flotilla's own SOURCE form. Every
+ * consumer runs the INSTALLED form, where the skills live in the plugin clone
+ * and this script has been copied to the consumer's own hooks directory — so the
+ * pointer was dead at exactly the moment a consumer read it: their first
+ * refusal. Reported by the first installed-form 1.0.0 consumer within hours of
+ * that release.
+ *
+ * Two alternatives were considered and REJECTED. A form-neutral pointer (naming
+ * the convention plus the skill that holds it, instead of a path) and having the
+ * setup scaffold rewrite the path at copy time both keep a *pointing
+ * relationship* alive across a distribution boundary; the copy-time rewrite
+ * additionally makes the shipped script and the installed script differ, with
+ * nothing verifying the mutation. An emitted message is precisely the place
+ * where a citation should be provenance rather than navigation (Convention 14),
+ * so the rule's one-line why now sits inline, where the reader meets the rule.
+ * `Convention 8` and `ADR-0029` stay as NAMES — provenance tokens that are
+ * searchable in whichever form the reader is running — never as paths.
+ *
+ * Pinned by `../src/shipped-citation-guard.spec.ts`, which runs this script out
+ * of a freshly packed tarball and fails on any form-dependent path in the
+ * refusal output.
  *
  * @param {Violation[]} violations
  * @returns {string}
@@ -855,20 +886,30 @@ function rejectionMessage(violations) {
     '',
     'Why: tool output is not ephemeral — it is the session transcript on disk, long-lived',
     'and read by humans and downstream agents alike. A value that reaches stdout has left',
-    'containment, and the only remedy afterwards is rotating the credential.',
+    'containment, and the only remedy afterwards is rotating the credential. That binds',
+    'every role which produces tool output, including the one that composed the briefs.',
     '',
     'Sanctioned alternatives:',
-    '  - "is the ambient variable set?" — the ONE sanctioned presence test:',
+    '  - "is the ambient variable set?" — the ONE sanctioned presence test. There is no',
+    '    second sanctioned form, and no "just for diagnostics" exemption:',
     '        [ -n "$VAR" ] && echo set',
     '  - "can the credential actually be resolved?" — the engine\'s value-free preflight',
     '    probe, never a hand-run lookup:',
     '        flotilla-engine credential-probe --all',
-    '    (wave-start step 4 / wave-close phase 2. ADR-0029: a configured <VAR>_CMD',
-    '     Lookup-Command\'s stdout IS the secret, so no role runs it outside the engine.)',
+    '    (ADR-0029: a configured <VAR>_CMD Lookup-Command\'s stdout IS the secret, so no',
+    '     role runs it outside the engine. It runs at the wave auth preflight — once,',
+    '     up front, before any row is dispatched.)',
+    '  - A dispatched, worktree-isolated role runs NEITHER of those. That preflight',
+    '    already proved every configured credential resolves, before dispatch and from',
+    '    the strictly more authoritative vantage point. If one dies mid-slice, the engine',
+    '    call that needed it returns a typed error — report that and stop; a probe run',
+    '    seconds earlier cannot out-run the failure and proves nothing about it.',
     '',
-    'Full doctrine: .claude/skills/wave-shared/reference/convention-08-secret-safe-briefs.md',
-    'Scope note: this guard is a speed bump over the command TEXT, not an anchor — it does',
-    'not see indirect expansion. Passing it is not proof that a command is safe.',
+    'Scope note: this guard matches the COMMAND TEXT before the command runs. It never sees',
+    'what the command would output, so it is a speed bump rather than the anchor: indirect',
+    'expansion and deliberate string assembly walk straight past it, and passing it is NOT',
+    'proof that a command is safe. The anchors are the tracked permissions.deny entries and',
+    'the ADR-0029 Lookup-Command indirection.',
     '',
   ].join('\n');
 }

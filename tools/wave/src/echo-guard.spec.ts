@@ -25,10 +25,21 @@ import { join } from 'node:path';
  * ## What a "reject" case asserts
  *
  * Exit code 2 (the blocking channel) AND the teaching message: it names
- * Convention 8, and it names both sanctioned alternatives — the value-free
- * presence test and the engine's value-free preflight probe. A guard that
- * blocks without teaching just moves the failure; a role that is told "no" and
- * not told "instead, this" reaches for the next unsafe form.
+ * Convention 8, it names both sanctioned alternatives — the value-free presence
+ * test and the engine's value-free preflight probe — and it names the
+ * isolated-role rule that says a dispatched role runs neither of them. A guard
+ * that blocks without teaching just moves the failure; a role that is told "no"
+ * and not told "instead, this" reaches for the next unsafe form.
+ *
+ * It also asserts a NEGATIVE, on every blocked case: the message carries no
+ * `.claude/` path. The refusal is emitted text that ships verbatim to every
+ * consumer, and a consumer runs the INSTALLED form — their skills live in the
+ * plugin clone, so a `.claude/skills/…` pointer is dead at the one moment they
+ * read it. The message therefore carries the rule's why inline instead of
+ * pointing at a document (Convention 14). `shipped-citation-guard.spec.ts` runs
+ * the same rule against a freshly packed tarball; this helper is the per-case
+ * ratchet underneath it, so no individual family's detail string can reintroduce
+ * the class without a red test.
  *
  * ## Scope, restated so it is not overread
  *
@@ -94,8 +105,21 @@ function expectBlocked(result: GuardResult): void {
   // Both sanctioned alternatives, every time — the teaching part of the message.
   expect(result.stderr).toContain('[ -n "$VAR" ] && echo set');
   expect(result.stderr).toContain('credential-probe');
-  // And the honest-scope note, so nobody reads a pass as a safety proof.
+  // The isolated-role rule: neither alternative above is a dispatched Worker's or
+  // Reviewer's to run. That is the branch most roles meeting this message are on,
+  // and since the doctrine pointer was dropped the message has to carry it itself.
+  expect(result.stderr).toContain('worktree-isolated role runs NEITHER');
+  // And the honest-scope note, so nobody reads a pass as a safety proof: what the
+  // guard matches is the command TEXT, not the command's behavior.
   expect(result.stderr).toContain('speed bump');
+  expect(result.stderr).toContain('COMMAND TEXT');
+  // No path that resolves only in flotilla's own source form. This runs on EVERY
+  // blocked case in the suite, so the class cannot creep back in through one
+  // family's detail string — the shipped script's refusal travels verbatim to a
+  // consumer whose skills live in a plugin clone, not under their `.claude/`.
+  // `shipped-citation-guard.spec.ts` owns the same rule against the packed
+  // tarball; this is the cheap per-case ratchet beneath it.
+  expect(result.stderr).not.toContain('.claude/');
 }
 
 function expectAllowed(result: GuardResult): void {
