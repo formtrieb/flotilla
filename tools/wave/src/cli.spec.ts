@@ -69,6 +69,16 @@ import {
   // this file never restates the wording the engine owns.
   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES,
   checkCommandLineSizeAdvisory,
+  // The PER-STRING term's threshold (issue #340), surfaced on the CLI JSON by
+  // issue #377. Same rule again: the constant is IMPORTED so the router-level
+  // expectation is derived from the engine's own budget and can never drift
+  // away from it by being retyped here.
+  MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
+  // The Scribe scratch directory's own path constant (issue #355), imported so
+  // the issue-#377 fixture below plants its payloads where the ENGINE looks
+  // rather than where this spec believes the engine looks — a transcribed
+  // `.flotilla/tmp` would keep passing after the constant moved.
+  SCRIBE_SCRATCH_RELATIVE_DIR,
 } from './worktree-cleanup';
 
 // Mock node:child_process so files-drift integration tests can control the
@@ -1599,6 +1609,220 @@ describe('worktree-cleanup subcommand — --orphans sweep (FOR-67)', () => {
   });
 });
 
+// ─── Form 8b-bis: worktree-cleanup — --dry-run previews the SCRIBE SCRATCH
+//             population from the plan the real run executes (issue #377) ─────
+//
+// The gap: the --dry-run branch built its `orphans` object out of the orphan
+// DIRECTORY plan's fields and returned before any execute — while the Scribe
+// scratch sweep (issue #355) was reachable only from INSIDE executeOrphanSweep,
+// through the one-shot `sweepScribeScratch`, which lists, plans and removes in
+// a single opaque call. So `--orphans --dry-run` was SILENT on `.flotilla/tmp`
+// — never "clean", because it had not looked — and the engine's own
+// preview-and-run-share-one-plan discipline, which the detached sweep (Form 8h)
+// and the orphan-BRANCH sweep (Form 8c-bis) both hold, was not met here.
+//
+// Same fixture rules as Form 8b above: `execFileSync` is mocked to '' so `git
+// worktree list` is empty and no other population interferes, and node:fs is
+// NOT mocked — every removal and every survival asserted below is a real
+// on-disk fact. The scratch sweep touches only plain files, so the mocked git
+// surface is irrelevant to it by construction.
+
+describe('worktree-cleanup subcommand — --dry-run previews the Scribe scratch sweep from the plan the real run executes (issue #377)', () => {
+  const repos: string[] = [];
+
+  /** The scratch half of the `orphans` key, on either output shape. */
+  type ScratchJson = {
+    dir: string;
+    present: boolean;
+    selected?: Array<{ path: string }>;
+    removed?: Array<{ path: string }>;
+    skipped: Array<{ path: string; reason?: string }>;
+    errors?: unknown[];
+  };
+
+  function parseScratch(): ScratchJson {
+    expect(stdoutBuf, `stderr was: ${stderrBuf}`).not.toBe('');
+    const parsed = JSON.parse(stdoutBuf) as { orphans?: { scratch?: ScratchJson } };
+    const scratch = parsed.orphans?.scratch;
+    expect(scratch, 'orphans.scratch missing from the CLI JSON').toBeDefined();
+    return scratch as ScratchJson;
+  }
+
+  /**
+   * A repo whose Scribe scratch directory is created at the path the ENGINE
+   * constant names. `create: false` leaves the directory absent entirely — the
+   * "did not look vs looked and found nothing" case.
+   */
+  function makeRepo(prefix: string, create = true): { repo: string; dir: string } {
+    const repo = mkdtempSync(join(tmpdir(), prefix));
+    repos.push(repo);
+    const dir = join(repo, SCRIBE_SCRATCH_RELATIVE_DIR);
+    if (create) mkdirSync(dir, { recursive: true });
+    return { repo, dir };
+  }
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+  });
+
+  afterEach(() => {
+    while (repos.length > 0) {
+      const dir = repos.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  it('--orphans --dry-run names the payload files under orphans.scratch and removes NOTHING', () => {
+    const { repo, dir } = makeRepo('wave-cli-377-preview-');
+    // Both payload kinds the Scribe driver emits, plus a file a human parked in
+    // the same directory — reported, never removed.
+    const report = join(dir, 'report-377-1.json');
+    const verdict = join(dir, 'verdict-377-2.json');
+    const foreign = join(dir, 'notes.md');
+    writeFileSync(report, '{}', 'utf-8');
+    writeFileSync(verdict, '{}', 'utf-8');
+    writeFileSync(foreign, 'human parked this here', 'utf-8');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run'])).toBe(0);
+    const scratch = parseScratch();
+
+    expect(scratch.dir).toBe(dir);
+    expect(scratch.present).toBe(true);
+    expect((scratch.selected ?? []).map((e) => e.path).sort()).toEqual(
+      [report, verdict].sort(),
+    );
+    expect(scratch.skipped.map((e) => e.path)).toEqual([foreign]);
+    expect(scratch.skipped[0].reason).toBe('not-a-scribe-payload');
+
+    // Dry-run: nothing was removed from disk.
+    expect(existsSync(report)).toBe(true);
+    expect(existsSync(verdict)).toBe(true);
+    expect(existsSync(foreign)).toBe(true);
+  });
+
+  it('the real run removes EXACTLY what the preview selected — one plan, derived expectation', () => {
+    const { repo, dir } = makeRepo('wave-cli-377-parity-');
+    const report = join(dir, 'report-377-1.json');
+    const foreign = join(dir, 'notes.md');
+    writeFileSync(report, '{}', 'utf-8');
+    writeFileSync(foreign, 'human parked this here', 'utf-8');
+
+    // 1. Preview.
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run'])).toBe(0);
+    const preview = parseScratch();
+    const previewSelected = (preview.selected ?? []).map((e) => e.path).sort();
+    const previewSkipped = new Map(preview.skipped.map((e) => [e.path, e.reason]));
+
+    // 2. The same invocation without --dry-run — two separate `main()` calls,
+    //    exactly like an operator's two separate CLI invocations.
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', repo, '--orphans'])).toBe(0);
+    const run = parseScratch();
+
+    // THE parity assertion: the removed set is the previewed set, read OFF the
+    // preview rather than transcribed here.
+    expect((run.removed ?? []).map((e) => e.path).sort()).toEqual(previewSelected);
+    expect(new Map(run.skipped.map((e) => [e.path, e.reason]))).toEqual(
+      previewSkipped,
+    );
+    // Sanity on the fixture, so the parity above cannot be vacuous.
+    expect(previewSelected).toEqual([report]);
+    expect(previewSkipped.get(foreign)).toBe('not-a-scribe-payload');
+
+    // The two assertions above are also this block's DOUBLE-SWEEP guard, and
+    // that is not theoretical: restoring `repoRoot` to the `executeOrphanSweep`
+    // call re-enables the engine's internal one-shot fold alongside the explicit
+    // plan-then-execute pair, and it was observed failing exactly here —
+    // `removed: []` against a preview that named one payload, because the
+    // engine's pass deleted the file first. The empty `errors` list below is the
+    // same guard read from the other side: the explicit pass then throws ENOENT
+    // removing a file that is already gone, i.e. reports a failure for a removal
+    // that in fact succeeded.
+    expect(run.errors).toEqual([]);
+    expect(existsSync(report)).toBe(false); // actually removed
+    expect(existsSync(foreign)).toBe(true); // never touched
+  });
+
+  it('a preview reporting NOTHING selected is followed by a real run that removes nothing', () => {
+    // The acceptance criterion in its own right, and the shape the disclosure
+    // called out: a dry run that reports an empty selection must be a promise
+    // the run keeps, not a coincidence. Here the directory exists and holds only
+    // entries the allowlist refuses — a file that is not a payload, and a
+    // subdirectory, which is never descended into.
+    const { repo, dir } = makeRepo('wave-cli-377-empty-selection-');
+    const foreign = join(dir, 'human-notes.txt');
+    const nested = join(dir, 'a-subdirectory');
+    writeFileSync(foreign, 'keep me', 'utf-8');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'report-377-1.json'), '{}', 'utf-8');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run'])).toBe(0);
+    const preview = parseScratch();
+    expect(preview.present).toBe(true);
+    expect(preview.selected ?? []).toEqual([]);
+    expect(preview.skipped.map((e) => e.path).sort()).toEqual(
+      [foreign, nested].sort(),
+    );
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', repo, '--orphans'])).toBe(0);
+    const run = parseScratch();
+    expect(run.removed ?? []).toEqual([]);
+    expect(run.errors).toEqual([]);
+    // Nothing was removed, including the payload-NAMED file one level down: the
+    // sweep is never recursive, so a nested name cannot be reached.
+    expect(existsSync(foreign)).toBe(true);
+    expect(existsSync(join(nested, 'report-377-1.json'))).toBe(true);
+  });
+
+  it('an ABSENT scratch directory previews as `present: false`, not as an empty sweep', () => {
+    // The distinction the engine's `present` flag exists for, carried into the
+    // preview: "did not look" and "looked and found nothing" must not read the
+    // same. Before this slice the dry run could report neither.
+    const { repo, dir } = makeRepo('wave-cli-377-absent-', false);
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run'])).toBe(0);
+    const preview = parseScratch();
+    expect(preview.dir).toBe(dir);
+    expect(preview.present).toBe(false);
+    expect(preview.selected ?? []).toEqual([]);
+    expect(preview.skipped).toEqual([]);
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', repo, '--orphans'])).toBe(0);
+    const run = parseScratch();
+    expect(run.present).toBe(false);
+    expect(run.removed ?? []).toEqual([]);
+    expect(run.errors).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — without --orphans neither shape carries the scratch sweep, and the payload survives a REAL run', () => {
+    // Proves the flag is what reaches this sweep, and that nothing about the
+    // preview widened the population a bare `worktree-cleanup` touches.
+    const { repo, dir } = makeRepo('wave-cli-377-noorphans-');
+    const report = join(dir, 'report-377-1.json');
+    writeFileSync(report, '{}', 'utf-8');
+
+    expect(main(['worktree-cleanup', repo, '--dry-run'])).toBe(0);
+    expect('orphans' in (JSON.parse(stdoutBuf) as Record<string, unknown>)).toBe(
+      false,
+    );
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', repo])).toBe(0);
+    expect('orphans' in (JSON.parse(stdoutBuf) as Record<string, unknown>)).toBe(
+      false,
+    );
+    expect(existsSync(report)).toBe(true);
+  });
+});
+
 // ─── Form 8f: worktree-cleanup — the branch-scoping flag FAILS CLOSED and
 //             reads the spine through the real reader (issue #141) ────────────
 //
@@ -2293,6 +2517,10 @@ describe('worktree-cleanup --detached — CLI wiring + dry-run parity (issues #2
       argCount: number;
       envCount: number;
       threshold: number;
+      // The PER-STRING pair (issue #377) — the sibling of bytes/threshold for
+      // execve's other independent E2BIG condition.
+      maxEntryBytes: number;
+      maxEntryThreshold: number;
       level: string;
       advisory: string | null;
     };
@@ -2614,6 +2842,139 @@ describe('worktree-cleanup --detached — CLI wiring + dry-run parity (issues #2
     expect(stdoutBuf).not.toContain(BIG_ENV_KEY);
     expect(stdoutBuf).not.toContain('zzzzzzzzzz');
     expect(parse().commandLine.level).toBe('advisory');
+  });
+
+  // ─── the PER-STRING term's two NUMBERS reach the JSON too (issue #377) ─────
+  //
+  // execve documents E2BIG on TWO independent conditions and the engine models
+  // both (issue #340) — but this CLI printed only one of them in numbers. The
+  // per-string VERDICT did reach an operator, folded into `level` and stated in
+  // the verbatim `advisory` prose; `maxEntryBytes` and `maxEntryThreshold`, the
+  // two numbers a MACHINE reader needs to act on that verdict, were not
+  // readable from this JSON at all. That is the same "ships the correction's
+  // premise, withholds the correction" shape issue #357 closed one layer up at
+  // the package root, recurring at the boundary a skill actually parses.
+
+  /**
+   * Plant a single entry over the PER-STRING budget but far under the TOTAL —
+   * the one shape a total-only reader calls clear. Sized from the engine's own
+   * constant, so this fixture cannot drift away from the budget it probes.
+   */
+  function withOversizedSingleEntry<T>(body: () => T): T {
+    process.env[BIG_ENV_KEY] = 'q'.repeat(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES + 1,
+    );
+    try {
+      return body();
+    } finally {
+      delete process.env[BIG_ENV_KEY];
+    }
+  }
+
+  it('maxEntryBytes and maxEntryThreshold ride BOTH output shapes, carrying the ENGINE numbers', () => {
+    const mainRoot = makeRepo('cmdline-perstring-shape');
+
+    expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    const preview = parse();
+    expect(preview.commandLine.maxEntryThreshold).toBe(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
+    );
+    // DERIVED from the engine in the same process/env rather than transcribed:
+    // this boundary's job is transport, and this is the assertion that fails the
+    // day it becomes arithmetic of its own.
+    expect(preview.commandLine.maxEntryBytes).toBe(
+      checkCommandLineSizeAdvisory().maxEntryBytes,
+    );
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', mainRoot])).toBe(0);
+    // Unconditional — no flag to remember, and present on the real-run shape too.
+    expect(parse().commandLine.maxEntryThreshold).toBe(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
+    );
+  });
+
+  it('the addition is PURELY ADDITIVE — the key set grows by exactly two names and nothing is re-pointed', () => {
+    const mainRoot = makeRepo('cmdline-perstring-additive');
+    expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    const { commandLine } = parse();
+
+    // ENUMERATION: the pre-#377 key set plus exactly the two per-string names.
+    // A rename anywhere in the object fails here, and so does a third field
+    // riding along unnoticed on a surface consumers already read.
+    expect(Object.keys(commandLine).sort()).toEqual([
+      'advisory',
+      'argCount',
+      'argvBytes',
+      'bytes',
+      'envBytes',
+      'envCount',
+      'level',
+      'maxEntryBytes',
+      'maxEntryThreshold',
+      'threshold',
+    ]);
+
+    // MEANING: `bytes` is still the TOTAL and `threshold` still the TOTAL
+    // budget — neither was quietly re-pointed at the per-string term.
+    expect(commandLine.bytes).toBe(
+      commandLine.argvBytes + commandLine.envBytes,
+    );
+    expect(commandLine.threshold).toBe(COMMAND_LINE_ADVISORY_THRESHOLD_BYTES);
+    // TYPE: both additions are numbers, not prose (the form the verdict already
+    // had, and the one that made it unreadable to a machine).
+    expect(typeof commandLine.maxEntryBytes).toBe('number');
+    expect(typeof commandLine.maxEntryThreshold).toBe('number');
+    // Two DISTINCT budgets, not one number under two names — the single way a
+    // per-string "addition" could be present and still useless.
+    expect(commandLine.maxEntryThreshold).not.toBe(commandLine.threshold);
+    // A single entry can never exceed the total it is counted into.
+    expect(commandLine.maxEntryBytes).toBeLessThanOrEqual(commandLine.bytes);
+  });
+
+  it('THE per-string proof at the CLI boundary: the numbers say WHY a total-clean spawn reads advisory', () => {
+    const mainRoot = makeRepo('cmdline-perstring-fires');
+
+    const parsed = withOversizedSingleEntry(() => {
+      expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+      const json = parse();
+      // Derived from the engine IN THE SAME process/env, so the CLI can never
+      // paraphrase or recompute the number the engine owns.
+      expect(json.commandLine.maxEntryBytes).toBe(
+        checkCommandLineSizeAdvisory().maxEntryBytes,
+      );
+      return json;
+    });
+
+    // The TOTAL really is under budget — without this the story would prove
+    // nothing the total term did not already catch.
+    expect(parsed.commandLine.bytes).toBeLessThan(parsed.commandLine.threshold);
+    // ...and the spawn is over the OTHER budget, which is now readable as two
+    // numbers instead of only as level-plus-prose.
+    expect(parsed.commandLine.maxEntryBytes).toBeGreaterThan(
+      parsed.commandLine.maxEntryThreshold,
+    );
+    expect(parsed.commandLine.level).toBe('advisory');
+    // The population this verb actually sweeps is pristine — the same two-term
+    // proof the total case makes, for the condition sweeping cannot move either.
+    expect(parsed.worktreeCount.level).toBe('ok');
+    // The prose still names the condition; the point is that it is no longer the
+    // ONLY place the per-string term is stated.
+    expect(parsed.commandLine.advisory).toContain('MAX_ARG_STRLEN');
+  });
+
+  it('SECRET-SAFE — the per-string numbers name no argument and no variable either', () => {
+    const mainRoot = makeRepo('cmdline-perstring-secret-safe');
+    withOversizedSingleEntry(() => {
+      expect(main(['worktree-cleanup', '--dry-run', mainRoot])).toBe(0);
+    });
+    // The whole stdout buffer: `maxEntryBytes` is derived from the LARGEST
+    // entry, which is exactly the entry most tempting to name in a report.
+    expect(stdoutBuf).not.toContain(BIG_ENV_KEY);
+    expect(stdoutBuf).not.toContain('qqqqqqqqqq');
+    expect(parse().commandLine.maxEntryBytes).toBeGreaterThan(
+      MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES,
+    );
   });
 });
 
