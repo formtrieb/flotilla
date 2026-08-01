@@ -68,7 +68,7 @@ Most of it comes from the first external consumer's field reports.
   map, because the second piece does not exist at check time. That is the edge of the
   promise, not a defect.
 
-### Not yet proven
+### Not yet proven at release — since verified
 
 - **The consumer-facing hop of the guard fix has been simulated, not observed.** During
   review it was exercised end to end by packing the engine, installing it into a
@@ -77,6 +77,17 @@ Most of it comes from the first external consumer's field reports.
   through a **published** install of this version: fetching 1.0.1 from the registry into
   a real consumer repository and reading the message there. That check belongs to a human
   after this release is published.
+
+  **Verified 2026-08-01, after the publish.** That exact path was run against the
+  published artifact — `npm install` of `1.0.1` from the registry into a throwaway
+  repository, then the shipped header's own copy and verify lines verbatim: the guard
+  refused with exit 2, and every path the shipped docstring names resolves in that
+  repository. The same run against `1.0.0` reproduced the defect this release fixes and
+  surfaced one more instance of it than was known: `1.0.0`'s refusal message ended by
+  citing a doctrine file under `.claude/skills/`, a tree the tarball does not ship at
+  all — a dead pointer in the one place a consumer meets this text at runtime rather
+  than by reading a file. Both versions refuse identically, so the fix was legibility
+  only, exactly as claimed. Recorded in full on issue #397.
 
 ## [1.0.0] — 2026-07-31
 
