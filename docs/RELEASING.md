@@ -75,6 +75,33 @@ before doing anything else.** Do not tag first and discover this afterwards.
    `npm publish` succeeding; `npm view @formtrieb/flotilla-engine versions` should show
    the new version, and the release should carry a provenance attestation.
 
+7. **Close what the release resolved — nothing else will.** An issue whose fix reaches a
+   consumer only by being published is resolved *by this release*, not by any pull
+   request, and that is the one shape the close machinery does not handle on its own:
+
+   ```bash
+   # The engine call is this repo's own `engine.cli` binding, verbatim — releasing
+   # flotilla happens here, in the source form, so it is not `flotilla-engine`.
+   # Run it from the repo root with --config; from .flotilla/ the github store
+   # resolves owner/repo off the wrong cwd remote.
+   ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts \
+     issue-store close <id> <bump-PR-url> --config .flotilla/wave.config.json
+   gh issue close <id> --reason completed   # the state flip — do not skip
+   ```
+
+   The first command is deliberately not a native close (ADR-0005: for a wave row the
+   merged PR's `Closes #N` does that job, and closing early would drop the claim while
+   the merge is still in flight). A release-bump PR names no issues, so for these the
+   flip has no other actor: the command exits 0, writes `Closed-by:`, and leaves the
+   issue **open**. It looks like it worked. Twice now it did not — #339 at 1.0.0 and
+   #397 at 1.0.1, both rescued by hand afterwards, which is why this step is written
+   down. Afterwards `issue-store read-closing <id>` reads `closed-unknown`; that is the
+   correct answer for an issue no PR references, not a defect.
+
+   If the release resolves an issue that also wants a verification hop in a real
+   consumer repo — anything the CHANGELOG listed as not yet proven — run it before
+   closing, and record the evidence on the issue.
+
 ## If step 5 fails
 
 Publishing the Release is what fires the workflow, and the workflow can fail in three
