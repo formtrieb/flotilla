@@ -1340,3 +1340,142 @@ describe('skill-reference-guard — class (d): Convention 14 citation placement 
     ).toEqual(['narrative', 'trailing-pointer']);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wave-plan currency — two flags must keep stating what they DERIVE
+//
+// Both assertions below pin prose that a consumer field report paid for. They
+// are currency assertions in the same family as the ones above: the risk is not
+// that the wording is wrong today, but that a later edit quietly restores the
+// claim the fix retired, and nothing else in the suite would notice — these are
+// skill DOCS, so vitest and tsc pass over them trivially.
+//
+// (1) The PRD panel's flag derives "this PRD has no OPEN slices". It cannot
+//     derive "never sliced": a closed slice leaves the candidate set carrying
+//     its `parent` backlink with it, so a fully-shipped PRD and a never-sliced
+//     one render identically, and the false-positive rate GROWS with repo
+//     history. Live: the first external 1.0.0 consumer's panel flagged six of
+//     seven PRDs, all six fully shipped; the retired wording's prescribed
+//     action would have re-sliced six finished planning documents.
+//
+// (2) `blockedBy` is `'none' | IssueRef[]`, and `'none'.length === 4` — so a
+//     bare `.length` reports FOUR blockers for a row that has none, beside a
+//     genuine count that makes the table look consistent. Types do not catch
+//     it (`.length` is valid on both members); the skill layer reads the field
+//     as CLI JSON anyway. Live: a consumer published that table to its operator.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('skill-reference-guard — wave-plan currency: derived flags state what they derive', () => {
+  const SKILL = '.claude/skills/wave-plan/SKILL.md';
+  const MECHANICS = '.claude/skills/wave-plan/reference/plan-mechanics.md';
+
+  /** The retired claim, in the two spellings the fix removed. */
+  const claimsNeverSliced = (body: string): boolean =>
+    /An un-consumed PRD has no slices yet/.test(body) ||
+    /consumed\(prd\)\s*=/.test(body) ||
+    /flag the un-consumed ones/.test(body);
+
+  /**
+   * Lines that read a `length` off the union WITHOUT narrowing it first.
+   *
+   * Line-scoped rather than body-scoped on purpose: both documents must QUOTE
+   * the wrong idiom in order to forbid it, and inside the correct `jq` recipe
+   * the substring `.blockedBy | length` legitimately appears — guarded, on the
+   * same line, by the `type` test that makes it correct. A body-wide regex
+   * would therefore fire on the very wording that fixes the bug. What is
+   * actually forbidden is an UNGUARDED read, so that is what the predicate
+   * looks for.
+   */
+  const unNarrowedLengthLines = (body: string): string[] =>
+    body
+      .split('\n')
+      .filter((line) => /\.blockedBy\s*\|\s*length|blockedBy\.length/.test(line))
+      .filter((line) => !/Array\.isArray|type\)\s*==\s*"array"/.test(line));
+
+  it('the PRD flag is stated as "no open slices", and the never-sliced claim is gone', () => {
+    for (const file of [SKILL, MECHANICS]) {
+      const body = SOURCES.get(file) as string;
+      expect(body, `${file} is missing from the corpus`).toBeTruthy();
+      expect(
+        claimsNeverSliced(body),
+        `${file} still claims the PRD flag derives "never sliced"/"un-consumed". It derives ` +
+          `"no OPEN slices" — a closed slice takes its parent backlink out of the candidate ` +
+          `set, so a shipped PRD is indistinguishable from a never-sliced one.`,
+      ).toBe(false);
+      expect(
+        /no open slices/i.test(body),
+        `${file} must state the flag as "no open slices" — the phrase is what keeps the ` +
+          `panel from asserting something it cannot know.`,
+      ).toBe(true);
+    }
+  });
+
+  it('the flagged-PRD action is a check, not a slice imperative', () => {
+    const skill = SOURCES.get(SKILL) as string;
+    expect(
+      /check, not a slice/i.test(skill),
+      'wave-plan SKILL step 4 must prescribe a CHECK for a flagged PRD — following a bare ' +
+        '"run to-issues to slice" re-slices finished PRDs on any repo with shipped history.',
+    ).toBe(true);
+    expect(
+      /closed/i.test(skill),
+      'the prescribed check must name CLOSED issues as where the missing evidence lives — ' +
+        'that is the one place that distinguishes "sliced and shipped" from "never sliced".',
+    ).toBe(true);
+  });
+
+  it('the blockedBy union is named where the skill layer reads it, with the narrowing idiom', () => {
+    const mechanics = SOURCES.get(MECHANICS) as string;
+    expect(
+      /'none'\s*\|\s*IssueRef\[\]/.test(mechanics),
+      'plan-mechanics must name the blockedBy union beside the ScopedIssue composition note — ' +
+        'the asymmetry (one field explained, the neighbouring one silent) is what made a ' +
+        'consumer trust a bare count.',
+    ).toBe(true);
+    expect(
+      /'none'\.length === 4/.test(mechanics),
+      'plan-mechanics must state the concrete trap value: ‘none’.length === 4.',
+    ).toBe(true);
+    expect(
+      /Array\.isArray/.test(mechanics),
+      'plan-mechanics must give the narrowing idiom, not only the warning.',
+    ).toBe(true);
+
+    const skill = SOURCES.get(SKILL) as string;
+    expect(
+      /Array\.isArray/.test(skill),
+      'wave-plan SKILL step 5 asks the Coordinator to report Blocked-by per candidate — it must ' +
+        'prescribe the narrowing read there, at the step where the wrong one gets typed.',
+    ).toBe(true);
+  });
+
+  it('neither document leaves an un-narrowed .length read of the union', () => {
+    for (const file of [SKILL, MECHANICS]) {
+      const body = SOURCES.get(file) as string;
+      expect(
+        unNarrowedLengthLines(body),
+        `${file} has a line reading length off blockedBy without narrowing it first — that is ` +
+          `the exact shape that reports 4 blockers for an unblocked row.`,
+      ).toEqual([]);
+    }
+  });
+
+  it('negative control — the retired wordings fail the same predicates', () => {
+    // Proves both predicates can actually fire (wave-shared Convention 11): a
+    // green assertion is compatible with "the check works" AND "the check
+    // cannot fail", and nothing else here distinguishes them.
+    expect(claimsNeverSliced('An un-consumed PRD has no slices yet. Flag it.')).toBe(true);
+    expect(claimsNeverSliced('consumed(prd) = candidates.some(c => c.parent === prd.id)')).toBe(true);
+    expect(claimsNeverSliced('List every PRD and flag the un-consumed ones — a PRD is consumed iff')).toBe(true);
+    expect(unNarrowedLengthLines(`jq -r '.[] | .blockedBy | length'`)).toHaveLength(1);
+    expect(unNarrowedLengthLines('const n = row.blockedBy.length')).toHaveLength(1);
+
+    // And that they do NOT fire on the current, corrected wording — including
+    // the correct `jq` recipe, whose own text CONTAINS the forbidden substring
+    // and is exempted only by the narrowing test sitting on the same line.
+    expect(claimsNeverSliced('The panel flags PRDs with no open slices; check closed issues before slicing.')).toBe(false);
+    expect(unNarrowedLengthLines('Array.isArray(b) ? b.length : 0')).toEqual([]);
+    expect(
+      unNarrowedLengthLines(`if (.blockedBy | type) == "array" then (.blockedBy | length) else 0 end`),
+    ).toEqual([]);
+  });
+});
