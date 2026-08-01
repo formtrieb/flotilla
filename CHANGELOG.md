@@ -9,6 +9,75 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.0.1] — 2026-08-01
+
+A patch release, and the **delivery half of work that was already done**: every fix below
+landed on `main` before this release existed, which means a consumer installed at 1.0.0
+has been running without them the whole time. The package-root export surface and the
+`wave.config.json` schema are untouched — this release adds no public API and removes
+none.
+
+Most of it comes from the first external consumer's field reports.
+
+### Fixed
+
+- **The echo-guard's refusal no longer sends the reader to a path only this repository
+  resolves.** The shipped `PreToolUse` hook rejects a credential-echo command with a
+  teaching message; that message cited a source-form skills path that does not exist in
+  an installed form, so the one reader it is written for could not follow it. The refusal
+  now carries its reason inline instead of pointing anywhere.
+
+- **The shipped hook module's own documentation stopped describing only the repository it
+  was written in.** Its paste-ready `hooks.PreToolUse` block and the verify line beneath
+  it named flotilla's vendored guard path unqualified; both now name the consumer's own
+  scaffold destination, with flotilla's repo recorded as the documented exception it
+  already is elsewhere. The same docstring also still announced that the consumer scaffold
+  was *not* shipped, while the setup reference recorded that gate as met — the shipped
+  artifact contradicted the shipped documentation about its own distribution.
+
+- **Ten dead header pointers left the shipped engine sources.** Comment lines citing
+  canonical specs, PRD sources, audit sources and playbooks under directories that have
+  never existed in this repository — and that reach no consumer's tarball under any
+  circumstances. A resolution guard now keeps them out. It asks *does this document
+  exist* rather than matching a list of banned directories, so it does not go stale
+  against the next tree that gets retired, and it now covers spec files as well as
+  shipped sources.
+
+- **`wave-plan` stopped claiming more than it can know.** Its PRD panel flagged a
+  fully-shipped PRD identically to a never-sliced one; the flag now states what it
+  actually derives and prescribes a *check* rather than a slice. Its `blockedBy` guidance
+  now warns that the field is a union whose `'none'` sentinel has a length of four — so a
+  bare `.length` reports four blockers for a row that has none, and reads as internally
+  consistent beside a genuine count.
+
+- **The awaiting-human archive gate no longer cites an ADR that does not describe it.**
+  The citations now point at the reference that actually documents the gate; the many
+  correct citations of that same ADR, which are about the Worker vocabulary, are
+  untouched.
+
+### Changed
+
+- The onboarding walk-through teaches the setup-time engine binding instead of call-time
+  resolution, at all three sites that taught the old model, and its allowlist guidance
+  names the form the scaffold actually writes rather than the exploration-only one. The
+  exploration form is still documented — with its lack of pinning and its cost — as what
+  it is. The beta framing is gone.
+
+- The charter names the conflict map's structural boundary: the dependency class where
+  resolving one piece of work reshapes *what another piece even is* is invisible to the
+  map, because the second piece does not exist at check time. That is the edge of the
+  promise, not a defect.
+
+### Not yet proven
+
+- **The consumer-facing hop of the guard fix has been simulated, not observed.** During
+  review it was exercised end to end by packing the engine, installing it into a
+  throwaway repository outside this tree, and running the scaffold's copy and verify line
+  verbatim — the guard refused as expected. What has *not* happened is that same path
+  through a **published** install of this version: fetching 1.0.1 from the registry into
+  a real consumer repository and reading the message there. That check belongs to a human
+  after this release is published.
+
 ## [1.0.0] — 2026-07-31
 
 The first stable release. What changes with the number: **the package-root export
