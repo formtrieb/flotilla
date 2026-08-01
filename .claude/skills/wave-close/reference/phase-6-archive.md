@@ -73,7 +73,7 @@ The Coordinator may **promote** a bundle-default item to its own ticket on judgm
 
 *Considered and set aside:* a second guard where the close flow reads back the filed issue's body before recording `filed:<id>`. The reject-at-create guard above already makes an empty-body bare issue impossible to write in the first place, so a read-back would only re-detect a failure the write path can no longer produce; not worth the extra round trip unless a future gap proves this one insufficient.
 
-## Awaiting-human gate — BEFORE the archive move, beside the disclosure gate (ADR-0012)
+## Awaiting-human gate — BEFORE the archive move, beside the disclosure gate
 
 **Run this second, every time, after `check-disclosures` and before either Guard below.** Like the disclosure gate it is a mechanical existence check, not a judgment call, and like it you read the **exit code only**:
 

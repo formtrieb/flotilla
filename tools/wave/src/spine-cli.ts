@@ -355,7 +355,7 @@ function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
 
   process.stdout.write(
     [
-      `awaiting-human: ${awaiting.length} of ${rows.length} human-gated rows — archive gate BLOCKED (ADR-0012)`,
+      `awaiting-human: ${awaiting.length} of ${rows.length} human-gated rows — archive gate BLOCKED (see .claude/skills/wave-close/reference/phase-6-archive.md)`,
       ...awaiting.map(
         (r) => `  row ${r.id}  worker ${r.worker}  state ${r.state}  ${r.title}`,
       ),
