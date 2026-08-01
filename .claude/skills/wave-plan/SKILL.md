@@ -89,23 +89,28 @@ Present it as a **line**, alongside the parallel-safety verdict — the human is
 {{wave-cli}} issue-store listDocuments
 ```
 
-Returns `DocumentView[]` (`{ id, title, body }`). List every PRD and **flag the un-consumed ones** — a PRD is consumed iff at least one candidate's `parent` field equals the PRD id (exact string match, derived from the already-loaded `listOpen` results). An un-consumed PRD has no slices yet; flag it with "run `to-issues` to slice". A PRD is never a candidate — the Document facet and the issue facet are entirely separate (ADR-0011).
+Returns `DocumentView[]` (`{ id, title, body }`). List every PRD and **flag the ones with no open slices** — `○` iff no candidate's `parent` field equals the PRD id (exact string match, derived from the already-loaded `listOpen` results). A PRD is never a candidate — the Document facet and the issue facet are entirely separate (ADR-0011).
+
+**Report the flag as what it derives: `○` means "no open slices", never "never sliced".** The two are indistinguishable from the candidate set alone, because a closed slice leaves that set carrying its `parent` backlink with it — so a fully-shipped PRD renders exactly like one that was never sliced, and the false-positive rate **grows with the repo's history** instead of staying constant. So the action a `○` row prescribes is a **check, not a slice**: look for slices carrying that PRD as `parent` among **closed** issues too (a tracker search for the PRD id, or its cross-reference list). Found → sliced and shipped, leave it alone. None anywhere → genuinely never sliced, and only then does `to-issues` apply. Legend: `✓` has open slices · `○` no open slices — shipped or never sliced, check which. Derivation, the rejected engine-side alternative, and the live occurrence: [reference/plan-mechanics.md](reference/plan-mechanics.md).
 
 ### 5. Present the report; pick ids
 
 Present the full picture:
 - Eligible candidates with their Risk, Worker, and Blocked-by. Flag any `HITL-required` rows.
+  > **Count `blockedBy` by narrowing the union — never with a bare `.length`.** It is `'none' | IssueRef[]`, and `'none'.length` is `4`: an unblocked row otherwise reports four blockers standing next to a genuine three, and the table reads as internally consistent. Neither TypeScript nor the JSON you actually read will stop you — `jq`: `if (.blockedBy | type) == "array" then (.blockedBy | length) else 0 end`; JS: `Array.isArray(b) ? b.length : 0`. Why, and the live occurrence: [reference/plan-mechanics.md](reference/plan-mechanics.md).
 - Cross-wave result: parallel-safe or serialize (with the conflicting files and issue ids).
 - Intra-wave conflicts, if any, so the coordinator can plan the sequence.
 - Public-API-change pairing advisory (KW-F4): any two-or-more `public-API-change` candidates flagged as a pairing — expect reconciled-merge landing rework even with disjoint `Files`; the human decides whether to serialize or split them across waves.
 - **Dispatch-cost estimate for the set** (step 3c): full-pipeline rows × ~4 agents, `foreground` rows named beside it at their reduced cost (Reviewer + verdict Scribe; zero Worker-side — ADR-0033's coordinator-direct boundary), the heavy-row count, and any `HITL-required` rows named as excluded. If the human is weighing two candidate sets, give the line for each — one per set, so the comparison is visible without re-deriving it.
-- PRD panel: consumed (✓) and un-consumed (needs slicing).
+- PRD panel: has open slices (✓) and no open slices (○ — shipped or never sliced; say which the check found, or that it is still unchecked).
 
 **Persist nothing.** The human picks the ids they want in the wave and hands them to `wave-create`.
 
 ## Common Mistakes
 
 - **Excluding `HITL-required`.** These rows are real wave work. Include and flag them; do not drop them from the report.
+- **Taking `.length` of `blockedBy`.** It is a union — `'none' | IssueRef[]` — and `'none'.length === 4`, so the row with **no** blockers reports more than one with three, and beside a real count the table looks internally consistent. TypeScript does not catch it: `.length` is valid on both members, so it infers `number` with no narrowing prompt (`.map` *is* caught — the loud failure is the lucky one). And the skill layer reads this as JSON from the CLI, not as TypeScript at all. Narrow with `Array.isArray` / a `type` test first. Live: a consumer published exactly that table to its operator.
+- **Reading the PRD panel's `○` as "never sliced".** It derives "no **open** slices". A closed slice takes its `parent` backlink out of the candidate set with it, so a fully-shipped PRD is indistinguishable from a never-sliced one — and the error rate grows with the repo's history rather than staying constant. Check for closed slices before reaching for `to-issues`; live, six of seven flagged rows were fully shipped and slicing them again was the prescribed action.
 - **Treating a PRD as a candidate.** A PRD is never in `listOpen`; it only appears in the PRD panel via `listDocuments`. Do not include it in the candidate set or cross-wave inputs.
 - **Persisting state from wave-plan.** wave-plan is advisory — it writes nothing. The `queued` claim and the spine creation happen in `wave-create`.
 - **Inventing heuristics.** Do not score, rank, or filter candidates by wallclock, worker-mix, or risk-mix. Present the eligible set; the coordinator decides. The step-3c cost line is not a heuristic — it is arithmetic over the set, reported and then left alone.

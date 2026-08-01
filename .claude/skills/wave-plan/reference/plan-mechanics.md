@@ -57,6 +57,26 @@ The dir is fixed rather than per-run, so a second planning pass **overwrites** b
 
 `cross-wave` accepts `ScopedIssue[]` (`{id, files}`) for its `--candidates` and `--claimed` files. `IssueView` is a structural superset of `ScopedIssue` — extra fields (`risk`, `worker`, `status`, …) are ignored. The `listOpen` and `listClaimed` JSON arrays are therefore valid `--candidates`/`--claimed` inputs verbatim; no transformation is needed.
 
+### But `blockedBy` is a union — and one member answers `.length`
+
+The section above says how this projection composes *elsewhere*; this one says where it does not compose the way a reader expects, because the asymmetry between the two is itself part of the trap. `blockedBy` is `'none' | IssueRef[]` — a string sentinel meaning "no blockers", or an array of refs.
+
+**Never take `.length` of it.** `'none'.length === 4`, so a row with **no** blockers reports **four** — and standing next to a genuine `3` from a real array, the output looks internally consistent. Types do not catch it either: `.length` is valid on *both* members of the union, so it type-checks and infers `number` with no narrowing prompt. (`.map` *is* caught — iteration is the loud, lucky failure. Counting is the quiet one, and it is exactly what a "how many blockers does this row have" reflex reaches for first.) And the skill layer is not TypeScript at all: it shells into the CLI and reads **JSON**, where the sentinel is indistinguishable from a four-element array by any check short of a `type` / `Array.isArray` test.
+
+Narrow before you count:
+
+```bash
+# jq — blockers per row, correct for both members
+jq -r '.[] | "\(.id)  \(if (.blockedBy | type) == "array" then (.blockedBy | length) else 0 end)"'
+```
+
+```js
+// JS — same narrowing
+const blockerCount = (b) => (Array.isArray(b) ? b.length : 0)
+```
+
+Live occurrence: the first external 1.0.0 consumer published a blocker table to its operator in which the unblocked row outranked a genuinely-blocked one; it surfaced only later, when iterating the same field threw. `cross-wave` itself is unaffected — it resolves the union correctly and returned the right `intraWaveBlockedByPairs` across the same rows. This is a consumer-side trap, not an engine defect, which is why it is closed here in the document the skill layer reads rather than by changing the shape.
+
 ## Output is canonical and deduplicated — compare directly
 
 `cross-wave` combines `--candidates` and `--claimed` as a **set union keyed by id**, not a concatenation. An issue that appears in both files (legitimate — e.g. it is already queued from a prior plan, or you are re-running the check for a wave whose own rows are soft-claimed) contributes exactly one entry to the underlying conflict computation. The result: every cell in **both** `intraWaveConflicts` and `crossWaveConflicts` has `a < b` (canonical lexicographic order) and each unordered pair appears **exactly once** — no repeats to mentally collapse, even when `candidates` and `claimed` fully overlap. Compare the arrays directly against the spine's `## Conflict-Map` or against each other; no de-duplication step is needed on the consumer side.
@@ -92,15 +112,21 @@ The dir is fixed rather than per-run, so a second planning pass **overwrites** b
 
 When `parallelSafe: true` (no `crossWaveConflicts`) **and no `warnings`**, the proposed candidates can run alongside currently-claimed work without file races. `parallelSafe: true` with a non-empty `warnings` means "no conflict found among what could be checked" — not "no conflicts exist".
 
-## PRD consumed-flag derivation
+## PRD open-slice flag derivation
 
-A PRD is **consumed** iff at least one candidate's `parent` field equals the PRD id (exact string match, no normalization). The `parent` field on `IssueView` is the opaque PRD id the slice was filed with — the same value `to-issues` stored as the `Parent` backlink (ADR-0013). Derivation from the already-loaded candidates array:
+The panel's flag derives **"this PRD has no OPEN slices"** — and that is the whole of what the data in hand can support. A PRD is flagged iff no candidate's `parent` field equals the PRD id (exact string match, no normalization). The `parent` field on `IssueView` is the opaque PRD id the slice was filed with — the same value `to-issues` stored as the `Parent` backlink (ADR-0013). Derivation from the already-loaded candidates array:
 
 ```
-consumed(prd) = candidates.some(c => c.parent === prd.id)
+hasOpenSlices(prd) = candidates.some(c => c.parent === prd.id)
 ```
 
-An un-consumed PRD has no slices yet. Flag it: "run `to-issues` to slice". A PRD is never in `candidates` — the Document facet and the issue facet are separate, and a PRD carries no eligibility marker.
+**It does NOT derive "never sliced", and the two readings come apart with age.** `candidates` is `listOpen` — wave-eligible **open** issues. The `parent` backlink is the only evidence a PRD was ever sliced, and that evidence lives on the slices; when the last slice closes, it leaves the candidate set with them. A fully-shipped PRD and a never-sliced one therefore render identically. On a fresh repo the two readings nearly coincide; on a repo with a year of shipped PRDs the flag is almost entirely false positives — which is exactly the point at which an operator stops reading the panel at all, including for the one row that is real. Live occurrence: the first external 1.0.0 consumer's panel flagged six of seven PRDs, and all six were fully shipped — every slice filed, merged and closed, some weeks earlier.
+
+**So a flagged PRD prescribes a CHECK, never a slice.** Establish which of the two cases it is before acting: look for slices carrying that PRD as `parent` among **closed** issues too — a tracker search for the PRD id, or the PRD's own cross-reference list on a store that renders one. Closed slices found → the PRD was sliced and shipped; leave it alone. None found anywhere, open or closed → it was genuinely never sliced, and that is the only case where `to-issues` applies.
+
+The check is deliberately the operator's rather than the panel's: resolving it in-engine would cost a closed-slice store round-trip the panel does not make today, and it would still leave a partially-shipped PRD ambiguous. The panel's job is to stop asserting something it cannot know.
+
+A PRD is never in `candidates` — the Document facet and the issue facet are separate, and a PRD carries no eligibility marker.
 
 ## Public-API-change pairing derivation (KW-F4)
 
