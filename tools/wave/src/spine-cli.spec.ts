@@ -642,11 +642,68 @@ describe('spine-cli — the direct-module invocation is collapsed onto the route
     const { code, stdout } = runAlias(['check-awaiting-human', path]);
     expect(code).toBe(1);
     expect(stdout).toContain('archive gate BLOCKED');
+    // The gate cites the archive phase reference — the doc that actually
+    // describes it — never ADR-0012 (which establishes the Worker vocabulary
+    // and never mentions an archive gate at all).
+    expect(stdout).toContain('.claude/skills/wave-close/reference/phase-6-archive.md');
+    expect(stdout).not.toContain('ADR-0012');
     expect(stdout).toContain('row 11');
 
     const listing = runAlias(['human-gated', path]);
     expect(listing.code).toBe(0);
     expect(JSON.parse(listing.stdout).awaitingHumanIds).toEqual(['11']);
+  });
+});
+
+// ─── ADR-0012 archive-gate miscitation, fixed scoped (issue #373) ────────────
+//
+// ADR-0012 establishes the Worker vocabulary and the human-gated Worker value
+// — it never describes an archive gate. Two prose sites in wave-close/SKILL.md
+// and the archive phase reference's own heading used to cite it as if it did;
+// all now point at the archive phase reference instead (which DOES describe
+// the gate). This block demonstrates the fix was SCOPED to those sites: the
+// CORRECT ADR-0012 citations elsewhere in the same files — the Worker vocabulary
+// bullet, the park exit's own ADR-0022 — are untouched, proving a blanket
+// ADR-0012 sweep did not happen (that sweep would have broken these too).
+
+describe('the awaiting-human archive-gate citation is fixed, and the fix is scoped (issue #373)', () => {
+  const REPO_ROOT = join(__dirname, '..', '..', '..');
+  const CLOSE_SKILL = readFileSync(
+    join(REPO_ROOT, '.claude/skills/wave-close/SKILL.md'),
+    'utf-8',
+  );
+  const ARCHIVE_PHASE_REF = readFileSync(
+    join(REPO_ROOT, '.claude/skills/wave-close/reference/phase-6-archive.md'),
+    'utf-8',
+  );
+
+  it('no site presents ADR-0012 as the authority for the archive gate', () => {
+    // The two miscited sentences (skill summary + phase-6 two-gates prose) now
+    // point at the archive phase reference instead.
+    expect(CLOSE_SKILL).toContain(
+      '(`spine check-awaiting-human`, [reference/phase-6-archive.md](reference/phase-6-archive.md))',
+    );
+    expect(CLOSE_SKILL).toContain(
+      '([reference/phase-6-archive.md](reference/phase-6-archive.md), park per ADR-0022)',
+    );
+    // The archive phase reference's own heading no longer miscites the gate it
+    // documents — it IS the authority, so it cites nothing at all here.
+    expect(ARCHIVE_PHASE_REF).toContain(
+      '## Awaiting-human gate — BEFORE the archive move, beside the disclosure gate\n',
+    );
+    expect(ARCHIVE_PHASE_REF).not.toContain('ADR-0012');
+  });
+
+  it('the CORRECT ADR-0012 citations (Worker vocabulary, human-gated Worker value) survive untouched — proof this was not a blanket sweep', () => {
+    // The terminality-gate bullet correctly cites ADR-0012 for the Worker
+    // VALUE itself, never for the gate — a blanket sweep over "ADR-0012" would
+    // have swept this one up too. It must be untouched by the fix.
+    expect(CLOSE_SKILL).toContain(
+      'the `Worker` is human-gated (`HITL-required` by default, ADR-0012) and no human has acted yet',
+    );
+
+    // The park exit keeps its own, separate, correct ADR-0022 citation.
+    expect(CLOSE_SKILL).toContain('park per ADR-0022');
   });
 });
 

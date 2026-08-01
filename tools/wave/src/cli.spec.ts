@@ -3723,6 +3723,11 @@ describe('spine check-awaiting-human — the fail-closed archive gate (issue #32
 
     expect(code).toBe(1);
     expect(stdoutBuf).toContain('archive gate BLOCKED');
+    // The gate cites the archive phase reference — the doc that actually
+    // describes it — never ADR-0012 (which establishes the Worker vocabulary
+    // and never mentions an archive gate at all).
+    expect(stdoutBuf).toContain('.claude/skills/wave-close/reference/phase-6-archive.md');
+    expect(stdoutBuf).not.toContain('ADR-0012');
     expect(stdoutBuf).toContain('row 11');
     // The hazard has to be named, not just the count — an operator who reads
     // only this output must learn WHY it is not skippable.
