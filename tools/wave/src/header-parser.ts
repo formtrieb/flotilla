@@ -1,7 +1,14 @@
 /**
  * Parser + serializer for the Issue-Header-Block.
  *
- * Schema is canonical in docs/agents/issue-tracker.md §Wave-Eligibility.
+ * Provenance:     the wave-eligibility schema documented for the predecessor
+ *                 wave-orchestration system flotilla was seeded from. Named,
+ *                 not pathed: that system's agents-docs tree (previously
+ *                 cited here by direct path) never existed in THIS repo and
+ *                 is in no published tarball, so the citation resolved only
+ *                 where it was written. The live schema is
+ *                 {@link DEFAULT_WAVE_SCHEMA} below plus this module's spec
+ *                 (`shipped-citation-guard.spec.ts`).
  * Four required + two optional bold-Markdown fields placed in the frontmatter
  * region of a `.scratch/<slug>/issues/<NN>-<slug>.md` file.
  *
@@ -70,11 +77,12 @@ const FIELD_PATTERN = /^\*\*([^*:]+):\*\*\s*(.*)$/;
 const LIST_ITEM_PATTERN = /^[-*]\s+(.+)$/;
 const HEADING_PATTERN = /^#+\s+/;
 /**
- * The Header-Block is, by schema (docs/agents/issue-tracker.md §Wave-Eligibility),
- * the frontmatter region above the first H2. An H2 (`## …`) marks the start of
- * body prose ("## What to build", "## Acceptance criteria", …) — anything below
- * it that *looks* like a header field (an Agent Brief that restates
- * `**Category:**`, `**Summary:**`, …) is documentation, not a real field.
+ * The Header-Block is the frontmatter region above the first H2 — per this
+ * module's own schema (see the header above, and {@link DEFAULT_WAVE_SCHEMA}).
+ * An H2 (`## …`) marks the start of body prose ("## What to build",
+ * "## Acceptance criteria", …) — anything below it that *looks* like a header
+ * field (an Agent Brief that restates `**Category:**`, `**Summary:**`, …) is
+ * documentation, not a real field.
  */
 const H2_PATTERN = /^##\s+/;
 

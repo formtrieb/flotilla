@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
  * documents that had been folded into their owning SKILL and mechanics documents
  * and existed under no spelling at all.
  *
- * ## Four rules; rules 1–3 share one subject, the artifact a consumer installs
+ * ## Five rules; rules 1–3 and 5 share one subject, the artifact a consumer installs
  *
  * 1. **No form-dependent path in the guard's REFUSAL OUTPUT** — checked by
  *    running the hook *out of a freshly packed tarball*, not out of the repo
@@ -43,10 +43,13 @@ import { tmpdir } from 'node:os';
  * 3. **No LABELED HEADER POINTER in a shipped engine source aiming at a markdown
  *    document that does not exist** — the same resolution demand as rule 2, over
  *    a shape rule 2 structurally could not see (see below).
- * 4. **A SPEC file is held to rules 2 and 3 as well** — the one rule here whose
+ * 4. **A SPEC file is held to rules 2, 3 and 5 as well** — the one rule here whose
  *    subject is the maintainer-facing surface rather than the shipped one. It is
  *    a decision this file records rather than a scope it inherited; the reasoning
  *    is under "The spec-file question" below.
+ * 5. **No UNLABELED PROSE CITATION in a shipped engine source aiming at a
+ *    document that does not exist** — the same resolution demand again, over a
+ *    THIRD shape rules 2 and 3 both walked past (see "Rule 5" below).
  *
  * Rule 2's second branch is deliberate and is where the fix for the three dead
  * citations went: the repair is to **name the subject** ("the Worker brief's
@@ -86,6 +89,45 @@ import { tmpdir } from 'node:os';
  * (`Escape a markdown-table cell: pipes/newlines`) is not a document pointer, and
  * a rule that resolved those would be a false-positive machine.
  *
+ * ## Rule 5 — the shape rules 2 and 3 both walked past a second time
+ *
+ * The wave that landed rule 3 removed ten LABELED pointers (`<Label>: <path>.md`)
+ * and, in the same pass, deliberately did not widen rule 3 to catch a second,
+ * unlabeled population wearing a different shape: a sentence of the form
+ * `<Spec|Schema> is canonical in <path>` — six instances, across the same five
+ * modules rule 3's ten came from (`header-parser.ts` twice), naming the identical
+ * two dead trees (`.scratch/wave-orchestration/…` and `docs/agents/…`). That was
+ * the right call at the time: rule 3 matches a *labeled* pointer, and a rule
+ * widened to catch unlabeled prose would have gone red on files the disclosing
+ * row could not touch.
+ *
+ * **Two live phrasings, not one.** `header-parser.ts` cites the same dead path
+ * twice in different words — `Schema is canonical in docs/agents/…md` at its
+ * module header, and `The Header-Block is, by schema (docs/agents/…md), the
+ * frontmatter region…` seventy lines later. Grepping `canonical in` and `by
+ * schema` (case-insensitive) across every `.ts` file under `src/` found exactly
+ * these six lines and nowhere else — both words appear routinely elsewhere with
+ * no path in sight (`canonical issueId`, `canonical numeric-string key`,
+ * `Gate-1 schema-membership check`), which is what keeps
+ * {@link CANONICAL_CITATION_TRIGGER} a NAMED pair of phrases rather than a
+ * bare-keyword search that would have fired on every one of them.
+ *
+ * **The scan window is bounded to the citing paragraph, not the rest of the
+ * file.** A citation can name two paths across a line-wrap (`dor-gate.ts`'s
+ * "…and in\n`<path>`" and `wave-md-rw.ts`'s "…in\n`<path>`"), so the extractor
+ * reads from the trigger to the next blank `*` line or the comment's own close,
+ * whichever comes first — never past it, or a trigger with no internal blank
+ * line before its comment closes would run on into the next doc-comment down
+ * the file and start collecting paths that were never part of the citation.
+ *
+ * **Verified NOT in this class.** `dor-gate.ts` carries two mentions of
+ * `docs/agents/wave-playbook.md` as an ILLUSTRATIVE EXAMPLE of a consumer's own
+ * doc path, inside prose about the basename-fallback coverage rule — not a
+ * citation of this repo's spec or schema. Neither contains either trigger
+ * phrase, so {@link extractCanonicalProseCitations} does not reach them; a
+ * negative control below pins that directly, from the real file, so a future
+ * edit that widens either fixture re-triggers it.
+ *
  * ## The spec-file question — DECIDED here, so nobody has to re-open it
  *
  * A dead citation was also found in a SPEC file's docstring
@@ -105,7 +147,9 @@ import { tmpdir } from 'node:os';
  *   file surfaced exactly one genuine dead pointer — the one above — plus this
  *   file's OWN prose mentions of `.claude/loop.md`, and nothing else anywhere.
  *   The surface was already clean; the rule is a ratchet, not a migration.
- * - *The machinery already existed.* Rule 4 reuses both extractors verbatim.
+ * - *The machinery already existed.* Rule 4 reuses all three extractors
+ *   verbatim — rule 5's included, once it existed too (see "Rule 5" above);
+ *   applying it to every spec file surfaced nothing new to fix.
  *
  * **The one exemption, and why it is not a hole being dug.** This file is
  * exempt from rule 4, because a guard cannot be its own subject: its fixtures
@@ -324,6 +368,123 @@ const REMOVED_HEADER_POINTERS: { module: string; line: string }[] = [
   {
     module: 'verdict-to-event.ts',
     line: ' * Audit source:   .scratch/wave-orchestration/autonomy-audit-2026-06-03.md §2 (G3)',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Rule 5 — unlabeled prose citations ("Spec/Schema is canonical in …",
+// "by schema (…)") — the shape rules 2 and 3 both walked past a second time
+// ---------------------------------------------------------------------------
+
+/**
+ * The two trigger phrases for an UNLABELED PROSE CITATION: prose, not a
+ * `Label:` header line, naming a path as the authoritative source for a
+ * module's spec or schema.
+ *
+ * Grepping `canonical in` and `by schema` (case-insensitive) across every
+ * shipped `.ts` source under `src/` found exactly the six lines this rule was
+ * written to catch, and nowhere else — which is what keeps this a NAMED pair
+ * of phrases rather than a keyword search on "canonical" or "schema" alone.
+ * Both words appear routinely elsewhere in these same files with no path
+ * anywhere nearby (`canonical issueId`, `canonical numeric-string key`,
+ * `Gate-1 schema-membership check`), and a bare-keyword rule would have fired
+ * on every one of them.
+ */
+const CANONICAL_CITATION_TRIGGER = /\b(?:Spec|Schema)\s+is\s+canonical\s+in\b|\bby\s+schema\s*\(/gi;
+
+/** A repo-relative path token ending in `.md`, with an optional wrapping backtick. */
+const MD_PATH_TOKEN = /`?([A-Za-z0-9._][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)+\.md)`?/g;
+
+/**
+ * Every unlabeled prose citation in `source`, with the 1-indexed line its
+ * trigger phrase starts on.
+ *
+ * The scan window runs from the trigger to the next blank `*` comment line or
+ * the comment's own close (the star-slash), whichever comes first — never
+ * past it. That
+ * is what lets a citation naming two paths across a line-wrap (`dor-gate.ts`,
+ * `wave-md-rw.ts`) read as one citation, while a trigger with no internal
+ * blank line before its comment closes (`header-parser.ts`'s second
+ * occurrence) does not run on into the next doc-comment down the file and
+ * start collecting paths that were never part of the citation. A template
+ * path segment (`.scratch/<slug>/issues/<NN>-<slug>.md`) never satisfies
+ * {@link MD_PATH_TOKEN} — `<` and `>` sit outside its character class — so a
+ * paragraph merely illustrating the tree's shape is not mistaken for a
+ * citation of a document in it.
+ *
+ * Like rules 2 and 3, this only reads comment lines: the trigger's own source
+ * line must classify as a comment via {@link isCommentLine}, or the match is
+ * discarded.
+ */
+function extractCanonicalProseCitations(source: string): { path: string; line: number }[] {
+  const out: { path: string; line: number }[] = [];
+  const lines = source.split('\n');
+  const triggerRe = new RegExp(CANONICAL_CITATION_TRIGGER.source, CANONICAL_CITATION_TRIGGER.flags);
+  for (const trigger of source.matchAll(triggerRe)) {
+    const start = trigger.index ?? 0;
+    const startLine = source.slice(0, start).split('\n').length;
+    if (!isCommentLine(lines[startLine - 1] ?? '')) continue;
+
+    const rest = source.slice(start);
+    const blankLine = /\n[ \t]*\*[ \t]*\n/.exec(rest);
+    const commentClose = /\*\//.exec(rest);
+    const boundaries = [blankLine?.index, commentClose?.index].filter(
+      (i): i is number => i !== undefined,
+    );
+    const end = boundaries.length > 0 ? Math.min(...boundaries) : rest.length;
+    const window = rest.slice(0, end);
+
+    const pathRe = new RegExp(MD_PATH_TOKEN.source, 'g');
+    for (const m of window.matchAll(pathRe)) {
+      out.push({ path: m[1], line: startLine });
+    }
+  }
+  return out;
+}
+
+/**
+ * The six unlabeled prose citations this row removed, verbatim as they stood
+ * in the five shipped modules (`header-parser.ts` carried it twice). The
+ * negative control that keeps rule 5 able to fail: if the extractor ever
+ * stops finding these, it has stopped finding anything.
+ */
+const REMOVED_CANONICAL_CITATIONS: { module: string; line: string; paths: string[] }[] = [
+  {
+    module: 'conflict-map.ts',
+    line: ' * Spec is canonical in `.scratch/wave-orchestration/PRD.md` §S2 + issue #07.',
+    paths: ['.scratch/wave-orchestration/PRD.md'],
+  },
+  {
+    module: 'dor-gate.ts',
+    line:
+      ' * Spec is canonical in `.scratch/wave-orchestration/PRD.md` §S2 and in\n' +
+      ' * `.scratch/wave-orchestration/issues/05-wave-validate-skill.md`. The gates:',
+    paths: [
+      '.scratch/wave-orchestration/PRD.md',
+      '.scratch/wave-orchestration/issues/05-wave-validate-skill.md',
+    ],
+  },
+  {
+    module: 'header-parser.ts',
+    line: ' * Schema is canonical in docs/agents/issue-tracker.md §Wave-Eligibility.',
+    paths: ['docs/agents/issue-tracker.md'],
+  },
+  {
+    module: 'header-parser.ts',
+    line: ' * The Header-Block is, by schema (docs/agents/issue-tracker.md §Wave-Eligibility),',
+    paths: ['docs/agents/issue-tracker.md'],
+  },
+  {
+    module: 'merge-order.ts',
+    line: ' * Spec is canonical in `.scratch/wave-orchestration/issues/44-...md`.',
+    paths: ['.scratch/wave-orchestration/issues/44-...md'],
+  },
+  {
+    module: 'wave-md-rw.ts',
+    line:
+      ' * Spec is canonical in\n' +
+      ' * `.scratch/wave-orchestration/issues/54-wave-md-rw-shared-spine-reader-writer.md`.',
+    paths: ['.scratch/wave-orchestration/issues/54-wave-md-rw-shared-spine-reader-writer.md'],
   },
 ];
 
@@ -673,6 +834,95 @@ describe('rule 3 — no shipped header pointer aims at a document that does not 
   });
 });
 
+describe('rule 5 — no shipped module carries an unlabeled canonical/schema prose citation aiming at a path that does not resolve', () => {
+  it('every unlabeled prose citation in a shipped engine source resolves — the count is ZERO', () => {
+    const sources = walk(shippedRoot).filter((p) => SOURCE_EXTENSIONS.some((e) => p.endsWith(e)));
+    expect(sources.length).toBeGreaterThan(20);
+
+    const dead: string[] = [];
+    for (const rel of sources) {
+      const body = readFileSync(join(shippedRoot, rel), 'utf-8');
+      for (const { path, line } of extractCanonicalProseCitations(body)) {
+        if (!existsSync(join(REPO_ROOT, path))) dead.push(`${rel}:${line} → ${path}`);
+      }
+    }
+
+    // Unlike rules 2-4, this shape's live population in the shipped tree is
+    // ZERO after this row — the six citations it removed were the entire
+    // population (confirmed: `canonical in` / `by schema` appear nowhere else
+    // in `src/`, see CANONICAL_CITATION_TRIGGER's own doc-comment). So this
+    // scan cannot prove the extractor is still looking by finding something
+    // organically; that proof is the negative controls below instead — the
+    // extractor still resolving the exact six removed lines, and still firing
+    // on a live synthetic citation.
+    expect(
+      dead,
+      'shipped modules carrying an unlabeled canonical/schema prose citation aiming ' +
+        'at a path that exists under no spelling. Six of these were removed by the row ' +
+        'that added this rule; the fix is to NAME the subject, not to re-spell the path:\n' +
+        dead.join('\n'),
+    ).toEqual([]);
+  });
+
+  it.each(REMOVED_CANONICAL_CITATIONS)(
+    'NEGATIVE CONTROL — the citation removed from $module is still detected and still dead',
+    ({ line, paths }) => {
+      const found = extractCanonicalProseCitations(`/**\n${line}\n */\n`);
+      expect(found.map((f) => f.path), `the extractor no longer sees: ${line}`).toEqual(paths);
+      for (const { path } of found) {
+        expect(existsSync(join(REPO_ROOT, path)), `${path} unexpectedly resolved`).toBe(false);
+      }
+    },
+  );
+
+  it('NEGATIVE CONTROL — the removed set was exactly SIX, across five modules', () => {
+    // The count this row's acceptance criterion names, pinned so "zero now"
+    // cannot quietly become "zero because the extractor broke".
+    expect(REMOVED_CANONICAL_CITATIONS).toHaveLength(6);
+    const modules = REMOVED_CANONICAL_CITATIONS.map((c) => c.module);
+    expect(new Set(modules).size).toBe(5);
+    // header-parser.ts is the one module carrying it twice.
+    expect(modules.filter((m) => m === 'header-parser.ts')).toHaveLength(2);
+    for (const { paths } of REMOVED_CANONICAL_CITATIONS) {
+      for (const path of paths) {
+        expect(path).toMatch(/(?:\.scratch|docs\/agents)\//);
+        expect(existsSync(join(REPO_ROOT, path))).toBe(false);
+      }
+    }
+    expect(existsSync(join(REPO_ROOT, '.scratch'))).toBe(false);
+    expect(existsSync(join(REPO_ROOT, 'docs/agents'))).toBe(false);
+  });
+
+  it('does NOT fire on the illustrative doc-path examples the DoR-gate module keeps', () => {
+    // Verified NOT in this class: `dor-gate.ts` uses a docs path as an
+    // EXAMPLE of a consumer's own doc path, inside prose about the Files
+    // gate's basename-fallback coverage rule — not a citation of this repo's
+    // own spec/schema. Read verbatim from the real file (both occurrences),
+    // so a future edit that widens either fixture re-triggers this control.
+    const body = readFileSync(join(PACKAGE_ROOT, 'src/dor-gate.ts'), 'utf-8');
+    expect(body).toContain('(e.g. `docs/agents/wave-playbook.md`)');
+    expect(body).toContain('(`docs/agents/wave-playbook.md`)');
+    expect(extractCanonicalProseCitations(body)).toEqual([]);
+  });
+
+  it('DOES fire on a live citation shape that resolves — proving it reads real lines, not just fixtures', () => {
+    const real = ' * Spec is canonical in `.claude/agents/wave-reviewer.md` §"Output schema".\n';
+    const found = extractCanonicalProseCitations(real);
+    expect(found.map((c) => c.path)).toEqual(['.claude/agents/wave-reviewer.md']);
+    expect(existsSync(join(REPO_ROOT, found[0].path))).toBe(true);
+  });
+
+  it('a citation that names its subject instead of a path has nothing to resolve — the intended pass', () => {
+    // The shape every one of the six was rewritten into — see the five
+    // repaired modules' own `Provenance:` lines.
+    const named =
+      ' * Provenance:     the wave-orchestration PRD\'s §S2 (issue #07), planned in\n' +
+      ' *                 the predecessor wave-orchestration system flotilla was\n' +
+      ' *                 seeded from.\n';
+    expect(extractCanonicalProseCitations(named)).toEqual([]);
+  });
+});
+
 describe('rule 4 — a spec file is held to the same resolution rule (the DECIDED extension)', () => {
   /** Every spec file under the package's `src/`, as package-relative paths. */
   function specFiles(): string[] {
@@ -716,6 +966,20 @@ describe('rule 4 — a spec file is held to the same resolution rule (the DECIDE
       }
     }
     expect(dead, `dead header pointers in spec files:\n${dead.join('\n')}`).toEqual([]);
+  });
+
+  it('every unlabeled prose citation in a spec doc-comment resolves', () => {
+    const dead: string[] = [];
+    for (const rel of specFiles()) {
+      const body = readFileSync(join(PACKAGE_ROOT, rel), 'utf-8');
+      for (const { path, line } of extractCanonicalProseCitations(body)) {
+        if (!existsSync(join(REPO_ROOT, path))) dead.push(`${rel}:${line} → ${path}`);
+      }
+    }
+    expect(
+      dead,
+      `dead unlabeled prose citations in spec files:\n${dead.join('\n')}`,
+    ).toEqual([]);
   });
 
   it('the reflexivity exemption is exactly ONE file, and it is this one', () => {
@@ -763,7 +1027,7 @@ describe('CARVE-OUT CONTROLS — the deliberate non-members stay out of every ru
     }
   });
 
-  it('this file\'s own planted fixtures sit in CODE lines, invisible to both extractors', () => {
+  it('this file\'s own planted fixtures sit in CODE lines, invisible to all three extractors', () => {
     // The fixtures are deliberately dead paths. They must stay dead AND stay
     // unreachable — if a future edit moved one into a doc-comment, the rules
     // would start failing on the guard's own evidence.
@@ -794,6 +1058,7 @@ describe('CARVE-OUT CONTROLS — the deliberate non-members stay out of every ru
     const inComments = [
       ...extractSkillDocCitations(body).map((c) => c.path),
       ...extractHeaderPointers(body).map((c) => c.path),
+      ...extractCanonicalProseCitations(body).map((c) => c.path),
     ];
     for (const p of [...plantedDead, ...plantedLive]) expect(inComments).not.toContain(p);
   });
@@ -801,8 +1066,8 @@ describe('CARVE-OUT CONTROLS — the deliberate non-members stay out of every ru
   it('merge-order.spec.ts\'s conflict-map glob fixtures are fixtures, not citations', () => {
     // That spec uses `.scratch/…` document names as conflict-map GLOB inputs.
     // They are values under test, and they are reached by no rule here: rules
-    // 1-3 read the tarball (which holds no spec file) and rule 4's extractors
-    // read comment lines only.
+    // 1-3 and 5 read the tarball (which holds no spec file) and rule 4's
+    // extractors read comment lines only.
     const rel = 'src/merge-order.spec.ts';
     const body = readFileSync(join(PACKAGE_ROOT, rel), 'utf-8');
     expect(body).toContain('.scratch/wave-orchestration/issues/');
@@ -813,5 +1078,6 @@ describe('CARVE-OUT CONTROLS — the deliberate non-members stay out of every ru
     for (const { path } of extractHeaderPointers(body)) {
       expect(existsSync(join(REPO_ROOT, path)), `${rel} points at ${path}`).toBe(true);
     }
+    expect(extractCanonicalProseCitations(body)).toEqual([]);
   });
 });

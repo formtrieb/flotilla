@@ -1,7 +1,14 @@
 /**
  * Conflict-Map computer — deep module 3 of the wave-orchestration PRD §S2.
  *
- * Spec is canonical in `.scratch/wave-orchestration/PRD.md` §S2 + issue #07.
+ * Provenance:     the wave-orchestration PRD's §S2 (issue #07), planned in
+ *                 the predecessor wave-orchestration system flotilla was
+ *                 seeded from. Named, not pathed: that system's planning tree
+ *                 (previously cited here by direct path) never existed in
+ *                 THIS repo and is in no published tarball, so the citation
+ *                 resolved only where it was written. The live specification
+ *                 is this module plus its spec
+ *                 (`shipped-citation-guard.spec.ts`).
  *
  * Input:  Map<IssueID, FileGlob[]>          (the Files: header of each issue)
  * Output: Map<(IssueID, IssueID), File[]>    (intersection matrix; pairs only,

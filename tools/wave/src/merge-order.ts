@@ -3,7 +3,13 @@
  * fewer-Files:-first algorithm from Wave 8 §L22) into a testable function and
  * extends it with stacked-branch detection (Wave 10 §L30).
  *
- * Spec is canonical in `.scratch/wave-orchestration/issues/44-...md`.
+ * Provenance:     issue #44 of the predecessor wave-orchestration system
+ *                 flotilla was seeded from. Named, not pathed: that system's
+ *                 issue tree (previously cited here by direct path) never
+ *                 existed in THIS repo and is in no published tarball, so the
+ *                 citation resolved only where it was written. The live
+ *                 specification is the algorithm documented below plus this
+ *                 module's spec (`shipped-citation-guard.spec.ts`).
  *
  * Two orders come out of `computeMergeOrder`:
  *

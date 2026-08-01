@@ -3,8 +3,14 @@
  * targeted mutators that `/wave start` deferred (PRD §"New shared module —
  * WAVE.md reader/writer", stories 20/8/17).
  *
- * Spec is canonical in
- * `.scratch/wave-orchestration/issues/54-wave-md-rw-shared-spine-reader-writer.md`.
+ * Provenance:     issue #54 of that same predecessor wave-orchestration
+ *                 system flotilla was seeded from. Named, not pathed: that
+ *                 system's issue tree (previously cited here by direct path,
+ *                 across two lines) never existed in THIS repo and is in no
+ *                 published tarball, so the citation resolved only where it
+ *                 was written. The live specification is the two halves
+ *                 documented below plus this module's spec
+ *                 (`shipped-citation-guard.spec.ts`).
  *
  * Two halves:
  *
