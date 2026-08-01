@@ -24,19 +24,28 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 ## Exact sequence
 
 ```bash
+# SESSION = an operator-chosen tag for this planning pass — e.g. today's date
+#           ("2026-08-01") or the working wave slug if one is already forming.
+#           Retype it in every call below, the same operator-held-constant way
+#           $REPO is retyped; pick a value distinct from any other planning
+#           pass you might have running at the same time.
+
 # A LITERAL scratch dir, deliberately NOT `T=$(mktemp -d)` — see the note below.
-mkdir -p /tmp/flotilla-plan
+# `-m 700` makes it owner-only (mktemp -d's own default), and the `$SESSION`
+# suffix scopes it so two planning passes running at once don't share one
+# directory — see the note below.
+mkdir -p -m 700 "/tmp/flotilla-plan-$SESSION"
 
 # 1. Draw candidates (eligibility OR-set is config-driven; no eligibility arg)
-{{wave-cli}} issue-store listOpen    > /tmp/flotilla-plan/candidates.json   # IssueView[]
+{{wave-cli}} issue-store listOpen    > "/tmp/flotilla-plan-$SESSION/candidates.json"   # IssueView[]
 
 # 2. Draw current claims (queued + in-flight across all waves)
-{{wave-cli}} issue-store listClaimed > /tmp/flotilla-plan/claimed.json      # IssueView[]
+{{wave-cli}} issue-store listClaimed > "/tmp/flotilla-plan-$SESSION/claimed.json"      # IssueView[]
 
 # 3. Cross-wave check
 {{wave-cli}} cross-wave \
-  --candidates /tmp/flotilla-plan/candidates.json \
-  --claimed    /tmp/flotilla-plan/claimed.json \
+  --candidates "/tmp/flotilla-plan-$SESSION/candidates.json" \
+  --claimed    "/tmp/flotilla-plan-$SESSION/claimed.json" \
   --repo-root  "$REPO"                                        # CrossWaveResult
 
 # 4. PRD panel
@@ -47,9 +56,9 @@ mkdir -p /tmp/flotilla-plan
 
 Guarding it inline would not have been enough either, because the value is consumed across *several* steps and shell state does not survive from one Bash call to the next — `T` is unset in the shell that runs step 2 whether or not step 0 checked it. So this site takes the convention's **preferred** form: it does not guard the capture, it **removes** it. A literal path is retypeable in every call, needs nothing to survive a boundary, and has no empty state to check.
 
-`$REPO` stays a variable because it is an **operator-held constant** — a value you already know and can retype in each call — which is the opposite of a `mktemp` output that only ever existed in one shell's memory. That distinction, not the `$` sigil, is what the convention is about.
+`$REPO` and `$SESSION` stay variables because they are **operator-held constants** — values you already know and can retype in each call — which is the opposite of a `mktemp` output that only ever existed in one shell's memory. That distinction, not the `$` sigil, is what the convention is about.
 
-The dir is fixed rather than per-run, so a second planning pass **overwrites** both files; each `>` rewrites its file wholesale, so a re-run is always self-consistent. Keep it outside the repo: planning runs against a checkout whose cleanliness other gates read, and scratch JSON inside `.flotilla/` would be committed in a consumer repo (there it is *not* gitignored — the spine is branch-local committed for resume).
+The dir is fixed per `$SESSION` rather than globally, so **re-running this sequence within the same planning pass** overwrites both files; each `>` rewrites its file wholesale, so a re-run within one pass is always self-consistent. Scoping by `$SESSION` is what bounds that overwrite to one pass: two planning passes running at once, given distinct `$SESSION` values, land in distinct directories and never share a write — matching how the create-pass and dispatch-pass scratch dirs are already scoped by `$SLUG`. `-m 700` restores the mode `mktemp -d` gave (owner-only, `drwx------`) — plain `mkdir -p` defaults to `0755`, which would leave `candidates.json`/`claimed.json` (the wave roster) world-readable at a predictable path inside world-writable `/tmp`; negligible on a single-operator box, exactly the hazard mktemp(1) documents on a shared one. Keep it outside the repo: planning runs against a checkout whose cleanliness other gates read, and scratch JSON inside `.flotilla/` would be committed in a consumer repo (there it is *not* gitignored — the spine is branch-local committed for resume).
 
 `$REPO` is the consumer repo root (the dir containing `wave.config.json`). **Always pass `--repo-root` explicitly** (FOR-38) — a live finding showed the same candidate roster produce 17 conflict cells without it vs. 40 with it, purely from glob `Files` patterns that silently failed to expand. Omitting it does not fall back to `process.cwd()` (that silent-guess behavior was the bug); it instead degrades glob comparison to exact-pattern-text matching and returns a `warnings` array naming every unexpanded pattern — treat any non-empty `warnings` as a sign the report is incomplete, not as a clean parallel-safe read.
 

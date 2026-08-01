@@ -27,7 +27,8 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 
 ```bash
 # A LITERAL scratch dir, deliberately NOT `T=$(mktemp -d)` — see the note below.
-mkdir -p "/tmp/flotilla-create-$SLUG"
+# `-m 700` makes it owner-only, matching what `mktemp -d` gave.
+mkdir -p -m 700 "/tmp/flotilla-create-$SLUG"
 # SLUG  = e.g. "2026-06-18-triage-engine"
 # REPO  = consumer repo root (dir containing wave.config.json)
 # IDS   = space-separated list of chosen issue ids
@@ -78,7 +79,7 @@ Here, though, an inline guard was never even *available*. The value has to reach
 
 `$SLUG` and `$REPO` remain variables, and that is not an inconsistency: they are **operator-held constants** you already know and retype in each call — the file names `$SLUG` literally in `.flotilla/waves/$SLUG.md` two steps later for exactly that reason. A `mktemp` output is the opposite: a value nobody can retype, because it only ever existed in one shell's memory. The convention is about that difference, not about the `$` sigil.
 
-Scoping by slug keeps two waves created in the same session off each other's scratch files. Keep it **outside** the repo: step 3's `dor` runs working-tree gates against the coordinator's checkout, and in a consumer repo `.flotilla/` is *not* gitignored (the spine is branch-local committed for resume), so scratch JSON parked there would both dirty the tree that gate reads and follow the spine into a commit.
+Scoping by slug keeps two waves created in the same session off each other's scratch files. `-m 700` restores the mode `mktemp -d` gave (owner-only, `drwx------`) — plain `mkdir -p` defaults to `0755`, which would leave `candidates.json`/`claimed.json` (the wave roster) world-readable at a predictable path inside world-writable `/tmp`; negligible on a single-operator box, exactly the hazard mktemp(1) documents on a shared one. Keep it **outside** the repo: step 3's `dor` runs working-tree gates against the coordinator's checkout, and in a consumer repo `.flotilla/` is *not* gitignored (the spine is branch-local committed for resume), so scratch JSON parked there would both dirty the tree that gate reads and follow the spine into a commit.
 
 **`--config` on the step-3 `dor` call is not the same convenience as elsewhere in this sequence.** `issue-store`/`cross-wave` fall back to a `wave.config.json` in the working directory when `--config` is omitted; `dor`'s Gate 8 (`verify-profile-coverage`) does not share that fallback — it only sees the consumer's `verify` block when `--config` names it explicitly on *this* call, no matter which directory you're running from. Two outcomes share the `deferred` status text but mean different things: **resolvable** (this call passed `--config`, the file loaded, and `verify.profiles` — empty or not — were actually weighed against the row's files) versus **genuinely absent** (no `--config` reached this call, so the gate never had a `verify` block to look at, and the `defer` says nothing about the row's actual coverage). Pass `--config` as shown; the sequence above should land in the resolvable state on every ordinary run.
 

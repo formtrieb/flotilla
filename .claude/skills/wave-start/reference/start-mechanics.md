@@ -17,8 +17,11 @@ SLUG=<2026-06-18-topic>; REPO=<consumer-root>; SPINE=".flotilla/waves/$SLUG.md"
 # value lacks — not the `$` sigil (Convention 12). The scratch dir is a literal
 # path for the same reason, never `T=$(mktemp -d)`: nothing to capture, nothing
 # to guard, nothing that has to survive a call boundary. Outside the repo, so it
-# never dirties the tree the working-tree gates read.
-mkdir -p "/tmp/flotilla-start-$SLUG"
+# never dirties the tree the working-tree gates read. `-m 700` makes it
+# owner-only, matching what `mktemp -d` gave — plain `mkdir -p` defaults to
+# 0755, which would leave the wave roster world-readable at a predictable path
+# inside world-writable /tmp.
+mkdir -p -m 700 "/tmp/flotilla-start-$SLUG"
 
 # 0. THE CALL BOUNDARY (wave-shared Convention 12, half two). There is no setup
 #    step here — deliberately. This file used to define a `require_capture()`
