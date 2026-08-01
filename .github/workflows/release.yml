@@ -170,21 +170,22 @@ jobs:
         # published clean three days earlier — the floor-without-ceiling npm install
         # floats forward, and the requirement arrived with it.
         #
-        # THE EXPLICIT TAG IS `latest` ON PURPOSE — the pre-1.0 posture, decided by the
-        # operator (2026-07-30): every release of this package so far IS a beta, and
-        # the documented npm-first invocation form is the BARE `npx
-        # @formtrieb/flotilla-engine`, which installs `latest`. A prerelease parked on
-        # a side tag leaves `latest` pointing at an older beta, and the documented
-        # form silently resolves stale — exactly what happened when v0.1.0-beta.1
-        # first published under `--tag beta` and the bare form kept installing
-        # beta.0 (fixed by a manual `npm dist-tag add`). The accidental-shadowing
-        # concern the npm guard protects against does not apply while no stable line
-        # exists. REVISIT AT THE FIRST STABLE RELEASE: once a stable is out, a
-        # continuing beta line moves to `--tag beta` and this comment moves with it.
-        # A stable version publishes untagged and lands `latest`, the default.
+        # POST-1.0 POSTURE (revisited at v1.0.0, 2026-07-31 — the pre-1.0 comment this
+        # replaced named this exact moment as its own trigger): a stable line now
+        # exists, so a prerelease publishes under the `beta` dist-tag and a stable
+        # version publishes untagged and lands `latest`, the default. Before v1.0.0,
+        # every release of this package was a beta, and the documented npm-first
+        # invocation form — the bare `npx @formtrieb/flotilla-engine`, which installs
+        # `latest` — meant a prerelease parked on a side tag left `latest` pointing at
+        # an older beta and the documented form resolving stale (exactly what happened
+        # when v0.1.0-beta.1 first published under `--tag beta` and the bare form kept
+        # installing beta.0, fixed by a manual `npm dist-tag add`). That accidental-
+        # shadowing concern no longer applies now that `latest` names a stable
+        # release: a beta published to `latest` would instead SHADOW the stable line
+        # for every default install, which is the harm this arm now exists to prevent.
         run: |
           VERSION=$(node -p "require('./package.json').version")
           case "$VERSION" in
-            *-*) npm publish --tag latest ;;
+            *-*) npm publish --tag beta ;;
             *)   npm publish ;;
           esac
