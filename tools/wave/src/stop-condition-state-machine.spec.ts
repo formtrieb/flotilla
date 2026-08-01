@@ -1,12 +1,18 @@
 /**
  * Exhaustive fixture-matrix test for the Stop-Condition state-machine.
  *
- * Covers all 143 cells of the 11-state × 13-event matrix documented in
- * .claude/skills/wave-start/references/stop-condition-handling.md §Fixture-matrix.
+ * Covers every cell of the 11-state × 13-event matrix — 143 of them, asserted
+ * exhaustively by the `matrix` table at the bottom of this file, which IS the
+ * fixture matrix rather than a copy of one. Named, not pathed: the standalone
+ * stop-condition-handling document this line used to cite for the matrix was
+ * folded into the wave-start skill's own mechanics and the engine's
+ * `route-verdict` / `route-outcome` verbs, and exists under no spelling
+ * (`shipped-citation-guard.spec.ts`, which since this row also holds SPEC files
+ * to that resolution rule — see its "The spec-file question" note for why).
  *
- * Each cell is tested by the `matrix` table at the bottom of this file.
- * Re-generate snapshots with:
- *   NX_DAEMON=false NX_WORKSPACE_ROOT_PATH="" npx nx test wave-tools --update-snapshots
+ * There is nothing to re-generate: every expectation below is written out by
+ * hand, and this suite runs under vitest (`npm test` from the package root),
+ * not under the predecessor system's task runner the removed line named.
  */
 
 import { describe, expect, it } from 'vitest';

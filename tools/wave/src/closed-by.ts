@@ -1,8 +1,15 @@
 /**
  * closed-by.ts — pure classifier for `Closed-by:` lines.
  *
- * Canonical spec: .scratch/wave-orchestration/issues/55-closed-by-classifier.md
- * Parent PRD:     .scratch/wave-orchestration/wave-close-skill-PRD.md (stories 21, 3, 4, 6)
+ * Provenance:     the closed-by-classifier slice of the wave-close skill effort
+ *                 (its stories 21, 3, 4 and 6), planned in the predecessor
+ *                 wave-orchestration system flotilla was seeded from. Named, not
+ *                 pathed: that system's planning tree (which these two lines used
+ *                 to cite as `Canonical spec` and `Parent PRD`) never existed in
+ *                 THIS repo and is in no published tarball, so the pointers
+ *                 resolved only where they were written. The live specification is
+ *                 the classification-precedence table below plus this module's
+ *                 spec (`shipped-citation-guard.spec.ts`).
  *
  * This module answers the question "does this `Closed-by:` row still need a
  * real PR opened and pinned?" — a single tested predicate (`needsPin`) backed
