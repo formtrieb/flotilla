@@ -1479,3 +1479,79 @@ describe('skill-reference-guard — wave-plan currency: derived flags state what
     ).toEqual([]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wave-setup currency — the store-preflight verb name agrees across the skill
+// pair.
+//
+// Issue #77 folded the once-separate `cli-store.ts` entrypoint into the
+// `cli.ts` router and renamed its verb to `store-preflight`
+// (setup-mechanics.md's own "Unified subcommand form" note documents this as
+// the canonical name since the unification). SKILL.md kept spelling the
+// retired `cli-store preflight` form in five places even after the reference
+// file it points readers at had already moved on — the two halves of one
+// skill disagreeing about the name of the verb they both instruct an agent to
+// run. This is a currency assertion in the same family as wave-plan's above:
+// the risk is not that today's wording is wrong, but that a later edit
+// quietly reintroduces the retired spelling in one file without the other,
+// and nothing else in the suite would notice — these are skill DOCS, so
+// vitest and tsc pass over them trivially.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('skill-reference-guard — wave-setup currency: the store-preflight verb name agrees across the skill pair', () => {
+  const SKILL = '.claude/skills/wave-setup/SKILL.md';
+  const MECHANICS = '.claude/skills/wave-setup/reference/setup-mechanics.md';
+
+  /** The unified spelling since issue #77 — setup-mechanics.md's own "Unified
+   * subcommand form" note is the canonical source for this name. */
+  const CANONICAL_STORE_PREFLIGHT_VERB = 'store-preflight';
+
+  /**
+   * Every inline-code span spelling either the retired or the unified verb.
+   * Scoped to exactly these two candidates — not a bare `/preflight/` sweep —
+   * so a legitimate different verb (`host-pr preflight`, a separate owner
+   * entirely) never enters this population.
+   */
+  const STORE_PREFLIGHT_VERB_SPAN = /`(cli-store preflight|store-preflight)`/g;
+
+  const storePreflightVerbSpellings = (body: string): string[] =>
+    [...body.matchAll(STORE_PREFLIGHT_VERB_SPAN)].map((m) => m[1]);
+
+  it('setup-mechanics.md documents store-preflight as the canonical unified form (issue #77)', () => {
+    const mechanics = SOURCES.get(MECHANICS) as string;
+    expect(mechanics).toMatch(/Unified subcommand form/);
+    expect(storePreflightVerbSpellings(mechanics)).toContain(CANONICAL_STORE_PREFLIGHT_VERB);
+  });
+
+  it('finds a store-preflight verb population in both files (a guard that matches nothing is green for the wrong reason)', () => {
+    expect(storePreflightVerbSpellings(SOURCES.get(SKILL) as string).length).toBeGreaterThan(0);
+    expect(storePreflightVerbSpellings(SOURCES.get(MECHANICS) as string).length).toBeGreaterThan(0);
+  });
+
+  it('SKILL.md and setup-mechanics.md agree on ONE spelling of the store-preflight verb — no occurrence of the retired `cli-store preflight` survives in either', () => {
+    const skillSpellings = storePreflightVerbSpellings(SOURCES.get(SKILL) as string);
+    const mechanicsSpellings = storePreflightVerbSpellings(SOURCES.get(MECHANICS) as string);
+    const allSpellings = [...new Set([...skillSpellings, ...mechanicsSpellings])];
+    expect(
+      allSpellings,
+      `the wave-setup skill pair disagrees on the store-preflight verb name — found spelling(s) ` +
+        `[${allSpellings.join(', ')}] across SKILL.md and setup-mechanics.md. The unified spelling ` +
+        `since issue #77 is \`${CANONICAL_STORE_PREFLIGHT_VERB}\` (setup-mechanics.md's own "Unified ` +
+        `subcommand form" note); \`cli-store preflight\` is the retired pre-unification spelling and ` +
+        `must not survive in either file.`,
+    ).toEqual([CANONICAL_STORE_PREFLIGHT_VERB]);
+  });
+
+  it('negative control — a planted retired-spelling occurrence fails the same predicate (Convention 11)', () => {
+    // Same extractor, same predicate as the real assertion above, on a
+    // synthetic line reproducing the exact pre-fix SKILL.md spelling.
+    const planted = 'Run the `cli-store preflight` verb (step 6) to check tracker facts.\n';
+    const plantedSpellings = storePreflightVerbSpellings(planted);
+    expect(plantedSpellings).toEqual(['cli-store preflight']);
+
+    const combined = [
+      ...new Set([...storePreflightVerbSpellings(SOURCES.get(MECHANICS) as string), ...plantedSpellings]),
+    ];
+    expect(combined).not.toEqual([CANONICAL_STORE_PREFLIGHT_VERB]);
+    expect(combined).toContain('cli-store preflight');
+  });
+});
