@@ -71,6 +71,15 @@
  *                    same `planOrphanBranchSweep` the real run executes, so a
  *                    preview that reports nothing selected is no longer followed
  *                    by a real run that deletes branches it never showed.
+ *                    --orphans further carries the Scribe scratch sweep (issue
+ *                    #355) of `.flotilla/tmp` payload files, under
+ *                    `orphans.scratch` — a plan under --dry-run, a full result
+ *                    on the real run (issue #377). ONE plan object, computed
+ *                    above the --dry-run branch and executed verbatim by the
+ *                    real run; previously the sweep lived inside
+ *                    executeOrphanSweep's one-shot, which --dry-run returns
+ *                    before ever reaching, so a dry run was silent on this
+ *                    population rather than clean.
  *
  *                    --detached (issue #238) adds the THIRD population: git-
  *                    REGISTERED worktrees under the worktrees root whose HEAD is
@@ -297,6 +306,17 @@ import {
   listOrphanDirs,
   planOrphanSweep,
   executeOrphanSweep,
+  // The Scribe scratch sweep (issue #355), imported as its list → plan →
+  // execute TRIO rather than as the one-shot `sweepScribeScratch` the engine
+  // folds into `executeOrphanSweep` (issue #377). Same reason the detached
+  // sweep below is imported as a pair: the one-shot cannot preview, and this
+  // verb's `--dry-run` branch returns before any execute — so while the sweep
+  // lived inside that opaque call, a dry run was silent on the population, never
+  // clean. The one-shot stays the programmatic form and rides the package-root
+  // barrel for out-of-tree callers.
+  listScribeScratchEntries,
+  planScribeScratchSweep,
+  executeScribeScratchSweep,
   planOrphanBranchSweep,
   executeOrphanBranchSweep,
   // The detached-HEAD scratchpad sweep + the worktree-count advisory (issue
@@ -1053,6 +1073,18 @@ function resolveBranchFilter(
  * (dry-run) or full CleanupResult (real run), and its branch hygiene folds into
  * the same branchesDeleted / branchHygieneSkipped pair.
  *
+ * `--orphans` also carries the Scribe scratch sweep (issue #355) under
+ * `orphans.scratch`, on BOTH shapes (issue #377): the ScratchSweepPlan
+ * (`dir`, `present`, `selected`, `skipped`) under `--dry-run`, the
+ * ScratchSweepResult (`dir`, `present`, `removed`, `skipped`, `errors`) on the
+ * real run. ONE plan object, computed above the `--dry-run` branch and executed
+ * verbatim by the real run — so a preview reporting nothing selected is
+ * followed by a run that removes nothing, structurally rather than by
+ * agreement. Previously the sweep was reached only through
+ * `executeOrphanSweep`'s internal one-shot, which the dry-run branch returns
+ * before ever calling: a dry run was documented to be SILENT on this
+ * population, never clean.
+ *
  * `worktreeCount` (issue #238) is printed on BOTH shapes, unconditionally and
  * with no flag to remember: `{ count, threshold, level, advisory }` straight
  * from `checkWorktreeCountAdvisory`, with `advisory` carrying the engine's
@@ -1065,8 +1097,16 @@ function resolveBranchFilter(
  *
  * `commandLine` (issue #266) rides beside it on both shapes, under the same
  * unconditional rule: `{ bytes, argvBytes, envBytes, argCount, envCount,
- * threshold, level, advisory }` from `checkCommandLineSizeAdvisory`, again with
- * the engine's text verbatim and non-null exactly when `level` is `'advisory'`.
+ * threshold, maxEntryBytes, maxEntryThreshold, level, advisory }` from
+ * `checkCommandLineSizeAdvisory`, again with the engine's text verbatim and
+ * non-null exactly when `level` is `'advisory'`.
+ * `maxEntryBytes`/`maxEntryThreshold` (issue #340's PER-STRING condition,
+ * surfaced by issue #377) are the sibling pair of `bytes`/`threshold` for
+ * execve's OTHER independent E2BIG condition — added purely additively, with no
+ * existing key renamed, retyped or re-pointed. They were the one part of the
+ * measurement the CLI withheld: the per-string verdict already reached an
+ * operator folded into `level` and stated in the `advisory` prose, while the two
+ * numbers behind it were not machine-readable from this JSON at all.
  * It is the OTHER term of the same exec argument budget — the command line this
  * spawn carries — and it is printed here precisely because the count alone
  * misled once: the live occurrence blew the budget with ~1019.5 KB across 3
@@ -1162,6 +1202,28 @@ function runWorktreeCleanup(args: string[]): number {
       ? planOrphanSweep(listOrphanDirs(repoRoot, { disposableNames }))
       : null;
 
+    // The Scribe scratch sweep (issue #355) rides the SAME `--orphans` flag and
+    // reports under the SAME `orphans` key — but its plan is computed HERE,
+    // above the `--dry-run` branch, for exactly the reason `detachedPlan` below
+    // is (issue #377). It used to be reached one level down, inside
+    // `executeOrphanSweep`, which folds in the one-shot `sweepScribeScratch` —
+    // list, plan and remove inside a single opaque call. A caller cannot see,
+    // print, or share the plan that call makes, and the `--dry-run` branch
+    // returns BEFORE any execute, so a dry run neither previewed nor swept this
+    // population: it was silent on it, never clean. Unfolding the one-shot into
+    // its list → plan → execute parts is the same move the detached sweep
+    // already made, and it buys the same structural guarantee — preview and
+    // execution cannot disagree, because there is only one plan to disagree
+    // about.
+    //
+    // Read BEFORE any removal, like `worktreeCount` below, and harmlessly so:
+    // the Scribe scratch directory is a repo path (`.flotilla/tmp`) disjoint by
+    // construction from every worktrees root this verb sweeps, so no removal
+    // below can change what this listing saw.
+    const scratchPlan = orphans
+      ? planScribeScratchSweep(listScribeScratchEntries(repoRoot))
+      : null;
+
     // Detached-HEAD scratchpad sweep (issue #238), gated on `--detached`. A
     // THIRD population, disjoint from neither of the two above by construction:
     // these worktrees ARE registered (so `listOrphanDirs` cannot see them) and
@@ -1249,6 +1311,27 @@ function runWorktreeCleanup(args: string[]): number {
       argCount: cmdlineAdvisory.argCount,
       envCount: cmdlineAdvisory.envCount,
       threshold: cmdlineAdvisory.threshold,
+      // The PER-STRING term's two numbers (issue #340's second condition,
+      // surfaced here by issue #377). PURELY ADDITIVE: every key above keeps its
+      // name, its type and its meaning — `bytes`/`threshold` are still the TOTAL
+      // pair, and nothing is re-pointed at the per-string term.
+      //
+      // Without them the CLI printed the per-string VERDICT — folded into
+      // `level`, and stated in the verbatim `advisory` prose — while withholding
+      // the two numbers a machine reader needs to act on it. That is the same
+      // "ships the correction's premise, withholds the correction" shape the
+      // barrel gap (issue #357) closed one layer up, recurring at the CLI
+      // boundary. `maxEntryBytes` is the single LARGEST argv/env entry;
+      // `maxEntryThreshold` is the effective MAX_ARG_STRLEN budget it was
+      // compared against — the exact sibling of `bytes`/`threshold` for execve's
+      // OTHER, independent E2BIG condition, which fires on its own even when the
+      // total sits comfortably under budget.
+      //
+      // Byte counts only, like every number beside them: the engine never
+      // returns an argument or a variable's name or value, so nothing here can
+      // leak one into the JSON.
+      maxEntryBytes: cmdlineAdvisory.maxEntryBytes,
+      maxEntryThreshold: cmdlineAdvisory.maxEntryThreshold,
       level: cmdlineAdvisory.level,
       advisory: cmdlineAdvisory.message,
     };
@@ -1280,6 +1363,13 @@ function runWorktreeCleanup(args: string[]): number {
                   orphans: {
                     selected: orphanPlan.selected,
                     skipped: orphanPlan.skipped,
+                    // The SAME `scratchPlan` object the real run hands to
+                    // `executeScribeScratchSweep` (issue #377) — the preview
+                    // this branch used to omit entirely. Carried WHOLE,
+                    // `dir`/`present` included, so "did not look" and "looked
+                    // and found nothing" stay as distinguishable in the preview
+                    // as they already are in the result.
+                    ...(scratchPlan !== null ? { scratch: scratchPlan } : {}),
                   },
                 }
               : {}),
@@ -1313,8 +1403,28 @@ function runWorktreeCleanup(args: string[]): number {
     }
 
     const result = executeCleanup(plan, { repoRoot, disposableNames });
-    const orphanResult =
-      orphanPlan !== null ? executeOrphanSweep(orphanPlan, { repoRoot }) : null;
+    // `executeOrphanSweep` is called WITHOUT `repoRoot` on purpose (issue #377).
+    // That option has exactly ONE effect inside the engine — it gates the
+    // one-shot Scribe-scratch fold — and this CLI now owns that sweep as an
+    // explicit plan-then-execute pair so the `--dry-run` branch above can
+    // preview it. Re-adding `repoRoot` here would run the scratch sweep TWICE:
+    // the engine's own pass would delete the payloads, and the explicit pass
+    // below would then fail to remove files that are already gone, filling
+    // `orphans.scratch.errors` with removals that in fact succeeded. Nothing
+    // else in `executeOrphanSweep` reads it — the orphan-DIRECTORY removals work
+    // off the absolute paths the plan already carries.
+    const orphanResult = orphanPlan !== null ? executeOrphanSweep(orphanPlan) : null;
+
+    // Execute EXACTLY the `scratchPlan` object the `--dry-run` branch prints
+    // (issue #377) — no options needed, because a plan entry already carries its
+    // absolute path. Reported under `orphans.scratch`: the same key, and the
+    // same whole-result shape, the engine produced while it folded the sweep in
+    // itself. Additive to the orphan-DIRECTORY numbers and never merged into
+    // them — a `not-a-scribe-payload` skip read as an orphan-directory skip
+    // would be actively misleading, the same reasoning that keeps the detached
+    // sweep under its own key.
+    const scratchResult =
+      scratchPlan !== null ? executeScribeScratchSweep(scratchPlan) : null;
 
     // Execute EXACTLY the `detachedPlan` object the `--dry-run` branch above
     // prints — same `executeCleanup` as every other removal path, so the
@@ -1382,7 +1492,19 @@ function runWorktreeCleanup(args: string[]): number {
           erroredStillListed: result.erroredStillListed,
           branchesDeleted,
           branchHygieneSkipped,
-          ...(orphanResult !== null ? { orphans: orphanResult } : {}),
+          // The orphan-DIRECTORY result plus the Scribe scratch sweep's own
+          // whole result under `orphans.scratch` (issue #377) — the same key,
+          // in the same place, that `executeOrphanSweep`'s internal fold used to
+          // put it; only the plan it executed is now the one the `--dry-run`
+          // branch above printed.
+          ...(orphanResult !== null
+            ? {
+                orphans: {
+                  ...orphanResult,
+                  ...(scratchResult !== null ? { scratch: scratchResult } : {}),
+                },
+              }
+            : {}),
           // The detached sweep's own CleanupResult, reported whole (removed /
           // skipped-with-reason / errors / both ENOTEMPTY-family classes) under
           // its own key rather than merged into the registered-GC numbers: the
@@ -1405,6 +1527,13 @@ function runWorktreeCleanup(args: string[]): number {
     // `executeCleanup`), so it must contribute to this verdict too — a sweep
     // whose removals errored while the verb still exited 0 is exactly the
     // silent-failure shape the class list above exists to prevent.
+    //
+    // `orphans.scratch.errors` is deliberately NOT in this list, and issue #377
+    // did not put it there: it was outside that list while the scratch sweep sat
+    // inside `executeOrphanSweep` (whose `errors` field carries orphan
+    // DIRECTORIES only), and surfacing the sweep's plan to `--dry-run` changes
+    // what is PREVIEWED, never what the verb exits with. Moving it would be a
+    // behaviour change to the exit contract, which belongs to its own row.
     const anyFailure =
       result.errors.length > 0 ||
       result.deregisteredNotDeleted.length > 0 ||
