@@ -1,8 +1,17 @@
 /**
  * 5-Gate Definition-of-Ready validator for a single wave-eligible issue.
  *
- * Spec is canonical in `.scratch/wave-orchestration/PRD.md` §S2 and in
- * `.scratch/wave-orchestration/issues/05-wave-validate-skill.md`. The gates:
+ * Provenance:     the wave-orchestration PRD's §S2 (issue #05's
+ *                 wave-validate-skill slice), planned in the predecessor
+ *                 wave-orchestration system flotilla was seeded from. Named,
+ *                 not pathed: that system's planning tree (previously cited
+ *                 here by two direct paths) never existed in THIS repo and is
+ *                 in no published tarball, so the citations resolved only
+ *                 where they were written. The live specification is the
+ *                 gate list below plus this module's spec
+ *                 (`shipped-citation-guard.spec.ts`).
+ *
+ * The gates:
  *
  *   1. Header-Block present + parseable (delegates to header-parser)
  *   2. `Files:` globs expand without error against the repo file tree
