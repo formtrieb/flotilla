@@ -1010,16 +1010,29 @@ const THRESHOLD_REGIONS: ReadonlyArray<{
     end: '### 5. Mark each row in-flight',
   },
   {
+    // Narrowed (issue #379, disclosure 357.2): this region used to run all the
+    // way to "# 5. Mark each NON-HELD row in-flight", which swallowed the
+    // command-line-advisory comment block (bytes, not worktrees) whole. A
+    // comparison-shaped BYTE value written there by mistake would have failed
+    // this pin — naming WORKTREE_COUNT_ADVISORY_THRESHOLD, the wrong constant
+    // for a byte budget. The end anchor now stops right where that block
+    // starts; COMMAND_LINE_ADVISORY_REGIONS below owns everything from there
+    // to "# 4b." under its OWN rule (see the dedicated describe block).
     label: 'start-mechanics.md step-4a shell block',
     path: START_MECHANICS_MD,
     start: '# 4a. Worktree-count advisory',
-    end: '# 5. Mark each NON-HELD row in-flight',
+    end: 'The engine surfaces the same verdict machine-readably: every',
   },
   {
+    // Narrowed the same way, same issue: the prose twin used to run all the
+    // way to "## Routing a tuple", swallowing "### The command-line term is
+    // itself TWO conditions" (and the plugin/anchor/compose-currency gates
+    // past it) into a region pinned to the worktree-count constant. The end
+    // anchor now stops right at that subsection's own heading.
     label: 'start-mechanics.md worktree-count advisory section',
     path: START_MECHANICS_MD,
     start: '## The worktree-count advisory (step 4a)',
-    end: '## Routing a tuple',
+    end: '### The command-line term is itself TWO conditions',
   },
 ];
 
@@ -1121,6 +1134,23 @@ describe('skill-schema-drift — the worktree-count threshold literal pins WORKT
     expect(md).toContain('skill-schema-drift.spec.ts');
   });
 
+  it.each([
+    ['wave-start/SKILL.md', WAVE_START_SKILL_MD],
+    ['start-mechanics.md', START_MECHANICS_MD],
+  ] as const)(
+    '%s states the comparison-shape narrowing at the guard citation site (issue #379, disclosure 357.1)',
+    (_label, path) => {
+      // An AC that cites this guard as "values stay engine-owned" is claiming
+      // more than the guard enforces: thresholdComparisons() (above) only ever
+      // matches a `>`/`≤`/`>=`/`<=` immediately followed by digits — a value
+      // restated in prose, with no comparison operator, passes the guard
+      // silently. Every citation site says so, in the same breath as the pin.
+      const md = readFileSync(path, 'utf-8');
+      expect(md).toMatch(/COMPARISON-SHAPED/);
+      expect(md).toMatch(/prose/i);
+    },
+  );
+
   it.each(THRESHOLD_REGIONS.map((r) => [r.label, r] as const))(
     'negative control — a drifted literal in %s is caught',
     (_label, region) => {
@@ -1192,6 +1222,148 @@ describe('skill-schema-drift — the worktree-count threshold literal pins WORKT
       12, 12,
     ]);
     expect(thresholdComparisons('#   >12 → advisory; <=12 → silent\n')).toEqual([12, 12]);
+  });
+});
+
+// ─── the command-line advisory subsection is carved OUT of the worktree-count
+//     pin, and attributes its own failures (issue #379, disclosure 357.2) ────
+//
+// The two regions above are pinned to WORKTREE_COUNT_ADVISORY_THRESHOLD (12).
+// Before this carve, both used to run past the command-line-advisory content —
+// the comment block / prose subsection that names COMMAND_LINE_ADVISORY_THRESHOLD_BYTES
+// and MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES (a pair of BYTE budgets that have
+// nothing to do with worktree counting) — so a comparison-shaped byte value
+// written there by mistake would have failed the worktree-count pin, naming
+// the wrong constant (12) in the failure message.
+//
+// This subsection carries no threshold literal to pin: both engine constants
+// are named, deliberately never restated as values (see the prose at "The
+// command-line term is itself TWO conditions" and the matching shell-block
+// comment). Its OWN rule is therefore simpler than the worktree-count pin's —
+// no comparison-shaped occurrence belongs here at all — and a violation is
+// reported under THIS region's own label, never the worktree-count constant's.
+
+/** The two places (shell block + prose twin) that describe the command-line
+ * advisory — carved out of THRESHOLD_REGIONS above so a byte value written
+ * here is never misattributed to WORKTREE_COUNT_ADVISORY_THRESHOLD. Each entry
+ * names the sibling worktree-count-pinned region it was carved out of, so the
+ * negative control below can prove the carve (not just the new rule) by
+ * showing the sibling region stays untouched by an injection here. */
+const COMMAND_LINE_ADVISORY_REGIONS: ReadonlyArray<{
+  label: string;
+  path: string;
+  start: string;
+  end: string;
+  worktreeCounterpart: (typeof THRESHOLD_REGIONS)[number];
+}> = [
+  {
+    label: 'start-mechanics.md step-4a shell block — command-line advisory subsection',
+    path: START_MECHANICS_MD,
+    start: 'The engine surfaces the same verdict machine-readably: every',
+    end: '# 4b. Plugin/engine lockstep gate',
+    worktreeCounterpart: THRESHOLD_REGIONS[1],
+  },
+  {
+    label: 'start-mechanics.md worktree-count advisory section — command-line advisory subsection',
+    path: START_MECHANICS_MD,
+    start: '### The command-line term is itself TWO conditions',
+    end: '## The plugin/engine lockstep gate (step 4b)',
+    worktreeCounterpart: THRESHOLD_REGIONS[2],
+  },
+];
+
+/**
+ * The load-bearing assertion for the carved-out subsection: it is a defect
+ * for ANY comparison-shaped number to appear here at all, because both
+ * COMMAND_LINE_ADVISORY_THRESHOLD_BYTES and MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES
+ * are, by the prose's own stated rule, named and never restated as literals.
+ * Throws naming THIS region/label and the offending value(s) — and deliberately
+ * never mentions WORKTREE_COUNT_ADVISORY_THRESHOLD, so a failure here cannot
+ * be misread as the worktree-count pin firing.
+ */
+function assertNoRestatedByteThreshold(region: string, label: string): void {
+  const found = thresholdComparisons(region);
+  if (found.length > 0) {
+    throw new Error(
+      `${label}: comparison-shaped value(s) ${found.join('/')} found. This is the ` +
+        "command-line advisory subsection's own rule: COMMAND_LINE_ADVISORY_THRESHOLD_BYTES " +
+        'and MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES (both in tools/wave/src/worktree-cleanup.ts) ' +
+        'are named here by identifier, never restated as literals. A comparison-shaped number in ' +
+        'this subsection is drift toward restating one of those byte budgets — name the constant ' +
+        'instead of the value.',
+    );
+  }
+}
+
+describe('skill-schema-drift — the command-line advisory subsection carries no restated literal (issue #379)', () => {
+  it.each(COMMAND_LINE_ADVISORY_REGIONS.map((r) => [r.label, r] as const))(
+    'today, %s carries ZERO comparison-shaped occurrences',
+    (_label, region) => {
+      const md = readFileSync(region.path, 'utf-8');
+      const slice = regionBetween(md, region.label, region.start, region.end);
+      expect(thresholdComparisons(slice)).toEqual([]);
+      expect(() => assertNoRestatedByteThreshold(slice, region.label)).not.toThrow();
+    },
+  );
+
+  it.each(COMMAND_LINE_ADVISORY_REGIONS.map((r) => [r.label, r] as const))(
+    '%s names both byte-budget constants by identifier',
+    (_label, region) => {
+      const md = readFileSync(region.path, 'utf-8');
+      const slice = regionBetween(md, region.label, region.start, region.end);
+      expect(slice).toContain('COMMAND_LINE_ADVISORY_THRESHOLD_BYTES');
+      expect(slice).toContain('MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES');
+    },
+  );
+
+  it.each(COMMAND_LINE_ADVISORY_REGIONS.map((r) => [r.label, r] as const))(
+    'NEGATIVE CONTROL — a comparison-shaped byte value placed inside %s fails naming THAT subsection\'s own rule, never the worktree-count constant (disclosure 357.2, falsified live)',
+    (_label, region) => {
+      const md = readFileSync(region.path, 'utf-8');
+      // A comparison-shaped BYTE value — the same SHAPE the worktree-count pin
+      // matches (`>`/`≤`/`>=`/`<=` + digits), but a value nowhere near 12, and
+      // about bytes, not worktrees. Injected right after the subsection's own
+      // start anchor, so it lands inside the carved-out region and nowhere else.
+      const poisoned = md.replace(
+        region.start,
+        `${region.start}\n\nA drifted mention: > 131072 bytes.\n`,
+      );
+      expect(poisoned).not.toEqual(md); // the replace actually matched
+
+      // 1. The carved-out subsection catches it, naming ITS OWN region/rule —
+      //    not the worktree-count constant.
+      const poisonedSlice = regionBetween(poisoned, region.label, region.start, region.end);
+      expect(thresholdComparisons(poisonedSlice)).toContain(131072);
+      let thrown: Error | undefined;
+      try {
+        assertNoRestatedByteThreshold(poisonedSlice, region.label);
+      } catch (e) {
+        thrown = e as Error;
+      }
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain(region.label);
+      expect(thrown!.message).toContain('131072');
+      expect(thrown!.message).not.toContain('WORKTREE_COUNT_ADVISORY_THRESHOLD');
+
+      // 2. The carve itself, not just the new rule: the sibling worktree-count
+      //    -pinned region never even sees the injected value, and its own pin
+      //    passes exactly as it did before the injection.
+      const wc = region.worktreeCounterpart;
+      const worktreeSlice = regionBetween(poisoned, wc.label, wc.start, wc.end);
+      expect(thresholdComparisons(worktreeSlice)).not.toContain(131072);
+      expect(() =>
+        assertThresholdPinned(worktreeSlice, wc.label, WORKTREE_COUNT_ADVISORY_THRESHOLD),
+      ).not.toThrow();
+    },
+  );
+
+  it('the matcher itself did NOT widen — a prose (non-comparison-shaped) mention of a byte value still passes', () => {
+    // The comparison-shape narrowing is deliberate and stays (reviewer hint):
+    // this guard, like the worktree-count pin above, catches only occurrences
+    // shaped like a comparison. A bare number in prose — "131072 bytes", no
+    // leading >/≤/>=/<= — is not caught, exactly as it is not caught for the
+    // worktree-count constant either (the sibling pin's own narrowing).
+    expect(thresholdComparisons('the byte budget is 131072 bytes, roughly')).toEqual([]);
   });
 });
 
