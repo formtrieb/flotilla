@@ -157,6 +157,57 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    */
   getClosingState(number: number): Promise<ClosingPrState>;
   /**
+   * Issue NUMBERS of the issues NATIVELY blocking this one, via GitHub's own
+   * issue-dependencies API — orthogonal to the body-codec `## Blocked by`
+   * section. {@link GitHubIssuesStore.read} unions both (ADR-0020's read-union,
+   * ported: without it the DoR gate is blind to native relations a consumer
+   * already maintains, and dispatches a row whose real blocker is still open).
+   * The mirroring *write* half is {@link addBlockedBy}.
+   *
+   * The seam speaks the store's OWN identity — the issue number (ADR-0001) —
+   * exactly as the Linear seam speaks `EX-16` identifiers. GitHub's separate
+   * per-issue DATABASE id (the `id` field, distinct from `number`) is what the
+   * dependency endpoints are actually keyed by; it stays seam-internal, the same
+   * stance `LinearApi` takes with Linear's UUIDs.
+   *
+   * Real impl: `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/
+   * blocked_by` → 200 with an array of full issue objects (docs.github.com/en/
+   * rest/issues/issue-dependencies, read 2026-08-03). PAGINATED (`per_page`
+   * default 30, max 100) — it MUST page to exhaustion for the same reason
+   * {@link listOpenIssues} does: a truncated blocker set silently UNBLOCKS a row.
+   * Throws on an unknown number.
+   */
+  getBlockedBy(number: number): Promise<number[]>;
+  /**
+   * Mirror ONE body-codec blockedBy ref into a NATIVE GitHub issue dependency
+   * (the write half of {@link getBlockedBy}): record that `blockerNumber` blocks
+   * `blockedNumber` — so from `blockedNumber`'s own perspective it is
+   * *blocked-by* `blockerNumber`. The read union then surfaces `blockerNumber`
+   * in `blockedNumber`'s blockedBy, giving humans a visible dependency on the
+   * issue itself rather than only a markdown line in its body.
+   *
+   * ADDITIVE-ONLY by contract, exactly as `LinearApi.addBlockedBy` is: this ONLY
+   * ever creates a dependency. It never deletes or updates one, so a
+   * human-drawn dependency survives any re-scope and a stale mirror is harmless
+   * (the read-union's dedup tolerates double representation). The body codec
+   * stays the canonical, store-agnostic home of blockedBy — this is a redundant
+   * visibility mirror, never the source of truth. GitHub *does* publish a
+   * removal endpoint (`DELETE …/dependencies/blocked_by/{issue_id}`, same doc
+   * page) and it is deliberately NOT declared here: ADR-0020 settled that the
+   * mirror has no delete path, so a delete verb would be unreachable surface.
+   *
+   * Real impl: resolve `blockerNumber` to its DATABASE id (readable as `id` off
+   * the issue object), then `POST /repos/{owner}/{repo}/issues/{blockedNumber}/
+   * dependencies/blocked_by` with `{ issue_id }` → 201 (same doc page, read
+   * 2026-08-03).
+   *
+   * Throws on an unresolvable number (either side) or a rejected write. The
+   * caller ({@link GitHubIssuesStore}) treats a throw as a best-effort mirror
+   * skip: the authoritative body-codec write already happened, so a failed
+   * native mirror is skipped, never fatal.
+   */
+  addBlockedBy(blockedNumber: number, blockerNumber: number): Promise<void>;
+  /**
    * Required status checks a branch's ACTIVE RULESETS put in force, read from the
    * effective-rules endpoint (GitHub `GET /repos/{o}/{r}/rules/branches/{branch}`;
    * default: the repo's default branch). This is the ruleset-aware companion to

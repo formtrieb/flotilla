@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { GitHubIssuesStore } from './github-issues-store';
 import { InMemoryGitHubApi, githubConformanceHooks } from './github-api-fake';
-import type { CreateInput } from '../issue-store';
+import type { CreateInput, AnnotatePatch } from '../issue-store';
+import { parseBody } from '../body-codec';
 import {
   runIssueStoreConformance,
   type ConformanceHarness,
@@ -182,6 +183,275 @@ describe('GitHubIssuesStore — GitHub-specific mapping', () => {
 
   it('parseRef() throws on a non-integer id', () => {
     expect(() => store.parseRef('not-a-number')).toThrow();
+  });
+});
+
+// ── blockedBy read-union (ADR-0020's DoR-gate fix, ported to GitHub's native
+// issue-dependencies API): the body-codec can't see a native blocked-by
+// dependency a consumer already maintains — read() must union both sides,
+// deduped by normalized ref identity, or the DoR gate dispatches a row whose
+// real blocker is still open. ───────────────────────────────────────────────
+describe('GitHubIssuesStore — blockedBy read-union (ADR-0020 DoR-gate fix)', () => {
+  let api: InMemoryGitHubApi;
+  let store: GitHubIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryGitHubApi();
+    store = new GitHubIssuesStore({ api });
+  });
+
+  it('read() unions body-codec blockedBy with native dependencies', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const blocked = await store.create(
+      baseInput({ title: 'blocked', blockedBy: [store.parseRef(blocker)] }),
+    );
+    const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
+    api.addNativeDependency(Number(blocked), Number(nativeBlocker));
+    const view = await store.read(blocked);
+    const ids = (view.blockedBy === 'none' ? [] : view.blockedBy).map((r) => r.issue);
+    expect(ids).toHaveLength(2); // codec ref + native ref, deduped
+    expect(ids.sort()).toEqual([Number(blocker), Number(nativeBlocker)].sort());
+  });
+
+  it('a purely-native blocker surfaces even with an empty codec block', async () => {
+    const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
+    const blocked = await store.create(baseInput({ title: 'blocked', blockedBy: 'none' }));
+    api.addNativeDependency(Number(blocked), Number(nativeBlocker));
+    const view = await store.read(blocked);
+    const ids = (view.blockedBy === 'none' ? [] : view.blockedBy).map((r) => r.issue);
+    expect(ids).toEqual([Number(nativeBlocker)]);
+  });
+
+  it('duplicate codec+native refs dedupe to one', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const blocked = await store.create(
+      baseInput({ title: 'blocked', blockedBy: [store.parseRef(blocker)] }),
+    );
+    api.addNativeDependency(Number(blocked), Number(blocker)); // the SAME blocker, both ways
+    const view = await store.read(blocked);
+    const ids = (view.blockedBy === 'none' ? [] : view.blockedBy).map((r) => r.issue);
+    expect(ids).toEqual([Number(blocker)]);
+  });
+
+  it('a FOREIGN-REPO codec ref never collapses into this repo\'s same-numbered native dependency', async () => {
+    // GitHub ids are slug-less, so `other#N` names a DIFFERENT issue than `#N`.
+    // The dedup key keeps them apart deliberately (the Linear port substitutes an
+    // owning-team slug here; GitHub has none to substitute).
+    const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
+    const n = Number(nativeBlocker);
+    const blocked = await store.create(
+      baseInput({ title: 'blocked', blockedBy: [{ slug: 'other', issue: n }] }),
+    );
+    api.addNativeDependency(Number(blocked), n);
+    const view = await store.read(blocked);
+    const refs = view.blockedBy === 'none' ? [] : view.blockedBy;
+    expect(refs).toHaveLength(2); // NOT deduped — two different issues
+    expect(refs).toEqual(expect.arrayContaining([{ slug: 'other', issue: n }, { issue: n }]));
+  });
+
+  it('the union is a read()-only layer — list scans stay codec-only (documented asymmetry)', async () => {
+    const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
+    const blocked = await store.create(baseInput({ title: 'blocked', blockedBy: 'none' }));
+    api.addNativeDependency(Number(blocked), Number(nativeBlocker));
+    const listed = (await store.listOpen('wave-ready')).find((v) => v.id === blocked);
+    expect(listed?.blockedBy).toBe('none'); // no per-issue getBlockedBy call in a scan
+    expect((await store.read(blocked)).blockedBy).not.toBe('none'); // read() DOES union
+  });
+});
+
+// ── blockedBy native WRITE half (ADR-0020's fast-follow, ported): create and
+// annotate MIRROR the canonical body-codec blockedBy into native GitHub issue
+// dependencies so a blocked row carries a visible dependency, not just a body
+// line. Additive-only (never deletes), best-effort (a failed mirror never fails
+// the issue write), and the body codec stays the canonical home. ─────────────
+describe('GitHubIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follow)', () => {
+  let api: InMemoryGitHubApi;
+  let store: GitHubIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryGitHubApi();
+    store = new GitHubIssuesStore({ api });
+  });
+
+  it('create mirrors EVERY blockedBy ref into a native dependency (multi-ref)', async () => {
+    const b1 = await store.create(baseInput({ title: 'blocker one' }));
+    const b2 = await store.create(baseInput({ title: 'blocker two' }));
+    const blocked = await store.create(
+      baseInput({ title: 'blocked', blockedBy: [store.parseRef(b1), store.parseRef(b2)] }),
+    );
+    expect((await api.getBlockedBy(Number(blocked))).sort()).toEqual(
+      [Number(b1), Number(b2)].sort(),
+    );
+  });
+
+  it('create with blockedBy "none" mirrors nothing', async () => {
+    const id = await store.create(baseInput({ blockedBy: 'none' }));
+    expect(await api.getBlockedBy(Number(id))).toEqual([]);
+  });
+
+  it('the body codec stays the CANONICAL home — the blockedBy wire form is written unchanged alongside the native mirror', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    const codec = parseBody((await api.getIssue(Number(blocked))).body).blockedBy;
+    expect(codec).not.toBe('none');
+    expect((codec as { issue: number }[]).map((r) => r.issue)).toEqual([Number(blocker)]);
+  });
+
+  it('annotate mirrors a body-codec ref not yet represented natively ("newly added" reconcile)', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failDependencyWrites(new Error('dependency write down')); // create-time mirror fails
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([]); // create mirror was skipped
+    api.failDependencyWrites(null);
+    await store.annotate(blocked, { files: ['src/new.ts'] }); // any annotate reconciles
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(blocker)]);
+  });
+
+  it('annotate is strictly ADDITIVE — a pre-existing native dependency is never deleted, and an already-native ref is not duplicated', async () => {
+    const codecBlocker = await store.create(baseInput({ title: 'codec blocker' }));
+    const humanBlocker = await store.create(baseInput({ title: 'human-drawn blocker' }));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(codecBlocker)] }));
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(codecBlocker)]); // create mirror
+    // a human draws a native dependency on a blocker that is NOT in the body codec:
+    api.addNativeDependency(Number(blocked), Number(humanBlocker));
+
+    await store.annotate(blocked, { risk: 'isolated-refactor' });
+
+    const native = await api.getBlockedBy(Number(blocked));
+    // no-delete guarantee: BOTH survive; no-duplicate: the codec ref stays single.
+    expect(native.filter((n) => n === Number(codecBlocker))).toEqual([Number(codecBlocker)]);
+    expect(native).toContain(Number(humanBlocker));
+    expect(native.sort()).toEqual([Number(codecBlocker), Number(humanBlocker)].sort());
+  });
+
+  it('a REJECTED native dependency write is non-fatal for create — the issue write survives, the codec ref stays authoritative', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failDependencyWrites(new Error('POST dependencies/blocked_by rejected'));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    // create RESOLVED (never threw); read() still surfaces the codec ref.
+    const view = await store.read(blocked);
+    expect(view.blockedBy).not.toBe('none');
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([]); // the mirror was skipped
+  });
+
+  it('a REJECTED native dependency write is non-fatal for annotate — the annotate body write still lands', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failDependencyWrites(new Error('dependency write down'));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    await expect(store.annotate(blocked, { files: ['src/x.ts'] })).resolves.toBeUndefined();
+    expect((await store.read(blocked)).files).toEqual(['src/x.ts']);
+  });
+
+  it('an UNRESOLVABLE blockedBy ref is skipped non-fatally; a resolvable sibling still mirrors', async () => {
+    const realBlocker = await store.create(baseInput({ title: 'real blocker' }));
+    const blocked = await store.create(
+      baseInput({ blockedBy: [{ issue: 9999 }, store.parseRef(realBlocker)] }),
+    );
+    // only the resolvable ref mirrored; the phantom #9999 was skipped, not thrown.
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(realBlocker)]);
+    // and the body codec (authoritative) still carries BOTH refs untouched.
+    const codec = parseBody((await api.getIssue(Number(blocked))).body).blockedBy;
+    expect((codec as { issue: number }[]).map((r) => r.issue).sort()).toEqual(
+      [9999, Number(realBlocker)].sort(),
+    );
+  });
+
+  it('a CROSS-REPO ref is never mirrored onto this repo\'s same-numbered issue (the deliberate divergence from the Linear port)', async () => {
+    // GitHub's dependency endpoints are repo-scoped, so mirroring `other#N`
+    // here would create a dependency on THIS repo's #N — a silently wrong
+    // relation, worse than a missing mirror. It is skipped instead.
+    const localIssue = await store.create(baseInput({ title: 'this repo\'s same-numbered issue' }));
+    const n = Number(localIssue);
+    const blocked = await store.create(baseInput({ blockedBy: [{ slug: 'other', issue: n }] }));
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([]); // nothing mirrored
+    // the codec keeps the cross-repo ref, authoritatively.
+    const codec = parseBody((await api.getIssue(Number(blocked))).body).blockedBy;
+    expect(codec).toEqual([{ slug: 'other', issue: n }]);
+  });
+
+  it('annotate on a genuine decorate-target (no Files section pre-patch) exits 0 with labels + body writes applied', async () => {
+    // a bare, not-yet-decorated issue: no `## Files` / `## Acceptance criteria`
+    // section at all — parsing THIS pre-patch body throws (missing `## Files`).
+    const { number } = await api.createIssue({
+      title: 'not yet decorated',
+      body: 'Some free-form prose with no managed sections yet.',
+      labels: [],
+    });
+
+    await expect(
+      store.annotate(String(number), {
+        risk: 'isolated-refactor',
+        worker: 'background',
+        files: ['src/new.ts'],
+        acceptanceCriteria: [{ text: 'does the thing', checked: false }],
+      }),
+    ).resolves.toBeUndefined();
+
+    const gh = await api.getIssue(number);
+    expect(gh.labels).toEqual(
+      expect.arrayContaining(['risk/isolated-refactor', 'worker/background']),
+    );
+    const parsed = parseBody(gh.body);
+    expect(parsed.files).toEqual(['src/new.ts']);
+    expect(parsed.acceptanceCriteria).toEqual([{ text: 'does the thing', checked: false }]);
+  });
+
+  it('the mirror reconciles from the UPDATED (post-patch) body, not the stale pre-patch read', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    // a genuine decorate-target: the raw pre-patch body already carries a
+    // `## Blocked by` ref (unaffected by annotate, which never rewrites that
+    // section) but has NO `## Files` / `## Acceptance criteria` section — so
+    // parsing the STALE pre-patch body throws, while parsing the UPDATED
+    // post-patch body succeeds and surfaces the ref to mirror.
+    const { number } = await api.createIssue({
+      title: 'decorate target with a pre-existing Blocked by ref',
+      body: `## Blocked by\n\n#${Number(blocker)}\n`,
+      labels: [],
+    });
+
+    await expect(
+      store.annotate(String(number), {
+        files: ['src/new.ts'],
+        acceptanceCriteria: [{ text: 'does the thing', checked: false }],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(await api.getBlockedBy(number)).toEqual([Number(blocker)]);
+  });
+
+  it('a body that STILL fails to parse after the patch degrades to a skipped mirror — never a thrown annotate', async () => {
+    // only `files` is patched, never `acceptanceCriteria` — so even the UPDATED
+    // body is missing the required `## Acceptance criteria` section and
+    // parseBody keeps throwing. annotate must still resolve.
+    const { number } = await api.createIssue({
+      title: 'still unparseable after the patch',
+      body: 'no managed sections at all',
+      labels: [],
+    });
+
+    await expect(store.annotate(String(number), { files: ['src/x.ts'] })).resolves.toBeUndefined();
+    expect((await api.getIssue(number)).body).toContain('## Files');
+    expect(await api.getBlockedBy(number)).toEqual([]); // mirror skipped, not attempted
+  });
+
+  // ── ADR-0025's facet boundary: dependency structure is out-of-band. The
+  // mirror reconciles the CANONICAL body codec, never a patch field. ─────────
+  it('ADR-0025 boundary: blockedBy is NOT a member of AnnotatePatch', () => {
+    // Compile-time assertion. Adding `blockedBy` to AnnotatePatch flips this
+    // conditional type to `true`, and the `false` initialiser stops compiling —
+    // `tsc --noEmit` is the gate that catches it; this expect() only keeps the
+    // assertion reachable from (and reported by) the suite.
+    const blockedByIsOnThePatch: 'blockedBy' extends keyof AnnotatePatch ? true : false = false;
+    expect(blockedByIsOnThePatch).toBe(false);
+  });
+
+  it('ADR-0025 boundary: annotate never rewrites the Blocked by section — the mirror only ADDS a native representation of what the codec already says', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    const before = (await api.getIssue(Number(blocked))).body;
+    await store.annotate(blocked, { files: ['src/new.ts'] });
+    const after = (await api.getIssue(Number(blocked))).body;
+    const codecBefore = parseBody(before).blockedBy;
+    const codecAfter = parseBody(after).blockedBy;
+    expect(codecAfter).toEqual(codecBefore); // dependency structure untouched by the patch
   });
 });
 

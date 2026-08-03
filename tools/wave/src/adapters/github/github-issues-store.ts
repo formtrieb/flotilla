@@ -20,6 +20,7 @@ import type {
   IssueView,
   CoarseState,
   IssueRef,
+  BlockedBy,
   TriageSchema,
   TriageView,
   ApplyTriageInput,
@@ -129,6 +130,12 @@ export class GitHubIssuesStore implements IssueStore {
       body,
       labels,
     });
+    // Mirror the just-written body-codec blockedBy into NATIVE GitHub issue
+    // dependencies (ADR-0020's write half, ported) so a blocked row carries a
+    // visible dependency on the issue itself, not just a body line. Best-effort:
+    // the body-codec write above is the authoritative one, so a failed mirror
+    // never fails create().
+    await this.mirrorBlockedBy(number, decorated.blockedBy);
     return String(number); // filingHint ignored — id is the opaque issue number (ADR-0001)
   }
 
@@ -178,6 +185,29 @@ export class GitHubIssuesStore implements IssueStore {
       body = upsertLine(body, 'Parent', parentToLine(patch.parent));
     }
     if (body !== gh.body) await this.api.setBody(n, body);
+
+    // Mirror the issue's CANONICAL body-codec blockedBy into native dependencies
+    // (the write half). AnnotatePatch deliberately carries no `blockedBy`
+    // (dependency structure is out-of-band — issue-store.ts; ADR-0025 keeps it
+    // off the patch), and annotate never rewrites the Blocked-by section, so
+    // this reconciles the native side against the EXISTING codec block: any
+    // codec ref not yet natively represented is created, additively. It NEVER
+    // deletes — a human-drawn or stale native dependency survives.
+    //
+    // Parse the UPDATED (post-patch) `body` local, not the stale `gh.body` read
+    // at the top: on a genuine decorate-target the pre-patch body has no Files
+    // section yet (that is exactly the write this call just performed), so
+    // parsing the pre-patch value throws even though the write succeeded. The
+    // parse must sit INSIDE this same try — a throw from parseBody in the
+    // argument expression would happen BEFORE mirrorBlockedBy's own per-ref
+    // catches and escape annotate() as an uncaught rejection after every write
+    // had already landed (the FOR-77 shape the Linear port fixed).
+    try {
+      await this.mirrorBlockedBy(n, parseBody(body).blockedBy);
+    } catch {
+      // best-effort: the body-codec write above is authoritative and already
+      // landed; a body that still fails to parse must not fail annotate().
+    }
   }
 
   // ── amend (ADR-0025 — authored content: title + free-prose sections) ───────
@@ -217,7 +247,81 @@ export class GitHubIssuesStore implements IssueStore {
     const n = Number(id);
     if (!Number.isInteger(n)) throw new Error(`Malformed GitHub issue id: ${id}`);
     const gh = await this.api.getIssue(n);
-    return this.project(id, gh);
+    const view = this.project(id, gh);
+    return { ...view, blockedBy: await this.unionBlockedBy(n, view.blockedBy) };
+  }
+
+  /**
+   * Read-side union (ADR-0020's DoR-gate fix, ported to GitHub's native
+   * issue-dependencies API): the body-codec `blockedBy` cannot see a native
+   * blocked-by dependency the consumer already maintains on the issue, and
+   * without this union the DoR gate would dispatch a row whose real blocker is
+   * still open. Native numbers are mapped through {@link parseRef} — the same
+   * inversion the codec refs were minted through — so both sides normalize to
+   * the same `IssueRef` shape and dedupe correctly.
+   *
+   * Dedup key: GitHub's own ids are SLUG-LESS (`parseRef('16') → {issue:16}`),
+   * so unlike the Linear port there is no owning-team slug to substitute. A
+   * codec ref that DOES carry a slug is a foreign-REPO reference (`other#5`,
+   * body-codec `REF_RE`) and names a different issue than this repo's `#5` — so
+   * {@link refKey} keeps them apart deliberately rather than collapsing them.
+   */
+  private async unionBlockedBy(n: number, codec: BlockedBy): Promise<BlockedBy> {
+    const nativeNumbers = await this.api.getBlockedBy(n);
+    if (nativeNumbers.length === 0) return codec;
+    const merged = new Map<string, IssueRef>();
+    for (const ref of codec === 'none' ? [] : codec) merged.set(refKey(ref), ref);
+    for (const blocker of nativeNumbers) {
+      const ref = this.parseRef(String(blocker));
+      merged.set(refKey(ref), ref);
+    }
+    const out = [...merged.values()];
+    return out.length === 0 ? 'none' : out;
+  }
+
+  /**
+   * The WRITE counterpart of {@link unionBlockedBy} (ADR-0020's fast-follow, the
+   * same shape the Linear adapter carries): mirror the canonical body-codec
+   * `blockedBy` into NATIVE GitHub issue dependencies so a blocked row carries a
+   * visible dependency, not just a body line. Three properties, all load-bearing:
+   *
+   *  - **Additive-only.** Only refs NOT already represented natively are created
+   *    (delta vs {@link GitHubApi.getBlockedBy}, keyed by the SAME {@link refKey}
+   *    the read-union dedups on). There is no delete/update path: a human-drawn
+   *    dependency survives any re-scope, and a stale mirror is harmless (read()
+   *    dedups double representation). "Newly added refs" = codec refs missing
+   *    from the native side — the AnnotatePatch has no `blockedBy` (ADR-0025), so
+   *    annotate reconciles the existing codec block rather than a patch delta.
+   *  - **Best-effort / non-fatal.** The body-codec write is the authoritative one
+   *    (ADR-0020); a mirror that throws — an unresolvable number, a foreign-repo
+   *    ref this repo-scoped endpoint cannot address, or a refused dependency
+   *    write — is SKIPPED per-ref, never propagated, so create()/annotate()
+   *    always complete the issue write. No logger seam exists in the engine, so
+   *    the disclosure is structural: read() still surfaces the codec ref via the
+   *    union, and a later create/annotate re-reconciles the native side.
+   *  - **The codec stays canonical.** This never rewrites the body; it only adds
+   *    a redundant, human-visible representation of what the body already says.
+   */
+  private async mirrorBlockedBy(n: number, blockedBy: BlockedBy): Promise<void> {
+    if (blockedBy === 'none' || blockedBy.length === 0) return;
+    let existing: Set<string>;
+    try {
+      existing = new Set(
+        (await this.api.getBlockedBy(n)).map((b) => refKey(this.parseRef(String(b)))),
+      );
+    } catch {
+      existing = new Set(); // a failed native read must not fail the body write
+    }
+    for (const ref of blockedBy) {
+      if (existing.has(refKey(ref))) continue; // already native — additive, no duplicate
+      try {
+        await this.api.addBlockedBy(n, refToIssueNumber(ref));
+      } catch {
+        // swallow — best-effort mirror. The authoritative body-codec write
+        // already landed; a missing native mirror is harmless (read() unions
+        // codec ∪ native and dedups).
+      }
+    }
   }
 
   async transition(id: string, rung: ClaimRung): Promise<void> {
@@ -335,6 +439,16 @@ export class GitHubIssuesStore implements IssueStore {
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
+  /**
+   * NOTE — deliberate read()/list asymmetry (the same one the Linear port
+   * carries): `read()` layers {@link unionBlockedBy} on top of this projection,
+   * so its `blockedBy` is codec ∪ native. Views built directly from `project()`
+   * (i.e. `listOpen`/`listClaimed`, via `scan()`) carry the codec-only
+   * `blockedBy` — no native union, since that would mean one extra
+   * `getBlockedBy` call per scanned issue. A future consumer that reasons about
+   * `blockedBy` across a list scan must not assume the union holds there; only a
+   * single-issue `read()` guarantees it.
+   */
   private project(id: string, gh: GhIssue): IssueView {
     const parsed = parseBody(gh.body);
     const risk = soleLabelValue(gh.labels, 'risk', id);
@@ -462,6 +576,46 @@ function renderNeedsAttentionComment(payload: NeedsAttentionPayload): string {
     ...payload.options.map((o) => `- ${o}`),
   ];
   return lines.join('\n');
+}
+
+/**
+ * Normalized ref identity for the blockedBy read-union / mirror dedup —
+ * `slug#issue`, with an absent slug meaning THIS repo.
+ *
+ * The Linear counterpart substitutes the referencing issue's own team slug here;
+ * GitHub has no such slug (its ids are bare numbers, `parseRef('16') →
+ * {issue:16}`), so a slug-less ref keys as `#16` and a slugged ref keys as
+ * `other#16`. Keeping those apart is the CORRECT behaviour, not a gap: a slugged
+ * ref names a foreign repo's issue #16, which is a different issue from this
+ * repo's #16 and must never dedupe against a native dependency here.
+ */
+function refKey(ref: IssueRef): string {
+  return `${ref.slug ?? ''}#${ref.issue}`;
+}
+
+/**
+ * A blockedBy `IssueRef` → the issue NUMBER the native mirror addresses. Inverse
+ * of {@link GitHubIssuesStore.parseRef}.
+ *
+ * A ref carrying a slug is a FOREIGN-REPO reference, and GitHub's dependency
+ * endpoints are repo-scoped (`POST /repos/{owner}/{repo}/issues/{n}/
+ * dependencies/blocked_by`): mirroring it against this repo would create a
+ * dependency on this repo's same-numbered issue — a silently WRONG relation, the
+ * one outcome worse than a missing mirror. So it throws instead, and
+ * {@link GitHubIssuesStore.mirrorBlockedBy}'s per-ref catch turns that into a
+ * non-fatal skip (the body codec keeps the ref, authoritatively, either way).
+ * This is the deliberate divergence from the Linear port, whose
+ * `refToIdentifier` CAN resolve a cross-team ref because a Linear identifier
+ * carries its team slug natively.
+ */
+function refToIssueNumber(ref: IssueRef): number {
+  if (ref.slug !== undefined) {
+    throw new Error(
+      `refToIssueNumber: cross-repo blockedBy ref "${ref.slug}#${ref.issue}" cannot be mirrored ` +
+        `into a repo-scoped GitHub issue dependency.`,
+    );
+  }
+  return ref.issue;
 }
 
 /**

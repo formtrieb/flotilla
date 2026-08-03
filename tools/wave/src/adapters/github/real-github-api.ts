@@ -254,6 +254,99 @@ export class RealGitHubApi implements GitHubApi {
     if (res.status !== 200) throw new GitHubApiError(res.status, 'nativeClose');
   }
 
+  /**
+   * The native blocked-by READ half. `GET …/issues/{n}/dependencies/blocked_by`
+   * answers 200 with an array of full issue objects; only their `number` is
+   * projected out (the store's own identity, ADR-0001).
+   *
+   * PAGINATED like {@link listOpenIssues} and {@link listLabels} (`per_page`
+   * default 30, max 100) and paged to exhaustion by the same short-page count
+   * heuristic — a truncated blocker list would silently UNBLOCK a row at the DoR
+   * gate, the exact correctness hole the read-union exists to close.
+   *
+   * Documented form: docs.github.com/en/rest/issues/issue-dependencies, read
+   * 2026-08-03. Live-confirmed 2026-08-03 against this repo — an unauthenticated
+   * `GET /repos/formtrieb/flotilla/issues/380/dependencies/blocked_by?per_page=
+   * 100&page=1` answered 200 with `[]` under the `X-GitHub-Api-Version:
+   * 2022-11-28` this adapter's HTTP seam pins (the doc page's own curl example
+   * shows `2026-03-10`; the endpoint is reachable under both, so the seam-wide
+   * pin is deliberately left alone by this slice).
+   */
+  async getBlockedBy(number: number): Promise<number[]> {
+    const out: number[] = [];
+    for (let page = 1; ; page++) {
+      const res = await this.send(
+        'GET',
+        `${this.base()}/issues/${number}/dependencies/blocked_by?per_page=100&page=${page}`,
+      );
+      if (res.status !== 200) throw new GitHubApiError(res.status, 'getBlockedBy');
+      const items = Array.isArray(res.json) ? (res.json as Record<string, unknown>[]) : [];
+      for (const it of items) {
+        const n = Number(it.number);
+        if (Number.isInteger(n)) out.push(n);
+      }
+      if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
+    }
+    return out;
+  }
+
+  /**
+   * The native blocked-by WRITE half (best-effort mirror; the store swallows a
+   * throw per-ref). Two calls, in this order:
+   *
+   *   1. resolve the BLOCKER's DATABASE id — the dependency endpoints are keyed
+   *      by `id`, NOT by `number`, and the two are different values on the same
+   *      issue object. Doing this read first also makes an unknown blocker fail
+   *      BEFORE any write is attempted.
+   *   2. `POST …/issues/{blockedNumber}/dependencies/blocked_by` with
+   *      `{ issue_id }` — "The id of the issue that blocks the current issue" —
+   *      which the docs pin at **201**, not 200.
+   *
+   * ADDITIVE-ONLY by construction: this method has no delete/update branch
+   * (ADR-0020 — never remove a dependency), which is why the documented
+   * `DELETE …/dependencies/blocked_by/{issue_id}` companion is not implemented.
+   *
+   * Documented form: docs.github.com/en/rest/issues/issue-dependencies, read
+   * 2026-08-03. UNPROVEN LIVE — the write needs a credential this slice does not
+   * have; the read half of the same endpoint family WAS live-confirmed (see
+   * {@link getBlockedBy}). The first `wave-create` carrying a real blockedBy ref
+   * on a github-store consumer is the live gate, the same stance
+   * `RealLinearApi.addBlockedBy` records for its own mirror.
+   */
+  async addBlockedBy(blockedNumber: number, blockerNumber: number): Promise<void> {
+    const blockerId = await this.issueDatabaseId(blockerNumber);
+    const res = await this.send(
+      'POST',
+      `${this.base()}/issues/${blockedNumber}/dependencies/blocked_by`,
+      { issue_id: blockerId },
+    );
+    if (res.status !== 201) {
+      throw new GitHubApiError(res.status, 'addBlockedBy', ghMessage(res.json, 'addBlockedBy'));
+    }
+  }
+
+  /**
+   * An issue's DATABASE id (`id`) from its number — the key the dependency
+   * endpoints take. Kept private: the seam speaks issue numbers, so the database
+   * id never leaves this file (the same containment `RealLinearApi` gives
+   * Linear's UUIDs).
+   */
+  private async issueDatabaseId(number: number): Promise<number> {
+    const res = await this.send('GET', `${this.base()}/issues/${number}`);
+    if (res.status !== 200) {
+      throw new GitHubApiError(res.status, 'addBlockedBy', ghMessage(res.json, 'addBlockedBy'));
+    }
+    const id = Number((res.json as Record<string, unknown>)?.id);
+    if (!Number.isInteger(id)) {
+      throw new GitHubApiError(
+        res.status,
+        'addBlockedBy',
+        `issue #${number} carries no database id — cannot key the dependency write`,
+      );
+    }
+    return id;
+  }
+
   async getClosingState(number: number): Promise<ClosingPrState> {
     const query =
       'query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){issue(number:$number){state closedByPullRequestsReferences(first:10,includeClosedPrs:true){nodes{merged url}}}}}';

@@ -155,6 +155,100 @@ describe('RealGitHubApi', () => {
     expect(comments[100]).toEqual({ body: 'last comment' });
   });
 
+  // ── native issue dependencies (ADR-0020's read-union + write-mirror, ported).
+  // Request shaping pinned against docs.github.com/en/rest/issues/
+  // issue-dependencies (read 2026-08-03); the GET's path + query + 200 were also
+  // live-confirmed unauthenticated against this repo the same day. ────────────
+  describe('issue dependencies (ADR-0020 port)', () => {
+    it('getBlockedBy GETs …/issues/{n}/dependencies/blocked_by and projects issue NUMBERS out of the full issue objects', async () => {
+      const { api, http } = makeApi((req) => {
+        expect(req.method).toBe('GET');
+        return {
+          status: 200,
+          // the endpoint answers full issue objects: `id` (the DATABASE id) is a
+          // DIFFERENT value from `number`, and only `number` is the store's id.
+          json: [
+            { id: 3_000_001, number: 11, title: 'blocker one', state: 'open' },
+            { id: 3_000_002, number: 12, title: 'blocker two', state: 'open' },
+          ],
+        };
+      });
+      expect(await api.getBlockedBy(7)).toEqual([11, 12]);
+      expect(http.requests[0].url).toBe(
+        'https://api.github.com/repos/example-org/example-repo/issues/7/dependencies/blocked_by?per_page=100&page=1',
+      );
+    });
+
+    it('getBlockedBy pages to exhaustion — a truncated blocker list would silently UNBLOCK a row', async () => {
+      const page1 = Array.from({ length: 100 }, (_, i) => ({ id: 9000 + i, number: i + 1 }));
+      const page2 = [{ id: 9999, number: 500 }];
+      const { api, http } = makeApi((req) => {
+        const page = new URL(req.url).searchParams.get('page');
+        return { status: 200, json: page === '1' ? page1 : page2 };
+      });
+      const blockers = await api.getBlockedBy(7);
+      expect(http.requests).toHaveLength(2); // full page → fetch page 2; short page → stop
+      expect(blockers).toHaveLength(101);
+      expect(blockers[100]).toBe(500);
+    });
+
+    it('getBlockedBy throws GitHubApiError on a non-200', async () => {
+      const { api } = makeApi(() => ({ status: 404, json: { message: 'Not Found' } }));
+      await expect(api.getBlockedBy(7)).rejects.toBeInstanceOf(GitHubApiError);
+    });
+
+    it('addBlockedBy resolves the BLOCKER\'s database id first, then POSTs { issue_id } and requires 201', async () => {
+      const { api, http } = makeApi((req) => {
+        if (req.method === 'GET') return { status: 200, json: { number: 11, id: 3_000_001 } };
+        return { status: 201, json: {} };
+      });
+      await expect(api.addBlockedBy(7, 11)).resolves.toBeUndefined();
+      expect(http.requests).toHaveLength(2);
+      // 1: resolve the blocker (#11) → its database id
+      expect(http.requests[0].url).toBe('https://api.github.com/repos/example-org/example-repo/issues/11');
+      // 2: create the dependency ON the BLOCKED issue (#7), keyed by the blocker's DATABASE id
+      expect(http.requests[1].method).toBe('POST');
+      expect(http.requests[1].url).toBe(
+        'https://api.github.com/repos/example-org/example-repo/issues/7/dependencies/blocked_by',
+      );
+      expect(JSON.parse(http.requests[1].body!)).toEqual({ issue_id: 3_000_001 });
+    });
+
+    it('addBlockedBy throws on a 200 (the docs pin 201) — a non-created dependency must never read as success', async () => {
+      const { api } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { number: 11, id: 3_000_001 } }
+          : { status: 200, json: {} },
+      );
+      await expect(api.addBlockedBy(7, 11)).rejects.toBeInstanceOf(GitHubApiError);
+    });
+
+    it('addBlockedBy surfaces GitHub\'s own message on a rejected write (422 validation failed)', async () => {
+      const { api } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { number: 11, id: 3_000_001 } }
+          : { status: 422, json: { message: 'Validation Failed' } },
+      );
+      await expect(api.addBlockedBy(7, 11)).rejects.toSatisfy(
+        (e: unknown) => e instanceof GitHubApiError && e.message.includes('Validation Failed'),
+      );
+    });
+
+    it('addBlockedBy fails BEFORE any write when the blocker does not resolve', async () => {
+      const { api, http } = makeApi(() => ({ status: 404, json: { message: 'Not Found' } }));
+      await expect(api.addBlockedBy(7, 999)).rejects.toBeInstanceOf(GitHubApiError);
+      expect(http.requests).toHaveLength(1); // the resolve only — no POST attempted
+      expect(http.requests[0].method).toBe('GET');
+    });
+
+    it('addBlockedBy throws when the resolved issue carries no database id', async () => {
+      const { api } = makeApi(() => ({ status: 200, json: { number: 11 } })); // no `id`
+      await expect(api.addBlockedBy(7, 11)).rejects.toSatisfy(
+        (e: unknown) => e instanceof GitHubApiError && e.message.includes('database id'),
+      );
+    });
+  });
+
   describe('canMergePullRequests (FOR-12 store-preflight)', () => {
     it('GETs the repo and returns true when permissions grant push', async () => {
       const { api, http } = makeApi((req) => {
