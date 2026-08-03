@@ -461,6 +461,8 @@ Pass `--expect <plugin-version>` on this run too, for an installed-form consumer
 
 ## `.gitignore` scaffold — the Scribe scratch path (issue #355)
 
+Written at [Procedure step 4](../SKILL.md#procedure), alongside `wave.config.json` — the consumer repo root is already in hand for that write, and this is the same moment.
+
 **One line, and it is the only flotilla-owned `.gitignore` entry a consumer needs.** Write it into the consumer repo's `.gitignore` at setup time, beside whatever else that file already carries:
 
 ```gitignore

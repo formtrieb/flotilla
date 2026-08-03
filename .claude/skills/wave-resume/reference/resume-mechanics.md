@@ -16,6 +16,7 @@ The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the comman
 |---|---|
 | `{{wave-cli}} spine read <spine-path>` | the WAL authority — read FIRST (raw spine markdown on stdout) |
 | `{{wave-cli}} resume --spine <p> --reports <d> --verdicts <d> [--repo-root <d>] [--marker <m>] [--force]` | `{ rows, fatals, cleanup }` JSON |
+| `{{wave-cli}} worktree-cleanup --orphans --detached` | (step 4b) the general orphan-directory / orphan-branch / detached-scratch / Scribe-scratch sweep — the SAME verb and flag pair `wave-close` phase 3 and `wave-start`'s dispatch preflight run. Reports `{ removed, skipped, errors, branchesDeleted, branchHygieneSkipped, orphans: { removed, skipped, errors, scratch: { dir, present, removed, skipped, errors } }, detached: { removed, skipped, errors } }`. `orphans.scratch` is the Scribe scratch sweep (issue #355) — full reading guide: [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md#the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-lifecycle-issue-355). Row-unscoped by design (no `--wave` flag here — this call sweeps repo-wide, exactly like the close and dispatch-preflight calls it mirrors); it never touches the tracker. |
 | `{{wave-cli}} issue-store read-closing <id>` | `ClosingState` — the 4th, skill-only done-reconcile input (tracker-attachment tier of the evidence hierarchy) |
 | `{{wave-cli}} host-pr status --branch <b>` | host-evidence tier (ADR-0023): `{ state: "open"\|"merged"\|"closed-unmerged"\|"none", url? }` — consulted when `read-closing` cannot see a merge on a no-integration workspace. No `--config` (talks to the code host, not the tracker). |
 | `{{wave-cli}} verdict-acked <verdictsDir> <id>` | (FOR-17) the single-owner derivation of `close`'s `--acked` indexes: `{ "acked": [0, 2], "iter": 2\|null, "corrupt": 0 }`. Reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` out of `<verdictsDir>` and returns the 0-based `acVerification` indexes marked `met` — partial/not-met/deferred excluded. Max-iter means a changes-requested → re-dispatch cycle's answer is always the LATEST verdict. No verdict sidecar (or only a corrupt one) → `{ acked: [], iter: null, corrupt: N }`, never a failure — the tick is cosmetic (ADR-0004). |
@@ -121,6 +122,16 @@ VERDICTS=".flotilla/waves/$SLUG/verdicts"
 #   {{wave-cli}} resume --spine "$SPINE" --reports "$REPORTS" --verdicts "$VERDICTS" \
 #     --repo-root "$REPO" --force > result.json
 
+# 4b. General sweep — orphaned directories/branches, detached scratch checkouts, and
+#     the Scribe scratch payloads (issue #355). Step 4's crash-cleanup only ever
+#     touches a redispatch row's OWN branch/worktree; this call is what reaches
+#     everything else, repo-wide, exactly like wave-close phase 3 and wave-start's
+#     dispatch preflight. --orphans and --detached on the SAME call, every time:
+{{wave-cli}} worktree-cleanup --orphans --detached
+# read `orphans.scratch` the same way wave-close phase 3 does: absent → the sweep
+# never looked; present:false → looked, nothing there; non-empty removed → real
+# payloads were cleaned. Full reading guide: ../../wave-close/reference/phase-3-worktree-cleanup.md
+
 # 5. Done-reconcile each in-review row — evidence hierarchy (ADR-0023):
 #    tracker attachment (read-closing) > host PR state (host-pr status) > nothing
 {{wave-cli}} issue-store read-closing "$ID"     # merged → close (below); closed-unmerged → flag; open/closed-unknown → host fallback (closed-unknown never auto-flags)
@@ -185,6 +196,7 @@ ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("f
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `{{wave-cli}} resume` | `{ rows, fatals, cleanup }` on stdout | domain failure during assembly/resume | missing `--spine`/`--reports`/`--verdicts` |
+| `worktree-cleanup` | clean | per-worktree removal errors | usage |
 | `spine read` | spine source on stdout | bad path / parse | usage |
 | `read-closing` | `ClosingState` | issue not found | usage |
 | `verdict-acked` | `{ acked, iter, corrupt }` printed (found or not found — an absent/corrupt verdict is not a failure) | — | missing `<verdictsDir>`/`<id>` |
@@ -203,3 +215,5 @@ ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("f
 The reconciler is PURE and never reads the tracker — the tracker is healed FROM the reconstruction (one-way). `resume()` projects to a `ClaimRung` only; reaching `done` is the skill's done-reconcile (step 5), and reaching `available` is eligibility (not a resume concern). All reconciliation — re-projection, done-reconcile, fatal flags — completes before any re-dispatch.
 
 Crash-cleanup (`cleanup[]`, FOR-10) is NOT part of the pure `resume()` reconciler — it is an I/O side-effect the `{{wave-cli}} resume` router subcommand runs immediately after calling `resume()`, using its own injectable `RedispatchCleanupOps` seam (`tools/wave/src/worktree-cleanup.ts`). It only ever touches a `redispatch` row's OWN branch/worktree; it never reads or writes the tracker either.
+
+The general sweep (step 4b, `{{wave-cli}} worktree-cleanup --orphans --detached`) is a SEPARATE call through the same module, not a variant of crash-cleanup — it is the identical, repo-wide, row-unscoped sweep `wave-close` phase 3 and `wave-start`'s dispatch preflight already run, and it is what reaches the Scribe's `.flotilla/tmp/` scratch payloads (issue #355) on the resume path. Before step 4b was wired, resume was the one path this sweep never reached (a repo-wide grep found the Scribe scratch path at four driver sites and two spec sites and in every cleanup path except this one).
