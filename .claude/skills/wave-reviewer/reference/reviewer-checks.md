@@ -49,14 +49,47 @@ An outcome-phrased AC earns `met` only on outcome-*exercising* evidence (a slice
 ## Check 4 — focus-hints sweep
 One directed check per hint (Coordinator hints ++ Worker `reviewerFocusItems`). Non-mechanical → `reviewerFocusItems` entry tagged `(needs human eyes)`; never `changes-requested` those.
 
-## Check 5 — sibling merge-tree (only when sibling list non-empty)
+## Check 5 — sibling merge-tree prediction, **with its coverage denominator** (only when the sibling list is non-empty)
+
+The wave driver runs the rows with **no barrier** — row B's Worker runs while row A's Reviewer already runs — so a sibling branch may not be on `origin` yet when you reach for it, or may be there and still sitting at the wave anchor. **Partial coverage is ordinary and honest; silent partial coverage is not.** The sibling list the brief hands you is the **denominator**, and every branch on it gets exactly one outcome.
+
+Run it **per sibling**, writing the branch name in literally rather than looping over a `$SIB` variable (wave-shared Convention 13: a command naming a shell variable has been refused outright in an isolated dispatch, and a loop that never ran is indistinguishable from a run that found nothing):
+
 ```bash
-for SIB in <sibling-branches>; do
-  git fetch origin "$SIB" 2>&1 | tail -3
-  git merge-tree "$BRANCH" "origin/$SIB"     # <<<<<<< → predicted conflict
-done
+git fetch origin wave/<sibling-id>-<sibling-slug> 2>&1 | tail -3
+git rev-parse FETCH_HEAD                       # the sibling tip — compare this to $ANCHOR FIRST
+git merge-tree "$BRANCH" FETCH_HEAD            # <<<<<<< → predicted conflict
 ```
-**Always `(advisory)`.** Surface as `reviewerFocusItems`: `(advisory) Predicted merge conflict with <SIB> at <file> — rebase whichever PR lands second.` Never escalate to `changes-requested`/`questions-blocking`.
+
+### The four per-sibling outcomes — every sibling on the list gets exactly one
+
+| Outcome | Condition | Coverage? |
+|---|---|---|
+| `predicted-clean` | on `origin`, tip **≠** `$ANCHOR`, `git merge-tree` reports no `<<<<<<<` | **yes** — two real diffs were merged and did not collide |
+| `predicted-conflict` | `git merge-tree` reports `<<<<<<<` | **yes** — name the file(s) |
+| `not-on-origin` | `git fetch` cannot resolve the branch | **no** — that Worker has not pushed yet |
+| `at-anchor` | the fetched tip **equals the wave-anchor SHA the brief carries** | **no** — see below |
+
+### `at-anchor` is VACUOUS — never report it as clean
+
+This is the outcome that does not look like missing coverage at all. A sibling branch that exists on `origin` but whose tip is still the wave anchor has an **empty diff**, so `git merge-tree` exits 0 and prints one tree hash — byte-identical to what a genuinely clean prediction prints. Nothing in that output distinguishes the two; only the tip comparison does.
+
+So **compare before you read the merge-tree result**: `git rev-parse FETCH_HEAD` against the `$ANCHOR` the dispatch brief carries. Equal → record `at-anchor`, and **never** count it as `predicted-clean`, never let it stand in for coverage of that sibling. Live origin: four Reviewers in one wave reported partial coverage; three named missing branches outright, and the fourth found the branch present, at the anchor, and had to name the vacuity itself because no command would.
+
+### The coverage line is mandatory
+
+Whether or not any conflict was predicted, the sibling advisory in `reviewerFocusItems` carries **one coverage line** naming the denominator and every uncovered sibling by outcome:
+
+```
+(advisory) Sibling merge-tree coverage: 3/5 predicted — wave/<a> predicted-clean,
+wave/<b> predicted-clean, wave/<c> predicted-conflict at <file>; NOT covered:
+wave/<d> not-on-origin, wave/<e> at-anchor (tip == wave anchor, prediction vacuous).
+Re-run against <d> and <e> before landing.
+```
+
+A verdict that reports only the conflicts it happened to find, with no denominator, reads as full coverage. `0/N` is a legitimate coverage line — "no sibling was predictable from here" is a real, reportable result; **silence is not**.
+
+**Always `(advisory)` — the coverage line included.** A predicted conflict is `(advisory) Predicted merge conflict with <SIB> at <file> — rebase whichever PR lands second.` Neither a predicted conflict nor missing coverage escalates the verdict — **never** `changes-requested`, **never** `questions-blocking`: the reviewed branch is not wrong, and a sibling that has not pushed yet is not this row's defect. The coverage line lives **inside the existing advisory strings** — it adds no field to the ReviewerVerdict schema.
 
 ## Check 6 — documented-form comparison (required when the core path is unexecutable, [ADR-0030](../../../../docs/adr/0030-deferred-core-path-requires-documented-form-comparison.md))
 

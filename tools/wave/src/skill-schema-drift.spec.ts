@@ -72,6 +72,20 @@ const CREATE_MECHANICS_MD = join(
   '../../../.claude/skills/wave-create/reference/create-mechanics.md',
 );
 
+// The Reviewer half of the sibling-prediction contract (issue #419). Check 5's
+// coverage denominator is stated in three places — the operator-facing skill,
+// its runnable checks reference, and the reviewerBrief the driver composes — so
+// all three are read here and pinned together.
+const WAVE_REVIEWER_SKILL_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-reviewer/SKILL.md',
+);
+
+const REVIEWER_CHECKS_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-reviewer/reference/reviewer-checks.md',
+);
+
 const DRIVER_WORKER_REPORT_ANCHOR =
   '// ── inlined from wave-shared (copy of WORKER_REPORT_SCHEMA) ──';
 
@@ -1581,5 +1595,368 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
     expect(() =>
       loadHumanGateModule("const HUMAN_GATED_WORKERS = ['x']\n# and nothing else\n"),
     ).toThrow(/assertNotHumanGated.*not found/);
+  });
+});
+
+// ─── Check 5's coverage denominator rides all three contract copies (#419) ───
+//
+// The Reviewer predicts merge-tree conflicts against its sibling in-flight
+// branches. The driver runs the rows with NO barrier — by design, so row B's
+// Worker runs while row A's Reviewer already runs — which means a sibling branch
+// may simply not be on `origin` when a Reviewer reaches for it. Observed four
+// times in ONE wave, each reported honestly and each partial. The fourth is the
+// class this pin exists for: the sibling branch was present but still AT THE WAVE
+// ANCHOR, so its diff was empty and `git merge-tree` returned exit 0 plus one tree
+// hash — byte-identical to what a genuinely clean prediction returns. Partial
+// coverage that is indistinguishable from full coverage is the failure mode, and
+// no command output separates them; only a tip-vs-anchor comparison does.
+//
+// The remedy is contract text, and it is stated in three hand-maintained places
+// with nothing coupling them — the same shape as the schema-literal pins above:
+//
+//   - wave-reviewer/SKILL.md                      — the operator's view
+//   - wave-reviewer/reference/reviewer-checks.md  — the runnable detail
+//   - wave-start/reference/workflow-driver.md     — the reviewerBrief ACTUALLY dispatched
+//
+// The driver copy is the one that reaches a running Reviewer, so a drift there is
+// the one that silently stops happening; it is also the only copy that can
+// interpolate the row's own `anchorSha`, which is what makes the at-anchor
+// comparison executable rather than merely described. Both properties are pinned
+// separately below.
+//
+// Deliberately NOT pinned into existence here: any ReviewerVerdict schema shape.
+// The coverage line lives INSIDE the existing advisory strings in
+// `reviewerFocusItems`, so the other half of this contract is that the schema did
+// NOT move — asserted explicitly, because "we added a reporting duty" is exactly
+// the change that grows a field by reflex.
+
+/**
+ * The four per-sibling prediction outcomes Check 5 must enumerate. Every one is
+ * load-bearing, and the split is the whole point: two of them are real coverage
+ * (`predicted-clean`, `predicted-conflict`) and two are NOT coverage at all
+ * (`not-on-origin`, `at-anchor`). A copy that names three has quietly dropped a
+ * way for a Reviewer to be blind — and `at-anchor` is the one a reader deletes
+ * as redundant, because it is the one whose command output looks like success.
+ */
+const SIBLING_PREDICTION_OUTCOMES = [
+  'predicted-clean',
+  'predicted-conflict',
+  'not-on-origin',
+  'at-anchor',
+] as const;
+
+/**
+ * The canonical opening of the mandatory coverage line. All three copies write it
+ * out verbatim so a Reviewer emits ONE recognisable shape and a Coordinator can
+ * find it — the denominator is worth nothing if every verdict phrases it freshly.
+ */
+const COVERAGE_LINE_PREFIX = 'Sibling merge-tree coverage:';
+
+/** The bold-caps opener of the reviewerBrief's own sibling-coverage clause. */
+const DRIVER_SIBLING_COVERAGE_OPENER =
+  '**SIBLING MERGE-TREE PREDICTION REPORTS ITS COVERAGE DENOMINATOR.**';
+
+/**
+ * Slice the text BETWEEN two literal anchors — `[start.length, end)`, the start
+ * anchor itself excluded — failing loud on a missing/out-of-order anchor or an
+ * empty region, because a doc restructure must BREAK this pin rather than quietly
+ * reduce it to scanning nothing.
+ *
+ * Two deliberate departures from `regionBetween` above, both about failure
+ * legibility rather than taste. (1) Its throw message is worded for the threshold
+ * pins ("threshold-region start anchor missing"); a Check-5 anchor failing under
+ * that wording sends the next reader to the wrong constant entirely. (2) It slices
+ * from `from`, INCLUDING its own start anchor — correct there, where a threshold
+ * literal can sit in the heading line itself, but it makes an emptiness check
+ * unreachable: the region always contains at least the anchor. Excluding the
+ * anchor here is what lets "the anchors survived a restructure that gutted
+ * everything between them" fail instead of pass.
+ */
+function contractRegion(md: string, label: string, start: string, end: string): string {
+  const from = md.indexOf(start);
+  if (from < 0) {
+    throw new Error(`sibling-coverage region start anchor missing in ${label}: ${start}`);
+  }
+  const contentFrom = from + start.length;
+  const to = md.indexOf(end, contentFrom);
+  if (to < 0) {
+    throw new Error(`sibling-coverage region end anchor missing in ${label}: ${end}`);
+  }
+  const region = md.slice(contentFrom, to);
+  if (region.trim().length === 0) {
+    throw new Error(`sibling-coverage region is EMPTY in ${label} — the pin would pass vacuously`);
+  }
+  return region;
+}
+
+/**
+ * The tightest stretch of `region` that contains ALL FOUR outcomes, measured in
+ * characters from the start of the first to the end of the last — or `null` when
+ * one of them is absent entirely.
+ *
+ * A plain "every outcome appears somewhere in this copy" check was tried first
+ * and FALSIFIED live: dropping `at-anchor` from the driver's vocabulary list left
+ * it still passing, because the term survived further down in the worked example
+ * and in the prose that calls it vacuous. Presence-anywhere cannot tell
+ * "enumerated" from "mentioned in passing", and the drift that matters — a copy
+ * that quietly stops offering an outcome as a CHOICE — is exactly the one it
+ * misses. Span is the discriminator: a real enumeration puts the four within a
+ * few hundred characters of each other; a term surviving only in scattered prose
+ * cannot.
+ */
+function enumerationSpan(region: string): number | null {
+  const marks: Array<{ at: number; outcome: string }> = [];
+  for (const outcome of SIBLING_PREDICTION_OUTCOMES) {
+    for (let from = 0; ; ) {
+      const at = region.indexOf(outcome, from);
+      if (at < 0) break;
+      marks.push({ at, outcome });
+      from = at + 1;
+    }
+  }
+  marks.sort((a, b) => a.at - b.at);
+  let best: number | null = null;
+  for (let i = 0; i < marks.length; i++) {
+    const seen = new Set<string>();
+    for (let j = i; j < marks.length; j++) {
+      seen.add(marks[j].outcome);
+      if (seen.size === SIBLING_PREDICTION_OUTCOMES.length) {
+        const span = marks[j].at + marks[j].outcome.length - marks[i].at;
+        if (best === null || span < best) best = span;
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * The widest an honest enumeration may be, in characters. Chosen from measurement,
+ * not taste — the four numbers this pin sits between were all read off a run:
+ *
+ *   -  70  wave-reviewer/SKILL.md         (slash-separated inline list)
+ *   -  76  workflow-driver.md             (pipe-separated inline list)
+ *   - 111  reviewer-checks.md Check 5     (the coverage-line worked example)
+ *   - 409  the falsified driver copy      (`at-anchor` dropped from the list,
+ *                                          surviving only in the prose below it)
+ *
+ * 250 leaves the widest shipped copy better than 2× of headroom and still lands
+ * well under the falsified value. Deliberately loose at that: this pin exists to
+ * catch a DROPPED choice, not to police how much a table row may say. A future
+ * rewrite that legitimately widens an enumeration past it fails with the measured
+ * span in the message — re-tune the constant then, and record the new reading here.
+ *
+ * What it does NOT catch, stated plainly so nobody over-reads a green run: a copy
+ * that keeps ANY ONE complete enumeration passes. Drop `at-anchor` from Check 5's
+ * table while leaving the coverage-line example intact and this pin stays green —
+ * the vocabulary is still communicated, which is the property being pinned.
+ */
+const MAX_ENUMERATION_SPAN = 250;
+
+/**
+ * The denominator examples a copy writes after {@link COVERAGE_LINE_PREFIX} —
+ * `3/5`, `0/N`. Read OUT of the copy by shape rather than hard-listed here, so an
+ * author who rewrites the example keeps the pin instead of tripping it.
+ */
+function coverageDenominatorExamples(region: string): string[] {
+  return [
+    ...region.matchAll(
+      new RegExp(`${COVERAGE_LINE_PREFIX}\\s*(\\d+/(?:\\d+|N))`, 'g'),
+    ),
+  ].map((m) => m[1]);
+}
+
+/**
+ * Does this copy state the at-anchor case as VACUOUS *and* refuse it as clean?
+ * Both halves are required and neither is sufficient. Naming the outcome without
+ * the refusal leaves "the branch was there, merge-tree exited 0, call it clean"
+ * wide open — which is precisely the reading four honest Reviewer reports could
+ * not rule out — and refusing it without the word `vacuous` drops the reason,
+ * which is the only thing that makes the refusal survive an editor.
+ */
+function refusesAtAnchorAsClean(region: string): boolean {
+  return (
+    region.includes('at-anchor') &&
+    /vacuous/i.test(region) &&
+    /never\b[^.]{0,160}\bclean\b/i.test(region)
+  );
+}
+
+describe('skill-schema-drift — sibling merge-tree prediction states its coverage denominator (#419)', () => {
+  const reviewerSkillMd = readFileSync(WAVE_REVIEWER_SKILL_MD, 'utf-8');
+  const reviewerChecksMd = readFileSync(REVIEWER_CHECKS_MD, 'utf-8');
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  /** Check 5's own section of the runnable checks reference. */
+  function checksCheck5(md: string): string {
+    return contractRegion(md, 'reviewer-checks.md', '## Check 5 —', '## Check 6 —');
+  }
+
+  /** The reviewerBrief's sibling-coverage clause, scoped to itself so a match
+   * cannot be satisfied by an unrelated sentence elsewhere in a 1000-line file. */
+  function driverClause(md: string): string {
+    return contractRegion(
+      md,
+      'workflow-driver.md reviewerBrief',
+      DRIVER_SIBLING_COVERAGE_OPENER,
+      '**If this slice ships a NEW check**',
+    );
+  }
+
+  /** The three copies, sliced. wave-reviewer/SKILL.md is taken whole: it is the
+   * Reviewer's own operator doc end to end, and its statement of this contract is
+   * deliberately spread across three sections (what a verdict rests on, the
+   * boundary, Common Mistakes) — an anchor pair would pin one third of it. */
+  const COPIES: Array<[string, string]> = [
+    ['wave-reviewer/SKILL.md', reviewerSkillMd],
+    ['reviewer-checks.md Check 5', checksCheck5(reviewerChecksMd)],
+    ['workflow-driver.md reviewerBrief', driverClause(driverMd)],
+  ];
+
+  it.each(COPIES)('%s enumerates all FOUR per-sibling outcomes', (_label, region) => {
+    for (const outcome of SIBLING_PREDICTION_OUTCOMES) {
+      expect(region).toContain(outcome);
+    }
+    // …and enumerates them, rather than merely containing the four words
+    // somewhere. See enumerationSpan's docstring for the live falsification that
+    // made the difference load-bearing.
+    const span = enumerationSpan(region);
+    expect(span).not.toBeNull();
+    expect(span).toBeLessThanOrEqual(MAX_ENUMERATION_SPAN);
+  });
+
+  it.each(COPIES)(
+    '%s requires the coverage line, with a denominator-shaped example',
+    (_label, region) => {
+      expect(region).toContain(COVERAGE_LINE_PREFIX);
+      // Not just the words: an example that actually shows a denominator. A
+      // "coverage" sentence with no `n/N` in it does not tell a Reviewer what
+      // the line is counting against.
+      expect(coverageDenominatorExamples(region).length).toBeGreaterThan(0);
+      // `0/N` — "nothing was predictable from here" — is a REPORTABLE result,
+      // not an excuse to omit the line. Stated in every copy.
+      expect(region).toMatch(/0\/N/);
+    },
+  );
+
+  it.each(COPIES)('%s names at-anchor VACUOUS and refuses it as clean', (_label, region) => {
+    expect(refusesAtAnchorAsClean(region)).toBe(true);
+  });
+
+  it.each(COPIES)(
+    '%s keeps sibling findings ADVISORY — the coverage line never escalates a verdict',
+    (_label, region) => {
+      expect(region).toMatch(/advisory/i);
+      expect(region).toMatch(/never\b[^.]{0,200}changes-requested/i);
+    },
+  );
+
+  it('the reviewerBrief instructs the at-anchor comparison against the anchor IT carries', () => {
+    // The comparison is only meaningful against THIS row's anchor, and the brief
+    // is the only one of the three copies where that value exists at dispatch
+    // time. A copy that says "compare against the wave anchor" without
+    // interpolating it hands the Reviewer a rule it cannot execute — the same
+    // failure shape as the bad-anchor first round (W2-F1) one level down.
+    const clause = driverClause(driverMd);
+    expect(clause).toContain('${issue.anchorSha}');
+    expect(clause).toContain('git rev-parse FETCH_HEAD');
+  });
+
+  it('NO ReviewerVerdict schema change — the driver copy still deep-equals the engine const, and no outcome token leaks into it', () => {
+    // The other half of the contract: this is a REPORTING duty discharged inside
+    // the existing `reviewerFocusItems` strings. If a later edit "helps" by
+    // modelling the outcomes as a field, both halves of this assertion fail —
+    // the deep-equal first, and the token scan second, naming the leak.
+    const schema = extractInlinedSchema(
+      driverMd,
+      DRIVER_REVIEWER_VERDICT_ANCHOR,
+      'REVIEWER_VERDICT_SCHEMA',
+    );
+    expect(schema).toEqual(plain(REVIEWER_VERDICT_JSON_SCHEMA));
+    const literal = JSON.stringify(schema);
+    for (const outcome of SIBLING_PREDICTION_OUTCOMES) {
+      expect(literal).not.toContain(outcome);
+    }
+    expect(literal).not.toContain(COVERAGE_LINE_PREFIX);
+  });
+
+  it.each(SIBLING_PREDICTION_OUTCOMES.map((o) => [o] as const))(
+    'NEGATIVE CONTROL — a copy that drops the "%s" outcome is caught',
+    (outcome) => {
+      // Shape-blind on purpose: every outcome is dropped in turn from every
+      // copy, so no single term is the only one actually guarded. `at-anchor`
+      // is the term at real risk — it reads as redundant next to
+      // `predicted-clean` until you know its output is identical.
+      for (const [, region] of COPIES) {
+        const stripped = region.split(outcome).join('<dropped>');
+        expect(stripped).not.toEqual(region); // the strip actually matched
+        expect(stripped).not.toContain(outcome);
+        expect(enumerationSpan(stripped)).toBeNull();
+      }
+    },
+  );
+
+  it('NEGATIVE CONTROL — an outcome dropped from the LIST but surviving in prose is still caught', () => {
+    // The live falsification, kept as a regression: this is the shape the
+    // presence-only predecessor of this pin let through. Only the driver's
+    // enumeration occurrence of `at-anchor` is removed; the copy still names the
+    // outcome further down (the vacuity prose, the coverage-line example), so a
+    // `toContain` check keeps passing and only the SPAN moves.
+    const clause = driverClause(driverMd);
+    const listOnly = clause.replace(' | \\`at-anchor\\`', '');
+    expect(listOnly).not.toEqual(clause); // the replace actually matched
+    expect(listOnly).toContain('at-anchor'); // presence-only would still pass…
+    const span = enumerationSpan(listOnly);
+    expect(span).not.toBeNull();
+    expect(span!).toBeGreaterThan(MAX_ENUMERATION_SPAN); // …the span pin does not
+  });
+
+  it('NEGATIVE CONTROL — a copy that keeps the outcome but calls at-anchor clean is caught', () => {
+    // The subtle regression this whole block exists for: the term survives, the
+    // refusal does not. `refusesAtAnchorAsClean` must fail on text that still
+    // NAMES `at-anchor` — so it cannot be passing on the term's mere presence.
+    for (const [, region] of COPIES) {
+      const softened = region
+        .replace(/vacuous/gi, 'noted')
+        .replace(/never/gi, 'usually not');
+      expect(softened).toContain('at-anchor'); // still named…
+      expect(refusesAtAnchorAsClean(softened)).toBe(false); // …and no longer refused
+      expect(refusesAtAnchorAsClean(region)).toBe(true); // control: the real copy passes
+    }
+  });
+
+  it('NEGATIVE CONTROL — a coverage sentence with no denominator does not satisfy the pin', () => {
+    // "we mention coverage" is not "we report a denominator". The matcher is
+    // keyed on the `n/N` SHAPE right after the canonical prefix, so prose that
+    // drops the fraction fails even with the prefix intact.
+    const denominatorless = `(advisory) ${COVERAGE_LINE_PREFIX} predicted where possible.`;
+    expect(denominatorless).toContain(COVERAGE_LINE_PREFIX);
+    expect(coverageDenominatorExamples(denominatorless)).toEqual([]);
+    // …and the shape it should have had:
+    expect(
+      coverageDenominatorExamples(`(advisory) ${COVERAGE_LINE_PREFIX} 3/5 predicted`),
+    ).toEqual(['3/5']);
+    expect(coverageDenominatorExamples(`${COVERAGE_LINE_PREFIX} 0/N predicted`)).toEqual([
+      '0/N',
+    ]);
+  });
+
+  it('NEGATIVE CONTROL — contractRegion fails loud on a missing anchor or an emptied region', () => {
+    expect(() => checksCheck5('# a checks file with no Check 5\n')).toThrow(
+      /start anchor missing in reviewer-checks\.md/,
+    );
+    expect(() => driverClause('a driver with no reviewerBrief clause')).toThrow(
+      /start anchor missing in workflow-driver\.md reviewerBrief/,
+    );
+    // A restructure that leaves both anchors adjacent must FAIL, not pass on an
+    // empty string — the vacuous-pass failure mode this whole file guards for.
+    expect(() =>
+      contractRegion(
+        `${DRIVER_SIBLING_COVERAGE_OPENER}**If this slice ships a NEW check**`,
+        'synthetic',
+        DRIVER_SIBLING_COVERAGE_OPENER,
+        '**If this slice ships a NEW check**',
+      ),
+    ).toThrow(/EMPTY in synthetic/);
   });
 });

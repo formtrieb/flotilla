@@ -778,6 +778,27 @@ commands + the floor checks against \`${issue.anchorSha}..${issue.branch}\`,
 per-AC met/partial/not-met with evidence (against the embedded spec above), sibling
 merge-tree prediction.
 
+**SIBLING MERGE-TREE PREDICTION REPORTS ITS COVERAGE DENOMINATOR.** The sibling list above is
+the DENOMINATOR, and every branch on it gets exactly ONE outcome: \`predicted-clean\` |
+\`predicted-conflict\` | \`not-on-origin\` | \`at-anchor\`. The rows run with NO barrier — row
+B's Worker is still running while row A's Reviewer already runs — so a sibling may simply not
+be on \`origin\` when you reach for it. Partial coverage is ordinary and honest; what is not
+honest is a verdict that reports the conflicts it found and stays silent about the siblings it
+never reached. **\`at-anchor\` is the sharp one:** a sibling branch that IS on \`origin\` but
+whose tip still EQUALS this row's wave anchor SHA (\`${issue.anchorSha}\`) has an empty diff, so
+\`git merge-tree\` exits 0 and prints one tree hash — byte-identical to a genuinely clean
+prediction. Nothing in that output tells them apart. So per sibling, \`git fetch origin <branch>\`
+then \`git rev-parse FETCH_HEAD\`, and compare that tip against \`${issue.anchorSha}\` BEFORE you
+read the merge-tree result: equal → record \`at-anchor\`, which is VACUOUS and is never
+\`predicted-clean\`. Then put ONE coverage line in \`reviewerFocusItems\` naming the denominator
+and every uncovered sibling by outcome — \`(advisory) Sibling merge-tree coverage: 3/5 predicted
+— …; NOT covered: <d> not-on-origin, <e> at-anchor (tip == wave anchor, prediction vacuous).\`
+\`0/N\` is a legitimate coverage line; silence is not. **All of it stays \`(advisory)\`** — a
+predicted conflict is never \`changes-requested\`, and missing coverage is never
+\`questions-blocking\`; the coverage line lives INSIDE the existing advisory strings, so
+NOTHING here adds a field to the ReviewerVerdict schema. (Contract detail:
+\`wave-reviewer/reference/reviewer-checks.md\` Check 5.)
+
 **If this slice ships a NEW check** — a test, an assertion, a guard, a smoke probe, a
 lint rule, a CI gate, a preflight, a validator — the Worker owed a falsification note
 (wave-shared Convention 11): which check, what was broken, the observed failing output,
