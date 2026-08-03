@@ -135,12 +135,13 @@ export {
   // reconciliation) — `validateIssue` gates a markdown/spine ValidateOptions
   // input, `validateIssueView` gates the canonical IssueView contract
   // directly, which is the shape a store-backed (GitHub/Linear) caller
-  // actually holds. `dirname`/`resolve` are NOT re-exported here: they are an
-  // incidental re-export of the `node:path` builtins this module imports for
-  // its own use (dor-gate.ts's own `export { resolve, dirname };`), not an
-  // engine surface — see barrel-drift.spec.ts's allowlist entry for the
-  // reasoning (dor-gate.ts sits outside this issue's declared Files scope, so
-  // the accidental re-export itself is left in place, only NOT propagated).
+  // actually holds. dor-gate.ts no longer has anything left over to exclude
+  // here: its accidental `export { resolve, dirname };` re-export of the
+  // `node:path` builtins it imported for no in-file use — and the
+  // barrel-drift allowlist entry that used to excuse leaving it
+  // unpropagated — were both removed at the source (PR #412), so this
+  // module's own export surface is exactly `validateIssue` /
+  // `validateIssueView` and the types below, nothing accidental riding along.
   validateIssueView,
   type ValidateViewOptions,
 } from './dor-gate';
