@@ -34,6 +34,10 @@ export class InMemoryGitHubApi implements GitHubApi {
     number,
     { merged: boolean; url?: string }
   >();
+  /** blocked issue number → the issue numbers NATIVELY blocking it (the read-union substrate). */
+  private readonly nativeBlockedBy = new Map<number, number[]>();
+  /** When set, the production {@link addBlockedBy} mirror rejects with it (models a rejected dependency write). */
+  private dependencyWriteError: Error | undefined;
   private counter = 0; // per-instance; never reset between calls
   /** Store-preflight substrate (FOR-12): does the ambient token merge PRs? Default yes. */
   private canMergePrs = true;
@@ -162,6 +166,63 @@ export class InMemoryGitHubApi implements GitHubApi {
     }
     // A closing PR WAS recorded and it did not merge ⇒ a proven rejection.
     return { state: 'closed-unmerged' };
+  }
+
+  async getBlockedBy(number: number): Promise<number[]> {
+    if (!this.issues.has(number)) {
+      throw new Error(`GitHub issue not found: #${number}`);
+    }
+    return [...(this.nativeBlockedBy.get(number) ?? [])];
+  }
+
+  /**
+   * Mirror ONE blockedBy ref natively (the write half). Both sides are resolved
+   * against the issue map — modelling `RealGitHubApi.addBlockedBy`, which
+   * resolves the BLOCKER to its database id and throws on a number that does not
+   * exist (the store treats that as a non-fatal single-mirror skip). An injected
+   * {@link failDependencyWrites} error models a rejected `POST
+   * …/dependencies/blocked_by`. ADDITIVE-ONLY: appends to the same
+   * `nativeBlockedBy` substrate `getBlockedBy` reads (never deletes) — a repeat
+   * mirror double-represents, exactly as a live duplicate dependency would, and
+   * the store's read-union dedups it.
+   */
+  async addBlockedBy(blockedNumber: number, blockerNumber: number): Promise<void> {
+    if (!this.issues.has(blockedNumber)) {
+      throw new Error(`GitHub issue not found: #${blockedNumber}`);
+    }
+    if (!this.issues.has(blockerNumber)) {
+      throw new Error(`GitHub issue not found: #${blockerNumber}`);
+    }
+    if (this.dependencyWriteError) throw this.dependencyWriteError;
+    const list = this.nativeBlockedBy.get(blockedNumber) ?? [];
+    list.push(blockerNumber);
+    this.nativeBlockedBy.set(blockedNumber, list);
+  }
+
+  /**
+   * Test affordance: record a NATIVE GitHub dependency — `blocked` is blocked by
+   * `blocker`. NOT part of `GitHubApi`; a spec reaches it through the store's
+   * `api` field, mirroring how `setClosingPr` drives the closing probe. Additive
+   * (repeat calls append; not idempotent — a dedup test adds the same pair twice
+   * on purpose).
+   */
+  addNativeDependency(blocked: number, blocker: number): void {
+    if (!this.issues.has(blocked)) throw new Error(`GitHub issue not found: #${blocked}`);
+    if (!this.issues.has(blocker)) throw new Error(`GitHub issue not found: #${blocker}`);
+    const list = this.nativeBlockedBy.get(blocked) ?? [];
+    list.push(blocker);
+    this.nativeBlockedBy.set(blocked, list);
+  }
+
+  /**
+   * Test affordance: force the production {@link addBlockedBy} mirror to REJECT
+   * with `error` (a refused dependency write), or pass `null` to clear it. NOT
+   * part of `GitHubApi` — the store's non-fatal-mirror specs reach it to prove a
+   * failed native write never fails the authoritative create/annotate. Mirrors
+   * `setClosingPr`/`setCanMergePullRequests`' stance.
+   */
+  failDependencyWrites(error: Error | null): void {
+    this.dependencyWriteError = error ?? undefined;
   }
 
   async canMergePullRequests(): Promise<boolean> {

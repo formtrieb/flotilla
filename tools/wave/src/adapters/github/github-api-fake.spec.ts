@@ -61,6 +61,55 @@ describe('InMemoryGitHubApi effective-rules read (2026-07-23 gate-arm gap)', () 
   });
 });
 
+describe('InMemoryGitHubApi issue dependencies (ADR-0020 read-union + write-mirror)', () => {
+  it('getBlockedBy defaults to [] and throws on an unknown issue', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number } = await api.createIssue({ title: 't', body: 'b', labels: [] });
+    expect(await api.getBlockedBy(number)).toEqual([]);
+    await expect(api.getBlockedBy(999)).rejects.toThrow(/not found/);
+  });
+
+  it('addBlockedBy records the dependency and is ADDITIVE (a repeat double-represents, as a live duplicate would)', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number: blocked } = await api.createIssue({ title: 'blocked', body: '', labels: [] });
+    const { number: blocker } = await api.createIssue({ title: 'blocker', body: '', labels: [] });
+    await api.addBlockedBy(blocked, blocker);
+    await api.addBlockedBy(blocked, blocker);
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker, blocker]);
+  });
+
+  it('addBlockedBy throws on EITHER side being unresolvable — modelling the real impl\'s database-id resolution', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number } = await api.createIssue({ title: 't', body: 'b', labels: [] });
+    await expect(api.addBlockedBy(number, 999)).rejects.toThrow(/not found/);
+    await expect(api.addBlockedBy(999, number)).rejects.toThrow(/not found/);
+    expect(await api.getBlockedBy(number)).toEqual([]);
+  });
+
+  it('failDependencyWrites makes addBlockedBy reject and records nothing; null clears it', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number: blocked } = await api.createIssue({ title: 'blocked', body: '', labels: [] });
+    const { number: blocker } = await api.createIssue({ title: 'blocker', body: '', labels: [] });
+    api.failDependencyWrites(new Error('dependency write refused'));
+    await expect(api.addBlockedBy(blocked, blocker)).rejects.toThrow(/refused/);
+    expect(await api.getBlockedBy(blocked)).toEqual([]);
+    api.failDependencyWrites(null);
+    await api.addBlockedBy(blocked, blocker);
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
+  });
+
+  it('addNativeDependency drives the read side without going through the production write', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number: blocked } = await api.createIssue({ title: 'blocked', body: '', labels: [] });
+    const { number: blocker } = await api.createIssue({ title: 'blocker', body: '', labels: [] });
+    // even with production writes refused, the human/consumer-drawn side lands.
+    api.failDependencyWrites(new Error('down'));
+    api.addNativeDependency(blocked, blocker);
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
+    expect(() => api.addNativeDependency(blocked, 999)).toThrow(/not found/);
+  });
+});
+
 describe('InMemoryGitHubApi deleteBranch (consumer KW-F6)', () => {
   it('records the deleted branch', async () => {
     const api = new InMemoryGitHubApi();
