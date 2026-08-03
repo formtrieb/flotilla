@@ -2192,6 +2192,13 @@ export interface ScratchSweepResult {
    * Errors encountered during removal — including the verify-after-write case
    * where the remover reported success but the file is STILL on disk, the same
    * discipline {@link executeOrphanSweep} applies to a directory.
+   *
+   * A non-empty list is an INCOMPLETE OUTCOME, and the `worktree-cleanup` CLI
+   * folds it into its non-zero exit verdict (issue #417) exactly as it folds in
+   * the orphan-DIRECTORY errors beside it. It was outside that verdict while
+   * this result was reachable only from inside {@link executeOrphanSweep},
+   * whose own `errors` field carries directories only: the failure was printed
+   * under `orphans.scratch` and the verb still exited 0.
    */
   errors: Array<{ path: string; message: string }>;
 }

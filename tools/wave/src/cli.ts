@@ -79,7 +79,10 @@
  *                    real run; previously the sweep lived inside
  *                    executeOrphanSweep's one-shot, which --dry-run returns
  *                    before ever reaching, so a dry run was silent on this
- *                    population rather than clean.
+ *                    population rather than clean. A payload removal that FAILS
+ *                    forces exit 1 (issue #417), the same as every other
+ *                    incomplete outcome above — it used to reach the JSON and
+ *                    no exit code at all.
  *
  *                    --detached (issue #238) adds the THIRD population: git-
  *                    REGISTERED worktrees under the worktrees root whose HEAD is
@@ -1085,6 +1088,12 @@ function resolveBranchFilter(
  * before ever calling: a dry run was documented to be SILENT on this
  * population, never clean.
  *
+ * A non-empty `orphans.scratch.errors` on the real run drives exit 1 (issue
+ * #417), like every other incomplete-outcome class: a payload removal that
+ * failed used to reach this JSON and no exit code at all, because the verdict
+ * read `orphans.errors` (orphan DIRECTORIES only) and never the sweep's own
+ * list one level down. `--dry-run` is unaffected — a plan has no `errors`.
+ *
  * `worktreeCount` (issue #238) is printed on BOTH shapes, unconditionally and
  * with no flag to remember: `{ count, threshold, level, advisory }` straight
  * from `checkWorktreeCountAdvisory`, with `advisory` carrying the engine's
@@ -1122,7 +1131,8 @@ function resolveBranchFilter(
  *   1 — a removal error, a deregistered-but-not-deleted directory, an
  *       errored-yet-still-listed worktree (FOR-73) — from the registered GC OR
  *       (issue #238) from the `--detached` sweep, which rides the same three
- *       classes — or an orphan-sweep removal error
+ *       classes — an orphan-sweep removal error, or (issue #417) a
+ *       Scribe-scratch payload-removal error under `orphans.scratch.errors`
  *   2 — usage / unexpected error
  */
 function runWorktreeCleanup(args: string[]): number {
@@ -1528,17 +1538,26 @@ function runWorktreeCleanup(args: string[]): number {
     // whose removals errored while the verb still exited 0 is exactly the
     // silent-failure shape the class list above exists to prevent.
     //
-    // `orphans.scratch.errors` is deliberately NOT in this list, and issue #377
-    // did not put it there: it was outside that list while the scratch sweep sat
-    // inside `executeOrphanSweep` (whose `errors` field carries orphan
-    // DIRECTORIES only), and surfacing the sweep's plan to `--dry-run` changes
-    // what is PREVIEWED, never what the verb exits with. Moving it would be a
-    // behaviour change to the exit contract, which belongs to its own row.
+    // `orphans.scratch.errors` is IN this list (issue #417) — a failed
+    // Scribe-payload removal is exactly as incomplete an outcome as a failed
+    // directory removal, and now exits 1 like every other class here. It was
+    // outside the list for a structural reason, not a deliberate one: the
+    // scratch sweep used to sit INSIDE `executeOrphanSweep`, whose own `errors`
+    // field carries orphan DIRECTORIES only, so its errors sat one level down
+    // under `orphans.scratch` and no term of this verdict ever read them. The
+    // verb therefore printed the failure and exited 0 — the operator (or the
+    // close ceremony) branching on the exit status saw nothing, while the
+    // payload was still on disk. Issue #377 surfaced the sweep's plan to
+    // `--dry-run`, which changes what is PREVIEWED and never what the verb
+    // exits with, and left this to its own row precisely because it IS a
+    // behaviour change to the exit contract. `--dry-run` stays unaffected: it
+    // returns above, and a ScratchSweepPlan has no `errors` field at all.
     const anyFailure =
       result.errors.length > 0 ||
       result.deregisteredNotDeleted.length > 0 ||
       result.erroredStillListed.length > 0 ||
       (orphanResult !== null && orphanResult.errors.length > 0) ||
+      (scratchResult !== null && scratchResult.errors.length > 0) ||
       (detachedResult !== null &&
         (detachedResult.errors.length > 0 ||
           detachedResult.deregisteredNotDeleted.length > 0 ||
