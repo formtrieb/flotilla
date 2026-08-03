@@ -34,6 +34,10 @@ import {
   rmSync,
   existsSync,
   realpathSync,
+  // Issue #417's fixture makes a REAL removal fail by denying write on the
+  // payload's parent directory — permission bits are the portable way to do
+  // that without mocking node:fs (which this spec deliberately leaves real).
+  chmodSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1821,6 +1825,184 @@ describe('worktree-cleanup subcommand — --dry-run previews the Scribe scratch 
     );
     expect(existsSync(report)).toBe(true);
   });
+});
+
+// ─── Form 8b-ter: worktree-cleanup — a FAILED Scribe-payload removal reaches
+//             the EXIT CODE, not just the JSON (issue #417) ──────────────────
+//
+// The gap: `anyFailure` read `orphanResult.errors`, which carries orphan
+// DIRECTORIES only. The scratch sweep's own errors sit one level down, under
+// `orphans.scratch.errors`, outside every term of that verdict — so a payload
+// removal that failed was printed in the summary and the verb still exited 0.
+// The close ceremony and any operator branch on the exit status, so the one
+// channel a caller actually reads carried no signal that a file was left
+// behind. Every other incomplete-outcome class here (a removal error, an
+// ENOTEMPTY deregistration, FOR-73's errored-yet-still-listed worktree, the
+// detached sweep's three) already forces exit 1; this one now does too.
+//
+// Same fixture rules as Form 8b-bis above: `execFileSync` is mocked to '' so
+// `git worktree list` is empty and no other population can contribute to the
+// verdict, and node:fs is NOT mocked — the failure below is a REAL removal
+// failure at the REAL seam (`rmSync` refused by the filesystem), never a
+// stubbed error object handed to the CLI by a test double. That matters here
+// more than anywhere else in this file: the whole claim under test is that a
+// genuine on-disk failure changes the process exit status.
+
+describe('worktree-cleanup subcommand — a failed Scribe-scratch payload removal drives exit 1 (issue #417)', () => {
+  const repos: string[] = [];
+  const modesToRestore: string[] = [];
+
+  /** The whole real-run summary, so the verdict can be attributed to ONE class. */
+  type CleanupJson = {
+    errors: unknown[];
+    deregisteredNotDeleted: unknown[];
+    erroredStillListed: unknown[];
+    orphans?: {
+      errors: unknown[];
+      scratch?: {
+        dir: string;
+        present: boolean;
+        selected?: Array<{ path: string }>;
+        removed?: Array<{ path: string }>;
+        skipped: Array<{ path: string; reason?: string }>;
+        errors?: Array<{ path: string; message: string }>;
+      };
+    };
+  };
+
+  function parseSummary(): CleanupJson {
+    expect(stdoutBuf, `stderr was: ${stderrBuf}`).not.toBe('');
+    return JSON.parse(stdoutBuf) as CleanupJson;
+  }
+
+  /**
+   * Permission bits are the portable way to make a real removal fail; root
+   * ignores them and Windows has no equivalent — the same guard the
+   * unreadable-worktree specs in worktree-cleanup.spec.ts use.
+   */
+  const canDenyWrite =
+    process.platform !== 'win32' && (process.getuid?.() ?? 0) !== 0;
+
+  /** A repo whose Scribe scratch directory holds exactly one payload file. */
+  function makeRepoWithPayload(prefix: string): {
+    repo: string;
+    dir: string;
+    payload: string;
+  } {
+    const repo = mkdtempSync(join(tmpdir(), prefix));
+    repos.push(repo);
+    const dir = join(repo, SCRIBE_SCRATCH_RELATIVE_DIR);
+    mkdirSync(dir, { recursive: true });
+    const payload = join(dir, 'report-417-1.json');
+    writeFileSync(payload, '{}', 'utf-8');
+    return { repo, dir, payload };
+  }
+
+  /**
+   * Deny writes on the payload's PARENT: unlinking a file needs write
+   * permission on its directory, while read+execute keeps the listing (and so
+   * the plan's `selected`) exactly as it was. The removal is what fails, not
+   * the classification — which is precisely the case the exit verdict missed.
+   */
+  function denyRemoval(dir: string): void {
+    chmodSync(dir, 0o555);
+    modesToRestore.push(dir);
+  }
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+  });
+
+  afterEach(() => {
+    // Restore modes BEFORE the recursive rm — a 0555 directory would otherwise
+    // defeat the cleanup itself and leak the fixture into the temp dir.
+    while (modesToRestore.length > 0) {
+      const dir = modesToRestore.pop();
+      if (dir) {
+        try {
+          chmodSync(dir, 0o755);
+        } catch {
+          // best-effort restore
+        }
+      }
+    }
+    while (repos.length > 0) {
+      const dir = repos.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  it.skipIf(!canDenyWrite)(
+    'a payload removal that FAILS is reported under orphans.scratch.errors AND exits 1',
+    () => {
+      const { repo, dir, payload } = makeRepoWithPayload('wave-cli-417-fail-');
+      denyRemoval(dir);
+
+      const code = main(['worktree-cleanup', repo, '--orphans']);
+
+      expect(code).toBe(1);
+
+      const summary = parseSummary();
+      const scratch = summary.orphans?.scratch;
+      expect(scratch, 'orphans.scratch missing from the CLI JSON').toBeDefined();
+      expect((scratch?.removed ?? []).map((e) => e.path)).toEqual([]);
+      expect((scratch?.errors ?? []).map((e) => e.path)).toEqual([payload]);
+      expect((scratch?.errors ?? [])[0].message).toMatch(
+        /EACCES|EPERM|permission denied/i,
+      );
+
+      // ATTRIBUTION: every OTHER term of the verdict is empty, so the 1 above
+      // can only have come from the scratch errors. Without this the test would
+      // pass just as happily if some unrelated population had failed.
+      expect(summary.errors).toEqual([]);
+      expect(summary.deregisteredNotDeleted).toEqual([]);
+      expect(summary.erroredStillListed).toEqual([]);
+      expect(summary.orphans?.errors).toEqual([]);
+
+      // The exit code names a real leftover: the payload is still on disk.
+      expect(existsSync(payload)).toBe(true);
+    },
+  );
+
+  it('NEGATIVE CONTROL — the same sweep with a REMOVABLE payload still exits 0', () => {
+    // Runs on every platform, including as root: it proves the new term did not
+    // turn an ordinary successful sweep into a failure, which is the half of
+    // "existing exit classes unchanged" that this population owns.
+    const { repo, payload } = makeRepoWithPayload('wave-cli-417-ok-');
+
+    const code = main(['worktree-cleanup', repo, '--orphans']);
+
+    expect(code).toBe(0);
+    const scratch = parseSummary().orphans?.scratch;
+    expect((scratch?.removed ?? []).map((e) => e.path)).toEqual([payload]);
+    expect(scratch?.errors ?? []).toEqual([]);
+    expect(existsSync(payload)).toBe(false);
+  });
+
+  it.skipIf(!canDenyWrite)(
+    'a DRY RUN over the same unremovable payload still exits 0 — a plan carries no errors',
+    () => {
+      // The dry-run branch returns before any execute, so there is nothing that
+      // could fail and nothing the verdict could read. Pinned because the fix
+      // lives in the shared verb: a preview that started failing here would be
+      // a regression nobody asked for.
+      const { repo, dir, payload } = makeRepoWithPayload('wave-cli-417-dry-');
+      denyRemoval(dir);
+
+      expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run'])).toBe(0);
+
+      const scratch = parseSummary().orphans?.scratch;
+      expect((scratch?.selected ?? []).map((e) => e.path)).toEqual([payload]);
+      expect(scratch?.errors).toBeUndefined();
+      expect(existsSync(payload)).toBe(true);
+    },
+  );
 });
 
 // ─── Form 8f: worktree-cleanup — the branch-scoping flag FAILS CLOSED and
