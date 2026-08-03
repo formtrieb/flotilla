@@ -156,17 +156,22 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #   `worktree-cleanup` run (--dry-run included) prints
 #   worktreeCount { count, threshold, level, advisory } AND, for the second
 #   term, commandLine { bytes, argvBytes, envBytes, argCount, envCount,
-#   threshold, level, advisory } from the engine's checkCommandLineSizeAdvisory.
+#   threshold, maxEntryBytes, maxEntryThreshold, level, advisory } from the
+#   engine's checkCommandLineSizeAdvisory.
 #   That one call checks TWO independent execve conditions and owns a NAMED
 #   threshold constant for each, both in the same engine file:
-#   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES for the argv+env TOTAL, and its
-#   sibling MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES for the PER-STRING cap on
-#   any ONE argv/env entry. Read both numbers there, never restate either here.
+#   COMMAND_LINE_ADVISORY_THRESHOLD_BYTES for the argv+env TOTAL (printed as
+#   `threshold`, alongside the measured `bytes`), and its sibling
+#   MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES for the PER-STRING cap on any ONE
+#   argv/env entry (printed as `maxEntryThreshold`, alongside the largest
+#   single entry's own size as `maxEntryBytes`). Read all four numbers there,
+#   never restate any of them here.
 #   `level` is `advisory` when EITHER trips, so a printed `level: ok` is a
-#   two-condition all-clear — but the printed `threshold` is the TOTAL one
-#   alone, so never read that field as the per-string budget. THIS step
-#   keeps the raw git form because the preflight runs before any config/store
-#   resolution.
+#   two-condition all-clear — but `threshold` and `maxEntryThreshold` are two
+#   DIFFERENT fields carrying two DIFFERENT budgets, so never read `threshold`
+#   as the per-string budget: `maxEntryThreshold` is the field for that. THIS
+#   step keeps the raw git form because the preflight runs before any
+#   config/store resolution.
 #   Deliberately NOT guarded: `grep -c` prints `0`
 #   on no match, so this capture is never empty on a did-not-run — and a repo
 #   with zero registered worktrees is impossible anyway (the primary checkout
