@@ -62,6 +62,18 @@ Each `rows[]` entry carries `reconstructedState`, a `decision` (`adopt`/`redispa
 
 The crash-cleanup step uses an UNSCOPED worktree scan internally (not narrowed by `--marker`), so it still finds and cleans a redispatch row's debris even when you pass `--marker` to keep the *reconciliation itself* scoped away from a sibling wave's worktrees. It only ever acts on the exact branch of a `redispatch` row from THIS wave's spine — it cannot touch a sibling wave's worktree.
 
+### 4b. Sweep orphaned/detached worktrees — and the Scribe scratch payloads (`--orphans --detached`, same call)
+
+Step 4's crash-cleanup is **row-scoped by design**: it only ever unlocks/removes a `redispatch` row's OWN branch/worktree, through its own `RedispatchCleanupOps` seam (reference/resume-mechanics.md's Disclaimer) — never the tracker, and never anything outside that one branch. Three other populations sit entirely outside that scope and nothing else in this skill reaches them: orphan directories `git worktree list` has already forgotten, an agent's or reviewer's own hand-made detached-HEAD scratch checkout (registered but un-prefixed, so no name-allowlisted sweep sees it), and the Scribe's `.flotilla/tmp/` hand-off payloads (issue #355) — residue the instant `wave-start`'s Scribe stages hand a report/verdict to `write-report`/`write-verdict`. None of the three are wave-resume-specific — they accumulate across every dispatch through this checkout, crashed or not — and a resume that skips this sweep leaves them for the next close to find.
+
+Run the general sweep once, `--orphans` and `--detached` on the SAME call, never split — the identical pairing rule [wave-close phase 3](../wave-close/reference/phase-3-worktree-cleanup.md) mandates for the close path and [wave-start's dispatch preflight](../wave-start/reference/start-mechanics.md) mandates for the dispatch path:
+
+```bash
+{{wave-cli}} worktree-cleanup --orphans --detached
+```
+
+This is the SAME verb, the SAME flag pair, and the SAME `orphans.scratch`-reported Scribe scratch sweep the close phases already run — see [wave-close phase 3](../wave-close/reference/phase-3-worktree-cleanup.md#the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-lifecycle-issue-355) for the full reading guide (what `orphans`, `detached`, and `orphans.scratch` carry, and what an absent key vs. `present: false` vs. a non-empty `removed` means). Resume was the one dispatch/close-adjacent path this sweep never reached — its own crash-cleanup runs through the separate, row-scoped seam above, not through this verb at all.
+
 ### 5. Done-reconcile (the skill-only 4th input)
 
 The pure reconciler projects to a `ClaimRung` only — it **cannot reach `done`/`available`** (those derive from native PR-merge / eligibility, not from any fine state). For every row whose reconstructed coarse rung is `in-review`, probe its closing state: `{{wave-cli}} issue-store read-closing <id>`.
@@ -113,6 +125,7 @@ Only now hand the rows whose `decision === 'redispatch'` to `wave-start`. These 
 - **Manually running `git worktree unlock/remove` or `git branch -D` for a redispatch row.** `{{wave-cli}} resume` already does this for you (step 4, FOR-10) — don't duplicate it by hand.
 - **Passing `--force` by default "to be safe."** `--force` destroys a DIRTY crashed worktree (uncommitted changes). Only pass it after a human has actually looked at a `blockedByDirty: true` entry and confirmed the work in it is disposable — never as a routine flag.
 - **Re-dispatching a row whose `cleanup[]` entry is `blockedByDirty: true`.** That worktree still holds uncommitted work; hand it to `wave-start` and you risk silently discarding it on the next dispatch. Resolve the dirty worktree first.
+- **Treating step 4's crash-cleanup as the whole cleanup story and skipping step 4b.** Step 4 only ever touches a `redispatch` row's OWN branch/worktree — it structurally cannot see orphan directories, an agent's own detached scratch checkout, or the Scribe's `.flotilla/tmp/` payloads. Run `{{wave-cli}} worktree-cleanup --orphans --detached` (step 4b) every resume, the same way every close does — skipping it leaves those three populations to accumulate silently until the next close finds them.
 
 ## Related
 
