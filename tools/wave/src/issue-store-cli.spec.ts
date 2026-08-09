@@ -14,6 +14,8 @@ import { runIssueStore } from './issue-store-cli';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
+import { GitHubIssuesStore } from './adapters/github/github-issues-store';
+import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
 import type { CreateInput, ClosingState } from './adapters/issue-store';
 import type { IssueView } from './contract';
 
@@ -701,5 +703,97 @@ describe('issue-store-cli — done-reconcile close seam (FOR-18)', () => {
     await runIssueStore(['read', id], store);
     expect((JSON.parse(captured) as IssueView).status).toBe('done');
     expect(await api.getComments(id)).toHaveLength(1); // advisory not doubled
+  });
+});
+
+// ── #399: `close` probes + reports the native end-state loudly ──────────────
+// `close` is deliberately no-op-or-reconcile: it records the closing PR +
+// cosmetic AC tick but does NOT natively close an issue whose satisfying act
+// was not a merged PR carrying its own close phrase. Before this slice that
+// gap was silent — exit 0, `Closed-by:` written, issue still OPEN — the exact
+// shape #339 (1.0.0) and #397 (1.0.1) both hit and had to be rescued by hand
+// (docs/RELEASING.md step 7). These specs exercise that shared shape on
+// GitHubIssuesStore (the store both occurrences lived on): `close()` there
+// never calls `nativeClose`, so a row whose satisfying act was never a
+// merged-PR `Closes #N` stays open after the call — the same shape a
+// release-bump PR that names no issue produces.
+describe('issue-store-cli — close reports the native end-state loudly (#399)', () => {
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let outCaptured: string;
+  let errCaptured: string;
+
+  beforeEach(() => {
+    outCaptured = '';
+    errCaptured = '';
+    outSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        outCaptured += chunk.toString();
+        return true;
+      });
+    errSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        errCaptured += chunk.toString();
+        return true;
+      });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  function ghInput(): CreateInput {
+    return {
+      title: 'A release-resolved issue',
+      filingHint: 'release-resolved-issue',
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['tools/wave/src/issue-store-cli.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'ships in the release', checked: false }],
+    };
+  }
+
+  it('the #339/#397 shape: a satisfied-but-not-by-PR close prints the still-open state AND an unmistakable STILL OPEN line', async () => {
+    const api = new InMemoryGitHubApi();
+    const store = new GitHubIssuesStore({ api });
+    const id = await store.create(ghInput());
+    await store.transition(id, 'in-review');
+    // No merged PR ever referenced this issue (mirrors a release-bump PR that
+    // names no issue) — the issue stays open natively; GitHubIssuesStore's
+    // close() never calls nativeClose().
+
+    const code = await runIssueStore(
+      ['close', id, 'https://github.com/o/r/pull/999'],
+      store,
+    );
+    expect(code).toBe(0); // exit-code meaning unchanged (ADR-0035): still 0
+
+    const printed = JSON.parse(outCaptured) as ClosingState;
+    expect(printed.state).toBe('open'); // the JSON key naming the tracker state
+
+    expect(errCaptured).toMatch(/STILL OPEN/);
+    expect(errCaptured).toContain(id);
+    expect(errCaptured).toContain('https://github.com/o/r/pull/999');
+  });
+
+  it('contrast — an ordinary merged-PR close reports `merged` and stays silent (no STILL OPEN line)', async () => {
+    const api = new InMemoryGitHubApi();
+    const store = new GitHubIssuesStore({ api });
+    const id = await store.create(ghInput());
+    await store.transition(id, 'in-review');
+    const PR = 'https://github.com/o/r/pull/1';
+    await api.setClosingPr(Number(id), { merged: true, url: PR });
+    await api.nativeClose(Number(id)); // the merged PR's `Closes #N`, out of band
+
+    const code = await runIssueStore(['close', id, PR], store);
+    expect(code).toBe(0);
+
+    const printed = JSON.parse(outCaptured) as ClosingState;
+    expect(printed).toMatchObject({ state: 'merged', prUrl: PR });
+    expect(errCaptured).not.toMatch(/STILL OPEN/);
   });
 });
