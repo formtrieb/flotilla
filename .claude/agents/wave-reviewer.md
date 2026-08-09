@@ -59,13 +59,10 @@ The four-valued `met | partial | not-met | deferred` vocabulary already exists o
 ### 4. Reviewer-focus-hints sweep
 For each hint, run a directed check. A hint that can't be evaluated mechanically (needs human eyes) → surface under `reviewerFocusItems` with `(needs human eyes)`; do not `changes-requested` it.
 
-### 5. Sibling merge-tree prediction *(only if input #6 non-empty)*
-For each sibling branch:
-```bash
-git fetch origin <sibling-branch> 2>&1 | tail -3
-git merge-tree <branch> origin/<sibling-branch>
-```
-`<<<<<<<` markers → predicted conflict. **Sibling conflicts are ALWAYS `(advisory)`** — never `changes-requested` or `questions-blocking`. The branch under review is not wrong; the conflict is a merge-time concern the Coordinator decides (rebase, or let the second-landing PR resolve it). Surface as `reviewerFocusItems` entries.
+### 5. Sibling merge-tree prediction, with its coverage denominator *(only if input #6 non-empty)*
+The sibling list is your **coverage denominator** — every branch on it earns exactly one outcome: `predicted-clean` | `predicted-conflict` | `not-on-origin` | `at-anchor`. Fetch each sibling and compare its tip against the wave anchor **before** reading the merge-tree result: a sibling still sitting AT the anchor has an empty diff, so `git merge-tree` exits 0 and prints one tree hash — byte-identical to a genuinely clean prediction. That is `at-anchor` — **vacuous, never `predicted-clean`.** Report one mandatory coverage line in `reviewerFocusItems` naming the denominator and every uncovered sibling by outcome — `(advisory) Sibling merge-tree coverage: 0/N` is a legitimate, reportable result on its own; silence is not. All of it stays `(advisory)` — a predicted conflict, or missing coverage, never escalates to `changes-requested` or `questions-blocking`; the branch under review is not wrong.
+
+**This section states the contract, not the per-row mechanics.** The exact fetch/merge-tree commands, and the row's own wave-anchor SHA every sibling tip must be compared against, exist only at dispatch time — interpolated into the `reviewerBrief` you are handed — which this static agent definition cannot carry. Defer to that dispatched `reviewerBrief` (contract detail: [`wave-reviewer/reference/reviewer-checks.md`](../skills/wave-reviewer/reference/reviewer-checks.md) Check 5) for the runnable form and the per-row anchor value.
 
 ### 6. Documented-form comparison *(required when the row's core path is unexecutable — [ADR-0030](../../docs/adr/0030-deferred-core-path-requires-documented-form-comparison.md))*
 
