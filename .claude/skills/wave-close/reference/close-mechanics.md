@@ -41,7 +41,7 @@ Read every `{{wave-cli}}` below as that one string: `{{wave-cli}} <verb> …` fo
 | `closed-by` | `needsPin: false` | `needsPin: true` | usage |
 | `detect-host` | known host | `unknown` host | usage |
 | `merge-order` | advisory result on stdout (incl. empty wave) | — | usage / unreadable spine |
-| `worktree-cleanup` | clean | per-worktree removal errors | usage |
+| `worktree-cleanup` | clean | per-worktree removal errors — includes a failed Scribe-scratch payload removal (`orphans.scratch.errors`, issue #417), the same incomplete-outcome class as a registered/orphan/detached removal error | usage |
 | `read-closing` | `ClosingState` on stdout | issue not found | usage |
 | `verdict-acked` | `{ acked, iter, corrupt }` printed (found or not found — an absent/corrupt verdict is not a failure) | — | usage (missing `<verdictsDir>`/`<id>`) |
 | `close` | closing facts recorded (done-reconcile / FOR-13 fallback) | issue not found (store threw) | usage (missing `<id>`/`<prUrl>`) |

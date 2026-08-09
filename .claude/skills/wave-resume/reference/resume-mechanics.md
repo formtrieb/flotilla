@@ -126,7 +126,16 @@ VERDICTS=".flotilla/waves/$SLUG/verdicts"
 #     the Scribe scratch payloads (issue #355). Step 4's crash-cleanup only ever
 #     touches a redispatch row's OWN branch/worktree; this call is what reaches
 #     everything else, repo-wide, exactly like wave-close phase 3 and wave-start's
-#     dispatch preflight. --orphans and --detached on the SAME call, every time:
+#     dispatch preflight — both of which preview before they sweep, the same
+#     discipline this step follows too:
+
+# Preview first — --dry-run shares the exact same plan the real run below
+# executes (wave-close phase 3), so what this prints is exactly what the next
+# call removes:
+{{wave-cli}} worktree-cleanup --dry-run --orphans --detached
+
+# Execute (only after the preview looks right) — --orphans and --detached on
+# the SAME call, every time:
 {{wave-cli}} worktree-cleanup --orphans --detached
 # read `orphans.scratch` the same way wave-close phase 3 does: absent → the sweep
 # never looked; present:false → looked, nothing there; non-empty removed → real

@@ -8,23 +8,28 @@
 
 ```bash
 # Preview first — --dry-run previews the wave-scoped worktree plan, the
-# orphan-DIRECTORY plan, the orphan-BRANCH sweep (issue #148, fixed), AND
-# (issue #238, wired) the detached-scratchpad sweep: the JSON carries an
+# orphan-DIRECTORY plan, the orphan-BRANCH sweep (issue #148, fixed), the
+# Scribe scratch-sweep (issue #355, previewed since issue #377), AND (issue
+# #238, wired) the detached-scratchpad sweep: the JSON carries an
 # `orphanBranches: { toDelete, branchHygieneSkipped }` key computed by the
 # exact same `planOrphanBranchSweep` the real run below executes via
-# `executeOrphanBranchSweep`, and a `detached: { selected, skipped }` key
-# computed by the exact same `planDetachedScratchpadSweep` the real run
-# executes via `executeCleanup` — preview and execution share one plan per
-# population, never an independently-deciding second derivation. One
-# residual asymmetry, orphan-BRANCH only: the real run recomputes that plan
-# AFTER physically removing orphan directories first, so a worktree-wf_*
-# branch whose orphan directory this same call is about to delete can read
-# ineligible in the preview and eligible moments later in the execute — read
-# the orphan-branch preview as accurate one directory-removal step short of
-# the run it precedes, not as universally identical to it. The detached
-# sweep has no such asymmetry: its plan is computed once, before the
-# --dry-run branch, so `detached.selected` in the preview is exactly what
-# the real run below removes.
+# `executeOrphanBranchSweep`, an `orphans.scratch: { dir, present, selected,
+# skipped }` key computed by the exact same `planScribeScratchSweep` the real
+# run below executes via `executeScribeScratchSweep`, and a
+# `detached: { selected, skipped }` key computed by the exact same
+# `planDetachedScratchpadSweep` the real run executes via `executeCleanup` —
+# preview and execution share one plan per population, never an
+# independently-deciding second derivation. One residual asymmetry,
+# orphan-BRANCH only: the real run recomputes that plan AFTER physically
+# removing orphan directories first, so a worktree-wf_* branch whose orphan
+# directory this same call is about to delete can read ineligible in the
+# preview and eligible moments later in the execute — read the orphan-branch
+# preview as accurate one directory-removal step short of the run it
+# precedes, not as universally identical to it. Neither the Scribe
+# scratch-sweep nor the detached sweep carries that asymmetry: each plan is
+# computed once, before the --dry-run branch, so `orphans.scratch` and
+# `detached.selected` in the preview are exactly what the real run below
+# removes.
 {{wave-cli}} worktree-cleanup --dry-run --wave <wave-file> --orphans --detached
 
 # Execute (only after the preview looks right)
