@@ -468,6 +468,12 @@ export class GitHubIssuesStore implements IssueStore {
       ...(parsed.estimatedWallclock !== undefined
         ? { estimatedWallclock: parsed.estimatedWallclock }
         : {}),
+      // The tracker's OWN last-write instant (`updated_at`), not anything the
+      // body codec could carry — it is API metadata, so it survives no
+      // round-trip through the issue text. Passed through as-is; an absent
+      // `updatedAt` stays absent, which the DoR staleness advisory reads as
+      // `'deferred'` rather than as "nothing moved".
+      ...(gh.updatedAt !== undefined ? { trackerUpdatedAt: gh.updatedAt } : {}),
     };
   }
 

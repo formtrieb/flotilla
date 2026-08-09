@@ -38,6 +38,11 @@ import {
   // payload's parent directory — permission bits are the portable way to do
   // that without mocking node:fs (which this spec deliberately leaves real).
   chmodSync,
+  // Gate 9's fixtures back-date an issue file: on a markdown store the file's
+  // own mtime IS the tracker-update signal, so setting it is how a "this row
+  // was last touched before main moved" scenario is built without a clock race.
+  readdirSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -3990,6 +3995,177 @@ describe('dor <path> --config <path> threads verify profiles into Gate 8 (file f
 
     expect(code).toBe(1);
     expect(stderrBuf).toMatch(/could not load --config/);
+  });
+});
+
+// --- Gate 9 (the staleness advisory) reaches BOTH dor forms ------------------
+//
+// Division of labour with dor-gate.spec.ts, stated because it is not obvious:
+// that file drives the gate against REAL git repositories with pinned commit
+// dates, so the date arithmetic, the pathspec translation and the
+// absence-defers rule are proven there against the real tool. THIS file cannot
+// do that — `node:child_process` is mocked module-wide at the top (the
+// files-drift specs depend on it) — so what these specs prove is the half that
+// only the CLI can prove: that the gate is reached at all from both `dor`
+// forms, that its two different `since` sources are actually wired (the issue
+// FILE's mtime on the file form, `IssueView.trackerUpdatedAt` on `--id`), and
+// that the row's exit code is UNCHANGED by a firing advisory (ADR-0035: the
+// addition is additive on the frozen CLI surface — a new gate line, nothing
+// else).
+
+describe('dor -- the staleness advisory reaches both entry points (exit code unchanged)', () => {
+  const staleRoots: string[] = [];
+
+  /** One touching commit, in the exact record shape `git log --format` emits. */
+  const TOUCHING_COMMIT =
+    'abc1234' + '\u001f' + '2020-06-01T12:00:00Z' + '\u001f' + 'retire the mechanism the row still names\n';
+
+  /**
+   * Stub the git calls gate 9 makes, in the same style the files-drift specs in
+   * this file already stub `getChangedFilesFromGit`: answer each read the gate
+   * performs, and hand back `commits` for the `git log`.
+   */
+  function stubGitLog(commits: string): void {
+    vi.mocked(execFileSync).mockImplementation(((_file: unknown, args: unknown) => {
+      const a = Array.isArray(args) ? (args as string[]) : [];
+      if (a[0] === 'rev-parse' && a[1] === '--git-dir') return '.git\n';
+      if (a[0] === 'symbolic-ref') return 'origin/main\n';
+      if (a[0] === 'log') return commits;
+      return '';
+    }) as never);
+  }
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation((() => '') as never);
+  });
+
+  afterAll(() => {
+    for (const r of staleRoots) rmSync(r, { recursive: true, force: true });
+  });
+
+  /** A temp root carrying the declared file, so the other working-tree gates pass. */
+  function rootWithDeclaredFile(label: string): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), `dor-stale-cli-${label}-`)));
+    staleRoots.push(dir);
+    mkdirSync(join(dir, '.scratch'), { recursive: true });
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'foo.ts'), '// declared\n', 'utf-8');
+    return dir;
+  }
+
+  it('the FILE form surfaces the advisory as a warn and still exits 0', () => {
+    stubGitLog(TOUCHING_COMMIT);
+    const dir = rootWithDeclaredFile('file-form');
+    const issueDir = join(dir, '.scratch', 'demo', 'issues');
+    mkdirSync(issueDir, { recursive: true });
+    const issuePath = join(issueDir, '01-demo.md');
+    writeFileSync(
+      issuePath,
+      [
+        '# 01 -- Demo',
+        '',
+        '**Status:** ready-for-agent',
+        '**Risk:** isolated-refactor',
+        '**Worker:** background',
+        '**Files:**',
+        '- src/foo.ts',
+        '**Blocked by:** none',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] the thing is built',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const code = main(['dor', issuePath]);
+
+    expect(code).toBe(0); // ADVISORY: a firing gate does not move the exit code
+    expect(stdoutBuf).toMatch(/warn\s+files-touched-since-tracker-update/);
+    expect(stdoutBuf).toMatch(/retire the mechanism the row still names/);
+    expect(stdoutBuf).toMatch(/^PASS/m);
+  });
+
+  it('the FILE form passes the gate when git reports nothing touching the declared files', () => {
+    stubGitLog('');
+    const dir = rootWithDeclaredFile('file-form-quiet');
+    const issueDir = join(dir, '.scratch', 'demo', 'issues');
+    mkdirSync(issueDir, { recursive: true });
+    const issuePath = join(issueDir, '01-demo.md');
+    writeFileSync(
+      issuePath,
+      [
+        '# 01 -- Demo',
+        '',
+        '**Status:** ready-for-agent',
+        '**Risk:** isolated-refactor',
+        '**Worker:** background',
+        '**Files:**',
+        '- src/foo.ts',
+        '**Blocked by:** none',
+        '',
+        '## Acceptance criteria',
+        '',
+        '- [ ] the thing is built',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const code = main(['dor', issuePath]);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/pass\s+files-touched-since-tracker-update/);
+  });
+
+  it('the --id form surfaces the advisory, taking its window off IssueView.trackerUpdatedAt', async () => {
+    stubGitLog(TOUCHING_COMMIT);
+    const dir = rootWithDeclaredFile('id-form');
+    const store = new MarkdownFsStore({ repoRoot: dir, slug: 'demo' });
+    const id = await store.create({ ...DOR_INPUT, files: ['src/foo.ts'] });
+
+    // Proof the window came off the CONTRACT rather than from anything the CLI
+    // reconstructed: the store's own read is what carries it.
+    expect((await store.read(id)).trackerUpdatedAt).toBeDefined();
+
+    const code = await runDorById(['--id', id, '--repo-root', dir], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/warn\s+files-touched-since-tracker-update/);
+    expect(stdoutBuf).toMatch(/retire the mechanism the row still names/);
+  });
+
+  it('the --id form DEFERS the advisory without --repo-root, exactly like the other working-tree gates', async () => {
+    const store = tmpStore();
+    const id = await store.create(DOR_INPUT);
+
+    const code = await runDorById(['--id', id], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/deferred\s+files-touched-since-tracker-update/);
+    expect(stdoutBuf).not.toMatch(/pass\s+files-touched-since-tracker-update/);
+  });
+
+  it('the --id form DEFERS -- never passes -- when the store states no tracker-update instant', async () => {
+    stubGitLog(TOUCHING_COMMIT);
+    const dir = rootWithDeclaredFile('id-form-no-ts');
+    // A store whose read() omits trackerUpdatedAt entirely: the adapter could
+    // not state one. The gate must not read that as "nothing moved".
+    const store = fakeStore(async (id) => ({
+      id,
+      risk: 'isolated-refactor',
+      worker: 'background',
+      files: ['src/foo.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+      status: 'available',
+    }));
+
+    const code = await runDorById(['--id', '42', '--repo-root', dir], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/deferred\s+files-touched-since-tracker-update/);
+    expect(stdoutBuf).not.toMatch(/pass\s+files-touched-since-tracker-update/);
+    expect(stdoutBuf).not.toMatch(/warn\s+files-touched-since-tracker-update/);
   });
 });
 

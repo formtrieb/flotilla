@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  realpathSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   validateIssue,
   validateIssueView,
@@ -1292,7 +1300,7 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
     expect(result.overall).toBe('PASS');
   });
 
-  it('emits all eight canonical gates in the same order as the file path (no silent omission)', () => {
+  it('emits all nine canonical gates in the same order as the file path (no silent omission)', () => {
     const names = validateIssueView(buildView()).gates.map((g) => g.name);
 
     expect(names).toEqual([
@@ -1304,6 +1312,7 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
       'ac-files-coverage',
       'literal-files-exist',
       'verify-profile-coverage',
+      'files-touched-since-tracker-update',
     ]);
   });
 
@@ -1320,5 +1329,317 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
     expect(result.gates.some((g) => g.status === 'deferred')).toBe(true);
     expect(result.gates.some((g) => g.status === 'fail')).toBe(false);
     expect(result.overall).toBe('PASS');
+  });
+});
+
+// ─── Gate 9 — the staleness advisory ────────────────────────────────────────
+//
+// Fixtures are REAL git repositories, not a mocked git: the gate's whole job is
+// to ask git a question (has the default branch touched these paths since this
+// instant?) and a mock would only re-assert the question this file already
+// writes down. Commit dates are pinned via GIT_AUTHOR_DATE/GIT_COMMITTER_DATE
+// so every case is deterministic — `--since` filters on the COMMITTER date, so
+// pinning it is what removes the clock race between "make a commit" and "pick a
+// tracker timestamp".
+
+const STALENESS_GATE_NAME = 'files-touched-since-tracker-update';
+
+/** Commit date every fixture commit is pinned to. */
+const COMMIT_AT = '2020-06-01T12:00:00Z';
+/** A tracker update BEFORE the fixture commit — the row is stale, the advisory fires. */
+const TRACKER_BEFORE_COMMIT = '2020-01-01T00:00:00Z';
+/** A tracker update AFTER the fixture commit — nothing has moved since, the advisory passes. */
+const TRACKER_AFTER_COMMIT = '2021-01-01T00:00:00Z';
+
+describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)', () => {
+  const repos: string[] = [];
+
+  afterAll(() => {
+    for (const r of repos) rmSync(r, { recursive: true, force: true });
+  });
+
+  function git(repo: string, args: string[]): void {
+    execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: COMMIT_AT,
+        GIT_COMMITTER_DATE: COMMIT_AT,
+      },
+    });
+  }
+
+  /** A fresh git repo whose default branch is `main`, with one seed commit. */
+  function makeRepo(label: string): string {
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), `wave-dor-stale-${label}-`)));
+    repos.push(repo);
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'test@example.com']);
+    git(repo, ['config', 'user.name', 'Test']);
+    // A global core.excludesFile on the machine running this suite must not be
+    // able to make a fixture file un-addable and quietly empty the history.
+    git(repo, ['config', 'core.excludesFile', '/dev/null']);
+    writeFileSync(join(repo, 'README.md'), '# fixture\n', 'utf-8');
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', 'seed']);
+    git(repo, ['branch', '-M', 'main']); // deterministic default-branch name
+    return repo;
+  }
+
+  /**
+   * Write a minimal wave issue file inside the repo and hand back both the path
+   * and the exact source string, so `validateIssue` reads what was written
+   * rather than a second, separately-composed copy.
+   */
+  function writeIssueIn(repo: string): { issuePath: string; source: string } {
+    const issuePath = join(repo, '.scratch', 'demo', 'issues', '01-demo.md');
+    mkdirSync(dirname(issuePath), { recursive: true });
+    const source = ISSUE_FIXTURE_BODY(
+      [
+        '**Risk:** isolated-refactor',
+        '**Worker:** background',
+        '**Files:**',
+        '- src/foo.ts',
+        '**Blocked by:** none',
+      ].join('\n'),
+    );
+    writeFileSync(issuePath, source, 'utf-8');
+    return { issuePath, source };
+  }
+
+  function commitFile(repo: string, rel: string, message: string): void {
+    const abs = join(repo, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, `// ${message}\n`, 'utf-8');
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', message]);
+  }
+
+  // ── it FIRES ────────────────────────────────────────────────────────────
+
+  it('warns when the default branch touched a declared file after the row was last updated, naming the touching commit', () => {
+    const repo = makeRepo('fires');
+    commitFile(repo, 'src/foo.ts', 'retire the mechanism the row still names');
+
+    const result = validateIssueView(
+      buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+      { repoRoot: repo },
+    );
+
+    const g = gate(result, STALENESS_GATE_NAME);
+    expect(g.status).toBe('warn');
+    expect(g.reason).toContain('retire the mechanism the row still names');
+    expect(g.reason).toContain('src/foo.ts');
+  });
+
+  it('names the ref it compared against, so a reader can tell origin/main from a bare HEAD', () => {
+    const repo = makeRepo('ref-named');
+    commitFile(repo, 'src/foo.ts', 'moved');
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.reason).toContain('main');
+  });
+
+  it('fires through a GLOB entry, matching the engine-wide `**` semantics', () => {
+    const repo = makeRepo('glob');
+    commitFile(repo, 'src/nested/deep/thing.ts', 'moved under the glob');
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: ['src/**'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('warn');
+    expect(g.reason).toContain('moved under the glob');
+  });
+
+  it('is ADVISORY in the firing case: overall stays PASS and no gate reports fail', () => {
+    const repo = makeRepo('advisory');
+    commitFile(repo, 'src/foo.ts', 'moved');
+
+    const result = validateIssueView(
+      buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+      { repoRoot: repo },
+    );
+
+    expect(gate(result, STALENESS_GATE_NAME).status).toBe('warn');
+    expect(result.gates.some((g) => g.status === 'fail')).toBe(false);
+    expect(result.overall).toBe('PASS');
+  });
+
+  // ── it stays QUIET where it should ──────────────────────────────────────
+
+  it('passes when the branch moved only OUTSIDE the declared files (the pathspec is load-bearing)', () => {
+    const repo = makeRepo('elsewhere');
+    commitFile(repo, 'docs/unrelated.md', 'moved somewhere else entirely');
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('pass');
+  });
+
+  it('passes when the row was updated AFTER the branch last touched its files', () => {
+    const repo = makeRepo('fresh');
+    commitFile(repo, 'src/foo.ts', 'moved before the row was decorated');
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_AFTER_COMMIT }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('pass');
+  });
+
+  it('passes vacuously — and says so — for a row that declares no Files at all', () => {
+    const repo = makeRepo('no-files');
+    commitFile(repo, 'src/foo.ts', 'moved');
+
+    const g = gate(
+      validateIssueView(buildView({ files: [], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }), {
+        repoRoot: repo,
+      }),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('pass');
+    expect(g.reason).toContain('declares no Files');
+  });
+
+  // ── absence DEFERS, never falsely passes (the acceptance criterion) ──────
+
+  it('DEFERS — never passes — when the view carries no tracker-update timestamp, on the exact fixture that otherwise fires', () => {
+    const repo = makeRepo('no-timestamp');
+    commitFile(repo, 'src/foo.ts', 'moved');
+
+    // Control: with the timestamp, this same repo + row warns.
+    expect(
+      gate(
+        validateIssueView(
+          buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+          { repoRoot: repo },
+        ),
+        STALENESS_GATE_NAME,
+      ).status,
+    ).toBe('warn');
+
+    const g = gate(
+      validateIssueView(buildView({ files: ['src/foo.ts'] }), { repoRoot: repo }),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('deferred');
+    expect(g.status).not.toBe('pass');
+    expect(g.reason).toContain('capability gap');
+  });
+
+  it('DEFERS on an unparseable tracker-update timestamp rather than guessing a window', () => {
+    const repo = makeRepo('bad-timestamp');
+    commitFile(repo, 'src/foo.ts', 'moved');
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: ['src/foo.ts'], trackerUpdatedAt: 'last Tuesday-ish' }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('deferred');
+  });
+
+  it('DEFERS without a checkout, with the same working-tree semantics as gates 2/7 (ADR-0014)', () => {
+    const result = validateIssueView(
+      buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+    );
+
+    const g = gate(result, STALENESS_GATE_NAME);
+    expect(g.status).toBe('deferred');
+    // the SAME defer reason the other working-tree gates carry
+    expect(g.reason).toBe(gate(result, 'literal-files-exist').reason);
+  });
+
+  it('DEFERS when the supplied repo root is not a git checkout', () => {
+    const notARepo = realpathSync(mkdtempSync(join(tmpdir(), 'wave-dor-stale-nongit-')));
+    repos.push(notARepo);
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+        { repoRoot: notARepo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('deferred');
+    expect(g.reason).toContain('not a git checkout');
+  });
+
+  // ── the file path (validateIssue) ───────────────────────────────────────
+
+  it('derives the window from the issue FILE mtime on the file path, and fires', () => {
+    const repo = makeRepo('file-path');
+    commitFile(repo, 'src/foo.ts', 'moved after the issue file was last written');
+
+    const { issuePath, source } = writeIssueIn(repo);
+    // Back-date the issue file: the markdown store's tracker-update signal IS
+    // this mtime, so this is the file-path equivalent of TRACKER_BEFORE_COMMIT.
+    const backdated = new Date(TRACKER_BEFORE_COMMIT);
+    utimesSync(issuePath, backdated, backdated);
+
+    const result = validateIssue({ repoRoot: repo, issuePath, source });
+
+    expect(gate(result, STALENESS_GATE_NAME).status).toBe('warn');
+    expect(result.overall).toBe('PASS');
+  });
+
+  it('lets an explicit trackerUpdatedAt override the file mtime on the file path', () => {
+    const repo = makeRepo('file-path-override');
+    commitFile(repo, 'src/foo.ts', 'moved');
+
+    const { issuePath, source } = writeIssueIn(repo);
+    const backdated = new Date(TRACKER_BEFORE_COMMIT);
+    utimesSync(issuePath, backdated, backdated);
+
+    const result = validateIssue({
+      repoRoot: repo,
+      issuePath,
+      source,
+      // later than the commit — overrides the back-dated mtime
+      trackerUpdatedAt: TRACKER_AFTER_COMMIT,
+    });
+
+    expect(gate(result, STALENESS_GATE_NAME).status).toBe('pass');
+  });
+
+  it('emits the gate LAST on the file path too, keeping the two entrypoints in the same order', () => {
+    const repo = makeRepo('file-path-order');
+    const { issuePath, source } = writeIssueIn(repo);
+
+    const names = validateIssue({ repoRoot: repo, issuePath, source }).gates.map(
+      (g) => g.name,
+    );
+
+    expect(names[names.length - 1]).toBe(STALENESS_GATE_NAME);
   });
 });

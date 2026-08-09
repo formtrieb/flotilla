@@ -44,6 +44,14 @@ export interface LinearIssue {
   stateName: string;
   /** Linear's fixed category for the state — the done derivation input. */
   stateType: LinearStateType;
+  /**
+   * Linear's own `updatedAt` on the Issue node — an ISO-8601 instant, the
+   * substrate for `IssueView.trackerUpdatedAt` (the DoR staleness advisory's
+   * `since`). OPTIONAL on this seam so a hand-built `LinearIssue` in a spec
+   * stays valid; the store projects absence straight through as absence, and
+   * the advisory then `defer`s rather than falsely passing.
+   */
+  updatedAt?: string;
 }
 
 export interface LinearCreateIssueInput {

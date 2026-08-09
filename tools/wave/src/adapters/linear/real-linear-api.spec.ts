@@ -189,6 +189,36 @@ describe('RealLinearApi', () => {
       expect(http.requests).toHaveLength(1);
     });
 
+    // The tracker-update instant behind the DoR staleness advisory. Linear's own
+    // schema declares `Issue.updatedAt: DateTime!` — "the last time at which the
+    // entity was meaningfully updated" — and `DateTime` is documented as ISO
+    // 8601, so the wire value is carried through verbatim rather than reformatted.
+    it('carries the wire `updatedAt` through onto the LinearIssue', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: () =>
+          issueByIdentifierResponse({ updatedAt: '2026-08-09T10:11:12.000Z' }),
+      });
+      const issue = await api.getIssue('EX-16');
+      expect(issue.updatedAt).toBe('2026-08-09T10:11:12.000Z');
+    });
+
+    it('leaves updatedAt ABSENT (never fabricated) when the field is missing from the response', async () => {
+      const { api } = makeApi({ IssueByIdentifier: () => issueByIdentifierResponse() });
+      const issue = await api.getIssue('EX-16');
+      // Absence must propagate: the DoR staleness advisory reads an absent
+      // instant as `deferred`, and any invented value would turn that honest
+      // "unknown" into a silent, wrong "nothing moved".
+      expect(issue.updatedAt).toBeUndefined();
+    });
+
+    it('asks the wire for `updatedAt` — the field is IN the query, not just tolerated in the response', async () => {
+      const { api, http } = makeApi({
+        IssueByIdentifier: () => issueByIdentifierResponse(),
+      });
+      await api.getIssue('EX-16');
+      expect(http.requests[0].query).toContain('updatedAt');
+    });
+
     it('throws a plain (non-wire) error when the identifier is unknown', async () => {
       const { api } = makeApi({
         IssueByIdentifier: () => ({ status: 200, json: { data: { issues: { nodes: [] } } } }),

@@ -71,6 +71,20 @@ done   # sum MUST be 0; >0 → STOP (another wave is in-flight)
 #   verify block to check — the defer says nothing about the row's coverage,
 #   only that this invocation didn't ask). Passing --config as shown lands
 #   this re-check in the resolvable state on every ordinary run.
+#   --repo-root ALSO turns on `files-touched-since-tracker-update` (the
+#   staleness advisory, ADR-0034's born-structural case): git is asked whether
+#   the default branch touched this row's declared Files since the row's last
+#   tracker update, and a `warn` NAMES the touching commits and the ref it
+#   compared against. It is ADVISORY in every path — it has no FAIL, so it can
+#   never be the reason `overall` leaves PASS, and it must never be treated as
+#   a STOP. The response it asks for is a RE-READ, and it is the Coordinator's:
+#   open the row body and check its acceptance criteria against main before you
+#   dispatch it. This re-check is the LAST gate before fan-out, so it is the
+#   last place a premise that went stale between wave-create and now can still
+#   be caught — wave-create ran the same gate, but main may have moved since.
+#   A `deferred` here is an unknown, never a clean bill: it means no checkout,
+#   no tracker-update timestamp from the store, or no readable default-branch
+#   history. Judgment stance in full: the wave-create SKILL body, step 3.
 {{wave-cli}} issue-store listClaimed > "/tmp/flotilla-start-$SLUG/claimed.json"
 {{wave-cli}} cross-wave --candidates "/tmp/flotilla-start-$SLUG/cands.json" --claimed "/tmp/flotilla-start-$SLUG/claimed.json" --repo-root "$REPO" \
   > "/tmp/flotilla-start-$SLUG/cross-wave-result.json"

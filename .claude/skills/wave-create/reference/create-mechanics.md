@@ -17,7 +17,7 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 | `issue-store read <id>` | `IssueView` — worker, risk, files |
 | `issue-store triage-read <id>` | `TriageView` — `.title` (tracker-native title, triaged or not) and `.body` (the sanctioned source for embedding the issue spec into a Worker brief at compose time) |
 | `issue-store listClaimed` | `IssueView[]` — all currently queued + in-flight issues |
-| `dor --id <id> --repo-root <dir> --config <path>` | DoR gate; working-tree gates run against the coordinator's checkout, and `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring |
+| `dor --id <id> --repo-root <dir> --config <path>` | DoR gate; working-tree gates run against the coordinator's checkout (including `files-touched-since-tracker-update`, the staleness advisory, which reads the default branch's history there), and `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring |
 | `cross-wave --candidates <f.json> --claimed <f.json> --repo-root <dir>` | `CrossWaveResult` — parallel-safety check |
 | `spine create <out-path> <payload.json>` | render and write the `WAVE.md` spine |
 | `issue-store transition <id> queued` | set the soft claim |
@@ -52,6 +52,13 @@ mkdir -p -m 700 "/tmp/flotilla-create-$SLUG"
 #    lets Gate 8 (verify-profile-coverage) see the consumer's verify block at
 #    all, on THIS call, regardless of cwd (see note below the sequence)
 {{wave-cli}} dor --id "$ID" --repo-root "$REPO" --config "$REPO/wave.config.json"
+#   --repo-root also turns on `files-touched-since-tracker-update` (the
+#   staleness advisory): it reads the default branch's history over the row's
+#   declared Files since the row's last tracker update. A `warn` there is an
+#   instruction to YOU — re-read the row body against main before dispatch — and
+#   never a block; it has no FAIL. Without --repo-root, or on a store that
+#   cannot state when the row was last updated, it `defer`s: an unknown, not a
+#   pass. Judgment stance and the required response: the skill body, step 3.
 
 # 4. Cross-wave
 #   Write chosen IssueViews (id+files suffice; extra fields ignored) as candidates

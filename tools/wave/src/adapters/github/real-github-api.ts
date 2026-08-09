@@ -861,6 +861,18 @@ function toGhIssue(json: unknown): GhIssue {
         .filter((s) => s.length > 0)
     : [];
   const reason = o.state_reason;
+  // `updated_at` is declared REQUIRED on the issue schema, `string` with
+  // `format: date-time`, and is returned by both "Get an issue" and "List
+  // repository issues" (GitHub REST issues docs, read 2026-08-09). Carried
+  // straight through as `GhIssue.updatedAt` → the store's
+  // `IssueView.trackerUpdatedAt`, verbatim rather than reformatted.
+  //
+  // e2e-verify — UNPROVEN in this slice (hermetic specs only, no live probe;
+  // ADR-0030's declared-unexecutable path). Narrowed the same defensive way
+  // every other field here is: a non-string leaves it absent — and the tolerant
+  // branch is the SAFE one, since absence `defer`s the DoR staleness advisory
+  // instead of passing it.
+  const updatedAt = typeof o.updated_at === 'string' && o.updated_at.length > 0 ? o.updated_at : undefined;
   return {
     number: Number(o.number),
     title: typeof o.title === 'string' ? o.title : '',
@@ -868,6 +880,7 @@ function toGhIssue(json: unknown): GhIssue {
     labels,
     state: o.state === 'closed' ? 'closed' : 'open',
     stateReason: reason === 'completed' || reason === 'not_planned' || reason === 'reopened' ? reason : null,
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
   };
 }
 
