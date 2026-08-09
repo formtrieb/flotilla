@@ -587,6 +587,12 @@ export class LinearIssuesStore implements IssueStore {
       ...(parsed.estimatedWallclock !== undefined
         ? { estimatedWallclock: parsed.estimatedWallclock }
         : {}),
+      // The tracker's OWN last-write instant (`updatedAt`), not anything the
+      // body codec could carry — it is API metadata and survives no round-trip
+      // through the description. Passed through as-is; an absent `updatedAt`
+      // stays absent, which the DoR staleness advisory reads as `'deferred'`
+      // rather than as "nothing moved".
+      ...(issue.updatedAt !== undefined ? { trackerUpdatedAt: issue.updatedAt } : {}),
     };
   }
 

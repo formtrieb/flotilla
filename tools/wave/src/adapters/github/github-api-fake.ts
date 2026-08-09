@@ -41,6 +41,23 @@ export class InMemoryGitHubApi implements GitHubApi {
   private counter = 0; // per-instance; never reset between calls
   /** Store-preflight substrate (FOR-12): does the ambient token merge PRs? Default yes. */
   private canMergePrs = true;
+  /**
+   * Monotonic backing for `updatedAt` (GitHub's `updated_at`). Real GitHub moves
+   * that field on every write; the fake models the same rule — {@link stamp} is
+   * called from `createIssue` and from {@link mutate}, which every field write in
+   * this class funnels through. Strictly increasing so a create→write→read
+   * sequence has an observably later timestamp even inside one millisecond,
+   * which is what the conformance suite's monotonicity assertion needs to mean
+   * anything on a fast machine.
+   */
+  private lastStampMs: number | undefined;
+
+  private stamp(): string {
+    const now = Date.now();
+    const next = this.lastStampMs === undefined ? now : Math.max(now, this.lastStampMs + 1);
+    this.lastStampMs = next;
+    return new Date(next).toISOString();
+  }
 
   async createIssue(input: CreateIssueInput): Promise<{ number: number }> {
     const number = ++this.counter;
@@ -51,6 +68,7 @@ export class InMemoryGitHubApi implements GitHubApi {
       labels: [...new Set(input.labels)],
       state: 'open',
       stateReason: null,
+      updatedAt: this.stamp(),
     });
     return { number };
   }
@@ -384,6 +402,9 @@ export class InMemoryGitHubApi implements GitHubApi {
     const issue = this.issues.get(number);
     if (!issue) throw new Error(`GitHub issue not found: #${number}`);
     fn(issue);
+    // Every field write in this class funnels through here, so this one line is
+    // the whole `updated_at`-moves-on-write rule (see {@link stamp}).
+    issue.updatedAt = this.stamp();
   }
 }
 

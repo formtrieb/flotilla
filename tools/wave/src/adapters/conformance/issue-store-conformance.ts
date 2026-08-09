@@ -119,6 +119,57 @@ export function runIssueStoreConformance(
       expect((view.blockedBy as { issue: number }[]).length).toBeGreaterThanOrEqual(1);
     });
 
+    // ── trackerUpdatedAt (the DoR staleness advisory's `since`) ────────────
+    //
+    // Store-agnostic by construction: the suite asks only what the CONTRACT
+    // says — is the field there, is it an instant, and does a write move it
+    // forward. It never names GitHub's `updated_at`, Linear's `updatedAt`, or
+    // the markdown store's file mtime, so the three genuinely different
+    // mechanisms are held to one rule (the suite's own tracker-agnostic rule
+    // at the top of this file).
+    //
+    // Why this belongs in the CONFORMANCE suite rather than three adapter
+    // specs: the DoR staleness advisory is store-blind (it reads only
+    // `IssueView`), so "which adapters can this gate actually run on?" is a
+    // question about the contract, not about any one adapter. A store that
+    // silently omits the field degrades the advisory to `'deferred'` on every
+    // row it serves — invisible from inside that adapter's own spec.
+
+    it('read() carries a tracker-update timestamp, and it is a real instant', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+      const view = await store.read(id);
+
+      expect(view.trackerUpdatedAt).toBeDefined();
+      expect(typeof view.trackerUpdatedAt).toBe('string');
+      expect(Number.isNaN(Date.parse(view.trackerUpdatedAt as string))).toBe(false);
+    });
+
+    it('a write moves the tracker-update timestamp forward (never backwards)', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+      const before = Date.parse((await store.read(id)).trackerUpdatedAt as string);
+
+      await store.annotate(id, { risk: 'cross-feature-refactor' });
+      const after = Date.parse((await store.read(id)).trackerUpdatedAt as string);
+
+      expect(Number.isNaN(after)).toBe(false);
+      expect(after).toBeGreaterThanOrEqual(before);
+    });
+
+    it('the tracker-update timestamp is stable across two reads with no write between them', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+
+      const first = (await store.read(id)).trackerUpdatedAt;
+      const second = (await store.read(id)).trackerUpdatedAt;
+
+      // A read is not a write: a timestamp that moved here would make the
+      // staleness advisory's window collapse to "since a moment ago" on every
+      // call, so the advisory could never fire.
+      expect(second).toBe(first);
+    });
+
     it('acceptanceCriteria start unchecked', async () => {
       const { h, store } = await fresh();
       const id = await store.create(

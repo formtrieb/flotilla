@@ -128,6 +128,7 @@ const ISSUE_BY_IDENTIFIER_QUERY = `query IssueByIdentifier($teamKey: String!, $n
       identifier
       title
       description
+      updatedAt
       labels(first: 250) { nodes { id name } }
       state { id name type }
       attachments(first: 250) { nodes { url sourceType metadata } }
@@ -145,6 +146,7 @@ const LIST_OPEN_ISSUES_QUERY = `query ListOpenIssues($filter: IssueFilter, $firs
       identifier
       title
       description
+      updatedAt
       labels(first: 250) { nodes { id name } }
       state { id name type }
     }
@@ -257,6 +259,13 @@ interface ResolvedIssueNode {
   identifier: string;
   title: string;
   description: string;
+  /**
+   * Linear's own `updatedAt` on the Issue node (ISO-8601). Undefined when the
+   * query that produced this node did not ask for it, or the field came back a
+   * non-string; the store passes that absence through and the DoR staleness
+   * advisory `defer`s rather than falsely passing.
+   */
+  updatedAt: string | undefined;
   /** name → id, for THIS issue's current labels (not the team catalog). */
   labelIds: Map<string, string>;
   stateName: string;
@@ -722,6 +731,21 @@ function toResolvedIssueNode(raw: Record<string, unknown>): ResolvedIssueNode {
     identifier: String(raw.identifier),
     title: typeof raw.title === 'string' ? raw.title : '',
     description: typeof raw.description === 'string' ? raw.description : '',
+    // `updatedAt` is declared on Linear's own `Issue` type as `DateTime!` —
+    // "the last time at which the entity was meaningfully updated. This is the
+    // same as the creation time if the entity hasn't been updated after
+    // creation" — and the `DateTime` scalar is documented as ISO 8601 (Linear's
+    // published GraphQL schema, read 2026-08-09). Both issue queries above ask
+    // for it, and the value is carried through VERBATIM rather than reformatted.
+    //
+    // e2e-verify — UNPROVEN in this slice (hermetic specs only, no live probe;
+    // ADR-0030's declared-unexecutable path). The schema declares it
+    // non-nullable, so a live read should always carry it; this narrowing is
+    // deliberately tolerant anyway, matching how every other field here is read
+    // — and the tolerant branch is the SAFE one, since an absent instant defers
+    // the DoR staleness advisory instead of passing it.
+    updatedAt:
+      typeof raw.updatedAt === 'string' && raw.updatedAt.length > 0 ? raw.updatedAt : undefined,
     labelIds,
     stateName: typeof state.name === 'string' ? state.name : '',
     stateType: toStateType(state.type),
@@ -739,6 +763,7 @@ function toLinearIssue(node: ResolvedIssueNode): LinearIssue {
     labels: [...node.labelIds.keys()],
     stateName: node.stateName,
     stateType: node.stateType,
+    ...(node.updatedAt !== undefined ? { updatedAt: node.updatedAt } : {}),
   };
 }
 

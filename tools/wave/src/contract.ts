@@ -98,6 +98,35 @@ export interface IssueView {
   /** PR ref that closes this issue, once known. */
   closedBy?: string;
   estimatedWallclock?: string;
+  /**
+   * When the TRACKER last recorded a change to this issue, as an ISO-8601
+   * instant. Adapter-populated from whatever the tracker itself calls that fact
+   * — GitHub's `updated_at`, Linear's `updatedAt`, the markdown store's file
+   * mtime — never computed by the engine.
+   *
+   * The one engine consumer is the DoR staleness advisory (ADR-0034's
+   * born-structural case): "has the default branch moved over this row's
+   * declared `Files:` since the row was last touched on the tracker?". That is
+   * a question about the row's PREMISE, and premises drift silently — a decorated
+   * row's acceptance criteria survived triage, decoration and both DoR gates
+   * while naming a mechanism that had already been retired, and only a hand read
+   * caught it.
+   *
+   * OPTIONAL, and its absence is load-bearing: an adapter that cannot state this
+   * fact leaves it `undefined`, and the advisory then reports `'deferred'`
+   * (ADR-0014's capability-conditional class) — never a `'pass'`. "I do not know
+   * when this was last touched" must never read the same as "nothing moved".
+   *
+   * KNOWN NARROWING, stated so nobody reads more into a quiet gate than is
+   * there: this is the tracker's last write of ANY kind, which includes
+   * flotilla's own coarse-projection writes (`transition` stamps a claim label /
+   * workflow state). So once a wave has claimed a row, the window shrinks to
+   * "since the claim" rather than "since the row was authored" — which is still
+   * the right question at the `wave-start` re-check (did the branch move since
+   * wave-create?), but is NOT "nothing has moved under this row ever". The
+   * authoring-time question is the one `wave-create` asks, before the claim.
+   */
+  trackerUpdatedAt?: string;
 }
 
 /** Field subset whose vocabulary is governed by a {@link WaveSchema}. */

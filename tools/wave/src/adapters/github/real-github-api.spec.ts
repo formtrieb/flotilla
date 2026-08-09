@@ -42,6 +42,29 @@ describe('RealGitHubApi', () => {
     });
   });
 
+  // The tracker-update instant behind the DoR staleness advisory. GitHub's REST
+  // issue schema declares `updated_at` as a REQUIRED string with format
+  // date-time, so the wire value is carried through verbatim rather than
+  // reformatted.
+  it('getIssue carries the wire `updated_at` through as GhIssue.updatedAt', async () => {
+    const { api } = makeApi(() => ({
+      status: 200,
+      json: { number: 7, title: 'X', body: 'Y', labels: [], state: 'open', state_reason: null, updated_at: '2026-08-09T10:11:12Z' },
+    }));
+    expect((await api.getIssue(7)).updatedAt).toBe('2026-08-09T10:11:12Z');
+  });
+
+  it('getIssue leaves updatedAt ABSENT (never fabricated) when the wire omits updated_at', async () => {
+    const { api } = makeApi(() => ({
+      status: 200,
+      json: { number: 7, title: 'X', body: 'Y', labels: [], state: 'open', state_reason: null },
+    }));
+    // Absence must propagate: the DoR staleness advisory reads an absent instant
+    // as `deferred`, and an invented value would turn that honest "unknown" into
+    // a silent, wrong "nothing moved".
+    expect((await api.getIssue(7)).updatedAt).toBeUndefined();
+  });
+
   it('listOpenIssues pages to exhaustion and drops pull_request items', async () => {
     // page 1: 100 items (99 issues + 1 PR) → full page → fetch page 2; page 2: 1 issue → short → stop.
     const page1 = Array.from({ length: 99 }, (_, i) => ({ number: i + 1, title: `t${i}`, body: '', labels: [], state: 'open', state_reason: null }));

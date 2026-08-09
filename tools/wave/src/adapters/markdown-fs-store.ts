@@ -15,7 +15,7 @@
  * annotations the parser doesn't round-trip are preserved.
  */
 
-import { mkdir, readFile, writeFile, readdir, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, rename, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   createHeaderParser,
@@ -255,6 +255,7 @@ export class MarkdownFsStore implements IssueStore {
         : (this.readRung(source) ?? 'available');
 
     const closedBy = readField(source, CLOSED_BY_FIELD);
+    const trackerUpdatedAt = await this.lastUpdatedIso(path);
 
     return {
       id,
@@ -270,7 +271,29 @@ export class MarkdownFsStore implements IssueStore {
       ...(h.estimatedWallclock !== undefined
         ? { estimatedWallclock: h.estimatedWallclock }
         : {}),
+      ...(trackerUpdatedAt !== undefined ? { trackerUpdatedAt } : {}),
     };
+  }
+
+  /**
+   * `IssueView.trackerUpdatedAt` for a markdown-backed issue: the issue FILE's
+   * own mtime. There is no tracker behind a `.scratch/` file, so the filesystem
+   * IS the tracker here — every write path in this store (`create`, `annotate`,
+   * `amend`, `transition`, `unclaim`, `flag`, `close`, the `done/` rename) goes
+   * through `writeFile`/`rename` and therefore moves it, which is exactly the
+   * "the tracker recorded a change" semantics the GitHub/Linear `updated_at`
+   * fields carry.
+   *
+   * An unreadable stat yields `undefined` rather than a fabricated instant: the
+   * DoR staleness advisory turns absence into `'deferred'`, and a made-up
+   * timestamp would turn it into a silent false pass instead.
+   */
+  private async lastUpdatedIso(path: string): Promise<string | undefined> {
+    try {
+      return (await stat(path)).mtime.toISOString();
+    } catch {
+      return undefined;
+    }
   }
 
   // ── transition (claim ledger) ─────────────────────────────────────────────

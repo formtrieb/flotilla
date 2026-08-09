@@ -43,6 +43,8 @@ interface StoredIssue {
   description: string;
   labels: string[];
   stateName: string;
+  /** Linear's `updatedAt`: moved by every issue-field write (see {@link InMemoryLinearApi.touch}). */
+  updatedAt: string;
 }
 
 export class InMemoryLinearApi implements LinearApi {
@@ -67,6 +69,27 @@ export class InMemoryLinearApi implements LinearApi {
     this.teamKey = teamKey;
   }
 
+  /**
+   * Monotonic backing for `updatedAt`. Real Linear moves that field on every
+   * issue write; the fake models the same rule via {@link touch}. Strictly
+   * increasing so a create→write→read sequence has an observably later
+   * timestamp even inside one millisecond — which is what the conformance
+   * suite's monotonicity assertion needs to mean anything on a fast machine.
+   */
+  private lastStampMs: number | undefined;
+
+  private stamp(): string {
+    const now = Date.now();
+    const next = this.lastStampMs === undefined ? now : Math.max(now, this.lastStampMs + 1);
+    this.lastStampMs = next;
+    return new Date(next).toISOString();
+  }
+
+  /** Mark an issue as just-written — the `updatedAt`-moves-on-write rule. */
+  private touch(issue: StoredIssue): void {
+    issue.updatedAt = this.stamp();
+  }
+
   async createIssue(input: LinearCreateIssueInput): Promise<{ identifier: string }> {
     const identifier = `${this.teamKey}-${++this.counter}`;
     this.issues.set(identifier, {
@@ -75,6 +98,7 @@ export class InMemoryLinearApi implements LinearApi {
       description: input.description,
       labels: [...new Set(input.labels)],
       stateName: this.defaultCreateStateName(),
+      updatedAt: this.stamp(),
     });
     return { identifier };
   }
@@ -90,21 +114,27 @@ export class InMemoryLinearApi implements LinearApi {
   }
 
   async setDescription(identifier: string, description: string): Promise<void> {
-    this.mustGet(identifier).description = description;
+    const issue = this.mustGet(identifier);
+    issue.description = description;
+    this.touch(issue);
   }
 
   async setTitle(identifier: string, title: string): Promise<void> {
-    this.mustGet(identifier).title = title;
+    const issue = this.mustGet(identifier);
+    issue.title = title;
+    this.touch(issue);
   }
 
   async addLabel(identifier: string, label: string): Promise<void> {
     const issue = this.mustGet(identifier);
     if (!issue.labels.includes(label)) issue.labels.push(label); // idempotent; auto-creates
+    this.touch(issue);
   }
 
   async removeLabel(identifier: string, label: string): Promise<void> {
     const issue = this.mustGet(identifier);
     issue.labels = issue.labels.filter((l) => l !== label); // idempotent
+    this.touch(issue);
   }
 
   async addComment(identifier: string, body: string): Promise<void> {
@@ -132,9 +162,10 @@ export class InMemoryLinearApi implements LinearApi {
       // sees the pre-write state.
       if (dropsLeft === 1) this.droppedStateWrites.delete(identifier);
       else this.droppedStateWrites.set(identifier, dropsLeft - 1);
-      return;
+      return; // deliberately BEFORE touch(): a dropped write leaves updatedAt where it was
     }
     issue.stateName = stateName;
+    this.touch(issue);
   }
 
   async getPrAttachments(identifier: string): Promise<LinearPrAttachment[]> {
@@ -203,6 +234,7 @@ export class InMemoryLinearApi implements LinearApi {
   simulateMergedPrClose(identifier: string, prUrl: string): void {
     const issue = this.mustGet(identifier);
     issue.stateName = this.mustCompletedStateName();
+    this.touch(issue);
     const list = this.attachmentsByIssue.get(identifier) ?? [];
     list.push({ url: prUrl, merged: true });
     this.attachmentsByIssue.set(identifier, list);
@@ -224,6 +256,7 @@ export class InMemoryLinearApi implements LinearApi {
   simulateUnmergedClose(identifier: string, prUrl = 'https://github.com/o/r/pull/0'): void {
     const issue = this.mustGet(identifier);
     issue.stateName = this.mustCompletedStateName();
+    this.touch(issue);
     const list = this.attachmentsByIssue.get(identifier) ?? [];
     list.push({ url: prUrl, merged: false });
     this.attachmentsByIssue.set(identifier, list);
@@ -240,7 +273,9 @@ export class InMemoryLinearApi implements LinearApi {
    * (W2-F1c) — there is no rejected PR here to find.
    */
   simulateCloseWithoutPrEvidence(identifier: string): void {
-    this.mustGet(identifier).stateName = this.mustCompletedStateName();
+    const issue = this.mustGet(identifier);
+    issue.stateName = this.mustCompletedStateName();
+    this.touch(issue);
   }
 
   /** Replace the team's workflow-state catalog (defaults to the standard workflow). */
@@ -315,6 +350,7 @@ export class InMemoryLinearApi implements LinearApi {
       labels: [...issue.labels],
       stateName: issue.stateName,
       stateType: this.typeOf(issue.stateName),
+      updatedAt: issue.updatedAt,
     };
   }
 

@@ -25,9 +25,15 @@
  *      A row whose files match no profile is not wrong (some work has no
  *      automated gate) but it must be *stated*, not silently equivalent to a
  *      fully verify-backed approve (FOR-127).
+ *   9. The **staleness advisory**: has the repo's default branch touched any of
+ *      the row's declared `Files:` since the tracker last recorded a change to
+ *      the row? — see {@link checkFilesTouchedSinceTrackerUpdate}. Advisory
+ *      warn-only in every path, by decision, never a FAIL.
  *
- * Pure function modulo two side-effects: file-glob expansion (`fastGlob`) and
- * blocked-by file-existence check (`statSync`). Both honor the `repoRoot`
+ * Pure function modulo three side-effects: file-glob expansion (`fastGlob`),
+ * blocked-by / literal-file existence checks (`statSync`/`existsSync`), and — for
+ * gate 9 only — read-only `git` invocations against the checkout (`execFileSync`,
+ * the same shape `files-drift` already uses). All three honor the `repoRoot`
  * option, so tests can point at a fixtures dir.
  *
  * Two entrypoints (ADR-0014):
@@ -49,7 +55,8 @@
  * a row that cannot state its dependencies is not grabbable.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import fastGlob from 'fast-glob';
 import micromatch from 'micromatch';
@@ -114,6 +121,15 @@ export interface ValidateOptions {
    * the absence of profiles).
    */
   verify?: VerifyConfig;
+  /**
+   * ISO-8601 instant of the row's last TRACKER update — the `since` the
+   * staleness advisory (gate 9) measures from. Optional override for the file
+   * path: absent, the gate falls back to the issue file's own mtime, which IS
+   * the markdown store's tracker-update signal (there is no other tracker
+   * behind a `.scratch/` file). Unreadable/unparseable either way → the gate
+   * `defer`s, never passes.
+   */
+  trackerUpdatedAt?: string;
 }
 
 /**
@@ -159,12 +175,33 @@ export function validateIssue(opts: ValidateOptions): DorResult {
     checkVerifyProfileCoverage(header.files, opts.verify, opts.repoRoot),
   );
 
+  // Gate 9 — staleness advisory (advisory warn-only). The file path has no
+  // tracker behind it, so the issue FILE's own mtime is the tracker-update
+  // signal (exactly what MarkdownFsStore reports as `trackerUpdatedAt`); an
+  // explicit `opts.trackerUpdatedAt` overrides it.
+  gates.push(
+    checkFilesTouchedSinceTrackerUpdate(
+      header.files,
+      opts.trackerUpdatedAt ?? fileMtimeIso(opts.issuePath),
+      opts.repoRoot,
+    ),
+  );
+
   const failed = gates.some((g) => g.status === 'fail');
   return {
     overall: failed ? 'FAIL' : 'PASS',
     gates,
     header,
   };
+}
+
+/** The issue file's own mtime as an ISO instant, or `undefined` if it cannot be stat'd. */
+function fileMtimeIso(issuePath: string): string | undefined {
+  try {
+    return statSync(issuePath).mtime.toISOString();
+  } catch {
+    return undefined;
+  }
 }
 
 /** Options for the structured (non-file) entrypoint {@link validateIssueView}. */
@@ -254,6 +291,19 @@ export function validateIssueView(
 
   // Gate 8 — Files intersect at least one configured verify profile (advisory warn-only)
   gates.push(checkVerifyProfileCoverage(view.files, opts.verify, repoRoot));
+
+  // Gate 9 — staleness advisory (advisory warn-only): working-tree gate, and
+  // additionally conditioned on the view carrying a tracker-update timestamp at
+  // all. Nothing is threaded through the options here — the `since` rides on the
+  // canonical contract itself (`IssueView.trackerUpdatedAt`), so a store-backed
+  // caller gets it for free and the entrypoint stays store-blind.
+  gates.push(
+    checkFilesTouchedSinceTrackerUpdate(
+      view.files,
+      view.trackerUpdatedAt,
+      repoRoot,
+    ),
+  );
 
   const failed = gates.some((g) => g.status === 'fail');
   return { overall: failed ? 'FAIL' : 'PASS', gates };
@@ -890,5 +940,268 @@ function checkVerifyProfileCoverage(
       `An approve here is inspection-only, not verify-backed: state that ` +
       `explicitly in the Worker/Reviewer brief rather than letting it read the ` +
       `same as a row a full verify run actually backed.`,
+  };
+}
+
+// ─── Gate 9: the staleness advisory (advisory warn-only) ─────────────────────
+
+/**
+ * Gate 9's one spelling. Both entrypoints emit it under this name and the specs
+ * assert on it; nothing else in the engine reads a gate name.
+ */
+const STALENESS_GATE = 'files-touched-since-tracker-update';
+
+/**
+ * The row carries no {@link IssueView.trackerUpdatedAt} (or an unparseable one),
+ * so there is no `since` to measure from. `'deferred'`, never `'pass'`: "I do
+ * not know when this row was last touched" must not read the same as "nothing
+ * moved" — the false-pass this gate exists to make impossible.
+ */
+const DEFER_NO_TRACKER_TIMESTAMP =
+  'No usable tracker-update timestamp on this row — the staleness advisory has no `since` to measure from. ' +
+  'This is a capability gap (the adapter did not state one), NOT evidence that nothing moved.';
+
+/** The supplied `repoRoot` is not a git checkout, so there is no history to read. */
+const DEFER_NOT_A_GIT_CHECKOUT =
+  'The supplied repo root is not a git checkout — the staleness advisory reads the default branch\'s history and cannot here.';
+
+/** A git checkout with no resolvable default-branch ref (fresh clone, no commits, exotic layout). */
+const DEFER_NO_DEFAULT_BRANCH_REF =
+  'No default-branch ref resolves in this checkout (tried origin/HEAD, origin/main, origin/master, main, master, HEAD) — nothing to compare against.';
+
+/**
+ * Upper bound on the commits `git log` is asked for. `--since` already bounds
+ * the window in practice; this bounds the pathological case (a very old row on a
+ * very busy branch) so a large stdout can never turn a real advisory into a
+ * `'deferred'` buffer overflow. A capped answer is reported as `N+`.
+ */
+const STALENESS_COMMIT_CAP = 200;
+
+/** How many touching commits are NAMED inline before the tail is summarised. */
+const STALENESS_COMMITS_SHOWN = 8;
+
+/** Field separator inside the `git log --format` record (US, never in a subject line). */
+const GIT_FIELD_SEP = '\u001f';
+
+interface TouchingCommit {
+  /** Abbreviated sha (`%h`). */
+  sha: string;
+  /** Author date, strict ISO-8601 (`%aI`). */
+  date: string;
+  /** Subject line (`%s`). */
+  subject: string;
+}
+
+type StalenessProbe =
+  | { ok: true; ref: string; commits: TouchingCommit[]; capped: boolean }
+  | { ok: false; reason: string };
+
+/**
+ * One read-only `git` invocation, same shape `files-drift` already uses: no
+ * shell, arguments passed as an array, a bounded timeout, and a buffer wide
+ * enough that {@link STALENESS_COMMIT_CAP} commits always fit. stderr is
+ * discarded — every failure here is turned into a `'deferred'` gate by the
+ * caller, and git's own diagnostic would only be noise on a CLI whose output is
+ * a gate table.
+ */
+function readOnlyGit(repoRoot: string, args: string[]): string {
+  return execFileSync('git', args, {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+    timeout: 10_000,
+    maxBuffer: 8 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+}
+
+/**
+ * The ref the advisory compares against, resolved from the checkout rather than
+ * configured (the slice takes no new required config). `origin/HEAD` is the
+ * authoritative answer where the remote publishes it; the named candidates cover
+ * a checkout that never fetched it, and bare `HEAD` is the last resort.
+ *
+ * The resolved ref is NAMED in the advisory text — a reader must be able to see
+ * WHICH branch was compared, because "HEAD" on a feature branch and "origin/main"
+ * are very different evidence.
+ */
+function resolveDefaultBranchRef(repoRoot: string): string | undefined {
+  try {
+    const symbolic = readOnlyGit(repoRoot, [
+      'symbolic-ref',
+      '--quiet',
+      '--short',
+      'refs/remotes/origin/HEAD',
+    ]).trim();
+    if (symbolic.length > 0) return symbolic;
+  } catch {
+    // no published origin/HEAD — fall through to the named candidates
+  }
+  for (const candidate of ['origin/main', 'origin/master', 'main', 'master', 'HEAD']) {
+    try {
+      readOnlyGit(repoRoot, ['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Declared `Files:` entries as git pathspecs. A glob entry gets `:(glob)` magic
+ * so `**`/`*` mean what they mean everywhere else in this engine (fast-glob /
+ * micromatch semantics); a literal entry is passed bare, keeping git's own
+ * file-or-directory-prefix meaning — which is what a bare directory entry in a
+ * `Files:` header intends.
+ */
+function toPathspecs(files: readonly string[]): string[] {
+  return files.map((entry) => (isLikelyGlob(entry) ? `:(glob)${entry}` : entry));
+}
+
+/**
+ * Normalise a tracker timestamp into the form git's date parser takes verbatim:
+ * UTC, second precision, `Z`-suffixed. Truncating DOWN to the second is
+ * deliberate — `--since` is exclusive, so a commit landing in the same second as
+ * the tracker update is REPORTED rather than missed, the conservative direction
+ * for an advisory. Returns `undefined` for absent/blank/unparseable input, which
+ * the gate turns into `'deferred'`.
+ */
+function toGitSince(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) return undefined;
+  return new Date(Math.floor(ms / 1000) * 1000).toISOString().replace('.000Z', 'Z');
+}
+
+/** `git log <default-branch> --since=<ts> -- <declared files>`, failures folded into `ok:false`. */
+function commitsTouchingSince(
+  repoRoot: string,
+  since: string,
+  files: readonly string[],
+): StalenessProbe {
+  try {
+    readOnlyGit(repoRoot, ['rev-parse', '--git-dir']);
+  } catch {
+    return { ok: false, reason: DEFER_NOT_A_GIT_CHECKOUT };
+  }
+
+  const ref = resolveDefaultBranchRef(repoRoot);
+  if (ref === undefined) return { ok: false, reason: DEFER_NO_DEFAULT_BRANCH_REF };
+
+  let out: string;
+  try {
+    out = readOnlyGit(repoRoot, [
+      'log',
+      ref,
+      `--since=${since}`,
+      `--max-count=${STALENESS_COMMIT_CAP}`,
+      '--format=%h%x1f%aI%x1f%s',
+      '--',
+      ...toPathspecs(files),
+    ]);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `The default-branch history read failed (${(err as Error).message}) — the staleness advisory could not run.`,
+    };
+  }
+
+  const commits = out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const parts = line.split(GIT_FIELD_SEP);
+      return {
+        sha: parts[0] ?? '',
+        date: parts[1] ?? '',
+        subject: parts.slice(2).join(GIT_FIELD_SEP),
+      };
+    });
+
+  return { ok: true, ref, commits, capped: commits.length >= STALENESS_COMMIT_CAP };
+}
+
+/** The advisory's human-facing text: what moved, where to look, and what it does NOT mean. */
+function renderStalenessAdvisory(
+  probe: { ref: string; commits: TouchingCommit[]; capped: boolean },
+  since: string,
+  files: readonly string[],
+): string {
+  const shown = probe.commits.slice(0, STALENESS_COMMITS_SHOWN);
+  const rest = probe.commits.length - shown.length;
+  const total = `${probe.commits.length}${probe.capped ? '+' : ''}`;
+  const lines = [
+    `The default branch (${probe.ref}) has moved over this row's declared Files since its last tracker update (${since}): ` +
+      `${total} commit(s) touched ${files.join(', ')}.`,
+    `RE-READ the row body against the default branch before dispatch: a declared file moving is where a stale premise hides — ` +
+      `acceptance criteria can go on naming a mechanism that has already been retired, and triage, decoration and both DoR gates all pass it through.`,
+    `ADVISORY ONLY: a moved file is NOT proof the premise broke. This gate never FAILs and never blocks a wave; the premise judgment is the Coordinator's, not the engine's.`,
+    'Touching commits:',
+    ...shown.map((c) => `  ${c.sha} ${c.date} ${c.subject}`),
+  ];
+  if (rest > 0) lines.push(`  ... and ${rest}${probe.capped ? '+' : ''} more`);
+  return lines.join('\n');
+}
+
+/**
+ * Gate 9 — the **staleness advisory**. Nothing re-checks a decorated row's
+ * premise between decoration and dispatch: a row's acceptance criteria can go
+ * stale under it while the row itself is untouched on the tracker, and every
+ * existing gate reads only the row. The one mechanical signal that the ground
+ * moved is the default branch's own history over the row's declared `Files:`.
+ *
+ * The engine closes the DETECTION half and leaves the JUDGMENT human (ADR-0034's
+ * born-structural case, decided 2026-08-09). Concretely:
+ *
+ *   - it never returns `'fail'` — there is no code path here that can, so a
+ *     hard stop cannot be reintroduced by a config or a caller;
+ *   - a `'warn'` says only WHERE re-reading pays, naming the ref, the window and
+ *     the touching commits. Files having moved does not prove a premise broke.
+ *
+ * ADR-0014 capability classification, mirroring Gates 2/7/8:
+ *   - `repoRoot` absent            → `'deferred'` (working-tree gate: the
+ *     default branch's history is a property of a checkout).
+ *   - no/unparseable timestamp     → `'deferred'` ({@link DEFER_NO_TRACKER_TIMESTAMP}).
+ *   - not a git checkout, or no
+ *     resolvable default-branch ref → `'deferred'`.
+ *   - no declared `Files:`          → `'pass'`, vacuously and SAID so in the
+ *     reason: with nothing declared there is nothing the branch could have moved
+ *     over. (It also keeps the pathspec list non-empty — a bare `git log --`
+ *     would report every commit on the branch as a hit.)
+ *   - otherwise                     → `'pass'` when nothing touched the files in
+ *     the window, `'warn'` naming the commits when something did.
+ */
+function checkFilesTouchedSinceTrackerUpdate(
+  files: readonly string[],
+  trackerUpdatedAt: string | undefined,
+  repoRoot: string | undefined,
+): GateResult {
+  const name = STALENESS_GATE;
+  if (repoRoot === undefined) {
+    return { name, status: 'deferred', reason: DEFER_NO_WORKTREE };
+  }
+  const since = toGitSince(trackerUpdatedAt);
+  if (since === undefined) {
+    return { name, status: 'deferred', reason: DEFER_NO_TRACKER_TIMESTAMP };
+  }
+  if (files.length === 0) {
+    return {
+      name,
+      status: 'pass',
+      reason: 'Row declares no Files — nothing the default branch could have moved over.',
+    };
+  }
+
+  const probe = commitsTouchingSince(repoRoot, since, files);
+  if (!probe.ok) return { name, status: 'deferred', reason: probe.reason };
+  if (probe.commits.length === 0) return { name, status: 'pass' };
+
+  return {
+    name,
+    status: 'warn',
+    reason: renderStalenessAdvisory(probe, since, files),
   };
 }

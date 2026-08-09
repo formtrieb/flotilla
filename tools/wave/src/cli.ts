@@ -537,6 +537,12 @@ function runDor(paths: string[]): number {
     }
   }
 
+  // Gate 9 (the staleness advisory) needs no threading here at all, and that is
+  // deliberate rather than an omission: on this path the row's tracker-update
+  // instant IS the issue file's own mtime, which `validateIssue` reads from the
+  // `issuePath` it already receives. The `ValidateOptions.trackerUpdatedAt`
+  // override exists for a caller that holds a better answer; the CLI does not,
+  // so it passes none.
   let anyFail = false;
   const outputs: string[] = [];
 
@@ -633,6 +639,11 @@ export async function runDorById(
     }
   }
 
+  // Gate 9 (the staleness advisory) is threaded by the CONTRACT, not by an
+  // option: the `since` it measures from rides on `IssueView.trackerUpdatedAt`,
+  // which `store.read(id)` above already populated (or deliberately left absent,
+  // in which case the gate `defer`s rather than passing). `--repo-root` is what
+  // turns it on, the same flag the other working-tree gates key off.
   const result = validateIssueView(view, {
     ...(repoRoot !== undefined ? { repoRoot } : {}),
     ...(verify !== undefined ? { verify } : {}),
