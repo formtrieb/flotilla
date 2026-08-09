@@ -93,9 +93,17 @@ before doing anything else.** Do not tag first and discover this afterwards.
    merged PR's `Closes #N` does that job, and closing early would drop the claim while
    the merge is still in flight). A release-bump PR names no issues, so for these the
    flip has no other actor: the command exits 0, writes `Closed-by:`, and leaves the
-   issue **open**. It looks like it worked. Twice now it did not — #339 at 1.0.0 and
-   #397 at 1.0.1, both rescued by hand afterwards, which is why this step is written
-   down. Afterwards `issue-store read-closing <id>` reads `closed-unknown`; that is the
+   issue **open**. **The exit is no longer silent (#399):** `close` now re-probes the
+   native end-state right after recording the facts and prints the resulting
+   `ClosingState` — and because a release-bump PR names no issue, that probe reads
+   `open` right here, every time, so the command ALSO writes an unmistakable
+   `STILL OPEN:` line to stderr naming the id and the recorded `<bump-PR-url>`. That
+   line is not a new failure — read it as confirmation that the `gh issue close` line
+   below is doing indispensable work, not a formality: skip it, and the issue stays
+   open regardless of what the first command printed. Before the loud line existed,
+   exit 0 alone looked like it worked, and twice it did not — #339 at 1.0.0 and #397
+   at 1.0.1, both rescued by hand afterwards, which is why this step is written down.
+   Afterwards `issue-store read-closing <id>` reads `closed-unknown`; that is the
    correct answer for an issue no PR references, not a defect.
 
    If the release resolves an issue that also wants a verification hop in a real

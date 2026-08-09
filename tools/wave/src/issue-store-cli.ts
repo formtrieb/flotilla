@@ -32,7 +32,13 @@
  *   amend    <id> --patch <AmendPatch.json>        → amends title / free-prose sections (ADR-0025)
  *   transition <id> <queued|in-flight|in-review>   → writes one claim rung
  *   unclaim  <id>                                  → drops the claim (queued→available)
- *   close    <id> <prUrl> [--acked 0,2,3]          → records closing facts (done-reconcile; FOR-13 doneState fallback)
+ *   close    <id> <prUrl> [--acked 0,2,3]          → records closing facts (done-reconcile; FOR-13 doneState fallback),
+ *              then probes + prints the resulting ClosingState (JSON, same
+ *              shape as `read-closing`) and — whenever that probe still reads
+ *              `open` — ALSO writes an unmistakable `STILL OPEN:` line to
+ *              stderr (#399): the satisfied-but-not-by-PR case (e.g. a
+ *              release) leaves the issue open after this call, and that is
+ *              no longer a silent exit 0.
  *   read-closing <id>                              → prints the ClosingState (JSON): open|merged|closed-unmerged|closed-unknown
  *   listOpen                                       → prints IssueView[] (JSON)
  *   listClaimed                                    → prints IssueView[] (JSON)
@@ -249,6 +255,32 @@ export async function runIssueStore(
             ? []
             : ackedRaw.split(',').map((s) => Number(s.trim()));
         await store.close(id, prUrl, acked);
+        // #399: `close` is deliberately no-op-or-reconcile — it records the
+        // closing facts but does NOT natively close an issue whose satisfying
+        // act was not a merged PR carrying its own close phrase (a release, a
+        // hand action). Left bare, that read as success on exit 0 with the
+        // issue silently still open (#339 at 1.0.0, #397 at 1.0.1 — both
+        // rescued by hand; see docs/RELEASING.md step 7). Probe the SAME
+        // evidence `read-closing` exposes and print it: additive under
+        // ADR-0035 (a wholly new stdout shape where `close` printed nothing
+        // before; no existing key renamed/removed, exit-code meaning
+        // unchanged — 0 either way, a still-open issue after `close` is a
+        // documented, non-domain-failure outcome). When the probe still
+        // reads `open`, ALSO write an unmistakable line so a human running
+        // this by hand cannot mistake exit 0 for "closed" — the documented
+        // operator procedure (docs/RELEASING.md step 7 / this repo's
+        // close-mechanics.md) is the path from here; no new close verb.
+        const closing = await store.readClosing(id);
+        printJson(closing);
+        if (closing.state === 'open') {
+          process.stderr.write(
+            `STILL OPEN: issue ${id} recorded closing facts (${prUrl}) but the ` +
+              `tracker still reports it OPEN — this call does not natively close ` +
+              `an issue whose satisfying act was not a merged PR carrying its own ` +
+              `close phrase. See docs/RELEASING.md step 7 for the documented ` +
+              `operator procedure.\n`,
+          );
+        }
         return 0;
       }
 
