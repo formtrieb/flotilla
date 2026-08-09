@@ -2,6 +2,8 @@
 
 Two failures chained, and only the first one is about shells. **An invocation form that silently does nothing**, and **a caller that accepts nothing as an answer.** The first has broken a wave five times. The second is the one that turns a failed command into a corrupted record — and it is the half that holds regardless of which shell is live, which is why it, not the shell trivia, is the structural half of this convention.
 
+> **Promotion (ADR-0034, doctrine-budget grill 2026-08-09).** Half one is now **structurally guarded on the Coordinator surface**: a tracked `PreToolUse` hook (`tools/wave/hooks/conv12-guard.cjs`, registered in the tracked settings beside the echo-guard) blocks a Bash tool call containing an unquoted parameter expansion, with the rewrite remedies in the refusal message. The rule earned the move at its sixth silent live occurrence — three past the trigger (silent failure → Promotion candidate at the second occurrence); the seventh, an unquoted `set -- $pair` in a Coordinator flip loop, happened hours before the hook landed and is the spec's first blocked case. Dispatched worktree-isolated roles were already covered by the harness's own isolation guard (Convention 13, Catalog entry 1) — the hook closes the one surface that guard never reached. **The prose below remains load-bearing** for what a text matcher cannot see (deliberate string assembly, half two's empty-capture discipline, the call-boundary rule) — the guard is a speed bump over the shape, never the whole rule.
+
 ### Half one — a command in a variable does not run under zsh
 
 ```bash
