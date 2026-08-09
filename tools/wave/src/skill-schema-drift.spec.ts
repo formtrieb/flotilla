@@ -72,10 +72,17 @@ const CREATE_MECHANICS_MD = join(
   '../../../.claude/skills/wave-create/reference/create-mechanics.md',
 );
 
-// The Reviewer half of the sibling-prediction contract (issue #419). Check 5's
-// coverage denominator is stated in three places — the operator-facing skill,
-// its runnable checks reference, and the reviewerBrief the driver composes — so
-// all three are read here and pinned together.
+// The Reviewer half of the sibling-prediction contract (issue #419, plus the
+// fourth-copy pin added for issue #431). Check 5's coverage denominator is
+// stated in FOUR places — the operator-facing skill, its runnable checks
+// reference, the reviewerBrief the driver composes, and the Reviewer's own
+// agent definition (its system prompt) — so all four are read here and pinned
+// together. The agent-definition copy is pinned in its REDUCED form only: it
+// structurally cannot carry a per-row interpolated value (no `${issue.*}`
+// exists in a static system prompt), so its pin asserts the outcome
+// vocabulary, the coverage-line duty, and an explicit deferral to the
+// dispatched reviewerBrief for the mechanics — never the full brief-side
+// contract.
 const WAVE_REVIEWER_SKILL_MD = join(
   __dirname,
   '../../../.claude/skills/wave-reviewer/SKILL.md',
@@ -84,6 +91,11 @@ const WAVE_REVIEWER_SKILL_MD = join(
 const REVIEWER_CHECKS_MD = join(
   __dirname,
   '../../../.claude/skills/wave-reviewer/reference/reviewer-checks.md',
+);
+
+const WAVE_REVIEWER_AGENT_MD = join(
+  __dirname,
+  '../../../.claude/agents/wave-reviewer.md',
 );
 
 const DRIVER_WORKER_REPORT_ANCHOR =
@@ -1770,7 +1782,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
   });
 });
 
-// ─── Check 5's coverage denominator rides all three contract copies (#419) ───
+// ─── Check 5's coverage denominator rides all FOUR contract copies (#419, #431) ───
 //
 // The Reviewer predicts merge-tree conflicts against its sibling in-flight
 // branches. The driver runs the rows with NO barrier — by design, so row B's
@@ -1783,18 +1795,43 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
 // coverage that is indistinguishable from full coverage is the failure mode, and
 // no command output separates them; only a tip-vs-anchor comparison does.
 //
-// The remedy is contract text, and it is stated in three hand-maintained places
+// The remedy is contract text, and it is stated in FOUR hand-maintained places
 // with nothing coupling them — the same shape as the schema-literal pins above:
 //
 //   - wave-reviewer/SKILL.md                      — the operator's view
 //   - wave-reviewer/reference/reviewer-checks.md  — the runnable detail
 //   - wave-start/reference/workflow-driver.md     — the reviewerBrief ACTUALLY dispatched
+//   - .claude/agents/wave-reviewer.md             — the Reviewer's OWN system prompt
 //
 // The driver copy is the one that reaches a running Reviewer, so a drift there is
 // the one that silently stops happening; it is also the only copy that can
 // interpolate the row's own `anchorSha`, which is what makes the at-anchor
 // comparison executable rather than merely described. Both properties are pinned
 // separately below.
+//
+// The FOURTH copy (issue #431) sat outside the #419 row's declared Files and was
+// missed entirely — a Reviewer dispatched from that system prompt was still being
+// taught the old denominator-less form (a bare fetch + merge-tree loop, no
+// four-outcome vocabulary) even after the other three copies moved. It is pinned
+// here in its REDUCED form only: a static system prompt cannot carry a per-row
+// interpolated value, so the agent-definition copy is required to state the
+// outcome vocabulary and the coverage-line duty (shared assertions, below) PLUS
+// an explicit deferral to the dispatched reviewerBrief for the mechanics it
+// structurally cannot carry — never the full brief-side contract, which would be
+// pinning text that is not, and cannot be, there.
+//
+// Two further hardenings ride along (disclosed against the #419 pins, neither a
+// defect in the shipped text): the anchor-interpolation pin now rejects an
+// ESCAPED, non-interpolating `\${issue.anchorSha}` — a plain `toContain` cannot
+// tell that apart from the real interpolation, since the literal substring
+// `${issue.anchorSha}` still appears inside it. And `refusesAtAnchorAsClean` now
+// requires `vacuous` and the `never … clean` refusal to sit within ONE bounded,
+// self-contained span rather than merely existing independently anywhere in the
+// region — the old existence-anywhere form happened to pass for
+// reviewer-checks.md only because that copy states the refusal in two separate
+// places (the `at-anchor` heading, and the tip-comparison prose), either of which
+// alone supplied both words; the pin's correctness should not rest on that
+// incidental duplication.
 //
 // Deliberately NOT pinned into existence here: any ReviewerVerdict schema shape.
 // The coverage line lives INSIDE the existing advisory strings in
@@ -1818,7 +1855,7 @@ const SIBLING_PREDICTION_OUTCOMES = [
 ] as const;
 
 /**
- * The canonical opening of the mandatory coverage line. All three copies write it
+ * The canonical opening of the mandatory coverage line. All four copies write it
  * out verbatim so a Reviewer emits ONE recognisable shape and a Coordinator can
  * find it — the denominator is worth nothing if every verdict phrases it freshly.
  */
@@ -1827,6 +1864,16 @@ const COVERAGE_LINE_PREFIX = 'Sibling merge-tree coverage:';
 /** The bold-caps opener of the reviewerBrief's own sibling-coverage clause. */
 const DRIVER_SIBLING_COVERAGE_OPENER =
   '**SIBLING MERGE-TREE PREDICTION REPORTS ITS COVERAGE DENOMINATOR.**';
+
+/**
+ * A genuine, unescaped `${issue.anchorSha}` interpolation — the `(?<!\\)`
+ * negative lookbehind is the whole point. `\${issue.anchorSha}` (an escaped
+ * dollar sign, which prints the literal template text at dispatch time instead
+ * of interpolating the row's SHA) still contains the substring
+ * `${issue.anchorSha}`, so a plain `toContain` cannot distinguish the two —
+ * only a check that inspects the character immediately before the `$` can.
+ */
+const ANCHOR_INTERPOLATION = /(?<!\\)\$\{issue\.anchorSha\}/;
 
 /**
  * Slice the text BETWEEN two literal anchors — `[start.length, end)`, the start
@@ -1939,25 +1986,37 @@ function coverageDenominatorExamples(region: string): string[] {
 }
 
 /**
- * Does this copy state the at-anchor case as VACUOUS *and* refuse it as clean?
- * Both halves are required and neither is sufficient. Naming the outcome without
- * the refusal leaves "the branch was there, merge-tree exited 0, call it clean"
- * wide open — which is precisely the reading four honest Reviewer reports could
- * not rule out — and refusing it without the word `vacuous` drops the reason,
- * which is the only thing that makes the refusal survive an editor.
+ * Does this copy state the at-anchor case as VACUOUS *and* refuse it as clean —
+ * as ONE self-contained statement? Both halves are required and neither is
+ * sufficient. Naming the outcome without the refusal leaves "the branch was
+ * there, merge-tree exited 0, call it clean" wide open — which is precisely the
+ * reading four honest Reviewer reports could not rule out — and refusing it
+ * without the word `vacuous` drops the reason, which is the only thing that
+ * makes the refusal survive an editor.
+ *
+ * `vacuous` and the `never … clean` refusal must sit within one bounded,
+ * period-free span of EACH OTHER (either order) — not merely exist somewhere,
+ * anywhere, independently in the region. An earlier, existence-anywhere version
+ * of this check passed reviewer-checks.md only because that copy happens to
+ * state the refusal in two separate places (the `at-anchor` heading, and the
+ * tip-comparison prose) — either alone supplies both words, so the check's real
+ * behaviour rested on that incidental duplication rather than on a single,
+ * provably self-contained refusal ever being present. Requiring co-location
+ * makes ONE statement both sufficient and necessary, for every copy alike —
+ * it no longer depends on the refusal being stated twice anywhere.
  */
 function refusesAtAnchorAsClean(region: string): boolean {
-  return (
-    region.includes('at-anchor') &&
-    /vacuous/i.test(region) &&
-    /never\b[^.]{0,160}\bclean\b/i.test(region)
-  );
+  if (!region.includes('at-anchor')) return false;
+  const vacuousThenNeverClean = /\bvacuous\b[^.]{0,160}\bnever\b[^.]{0,160}\bclean\b/i;
+  const neverCleanThenVacuous = /\bnever\b[^.]{0,160}\bclean\b[^.]{0,160}\bvacuous\b/i;
+  return vacuousThenNeverClean.test(region) || neverCleanThenVacuous.test(region);
 }
 
 describe('skill-schema-drift — sibling merge-tree prediction states its coverage denominator (#419)', () => {
   const reviewerSkillMd = readFileSync(WAVE_REVIEWER_SKILL_MD, 'utf-8');
   const reviewerChecksMd = readFileSync(REVIEWER_CHECKS_MD, 'utf-8');
   const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const reviewerAgentMd = readFileSync(WAVE_REVIEWER_AGENT_MD, 'utf-8');
 
   /** Check 5's own section of the runnable checks reference. */
   function checksCheck5(md: string): string {
@@ -1975,14 +2034,34 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     );
   }
 
-  /** The three copies, sliced. wave-reviewer/SKILL.md is taken whole: it is the
+  /** Check 5's own section of the Reviewer's agent definition (its system
+   * prompt) — the fourth copy (#431), scoped the same way as the checks
+   * reference so a match cannot be satisfied by an unrelated sentence
+   * elsewhere in the file. */
+  function agentCheck5(md: string): string {
+    return contractRegion(
+      md,
+      'wave-reviewer.md agent definition',
+      '### 5. Sibling merge-tree prediction',
+      '### 6. Documented-form comparison',
+    );
+  }
+
+  /** The four copies, sliced. wave-reviewer/SKILL.md is taken whole: it is the
    * Reviewer's own operator doc end to end, and its statement of this contract is
    * deliberately spread across three sections (what a verdict rests on, the
-   * boundary, Common Mistakes) — an anchor pair would pin one third of it. */
+   * boundary, Common Mistakes) — an anchor pair would pin one third of it. The
+   * agent-definition copy carries the REDUCED form (see block comment above) —
+   * it satisfies the same shared assertions below (outcome vocabulary, coverage
+   * line, at-anchor refusal, advisory-only) because that much genuinely lives in
+   * its reduced text; the per-row anchor-interpolation assertion further down
+   * stays scoped to the driver copy alone, because only the driver carries that
+   * value at all. */
   const COPIES: Array<[string, string]> = [
     ['wave-reviewer/SKILL.md', reviewerSkillMd],
     ['reviewer-checks.md Check 5', checksCheck5(reviewerChecksMd)],
     ['workflow-driver.md reviewerBrief', driverClause(driverMd)],
+    ['wave-reviewer.md agent definition (reduced form)', agentCheck5(reviewerAgentMd)],
   ];
 
   it.each(COPIES)('%s enumerates all FOUR per-sibling outcomes', (_label, region) => {
@@ -2025,13 +2104,64 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
 
   it('the reviewerBrief instructs the at-anchor comparison against the anchor IT carries', () => {
     // The comparison is only meaningful against THIS row's anchor, and the brief
-    // is the only one of the three copies where that value exists at dispatch
+    // is the only one of the four copies where that value exists at dispatch
     // time. A copy that says "compare against the wave anchor" without
     // interpolating it hands the Reviewer a rule it cannot execute — the same
     // failure shape as the bad-anchor first round (W2-F1) one level down.
+    //
+    // A plain `toContain('${issue.anchorSha}')` cannot tell a real interpolation
+    // apart from an ESCAPED, non-interpolating `\${issue.anchorSha}` — the
+    // substring `${issue.anchorSha}` still appears inside the escaped form, so a
+    // mutation that breaks the interpolation (and prints the literal template
+    // text at dispatch time instead of the row's SHA) would still satisfy a bare
+    // substring check. Require the `$` to NOT be escaped.
     const clause = driverClause(driverMd);
-    expect(clause).toContain('${issue.anchorSha}');
+    expect(clause).toMatch(ANCHOR_INTERPOLATION);
     expect(clause).toContain('git rev-parse FETCH_HEAD');
+  });
+
+  it('NEGATIVE CONTROL — an escaped, non-interpolating anchor form is caught', () => {
+    // The mutation a plain `toContain` cannot see: escape the `$` so the
+    // template no longer interpolates. `\${issue.anchorSha}` renders as that
+    // literal text at dispatch time — every Reviewer would receive the SAME
+    // uninterpolated string instead of its own row's SHA — yet the substring
+    // `${issue.anchorSha}` is still sitting right there inside it.
+    const clause = driverClause(driverMd);
+    // Escape EVERY occurrence — the clause interpolates the anchor twice (the
+    // vacuity explanation, and the fetch-tip comparison itself), and a mutation
+    // that broke only one would leave the other genuinely interpolating.
+    const escaped = clause.split('${issue.anchorSha}').join('\\${issue.anchorSha}');
+    expect(escaped).not.toEqual(clause); // the replace actually matched
+    expect(escaped).toContain('${issue.anchorSha}'); // …a bare toContain still passes
+    expect(escaped).not.toMatch(ANCHOR_INTERPOLATION); // …the hardened pin does not
+    expect(clause).toMatch(ANCHOR_INTERPOLATION); // control: the real copy passes
+  });
+
+  it('wave-reviewer.md Check 5 defers to the dispatched reviewerBrief for the per-row mechanics it cannot carry', () => {
+    // The reduced-form half of the #431 fix: the agent definition is a static
+    // system prompt, so it structurally cannot interpolate `${issue.anchorSha}`
+    // (that assertion stays scoped to the driver copy above, on purpose — it
+    // would be a vacuous pin here, asserting text that cannot exist). What it
+    // MUST do instead is say so, explicitly, rather than silently omitting the
+    // mechanics and leaving a Reviewer to assume there are none.
+    const region = agentCheck5(reviewerAgentMd);
+    expect(region).toMatch(/reviewerBrief/);
+    expect(region).toMatch(/\bcannot\b[^.]{0,160}\bcarry\b/i);
+  });
+
+  it('NEGATIVE CONTROL — a wave-reviewer.md rewrite that drops the reviewerBrief deferral is caught', () => {
+    const region = agentCheck5(reviewerAgentMd);
+    const noDeferral = region.replace(
+      /\*\*This section states the contract, not the per-row mechanics\.\*\*[\s\S]*$/,
+      '',
+    );
+    expect(noDeferral).not.toEqual(region); // the strip actually matched
+    expect(noDeferral).not.toMatch(/reviewerBrief/);
+    expect(noDeferral).not.toMatch(/\bcannot\b[^.]{0,160}\bcarry\b/i);
+    // The rest of the reduced-form contract (outcome vocabulary, coverage line,
+    // at-anchor refusal) survives the strip — this control isolates the
+    // deferral clause, it does not also re-prove the shared assertions above.
+    expect(enumerationSpan(noDeferral)).not.toBeNull();
   });
 
   it('NO ReviewerVerdict schema change — the driver copy still deep-equals the engine const, and no outcome token leaks into it', () => {
@@ -2097,6 +2227,44 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     }
   });
 
+  it('NEGATIVE CONTROL — scattered, non-co-located `vacuous` and `never … clean` no longer satisfy the pin', () => {
+    // The blind spot disclosed against the #419 pins: an existence-anywhere
+    // version of `refusesAtAnchorAsClean` (`region.includes` / independent
+    // `.test()` calls, no proximity requirement) is satisfiable by TWO
+    // unrelated sentences that happen to each supply half the evidence — which
+    // is exactly reviewer-checks.md's shape (the `at-anchor` heading states the
+    // refusal once; the tip-comparison prose restates it again), so the old
+    // check's correctness there rested on that incidental duplication rather
+    // than on one self-contained statement ever being required. Reconstruct
+    // that shape synthetically — `vacuous` and the `never … clean` refusal
+    // present, but pulled apart into two unrelated sentences separated by an
+    // unrelated paragraph — and confirm the CURRENT, co-location-based pin
+    // correctly refuses it, unlike the existence-anywhere predecessor it
+    // replaced (reconstructed inline below for the contrast, not imported —
+    // that version no longer exists in this file on purpose).
+    const existenceAnywherePredecessor = (r: string): boolean =>
+      r.includes('at-anchor') && /vacuous/i.test(r) && /never\b[^.]{0,160}\bclean\b/i.test(r);
+
+    const scattered = [
+      'This paragraph names `at-anchor` and calls the tip-mismatch case vacuous,',
+      'for reasons unrelated to any refusal.',
+      '',
+      'A wholly separate later paragraph, about a different topic entirely,',
+      'happens to say the working tree must never be left anything but clean.',
+    ].join('\n');
+
+    expect(scattered).toContain('at-anchor');
+    expect(existenceAnywherePredecessor(scattered)).toBe(true); // the old blind spot
+    expect(refusesAtAnchorAsClean(scattered)).toBe(false); // the hardened pin is not fooled
+
+    // Control: every real copy's genuine, self-contained refusal still passes
+    // the hardened pin — the fix narrows what is ACCEPTED, it does not also
+    // narrow what the shipped copies actually say.
+    for (const [, region] of COPIES) {
+      expect(refusesAtAnchorAsClean(region)).toBe(true);
+    }
+  });
+
   it('NEGATIVE CONTROL — a coverage sentence with no denominator does not satisfy the pin', () => {
     // "we mention coverage" is not "we report a denominator". The matcher is
     // keyed on the `n/N` SHAPE right after the canonical prefix, so prose that
@@ -2119,6 +2287,9 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     );
     expect(() => driverClause('a driver with no reviewerBrief clause')).toThrow(
       /start anchor missing in workflow-driver\.md reviewerBrief/,
+    );
+    expect(() => agentCheck5('# an agent definition with no Check 5\n')).toThrow(
+      /start anchor missing in wave-reviewer\.md agent definition/,
     );
     // A restructure that leaves both anchors adjacent must FAIL, not pass on an
     // empty string — the vacuous-pass failure mode this whole file guards for.
