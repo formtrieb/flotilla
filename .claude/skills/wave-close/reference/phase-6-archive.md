@@ -83,13 +83,9 @@ The Coordinator may **promote** a bundle-default item to its own ticket on judgm
 
 Exit `0` → `awaiting-human: 0 of N human-gated rows — archive gate CLEAR`, continue to the Guards below. **Non-zero exit → BLOCKED: do not archive.**
 
-**Why a human-gated row needs its own gate, when the terminality Guard already exists.** The two gates catch different things and the terminality Guard genuinely does not catch this one on its own: an awaiting-human row is `planned`, and `planned` is neither a running state nor a finalised one, so a Coordinator reading "no row is `dispatched`/`reviewing`" can talk itself into archiving. What makes that specifically dangerous is the **claim**, and this is the one property that separates an awaiting-human row from every other non-terminal shape:
+**Why this gate exists — the stranded claim (ADR-0036).** An awaiting-human row sits at `planned` — neither running nor finalised, so the terminality Guard structurally cannot see it — and its tracker claim is **still live** (`queued`; nothing ever dispatched it, so nothing ever released it). Archive past it and the issue reads as **claimed** to every future `wave-plan` with no live spine left to reconcile against — no self-healing path from there. The design rationale (why fail-closed rather than advisory, why its own gate rather than a stricter terminality read, the considered alternatives) lives in ADR-0036, not here.
 
-> Its tracker claim is **still live** (`queued`). The row was never dispatched, so nothing ever released it.
-
-Archive past it and the issue reads as **claimed** to every future `wave-plan`, with **no live spine left to reconcile against** — the wave that could have released it is in `_archive/`. There is no self-healing path from there; the claim has to be found and dropped by hand. That is why this is fail-closed rather than an advisory, and why the check is structural (shaped like the disclosure gate) rather than a line in the Common Mistakes list. Phase 5 already **names** the hazard when it reconciles; this is where the wave is actually stopped.
-
-**Fail-closed in both directions.** An awaiting-human row blocks the archive, and so does a spine that cannot be read or parsed — unreadable is *unknown*, and an archive gate must treat unknown as blocked. Same stance as `check-disclosures`.
+**Fail-closed in both directions.** An awaiting-human row blocks the archive, and so does a spine that cannot be read or parsed — unknown is blocked. Same stance as `check-disclosures` (ADR-0036).
 
 **Two exits, and only these two.** The gate's own output prints both; neither is a default, and the Coordinator picks:
 

@@ -22,3 +22,9 @@ A release workflow was reviewed and approved with three divergences from the reg
 - The Reviewer agent contract and its checks reference gain the duty at the deferred valve; the Worker brief gains the declare-and-self-compare clause; the glossary gains **Documented-Form Comparison**.
 - The founding incident stays testable: run against the release-workflow change as it stood at review time, the comparison must surface all three divergences — the implementation slice's worked example (#112).
 - The duty is deliberately cheap to satisfy honestly: on a row with an executable core path, no trigger fires and the field is simply absent — the common case pays nothing.
+
+## Amendment 2026-08-09 — a simulable consumer path is executable (doctrine-budget grill)
+
+The valve's trigger reads "outcome unreachable from the review environment," and a live review showed a whole class where that reading is more conservative than the facts: a consumer-form path with no installed package to resolve against (this repo runs the source form on both distribution layers) **is reachable by simulating the consumer install** — `npm pack` of the branch's engine, install of the tarball into a throwaway repo outside the tree, then the shipped line verbatim. Executed live twice (wave `2026-08-01-release-text-currency`, row 398's Reviewer — exit 2, the documented refusal — and the #397 registry contrast that followed), both times converting would-be substitute evidence into real execution.
+
+The declaration duty therefore gains a precondition: **before a core path is declared unexecutable, check whether the consumer form is simulable; a simulable path is executable, the simulation stands in for the consumer, and the deferred valve does not fire on it.** The check binds both declaration sites — the Worker before declaring in `judgmentCalls`, the Reviewer before accepting any trigger as final. Evidence trail: issue #407 (second finding).

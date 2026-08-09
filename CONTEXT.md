@@ -206,6 +206,16 @@ _Avoid_: the consumer's clear name (client-confidential).
 The consumer the M1 §6 live gate actually ran on (a Linear team + GitHub server repo — one real wave, end-to-end to merged PRs). Distinct from flotilla's own self-consumption: the subsequent hardening waves ran on flotilla itself.
 _Avoid_: the consumer's clear name (client-confidential).
 
+### Doctrine
+
+**Enforcement Tier**:
+The rung a rule is enforced on — engine refusal / schema boundary · drift-spec · hook / config · brief prose · reference doc — ordered by the token rent each enforcement costs per use: structural tiers cost ≈ 0 at runtime, prose tiers pay per dispatch (brief) or per session (reference doc) (ADR-0034). Always written qualified — an unqualified "tier" is the model tier (see Flagged ambiguities).
+_Avoid_: tier (unqualified), level, layer.
+
+**Promotion**:
+The move of a rule from a prose Enforcement Tier to a structural one, earned — never automatic: a rule whose violation fails *silently* (plausible wrong result, no-op with a success echo) becomes a Promotion candidate at its **second live occurrence**; a loudly-failing rule may stay prose until recurrence is chronic (ADR-0034). Prose is a rule's draft mode, structure its production mode — tokens are the rent a rule pays until it earns structure.
+_Avoid_: migration (sounds like data movement), hardening (vague), graduation.
+
 ## Relationships
 
 - An **IssueView** is keyed by its **id**; its **slug** decorates derived names but is never a key.
@@ -222,6 +232,7 @@ _Avoid_: the consumer's clear name (client-confidential).
 
 - **"status"** was overloaded across the triage lifecycle and the kanban **Coarse state**. **Resolved (ADR-0003):** two label worlds at two homes — issue-side **Triage** labels are the consumer's; the **`wave/*`** ledger is flotilla's. They are coupled only by the **Eligibility OR-set**. The engine's `IssueView.status` is `CoarseState` only; triage labels never enter it.
 - **"worker"** is overloaded: the **`IssueView.worker`** field (an *assignment* — which agent type) vs the **Worker** runtime agent it spawns. Keep "worker (assignment)" for the field, "Worker" for the agent.
+- **"tier"** is overloaded: the model tier (Worker/Reviewer routing, the abstract `-heavy` marker — ADR-0007/0012) vs the **Enforcement Tier** (which rung enforces a rule — ADR-0034). **Resolved:** unqualified "tier" keeps meaning the model tier everywhere in wave routing; the doctrine concept is always written out as **Enforcement Tier**.
 - **"human"** is overloaded across two pipeline stages with **opposite** wave outcomes. **Resolved (ADR-0015):** `ready-for-human` (triage eligibility axis) = *not* wave work, a human handles it entirely outside flotilla, never enters a wave; `HITL-required` (Worker axis, ADR-0012) = wave work that *does* enter a wave, merely human-gated. The separating test is "does the wave system track/surface this work at all?". A `public-API-change` is `ready-for-agent` + `background-heavy` (AFK-implementable, landing-gated), **never** `ready-for-human`.
 
 ## Example dialogue

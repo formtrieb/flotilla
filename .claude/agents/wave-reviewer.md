@@ -77,6 +77,8 @@ git merge-tree <branch> origin/<sibling-branch>
 | `issue-declared` | an acceptance criterion asked for the comparison outright (it also rides the ordinary per-AC machinery). |
 | `worker-declared` | the Worker declared an unexecutable core path in `judgmentCalls`, mirrored into `reviewerFocusItems` — Check 4's sweep turns it into this directed check. |
 
+**Simulability gate — before accepting any trigger as final (ADR-0030 Amendment 2026-08-09):** check whether the consumer-form path is *simulable* — `npm pack` the branch's engine, install the tarball into a throwaway repo outside this tree, run the shipped line verbatim. A simulable path is **executable**: run the probe, verify the AC on real evidence, and the valve never fires. Declare unexecutable only what a simulation cannot reach either.
+
 You never issue an abstract "this row is unexecutable" ruling. The could-not/cannot line is already drawn per-AC by Check 3: **a failing probe is `not-met`** (verifiable, failed); **unreachable is `deferred`**. Check 6 keys off that existing state, not off a second judgment layer.
 
 **What to do.** Identify the **authoritative documented form** for the unexecutable mechanism — the vendor's own documentation, the spec, the reference example — and **read it in this dispatch** (`WebFetch` the page, or read the vendored doc; the operating contract's evidence-before-assertions rule extends to documents). Compare the change **as it stands on the branch** against that form and report **every** divergence, each classified:

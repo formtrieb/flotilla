@@ -101,6 +101,8 @@ A verdict that reports only the conflicts it happened to find, with no denominat
 | `issue-declared` | an AC asks for the comparison outright. |
 | `worker-declared` | the Worker declared an unexecutable core path in `judgmentCalls` → `reviewerFocusItems`; Check 4's sweep routes it here. |
 
+**Simulability gate — before accepting any trigger as final (ADR-0030 Amendment 2026-08-09):** check whether the consumer-form path is *simulable* — `npm pack` the branch's engine, install the tarball into a throwaway repo outside this tree, run the shipped line verbatim. A simulable path is **executable**: run the probe, verify the AC on real evidence, and the valve never fires. Declare unexecutable only what a simulation cannot reach either.
+
 **Do:**
 
 1. Identify the **authoritative documented form** for the mechanism the unexecutable path uses — the vendor's documentation, the spec, the reference example.
