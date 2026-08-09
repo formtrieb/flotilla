@@ -20,13 +20,26 @@ Every "met", "green", "clean", "matches" claim must come from a command you ran 
 ## Inputs (passed inline in the dispatch brief)
 
 1. **Branch** — `wave/<id>-<slug>`. The branch under review.
-2. **Wave anchor SHA** — the SHA the Worker `git reset --hard`-ed to. **This is your diff base — NOT `main`.** `main..branch` surfaces the full feature delta (potentially hundreds of files), obscuring the Worker's actual change. Always diff `<anchorSha>..<branch>`.
+2. **Wave anchor SHA** — the SHA the Worker `git reset --hard`-ed to. **This is your diff base — NOT `main`.** `main..branch` surfaces the full feature delta (potentially hundreds of files), obscuring the Worker's actual change. Always diff `<anchorSha>..refs/review/<id>` — the resolved, confirmed named ref (below), never `<branch>` as a bare local name.
 3. **Risk class** — `mechanical | isolated-refactor | cross-feature-refactor | public-API-change`. You **return** this verbatim as `riskClass` (the Coordinator's routing bifurcates on it). It does not change which checks you run.
 4. **Worker report** — the structured `WorkerReport`, inline. You re-verify its claims.
 5. **Reviewer-focus hints** — Coordinator hints ++ the Worker's `reviewerFocusItems`. Apply each as a directed check.
 6. **Sibling in-flight branches** — other wave branches not yet at `pr-created`. `(none — last in-flight issue)` → skip the sibling merge-tree check.
 
 If any of inputs 1–4 are missing or malformed, STOP immediately with `verdict: questions-blocking` and surface the missing input — do not attempt a partial review.
+
+## Resolve the branch — a stable named ref, never `FETCH_HEAD`
+
+Before Check 1: fetch the branch under review (Input #1) into a **stable named ref** keyed on the row id, and confirm it before trusting it.
+
+```bash
+git fetch origin <branch>:refs/review/<id> 2>&1 | tail -3
+git rev-parse refs/review/<id>
+```
+
+The printed SHA MUST equal the Worker-reported commit (Input #4, `report.commitShas`, last entry). **A mismatch is `questions-blocking`** — name both SHAs and stop; do not proceed to diff a ref you have not confirmed. Every check below diffs against `refs/review/<id>`, never a bare local branch name and never `FETCH_HEAD`.
+
+`FETCH_HEAD` is a single ref shared by the whole checkout — a concurrent sibling Reviewer's own `git fetch` overwrites it mid-dispatch. Live occurrence: an unrelated two-file diff for the wrong row, no error, nothing to flag it as wrong — the wrong tree was plausible. The SHA assert above is what converts that silent hazard into a loud stop, the same silent-to-loud promotion [ADR-0034](../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md) names. `FETCH_HEAD` is never read, here or anywhere else in this review.
 
 ## Checks (run all — uniform contract, no profile branching)
 
@@ -36,8 +49,8 @@ Re-run the consumer's verify commands independently — the same commands the Ve
 If `wave.config.verify` is absent (no verify profile), this re-run is empty — note "no verify profile" in `lintTestSummary` and proceed.
 
 ### 2. Git-state sanity *(diff base = the anchor SHA)*
-All sub-checks against `<anchorSha>..<branch>`:
-- **Files-glob match.** `git diff --name-only <anchorSha>..<branch>` — confirm every changed file is covered by the issue's `Files:` globs. Flag any file outside the declared globs.
+All sub-checks against `<anchorSha>..refs/review/<id>`:
+- **Files-glob match.** `git diff --name-only <anchorSha>..refs/review/<id>` — confirm every changed file is covered by the issue's `Files:` globs. Flag any file outside the declared globs.
 - **Conflict-marker floor** (engine `FLOOR_CHECKS`). Grep start-of-line `<<<<<<<` / `=======` / `>>>>>>>` in every changed file at the SHA. Any hit = hard `changes-requested`; quote `<file>:<line>`.
 - **AC-ticks consistent with the diff.** For every AC the Worker claims met, spot-check the diff contains evidence (a file changed, a test added).
 - **Closed-by well-formed.** If the Worker report includes a `Closed-by` line, verify it is a well-formed `Closes #N` referencing the correct issue id.
