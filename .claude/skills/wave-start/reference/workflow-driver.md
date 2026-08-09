@@ -740,6 +740,18 @@ Risk class: \`${issue.risk}\`   (dispatch is universal — Risk does NOT gate wh
 Wave anchor SHA (diff base — NOT main): \`${issue.anchorSha}\`
 Sibling in-flight branches: ${issue.siblingBranches}
 
+## Resolve the branch — a stable named ref, never \`FETCH_HEAD\`
+
+**\`FETCH_HEAD\` is a single ref shared by the whole checkout** — every \`git fetch\` overwrites it, including a concurrent sibling Reviewer's own fetch mid-dispatch. Live occurrence: a Reviewer diffing \`<anchor>..FETCH_HEAD\` briefly got another row's two-file diff — nothing failed loudly, the wrong tree was plausible, and a Reviewer who didn't happen to look twice would have verified it and reported it as verified. Fetch this row's branch into a stable named ref instead, keyed on the row id so a sibling's own fetch cannot collide with it, and confirm it before trusting it:
+
+\`\`\`bash
+git fetch origin ${issue.branch}:refs/review/${issue.id} 2>&1 | tail -3
+\`\`\`
+\`\`\`bash
+git rev-parse refs/review/${issue.id}
+\`\`\`
+The printed SHA MUST equal the Worker-reported commit above (\`Commit SHAs: ${report.commitShas.join(', ')}\` — the LAST entry is the branch tip). **A mismatch is \`questions-blocking\`** — name both SHAs and stop; do not review a tree you have not confirmed. Every check below diffs against \`refs/review/${issue.id}\`, never a bare local branch name and never \`FETCH_HEAD\` — FETCH_HEAD is never read, here or anywhere else in this review. (ADR-0034 — the SHA assert is what turns this plausible, silent hazard into a loud stop; full mechanics: \`wave-reviewer/reference/reviewer-checks.md\` "The branch ref" section.)
+
 ## Workspace setup (do first)
 Your own worktree also carries **tracked files only**. If this consumer's
 dependency directory is gitignored, it is absent here too, and you cannot
@@ -774,9 +786,10 @@ ${j(report.reviewerFocusItems)}
 
 ## Your checks
 Run the wave-reviewer contract (see .claude/agents/wave-reviewer.md): re-run the verify
-commands + the floor checks against \`${issue.anchorSha}..${issue.branch}\`,
-per-AC met/partial/not-met with evidence (against the embedded spec above), sibling
-merge-tree prediction.
+commands + the floor checks against \`${issue.anchorSha}..refs/review/${issue.id}\`
+(the stable named ref resolved above — never \`${issue.branch}\` as a bare local branch
+name, never \`FETCH_HEAD\`), per-AC met/partial/not-met with evidence (against the
+embedded spec above), sibling merge-tree prediction.
 
 **SIBLING MERGE-TREE PREDICTION REPORTS ITS COVERAGE DENOMINATOR.** The sibling list above is
 the DENOMINATOR, and every branch on it gets exactly ONE outcome: \`predicted-clean\` |

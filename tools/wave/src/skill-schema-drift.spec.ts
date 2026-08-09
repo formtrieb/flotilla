@@ -2132,3 +2132,187 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     ).toThrow(/EMPTY in synthetic/);
   });
 });
+
+// ─── The FETCH_HEAD named-ref clause rides all FOUR contract copies (#407) ───
+//
+// The Reviewer diffs the branch under review, not just its siblings (Check 5
+// above). A live occurrence showed the SAME shared-checkout hazard on that
+// PRIMARY diff: a Reviewer diffing `<anchor>..FETCH_HEAD` briefly got another
+// row's two-file diff, because a sibling Reviewer's own `git fetch` — in the
+// same shared checkout — overwrote the single, shared `FETCH_HEAD` ref
+// mid-dispatch. Nothing failed loudly; the wrong tree was plausible, and a
+// Reviewer who didn't happen to look twice would have verified it and
+// reported it as verified.
+//
+// The remedy: fetch the branch under review into a STABLE NAMED REF keyed on
+// the row id (`refs/review/<id>`, immune to a sibling's own fetch because the
+// ref name differs per row), and ASSERT the resolved SHA against the
+// Worker-reported commit before trusting it — abort loudly
+// (`questions-blocking`) on any mismatch. `FETCH_HEAD` is never read.
+//
+// Stated in FOUR hand-maintained copies, the same shape as the Check-5 pins
+// above:
+//
+//   - wave-reviewer/SKILL.md                      — the operator's view
+//   - wave-reviewer/reference/reviewer-checks.md  — the runnable detail, and
+//                                                    the PRIMARY teaching site
+//                                                    for the ADR-0034 rationale
+//   - wave-start/reference/workflow-driver.md     — the reviewerBrief ACTUALLY dispatched
+//   - .claude/agents/wave-reviewer.md             — the Reviewer's OWN system prompt
+//
+// A path constant for the agent-definition file is declared LOCAL to this
+// block rather than added to the shared consts region above: issue #431
+// (Check 5's fourth-copy pin, landing on a sibling branch to this one)
+// independently adds its own agent.md path constant up there. A second,
+// differently-named constant here keeps this block's diff clear of that
+// region entirely, so the two rows' additions to this SAME file don't collide
+// on the same lines — a predicted merge conflict between the two rows over
+// this shared file is expected and advisory regardless (both touch it;
+// neither touches the other's own new block).
+
+const FETCH_HEAD_CLAUSE_AGENT_MD = join(
+  __dirname,
+  '../../../.claude/agents/wave-reviewer.md',
+);
+
+/**
+ * The canonical, backtick-tolerant "FETCH_HEAD is never read" statement. Two
+ * copies state it as inline code immediately followed by the words
+ * (`` `FETCH_HEAD` is never read ``); one states a SECOND, standalone
+ * occurrence with no backticks at all (a repeated noun, not a repeated code
+ * span). A plain substring match would have to pick one spelling; this regex
+ * accepts either.
+ */
+const NEVER_READ_RE = /FETCH_HEAD`?\s+is never read/;
+
+/** The stable named ref path every copy must prescribe. */
+const NAMED_REF_PATH = 'refs/review/';
+
+/**
+ * Mismatch-abort language: a resolved SHA that disagrees with the
+ * Worker-reported commit must abort loudly, never proceed quietly.
+ * Proximity-scoped for the same reason `refusesAtAnchorAsClean` above is —
+ * both words appearing SOMEWHERE in a region does not show they are talking
+ * about each other.
+ */
+const MISMATCH_ABORT_RE = /mismatch[^.]{0,220}questions-blocking/i;
+
+describe('skill-schema-drift — the FETCH_HEAD named-ref clause rides all FOUR contract copies (#407)', () => {
+  const reviewerSkillMd = readFileSync(WAVE_REVIEWER_SKILL_MD, 'utf-8');
+  const reviewerChecksMd = readFileSync(REVIEWER_CHECKS_MD, 'utf-8');
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const agentMd = readFileSync(FETCH_HEAD_CLAUSE_AGENT_MD, 'utf-8');
+
+  /** The clause's own section in reviewer-checks.md — the primary teaching site. */
+  function checksClause(md: string): string {
+    return contractRegion(md, 'reviewer-checks.md', '## The branch ref —', '## The diff base —');
+  }
+
+  /** The clause's own section in the dispatched reviewerBrief. */
+  function driverClause(md: string): string {
+    return contractRegion(
+      md,
+      'workflow-driver.md reviewerBrief',
+      '## Resolve the branch — a stable named ref',
+      '## Workspace setup (do first)',
+    );
+  }
+
+  /** The clause's own section in the Reviewer's agent definition (system prompt). */
+  function agentClause(md: string): string {
+    return contractRegion(
+      md,
+      'wave-reviewer.md agent definition',
+      '## Resolve the branch — a stable named ref',
+      '## Checks (run all',
+    );
+  }
+
+  /** The four copies, sliced. wave-reviewer/SKILL.md is taken whole — its
+   * statement of this clause is deliberately spread across two sections
+   * ("What a sound verdict rests on" and "Common Mistakes"), the same reason
+   * the Check-5 pins above take it whole rather than anchor a sub-region. */
+  const COPIES: Array<[string, string]> = [
+    ['wave-reviewer/SKILL.md', reviewerSkillMd],
+    ['reviewer-checks.md', checksClause(reviewerChecksMd)],
+    ['workflow-driver.md reviewerBrief', driverClause(driverMd)],
+    ['wave-reviewer.md agent definition', agentClause(agentMd)],
+  ];
+
+  it.each(COPIES)('%s prescribes the stable named ref path', (_label, region) => {
+    expect(region).toContain(NAMED_REF_PATH);
+  });
+
+  it.each(COPIES)('%s states FETCH_HEAD is never read', (_label, region) => {
+    expect(region).toMatch(NEVER_READ_RE);
+  });
+
+  it.each(COPIES)('%s aborts loudly on a SHA mismatch (questions-blocking)', (_label, region) => {
+    expect(region).toMatch(MISMATCH_ABORT_RE);
+  });
+
+  it('the PRIMARY teaching site (reviewer-checks.md) cites the silent-to-loud rationale (ADR-0034)', () => {
+    const region = checksClause(reviewerChecksMd);
+    expect(region).toContain('ADR-0034');
+    expect(region).toMatch(/silent/i);
+    expect(region).toMatch(/loud/i);
+  });
+
+  it("the driver copy interpolates THIS row's branch and id — not a generic placeholder", () => {
+    // The mechanics are only executable against a real row; a copy that says
+    // "fetch the branch" without interpolating which one hands the Reviewer a
+    // rule it cannot run — the same failure shape the Check-5 pins guard
+    // against for `${issue.anchorSha}` above. And the point of the whole
+    // clause is undone if the driver copy still tells the Reviewer to read
+    // FETCH_HEAD for the branch under review.
+    const clause = driverClause(driverMd);
+    expect(clause).toContain('${issue.branch}');
+    expect(clause).toContain('refs/review/${issue.id}');
+    expect(clause).not.toContain('git rev-parse FETCH_HEAD');
+  });
+
+  it('NEGATIVE CONTROL — contractRegion fails loud on a missing anchor', () => {
+    expect(() => checksClause('# no clause here\n')).toThrow(
+      /start anchor missing in reviewer-checks\.md/,
+    );
+    expect(() => driverClause('# no clause here\n')).toThrow(
+      /start anchor missing in workflow-driver\.md reviewerBrief/,
+    );
+    expect(() => agentClause('# no clause here\n')).toThrow(
+      /start anchor missing in wave-reviewer\.md agent definition/,
+    );
+  });
+
+  it.each(COPIES)(
+    'NEGATIVE CONTROL — %s: dropping the named-ref path is caught',
+    (_label, region) => {
+      const stripped = region.split(NAMED_REF_PATH).join('<dropped>');
+      expect(stripped).not.toEqual(region); // the strip actually matched
+      expect(stripped).not.toContain(NAMED_REF_PATH);
+    },
+  );
+
+  it.each(COPIES)(
+    'NEGATIVE CONTROL — %s: softening "is never read" to "should not be read" is caught',
+    (_label, region) => {
+      const softened = region.replace(NEVER_READ_RE, 'FETCH_HEAD should not be read');
+      expect(softened).not.toEqual(region); // the replace actually matched
+      expect(softened).not.toMatch(NEVER_READ_RE);
+    },
+  );
+
+  it.each(COPIES)(
+    'NEGATIVE CONTROL — %s: dropping the mismatch-abort language is caught',
+    (_label, region) => {
+      const stripped = region.replace(/questions-blocking/gi, '<dropped>');
+      expect(stripped).not.toMatch(MISMATCH_ABORT_RE);
+    },
+  );
+
+  it('NEGATIVE CONTROL — dropping ADR-0034 from the primary teaching site is caught', () => {
+    const region = checksClause(reviewerChecksMd);
+    const stripped = region.replace(/ADR-0034/g, '<dropped>');
+    expect(stripped).not.toEqual(region); // the strip actually matched
+    expect(stripped).not.toContain('ADR-0034');
+  });
+});
