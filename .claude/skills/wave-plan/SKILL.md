@@ -39,6 +39,12 @@ This returns the wave-eligible `IssueView[]` for this repo. The eligibility OR-s
 
 **PRDs never appear in `listOpen`** — `to-prd` publishes via the Document facet (ADR-0011), never eligibility-stamped, so no filtering is needed. The PRD panel is a separate step below.
 
+### 1b. GitHub blockedBy-mirror envelope (github consumers only)
+
+**Before planning wide on a github-store consumer** — a candidate set with many `blockedBy`-carrying rows, or one you plan to feed a bulk `to-issues` create/decorate pass — know that each such filing also mirrors its `blockedBy` refs into GitHub's native issue-dependencies API, one `addBlockedBy` POST per unmirrored ref (`GithubIssuesStore.mirrorBlockedBy`). That is on top of the read-side GET every `read()` already pays, and it walks toward GitHub's own **secondary rate limits** (a content-creation ceiling and a points budget on `POST`/`PATCH`/`PUT`/`DELETE` calls — full figures and sources: [to-issues/reference/filing-mechanics.md](../to-issues/reference/filing-mechanics.md)) faster than the row count alone suggests.
+
+This is a **read-and-proceed** note, not a gate: the mirror is deliberately un-throttled (triage decision), and a rate-limited or refused mirror POST degrades **harmlessly** — the authoritative body-codec `## Blocked by` write already landed, `read()` still unions codec ∪ native so the DoR gate sees the real blocker either way, and the next `create`/`annotate` re-attempts whatever a stalled pass left unmirrored. Nothing here changes what you report or how you size the wave; it is context for *why* a github consumer's dependency labels might lag the body text for a while after a wide filing pass, not a reason to shrink the set.
+
 ### 2. Draw current claims
 
 ```bash

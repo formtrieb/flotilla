@@ -312,6 +312,34 @@ export class GitHubIssuesStore implements IssueStore {
     } catch {
       existing = new Set(); // a failed native read must not fail the body write
     }
+    // ── operating envelope (vendor-documented, NOT throttled here — triage
+    // decision: NAME the caveat, do not build throttle/backoff/retry machinery
+    // for it). GitHub's own docs (both read 2026-08-09):
+    //   - docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+    //     — SECONDARY rate limits, separate from the primary per-hour quota:
+    //     no more than 900 points/minute for the REST API; a `POST`/`PATCH`/
+    //     `PUT`/`DELETE` costs 5 points vs. 1 for `GET`/`HEAD`/`OPTIONS`; and a
+    //     content-creation ceiling of no more than 80 such requests/minute or
+    //     500/hour, on top of the points budget.
+    //   - docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
+    //     — "make requests serially instead of concurrently" and "wait at
+    //     least one second between each" mutating (POST/PATCH/PUT/DELETE)
+    //     request to avoid tripping the secondary limit.
+    // Accepted per-call cost (matches what RealLinearApi.addBlockedBy pays for
+    // its own mirror): a read() costs +1 dependency GET; a create()/annotate()
+    // costs the +1 GET above PLUS up to one addBlockedBy POST per unmirrored
+    // ref in THIS loop. A wide wave-plan or a bulk to-issues decorate/create
+    // pass on a github-store consumer — many issues, each with fresh
+    // `blockedBy` refs — walks straight at that envelope: one POST per
+    // unmirrored ref, no pacing between them.
+    // No throttle/backoff/retry is added: this mirror is best-effort by
+    // design (class doc above) and a rate-limited or otherwise refused POST
+    // is swallowed below exactly like any other refusal — the authoritative
+    // body-codec write already landed, read() still unions codec ∪ native, and
+    // the next create()/annotate() re-attempts whatever this pass left
+    // unmirrored. Degradation here is harmless, not silent-and-wrong — see
+    // .claude/skills/to-issues/reference/filing-mechanics.md and
+    // .claude/skills/wave-plan/SKILL.md for the operator-facing note.
     for (const ref of blockedBy) {
       if (existing.has(refKey(ref))) continue; // already native — additive, no duplicate
       try {

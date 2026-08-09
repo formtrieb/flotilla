@@ -108,6 +108,14 @@ For an already-filed issue lacking the Header-Block — a triage-ready issue, **
 
 Either way, decorating an issue does not by itself grant wave-eligibility (the eligibility marker/label is a separate, consumer-owned step) — decorate makes the issue *readable and DoR-checkable*, eligibility is what a wave-planning step stamps on top.
 
+## GitHub blockedBy-mirror operating envelope (github consumers only)
+
+Every `create` or `decorate` call that carries a non-empty `blockedBy` on a **github**-store consumer also mirrors those refs into GitHub's native issue-dependencies API (`GithubIssuesStore.mirrorBlockedBy`, `tools/wave/src/adapters/github/github-issues-store.ts`) — best-effort, additive-only, and orthogonal to the authoritative body-codec write. That mirror costs **one `addBlockedBy` POST per unmirrored ref**, in addition to the one `getBlockedBy` GET the mirror always pays to check what is already native — the same per-call cost the Linear adapter pays for its own mirror.
+
+**Read this before a bulk `create`/`decorate` pass** (many slices, each with fresh `blockedBy` refs, filed in a tight loop): GitHub enforces its own **secondary rate limits** on top of the primary per-hour quota — a content-creation ceiling (no more than 80 content-generating requests/minute or 500/hour) and a points budget (`POST`/`PATCH`/`PUT`/`DELETE` cost 5 points vs. 1 for `GET`, capped at 900 points/minute) — and advises spacing mutating calls at least a second apart (docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api and .../best-practices-for-using-the-rest-api). A wide batch of blocked issues filed back-to-back can walk into that envelope.
+
+**This is deliberately not throttled** (triage decision: name the caveat, do not build throttle/backoff/retry machinery for it) — and that is safe to file against, not just a known gap: a rate-limited or otherwise refused mirror POST is swallowed per-ref, never fails the `create`/`annotate` call, and never fails `dor`. The authoritative body-codec `## Blocked by` section — the one every gate actually reads — already landed. The native mirror is a redundant, human-visible extra; `read()` unions codec ∪ native so a stalled mirror is invisible to the DoR gate, and the **next** `create`/`annotate` on that issue re-attempts whatever this pass left unmirrored. Degradation is harmless, not silent-and-wrong. Nothing in this skill needs to slow down or retry around it — just don't mistake "the dependency isn't native yet" for "the dependency didn't file."
+
 ## Self-check — `dor` and `conflict-map`
 
 `dor`'s gates split into **three** classes by what each one needs; deferral is **per-gate and capability-conditional** — keyed on what is present in the context, never on which store the issue came from (ADR-0014):
