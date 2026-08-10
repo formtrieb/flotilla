@@ -9,6 +9,75 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.2.0] — 2026-08-10
+
+A minor release cut the same day as 1.1.0 — the delivery half of the facet-unlock wave
+that landed hours after that release was tagged. The package-root export surface and
+the `wave.config.json` schema are untouched. The change the version number is chosen
+against (ADR-0035) is a relaxation on an exported class: the Linear store's Document
+facet stops refusing to work without a project binding.
+
+### Added
+
+- **The Document facet works without a project binding.** On a Linear store with no
+  `project` configured, `publishDocument` now parents the PRD Document on the
+  configured **team** — where it previously refused to mint an orphan — and
+  `listDocuments` narrows **server-side** to that team via the schema-verified
+  `DocumentFilter.team` predicate, replacing an unfiltered workspace-wide listing.
+  Both with-project paths are byte-unchanged. Driven by the second external consumer's
+  team-central PRD-home decision, implemented upstream the same day. One structural
+  consequence is stated everywhere the facet is taught rather than left implicit:
+  Linear documents `Document.team` as null for any non-team parent, so the
+  team-filtered panel can never return a *project-attached* Document — deliberately
+  accepted by the team-central convention.
+
+### Fixed
+
+- **The DoR staleness advisory stops trusting mtime for tracked markdown issues.** The
+  MarkdownFs store's tracker timestamp now derives from git history for tracked issue
+  files (committer date, aligned with the staleness gate's own clock), keeps mtime for
+  untracked scratch files, and stays absent where neither signal is derivable — so the
+  advisory defers instead of false-passing on a fresh clone. Both edges 1.1.0's entry
+  put on record as #443 are closed by this.
+- **`cleanup.extraRoots` reaches the detached sweep from the config.** The key
+  `config validate` accepted and the docs taught was never threaded from `--config`
+  into the `worktree-cleanup` CLI's `--detached` sweep — a config-declared containment
+  root now takes effect with no further wiring.
+
+### Docs (plugin half)
+
+- **The Reviewer's sibling tips ride per-sibling named refs.** 1.1.0 left the
+  per-sibling tip reads on `FETCH_HEAD` as an undecided question (#445); the answer is
+  the fix: the literal leaves the last two teaching sites, and the drift pin inverts —
+  it now fails on a `FETCH_HEAD` read *appearing*, not on the named-ref form missing.
+- **README and ONBOARDING rebuilt consumer-first.** Live version/CI badges replace the
+  hardcoded status line — the drift class that went stale after every release now has
+  no number left in the file to drift. The pipeline and the two-layer architecture
+  become diagrams, every skill is tabled with its phase (the `report` skill reaches
+  the README for the first time), and ONBOARDING's adoption path and preconditions
+  wall become tables — doctrine unchanged throughout.
+- **The facet-unlock text debt is cleared.** `wave-setup` unlearns the removed
+  publishDocument refusal, `cleanup.extraRoots` joins the authoring-time config table,
+  the team-null consequence is stated at every teaching site, and the `save_document`
+  citation names its real source (the tool description Linear's MCP server serves —
+  no stable public URL, so the comment says so; re-verified verbatim,
+  schema-corroborated).
+
+### Not yet proven
+
+- **The unbound Document arms have never run against a live Linear workspace.** Every
+  spec is hermetic over the HTTP fake; the published schema read pins both shapes
+  (`DocumentCreateInput.teamId`, `DocumentFilter.team`). The first live exercise
+  should publish one PRD from an unbound consumer and confirm the team-filtered
+  listing returns it — the second external consumer's onboarding is the intended
+  first reading (ADR-0030 disclosure, carried in the row's review).
+- The loud `STILL OPEN:` close line remains unread in anger — this release, too,
+  resolves no still-open issue at the playbook's step-7 close.
+- #418 (`npm ci --prefix` failing spuriously in dispatched contexts) stays open, now
+  falsifiable: the stray `$HOME` npm project the probe matrix suspected was moved out,
+  and the issue carries the prediction that the failure does not recur. A future
+  dispatched context proves or refutes it.
+
 ## [1.1.0] — 2026-08-10
 
 A minor release. The package-root export surface and the `wave.config.json` schema are
