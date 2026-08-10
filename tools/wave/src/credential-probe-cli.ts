@@ -81,20 +81,49 @@ import {
   type CredentialFailure,
   type CredentialLookupSpawn,
 } from './credential-resolver';
+import { BITBUCKET_TOKEN_VAR } from './adapters/bitbucket/bitbucket-api';
 import { printJson } from './cli-utils';
 
 /**
- * The credentials THIS engine's own adapters read (ADR-0029's two mechanical
+ * The credentials THIS engine's own adapters read (ADR-0029's mechanical
  * pairs). `--all` discovers over exactly this list: it is what "every configured
  * credential" means for a flotilla consumer, and it deliberately does NOT scan
  * the environment for arbitrary `*_CMD` keys — an unrelated `EDITOR_CMD` is not
  * a credential, and spawning it at a preflight would be a surprise.
  *
+ * Membership is AMBIENT variable names only, never a `<VAR>_CMD` name: the
+ * command counterpart is derived mechanically by {@link commandVariableFor}, so
+ * spelling it here would be a second, drift-capable copy of a rule the resolver
+ * already owns.
+ *
+ * ## Why the Bitbucket entry is the adapter's own constant
+ *
+ * `BITBUCKET_TOKEN_VAR` is imported rather than re-spelled as a literal, so the
+ * discovery list and the adapter that resolves the credential cannot disagree
+ * about the name BY CONSTRUCTION. The same coupling is not available for
+ * `GITHUB_TOKEN` / `LINEAR_API_KEY` — neither factory declares a `*_VAR`
+ * constant, both pass a bare literal — which is exactly why the second half of
+ * this fix is a check rather than a convention: `credential-discovery-drift.spec.ts`
+ * reads every production {@link resolveCredential} call site (literal argument
+ * OR `*_VAR` constant alike) and fails when one resolves a variable this list
+ * does not carry.
+ *
+ * That guard exists because THIS list already drifted silently: engine 1.3.0
+ * added the Bitbucket credential to two production call sites without widening
+ * the list, so `--all` reported `ok: true` / `probed: []` on a Bitbucket
+ * consumer whose host credential was never probed at all — a false all-clear at
+ * the AFK auth preflight, across an entire release, that no gate anywhere
+ * noticed.
+ *
  * An out-of-tree store adapter is not shut out: it names its credential with
  * `--var`, which inherits the same precedence, the same loud failures, and the
  * same containment.
  */
-export const KNOWN_CREDENTIAL_VARIABLES = ['GITHUB_TOKEN', 'LINEAR_API_KEY'] as const;
+export const KNOWN_CREDENTIAL_VARIABLES = [
+  'GITHUB_TOKEN',
+  'LINEAR_API_KEY',
+  BITBUCKET_TOKEN_VAR,
+] as const;
 
 /** Why a probe failed. The resolver's own vocabulary, plus the unknown-throw catch-all. */
 export type CredentialProbeFailure = CredentialFailure | 'unexpected';

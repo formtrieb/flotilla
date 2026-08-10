@@ -374,9 +374,12 @@ export { type HostPrDeps, runHostPr } from './host-pr-cli';
 
 // The ONE credential seam (ADR-0029). Consumed inside the engine by
 // `adapters/github/github-api-factory`, `adapters/linear/linear-api-factory`,
-// and `host-pr-cli`'s create edge; exported so an out-of-tree store adapter
-// inherits the same precedence and the same loud failures instead of writing a
-// fourth lookup.
+// `adapters/bitbucket/bitbucket-api`'s factory, and `host-pr-cli`'s create edge;
+// exported so an out-of-tree store adapter inherits the same precedence and the
+// same loud failures instead of writing one more lookup of its own. That list of
+// in-engine consumers is no longer maintained by hand alone —
+// `credential-discovery-drift.spec.ts` reads every production call site of the
+// resolver and reconciles it against the probe's discovery list below.
 export {
   resolveCredential,
   commandVariableFor,
@@ -395,6 +398,13 @@ export {
 // (wave-start step 4, wave-close phase 2) run before dispatch; exported so an
 // out-of-tree adapter can probe its own `<VAR>_CMD` pair with the same
 // containment instead of shelling the lookup out by hand (Convention 8).
+//
+// `KNOWN_CREDENTIAL_VARIABLES` is `as const`, so its literal tuple type is part
+// of the exported surface and widening it is a public-API change, not an
+// implementation detail. It gained `BITBUCKET_TOKEN` after the 1.3.0 landing
+// host shipped without it and `--all` reported a false all-clear on a Bitbucket
+// consumer; `credential-discovery-drift.spec.ts` is what makes the omission
+// impossible to repeat for the next adapter.
 export {
   runCredentialProbe,
   probeCredential,

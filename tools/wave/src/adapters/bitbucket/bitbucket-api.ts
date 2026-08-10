@@ -81,7 +81,17 @@ import { resolveCredential } from '../../credential-resolver';
 
 const API = 'https://api.bitbucket.org/2.0';
 
-/** The ambient variable the Bitbucket secret is known by (ADR-0029 naming). */
+/**
+ * The ambient variable the Bitbucket secret is known by (ADR-0029 naming).
+ *
+ * This constant has a SECOND consumer beyond this adapter and `host-pr-cli`:
+ * `credential-probe-cli`'s `KNOWN_CREDENTIAL_VARIABLES` imports it rather than
+ * re-spelling the string, so the discovery list `credential-probe --all` filters
+ * and the name this adapter actually resolves cannot disagree. Renaming the
+ * constant is safe (the import follows it); changing its VALUE without a look at
+ * that list is the thing to think twice about — and
+ * `credential-discovery-drift.spec.ts` is the guard that will say so either way.
+ */
 export const BITBUCKET_TOKEN_VAR = 'BITBUCKET_TOKEN';
 
 /**
