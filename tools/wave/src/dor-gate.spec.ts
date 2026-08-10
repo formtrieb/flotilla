@@ -1595,6 +1595,31 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     expect(g.reason).toContain('not a git checkout');
   });
 
+  it('DEFERS with its own reason when the checkout is a git repo with no commits at all (no resolvable default-branch ref)', () => {
+    // Every other fixture in this suite makes a seed commit via makeRepo(); this
+    // is the one path #443 pins a regression spec on: a git-initialized repo
+    // whose HEAD is unborn — no commit reaches origin/HEAD, origin/main,
+    // origin/master, main, master, or even bare HEAD — so
+    // resolveDefaultBranchRef() has nothing to resolve. This must defer with
+    // its own named reason, not throw, and must not affect the overall verdict.
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), 'wave-dor-stale-no-commits-')));
+    repos.push(repo);
+    git(repo, ['init', '-q']);
+
+    const result = validateIssueView(
+      buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+      { repoRoot: repo },
+    );
+
+    const g = gate(result, STALENESS_GATE_NAME);
+    expect(g.status).toBe('deferred');
+    expect(g.reason).toContain('No default-branch ref resolves');
+    // Advisory-only, same as every other Gate 9 outcome: the deferral must not
+    // flip any gate to fail or the overall result away from PASS.
+    expect(result.gates.some((x) => x.status === 'fail')).toBe(false);
+    expect(result.overall).toBe('PASS');
+  });
+
   // ── the file path (validateIssue) ───────────────────────────────────────
 
   it('derives the window from the issue FILE mtime on the file path, and fires', () => {
