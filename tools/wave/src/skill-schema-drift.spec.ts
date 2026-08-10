@@ -1838,6 +1838,21 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
 // `reviewerFocusItems`, so the other half of this contract is that the schema did
 // NOT move — asserted explicitly, because "we added a reporting duty" is exactly
 // the change that grows a field by reflex.
+//
+// A fifth hardening (issue #445) finishes a migration #407 deliberately left half
+// done: the branch-under-review diff base moved off `FETCH_HEAD` onto a stable
+// named ref, but the per-SIBLING tip reads above — `git fetch origin <sib>` then
+// `git rev-parse FETCH_HEAD` — were left exactly where they were, same hazard,
+// lower stakes (a sibling's outcome is advisory, not the diff base itself). The
+// shipped agent-definition sentence "FETCH_HEAD is never read, here or anywhere
+// else in this review" went out BEFORE this migration finished, and so
+// contradicted these two taught procedures until now. All four copies fetch each
+// sibling into its own `refs/review/sib/<sibling-id>` and rev-parse THAT ref for
+// the at-anchor comparison — never `FETCH_HEAD`. The pins below invert to match:
+// where the coverage-denominator pins above require PRESENCE of an outcome
+// vocabulary, these two require PRESENCE of the named-ref path and ABSENCE of the
+// `git rev-parse FETCH_HEAD` literal — the same polarity the #407 block below
+// already holds for the branch-under-review diff base.
 
 /**
  * The four per-sibling prediction outcomes Check 5 must enumerate. Every one is
@@ -1864,6 +1879,24 @@ const COVERAGE_LINE_PREFIX = 'Sibling merge-tree coverage:';
 /** The bold-caps opener of the reviewerBrief's own sibling-coverage clause. */
 const DRIVER_SIBLING_COVERAGE_OPENER =
   '**SIBLING MERGE-TREE PREDICTION REPORTS ITS COVERAGE DENOMINATOR.**';
+
+/**
+ * The per-sibling stable named ref path every copy must prescribe for a sibling
+ * TIP read (issue #445) — the same named-ref remedy the #407 block below pins
+ * for the branch-under-review diff base, applied to Check 5's sibling fetches.
+ * Namespaced under `sib/` so a sibling's own ref can never collide with
+ * `refs/review/$ROW` (or `refs/review/<id>`), the ref the row under review
+ * itself resolves into.
+ */
+const SIBLING_NAMED_REF_PATH = 'refs/review/sib/';
+
+/**
+ * The literal command this pin now REFUSES. Before #445 this was the taught
+ * form for reading a sibling's tip; the #407 migration named-ref'd the branch
+ * under review but deliberately left this exact literal standing for siblings.
+ * `.not.toContain` on this string is the inverted half of the pin.
+ */
+const SIBLING_FETCH_HEAD_LITERAL = 'git rev-parse FETCH_HEAD';
 
 /**
  * A genuine, unescaped `${issue.anchorSha}` interpolation — the `(?<!\\)`
@@ -2012,7 +2045,7 @@ function refusesAtAnchorAsClean(region: string): boolean {
   return vacuousThenNeverClean.test(region) || neverCleanThenVacuous.test(region);
 }
 
-describe('skill-schema-drift — sibling merge-tree prediction states its coverage denominator (#419)', () => {
+describe('skill-schema-drift — sibling merge-tree prediction states its coverage denominator, and reads named refs never FETCH_HEAD (#419, #445)', () => {
   const reviewerSkillMd = readFileSync(WAVE_REVIEWER_SKILL_MD, 'utf-8');
   const reviewerChecksMd = readFileSync(REVIEWER_CHECKS_MD, 'utf-8');
   const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
@@ -2117,8 +2150,50 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     // substring check. Require the `$` to NOT be escaped.
     const clause = driverClause(driverMd);
     expect(clause).toMatch(ANCHOR_INTERPOLATION);
-    expect(clause).toContain('git rev-parse FETCH_HEAD');
+    // #445: the comparison reads the sibling's OWN named ref, never FETCH_HEAD —
+    // inverted from the pre-#445 assertion this replaced (which required the
+    // FETCH_HEAD literal to be present; see the #407 block below for the sibling
+    // reasoning applied to the branch under review).
+    expect(clause).toContain(SIBLING_NAMED_REF_PATH);
+    expect(clause).not.toContain(SIBLING_FETCH_HEAD_LITERAL);
   });
+
+  it.each(COPIES)(
+    '%s prescribes the per-sibling named-ref path for the tip read (#445)',
+    (_label, region) => {
+      expect(region).toContain(SIBLING_NAMED_REF_PATH);
+    },
+  );
+
+  it.each(COPIES)(
+    '%s never reads FETCH_HEAD for a sibling tip (#445, inverted from the pre-migration pin)',
+    (_label, region) => {
+      expect(region).not.toContain(SIBLING_FETCH_HEAD_LITERAL);
+    },
+  );
+
+  it.each(COPIES)(
+    'NEGATIVE CONTROL — %s: dropping the per-sibling named-ref path is caught',
+    (_label, region) => {
+      const stripped = region.split(SIBLING_NAMED_REF_PATH).join('<dropped>');
+      expect(stripped).not.toEqual(region); // the strip actually matched
+      expect(stripped).not.toContain(SIBLING_NAMED_REF_PATH);
+    },
+  );
+
+  it.each(COPIES)(
+    'NEGATIVE CONTROL — %s: regressing to a FETCH_HEAD sibling-tip read is caught',
+    (_label, region) => {
+      // The exact pre-#445 regression: a copy that reintroduces the literal
+      // command this pin now refuses. Appending it (rather than requiring it
+      // already sit in the shipped text) proves the ABSENCE check is sensitive
+      // to the mutation, not vacuously true because the literal never occurs
+      // anywhere in any string.
+      const regressed = `${region}\n${SIBLING_FETCH_HEAD_LITERAL}`;
+      expect(regressed).not.toEqual(region); // the append actually changed it
+      expect(regressed).toContain(SIBLING_FETCH_HEAD_LITERAL); // …the real pin would now fail on this
+    },
+  );
 
   it('NEGATIVE CONTROL — an escaped, non-interpolating anchor form is caught', () => {
     // The mutation a plain `toContain` cannot see: escape the `$` so the

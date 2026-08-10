@@ -800,10 +800,11 @@ honest is a verdict that reports the conflicts it found and stays silent about t
 never reached. **\`at-anchor\` is the sharp one:** a sibling branch that IS on \`origin\` but
 whose tip still EQUALS this row's wave anchor SHA (\`${issue.anchorSha}\`) has an empty diff, so
 \`git merge-tree\` exits 0 and prints one tree hash — byte-identical to a genuinely clean
-prediction. Nothing in that output tells them apart. So per sibling, \`git fetch origin <branch>\`
-then \`git rev-parse FETCH_HEAD\`, and compare that tip against \`${issue.anchorSha}\` BEFORE you
-read the merge-tree result: equal → record \`at-anchor\`, which is VACUOUS and is never
-\`predicted-clean\`. Then put ONE coverage line in \`reviewerFocusItems\` naming the denominator
+prediction. Nothing in that output tells them apart. So per sibling, \`git fetch origin <branch>:refs/review/sib/<sibling-id>\`
+then \`git rev-parse refs/review/sib/<sibling-id>\` — never \`FETCH_HEAD\`, the same shared-ref
+hazard the branch-under-review resolution above already closed — and compare that tip against
+\`${issue.anchorSha}\` BEFORE you read the merge-tree result: equal → record \`at-anchor\`, which
+is VACUOUS and is never \`predicted-clean\`. Then put ONE coverage line in \`reviewerFocusItems\` naming the denominator
 and every uncovered sibling by outcome — \`(advisory) Sibling merge-tree coverage: 3/5 predicted
 — …; NOT covered: <d> not-on-origin, <e> at-anchor (tip == wave anchor, prediction vacuous).\`
 \`0/N\` is a legitimate coverage line; silence is not. **All of it stays \`(advisory)\`** — a
