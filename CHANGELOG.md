@@ -9,6 +9,94 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.1.0] — 2026-08-10
+
+A minor release. The package-root export surface and the `wave.config.json` schema are
+untouched; what grows is the CLI's *output* surface — and per ADR-0035 the CLI is now
+the explicitly-named third semver contract, with everything here additive against it.
+The theme: the engine stops keeping its judgments to itself. Pre-dispatch staleness,
+close-time end-states, advisory numbers and coverage denominators are now said out loud
+where an operator — human or agent — actually reads them.
+
+### Added
+
+- **The DoR gate learns staleness.** A row whose declared `Files` have seen `main` move
+  since the issue's last tracker update now draws an advisory naming the drift — the
+  premise-currency check that until now lived only in an operator's discipline.
+  Advisory, never a gate-fail: the gate still passes, the operator decides. Two edges
+  are on record as #443: the MarkdownFs store derives the tracker timestamp from file
+  mtime (a fresh clone reads as current where a defer belongs — the GitHub and Linear
+  stores read API metadata and are unaffected), and one defer path carries no
+  regression spec yet.
+- **`issue-store close` reports the native end-state loudly.** After recording
+  `Closed-by:`, close re-probes the tracker and prints the resulting closing state; an
+  issue that is natively still open earns an unmistakable `STILL OPEN:` line on stderr
+  naming the id and the recorded PR. The silent exit-0 that twice let a
+  release-resolved issue stay open unnoticed (#339 at 1.0.0, #397 at 1.0.1) cannot
+  recur silently.
+- **The CLI surfaces the advisory numbers the engine already computed** — per-string
+  advisory indices and the dry-run population — instead of swallowing them.
+- **The GitHub store reads `blockedBy` as the union of the body-codec and GitHub's
+  native issue dependencies, and mirrors writes back natively** — the read-union the
+  Linear adapter shipped with from day one, now on both tracker adapters. The mirror's
+  operating envelope (secondary rate limits, per-call API cost) is documented rather
+  than throttled.
+- **A new consumer-side skill: `report`.** A consumer repo's agent that has fully
+  analyzed a finding about flotilla itself can file it upstream at flotilla's own repo
+  in the house format — prose-only, and consent-first: it never files without the
+  human's explicit go.
+- **Convention 12's silent half gets a structural tier.** The tarball ships a second
+  PreToolUse guard beside the echo-guard (`hooks/conv12-guard.cjs`): it blocks unquoted
+  `$VAR` expansions on the Coordinator surface before they run — the class where zsh's
+  no-word-split turns a command held in a variable into a silent no-op behind a
+  true-reading success echo.
+- **The Reviewer's sibling merge-tree prediction names its coverage denominator**, so
+  "no conflicts predicted" is legible as full or partial coverage. Its
+  branch-under-review diff base now rides a stable named ref with a SHA assert —
+  `FETCH_HEAD` is never read for it. The per-sibling tip reads deliberately remain on
+  `FETCH_HEAD` at advisory-only stakes; on record as #445, undecided between fix and
+  documented acceptance.
+
+### Fixed
+
+- **A prerelease publishes under the `beta` dist-tag instead of `latest`.** The release
+  workflow derives the dist-tag from the version string, so a future beta can no longer
+  shadow the stable line for every plain `npm install`.
+- **A failed Scribe-payload removal reaches the worktree-cleanup exit code** instead of
+  disappearing inside a green sweep.
+- **Wave scratch directories are created owner-only, and the planning-pass path is
+  session-scoped** rather than a fixed name in a shared tmp.
+- **Shipped-text currency, three passes.** Five lines a wave's own changes had made
+  false were returned to true; unlabeled canonical-spec citations left five engine
+  modules; the drift-guard's command-line advisory subsection attributes its own
+  failures. The resolution guard now covers the prose shape as well.
+- An accidental `node:path` re-export left the DoR-gate module, together with the
+  barrel-drift allowlist entry that excused it — module-local either way; the package
+  root never carried it.
+
+### Docs (plugin half)
+
+- The doctrine grill of 2026-08-09 landed three ADRs and an amendment: the
+  enforcement-tier ladder with its promotion triggers (ADR-0034), **the CLI as the
+  third semver contract** (ADR-0035 — the contract this release's version number is
+  chosen against), the claim-safe `awaiting-human` gate (ADR-0036), and
+  simulable = executable at both Check-6 sites (ADR-0030 amendment).
+- Operator docs caught up across the back half: worktree-cleanup's exit fold, scratch
+  preview and dry-run discipline; the Convention-13 catalog's loop shape and
+  script-file remedy; the scratch sweep in `wave-resume` and the gitignore scaffold
+  route in `wave-setup`; the unified store-preflight verb; the release playbook's
+  step-7 close procedure. CLAUDE.md now names the `report` skill.
+
+### Not yet proven
+
+- The loud `STILL OPEN:` close line has passed its specs but has not yet been read in
+  anger — the first live reading is this release's own step-7 close, and the playbook
+  now leans on it.
+- One operational report stays open and unreproduced after a six-probe matrix (two
+  filesystem locations × three npm versions): `npm ci --prefix` failing spuriously in
+  dispatched contexts (#418). The capture playbook on the issue is the current state
+  of knowledge.
+
 ## [1.0.1] — 2026-08-01
 
 A patch release, and the **delivery half of work that was already done**: every fix below
