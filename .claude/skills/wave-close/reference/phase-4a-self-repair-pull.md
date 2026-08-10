@@ -12,8 +12,27 @@
 # real-github-api.ts, github-api-factory.ts, real-linear-api.ts,
 # linear-api-factory.ts, cli-store.ts — because a probe-logic fix confined to
 # that layer (the FOR-23 / real-linear-api.ts precedent) would otherwise
-# evade this check:
-ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts)$'
+# evade this check. Also widened to cover the closed-by classifier
+# (closed-by.ts, behind the `closed-by` verb), the credential-probe CLI
+# (credential-probe-cli.ts, behind `credential-probe --all`), the sidecar
+# reader `verdict-acked` reads through (sidecar.ts), the spine CLI
+# (spine-cli.ts) plus the WAVE.md reader/writer it reads through
+# (wave-md-rw.ts) — the pair behind BOTH `spine check-disclosures` and
+# `spine check-awaiting-human`, phase 6's two fail-closed archive gates — and
+# the credential resolver every host write in phases 2, 4b and 5 goes
+# through (credential-resolver.ts).
+#
+# MAINTENANCE DUTY: this list must gain an entry whenever wave-close starts
+# calling a new verb — it is a hand-maintained enumeration with nothing
+# checking it against the CLI's actual dispatch, the same defect class as
+# the credential-discovery list. Whether an automated guard can hold this
+# list to that duty is an OPEN QUESTION: an equivalent guard would have to
+# parse this prose and derive verb-to-module from the CLI's own dispatch,
+# which is a materially larger design question than this comment can settle
+# — deliberately deferred at triage, not decided against. If you're about to
+# build one, or to argue one away, that argument belongs at THIS pointer,
+# not re-derived from scratch.
+ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts|closed-by\.ts|credential-probe-cli\.ts|credential-resolver\.ts|sidecar\.ts|spine-cli\.ts|wave-md-rw\.ts)$'
 
 # WRITE THE BRANCHES OUT, or iterate a real array — never `for BRANCH in $BRANCHES`
 # (wave-shared Convention 12: zsh does not word-split, so a space-separated
