@@ -224,8 +224,11 @@ const CREATE_ISSUE_LABEL_MUTATION = `mutation CreateIssueLabel($input: IssueLabe
 // of {@link RealLinearApi.createDocument} uses. Read from Linear's published
 // GraphQL schema (`linear/linear` → `packages/sdk/src/schema.graphql`, read
 // 2026-08-10): `DocumentCreateInput.teamId: String`, doc-string "[Internal]
-// Related team for the document." Linear's own agent-facing `save_document`
-// contract states the rule the two arms below implement — on create, "exactly
+// Related team for the document." The rule the two arms below implement is
+// stated by Linear's own agent-facing `save_document` tool — quoted from the
+// tool description Linear's MCP server serves, which has no stable public URL
+// to cite (re-verified verbatim against the served description 2026-08-10;
+// the published schema above corroborates the substance): on create, "exactly
 // one parent (`project`, `issue`, `initiative`, `cycle`, or `team`) must be
 // specified", with `team` documented as "Attaches the document to the team".
 // So a team parent is a first-class Document parent, not a workaround. ───────
@@ -256,10 +259,25 @@ const GET_DOCUMENT_QUERY = `query GetDocument($id: String!) {
  * from Linear's published GraphQL schema (`linear/linear` →
  * `packages/sdk/src/schema.graphql`, read 2026-08-10): `DocumentFilter.team:
  * NullableTeamFilter`, and `NullableTeamFilter.id: IDComparator` (`eq: ID`) —
- * the exact `{ team: { id: { eq } } }` shape sent below. The client-side
- * fallback the same read makes available (`Document.team: Team` is selectable
- * on the node) is therefore NOT taken: it would page the whole workspace to
- * discard most of it.
+ * the exact `{ team: { id: { eq } } }` shape sent below. Annotation status,
+ * stated symmetrically with the create-side comment above: `DocumentFilter.team`
+ * carries NO `[Internal]` marker (its doc-string reads "Filters that the
+ * document's team must satisfy."); it is `Document.team` — the node field —
+ * that is annotated `[Internal]` and documented "Null if the document belongs
+ * to a different parent entity type."
+ *
+ * That null is a structural consequence worth stating: a team-filtered listing
+ * can NEVER return a project-attached Document (its `team` is null, so no team
+ * predicate matches). A workspace mixing ADR-0017's optional richer project
+ * binding with team-parented PRDs will not see the project-attached ones in
+ * the unbound (team-filtered) panel. Deliberately accepted, not a gap to fix:
+ * the team-central convention keeps an unbound consumer's PRDs team-parented —
+ * exactly what the unbound `createDocument` arm produces — and a project-bound
+ * consumer lists through the project arm instead.
+ *
+ * The client-side fallback the same read makes available (`Document.team: Team`
+ * is selectable on the node) is therefore NOT taken: it would page the whole
+ * workspace to discard most of it.
  */
 const LIST_DOCUMENTS_QUERY = `query ListDocuments($filter: DocumentFilter, $first: Int!, $after: String) {
   documents(filter: $filter, first: $first, after: $after) {

@@ -204,7 +204,7 @@ This is not a second scaffold form — it produces the identical `./node_modules
 |---|---|---|
 | `kind` | yes | `"linear"` |
 | `team` | yes | Linear team key or display name (e.g. `"EX"` or `"Example"`) — owns the workflow-state catalog + label namespace. Use the exact team key as Linear displays it (identifiers read `EX-16` → key `EX`); the lookup is case-sensitive. |
-| `project` | no | Linear project display name — scopes `listOpen` to that project; omit for a whole-team draw. Omitting `project` also disables PRD publishing — `to-prd`/`publishDocument` refuses to mint an orphan Document without a bound project (ADR-0017). |
+| `project` | no | Linear project display name — scopes `listOpen` and the PRD Document panel to that project; omit for a whole-team draw. Omitting `project` does **not** disable PRD publishing: the Document facet falls back team-scoped — `publishDocument` parents the Document on the configured `team`, and `listDocuments` narrows server-side to that team (ADR-0017 as amended). Know the structural consequence: Linear documents `Document.team` as null for any non-team parent, so the team-filtered listing can never return a *project-attached* Document — deliberately accepted by the team-central convention. |
 | `eligibility` | no | `string[]` — defaults to `["ready-for-agent"]` |
 | `states` | no | `{ queued?, inFlight?, inReview?, doneState? }` — claim-rung → workflow-state-name overrides; defaults to `{"queued": "Todo", "inFlight": "In Progress", "inReview": "In Review"}` (no default `doneState` — see below) |
 | `categoryLabels` | no | `Record<string, string>` — triage-category → existing label name (e.g. `{"bug": "Bug", "enhancement": "Improvement"}`) |
@@ -310,6 +310,9 @@ Three occurrences, one root cause, and the third happened to someone who had jus
 | Field | Required | Shape |
 |---|---|---|
 | `disposableNames` | no | `string[]` of **exact entry names** — extra directory/file names this consumer's toolchain leaves inside an agent worktree and considers disposable |
+| `extraRoots` | no | `string[]` of additional **containment roots** (absolute or repo-root-relative paths) the `worktree-cleanup --detached` sweep considers when looking for detached scratch checkouts — unioned with the marker-derived worktrees root, never a replacement |
+
+The two keys answer different questions: `disposableNames` names **entries** (what the build leaves *inside* a worktree); `extraRoots` names **places** (where this consumer's agents are known to make scratch checkouts *outside* the marker-derived worktrees root — only the `--detached` sweep reads it). The full teaching for `extraRoots` — why it exists, and what its absence looks like at close time (a registered checkout the sweep silently never considers) — is [wave-close's phase-3 reference](../../wave-close/reference/phase-3-worktree-cleanup.md); declare it at authoring time if such a checkout location is already known.
 
 **Ask this question during setup whenever the consumer's build writes into the working tree.** It is the same question as `verify`, one step later in the wave: `verify` asks what the build *runs*; `disposableNames` asks what the build *leaves behind*.
 
@@ -338,7 +341,7 @@ The engine's built-in disposable set knows `.DS_Store`, `.vscode/`, `.claude/` �
 
 > **Do not declare speculatively.** Declaring a name is a claim that *anything* by that name inside a spent agent worktree is disposable. Declare what the consumer's build actually emits, and nothing else — an undeclared real file anywhere in the directory still (correctly) refuses removal, which is the behaviour you want back if a declaration ever turns out to be wrong.
 
-> **Note on reach.** `cleanup.disposableNames` is honoured by the engine's cleanup API (`cleanAgentWorktrees`, `executeCleanup`, `listAgentWorktrees`, `listOrphanDirs`, `sweepOrphanWorktrees` — all take a `disposableNames` option, which is where the config key is threaded), and the path now works end-to-end: the `worktree-cleanup` **CLI verb** loads `--config <path>` via `loadWaveConfig` and threads `cleanup.disposableNames` into `listAgentWorktrees`, `listOrphanDirs`, and `executeCleanup` itself, so a `wave-close` run driven by `--config` picks the declaration up from the config file with no further wiring needed. `config validate` accepts and validates the key at author time, exactly as before.
+> **Note on reach.** `cleanup.disposableNames` is honoured by the engine's cleanup API (`cleanAgentWorktrees`, `executeCleanup`, `listAgentWorktrees`, `listOrphanDirs`, `sweepOrphanWorktrees` — all take a `disposableNames` option, which is where the config key is threaded), and the path now works end-to-end: the `worktree-cleanup` **CLI verb** loads `--config <path>` via `loadWaveConfig` and threads `cleanup.disposableNames` into `listAgentWorktrees`, `listOrphanDirs`, and `executeCleanup` itself, so a `wave-close` run driven by `--config` picks the declaration up from the config file with no further wiring needed. `cleanup.extraRoots` rides the same `--config` path: the CLI verb threads it into the detached sweep, so a config-declared containment root is honoured by `--detached` with no further wiring either. `config validate` accepts and validates both keys at author time.
 
 ## Example configs
 
