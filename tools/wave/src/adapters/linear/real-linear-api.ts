@@ -231,7 +231,11 @@ const CREATE_ISSUE_LABEL_MUTATION = `mutation CreateIssueLabel($input: IssueLabe
 // the published schema above corroborates the substance): on create, "exactly
 // one parent (`project`, `issue`, `initiative`, `cycle`, or `team`) must be
 // specified", with `team` documented as "Attaches the document to the team".
-// So a team parent is a first-class Document parent, not a workaround. ───────
+// So a team parent is a first-class Document parent, not a workaround.
+// e2e-VERIFIED 2026-08-10 (second external consumer's live workspace,
+// unbound engine CLI at 1.2.0): documentCreate carrying teamId is accepted
+// live and yields a clean team parent — the [Internal] annotation is a
+// docs-visibility marker, not a functional reservation. ────────────────────
 
 const CREATE_DOCUMENT_MUTATION = `mutation CreateDocument($input: DocumentCreateInput!) {
   documentCreate(input: $input) {
@@ -273,7 +277,13 @@ const GET_DOCUMENT_QUERY = `query GetDocument($id: String!) {
  * the unbound (team-filtered) panel. Deliberately accepted, not a gap to fix:
  * the team-central convention keeps an unbound consumer's PRDs team-parented —
  * exactly what the unbound `createDocument` arm produces — and a project-bound
- * consumer lists through the project arm instead.
+ * consumer lists through the project arm instead. e2e-VERIFIED 2026-08-10
+ * (second external consumer's live workspace, unbound engine CLI at 1.2.0):
+ * a team-parented document returns from the team-filtered listing while a
+ * document attached to a project through the Linear UI never appears in it —
+ * no error, no warning. The null itself is corroborated from a second
+ * workspace via Linear's own API the same day: two project-attached documents
+ * both read `team: null`.
  *
  * The client-side fallback the same read makes available (`Document.team: Team`
  * is selectable on the node) is therefore NOT taken: it would page the whole
