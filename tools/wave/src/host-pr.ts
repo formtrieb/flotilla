@@ -669,11 +669,12 @@ function errMessage(err: unknown): string {
 // The LANDING half of this module is deliberately host-NEUTRAL and I/O-free: it
 // routes on a `PrMergeability` and on two typed errors, nothing else. The host
 // specifics live behind {@link LandingHost} — GitHub implements it on the
-// `GitHubHttp` seam (RealGitHubApi); the Bitbucket pilot implements the same
-// interface, and gets the arm-vs-merge intent below for free (ADR-0023: "new
-// adapter, no new skills"). host-pr's OWN cross-host Basic-auth `HttpProbe`
-// (verifyAuth/findOpenPr/createPr, above) is untouched — the ADR-0019 boundary
-// holds.
+// `GitHubHttp` seam (RealGitHubApi); Bitbucket Cloud implements the same
+// interface on its own `BitbucketHttp` seam (RealBitbucketApi), and gets the
+// arm-vs-merge intent below for free (ADR-0023: "new adapter, no new skills" —
+// the pilot needed exactly zero changes here beyond this comment). host-pr's
+// OWN cross-host Basic-auth `HttpProbe` (verifyAuth/findOpenPr/createPr, above)
+// is untouched — the ADR-0019 boundary holds.
 
 /** How a PR is landed. flotilla squash-merges (every live wave to date did). */
 export type MergeMethod = 'squash' | 'merge' | 'rebase';
@@ -762,7 +763,11 @@ export interface BranchDeletionResult {
 /**
  * The host-local landing seam (ADR-0023). GitHub's implementation is
  * `RealGitHubApi` (which structurally satisfies this — see `GitHubApi extends
- * LandingHost`); the Bitbucket pilot implements the same methods.
+ * LandingHost`); Bitbucket Cloud's is `RealBitbucketApi`, which implements the
+ * same four methods and throws the typed {@link AutoMergeUnavailableError} from
+ * `enableAutoMerge` because that host has no arming primitive at all — the
+ * refusal this interface already mandates, used for exactly the case it was
+ * written for.
  */
 export interface LandingHost {
   /** Resolve the PR for a source branch → its landing state. */
@@ -808,9 +813,16 @@ export class AutoMergeUnavailableError extends Error {
 }
 
 /**
- * The detected host has no landing adapter. Thrown by the `host-pr` router for
- * `bitbucket` (the pilot's own build) and `unknown`. Typed + coded so the caller
- * can distinguish "this host cannot" from "the arm failed" (ADR-0023).
+ * The detected host has no landing adapter. Typed + coded so the caller can
+ * distinguish "this host cannot" from "the arm failed" (ADR-0023).
+ *
+ * Since the Bitbucket adapter landed, the only host the `host-pr` router can
+ * still raise this for is `unknown` — the two SHIPPED adapters are `github`
+ * (`RealGitHubApi`) and `bitbucket` (`RealBitbucketApi`), both reached by
+ * detect-host routing. The class stays parameterised over {@link Host} rather
+ * than hard-coding `unknown`, because it is the standing answer for any FUTURE
+ * host `detectHost` learns to recognise before an adapter exists for it — and
+ * because that message is the one that tells the next pilot what to build.
  */
 export class LandingNotImplementedError extends Error {
   readonly name = 'LandingNotImplementedError';
@@ -822,8 +834,8 @@ export class LandingNotImplementedError extends Error {
           // with no adapter: there is nothing to implement, because we could not
           // tell what to implement against.
           `Could not identify the code host from the git remote, so there is no landing adapter to route to ` +
-            `(host-pr create|arm|merge|status|preflight supports 'github'; ADR-0023). Check the remote URL, or pass --remote <url> explicitly.`
-        : `No landing adapter for host '${host}' — host-pr create|arm|merge|status|preflight is implemented for 'github' only (ADR-0023). ` +
+            `(host-pr create|arm|merge|status|preflight supports 'github' and 'bitbucket'; ADR-0023). Check the remote URL, or pass --remote <url> explicitly.`
+        : `No landing adapter for host '${host}' — host-pr create|arm|merge|status|preflight is implemented for 'github' and 'bitbucket' (ADR-0023). ` +
             `Implementing the LandingHost interface for ${host} is all that is required; no skill changes are needed.`,
     );
   }
@@ -1292,6 +1304,17 @@ export interface ArmOptions {
    * arm without it is byte-identical to before.
    */
   deleteBranch?: boolean;
+  /**
+   * Which code host this arm is running against, for the REFUSAL PROSE only —
+   * never for a decision. Every branch of the arm intent is host-neutral and
+   * stays so; what is not host-neutral is the REMEDY a refusal teaches, and a
+   * remedy naming a control the host does not have is worse than none.
+   *
+   * Omitted → the GitHub wording, byte-identical to what shipped before this
+   * option existed (the {@link LandingHost} seam carries no host tag, so an
+   * injected test double and any pre-existing caller keep their exact text).
+   */
+  host?: Host;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -1444,6 +1467,57 @@ function armedReason(reason: string, deleteBranchRequested: boolean): string {
 }
 
 /**
+ * The remedy a `not-allowed` arm refusal teaches on Bitbucket Cloud.
+ *
+ * The GitHub remedy — "tick Allow auto-merge under Settings → General → Pull
+ * Requests" — is not merely unhelpful here, it points at a control Bitbucket
+ * does not have: `RealBitbucketApi.enableAutoMerge` raises the SAME typed
+ * `not-allowed` refusal for a structurally different reason (no REST arming
+ * primitive exists at all, measured 2026-08-10, ADR-0023 amendment). And this is
+ * the DOMINANT Bitbucket landing outcome, not an edge: every row whose required
+ * build has not yet reported success takes exactly this leg, so the wrong remedy
+ * would be the sentence a Bitbucket operator reads most often.
+ */
+const BITBUCKET_ARM_REMEDY =
+  'There is no repository setting to enable and nothing to re-run: land this row via the advisory merge-order, ' +
+  'or click Merge in the pull-request UI on a destination branch that has Bitbucket\'s own "Allow automatic merge ' +
+  'when builds pass" merge check enabled — that check is UI-triggered, which is why the API cannot arm it.';
+
+/**
+ * The `not-allowed` refusal prose for the CHECK-ATTACH gate site — the leg that
+ * refuses because required checks are in force with some of them unreported.
+ *
+ * Host-aware and purely ADDITIVE: the GitHub string is byte-identical to the
+ * shipped one, and only the `bitbucket` branch is new (the same discipline the
+ * three host-conditional posture checks in {@link preflightHost} follow).
+ */
+function notAllowedAttachReason(host: Host | undefined, errMessage: string): string {
+  if (host === 'bitbucket') {
+    return `${BITBUCKET_NO_ARM} [${errMessage}] ${BITBUCKET_ARM_REMEDY}`;
+  }
+  return (
+    `The repository does not permit auto-merge, so this PR cannot be armed [${errMessage}]. Enable ` +
+    `"Allow auto-merge" (Settings → General → Pull Requests).`
+  );
+}
+
+/**
+ * The `not-allowed` refusal prose for the REQUIRED-PENDING site — the leg that
+ * refuses because a required check is reported pending and merging would bypass
+ * the very gate the human expected to hold. Same additive host-conditional
+ * shape as {@link notAllowedAttachReason}.
+ */
+function notAllowedPendingReason(host: Host | undefined, errMessage: string): string {
+  if (host === 'bitbucket') {
+    return `${BITBUCKET_NO_ARM} ${BITBUCKET_ARM_REMEDY} [${errMessage}]`;
+  }
+  return (
+    `The repository does not permit auto-merge, so this PR cannot be armed. Enable "Allow auto-merge" ` +
+    `(Settings → General → Pull Requests) and re-run, or land this row via the advisory merge-order. [${errMessage}]`
+  );
+}
+
+/**
  * Land a branch's PR by the ADR-0023 arm intent: probe → decide → act.
  *
  * Idempotent and re-entrant, because `wave-close` is: an already-merged PR is a
@@ -1561,11 +1635,7 @@ export async function armPullRequest(
           outcome: 'refused',
           prNumber,
           prUrl: status.url,
-          reason: attachRefusalReason(
-            attach,
-            `The repository does not permit auto-merge, so this PR cannot be armed [${err.message}]. Enable ` +
-              `"Allow auto-merge" (Settings → General → Pull Requests).`,
-          ),
+          reason: attachRefusalReason(attach, notAllowedAttachReason(opts.host, err.message)),
         };
       }
       if (hasNoPendingRequiredCheck(mergeability)) {
@@ -1590,9 +1660,7 @@ export async function armPullRequest(
         outcome: 'refused',
         prNumber,
         prUrl: status.url,
-        reason:
-          `The repository does not permit auto-merge, so this PR cannot be armed. Enable "Allow auto-merge" ` +
-          `(Settings → General → Pull Requests) and re-run, or land this row via the advisory merge-order. [${err.message}]`,
+        reason: notAllowedPendingReason(opts.host, err.message),
       };
     }
     throw err;
@@ -1868,9 +1936,14 @@ export function mergeRequiredChecks(
 /**
  * The code-host POSTURE seam (ADR-0023 amendment). The three reads `host-pr
  * preflight` grades. `GitHubApi extends` this (RealGitHubApi implements it on the
- * `GitHubHttp` seam); a Bitbucket adapter implements the same three and inherits
+ * `GitHubHttp` seam); `RealBitbucketApi` implements the same three and inherits
  * the probe. Distinct from {@link LandingHost} (per-PR arm/merge/status): this is
  * the repo-level "can we `--auto` here?" question, not a single PR's landing.
+ *
+ * The three reads are host-NEUTRAL in shape but not in MEANING, so
+ * {@link preflightHost} grades them per host: a Bitbucket `getAutoMergeSetting`
+ * of `off` is a platform property (advisory), where a GitHub `off` is a fixable
+ * setting (a `fail` when there are checks to wait for).
  */
 export interface LandingPosture {
   /**
@@ -1937,14 +2010,47 @@ export async function preflightHost(host: Host, posture: LandingPosture): Promis
   const required = await posture.getRequiredChecks();
 
   const checks: HostPreflightCheck[] = [
-    prMergeTokenCheck(canMerge),
-    allowAutoMergeCheck(autoMerge, required.state),
-    requiredChecksCheck(required),
+    prMergeTokenCheck(canMerge, host),
+    allowAutoMergeCheck(autoMerge, required.state, host),
+    requiredChecksCheck(required, host),
   ];
   return { ok: checks.every((c) => c.status !== 'fail'), host, checks };
 }
 
-function prMergeTokenCheck(canMerge: boolean): HostPreflightCheck {
+/**
+ * The Bitbucket posture wording (measured 2026-08-10, recorded in ADR-0023).
+ * Kept in ONE place so the three checks below tell the same story, and so the
+ * GitHub texts stay byte-identical to what they always were — the host-aware
+ * branches are additive, never a rewrite of the shipped GitHub report.
+ */
+const BITBUCKET_NO_ARM =
+  'Bitbucket Cloud exposes NO per-pull-request auto-merge arming primitive in its REST API (measured 2026-08-10; ADR-0023 ' +
+  'records the finding). Its nearest equivalent — the "Allow automatic merge when builds pass" merge check — is ' +
+  'triggered by a human clicking Merge in the pull-request UI, not by an API call.';
+
+/** What that gap MEANS for a wave, said once so every posture branch says it identically. */
+const BITBUCKET_AUTO_CONSEQUENCE =
+  '`wave-close --auto` therefore lands a Bitbucket row by DIRECT MERGE when nothing required is pending, and ' +
+  'REFUSES a row whose required builds have not all reported success — land that tail via the advisory ' +
+  'merge-order (ADR-0023).';
+
+function prMergeTokenCheck(canMerge: boolean, host: Host): HostPreflightCheck {
+  if (host === 'bitbucket') {
+    // Bitbucket's merge-capability read is USER-scoped
+    // (`GET /2.0/user/permissions/repositories`), and a repository/project/
+    // workspace access token has no user context to grade — so a `pass` here
+    // means "no evidence of a read-only credential", not "write access proven".
+    // Saying that plainly is the ADR-0023-amendment discipline (absence of
+    // evidence is never a finding) applied to a probe whose seam types the
+    // answer as a plain boolean.
+    return {
+      name: 'pr-merge-token',
+      status: canMerge ? 'pass' : 'fail',
+      detail: canMerge
+        ? 'The resolved BITBUCKET_TOKEN can merge PRs on the bound repo — or the user-scoped repository-permission read could not grade it (a repository/workspace access token has no user context), which is absence of evidence and never a finding. The merge write remains the ground truth.'
+        : 'The resolved BITBUCKET_TOKEN has only READ permission on the bound repo — it CANNOT merge PRs. Grant it write access (an Atlassian API token needs the `write:repository:bitbucket` scope) before landing a wave.',
+    };
+  }
   return {
     name: 'pr-merge-token',
     status: canMerge ? 'pass' : 'fail',
@@ -1964,7 +2070,47 @@ function prMergeTokenCheck(canMerge: boolean): HostPreflightCheck {
  * direct-merges today, so it only matters once CI arrives). `unknown` (the token
  * cannot see the setting) never blocks and never demands admin.
  */
-function allowAutoMergeCheck(setting: AutoMergeSetting, requiredState: RequiredChecksInfo['state']): HostPreflightCheck {
+function allowAutoMergeCheck(
+  setting: AutoMergeSetting,
+  requiredState: RequiredChecksInfo['state'],
+  host: Host,
+): HostPreflightCheck {
+  if (host === 'bitbucket') {
+    // NEVER `fail` on this host, whatever the setting says. A GitHub `off` is a
+    // fixable misconfiguration; the Bitbucket arming gap is structural — no
+    // repository setting closes it — so a `fail` would make `host-pr preflight`
+    // permanently red on every correctly-configured Bitbucket consumer, and a
+    // permanently-red gate is noise rather than a signal.
+    //
+    // The VALUE is nevertheless a real read now (`RealBitbucketApi.getAutoMergeSetting`
+    // reads the `allow_auto_merge_when_builds_pass` branch restriction on the
+    // default branch), so the three answers are reported apart instead of
+    // collapsed into one sentence — while all three carry the same arming
+    // conclusion, because none of them changes it.
+    if (setting === 'unknown') {
+      return {
+        name: 'allow-auto-merge',
+        status: 'unknown',
+        detail:
+          `Could not read the "allow_auto_merge_when_builds_pass" branch restriction on the default branch — the ` +
+          `resolved BITBUCKET_TOKEN could not see it. Advisory only, and it changes nothing: ${BITBUCKET_NO_ARM} ` +
+          `${BITBUCKET_AUTO_CONSEQUENCE}`,
+      };
+    }
+    return {
+      name: 'allow-auto-merge',
+      status: 'advisory',
+      detail:
+        (setting === 'on'
+          ? `The default branch HAS Bitbucket's "Allow automatic merge when builds pass" merge check enabled ` +
+            `(branch restriction kind \`allow_auto_merge_when_builds_pass\`). That is a UI affordance for a human, ` +
+            `NOT an arming API flotilla can call: `
+          : `The default branch does NOT have Bitbucket's "Allow automatic merge when builds pass" merge check ` +
+            `enabled (branch restriction kind \`allow_auto_merge_when_builds_pass\`). Enabling it would not unlock ` +
+            `arming either: `) +
+        `${BITBUCKET_NO_ARM} ${BITBUCKET_AUTO_CONSEQUENCE}`,
+    };
+  }
   if (setting === 'on') {
     return {
       name: 'allow-auto-merge',
@@ -2008,9 +2154,22 @@ function allowAutoMergeCheck(setting: AutoMergeSetting, requiredState: RequiredC
  * `absent` are advisory (report-only, never a fault); `unknown` (the probe needs
  * admin the token lacks) is `unknown` — the arm intent is decided per-PR anyway.
  */
-function requiredChecksCheck(required: RequiredChecksInfo): HostPreflightCheck {
+function requiredChecksCheck(required: RequiredChecksInfo, host: Host): HostPreflightCheck {
   if (required.state === 'present') {
     const named = required.contexts.length > 0 ? ` Required: ${required.contexts.join(', ')}.` : '';
+    if (host === 'bitbucket') {
+      // The GitHub sentence ("`--auto` will ARM these PRs") is simply false on
+      // this host, so it is replaced rather than reused — a posture report that
+      // promises an arm nothing can perform is worse than no report.
+      return {
+        name: 'required-checks',
+        status: 'advisory',
+        detail:
+          `${required.detail}${named} \`--auto\` will NOT arm these PRs — ${BITBUCKET_NO_ARM} A row whose ` +
+          `required builds have all reported success is merged directly; any other row is REFUSED and lands via ` +
+          `the advisory merge-order (ADR-0023).`,
+      };
+    }
     return {
       name: 'required-checks',
       status: 'advisory',
@@ -2037,12 +2196,21 @@ function bitbucketApi(): HostApi {
   const base = 'https://api.bitbucket.org/2.0';
   return {
     userUrl: `${base}/user`,
-    openPrUrl: (info, branch) => {
-      const q = `source.branch.name="${branch}"&state=OPEN`;
-      return `${base}/repositories/${info.workspace}/${info.repo}/pullrequests?q=${encodeURIComponent(
-        q,
-      )}`;
-    },
+    // The open-PR query is TWO separate query parameters, and that is the fix
+    // for a malformed URL this line used to build (issue: the Bitbucket landing
+    // adapter): it previously URL-encoded `source.branch.name="b"&state=OPEN`
+    // as ONE `q` value. `q` is BBQL, whose boolean operator is `and`, never an
+    // `&` — Atlassian's own example is `?q=size>1024+and+attributes="binary"`
+    // (developer.atlassian.com, filter-and-sort, read 2026-08-10) — so the
+    // encoded `&state=OPEN` was junk inside the expression, and a rejected
+    // query reads as "no open PR", which turns find-before-create into
+    // create-a-duplicate. `state` is a first-class parameter of this endpoint
+    // ("By default only open pull requests are returned"), so asking for OPEN
+    // through it needs no BBQL boolean at all.
+    openPrUrl: (info, branch) =>
+      `${base}/repositories/${info.workspace}/${info.repo}/pullrequests?q=${encodeURIComponent(
+        `source.branch.name="${branch}"`,
+      )}&state=OPEN`,
     createUrl: (info) =>
       `${base}/repositories/${info.workspace}/${info.repo}/pullrequests`,
     createBody: (req) =>

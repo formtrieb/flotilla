@@ -86,7 +86,16 @@ The code-host landing posture has its own owner, the host seam (ADR-0023 amendme
 # → { ok, verb: "preflight", host, checks: [ { name, status, detail }, … ] }
 ```
 
-It builds the posture reader from `GITHUB_TOKEN` (the same construction-time token check as `host-pr arm|merge|status`), resolved through the same credential seam as the store preflight — a configured `GITHUB_TOKEN_CMD` first, the ambient `GITHUB_TOKEN` otherwise (ADR-0029), so re-running this after scaffolding the lookup command doubles as its live-gate too; under a proxied sandbox the tracked env block below is the standing source for `NODE_USE_ENV_PROXY=1` — prefix it explicitly only where no tracked env block applies. `--remote <url>` overrides the detected remote (default `git remote get-url origin`). It takes **no `--branch`** — required checks are read against the repo's **default branch**.
+It builds the posture reader from the detected host's own credential (the same construction-time check as `host-pr arm|merge|status`), resolved through the same credential seam as the store preflight — a configured `<VAR>_CMD` first, the ambient `<VAR>` otherwise (ADR-0029), so re-running this after scaffolding the lookup command doubles as its live-gate too; under a proxied sandbox the tracked env block below is the standing source for `NODE_USE_ENV_PROXY=1` — prefix it explicitly only where no tracked env block applies. `--remote <url>` overrides the detected remote (default `git remote get-url origin`). It takes **no `--branch`** — required checks are read against the repo's **default branch**.
+
+Two adapters ship, and the credential differs:
+
+| Detected host | Credential | Notes |
+|---|---|---|
+| `github` | `GITHUB_TOKEN` / `GITHUB_TOKEN_CMD` | See [GitHub token permissions](#github-token-permissions) below. |
+| `bitbucket` | `BITBUCKET_TOKEN` / `BITBUCKET_TOKEN_CMD`, **plus `BITBUCKET_EMAIL`** | Bitbucket Cloud's REST Basic auth pairs your **Atlassian account email** with an **API token** (`--user '{atlassian_account_email}:{api_token}'`). Scope the token `read:repository:bitbucket` + `write:repository:bitbucket`. **App passwords no longer work at all** — Atlassian stopped them on 2026-06-09 and removed them on 2026-07-28. `BITBUCKET_EMAIL` is an identifier, not a secret: it belongs in the tracked `env` block next to the `BITBUCKET_TOKEN_CMD` pointer, never in the keychain. Leaving it unset makes the landing verbs authenticate with `Authorization: Bearer` instead (a repository/project/workspace access token); `host-pr create` cannot use that form and refuses loudly, naming `BITBUCKET_EMAIL`. |
+
+**What the checks mean on `bitbucket`** (ADR-0023's 2026-08-10 amendment): `allow-auto-merge` reads Bitbucket's `allow_auto_merge_when_builds_pass` branch restriction on the default branch and reports `on` / `off` honestly (`unknown` only when the credential could not see it) — but it is **never a `fail`, whatever the value**, because Bitbucket Cloud exposes **no per-pull-request arming call** in its REST API. Ticking that restriction enables a *human* to click Merge and have Bitbucket watch the build; it gives the engine nothing to call. So there is no misconfiguration for an operator to fix here, and a `fail` would be permanently red on a correctly-configured consumer — noise, not a signal. `required-checks` reads Bitbucket's `require_passing_builds_to_merge` branch restriction, which states a **count** rather than named contexts, so it reports the minimum and names nothing. `pr-merge-token` reads a **user-scoped** permission endpoint, which an access token has no user context for — a `pass` there means "no evidence of a read-only credential", and its `detail` says so; the merge write remains the ground truth.
 
 ### What it checks (every store kind — code host only)
 
@@ -103,7 +112,7 @@ Each check's `status` is one of `pass` / `fail` / `advisory` / `unknown` (the sh
 | Code | Meaning |
 |---|---|
 | `0` | nothing `fail`ed (checks may be `advisory`/`unknown`) — the code host can land rows under `--auto` |
-| `1` | a check `fail`ed (read its `detail` — it names the fix), the host has no adapter (`code: "adapter-not-implemented"` — bitbucket/unknown), or the host errored / `GITHUB_TOKEN` was missing |
+| `1` | a check `fail`ed (read its `detail` — it names the fix), the host has no adapter (`code: "adapter-not-implemented"` — any remote that is neither github nor bitbucket, including one the engine could not identify at all), or the host errored / the host credential was missing |
 | `2` | usage error |
 
 On exit 1 from a `fail`, apply the fix the `detail` names (grant the token write access; tick "Allow auto-merge") and re-run. A no-CI repo where `allow-auto-merge` is `advisory` is a valid `--auto` consumer — it does not block.
