@@ -559,7 +559,9 @@ WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
 #   `create`'s reuse-refusal guard should never legitimately fire here — the
 #   CREATE_EXIT check below interprets it as a compose defect if it does
 #   (workflow-driver.md "PR-open reuse-refusal"), never routes around it.
-#   github-only in M1 (bitbucket/unknown fail loud + typed); reads GITHUB_TOKEN.
+#   host-routed since the Bitbucket adapter landed (ADR-0023 amendment 2026-08-10):
+#   reads GITHUB_TOKEN on a github remote, BITBUCKET_TOKEN + BITBUCKET_EMAIL on a
+#   bitbucket one; unknown hosts fail loud + typed.
 # CALL 1 — render the verdict and open the PR. The rendered section is captured
 # and CONSUMED in this same call (Convention 12, half two): it is the PR body's
 # own input, so it never crosses a call boundary. An empty VERDICT_SECTION means
