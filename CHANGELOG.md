@@ -9,6 +9,67 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.3.0] — 2026-08-10
+
+The third release of one day, and the fastest field-report-to-shipped-feature arc yet:
+the Bitbucket+Linear pilot ADR-0023 named in July ran its first live wave on 1.2.0, filed
+the landing-seam refusal as its field report the same evening, and this release ships the
+adapter that answers it. The package-root export surface and the `wave.config.json`
+schema are untouched; minor per ADR-0035 — `host-pr` accepts a new host, an additive
+relaxation of the CLI contract.
+
+### Added
+
+- **`host-pr` works on Bitbucket Cloud.** The blanket non-github gate becomes per-verb
+  host routing. `create` runs the cross-host find-before-create/update path that had
+  been shipped behind the gate all along — over the measured credential shape: an
+  Atlassian API token paired with the account email (`BITBUCKET_TOKEN` through the
+  ADR-0029 lookup seam, `BITBUCKET_EMAIL` beside it; app passwords are measured dead,
+  not deprecated-someday). `status`, `merge`, and branch deletion ride a real
+  `LandingHost` implementation against REST v2. `arm` throws the typed
+  auto-merge-unavailable refusal on the **measured** basis that Bitbucket Cloud has no
+  per-pull-request arming call — so `wave-close --auto` direct-merges the ready rows and
+  the pending tail keeps the advisory merge-order. `preflight` reads the posture for
+  real, including the `allow_auto_merge_when_builds_pass` branch restriction (read,
+  never hardcoded) with host-aware grading — a visible `off` is advisory here, not a
+  fail, because the setting names a UI affordance, not an engine capability. `unknown`
+  hosts keep the loud, typed refusal on every verb. Mergeability is derived from
+  Atlassian's own merge-check sentence: zero reported builds against a required minimum
+  reads `blocked`, never `clean` — the check-attach latency window stays closed on this
+  host. The ADR-0023 amendment records every measurement.
+- **A find-before-create bug died on the way in:** the Bitbucket open-PR query had been
+  URL-encoding `&state=OPEN` into the BBQL `q` expression, so the host rejected the
+  query, "no open PR" was inferred, and every re-run against a Bitbucket repo would have
+  silently opened a duplicate PR. The query now carries `state` as the documented
+  first-class parameter.
+
+### Fixed
+
+- **The cross-host teaching texts stop teaching the pre-adapter world** (#464): the
+  create-path notes in the shipped skill references now route a Bitbucket Worker
+  terminator to `BITBUCKET_TOKEN` + `BITBUCKET_EMAIL` instead of `GITHUB_TOKEN`, and
+  the merge-capability posture read leaves the vendor-deprecated unscoped permissions
+  endpoint for the workspace-scoped one (no-evidence semantics unchanged).
+
+### Docs (plugin half)
+
+- The 1.2.0 entry's first Not-yet-proven item fell the same day it shipped: the unbound
+  Document arms are live-verified from the second external consumer's workspace —
+  ADR-0017's "one unproven spot" now records the verification, and the `[Internal]`
+  annotation is documented as a visibility marker, not a functional reservation.
+
+### Not yet proven
+
+- **The Bitbucket writes have never run against a live workspace.** Every request shape
+  is hermetic over the injectable seam and pinned to Atlassian's documented forms
+  (OpenAPI and support pages, read in-dispatch); the two residual hazards are deliberate
+  and commented at their points of departure (the merge body's omitted discriminator
+  field, and the unpolled 202 merge task). The pilot's first wave on this release is the
+  intended live reading — create, status, merge, and the `doneState` reconcile in one
+  pass.
+- #418 (`npm ci --prefix` failing spuriously in dispatched contexts) stays open and
+  falsifiable, unchanged from the 1.2.0 entry.
+
 ## [1.2.0] — 2026-08-10
 
 A minor release cut the same day as 1.1.0 — the delivery half of the facet-unlock wave
