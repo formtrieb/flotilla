@@ -74,13 +74,15 @@ One directed check per hint (Coordinator hints ++ Worker `reviewerFocusItems`). 
 
 The wave driver runs the rows with **no barrier** — row B's Worker runs while row A's Reviewer already runs — so a sibling branch may not be on `origin` yet when you reach for it, or may be there and still sitting at the wave anchor. **Partial coverage is ordinary and honest; silent partial coverage is not.** The sibling list the brief hands you is the **denominator**, and every branch on it gets exactly one outcome.
 
-Run it **per sibling**, writing the branch name in literally rather than looping over a `$SIB` variable (wave-shared Convention 13: a command naming a shell variable has been refused outright in an isolated dispatch, and a loop that never ran is indistinguishable from a run that found nothing):
+Run it **per sibling**, writing the branch name and its per-sibling ref key in literally rather than looping over a `$SIB` variable (wave-shared Convention 13: a command naming a shell variable has been refused outright in an isolated dispatch, and a loop that never ran is indistinguishable from a run that found nothing):
 
 ```bash
-git fetch origin wave/<sibling-id>-<sibling-slug> 2>&1 | tail -3
-git rev-parse FETCH_HEAD                       # the sibling tip — compare this to $ANCHOR FIRST
-git merge-tree "refs/review/$ROW" FETCH_HEAD   # <<<<<<< → predicted conflict
+git fetch origin wave/<sibling-id>-<sibling-slug>:refs/review/sib/<sibling-id> 2>&1 | tail -3
+git rev-parse refs/review/sib/<sibling-id>                       # the sibling tip — compare this to $ANCHOR FIRST
+git merge-tree "refs/review/$ROW" refs/review/sib/<sibling-id>   # <<<<<<< → predicted conflict
 ```
+
+Each sibling gets its own **stable named ref** — `refs/review/sib/<sibling-id>` — for exactly the reason the branch under review does: `FETCH_HEAD` is a single ref shared by the whole checkout, and a concurrent sibling Reviewer's own fetch can overwrite it between your fetch and your read. `FETCH_HEAD` is never read for a sibling tip either — same rule, same hazard, same fix, now finished end to end.
 
 ### The four per-sibling outcomes — every sibling on the list gets exactly one
 
@@ -95,7 +97,7 @@ git merge-tree "refs/review/$ROW" FETCH_HEAD   # <<<<<<< → predicted conflict
 
 This is the outcome that does not look like missing coverage at all. A sibling branch that exists on `origin` but whose tip is still the wave anchor has an **empty diff**, so `git merge-tree` exits 0 and prints one tree hash — byte-identical to what a genuinely clean prediction prints. Nothing in that output distinguishes the two; only the tip comparison does.
 
-So **compare before you read the merge-tree result**: `git rev-parse FETCH_HEAD` against the `$ANCHOR` the dispatch brief carries. Equal → record `at-anchor`, and **never** count it as `predicted-clean`, never let it stand in for coverage of that sibling. Live origin: four Reviewers in one wave reported partial coverage; three named missing branches outright, and the fourth found the branch present, at the anchor, and had to name the vacuity itself because no command would.
+So **compare before you read the merge-tree result**: `git rev-parse refs/review/sib/<sibling-id>` against the `$ANCHOR` the dispatch brief carries. Equal → record `at-anchor`, and **never** count it as `predicted-clean`, never let it stand in for coverage of that sibling. Live origin: four Reviewers in one wave reported partial coverage; three named missing branches outright, and the fourth found the branch present, at the anchor, and had to name the vacuity itself because no command would.
 
 ### The coverage line is mandatory
 
