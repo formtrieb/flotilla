@@ -177,13 +177,28 @@ export function bitbucketAuthHeader(token: string, email?: string): string {
 /**
  * flotilla's host-neutral {@link MergeMethod} → Bitbucket's `merge_strategy`.
  *
- * Bitbucket Cloud offers exactly three strategies — `merge_commit`, `squash`,
- * `fast_forward` (support.atlassian.com/bitbucket-cloud/docs/merge-a-pull-request,
- * read 2026-08-10) — and `rebase` is NOT among them. It is therefore absent from
- * this map on purpose and refused loudly at the call site rather than silently
- * rounded to `fast_forward`, which is a different operation (`git merge
- * --ff-only`, and only possible when the destination has no new commits). The
- * wave default is `squash`, so no flotilla path depends on the gap.
+ * **Bitbucket Cloud DOES rebase.** The `merge_strategy` enum on the
+ * `pullrequest_merge_parameters` schema has SIX members —
+ * `merge_commit`, `squash`, `fast_forward`, `squash_fast_forward`,
+ * `rebase_fast_forward`, `rebase_merge` (Atlassian's own OpenAPI document,
+ * developer.atlassian.com/cloud/bitbucket/swagger.v3.json, read 2026-08-10) —
+ * and Atlassian's merge-a-pull-request support page names the same six in UI
+ * spelling, "Rebase, merge" (`rebase + merge --no-ff`) and "Rebase,
+ * fast-forward" (`rebase + merge --ff-only`) among them.
+ *
+ * `rebase` is nevertheless absent from this map, and the reason is a mapping
+ * ambiguity on FLOTILLA's side rather than a gap on Bitbucket's: the engine's
+ * {@link MergeMethod} vocabulary has ONE `rebase`, Bitbucket has TWO rebase
+ * strategies, and they produce different destination-branch histories. Choosing
+ * either one silently would decide the consumer's history shape for them — on
+ * the one write in this adapter that cannot be rehearsed before a live wave
+ * (ADR-0030). So the call site refuses loudly and names both, leaving the choice
+ * where it can actually be made.
+ *
+ * Nothing automated depends on the gap: `DEFAULT_MERGE_METHOD` is `squash` and
+ * no wave path passes a method at all — `rebase` is reachable only by an
+ * operator typing `host-pr merge --method rebase` by hand, which is exactly the
+ * caller who can be told.
  */
 const BB_MERGE_STRATEGY: Partial<Record<MergeMethod, string>> = {
   squash: 'squash',
@@ -355,17 +370,26 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
   /**
    * ARM — and the MEASURED answer this issue's AC4 asked for.
    *
-   * **Bitbucket Cloud exposes no arming primitive through its REST API.** What
-   * it has instead is a merge CHECK, "Allow automatic merge when builds pass",
-   * enabled per destination branch under Repository settings → Branch
-   * restrictions → Merge checks; it is armed by a HUMAN CLICKING **Merge** in
-   * the pull-request UI while a build is still running ("After clicking on the
-   * Merge option, Bitbucket will watch the build for you and merge it if the
-   * build passes" — support.atlassian.com/bitbucket-cloud/kb, "Using Pull
-   * Request Pipelines and Auto-Merging…", read 2026-08-10; Atlassian's own
-   * announcement of the feature says the same and mentions no API). There is no
-   * request parameter on `POST …/pullrequests/{id}/merge`, and no separate
-   * endpoint, that arms a PR to land itself later.
+   * **Bitbucket Cloud exposes no PER-PULL-REQUEST arming call through its REST
+   * API.** What it has instead is a merge CHECK, "Allow automatic merge when
+   * builds pass", enabled per destination branch under Repository settings →
+   * Branch restrictions → Merge checks; it is armed by a HUMAN CLICKING
+   * **Merge** in the pull-request UI while a build is still running ("After
+   * clicking on the Merge option, Bitbucket will watch the build for you and
+   * merge it if the build passes" — support.atlassian.com/bitbucket-cloud/kb,
+   * "Using Pull Request Pipelines and Auto-Merging…", read 2026-08-10;
+   * Atlassian's own announcement of the feature says the same and mentions no
+   * API).
+   *
+   * Be precise about WHICH thing is missing, because the two are easy to
+   * conflate and only one of them is true: the branch-level SETTING is perfectly
+   * visible over REST — it is the `allow_auto_merge_when_builds_pass` member of
+   * the `branchrestriction` `kind` enum, and {@link getAutoMergeSetting} reads
+   * it. What does not exist is a request parameter on `POST
+   * …/pullrequests/{id}/merge`, or any sibling endpoint, that arms THIS pull
+   * request to land itself later. Turning the setting on therefore changes what
+   * a human can do in the UI and nothing about what this adapter can call, which
+   * is why the refusal below is unconditional rather than gated on the read.
    *
    * So the interface's own escape hatch is the correct implementation:
    * {@link AutoMergeUnavailableError} with reason `not-allowed`. That reason is
@@ -386,7 +410,7 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
   async enableAutoMerge(prNumber: number, _method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<void> {
     throw new AutoMergeUnavailableError(
       'not-allowed',
-      `Bitbucket Cloud offers no auto-merge arming primitive in its REST API, so PR #${prNumber} cannot be armed ` +
+      `Bitbucket Cloud offers no per-pull-request auto-merge arming call in its REST API, so PR #${prNumber} cannot be armed ` +
         `(measured 2026-08-10 against Atlassian's own documentation; ADR-0023 records the finding). Its nearest ` +
         `equivalent — the "Allow automatic merge when builds pass" merge check — is triggered by a human clicking ` +
         `Merge in the pull-request UI, not by an API call. host-pr therefore lands a Bitbucket row by direct merge ` +
@@ -424,10 +448,36 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
       throw new BitbucketApiError(
         0,
         'mergePullRequest',
-        `Bitbucket Cloud has no '${method}' merge strategy — it offers merge_commit, squash and fast_forward only. ` +
-          `Re-run with --method squash (the flotilla default) or --method merge.`,
+        `flotilla cannot map its '${method}' merge method onto Bitbucket Cloud unambiguously: Bitbucket offers TWO ` +
+          `rebase strategies — rebase_merge (rebase + merge --no-ff) and rebase_fast_forward (rebase + merge ` +
+          `--ff-only) — which leave different histories on the destination branch, and flotilla's merge-method ` +
+          `vocabulary has only one '${method}' to say it with. Choosing one for you is not this adapter's call. ` +
+          `Re-run with --method squash (the flotilla default) or --method merge, or merge in the Bitbucket UI, ` +
+          `where the strategy is picked explicitly.`,
       );
     }
+    // DELIBERATE DEPARTURE from the vendor schema, recorded at the point of
+    // departure because this is the one write here that cannot be rehearsed:
+    // `pullrequest_merge_parameters` declares `required: ["type"]`, and this
+    // body omits `type`.
+    //
+    // `type` is a Swagger DISCRIMINATOR artefact, not a field the API wants.
+    // Atlassian's base `object` schema — which 18 of the spec's 211 schemas
+    // inherit, `pullrequest_merge_parameters` among them — says so itself: "It
+    // also identifies the element as Swagger's `discriminator`", and `type` is
+    // its ONLY required member. The create endpoint carries the same inherited
+    // requirement and Atlassian's own description of it contradicts it in
+    // prose: "you only need to include the elements you want to initialize,
+    // such as the source branch and the title". flotilla's shipped Bitbucket
+    // create path (`bitbucketApi()` in host-pr.ts) has always omitted `type` on
+    // that basis. (developer.atlassian.com/cloud/bitbucket/swagger.v3.json,
+    // read 2026-08-10.)
+    //
+    // Sending a value would mean GUESSING the discriminator string on an
+    // unrehearsable write, where a wrong guess is a rejected merge; omitting it
+    // matches the sibling path that is already in service. If the pilot's first
+    // live merge returns a 400 naming `type`, this comment is the place to
+    // start — Bitbucket's own message surfaces verbatim through the throw below.
     const res = await this.send('POST', `${this.base()}/pullrequests/${prNumber}/merge`, {
       merge_strategy: strategy,
     });
@@ -497,20 +547,57 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
   }
 
   /**
-   * The "can a checks-pending PR be armed?" posture. Always `'off'` on this
-   * host, and that is a MEASUREMENT rather than a read: Bitbucket Cloud has no
-   * REST arming primitive to enable (see {@link enableAutoMerge}), so there is
-   * no setting whose value could make one appear. `'unknown'` would be the
-   * dishonest answer here — it means "the credential cannot see the setting",
-   * and the setting does not exist.
+   * Bitbucket's nearest thing to an "Allow auto-merge" setting, READ — the
+   * `allow_auto_merge_when_builds_pass` branch restriction on the default
+   * branch, from the very endpoint this adapter already calls for
+   * `require_passing_builds_to_merge`:
+   * `GET /2.0/repositories/{w}/{r}/branch-restrictions?kind=allow_auto_merge_when_builds_pass`.
    *
-   * The GRADING of this `off` is host-aware in `preflightHost`: on GitHub an
-   * OFF is a fixable misconfiguration and can be a hard `fail`; on Bitbucket it
-   * is a platform property, so it is `advisory` — a permanently-red preflight
-   * would be noise, not a signal.
+   * The setting IS observable, and an earlier draft of this adapter hardcoded
+   * `'off'` while calling that a "measurement" — it was not: it issued zero
+   * requests. `kind` is an enum on Atlassian's `branchrestriction` schema and
+   * `allow_auto_merge_when_builds_pass` is one of its eighteen members
+   * (developer.atlassian.com/cloud/bitbucket/swagger.v3.json, read 2026-08-10),
+   * readable and writable through the same collection as the builds gate.
+   *
+   * What this read does NOT change is the arming conclusion: even with the merge
+   * check ON, Bitbucket exposes no per-PR REST call that arms a pull request to
+   * land itself — the check is triggered by a HUMAN clicking Merge in the UI
+   * (see {@link enableAutoMerge}). So `'on'` here means "the UI affordance
+   * exists on the default branch", never "flotilla can arm". The posture text in
+   * `preflightHost` says exactly that, and grades every answer `advisory` /
+   * `unknown` — never `fail`, because there is no arming misconfiguration for an
+   * operator to fix on this host.
+   *
+   * `'unknown'` is reserved for its real meaning (the credential could not see
+   * it): any failing read — the mainbranch resolve or the restriction walk —
+   * degrades here rather than counterfeiting an `'off'`.
+   *
+   * Reuses {@link bitbucketBranchRestrictionApplies}, whose tie-break
+   * OVER-matches. That direction is deliberate there because over-reporting a
+   * gate makes `arm` refuse more often; here it can only over-report the UI
+   * affordance in an advisory sentence — no code path branches on this value —
+   * so the bounded cost is one over-generous line of posture prose, never a
+   * merge that should not have happened.
    */
   async getAutoMergeSetting(): Promise<AutoMergeSetting> {
-    return 'off';
+    try {
+      const target = await this.mainBranch();
+      const entries = await this.paged(
+        `${this.base()}/branch-restrictions?kind=allow_auto_merge_when_builds_pass&pagelen=100`,
+        'getAutoMergeSetting',
+      );
+      for (const e of entries) {
+        // The `kind` filter is a query parameter; re-check it on the payload so
+        // a server that ignores the filter cannot widen the answer (the same
+        // belt-and-braces `requiredBuilds` applies to its own kind).
+        if (e.kind !== 'allow_auto_merge_when_builds_pass') continue;
+        if (bitbucketBranchRestrictionApplies(e, target)) return 'on';
+      }
+      return 'off';
+    } catch {
+      return 'unknown';
+    }
   }
 
   /**

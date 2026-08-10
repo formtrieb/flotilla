@@ -1304,6 +1304,17 @@ export interface ArmOptions {
    * arm without it is byte-identical to before.
    */
   deleteBranch?: boolean;
+  /**
+   * Which code host this arm is running against, for the REFUSAL PROSE only —
+   * never for a decision. Every branch of the arm intent is host-neutral and
+   * stays so; what is not host-neutral is the REMEDY a refusal teaches, and a
+   * remedy naming a control the host does not have is worse than none.
+   *
+   * Omitted → the GitHub wording, byte-identical to what shipped before this
+   * option existed (the {@link LandingHost} seam carries no host tag, so an
+   * injected test double and any pre-existing caller keep their exact text).
+   */
+  host?: Host;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -1456,6 +1467,57 @@ function armedReason(reason: string, deleteBranchRequested: boolean): string {
 }
 
 /**
+ * The remedy a `not-allowed` arm refusal teaches on Bitbucket Cloud.
+ *
+ * The GitHub remedy — "tick Allow auto-merge under Settings → General → Pull
+ * Requests" — is not merely unhelpful here, it points at a control Bitbucket
+ * does not have: `RealBitbucketApi.enableAutoMerge` raises the SAME typed
+ * `not-allowed` refusal for a structurally different reason (no REST arming
+ * primitive exists at all, measured 2026-08-10, ADR-0023 amendment). And this is
+ * the DOMINANT Bitbucket landing outcome, not an edge: every row whose required
+ * build has not yet reported success takes exactly this leg, so the wrong remedy
+ * would be the sentence a Bitbucket operator reads most often.
+ */
+const BITBUCKET_ARM_REMEDY =
+  'There is no repository setting to enable and nothing to re-run: land this row via the advisory merge-order, ' +
+  'or click Merge in the pull-request UI on a destination branch that has Bitbucket\'s own "Allow automatic merge ' +
+  'when builds pass" merge check enabled — that check is UI-triggered, which is why the API cannot arm it.';
+
+/**
+ * The `not-allowed` refusal prose for the CHECK-ATTACH gate site — the leg that
+ * refuses because required checks are in force with some of them unreported.
+ *
+ * Host-aware and purely ADDITIVE: the GitHub string is byte-identical to the
+ * shipped one, and only the `bitbucket` branch is new (the same discipline the
+ * three host-conditional posture checks in {@link preflightHost} follow).
+ */
+function notAllowedAttachReason(host: Host | undefined, errMessage: string): string {
+  if (host === 'bitbucket') {
+    return `${BITBUCKET_NO_ARM} [${errMessage}] ${BITBUCKET_ARM_REMEDY}`;
+  }
+  return (
+    `The repository does not permit auto-merge, so this PR cannot be armed [${errMessage}]. Enable ` +
+    `"Allow auto-merge" (Settings → General → Pull Requests).`
+  );
+}
+
+/**
+ * The `not-allowed` refusal prose for the REQUIRED-PENDING site — the leg that
+ * refuses because a required check is reported pending and merging would bypass
+ * the very gate the human expected to hold. Same additive host-conditional
+ * shape as {@link notAllowedAttachReason}.
+ */
+function notAllowedPendingReason(host: Host | undefined, errMessage: string): string {
+  if (host === 'bitbucket') {
+    return `${BITBUCKET_NO_ARM} ${BITBUCKET_ARM_REMEDY} [${errMessage}]`;
+  }
+  return (
+    `The repository does not permit auto-merge, so this PR cannot be armed. Enable "Allow auto-merge" ` +
+    `(Settings → General → Pull Requests) and re-run, or land this row via the advisory merge-order. [${errMessage}]`
+  );
+}
+
+/**
  * Land a branch's PR by the ADR-0023 arm intent: probe → decide → act.
  *
  * Idempotent and re-entrant, because `wave-close` is: an already-merged PR is a
@@ -1573,11 +1635,7 @@ export async function armPullRequest(
           outcome: 'refused',
           prNumber,
           prUrl: status.url,
-          reason: attachRefusalReason(
-            attach,
-            `The repository does not permit auto-merge, so this PR cannot be armed [${err.message}]. Enable ` +
-              `"Allow auto-merge" (Settings → General → Pull Requests).`,
-          ),
+          reason: attachRefusalReason(attach, notAllowedAttachReason(opts.host, err.message)),
         };
       }
       if (hasNoPendingRequiredCheck(mergeability)) {
@@ -1602,9 +1660,7 @@ export async function armPullRequest(
         outcome: 'refused',
         prNumber,
         prUrl: status.url,
-        reason:
-          `The repository does not permit auto-merge, so this PR cannot be armed. Enable "Allow auto-merge" ` +
-          `(Settings → General → Pull Requests) and re-run, or land this row via the advisory merge-order. [${err.message}]`,
+        reason: notAllowedPendingReason(opts.host, err.message),
       };
     }
     throw err;
@@ -1968,9 +2024,15 @@ export async function preflightHost(host: Host, posture: LandingPosture): Promis
  * branches are additive, never a rewrite of the shipped GitHub report.
  */
 const BITBUCKET_NO_ARM =
-  'Bitbucket Cloud exposes NO auto-merge arming primitive in its REST API (measured 2026-08-10; ADR-0023 records ' +
-  'the finding). Its nearest equivalent — the "Allow automatic merge when builds pass" merge check — is triggered ' +
-  'by a human clicking Merge in the pull-request UI, not by an API call.';
+  'Bitbucket Cloud exposes NO per-pull-request auto-merge arming primitive in its REST API (measured 2026-08-10; ADR-0023 ' +
+  'records the finding). Its nearest equivalent — the "Allow automatic merge when builds pass" merge check — is ' +
+  'triggered by a human clicking Merge in the pull-request UI, not by an API call.';
+
+/** What that gap MEANS for a wave, said once so every posture branch says it identically. */
+const BITBUCKET_AUTO_CONSEQUENCE =
+  '`wave-close --auto` therefore lands a Bitbucket row by DIRECT MERGE when nothing required is pending, and ' +
+  'REFUSES a row whose required builds have not all reported success — land that tail via the advisory ' +
+  'merge-order (ADR-0023).';
 
 function prMergeTokenCheck(canMerge: boolean, host: Host): HostPreflightCheck {
   if (host === 'bitbucket') {
@@ -2014,19 +2076,39 @@ function allowAutoMergeCheck(
   host: Host,
 ): HostPreflightCheck {
   if (host === 'bitbucket') {
-    // A Bitbucket `off` is a PLATFORM PROPERTY, not a fixable misconfiguration:
-    // there is no setting to tick, so grading it `fail` (as a visible GitHub
-    // `off` with required checks is graded) would make `host-pr preflight`
-    // permanently red on every correctly-configured Bitbucket consumer. A
-    // permanently-red gate is noise, not a signal — so this is `advisory`, and
-    // the detail states the measurement plus what `--auto` actually does here.
+    // NEVER `fail` on this host, whatever the setting says. A GitHub `off` is a
+    // fixable misconfiguration; the Bitbucket arming gap is structural — no
+    // repository setting closes it — so a `fail` would make `host-pr preflight`
+    // permanently red on every correctly-configured Bitbucket consumer, and a
+    // permanently-red gate is noise rather than a signal.
+    //
+    // The VALUE is nevertheless a real read now (`RealBitbucketApi.getAutoMergeSetting`
+    // reads the `allow_auto_merge_when_builds_pass` branch restriction on the
+    // default branch), so the three answers are reported apart instead of
+    // collapsed into one sentence — while all three carry the same arming
+    // conclusion, because none of them changes it.
+    if (setting === 'unknown') {
+      return {
+        name: 'allow-auto-merge',
+        status: 'unknown',
+        detail:
+          `Could not read the "allow_auto_merge_when_builds_pass" branch restriction on the default branch — the ` +
+          `resolved BITBUCKET_TOKEN could not see it. Advisory only, and it changes nothing: ${BITBUCKET_NO_ARM} ` +
+          `${BITBUCKET_AUTO_CONSEQUENCE}`,
+      };
+    }
     return {
       name: 'allow-auto-merge',
       status: 'advisory',
       detail:
-        `${BITBUCKET_NO_ARM} \`wave-close --auto\` therefore lands a Bitbucket row by DIRECT MERGE when nothing ` +
-        `required is pending, and REFUSES a row whose required builds have not all reported success — land that ` +
-        `tail via the advisory merge-order (ADR-0023).`,
+        (setting === 'on'
+          ? `The default branch HAS Bitbucket's "Allow automatic merge when builds pass" merge check enabled ` +
+            `(branch restriction kind \`allow_auto_merge_when_builds_pass\`). That is a UI affordance for a human, ` +
+            `NOT an arming API flotilla can call: `
+          : `The default branch does NOT have Bitbucket's "Allow automatic merge when builds pass" merge check ` +
+            `enabled (branch restriction kind \`allow_auto_merge_when_builds_pass\`). Enabling it would not unlock ` +
+            `arming either: `) +
+        `${BITBUCKET_NO_ARM} ${BITBUCKET_AUTO_CONSEQUENCE}`,
     };
   }
   if (setting === 'on') {

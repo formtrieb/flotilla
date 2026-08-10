@@ -618,7 +618,11 @@ async function dispatch(
 
   const outcome =
     verb === 'arm'
-      ? await armPullRequest(host, branch, method, { deleteBranch })
+      ? // `host: hostName` is REFUSAL PROSE only (ArmOptions.host) — the arm
+        // intent itself stays host-neutral. Without it, a Bitbucket refusal
+        // would teach GitHub's "tick Allow auto-merge" remedy for a control
+        // Bitbucket has no equivalent of, on this host's most common outcome.
+        await armPullRequest(host, branch, method, { deleteBranch, host: hostName })
       : await mergePullRequestNow(host, branch, method, { deleteBranch });
 
   const ok = outcome.outcome === 'merged' || outcome.outcome === 'armed' || outcome.outcome === 'already-merged';

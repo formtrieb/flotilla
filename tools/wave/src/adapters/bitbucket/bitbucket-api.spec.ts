@@ -87,6 +87,24 @@ const requireBuilds = (n: number): [(req: BitbucketHttpRequest) => boolean, Bitb
   page([{ kind: 'require_passing_builds_to_merge', pattern: '*', value: n, branch_match_kind: 'glob' }]),
 ];
 
+/** The repo read that resolves the default branch (`getAutoMergeSetting` needs it first). */
+const MAINBRANCH_TRUNK: [(req: BitbucketHttpRequest) => boolean, BitbucketHttpResponse] = [
+  (req) => req.url === 'https://api.bitbucket.org/2.0/repositories/ws/repo',
+  { status: 200, json: { mainbranch: { name: 'trunk' } } },
+];
+
+/**
+ * One `allow_auto_merge_when_builds_pass` restriction on `pattern` — Bitbucket's
+ * "Allow automatic merge when builds pass" merge check, as the branch-restriction
+ * collection serves it.
+ */
+const allowAutoMerge = (
+  pattern: string,
+): [(req: BitbucketHttpRequest) => boolean, BitbucketHttpResponse] => [
+  urlHas('/branch-restrictions'),
+  page([{ kind: 'allow_auto_merge_when_builds_pass', pattern, branch_match_kind: 'glob' }]),
+];
+
 const statuses = (
   values: unknown[],
 ): [(req: BitbucketHttpRequest) => boolean, BitbucketHttpResponse] => [
@@ -356,7 +374,11 @@ describe('RealBitbucketApi.enableAutoMerge — Bitbucket Cloud has no arming pri
     expect(err).toBeInstanceOf(AutoMergeUnavailableError);
     if (err === undefined) throw new Error('unreachable — the assertion above already failed');
     expect(err.reason).toBe('not-allowed');
-    expect(err.message).toMatch(/no auto-merge arming primitive/i);
+    // "no PER-PULL-REQUEST arming call" — the precise claim. The unqualified
+    // "no arming primitive" was over-broad: the branch-level setting IS
+    // exposed (`getAutoMergeSetting` reads it); what does not exist is a call
+    // that arms THIS pull request.
+    expect(err.message).toMatch(/no per-pull-request auto-merge arming call/i);
     // The message must say WHAT the platform has instead, or the operator reads
     // it as a flotilla gap rather than a host property.
     expect(err.message).toMatch(/merge check/i);
@@ -384,9 +406,28 @@ describe('RealBitbucketApi.mergePullRequest', () => {
     expect(JSON.parse(calls[0].body as string)).toEqual({ merge_strategy: 'merge_commit' });
   });
 
-  it("refuses 'rebase' LOUDLY — Bitbucket has no rebase strategy — and issues no request", async () => {
+  it("refuses 'rebase' LOUDLY for the TRUE reason — an ambiguous mapping, not a missing platform feature", async () => {
+    // Bitbucket Cloud DOES rebase: its `merge_strategy` enum carries BOTH
+    // `rebase_merge` and `rebase_fast_forward` (Atlassian's OpenAPI document,
+    // read 2026-08-10). The refusal stands because flotilla's vocabulary has one
+    // `rebase` for those two different histories — so the message must name the
+    // ambiguity and must NOT claim the platform lacks the strategy.
     const { http, calls } = fakeHttp([mergeRoute({ status: 200, json: {} })]);
-    await expect(api(http).mergePullRequest(7, 'rebase')).rejects.toThrow(/merge_commit, squash and fast_forward/);
+    let err: unknown;
+    try {
+      await api(http).mergePullRequest(7, 'rebase');
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BitbucketApiError);
+    const message = (err as Error).message;
+    expect(message).toMatch(/rebase_merge/);
+    expect(message).toMatch(/rebase_fast_forward/);
+    expect(message).toMatch(/--method squash/);
+    // The falsified claim, pinned as a NEGATIVE so it cannot come back: no text
+    // here may assert Bitbucket offers only the three non-rebase strategies.
+    expect(message).not.toMatch(/merge_commit, squash and fast_forward only/);
+    expect(message).not.toMatch(/has no 'rebase' merge strategy/);
     expect(calls).toEqual([]);
   });
 
@@ -469,10 +510,50 @@ describe('RealBitbucketApi — LandingPosture', () => {
     }
   });
 
-  it('getAutoMergeSetting is off — a measurement, not a read (there is no setting to see)', async () => {
-    const { http, calls } = fakeHttp([]);
+  // ── getAutoMergeSetting: a REAL read of a real branch restriction ──────────
+  //
+  // `allow_auto_merge_when_builds_pass` is a member of Atlassian's
+  // `branchrestriction` `kind` enum (OpenAPI document, read 2026-08-10) and is
+  // served by the SAME /branch-restrictions collection the builds gate uses. An
+  // earlier draft returned a hardcoded 'off' while issuing zero requests and
+  // called that a measurement; these four cases exist so that cannot recur.
+
+  it('getAutoMergeSetting READS the allow_auto_merge_when_builds_pass restriction — on', async () => {
+    const { http, calls } = fakeHttp([MAINBRANCH_TRUNK, allowAutoMerge('*')]);
+    expect(await api(http).getAutoMergeSetting()).toBe('on');
+    // The proof it is a read at all: requests were issued, and the second one
+    // asks for the right `kind`.
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[1].url).toContain('kind=allow_auto_merge_when_builds_pass');
+  });
+
+  it('getAutoMergeSetting is off when no such restriction covers the default branch', async () => {
+    const { http } = fakeHttp([MAINBRANCH_TRUNK, NO_RESTRICTIONS]);
     expect(await api(http).getAutoMergeSetting()).toBe('off');
-    expect(calls).toEqual([]);
+  });
+
+  it('a restriction whose pattern does NOT cover the default branch reads off', async () => {
+    const { http } = fakeHttp([MAINBRANCH_TRUNK, allowAutoMerge('release/*')]);
+    expect(await api(http).getAutoMergeSetting()).toBe('off');
+  });
+
+  it("a BLIND read is 'unknown' — never a counterfeit 'off' (that was the defect)", async () => {
+    for (const routes of [
+      // the restriction walk fails
+      [MAINBRANCH_TRUNK, [urlHas('/branch-restrictions'), { status: 403, json: null }] as const],
+      // the mainbranch resolve fails
+      [[(req: BitbucketHttpRequest) => req.url.endsWith('/ws/repo'), { status: 500, json: null }] as const],
+    ]) {
+      const { http } = fakeHttp(routes as never);
+      expect(await api(http).getAutoMergeSetting()).toBe('unknown');
+    }
+  });
+
+  it('a server that ignores the kind= filter cannot widen the answer', async () => {
+    // The payload `kind` is re-checked, so a builds-gate row served back by a
+    // filter-ignoring server does not read as an auto-merge affordance.
+    const { http } = fakeHttp([MAINBRANCH_TRUNK, requireBuilds(1)]);
+    expect(await api(http).getAutoMergeSetting()).toBe('off');
   });
 
   it('getRequiredChecks reports PRESENT with an empty context list — Bitbucket states a COUNT, not names', async () => {

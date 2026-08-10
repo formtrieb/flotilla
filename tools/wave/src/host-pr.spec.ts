@@ -1966,6 +1966,74 @@ describe('armPullRequest — the check-attach gate (AC1/AC2, 2026-07-30 live occ
     expect(calls).toContain('mergePullRequest:42:squash');
   });
 
+  // ── the refusal PROSE is host-aware (the remedy, never the decision) ───────
+  //
+  // `RealBitbucketApi.enableAutoMerge` raises the SAME typed `not-allowed`
+  // refusal GitHub raises for "Allow auto-merge is off" — but for a structurally
+  // different reason, and Bitbucket has no such setting to tick. Teaching
+  // GitHub's remedy there would send an operator hunting for a control that does
+  // not exist, on this host's DOMINANT landing outcome: every row whose required
+  // build is still pending lands on exactly these two legs.
+
+  describe('the not-allowed refusal remedy is host-aware', () => {
+    const notAllowed = () => {
+      throw new AutoMergeUnavailableError('not-allowed', 'Auto merge is not allowed for this repository');
+    };
+
+    it('BOTH not-allowed refusal sites drop GitHub\'s settings remedy on bitbucket and name the real one', async () => {
+      // Site 1 — the required-pending refusal (no CheckAttachReader involved).
+      const pending = fakeLandingHost({ status: openPr('blocked'), onEnableAutoMerge: notAllowed });
+      // Site 2 — the check-attach gate refusal.
+      const attach = fakeAttachAwareHost({
+        status: freshCleanPr(),
+        required: requiredPresent(VITEST_CHECK, TSC_CHECK),
+        reported: [],
+        onEnableAutoMerge: notAllowed,
+      });
+
+      for (const { host } of [pending, attach]) {
+        const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { host: 'bitbucket' });
+        expect(out).toMatchObject({ outcome: 'refused' });
+        const reason = (out as { reason: string }).reason;
+        // The GitHub-only remedy must be gone — both the control and the path.
+        expect(reason).not.toMatch(/Settings → General/);
+        expect(reason).not.toMatch(/Enable "Allow auto-merge"/);
+        // …and replaced by the measured account plus a remedy that exists.
+        expect(reason).toMatch(/no per-pull-request auto-merge arming primitive/i);
+        expect(reason).toMatch(/merge-order/);
+        expect(reason).toMatch(/Allow automatic merge when builds pass/);
+        // The host's own message is still carried verbatim for the operator.
+        expect(reason).toMatch(/Auto merge is not allowed for this repository/);
+      }
+    });
+
+    it('omitting the host option keeps the shipped GitHub prose byte-identical (the change is additive)', async () => {
+      // The seam carries no host tag, so an injected double and every
+      // pre-existing caller must land on exactly the text they always had.
+      for (const host of ['github', undefined] as const) {
+        const { host: h } = fakeLandingHost({ status: openPr('blocked'), onEnableAutoMerge: notAllowed });
+        const out = await armPullRequest(h, 'b', DEFAULT_MERGE_METHOD, host === undefined ? {} : { host });
+        expect((out as { reason: string }).reason).toBe(
+          'The repository does not permit auto-merge, so this PR cannot be armed. Enable "Allow auto-merge" ' +
+            '(Settings → General → Pull Requests) and re-run, or land this row via the advisory merge-order. ' +
+            '[Auto merge is not allowed for this repository]',
+        );
+      }
+    });
+
+    it('the host option changes PROSE only — the decision on both hosts is the identical refusal', async () => {
+      const calls: string[][] = [];
+      for (const h of ['github', 'bitbucket'] as const) {
+        const { host, calls: c } = fakeLandingHost({ status: openPr('blocked'), onEnableAutoMerge: notAllowed });
+        const out = await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { host: h });
+        expect(out).toMatchObject({ outcome: 'refused', prNumber: 42 });
+        expect(c).not.toContain('mergePullRequest:42:squash');
+        calls.push(c);
+      }
+      expect(calls[0]).toEqual(calls[1]);
+    });
+  });
+
   it('--delete-branch on an arm that the gate turned into an ARM defers the deletion (no synchronous merge to delete after)', async () => {
     const { host, calls } = fakeAttachAwareHost({
       status: freshCleanPr(),
@@ -2313,12 +2381,47 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     it('the bitbucket auto-merge detail states the MEASUREMENT and what --auto does instead', async () => {
       const report = await preflightHost('bitbucket', fakePosture({ autoMerge: 'off' }));
       const detail = byName(report.checks)['allow-auto-merge'].detail;
-      expect(detail).toMatch(/no auto-merge arming primitive/i);
+      expect(detail).toMatch(/no per-pull-request auto-merge arming primitive/i);
       expect(detail).toMatch(/merge check/i);
       expect(detail).toMatch(/DIRECT MERGE/);
       expect(detail).toMatch(/merge-order/);
       // It must NOT hand a Bitbucket operator GitHub's fix instruction.
       expect(detail).not.toMatch(/Settings → General/);
+    });
+
+    // The posture READ is real now (the adapter reads the
+    // `allow_auto_merge_when_builds_pass` branch restriction), so the three
+    // answers must be told apart in the report — while none of them may promise
+    // an arm, because none of them changes what the engine can call.
+    it('the three read answers are reported APART, and each names the branch restriction it came from', async () => {
+      const on = byName((await preflightHost('bitbucket', fakePosture({ autoMerge: 'on' }))).checks)['allow-auto-merge'];
+      const off = byName((await preflightHost('bitbucket', fakePosture({ autoMerge: 'off' }))).checks)['allow-auto-merge'];
+      const unk = byName((await preflightHost('bitbucket', fakePosture({ autoMerge: 'unknown' }))).checks)['allow-auto-merge'];
+
+      expect(on.detail).toMatch(/HAS Bitbucket's "Allow automatic merge when builds pass"/);
+      expect(off.detail).toMatch(/does NOT have Bitbucket's "Allow automatic merge when builds pass"/);
+      expect(unk.detail).toMatch(/[Cc]ould not read/);
+      for (const c of [on, off, unk]) {
+        expect(c.detail).toMatch(/allow_auto_merge_when_builds_pass/);
+        // Whatever the value, the arming conclusion is identical and no detail
+        // may promise the engine can arm.
+        expect(c.detail).toMatch(/no per-pull-request auto-merge arming primitive/i);
+      }
+      // `on` must not read as "flotilla can arm now".
+      expect(on.detail).toMatch(/NOT an arming API/);
+    });
+
+    it('NO value of the setting is ever a `fail` here — the arming gap is structural, not a misconfiguration', async () => {
+      for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
+        for (const required of [REQUIRED_PRESENT, REQUIRED_ABSENT, REQUIRED_UNKNOWN]) {
+          const check = byName(
+            (await preflightHost('bitbucket', fakePosture({ canMerge: true, autoMerge, required }))).checks,
+          )['allow-auto-merge'];
+          expect(check.status).not.toBe('fail');
+          // `unknown` keeps its real meaning: a read that failed, nothing else.
+          expect(check.status).toBe(autoMerge === 'unknown' ? 'unknown' : 'advisory');
+        }
+      }
     });
 
     it('required-checks present does NOT promise an arm on bitbucket (the github sentence would be false here)', async () => {

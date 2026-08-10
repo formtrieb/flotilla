@@ -247,6 +247,17 @@ describe('host-pr on bitbucket — arm | merge | status through RealBitbucketApi
     expect(String(out().reason)).toMatch(/auto-merge|merge-order/i);
     // The decisive assertion: no merge was POSTed.
     expect(calls.some((c) => c.method === 'POST')).toBe(false);
+
+    // …and this is the DOMINANT Bitbucket landing outcome, so the remedy it
+    // teaches has to be reachable on this host. The CLI is what threads
+    // `ArmOptions.host` (the arm intent carries no host tag of its own), so
+    // asserting it HERE — end to end, from argv through the real adapter —
+    // is what proves the wiring rather than the string.
+    const reason = String(out().reason);
+    expect(reason).not.toMatch(/Settings → General/);
+    expect(reason).not.toMatch(/Enable "Allow auto-merge"/);
+    expect(reason).toMatch(/no per-pull-request auto-merge arming primitive/i);
+    expect(reason).toMatch(/merge-order/);
   });
 
   it('arm on a PR whose required build PASSED merges directly', async () => {
@@ -1258,10 +1269,13 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
   });
 
   it('bitbucket reports the same three checks — and its allow-auto-merge OFF is ADVISORY, never a hard fail', async () => {
-    // Bitbucket Cloud has no arming primitive to enable, so an `off` here is a
-    // platform property rather than a fixable setting. Grading it `fail` (as a
-    // visible GitHub `off` with required checks is graded) would leave every
-    // correctly-configured Bitbucket consumer permanently red.
+    // The `off` is a real READ here (the adapter reads the
+    // `allow_auto_merge_when_builds_pass` branch restriction), but no value of
+    // it gives the engine an arming call — the restriction only enables a human
+    // to click Merge. So there is no misconfiguration for an operator to fix,
+    // and grading it `fail` (as a visible GitHub `off` with required checks is
+    // graded) would leave every correctly-configured Bitbucket consumer
+    // permanently red.
     const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
       posture: fakePosture({
         canMerge: true,
@@ -1276,7 +1290,9 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     expect(checks.map((c) => c.name)).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
     const autoMerge = checks.find((c) => c.name === 'allow-auto-merge');
     expect(autoMerge?.status).toBe('advisory');
-    expect(autoMerge?.detail).toMatch(/no auto-merge arming primitive/i);
+    expect(autoMerge?.detail).toMatch(/no per-pull-request auto-merge arming primitive/i);
+    // The read that produced the value is named, so the report is auditable.
+    expect(autoMerge?.detail).toMatch(/allow_auto_merge_when_builds_pass/);
     // The required-checks line must NOT promise an arm this host cannot perform.
     expect(checks.find((c) => c.name === 'required-checks')?.detail).not.toMatch(/will ARM these PRs/);
   });
