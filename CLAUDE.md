@@ -53,4 +53,4 @@ flotilla's build history and wave-by-wave operational status live in a private o
 
 ## Skill pipeline
 
-The wave skills live in `.claude/skills/`. Front half (planning): `triage`, `to-prd`, `to-issues`. Back half (a wave's lifecycle): `wave-setup` (one-time bootstrap), `wave-plan`, `wave-create`, `wave-start`, `wave-reviewer`, `wave-close`, `wave-resume`. `wave-shared` holds conventions and schemas common to the back half. `grill-with-docs` is the stress-testing tool for any design decision worth an ADR before it's built.
+The wave skills live in `.claude/skills/`. Front half (planning): `triage`, `to-prd`, `to-issues`. Back half (a wave's lifecycle): `wave-setup` (one-time bootstrap), `wave-plan`, `wave-create`, `wave-start`, `wave-reviewer`, `wave-close`, `wave-resume`. `wave-shared` holds conventions and schemas common to the back half. `grill-with-docs` is the stress-testing tool for any design decision worth an ADR before it's built. `report` belongs to neither half — it is the standalone consumer-side utility: a consumer repo's agent uses it to file a fully-analyzed finding about flotilla itself upstream at flotilla's own repo, in the house format.
