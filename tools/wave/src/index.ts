@@ -305,6 +305,17 @@ export {
 //     `RequiredChecksInfo`, `RulesetChecksInfo`, `AutoMergeSetting`,
 //     `PrLandingStatus`.
 //
+//     `HostCheckName` carries FOUR members, not three: the three posture reads
+//     plus `create-credentials`, the ambient-credential advisory a host emits
+//     when its `create` verb has a precondition its landing verbs do not share
+//     (Bitbucket Cloud's BITBUCKET_EMAIL today). Widening that string-literal
+//     union is a public-API change for anyone who exhaustively switches on it —
+//     the check is host-CONDITIONAL and absent from a GitHub report entirely, so
+//     a consumer must read `checks` by name and never by index or length.
+//     `preflightHost` gained a matching optional third parameter (the
+//     environment that advisory is graded in, defaulting to `process.env`);
+//     existing two-argument call sites are unaffected.
+//
 // `github-api.ts` re-exports `RequiredChecksInfo`/`RulesetChecksInfo`/
 // `AutoMergeSetting`/`ReportedCheck` from THIS module rather than declaring
 // its own (its own file-header comment says so) — so exporting them here

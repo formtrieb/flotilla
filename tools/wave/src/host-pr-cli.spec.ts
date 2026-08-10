@@ -1268,7 +1268,7 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
   });
 
-  it('bitbucket reports the same three checks — and its allow-auto-merge OFF is ADVISORY, never a hard fail', async () => {
+  it('bitbucket reports the same three posture checks (plus the create-credentials advisory) — and its allow-auto-merge OFF is ADVISORY, never a hard fail', async () => {
     // The `off` is a real READ here (the adapter reads the
     // `allow_auto_merge_when_builds_pass` branch restriction), but no value of
     // it gives the engine an arming call — the restriction only enables a human
@@ -1276,7 +1276,12 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     // and grading it `fail` (as a visible GitHub `off` with required checks is
     // graded) would leave every correctly-configured Bitbucket consumer
     // permanently red.
+    //
+    // `env` is injected (empty) rather than left to default: this host's report
+    // now carries an AMBIENT-credential check too, and a spec whose answer
+    // depended on the real process environment would pass or fail by machine.
     const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+      env: {} as NodeJS.ProcessEnv,
       posture: fakePosture({
         canMerge: true,
         autoMerge: 'off',
@@ -1287,7 +1292,14 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     const o = out();
     expect(o).toMatchObject({ ok: true, verb: 'preflight', host: 'bitbucket' });
     const checks = o.checks as { name: string; status: string; detail: string }[];
-    expect(checks.map((c) => c.name)).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+    // The three posture checks keep their names AND their order; the ambient
+    // check is APPENDED — that ordering is the additive claim, asserted.
+    expect(checks.map((c) => c.name)).toEqual([
+      'pr-merge-token',
+      'allow-auto-merge',
+      'required-checks',
+      'create-credentials',
+    ]);
     const autoMerge = checks.find((c) => c.name === 'allow-auto-merge');
     expect(autoMerge?.status).toBe('advisory');
     expect(autoMerge?.detail).toMatch(/no per-pull-request auto-merge arming primitive/i);
@@ -1311,5 +1323,112 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     expect(code).toBe(1);
     expect(out()).toMatchObject({ ok: false, verb: 'preflight', host: 'bitbucket' });
     expect(String(out().error)).toMatch(/BITBUCKET_TOKEN/);
+  });
+});
+
+// ─── host-pr preflight → the create-credentials advisory ─────────────────────
+//
+// The wiring half of the check: `deps.env` reaching `preflightHost`, the check
+// landing in the printed JSON, and the exit code staying where it was. The
+// GRADING (the detail text, the host-conditionality, the derivation from
+// `bitbucketCreateCreds`) is host-pr.spec.ts's job, as with every other check.
+//
+// EVERY test here injects its own `env` object. None reads, writes, or depends
+// on `process.env`, and none resolves a credential: the posture reader is
+// injected, so no adapter factory is reached. `SET_EMAIL_ENV`'s value is a
+// synthetic fixture, not anyone's account.
+
+const NO_EMAIL_ENV = {} as NodeJS.ProcessEnv;
+const SET_EMAIL_ENV = { BITBUCKET_EMAIL: 'wave-fixture@example.test' } as NodeJS.ProcessEnv;
+
+describe('host-pr preflight — the create-credentials advisory (BITBUCKET_EMAIL)', () => {
+  it('bitbucket + BITBUCKET_EMAIL UNSET → the check reports `advisory`, ok stays true, exit stays 0', async () => {
+    const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+      env: NO_EMAIL_ENV,
+      posture: fakePosture({ canMerge: true, autoMerge: 'on' }),
+    });
+
+    // The whole point of the settled grade: an unset email is STATED, never
+    // enforced. A land-only consumer must not be refused.
+    expect(code).toBe(0);
+    const o = out();
+    expect(o.ok).toBe(true);
+    const check = (o.checks as { name: string; status: string }[]).find((c) => c.name === 'create-credentials');
+    expect(check?.status).toBe('advisory');
+  });
+
+  it('bitbucket + BITBUCKET_EMAIL SET → the same check reports `pass`', async () => {
+    const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+      env: SET_EMAIL_ENV,
+      posture: fakePosture({ canMerge: true, autoMerge: 'on' }),
+    });
+    expect(code).toBe(0);
+    const check = (out().checks as { name: string; status: string }[]).find((c) => c.name === 'create-credentials');
+    expect(check?.status).toBe('pass');
+  });
+
+  // The env THREADING itself, asserted as a property rather than assumed: the
+  // same posture and the same argv produce two different answers, and the only
+  // difference between the two runs is the injected environment. A check that
+  // read `process.env` at a new site would answer identically both times.
+  it('the answer is a function of the INJECTED env — same argv, same posture, two envs, two verdicts', async () => {
+    const statusFor = async (env: NodeJS.ProcessEnv): Promise<string | undefined> => {
+      stdout = '';
+      await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+        env,
+        posture: fakePosture({ canMerge: true, autoMerge: 'on' }),
+      });
+      return (out().checks as { name: string; status: string }[]).find((c) => c.name === 'create-credentials')?.status;
+    };
+
+    expect(await statusFor(NO_EMAIL_ENV)).toBe('advisory');
+    expect(await statusFor(SET_EMAIL_ENV)).toBe('pass');
+  });
+
+  it('github never reports the check — with the variable unset AND with it set (no spurious advisory)', async () => {
+    for (const env of [NO_EMAIL_ENV, SET_EMAIL_ENV]) {
+      stdout = '';
+      const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+        env,
+        posture: fakePosture({ canMerge: true, autoMerge: 'on' }),
+      });
+      expect(code).toBe(0);
+      const names = (out().checks as { name: string }[]).map((c) => c.name);
+      // Byte-identical to the shipped GitHub report: three checks, same order.
+      expect(names).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+    }
+  });
+
+  it('never flips the exit code on ANY bitbucket posture — it is advisory in every combination', async () => {
+    for (const env of [NO_EMAIL_ENV, SET_EMAIL_ENV]) {
+      for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
+        stdout = '';
+        const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+          env,
+          posture: fakePosture({
+            canMerge: true,
+            autoMerge,
+            required: { state: 'present', contexts: ['build'], detail: 'one build' },
+          }),
+        });
+        expect(code).toBe(0);
+        const check = (out().checks as { name: string; status: string }[]).find(
+          (c) => c.name === 'create-credentials',
+        );
+        expect(check?.status).not.toBe('fail');
+      }
+    }
+  });
+
+  it('the printed payload never carries the variable VALUE — presence is graded, the value is not echoed', async () => {
+    await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+      env: SET_EMAIL_ENV,
+      posture: fakePosture({ canMerge: true }),
+    });
+    // Not just the one check's detail — the WHOLE stdout payload, because the
+    // helper this check calls builds a `user:secret` pair and a leak of it
+    // anywhere in the report would be the damaging kind.
+    expect(stdout).not.toContain('wave-fixture@example.test');
+    expect(stdout).not.toContain('preflight-probe-not-a-credential');
   });
 });

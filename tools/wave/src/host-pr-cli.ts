@@ -52,10 +52,15 @@
  *   status       → `LandingHost.getPrStatus`
  *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
  *                  the three code-host checks (pr-merge-token, allow-auto-merge,
- *                  required-checks). Store-BLIND (no `--config`, no `--branch`) —
- *                  identical on every store kind, because landing is always on the
- *                  code host (ADR-0023 amendment / W10-F1). Builds the posture
- *                  reader from the resolved GitHub credential, like arm/merge/status.
+ *                  required-checks), plus `create-credentials` on a host whose
+ *                  `create` verb has a precondition the landing verbs do not share
+ *                  (today Bitbucket Cloud alone, where `create` needs
+ *                  BITBUCKET_EMAIL and the landing verbs do not). Store-BLIND (no
+ *                  `--config`, no `--branch`) — identical on every store kind,
+ *                  because landing is always on the code host (ADR-0023 amendment /
+ *                  W10-F1). Builds the posture reader from the resolved host
+ *                  credential, like arm/merge/status, and reads the ambient half
+ *                  from `deps.env`.
  *
  * Exit codes:
  *   0 — the op succeeded (`create`: the PR was created or an open one reused;
@@ -134,9 +139,14 @@ export interface HostPrDeps {
   /** `create`: injectable network seam (tests). Defaults inside `findOpenPr`/`createPr`. */
   http?: HttpProbe;
   /**
-   * `create` + `preflight`: the environment the GitHub credential is RESOLVED
-   * from (ADR-0029) — `GITHUB_TOKEN_CMD` (a lookup command) or `GITHUB_TOKEN`
-   * (ambient). Defaults to `process.env`.
+   * `create` + `preflight`: the environment the host credential is RESOLVED
+   * from (ADR-0029) — `<VAR>_CMD` (a lookup command) or the ambient `<VAR>`
+   * (`GITHUB_TOKEN` / `BITBUCKET_TOKEN`). Defaults to `process.env`.
+   *
+   * `preflight` reads it for a SECOND, non-secret purpose: it is the environment
+   * `preflightHost`'s `create-credentials` check grades `BITBUCKET_EMAIL` in.
+   * One injectable seam for both, so that check is drivable from a spec without
+   * any spec ever touching the real process environment.
    */
   env?: NodeJS.ProcessEnv;
   /** `preflight`: a posture reader to probe (tests). Production builds a `GitHubApi` from the env. */
@@ -180,6 +190,9 @@ function usage(message: string): number {
       '            failure. `arm` accepts the same flag with its own (partially deferred) semantics — see above.',
       '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url).',
       '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
+      '            On bitbucket it also reports create-credentials — an ADVISORY (it never changes the exit code)',
+      '            stating whether BITBUCKET_EMAIL is set, because `host-pr create` refuses without it while the',
+      '            landing verbs do not, and a wave calls create on every row.',
       '            Store-blind (no --config, no --branch) — identical on every store kind (ADR-0023 amendment).',
       '',
       '  --remote defaults to `git remote get-url origin`.',
@@ -560,21 +573,29 @@ function createCredsFor(host: Host, env: NodeJS.ProcessEnv | undefined): Creds {
 /**
  * The `preflight` verb — the code-host posture probe (ADR-0023 amendment). It is
  * store-BLIND: no `--config`, no store, no `--branch`. It builds a posture reader
- * from the RESOLVED GitHub credential (ADR-0029 — the same construction-time
- * token preflight as arm/merge/status), then grades the three code-host checks
+ * from the RESOLVED host credential (ADR-0029 — the same construction-time
+ * token preflight as arm/merge/status), then grades the code-host checks
  * via `preflightHost`.
  * Reports on every store kind identically — landing is always on the code host.
  *
  * Exit 0 = every check passed / advisory / unknown (a probe answer, not a block);
  * exit 1 = a check `fail`ed (allow-auto-merge OFF with required checks present, or
- * the token cannot merge PRs), or the host build/probe threw.
+ * the token cannot merge PRs), or the host build/probe threw. The Bitbucket
+ * `create-credentials` check is graded `advisory` by construction and therefore
+ * never reaches this exit code — read `checks`, not `$?`, for it.
  */
 async function runPreflight(info: HostInfo, remoteUrl: string, deps: HostPrDeps): Promise<number> {
   try {
     // The posture reader IS the landing adapter on both shipped hosts — one
     // construction, one credential preflight, three posture reads.
     const posture: LandingPosture = deps.posture ?? (await landingHostFor(info, remoteUrl, deps));
-    const report = await preflightHost(info.host, posture);
+    // `deps.env` is threaded through as the ONE environment this verb reads:
+    // the `create-credentials` check grades an ambient variable rather than a
+    // posture read, and routing it through the same injectable seam the
+    // credential resolve already uses keeps it exercisable from a spec instead
+    // of adding a second `process.env` read site. `undefined` → the engine's
+    // own `process.env` default.
+    const report = await preflightHost(info.host, posture, deps.env);
     printJson({ ok: report.ok, verb: 'preflight', host: report.host, checks: report.checks });
     return report.ok ? 0 : 1;
   } catch (err) {

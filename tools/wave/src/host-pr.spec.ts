@@ -48,9 +48,11 @@ import {
   type PrLandingStatus,
   type PrMergeability,
   type AutoMergeSetting,
+  type Host,
   type RequiredChecksInfo,
   type RulesetChecksInfo,
 } from './host-pr';
+import { BITBUCKET_EMAIL_VAR, bitbucketCreateCreds } from './adapters/bitbucket/bitbucket-api';
 
 // ─── HTTP seam fixture ───────────────────────────────────────────────────────
 
@@ -2235,27 +2237,38 @@ function fakePosture(opts: {
 const byName = (checks: { name: string; status: string; detail: string }[]) =>
   Object.fromEntries(checks.map((c) => [c.name, c]));
 
+/**
+ * `preflightHost` with an EXPLICIT environment on every call — empty unless a
+ * test says otherwise. Not sugar: the report now carries an ambient-credential
+ * check alongside the three posture reads, and `preflightHost`'s own default is
+ * `process.env`, so a two-argument call in a spec would let the machine running
+ * the suite decide the answer. Every assertion in this file grades an injected
+ * environment; none reads the real one, and none resolves a credential.
+ */
+const preflight = (host: Host, posture: LandingPosture, env: NodeJS.ProcessEnv = {}) =>
+  preflightHost(host, posture, env);
+
 describe('preflightHost (ADR-0023 amendment posture grading)', () => {
   it('reports exactly the three code-host checks and echoes the host', async () => {
-    const report = await preflightHost('github', fakePosture({ autoMerge: 'on', required: REQUIRED_ABSENT }));
+    const report = await preflight('github', fakePosture({ autoMerge: 'on', required: REQUIRED_ABSENT }));
     expect(report.host).toBe('github');
     expect(report.checks.map((c) => c.name)).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
   });
 
   it('reads required-checks against the DEFAULT branch (no branch argument)', async () => {
     let seen: string | undefined | 'UNCALLED' = 'UNCALLED';
-    await preflightHost('github', fakePosture({ onGetRequiredChecks: (b) => (seen = b) }));
+    await preflight('github', fakePosture({ onGetRequiredChecks: (b) => (seen = b) }));
     expect(seen).toBeUndefined(); // called with no arg → the default branch
   });
 
   describe('pr-merge-token', () => {
     it('pass when the token can merge', async () => {
-      const report = await preflightHost('github', fakePosture({ canMerge: true }));
+      const report = await preflight('github', fakePosture({ canMerge: true }));
       expect(byName(report.checks)['pr-merge-token'].status).toBe('pass');
     });
 
     it('FAIL (ok:false) with a write-access instruction when it cannot', async () => {
-      const report = await preflightHost('github', fakePosture({ canMerge: false }));
+      const report = await preflight('github', fakePosture({ canMerge: false }));
       const c = byName(report.checks)['pr-merge-token'];
       expect(c.status).toBe('fail');
       expect(c.detail).toMatch(/write/i);
@@ -2268,7 +2281,7 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     // on it, whichever of the two paths supplied it.
     it('never describes the token as "ambient" (ADR-0029), on either verdict', async () => {
       for (const canMerge of [true, false]) {
-        const report = await preflightHost('github', fakePosture({ canMerge }));
+        const report = await preflight('github', fakePosture({ canMerge }));
         const c = byName(report.checks)['pr-merge-token'];
         expect(c.detail).not.toMatch(/ambient/i);
         expect(c.detail).toContain('GITHUB_TOKEN');
@@ -2278,13 +2291,13 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
 
   describe('allow-auto-merge', () => {
     it('ON → pass', async () => {
-      const report = await preflightHost('github', fakePosture({ autoMerge: 'on', required: REQUIRED_PRESENT }));
+      const report = await preflight('github', fakePosture({ autoMerge: 'on', required: REQUIRED_PRESENT }));
       expect(byName(report.checks)['allow-auto-merge'].status).toBe('pass');
       expect(report.ok).toBe(true);
     });
 
     it('a visible OFF with required checks present → FAIL (ok:false) + the fix instruction', async () => {
-      const report = await preflightHost('github', fakePosture({ autoMerge: 'off', required: REQUIRED_PRESENT }));
+      const report = await preflight('github', fakePosture({ autoMerge: 'off', required: REQUIRED_PRESENT }));
       const c = byName(report.checks)['allow-auto-merge'];
       expect(c.status).toBe('fail');
       expect(c.detail).toMatch(/Settings/);
@@ -2293,14 +2306,14 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     });
 
     it('a visible OFF with NO required checks → advisory (a clean PR direct-merges today), never blocks', async () => {
-      const report = await preflightHost('github', fakePosture({ autoMerge: 'off', required: REQUIRED_ABSENT }));
+      const report = await preflight('github', fakePosture({ autoMerge: 'off', required: REQUIRED_ABSENT }));
       const c = byName(report.checks)['allow-auto-merge'];
       expect(c.status).toBe('advisory');
       expect(report.ok).toBe(true);
     });
 
     it('UNKNOWN (the token cannot see it) → unknown, never blocks, detail carries the manual-verify/permission fix and demands no admin', async () => {
-      const report = await preflightHost('github', fakePosture({ autoMerge: 'unknown', required: REQUIRED_PRESENT }));
+      const report = await preflight('github', fakePosture({ autoMerge: 'unknown', required: REQUIRED_PRESENT }));
       const c = byName(report.checks)['allow-auto-merge'];
       expect(c.status).toBe('unknown');
       expect(report.ok).toBe(true); // absence of evidence is not a finding
@@ -2312,7 +2325,7 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
 
   describe('required-checks', () => {
     it('present → advisory, names the contexts, and says --auto will ARM', async () => {
-      const report = await preflightHost('github', fakePosture({ required: REQUIRED_PRESENT }));
+      const report = await preflight('github', fakePosture({ required: REQUIRED_PRESENT }));
       const c = byName(report.checks)['required-checks'];
       expect(c.status).toBe('advisory');
       expect(c.detail).toContain('ci/test');
@@ -2320,14 +2333,14 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     });
 
     it('absent → advisory, states that confirming means an IMMEDIATE merge', async () => {
-      const report = await preflightHost('github', fakePosture({ required: REQUIRED_ABSENT }));
+      const report = await preflight('github', fakePosture({ required: REQUIRED_ABSENT }));
       const c = byName(report.checks)['required-checks'];
       expect(c.status).toBe('advisory');
       expect(c.detail).toMatch(/immediate/i);
     });
 
     it('unknown → unknown (report-only), never blocks', async () => {
-      const report = await preflightHost('github', fakePosture({ required: REQUIRED_UNKNOWN }));
+      const report = await preflight('github', fakePosture({ required: REQUIRED_UNKNOWN }));
       expect(byName(report.checks)['required-checks'].status).toBe('unknown');
       expect(report.ok).toBe(true);
     });
@@ -2339,7 +2352,7 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     for (const canMerge of [true, false]) {
       for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
         for (const required of [REQUIRED_PRESENT, REQUIRED_ABSENT, REQUIRED_UNKNOWN]) {
-          const report = await preflightHost('github', fakePosture({ canMerge, autoMerge, required }));
+          const report = await preflight('github', fakePosture({ canMerge, autoMerge, required }));
           for (const check of report.checks) {
             expect(check.detail).not.toMatch(/ambient/i);
           }
@@ -2349,7 +2362,7 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
   });
 
   it('unknown + advisory NEVER drag ok to false — only a fail blocks', async () => {
-    const report = await preflightHost(
+    const report = await preflight(
       'github',
       fakePosture({ canMerge: true, autoMerge: 'unknown', required: REQUIRED_UNKNOWN }),
     );
@@ -2367,8 +2380,8 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
   describe('bitbucket grading', () => {
     it('an OFF auto-merge setting is ADVISORY here, where the same value is a hard fail on github', async () => {
       const posture = fakePosture({ canMerge: true, autoMerge: 'off', required: REQUIRED_PRESENT });
-      const bb = await preflightHost('bitbucket', posture);
-      const gh = await preflightHost('github', posture);
+      const bb = await preflight('bitbucket', posture);
+      const gh = await preflight('github', posture);
 
       expect(byName(bb.checks)['allow-auto-merge'].status).toBe('advisory');
       expect(bb.ok).toBe(true);
@@ -2379,7 +2392,7 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     });
 
     it('the bitbucket auto-merge detail states the MEASUREMENT and what --auto does instead', async () => {
-      const report = await preflightHost('bitbucket', fakePosture({ autoMerge: 'off' }));
+      const report = await preflight('bitbucket', fakePosture({ autoMerge: 'off' }));
       const detail = byName(report.checks)['allow-auto-merge'].detail;
       expect(detail).toMatch(/no per-pull-request auto-merge arming primitive/i);
       expect(detail).toMatch(/merge check/i);
@@ -2394,9 +2407,9 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     // answers must be told apart in the report — while none of them may promise
     // an arm, because none of them changes what the engine can call.
     it('the three read answers are reported APART, and each names the branch restriction it came from', async () => {
-      const on = byName((await preflightHost('bitbucket', fakePosture({ autoMerge: 'on' }))).checks)['allow-auto-merge'];
-      const off = byName((await preflightHost('bitbucket', fakePosture({ autoMerge: 'off' }))).checks)['allow-auto-merge'];
-      const unk = byName((await preflightHost('bitbucket', fakePosture({ autoMerge: 'unknown' }))).checks)['allow-auto-merge'];
+      const on = byName((await preflight('bitbucket', fakePosture({ autoMerge: 'on' }))).checks)['allow-auto-merge'];
+      const off = byName((await preflight('bitbucket', fakePosture({ autoMerge: 'off' }))).checks)['allow-auto-merge'];
+      const unk = byName((await preflight('bitbucket', fakePosture({ autoMerge: 'unknown' }))).checks)['allow-auto-merge'];
 
       expect(on.detail).toMatch(/HAS Bitbucket's "Allow automatic merge when builds pass"/);
       expect(off.detail).toMatch(/does NOT have Bitbucket's "Allow automatic merge when builds pass"/);
@@ -2415,7 +2428,7 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
       for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
         for (const required of [REQUIRED_PRESENT, REQUIRED_ABSENT, REQUIRED_UNKNOWN]) {
           const check = byName(
-            (await preflightHost('bitbucket', fakePosture({ canMerge: true, autoMerge, required }))).checks,
+            (await preflight('bitbucket', fakePosture({ canMerge: true, autoMerge, required }))).checks,
           )['allow-auto-merge'];
           expect(check.status).not.toBe('fail');
           // `unknown` keeps its real meaning: a read that failed, nothing else.
@@ -2426,10 +2439,10 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
 
     it('required-checks present does NOT promise an arm on bitbucket (the github sentence would be false here)', async () => {
       const bbDetail = byName(
-        (await preflightHost('bitbucket', fakePosture({ required: REQUIRED_PRESENT }))).checks,
+        (await preflight('bitbucket', fakePosture({ required: REQUIRED_PRESENT }))).checks,
       )['required-checks'].detail;
       const ghDetail = byName(
-        (await preflightHost('github', fakePosture({ required: REQUIRED_PRESENT }))).checks,
+        (await preflight('github', fakePosture({ required: REQUIRED_PRESENT }))).checks,
       )['required-checks'].detail;
 
       expect(ghDetail).toMatch(/will ARM these PRs/);
@@ -2438,14 +2451,14 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     });
 
     it('the pr-merge-token detail names BITBUCKET_TOKEN, and its pass discloses that a blind read is not proof', async () => {
-      const pass = byName((await preflightHost('bitbucket', fakePosture({ canMerge: true }))).checks)['pr-merge-token'];
+      const pass = byName((await preflight('bitbucket', fakePosture({ canMerge: true }))).checks)['pr-merge-token'];
       expect(pass.status).toBe('pass');
       expect(pass.detail).toMatch(/BITBUCKET_TOKEN/);
       expect(pass.detail).not.toMatch(/GITHUB_TOKEN/);
       // Absence of evidence is disclosed, never dressed up as a proven grant.
       expect(pass.detail).toMatch(/absence of evidence/i);
 
-      const fail = byName((await preflightHost('bitbucket', fakePosture({ canMerge: false }))).checks)['pr-merge-token'];
+      const fail = byName((await preflight('bitbucket', fakePosture({ canMerge: false }))).checks)['pr-merge-token'];
       expect(fail.status).toBe('fail');
       expect(fail.detail).toMatch(/write:repository:bitbucket/);
     });
@@ -2453,9 +2466,9 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     it('a read-only credential is the ONLY bitbucket posture that blocks', async () => {
       for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
         for (const required of [REQUIRED_PRESENT, REQUIRED_ABSENT, REQUIRED_UNKNOWN]) {
-          const ok = await preflightHost('bitbucket', fakePosture({ canMerge: true, autoMerge, required }));
+          const ok = await preflight('bitbucket', fakePosture({ canMerge: true, autoMerge, required }));
           expect(ok.ok).toBe(true);
-          const blocked = await preflightHost('bitbucket', fakePosture({ canMerge: false, autoMerge, required }));
+          const blocked = await preflight('bitbucket', fakePosture({ canMerge: false, autoMerge, required }));
           expect(blocked.ok).toBe(false);
         }
       }
@@ -2465,10 +2478,159 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
       // A regression net for the additive claim: the github texts asserted
       // across this whole describe block still hold, so the bitbucket branches
       // added behaviour rather than rewriting the shipped report.
-      const report = await preflightHost('github', fakePosture({ canMerge: true, autoMerge: 'on', required: REQUIRED_PRESENT }));
+      const report = await preflight('github', fakePosture({ canMerge: true, autoMerge: 'on', required: REQUIRED_PRESENT }));
       expect(byName(report.checks)['pr-merge-token'].detail).toMatch(/GITHUB_TOKEN/);
       expect(byName(report.checks)['allow-auto-merge'].detail).toMatch(/"Allow auto-merge" is ON/);
       expect(byName(report.checks)['required-checks'].detail).toMatch(/Required: ci\/test, ci\/lint\./);
+    });
+  });
+
+  // ─── create-credentials (the BITBUCKET_EMAIL advisory) ──────────────────
+  //
+  // The gap this closes: the email is an OPTIONAL half of the Bitbucket auth
+  // header (absent → Bearer, which the LANDING verbs accept), so the adapter
+  // constructs, its construction-time preflight passes, and all three posture
+  // checks above go green without ever looking at the variable. The refusal
+  // lives one verb on, in `host-pr create` — which rides the Worker terminator,
+  // per row, after dispatch. This check states it BEFORE a row burns.
+  //
+  // Two things are settled and asserted as settled: the grade is `advisory`
+  // (a land-only consumer has a healthy posture and must not be refused), and
+  // the DETAIL — not the status — is what has to carry the consequence.
+
+  describe('create-credentials (the BITBUCKET_EMAIL advisory)', () => {
+    const NO_EMAIL: NodeJS.ProcessEnv = {};
+    const WITH_EMAIL: NodeJS.ProcessEnv = { [BITBUCKET_EMAIL_VAR]: 'wave-fixture@example.test' };
+    const CREATE_CREDENTIALS = 'create-credentials';
+
+    /** The report's create-credentials check, or `undefined` when it is omitted. */
+    const check = async (host: Host, env: NodeJS.ProcessEnv) =>
+      (await preflight(host, fakePosture({ canMerge: true }), env)).checks.find(
+        (c) => c.name === CREATE_CREDENTIALS,
+      );
+
+    it('bitbucket + the variable UNSET → advisory, and ok stays TRUE', async () => {
+      const report = await preflight('bitbucket', fakePosture({ canMerge: true }), NO_EMAIL);
+      const c = byName(report.checks)[CREATE_CREDENTIALS];
+      expect(c.status).toBe('advisory');
+      // The settled grade, asserted as an invariant and not as a coincidence:
+      // `ok` is "no check is fail", so an advisory may never move it.
+      expect(report.ok).toBe(true);
+    });
+
+    it('bitbucket + the variable SET → pass', async () => {
+      expect((await check('bitbucket', WITH_EMAIL))?.status).toBe('pass');
+    });
+
+    it('an EMPTY-STRING value is graded exactly as unset — the rule `create` itself applies', async () => {
+      // Not a re-derived convention: `bitbucketCreateCreds` refuses `''` as well
+      // as `undefined`, and this check calls that helper rather than re-testing
+      // the rule, so the two cannot disagree.
+      expect((await check('bitbucket', { [BITBUCKET_EMAIL_VAR]: '' }))?.status).toBe('advisory');
+    });
+
+    it('the advisory detail states BOTH halves — landing unaffected, AND create refuses on every wave row', async () => {
+      const detail = (await check('bitbucket', NO_EMAIL))?.detail ?? '';
+
+      // Half one: the landing verbs are fine. Without this a reader concludes
+      // the host is broken and stops.
+      expect(detail).toMatch(/landing verbs are UNAFFECTED/i);
+      expect(detail).toMatch(/arm \| merge \| status \| preflight/);
+      expect(detail).toMatch(/Bearer/);
+
+      // Half two: the consequence. `advisory` alone reads as "ignorable" — the
+      // detail is the only place a reader learns that a WAVE fails on it.
+      expect(detail).toMatch(/host-pr create/);
+      expect(detail).toMatch(/refuse/i);
+      expect(detail).toMatch(/Worker\s+terminator/i);
+      expect(detail).toMatch(/EVERY row/i);
+
+      // And the remedy, named where the reader is (an identifier, not a secret
+      // — it must not send anyone to the ADR-0029 credential seam).
+      expect(detail).toContain(BITBUCKET_EMAIL_VAR);
+      expect(detail).toMatch(/not a secret/i);
+    });
+
+    it('the advisory QUOTES the refusal `bitbucketCreateCreds` actually throws — one rule, one owner', async () => {
+      // The drift guard, and the reason this check calls the create helper
+      // instead of re-implementing its precondition: if that refusal text (or
+      // the precondition behind it) ever changes, the advisory follows it
+      // automatically. A second, parallel copy of the rule would not.
+      let refusal: string | undefined;
+      try {
+        bitbucketCreateCreds('token-fixture-not-a-credential', undefined);
+      } catch (err) {
+        refusal = (err as Error).message;
+      }
+      expect(refusal).toBeDefined();
+
+      const detail = (await check('bitbucket', NO_EMAIL))?.detail ?? '';
+      expect(detail).toContain(refusal as string);
+    });
+
+    it('github NEVER reports it — variable unset AND variable set (no fail, no spurious advisory)', async () => {
+      // The chosen host-aware behaviour is OMISSION, not an inert
+      // `not-applicable` row: GitHub's create credential is the same token
+      // `pr-merge-token` already grades, so a row here would be one fact under
+      // two names — and omission keeps the shipped GitHub report byte-identical.
+      for (const env of [NO_EMAIL, WITH_EMAIL]) {
+        const report = await preflight('github', fakePosture({ canMerge: true }), env);
+        expect(report.checks.map((c) => c.name)).toEqual([
+          'pr-merge-token',
+          'allow-auto-merge',
+          'required-checks',
+        ]);
+        expect(report.checks.find((c) => c.name === CREATE_CREDENTIALS)).toBeUndefined();
+      }
+    });
+
+    it('is ADDITIVE: the three posture checks are byte-identical across both hosts and both environments', async () => {
+      // AC5, asserted structurally rather than by re-quoting the shipped detail
+      // strings: whatever the three posture checks say, the environment cannot
+      // change it, and the new check is APPENDED after them.
+      const posture = fakePosture({ canMerge: true, autoMerge: 'off', required: REQUIRED_PRESENT });
+      for (const host of ['github', 'bitbucket'] as Host[]) {
+        const a = await preflight(host, posture, NO_EMAIL);
+        const b = await preflight(host, posture, WITH_EMAIL);
+        expect(a.checks.slice(0, 3)).toEqual(b.checks.slice(0, 3));
+        expect(a.checks.slice(0, 3).map((c) => c.name)).toEqual([
+          'pr-merge-token',
+          'allow-auto-merge',
+          'required-checks',
+        ]);
+      }
+      // …and on GitHub the whole report is identical, not just its first three.
+      expect(await preflight('github', posture, NO_EMAIL)).toEqual(
+        await preflight('github', posture, WITH_EMAIL),
+      );
+    });
+
+    it('is never a `fail` on ANY bitbucket posture, and never drags ok down', async () => {
+      for (const env of [NO_EMAIL, WITH_EMAIL]) {
+        for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
+          for (const required of [REQUIRED_PRESENT, REQUIRED_ABSENT, REQUIRED_UNKNOWN]) {
+            const report = await preflight(
+              'bitbucket',
+              fakePosture({ canMerge: true, autoMerge, required }),
+              env,
+            );
+            expect(byName(report.checks)[CREATE_CREDENTIALS].status).not.toBe('fail');
+            expect(report.ok).toBe(true);
+          }
+        }
+      }
+    });
+
+    it('grades PRESENCE only — the variable value never reaches the report, on either verdict', async () => {
+      // The helper this check calls builds a `user:secret` pair. Neither half of
+      // it, nor the sentinel token passed in place of a real credential, may
+      // appear anywhere in the emitted report.
+      for (const env of [NO_EMAIL, WITH_EMAIL]) {
+        const report = await preflight('bitbucket', fakePosture({ canMerge: true }), env);
+        const serialised = JSON.stringify(report);
+        expect(serialised).not.toContain('wave-fixture@example.test');
+        expect(serialised).not.toContain('preflight-probe-not-a-credential');
+      }
     });
   });
 });
