@@ -24,3 +24,27 @@ This was **verified against the server pilot's live Linear workspace** (2026-06-
 - **Opaque id (ADR-0001/0013):** the id the facet mints is the Document **uuid** (stable); slices reference it verbatim as their `Parent` backlink, and *consumed* derives by exact id match over those backlinks — identical to every other store, because `Parent` is read from the explicit Header-Block field, never inferred.
 - **Open point — the forward cross-reference:** GitHub renders "PRD referenced by #N" for free from the `Parent` issue→issue cross-ref. Linear has no automatic Document←Issue back-reference, so the human-visible "this PRD was sliced" signal needs a Linear-specific mechanism. The **wave ≈ Project** binding above is the cleanest answer (slices and PRD share a Project); a mention/link from each slice is the fallback. This is a wave-modelling decision deferred to the M2 Linear adapter build, not settled here.
 - **No engine change.** The Document-facet contract ([issue-store.ts](../../tools/wave/src/adapters/issue-store.ts) L118-141) already expresses everything; this ADR only fixes the Linear adapter's *implementation* choice ahead of the M2 build so it isn't re-litigated. GitHub and MarkdownFs are unaffected.
+
+### Amendment — the unbound half: no `project` binding is required, and an unbound listing is TEAM-scoped, never workspace-wide
+
+The M2 build read the "optional Project binding" above as *mandatory*, and the facet ended up locked behind it. As built, `LinearStoreConfig.project` triple-dutied:
+
+1. **candidate-pool filter** — with it set, `listOpen` draws only that project's issues (ADR-0020);
+2. **mandatory Document home** — `createDocument` refused to mint a Document without it, throwing a client-side `LinearApiError` before any wire call;
+3. **Document-listing filter** — `listDocuments` sent the project predicate when bound, and *no filter at all* otherwise: a workspace-wide listing, not even team-scoped.
+
+Those three do not want the same answer. A consumer whose model is **per-member / per-feature Projects over a team-wide candidate pool** must leave `project` unset for (1), and thereby lost the whole facet to (2) and got a foreign-team-polluted PRD panel from (3). The refusal was **adapter policy, not a platform constraint** — this ADR's own live probe above observed the team-scoped shape natively (`project: null`, `initiative: null`, attached only to a **team**).
+
+So both halves are now defined, and the project binding stays exactly what this ADR said it was — optional:
+
+- **`createDocument`** attaches to the one parent it has: the bound project's `projectId` when a project is bound (unchanged), else `teamId` from the **already-required** `team` config. There is no orphan case in either arm — a team is always known — so the refusal has nothing left to protect.
+- **`listDocuments`** is always scoped: the bound project's documents when a project is bound (unchanged), else the configured team's, narrowed **server-side** via `DocumentFilter.team`. The unbound arm pays one catalog round-trip it used to skip; a listing scoped to the wrong thing is not worth saving it.
+- **No new config fields.** Both arms read `team`/`project`, which the store config already carries.
+
+Pinned against Linear's own published GraphQL schema (`linear/linear` → `packages/sdk/src/schema.graphql`) and its agent-facing `save_document` contract, both read 2026-08-10: `DocumentCreateInput.teamId: String` exists (doc-string `[Internal] Related team for the document.`), `DocumentFilter.team: NullableTeamFilter` exists with `id: IDComparator`, and `save_document` states the governing rule — on create, "exactly one parent (`project`, `issue`, `initiative`, `cycle`, or `team`) must be specified", `team` being "Attaches the document to the team". A team parent is a first-class Document parent, not a workaround. The `[Internal]` annotation on `teamId` is the one unproven spot: it is a docs-visibility marker on a field the public schema publishes and the platform's own document tooling exposes as a parent, but no live `documentCreate` with `teamId` has been run from this repo.
+
+### The `PRD: ` title prefix is a CONSUMER convention — marker recognition is deliberately deferred
+
+`to-prd` titles its documents `PRD: <feature title>`. That prefix is a **consumer-side convention for humans reading a list**, not a contract, and no adapter parses it: `listDocuments` returns every Document in scope, and `wave-plan`'s PRD panel is convention-blind. It has to be — nothing structurally distinguishes a PRD Document from any other Document a human wrote in the same team, and the facet's real guarantee is the one this ADR is about (a Document is categorically not an issue, so it can never pollute `listOpen`), which holds whatever the title says.
+
+Adapter-level PRD-marker recognition — a title prefix, an icon, a dedicated Linear label-equivalent — is **deliberately deferred**, not overlooked. Deciding it means deciding what a marker *is* across every store (GitHub has no Document primitive at all and models a PRD as a `prd`-labelled issue), and the unbound-facet fix does not need it: a team-scoped listing over one team's documents is already a usable panel. Revisit it when a consumer's panel is genuinely noisy with non-PRD documents — that is the evidence this decision is waiting on.

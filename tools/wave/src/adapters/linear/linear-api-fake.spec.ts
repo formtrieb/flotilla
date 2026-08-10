@@ -34,6 +34,64 @@ describe('InMemoryLinearApi native blocked-by write half (ADR-0020)', () => {
   });
 });
 
+// ── Document facet: the fake models a Document's TEAM attachment (ADR-0017
+// amendment), so both directions of the scoped listing are ASSERTED here, not
+// narrated: an unbound api is team-scoped, a project-bound one is unchanged.
+describe('InMemoryLinearApi Document facet — team attachment (ADR-0017 amendment)', () => {
+  describe('without a bound project (the team-pool consumer shape)', () => {
+    it("createDocument mints a document the api's own team listing returns", async () => {
+      const api = new InMemoryLinearApi('EX');
+      const { id } = await api.createDocument({ title: 'PRD: thing', content: '# body\n' });
+      expect(await api.listDocuments()).toEqual([{ id, title: 'PRD: thing', content: '# body\n' }]);
+    });
+
+    it("listDocuments returns ONLY the configured team's documents", async () => {
+      const api = new InMemoryLinearApi('EX');
+      const mine = (await api.createDocument({ title: 'mine', content: 'a' })).id;
+      const sameTeam = api.seedDocument({ title: 'a teammate wrote this', content: 'b', team: 'EX' });
+      api.seedDocument({ title: 'another team entirely', content: 'c', team: 'OTHER' });
+      api.seedDocument({ title: "some project's doc", content: 'd', project: 'Unrelated Project' });
+
+      const listed = (await api.listDocuments()).map((d) => d.id);
+      expect(listed).toEqual([mine, sameTeam]); // and NOT the foreign team's / the project's
+    });
+
+    it('getDocument resolves an out-of-scope id — the listing is scoped, the fetch is not', async () => {
+      const api = new InMemoryLinearApi('EX');
+      const foreign = api.seedDocument({ title: 'another team entirely', content: 'c', team: 'OTHER' });
+      expect(await api.listDocuments()).toEqual([]);
+      await expect(api.getDocument(foreign)).resolves.toEqual({ id: foreign, title: 'another team entirely', content: 'c' });
+    });
+  });
+
+  describe('with a bound project (unchanged)', () => {
+    it('createDocument attaches to the PROJECT, and the project listing returns it', async () => {
+      const api = new InMemoryLinearApi('EX', 'Example Project');
+      const { id } = await api.createDocument({ title: 'PRD: thing', content: '# body\n' });
+      expect(await api.listDocuments()).toEqual([{ id, title: 'PRD: thing', content: '# body\n' }]);
+    });
+
+    it("listDocuments stays project-scoped — a team-attached document of the SAME team is not drawn in", async () => {
+      const api = new InMemoryLinearApi('EX', 'Example Project');
+      const mine = (await api.createDocument({ title: 'mine', content: 'a' })).id;
+      api.seedDocument({ title: 'team-attached, same team', content: 'b', team: 'EX' });
+      api.seedDocument({ title: 'another project', content: 'c', project: 'Other Project' });
+
+      expect((await api.listDocuments()).map((d) => d.id)).toEqual([mine]);
+    });
+
+    it('a project-bound api and an unbound one over the same team see different scopes', async () => {
+      const bound = new InMemoryLinearApi('EX', 'Example Project');
+      const unbound = new InMemoryLinearApi('EX');
+      await bound.createDocument({ title: 'project doc', content: 'a' });
+      await unbound.createDocument({ title: 'team doc', content: 'b' });
+      // separate instances hold separate substrates — each sees exactly its own.
+      expect((await bound.listDocuments()).map((d) => d.title)).toEqual(['project doc']);
+      expect((await unbound.listDocuments()).map((d) => d.title)).toEqual(['team doc']);
+    });
+  });
+});
+
 describe('InMemoryLinearApi store-preflight substrate (FOR-12)', () => {
   it('hasGitHubIntegration defaults to true and is togglable', async () => {
     const api = new InMemoryLinearApi();

@@ -36,6 +36,25 @@ const DEFAULT_STATE_CATALOG: { name: string; type: LinearStateType }[] = [
   { name: 'Duplicate', type: 'duplicate' }, // live category (e2e find 2026-07-15) — NOT 'canceled'
 ];
 
+/**
+ * The stored Document substrate (ADR-0017). Linear attaches a Document to
+ * exactly ONE parent; this fake models the two arms the adapter can mint — the
+ * bound project when the api is project-bound, else the api's own team — so a
+ * scoped listing is assertable rather than narrated. Exactly one of the two
+ * parent fields is set on anything {@link InMemoryLinearApi.createDocument}
+ * mints; {@link InMemoryLinearApi.seedDocument} can set either, so a foreign
+ * team's / foreign project's document can exist in the substrate at all.
+ */
+interface StoredDocument {
+  id: string;
+  title: string;
+  content: string;
+  /** The team key this Document hangs off, when team-attached. */
+  teamKey?: string;
+  /** The project name this Document hangs off, when project-attached. */
+  project?: string;
+}
+
 /** The stored issue substrate — `stateType` is resolved from the catalog on read. */
 interface StoredIssue {
   identifier: string;
@@ -51,7 +70,7 @@ export class InMemoryLinearApi implements LinearApi {
   private readonly issues = new Map<string, StoredIssue>();
   private readonly commentsByIssue = new Map<string, string[]>();
   private readonly attachmentsByIssue = new Map<string, LinearPrAttachment[]>();
-  private readonly documents = new Map<string, { id: string; title: string; content: string }>();
+  private readonly documents = new Map<string, StoredDocument>();
   /** blocked identifier → its NATIVE blocker identifiers (ADR-0020 read-union). */
   private readonly nativeBlockedBy = new Map<string, string[]>();
   private catalog: { name: string; type: LinearStateType }[] = [...DEFAULT_STATE_CATALOG];
@@ -64,9 +83,22 @@ export class InMemoryLinearApi implements LinearApi {
   private counter = 0; // per-instance; never reset between calls
   private docCounter = 0;
   private readonly teamKey: string;
+  /**
+   * The bound project, mirroring `RealLinearApi`'s optional `project`
+   * constructor arg. Only the Document facet reads it (ADR-0017): with a
+   * project bound the facet is project-scoped, without one it falls back to
+   * this fake's own {@link teamKey}. Left undefined by every existing caller,
+   * which is exactly the team-pool consumer's shape.
+   *
+   * Named `boundProject`, not `project` — this class already has a private
+   * `project(issue)` PROJECTION method (StoredIssue → LinearIssue) and the
+   * field would shadow it.
+   */
+  private readonly boundProject: string | undefined;
 
-  constructor(teamKey = 'EX') {
+  constructor(teamKey = 'EX', project?: string) {
     this.teamKey = teamKey;
+    this.boundProject = project;
   }
 
   /**
@@ -207,20 +239,45 @@ export class InMemoryLinearApi implements LinearApi {
   }
 
   // ── Document facet substrate (ADR-0017) — a separate store from issues ──────
+
+  /**
+   * Mint a Document under this api's ONE parent — the bound project when there
+   * is one, else its team — mirroring `RealLinearApi.createDocument`'s two
+   * arms. Never parentless, because a team is always known.
+   */
   async createDocument(input: { title: string; content: string }): Promise<{ id: string }> {
     const id = `doc-${++this.docCounter}`;
-    this.documents.set(id, { id, title: input.title, content: input.content });
+    this.documents.set(id, {
+      id,
+      title: input.title,
+      content: input.content,
+      ...(this.boundProject !== undefined
+        ? { project: this.boundProject }
+        : { teamKey: this.teamKey }),
+    });
     return { id };
   }
 
+  /** Fetch by id — deliberately NOT scope-filtered, mirroring `document(id)`: an id the caller holds resolves whatever its parent. */
   async getDocument(id: string): Promise<{ id: string; title: string; content: string }> {
     const doc = this.documents.get(id);
     if (!doc) throw new Error(`Linear document not found: ${id}`);
-    return { ...doc };
+    return projectDocument(doc);
   }
 
+  /**
+   * The Documents in this api's own scope: the bound project's when a project
+   * is bound, else this api's team's — never every document in the substrate
+   * (`RealLinearApi`'s server-side `DocumentFilter`, modelled in memory).
+   */
   async listDocuments(): Promise<{ id: string; title: string; content: string }[]> {
-    return [...this.documents.values()].map((d) => ({ ...d }));
+    return [...this.documents.values()]
+      .filter((d) =>
+        this.boundProject !== undefined
+          ? d.project === this.boundProject
+          : d.teamKey === this.teamKey,
+      )
+      .map(projectDocument);
   }
 
   // ── test affordances (mirror InMemoryGitHubApi's setClosingPr shape) ────────
@@ -320,6 +377,28 @@ export class InMemoryLinearApi implements LinearApi {
   }
 
   /**
+   * Seed a Document with an EXPLICIT parent (ADR-0017 amendment): a document
+   * belonging to another team, or to another project, or to this very team —
+   * whatever the scoped listing is supposed to keep or drop. This is the only
+   * way such a document can enter the substrate at all, since
+   * {@link createDocument} can only ever mint one under this api's OWN parent,
+   * so without it a scope filter is untestable (it would trivially keep
+   * everything it could see). Returns the minted id. NOT part of `LinearApi` —
+   * mirrors `addNativeRelation`'s test-only stance.
+   */
+  seedDocument(doc: { title: string; content?: string; team?: string; project?: string }): string {
+    const id = `doc-${++this.docCounter}`;
+    this.documents.set(id, {
+      id,
+      title: doc.title,
+      content: doc.content ?? '',
+      ...(doc.team !== undefined ? { teamKey: doc.team } : {}),
+      ...(doc.project !== undefined ? { project: doc.project } : {}),
+    });
+    return id;
+  }
+
+  /**
    * Test affordance (FOR-64 / consumer KW-F2): make the next `times` calls to
    * {@link setState} for `identifier` resolve successfully WITHOUT actually
    * changing the stored state — models the live silent-transition failure
@@ -375,6 +454,11 @@ export class InMemoryLinearApi implements LinearApi {
     if (!name) throw new Error('state catalog has no `completed`-type state');
     return name;
   }
+}
+
+/** Drop the parent bookkeeping — the seam returns the wire shape only (`{ id, title, content }`). */
+function projectDocument(doc: StoredDocument): { id: string; title: string; content: string } {
+  return { id: doc.id, title: doc.title, content: doc.content };
 }
 
 /**

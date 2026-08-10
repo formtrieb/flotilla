@@ -138,9 +138,21 @@ export interface LinearApi {
    */
   listStates(): Promise<{ name: string; type: LinearStateType }[]>;
   // Document facet substrate (ADR-0017) — native Documents, categorically not issues:
-  /** Real impl requires a bound `project` and refuses to mint an orphan Document — a clear `LinearApiError` thrown before any wire call; the in-memory fake is lenient (no project required). */
+  /**
+   * Create a native Document under the ONE parent the api is bound to: the
+   * configured `project` when one is bound, else the configured `team`
+   * (ADR-0017 amendment — the facet needs no project binding, and a
+   * team-attached Document is Linear's own native shape). Never an orphan:
+   * `team` is required config, so there is always a parent.
+   */
   createDocument(input: { title: string; content: string }): Promise<{ id: string }>;
-  /** Fetch a native Document; throws on an unknown id. */
+  /** Fetch a native Document; throws on an unknown id. Never scope-filtered — an id the caller already holds resolves. */
   getDocument(id: string): Promise<{ id: string; title: string; content: string }>;
+  /**
+   * The Documents in the api's own scope — the bound `project`'s when one is
+   * bound, else the configured `team`'s (ADR-0017 amendment). Never
+   * workspace-wide: a PRD panel showing every team's documents is not this
+   * consumer's panel.
+   */
   listDocuments(): Promise<{ id: string; title: string; content: string }[]>;
 }

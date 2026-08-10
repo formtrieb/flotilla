@@ -599,6 +599,9 @@ describe('RealLinearApi', () => {
           ResolveTeamCatalog: () => teamCatalogResponse(),
           ResolveProject: () => ({ status: 200, json: { data: { team: { projects: { nodes: [{ id: 'proj-1', name: 'Example Project' }] } } } } }),
           CreateDocument: (req) => {
+            // UNCHANGED direction (ADR-0017 amendment): a project-bound api
+            // still sends `projectId` and ONLY `projectId` — the exact-match
+            // assertion is what proves no `teamId` crept in beside it.
             expect(req.variables).toEqual({
               input: { title: 'PRD: thing', content: '# body\n', projectId: 'proj-1' },
             });
@@ -611,12 +614,33 @@ describe('RealLinearApi', () => {
       expect(http.requests.some((r) => r.query.includes('CreateDocument'))).toBe(true);
     });
 
-    it('throws LinearApiError BEFORE any wire call when no project is bound (no silent orphan document)', async () => {
-      const { api, http } = makeApi({}); // no project configured, no routes needed — nothing may be sent
-      await expect(api.createDocument({ title: 'T', content: 'C' })).rejects.toSatisfy(
-        (e: unknown) => e instanceof LinearApiError && e.op === 'CreateDocument' && /project/.test(e.message),
-      );
-      expect(http.requests).toHaveLength(0);
+    it('attaches to the TEAM when no project is bound — no refusal, no orphan (ADR-0017 amendment)', async () => {
+      // The team-pool consumer's shape: `project` is deliberately unset (it
+      // would also narrow the candidate pool, ADR-0020), and the facet must
+      // still work. The Document hangs off the REQUIRED team instead.
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        CreateDocument: (req) => {
+          expect(req.variables).toEqual({
+            input: { title: 'PRD: thing', content: '# body\n', teamId: 'team-uuid-1' },
+          });
+          return { status: 200, json: { data: { documentCreate: { success: true, document: { id: 'doc-uuid-2' } } } } };
+        },
+      });
+      await expect(api.createDocument({ title: 'PRD: thing', content: '# body\n' })).resolves.toEqual({ id: 'doc-uuid-2' });
+      // exactly one parent goes on the wire — never both, never neither.
+      const sent = (http.requests.find((r) => r.query.includes('CreateDocument'))!.variables as { input: Record<string, unknown> }).input;
+      expect(sent.projectId).toBeUndefined();
+      // and no project resolution was attempted for an api that has no project.
+      expect(http.requests.some((r) => r.query.includes('ResolveProject'))).toBe(false);
+    });
+
+    it('surfaces an unknown team LOUDLY rather than minting a parentless document', async () => {
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => ({ status: 200, json: { data: { teams: { nodes: [] } } } }),
+      });
+      await expect(api.createDocument({ title: 'T', content: 'C' })).rejects.toThrow(/team not found/i);
+      expect(http.requests.some((r) => r.query.includes('CreateDocument'))).toBe(false);
     });
   });
 
@@ -663,6 +687,9 @@ describe('RealLinearApi', () => {
           ResolveProject: () => ({ status: 200, json: { data: { team: { projects: { nodes: [{ id: 'proj-1', name: 'Example Project' }] } } } } }),
           ListDocuments: (req) => {
             const vars = req.variables as { filter?: unknown; first: number; after?: string };
+            // UNCHANGED direction (ADR-0017 amendment): the project predicate
+            // alone — the exact-match assertion proves no team predicate was
+            // added beside it.
             expect(vars.filter).toEqual({ project: { id: { eq: 'proj-1' } } });
             expect(vars.first).toBe(100);
             if (vars.after === undefined) {
@@ -682,15 +709,30 @@ describe('RealLinearApi', () => {
       ]);
     });
 
-    it('lists workspace-wide (no filter, no catalog resolution) when no project is bound', async () => {
+    it("narrows SERVER-side to the configured team's documents when no project is bound (ADR-0017 amendment)", async () => {
+      // Was: an UNFILTERED query — workspace-wide, not even team-scoped, so a
+      // team-pool consumer's PRD panel listed every other team's documents.
       const { api, http } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
         ListDocuments: (req) => {
-          expect((req.variables as { filter?: unknown }).filter).toBeUndefined();
+          expect((req.variables as { filter?: unknown }).filter).toEqual({ team: { id: { eq: 'team-uuid-1' } } });
           return { status: 200, json: { data: { documents: { nodes: [{ id: 'doc-9', title: 'T', content: 'C' }], pageInfo: { hasNextPage: false, endCursor: null } } } } };
         },
       });
       await expect(api.listDocuments()).resolves.toEqual([{ id: 'doc-9', title: 'T', content: 'C' }]);
-      expect(http.requests).toHaveLength(1); // no ResolveTeamCatalog/ResolveProject round-trips
+      // the one catalog round-trip this arm now pays for, and no more: the
+      // team resolution, never a project resolution.
+      expect(http.requests.some((r) => r.query.includes('ResolveTeamCatalog'))).toBe(true);
+      expect(http.requests.some((r) => r.query.includes('ResolveProject'))).toBe(false);
+      expect(http.requests).toHaveLength(2);
+    });
+
+    it('an unknown team fails the listing LOUDLY rather than falling back to workspace-wide', async () => {
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => ({ status: 200, json: { data: { teams: { nodes: [] } } } }),
+      });
+      await expect(api.listDocuments()).rejects.toThrow(/team not found/i);
+      expect(http.requests.some((r) => r.query.includes('ListDocuments'))).toBe(false);
     });
   });
 

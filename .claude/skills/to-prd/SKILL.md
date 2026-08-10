@@ -51,6 +51,12 @@ Publish through the store's Document facet (`publishDocument`, *not* `issue-stor
 
 Then report the published PRD id + title and point the user at the downstream step: **run `to-issues` to slice this PRD into independently-grabbable, wave-eligible issues.**
 
+### The `PRD: ` title prefix is a convention, not a contract
+
+Title the document `PRD: <feature title>` — but know what that prefix is and is not. It is a **consumer-side convention for humans scanning a list**: no store parses it, no engine verb keys off it, and nothing downstream breaks if a human retitles the document later. What keeps a PRD out of a wave is structural, not textual — it is never eligibility-stamped, and on a store with a native document primitive it is not even an issue (ADR-0017), so it cannot enter `listOpen` whatever it is called. Adapter-level marker recognition is **deliberately deferred**, which is why the prefix is worth writing consistently and worth never relying on: `listDocuments` returns every document in scope, so a well-titled PRD is how the panel stays readable.
+
+The facet needs no project-style binding to work. On a store whose tracker scopes documents natively (Linear), a document published from a consumer with **no project bound** lands in — and lists from — the configured **team** (the ADR-0017 amendment); the panel is scoped to that consumer either way, never workspace-wide.
+
 ## Common Mistakes
 
 - **Publishing via `issue-store create`.** A PRD is a document — use `publishDocument`. `create` is the wave-slice contract and would demand Risk/Worker/Files a PRD has no business carrying. Equivalently: never treat the PRD as a wave slice — it carries no Header-Block, is never eligibility-stamped, and is never grabbed by a wave.
