@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { mkdtemp, rm, readFile, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MarkdownFsStore, markdownConformanceHooks } from './markdown-fs-store';
@@ -211,6 +213,106 @@ describe('MarkdownFsStore — markdown parity specifics', () => {
 
   it('parseRef() throws on a non-numeric id (e.g. a PRD `#prd` sentinel — ADR-0013)', () => {
     expect(() => store.parseRef(`${SLUG}#prd`)).toThrow();
+  });
+});
+
+// ── trackerUpdatedAt derivation: git-tracked vs untracked (the two disclosed
+// staleness-advisory soft spots, issue #443) ──────────────────────────────────
+//
+// A fixture is a REAL git repository, not a mocked git: the store's whole job
+// here is to ask git a question (does the index know this file, and if so what
+// is its last commit's date?) and a mock would only re-assert the question
+// this file already writes down. Commit dates are pinned via
+// GIT_AUTHOR_DATE/GIT_COMMITTER_DATE for determinism, same shape as the Gate 9
+// fixtures in dor-gate.spec.ts.
+describe('MarkdownFsStore — trackerUpdatedAt derivation (git-tracked vs untracked)', () => {
+  let root: string;
+  let store: MarkdownFsStore;
+  const COMMIT_AT = '2020-06-01T12:00:00Z';
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'mdfs-git-'));
+    store = new MarkdownFsStore({ repoRoot: root, slug: SLUG });
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const issuePath = (nn: string) => join(root, '.scratch', SLUG, 'issues', `${nn}`);
+
+  function git(args: string[]): void {
+    execFileSync('git', args, {
+      cwd: root,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: COMMIT_AT,
+        GIT_COMMITTER_DATE: COMMIT_AT,
+      },
+    });
+  }
+
+  it('a git-TRACKED issue file derives trackerUpdatedAt from git history, not mtime — a fresh clone must not read as freshly updated', async () => {
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@example.com']);
+    git(['config', 'user.name', 'Test']);
+
+    const id = await store.create(baseInput({ filingHint: 'tracked-thing' }));
+    const path = issuePath('01-tracked-thing.md');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'seed']);
+
+    // Simulate exactly what a fresh clone / file copy does to a tracked file:
+    // reset its mtime to "now", long after the pinned commit date above.
+    const freshNow = new Date();
+    utimesSync(path, freshNow, freshNow);
+
+    const view = await store.read(id);
+    expect(view.trackerUpdatedAt).toBeDefined();
+    // Must read back the pinned commit year — never the fresh "now" mtime.
+    expect(new Date(view.trackerUpdatedAt as string).getUTCFullYear()).toBe(2020);
+    expect(new Date(view.trackerUpdatedAt as string).getTime()).toBeLessThan(
+      freshNow.getTime() - 1000 * 60 * 60,
+    );
+  });
+
+  it("an UNTRACKED issue file (gitignored .scratch/ — this repo's own dogfood case) keeps a working mtime-based signal", async () => {
+    git(['init', '-q']);
+    await writeFile(join(root, '.gitignore'), '.scratch/\n', 'utf-8');
+
+    const before = Date.now();
+    const id = await store.create(baseInput({ filingHint: 'scratch-thing' }));
+    const view = await store.read(id);
+
+    expect(view.trackerUpdatedAt).toBeDefined();
+    expect(new Date(view.trackerUpdatedAt as string).getTime()).toBeGreaterThanOrEqual(
+      before - 5000,
+    );
+  });
+
+  it('a git-tracked file with no commit history yet (staged only) has no derivable signal — stays absent, never falls back to mtime', async () => {
+    git(['init', '-q']);
+
+    const id = await store.create(baseInput({ filingHint: 'staged-only' }));
+    const path = issuePath('01-staged-only.md');
+    git(['add', path]); // staged → tracked, but zero commits reach it
+
+    const view = await store.read(id);
+    expect(view.trackerUpdatedAt).toBeUndefined();
+  });
+
+  it('a repoRoot that is not a git checkout at all falls back to mtime (git cannot know a file it has no repository for)', async () => {
+    // No `git init` here at all — mirrors the pre-existing (non-git) behavior
+    // every other test in this file already exercises implicitly.
+    const before = Date.now();
+    const id = await store.create(baseInput({ filingHint: 'no-git-thing' }));
+    const view = await store.read(id);
+
+    expect(view.trackerUpdatedAt).toBeDefined();
+    expect(new Date(view.trackerUpdatedAt as string).getTime()).toBeGreaterThanOrEqual(
+      before - 5000,
+    );
   });
 });
 

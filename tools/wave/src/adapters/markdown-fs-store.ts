@@ -16,7 +16,9 @@
  */
 
 import { mkdir, readFile, writeFile, readdir, rename, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join, relative } from 'node:path';
 import {
   createHeaderParser,
   serializeHeaderBlock,
@@ -276,21 +278,102 @@ export class MarkdownFsStore implements IssueStore {
   }
 
   /**
-   * `IssueView.trackerUpdatedAt` for a markdown-backed issue: the issue FILE's
-   * own mtime. There is no tracker behind a `.scratch/` file, so the filesystem
-   * IS the tracker here — every write path in this store (`create`, `annotate`,
-   * `amend`, `transition`, `unclaim`, `flag`, `close`, the `done/` rename) goes
-   * through `writeFile`/`rename` and therefore moves it, which is exactly the
-   * "the tracker recorded a change" semantics the GitHub/Linear `updated_at`
-   * fields carry.
+   * `IssueView.trackerUpdatedAt` for a markdown-backed issue. There is no
+   * tracker behind a `.scratch/` file, so *something* about the file itself
+   * must stand in for "the tracker recorded a change" — but WHICH signal is
+   * honest depends on whether git can see the file:
    *
-   * An unreadable stat yields `undefined` rather than a fabricated instant: the
-   * DoR staleness advisory turns absence into `'deferred'`, and a made-up
-   * timestamp would turn it into a silent false pass instead.
+   *   - **git-TRACKED** (the file is in the index — a consumer who commits
+   *     their issue files): the filesystem mtime is worthless here. A fresh
+   *     `git clone`, a `cp -r`, or a CI checkout all reset every tracked
+   *     file's mtime to "now" regardless of when it last actually changed —
+   *     so mtime would make the staleness advisory (Gate 9) silently PASS a
+   *     row that is in fact stale, the exact false-quiet direction the
+   *     advisory's own never-a-false-pass rule guards everywhere else. The
+   *     honest signal for a tracked file is git's own history: the last
+   *     commit that touched it ({@link gitLastCommitIso}). If git knows the
+   *     file but no commit reaches it yet (staged, never committed), that is
+   *     genuinely no signal — `undefined`, never a silent fall-back to mtime.
+   *   - **UNTRACKED** (the ordinary dogfood case: a gitignored `.scratch/`
+   *     tree, or `repoRoot` is not a git checkout at all) — there is no git
+   *     history to ask, so the mtime IS the tracker-update signal: every
+   *     write path in this store (`create`, `annotate`, `amend`,
+   *     `transition`, `unclaim`, `flag`, `close`, the `done/` rename) goes
+   *     through `writeFile`/`rename` and therefore moves it.
+   *
+   * Either way, an unreadable/undeterminable signal yields `undefined` rather
+   * than a fabricated instant: the DoR staleness advisory turns absence into
+   * `'deferred'`, and a made-up timestamp would turn it into a silent false
+   * pass instead.
    */
   private async lastUpdatedIso(path: string): Promise<string | undefined> {
+    const rel = relative(this.repoRoot, path);
+    if (this.isGitTracked(rel)) {
+      // Tracked: git history is the only honest signal — never fall back to
+      // mtime even if git has nothing to say (no commit reaches the file yet).
+      return this.gitLastCommitIso(rel);
+    }
+    // Untracked (or repoRoot isn't a git checkout at all — git can't tell us
+    // anything either way, so this is the same "no tracked-file signal"
+    // branch): the mtime is the tracker-update signal.
     try {
       return (await stat(path)).mtime.toISOString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Whether git's index knows `relPath` (staged or committed — the discriminator
+   * is "does git know the file", not "has it been committed"). `false` for a
+   * genuinely untracked file AND for a `repoRoot` that is not a git checkout at
+   * all (no ambiguity there: git cannot know a file it has no repository for).
+   *
+   * The plain `.git` existence check comes FIRST, and is a cheap `node:fs`
+   * stat rather than a subprocess spawn, on purpose: it is the fast, honest
+   * "not a git checkout" answer for the ordinary non-git consumer (this
+   * store's own doc contract already fixes `repoRoot` as the directory that
+   * directly contains `.scratch/`, so `.git` living directly under it too is
+   * the same convention, not a new one) — a real per-file `git ls-files`
+   * subprocess is spawned only once that much is already established. `.git`
+   * as a FILE (not a directory) is still honored: a linked worktree's `.git`
+   * is exactly that shape, and `existsSync` does not care which.
+   */
+  private isGitTracked(relPath: string): boolean {
+    if (!existsSync(join(this.repoRoot, '.git'))) return false;
+    try {
+      execFileSync('git', ['ls-files', '--error-unmatch', relPath], {
+        cwd: this.repoRoot,
+        timeout: 10_000,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The ISO-8601 committer date (`%cI`) of the last commit that touched
+   * `relPath` on the current checkout — committer date because that is what
+   * the DoR staleness advisory's own `git log --since` filters on
+   * ({@link file://./../dor-gate.ts}), so the two stay measuring the same
+   * clock. `undefined` when git has no commit reaching the file (tracked but
+   * never committed) or the read otherwise fails — never a fabricated instant.
+   */
+  private gitLastCommitIso(relPath: string): string | undefined {
+    try {
+      const out = execFileSync(
+        'git',
+        ['log', '-1', '--format=%cI', '--', relPath],
+        {
+          cwd: this.repoRoot,
+          encoding: 'utf-8',
+          timeout: 10_000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        },
+      ).trim();
+      return out.length > 0 ? out : undefined;
     } catch {
       return undefined;
     }
