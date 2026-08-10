@@ -270,6 +270,17 @@ describe('RealBitbucketApi.getPrStatus — mergeability (Bitbucket has no mergea
     expect(await withStatuses(1, [{ state: 'STOPPED' }])).toBe('blocked');
   });
 
+  it('an in-progress build blocks under ANY spelling — the grading is "not SUCCESSFUL", not an enumeration', async () => {
+    // Fails CLOSED on a token this slice could not confirm verbatim. An
+    // enumerated matcher that missed the real spelling would fail OPEN: a
+    // running build, the successful count already met, read as `clean` and
+    // merged. Every one of these is paired with enough SUCCESSFUL builds to
+    // satisfy the minimum on its own, so only the non-green one can block.
+    for (const state of ['INPROGRESS', 'IN_PROGRESS', 'IN PROGRESS', 'PENDING', 'something-new']) {
+      expect(await withStatuses(1, [{ state: 'SUCCESSFUL' }, { state }])).toBe('blocked');
+    }
+  });
+
   it('a BLIND branch-restrictions read → unknown, never clean', async () => {
     const { http } = fakeHttp([
       [urlHas('/pullrequests'), page([openPr()])],

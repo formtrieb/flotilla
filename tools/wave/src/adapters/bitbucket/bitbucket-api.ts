@@ -555,8 +555,8 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
    *     with its own message, which {@link mergePullRequest} surfaces verbatim.
    *   - no required builds → `clean` (direct merge; the same behaviour a
    *     no-CI GitHub repo gets).
-   *   - any FAILED or INPROGRESS build status on the head commit, or fewer
-   *     SUCCESSFUL ones than the required minimum → `blocked`. The
+   *   - any build status on the head commit that is not SUCCESSFUL, or fewer
+   *     of them than the required minimum → `blocked`. The
    *     fewer-than-required case is the CHECK-ATTACH LATENCY WINDOW: zero
    *     reports is `0 < N`, so a PR whose builds have not started yet is
    *     `blocked`, not `clean`. That is the same defect the GitHub adapter
@@ -585,9 +585,17 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
     } catch {
       return 'unknown';
     }
-    if (statuses.some((s) => s.state === 'FAILED' || s.state === 'INPROGRESS')) return 'blocked';
-    const successful = statuses.filter((s) => s.state === 'SUCCESSFUL').length;
-    return successful >= required.count ? 'clean' : 'blocked';
+    // "no failed builds and no in progress builds" is graded by what a status
+    // is NOT, rather than by enumerating FAILED / INPROGRESS / STOPPED. The
+    // enumeration would be a spelling dependency on tokens this slice could
+    // confirm only partially (`SUCCESSFUL` and `FAILED` appear verbatim in
+    // Atlassian's build-status docs; the in-progress token is written "IN
+    // PROGRESS" in prose), and getting that spelling wrong would fail OPEN — a
+    // running build the matcher missed, with the successful count already met,
+    // would read `clean` and be merged. Grading by NOT-SUCCESSFUL fails closed
+    // for every present and future state name instead.
+    if (statuses.some((s) => s.state !== 'SUCCESSFUL')) return 'blocked';
+    return statuses.length >= required.count ? 'clean' : 'blocked';
   }
 
   /** {@link requiredBuilds}, degraded to `unknown` rather than throwing. */
@@ -643,10 +651,11 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
   /**
    * The build statuses Bitbucket has recorded for a commit —
    * `GET /2.0/repositories/{w}/{r}/commit/{sha}/statuses`. States seen in
-   * Atlassian's own documentation and KB: `SUCCESSFUL`, `FAILED`,
-   * `INPROGRESS`, `STOPPED`. Only the first three are interpreted; anything
-   * else (including `STOPPED`) counts as "not a successful build", which is
-   * the safe direction — it can only make the PR read `blocked`.
+   * Atlassian's own documentation and KB: `SUCCESSFUL` and `FAILED` appear
+   * verbatim; the in-progress and stopped states are named in prose only. Only
+   * `SUCCESSFUL` is therefore matched by name — every other value, known or
+   * not, counts as "not a successful build", which is the direction that fails
+   * closed (see {@link RealBitbucketApi.mergeabilityOf}).
    *
    * THROWS on a non-200, deliberately: an empty list is EVIDENCE that nothing
    * has reported for this commit yet, and that is the input that forces a
