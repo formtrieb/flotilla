@@ -218,7 +218,17 @@ const CREATE_ISSUE_LABEL_MUTATION = `mutation CreateIssueLabel($input: IssueLabe
 // categorically not an issue, so it can never pollute listOpen. `content` is
 // the markdown body and the facet id is the Document uuid (both live-verified
 // in ADR-0017's live probe). e2e-VERIFIED 2026-07-16 (FOR-23): live schema
-// introspection confirms `DocumentCreateInput` carries a `projectId` field. ───
+// introspection confirms `DocumentCreateInput` carries a `projectId` field.
+//
+// `DocumentCreateInput` ALSO carries a `teamId` — the parent the unbound arm
+// of {@link RealLinearApi.createDocument} uses. Read from Linear's published
+// GraphQL schema (`linear/linear` → `packages/sdk/src/schema.graphql`, read
+// 2026-08-10): `DocumentCreateInput.teamId: String`, doc-string "[Internal]
+// Related team for the document." Linear's own agent-facing `save_document`
+// contract states the rule the two arms below implement — on create, "exactly
+// one parent (`project`, `issue`, `initiative`, `cycle`, or `team`) must be
+// specified", with `team` documented as "Attaches the document to the team".
+// So a team parent is a first-class Document parent, not a workaround. ───────
 
 const CREATE_DOCUMENT_MUTATION = `mutation CreateDocument($input: DocumentCreateInput!) {
   documentCreate(input: $input) {
@@ -235,7 +245,22 @@ const GET_DOCUMENT_QUERY = `query GetDocument($id: String!) {
   }
 }`;
 
-/** e2e-VERIFIED 2026-07-16 (FOR-23): `DocumentFilter` DOES support `project: { id: { eq } }` — live schema introspection reports `DocumentFilter.project → ProjectFilter`, whose `id` field is an `IDComparator` (so `eq` is available). */
+/**
+ * e2e-VERIFIED 2026-07-16 (FOR-23): `DocumentFilter` DOES support
+ * `project: { id: { eq } }` — live schema introspection reports
+ * `DocumentFilter.project → ProjectFilter`, whose `id` field is an
+ * `IDComparator` (so `eq` is available).
+ *
+ * `DocumentFilter` carries a TEAM predicate too, so the unbound listing narrows
+ * SERVER-side rather than fetching the workspace and filtering in memory. Read
+ * from Linear's published GraphQL schema (`linear/linear` →
+ * `packages/sdk/src/schema.graphql`, read 2026-08-10): `DocumentFilter.team:
+ * NullableTeamFilter`, and `NullableTeamFilter.id: IDComparator` (`eq: ID`) —
+ * the exact `{ team: { id: { eq } } }` shape sent below. The client-side
+ * fallback the same read makes available (`Document.team: Team` is selectable
+ * on the node) is therefore NOT taken: it would page the whole workspace to
+ * discard most of it.
+ */
 const LIST_DOCUMENTS_QUERY = `query ListDocuments($filter: DocumentFilter, $first: Int!, $after: String) {
   documents(filter: $filter, first: $first, after: $after) {
     nodes {
@@ -467,26 +492,35 @@ export class RealLinearApi implements LinearApi {
   // discipline. `content` is the markdown body; the facet id is the uuid. ────
 
   /**
-   * Documented choice (per ADR-0017's project-binding option): when this api
-   * was constructed WITH a `project`, the new Document attaches to that
-   * project (`projectId` from the cached resolution) — the wave≈Project
-   * binding that recovers the "this PRD was sliced into these issues"
-   * grouping. WITHOUT a bound project it throws up-front (status 0 = no wire
-   * call was made — a client-side precondition, not an HTTP failure): a clear
-   * error beats silently minting an orphan Document nothing scopes to.
+   * Attach the new Document to the ONE parent this adapter has (Linear's own
+   * create contract: exactly one of project / issue / initiative / cycle /
+   * team):
+   *
+   *   - **project-bound api** → `projectId` from the cached resolution. This
+   *     is ADR-0017's wave≈Project binding, which recovers the human-visible
+   *     "this PRD was sliced into these issues" grouping. Unchanged.
+   *   - **unbound api** → `teamId` from the *required* `team` config, resolved
+   *     through the same cached catalog every other write already uses.
+   *
+   * The unbound arm replaced an up-front refusal (a `LinearApiError` with
+   * status 0, thrown before any wire call). That refusal was **adapter policy,
+   * never a platform constraint**: ADR-0017's own live probe observed the
+   * team-scoped shape natively (`project: null`, `initiative: null` — attached
+   * only to a team). Its cost was that the whole Document facet sat behind a
+   * config field a team-pool consumer must leave UNSET, because `project` also
+   * narrows the candidate pool `listOpen` draws from (ADR-0020) — such a
+   * consumer had to choose between its candidate pool and its PRDs.
+   *
+   * No arm can mint an orphan: `team` is required config, so every Document
+   * this adapter creates hangs off at least the configured team.
    */
   async createDocument(input: { title: string; content: string }): Promise<{ id: string }> {
-    if (!this.project) {
-      throw new LinearApiError(
-        'CreateDocument',
-        0,
-        'RealLinearApi was constructed without a project — refusing to create an orphan Document. ' +
-          'Bind a `project` in the linear store config (ADR-0017 wave≈Project binding).',
-      );
-    }
-    await this.ensureCatalog(); // resolves this.projectId (throws if the project name is unknown)
+    // resolves this.teamId, and this.projectId when a project name is bound
+    // (either resolution throws loudly if the configured name is unknown).
+    await this.ensureCatalog();
+    const parent = this.project ? { projectId: this.projectId } : { teamId: this.teamId };
     const { data } = await this.gql('CreateDocument', CREATE_DOCUMENT_MUTATION, {
-      input: { title: input.title, content: input.content, projectId: this.projectId },
+      input: { title: input.title, content: input.content, ...parent },
     });
     const payload = data.documentCreate as Record<string, unknown> | undefined;
     const doc = payload?.document as Record<string, unknown> | undefined;
@@ -507,16 +541,26 @@ export class RealLinearApi implements LinearApi {
   }
 
   /**
-   * Scoped to the bound project when one is configured (the PRD panel wants
-   * the wave's own project docs); workspace-wide otherwise — with NO catalog
-   * round-trip, since an unbound listing needs no id resolution at all.
+   * Always scoped, never workspace-wide — the PRD panel is a view of THIS
+   * consumer's planning docs, not of every document anyone in the workspace
+   * ever wrote:
+   *
+   *   - **project-bound api** → the bound project's documents. Unchanged.
+   *   - **unbound api** → the configured team's documents, narrowed
+   *     SERVER-side via `DocumentFilter.team` (see
+   *     {@link LIST_DOCUMENTS_QUERY} for the schema read that pins the shape).
+   *
+   * The unbound arm replaced an *unfiltered* query — workspace-wide, not even
+   * team-scoped — which made a team-pool consumer's PRD panel a listing of
+   * every other team's documents too. It costs the one catalog round-trip that
+   * arm used to skip; a listing scoped to the wrong thing is not worth saving
+   * it.
    */
   async listDocuments(): Promise<{ id: string; title: string; content: string }[]> {
-    let filter: Record<string, unknown> | undefined;
-    if (this.project) {
-      await this.ensureCatalog();
-      filter = { project: { id: { eq: this.projectId } } };
-    }
+    await this.ensureCatalog();
+    const filter: Record<string, unknown> = this.project
+      ? { project: { id: { eq: this.projectId } } }
+      : { team: { id: { eq: this.teamId } } };
     const out: { id: string; title: string; content: string }[] = [];
     let after: string | undefined;
     for (;;) {

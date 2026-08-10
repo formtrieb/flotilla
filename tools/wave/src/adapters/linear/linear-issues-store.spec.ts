@@ -586,6 +586,45 @@ describe('LinearIssuesStore — Linear-only facet semantics (ADR-0020/ADR-0015-a
     api.simulateUnmergedClose(id, 'https://github.com/o/r/pull/77');
     expect(await store.readClosing(id)).toEqual({ state: 'closed-unmerged' });
   });
+
+  // ── Document facet through the STORE, both binding directions (ADR-0017
+  // amendment). The shared conformance suite already drives publish→read→list
+  // round-trips, but it is deliberately store-blind: it cannot see that the
+  // listing is SCOPED, because it only ever publishes into the one scope it
+  // then lists. These two cases put an out-of-scope document in the substrate
+  // so the DocumentView projection is asserted over a filter that actually
+  // removes something.
+  it("publishDocument on a project-UNBOUND store lands in the team scope, and listDocuments returns only that team's PRDs", async () => {
+    const id = await store.publishDocument({
+      title: 'PRD: the team-pool consumer',
+      filingHint: 'prd-team-pool',
+      bodySections: [{ heading: 'Problem Statement', markdown: 'the brief' }],
+    });
+    // a document belonging to a DIFFERENT team of the same workspace...
+    api.seedDocument({ title: 'PRD: someone else entirely', content: '# theirs\n', team: 'OTHER' });
+
+    // ...never reaches this consumer's PRD panel.
+    const listed = await store.listDocuments();
+    expect(listed.map((d) => d.id)).toEqual([id]);
+    expect(listed[0].title).toBe('PRD: the team-pool consumer');
+    expect(listed[0].body).toContain('## Problem Statement');
+    // and the round-trip by id is unaffected by the scoping.
+    expect((await store.readDocument(id)).title).toBe('PRD: the team-pool consumer');
+  });
+
+  it('publishDocument on a project-BOUND store is unchanged — project-scoped, and a same-team document stays out of the panel', async () => {
+    const boundApi = new InMemoryLinearApi('EX', 'Example Project');
+    const boundStore = new LinearIssuesStore({ api: boundApi });
+    const id = await boundStore.publishDocument({
+      title: 'PRD: the project-bound consumer',
+      filingHint: 'prd-project-bound',
+      bodySections: [{ heading: 'Problem Statement', markdown: 'the brief' }],
+    });
+    boundApi.seedDocument({ title: 'PRD: team-attached', content: '# team\n', team: 'EX' });
+
+    expect((await boundStore.listDocuments()).map((d) => d.id)).toEqual([id]);
+    expect((await boundStore.readDocument(id)).title).toBe('PRD: the project-bound consumer');
+  });
 });
 
 // ── opt-in done-state fallback (FOR-13) ─────────────────────────────────────
