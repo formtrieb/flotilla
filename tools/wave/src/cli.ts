@@ -106,6 +106,14 @@
  *                    registered-GC plan so a detached `wf_*` worktree is never
  *                    removed twice.
  *
+ *                    The containment root defaults to the marker-derived
+ *                    worktrees root. A consumer whose agents make their scratch
+ *                    checkouts elsewhere declares those roots in the wave
+ *                    config's `cleanup.extraRoots` (issue #451) — no flag; the
+ *                    key is read from --config and unioned with the
+ *                    marker-derived roots. Undeclared, an out-of-root checkout
+ *                    is left strictly alone (the conservative default).
+ *
  *                    worktreeCount (issue #238) is printed on BOTH shapes,
  *                    unconditionally: { count, threshold, level, advisory } from
  *                    the engine's checkWorktreeCountAdvisory — `count` is the
@@ -1075,6 +1083,22 @@ function resolveBranchFilter(
  * treats that as "no extra names" — no behavior change for existing bare
  * `worktree-cleanup` call sites.
  *
+ * `cleanup?.extraRoots` (issue #451) is threaded off the SAME single load, into
+ * `listDetachedScratchpadWorktrees` — the detached sweep's ADDITIONAL
+ * containment roots, absolute or repo-root-relative, unioned with the
+ * marker-derived ones. The engine option had documented itself as the way to
+ * declare such a root since the sweep landed, but nothing read it from config,
+ * so the CONFIGURED path (this verb, which is what wave-close phase 3 runs)
+ * could not declare one at all: an out-of-root detached scratch checkout stayed
+ * registered forever, counted by `worktreeCount` and selected by nothing. Same
+ * fail-loud stance as its sibling above — a malformed declaration is refused by
+ * `loadWaveConfig` and surfaces here as exit 1. NO new flag: config-only
+ * threading is the precedent this verb already set for `disposableNames`, and
+ * the usage line below is unchanged because nothing about the CLI's argument
+ * vocabulary is. Absent a declaration, the roots are exactly the marker-derived
+ * ones — an out-of-root checkout is left strictly alone, byte-identical to
+ * before the key existed.
+ *
  * Prints the FULL engine summary so a run can never do work and show nothing
  * (FOR-67): removed/skipped/errors PLUS deregisteredNotDeleted (the ENOTEMPTY
  * class), erroredStillListed (FOR-73 — a throwing removal git still lists as
@@ -1187,18 +1211,27 @@ function runWorktreeCleanup(args: string[]): number {
   const repoRoot =
     positional.length > 0 ? resolve(positional[0]) : process.cwd();
 
-  // The consumer's cleanup.disposableNames declaration (issue #184 — the
-  // last-mile wiring gap left by issue #115): `loadWaveConfig` already
-  // validates the key at config-load time via the engine's own
-  // `normalizeDisposableNames`, so a bad declaration fails loud here rather
-  // than being silently narrowed to "no extra names". Absent --config
-  // (the pre-existing form) leaves `disposableNames` undefined — every entry
-  // point below already treats that as a no-op.
+  // The consumer's cleanup declarations (issue #184 — the last-mile wiring gap
+  // left by issue #115 — and issue #451 for `extraRoots`): `loadWaveConfig`
+  // already validates BOTH keys at config-load time (the engine's own
+  // `normalizeDisposableNames` for the names, the config layer's own
+  // path-shaped rule for the roots), so a bad declaration fails loud here
+  // rather than being silently narrowed. Absent --config (the pre-existing
+  // form) leaves both undefined — every entry point below already treats that
+  // as a no-op.
+  //
+  // ONE load, both keys read off it: a second `loadWaveConfig` call for the
+  // second key would parse and re-validate the same file twice and could report
+  // its failure twice, which is how one config error turns into two confusing
+  // messages.
   const configPath = flag(args, '--config');
   let disposableNames: readonly string[] | undefined;
+  let extraRoots: readonly string[] | undefined;
   if (configPath !== undefined) {
     try {
-      disposableNames = loadWaveConfig(configPath).cleanup?.disposableNames;
+      const cleanup = loadWaveConfig(configPath).cleanup;
+      disposableNames = cleanup?.disposableNames;
+      extraRoots = cleanup?.extraRoots;
     } catch (err) {
       process.stderr.write(
         `error: could not load --config ${configPath}: ${(err as Error).message}\n`,
@@ -1274,14 +1307,28 @@ function runWorktreeCleanup(args: string[]): number {
     // `--wave`/`--branches` active the question does not arise: `planCleanup`
     // excludes every detached (branch: null) entry from both of its buckets, so
     // nothing is filtered out here and the detached sweep is the only reader.
+    //
+    // `extraRoots` (issue #451) is the consumer's own containment-root
+    // declaration, read from `cleanup.extraRoots` above. It reaches the sweep
+    // HERE and nowhere else, which is exactly right: it widens only the
+    // CONTAINMENT test of this one population — the registered GC and the
+    // orphan-directory sweep both key on the marker-derived roots and their
+    // name prefixes, and neither is in scope for a declared scratch root.
+    // Because this is the single plan both branches below share, a declaration
+    // reaches the preview and the real run by construction, never by two
+    // agreeing reads. Undeclared (`undefined`) leaves the roots exactly as the
+    // markers derived them — the conservative default, byte-identical to
+    // before the key existed.
     const alreadyPlanned = new Set(
       [...plan.selected, ...plan.skipped].map((wt) => wt.path),
     );
     const detachedPlan = detached
       ? planDetachedScratchpadSweep(
-          listDetachedScratchpadWorktrees({ repoRoot, disposableNames }).filter(
-            (wt) => !alreadyPlanned.has(wt.path),
-          ),
+          listDetachedScratchpadWorktrees({
+            repoRoot,
+            disposableNames,
+            extraRoots,
+          }).filter((wt) => !alreadyPlanned.has(wt.path)),
         )
       : null;
 

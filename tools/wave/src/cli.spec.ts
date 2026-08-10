@@ -3165,6 +3165,263 @@ describe('worktree-cleanup --detached — CLI wiring + dry-run parity (issues #2
   });
 });
 
+// ─── Form 8j: worktree-cleanup --detached — `cleanup.extraRoots` from --config
+//             reaches the detached sweep (issue #451) ─────────────────────────
+//
+// The gap this closes, reported by the FIRST installed-form consumer and
+// reproduced independently by the maintainer on main. `DetachedSweepOptions`
+// has documented `extraRoots` since the sweep landed — ADDITIONAL containment
+// roots, absolute or repo-root-relative, unioned with the marker-derived ones —
+// as the declared way for a consumer whose agents make their scratch checkouts
+// somewhere other than the worktrees root to have them swept. But the option
+// was reachable from the LIBRARY API only: `CleanupConfig` carried
+// `disposableNames` and nothing else, so the CONFIGURED path — the
+// `worktree-cleanup --detached --config <path>` invocation wave-close's phase 3
+// actually runs — could not declare such a root at all. An out-of-root detached
+// scratch checkout therefore stayed registered indefinitely: counted by the
+// `worktreeCount` advisory (which reads `git worktree list` whole), selected by
+// nothing, with BOTH `detached` arrays empty. That exact reading is the
+// negative control below.
+//
+// The consumer posture that makes this recurring rather than exotic: the
+// reviewer probe license prescribes `git worktree add`, and where a tracked file
+// sits on a sandbox write-deny list an IN-repo checkout aborts — so an
+// outside-the-worktrees-root probe is the natural workaround, made over and
+// over, by design.
+//
+// Same discipline as Form 8g (the `cleanup.disposableNames` wiring): a REAL git
+// repository, a REAL `--config` file on disk, and the REAL router
+// (`main([...])`), so the WIRING is what is under test — never the engine's own
+// containment/classification logic, which worktree-cleanup.spec.ts already
+// covers unmodified.
+describe('worktree-cleanup --detached — --config cleanup.extraRoots reaches the detached sweep (issue #451)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /** A real repo with a real (marker-derived) worktrees root. */
+  function makeRepo(label: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cli-451-${label}-`)));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    writeFileSync(join(mainRoot, 'README.md'), '# fixture\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    return mainRoot;
+  }
+
+  /**
+   * Plant a DETACHED scratch checkout at a repo-root-relative path. Used both
+   * for the OUT-of-root probe (`scratchpad/probe-451` — the reported shape) and
+   * for a checkout under the marker-derived root, so the union property below
+   * can be shown with one helper.
+   */
+  function plantDetachedAt(mainRoot: string, relDir: string): string {
+    realGit(['worktree', 'add', '-q', '--detach', relDir, 'HEAD'], mainRoot);
+    return join(mainRoot, relDir);
+  }
+
+  /** A `wave.config.json` carrying a raw `cleanup` object, verbatim. */
+  function writeCleanupConfig(cleanup: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wave-cli-451-cfg-'));
+    const cfgPath = join(dir, 'wave.config.json');
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot: '.', slug: 'x' },
+        cleanup,
+      }),
+      'utf-8',
+    );
+    return cfgPath;
+  }
+
+  type DetachedJson = {
+    dryRun: boolean;
+    detached?: {
+      selected?: Array<{ path: string }>;
+      removed?: Array<{ path: string }>;
+      skipped: Array<{ path: string; reason?: string }>;
+      errors?: unknown[];
+    };
+    worktreeCount: { count: number };
+  };
+
+  function parse(): DetachedJson {
+    expect(stdoutBuf, `stderr was: ${stderrBuf}`).not.toBe('');
+    return JSON.parse(stdoutBuf) as DetachedJson;
+  }
+
+  it('a detached checkout under a declared extra root is SELECTED in the preview and removed by the run — one shared plan', () => {
+    const mainRoot = makeRepo('declared');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-451'));
+    const configPath = writeCleanupConfig({ extraRoots: ['scratchpad'] });
+
+    // 1. Preview.
+    expect(
+      main(['worktree-cleanup', '--dry-run', '--detached', mainRoot, '--config', configPath]),
+    ).toBe(0);
+    const preview = parse();
+    const previewSelected = (preview.detached?.selected ?? []).map((w) => w.path).sort();
+    expect(previewSelected).toEqual([outside]);
+    // A preview removes nothing — still on disk AND still registered.
+    expect(existsSync(outside)).toBe(true);
+
+    // 2. The same invocation without --dry-run.
+    stdoutBuf = '';
+    expect(
+      main(['worktree-cleanup', '--detached', mainRoot, '--config', configPath]),
+    ).toBe(0);
+    const run = parse();
+
+    // THE parity assertion, derived from the preview's own output rather than
+    // transcribed: preview and execution share ONE plan object, computed above
+    // the --dry-run branch, so this cannot pass by agreement.
+    expect((run.detached?.removed ?? []).map((w) => w.path).sort()).toEqual(
+      previewSelected,
+    );
+    expect(run.detached?.errors).toEqual([]);
+    expect(existsSync(outside)).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL — the identical fixture with NO declaration leaves the checkout strictly alone (the maintainer repro)', () => {
+    // The conservative default, and the exact reading reported from the field:
+    // the probe IS registered (worktreeCount counts it), and both detached
+    // arrays are empty — nothing selected, nothing skipped, nothing to act on.
+    const mainRoot = makeRepo('undeclared');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-451'));
+
+    const code = main(['worktree-cleanup', '--detached', mainRoot]);
+
+    expect(code).toBe(0);
+    const parsed = parse();
+    expect(parsed.worktreeCount.count).toBe(2); // primary checkout + the probe
+    expect(parsed.detached?.removed ?? []).toEqual([]);
+    expect(parsed.detached?.skipped ?? []).toEqual([]);
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  it('an ABSOLUTE declared root works identically to a repo-root-relative one', () => {
+    const mainRoot = makeRepo('absolute');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-451'));
+    const configPath = writeCleanupConfig({
+      extraRoots: [join(mainRoot, 'scratchpad')],
+    });
+
+    expect(
+      main(['worktree-cleanup', '--dry-run', '--detached', mainRoot, '--config', configPath]),
+    ).toBe(0);
+    expect((parse().detached?.selected ?? []).map((w) => w.path)).toEqual([outside]);
+  });
+
+  it('a declared root is UNIONED with the marker-derived one, never a replacement', () => {
+    // Both populations in ONE run: the ordinary `.claude/worktrees` scratch
+    // checkout the sweep already reached, and the out-of-root one only a
+    // declaration reaches. A declaration that REPLACED the marker-derived root
+    // would silently stop sweeping the population this verb was written for.
+    const mainRoot = makeRepo('union');
+    const inRoot = plantDetachedAt(mainRoot, join('.claude', 'worktrees', 'review-451'));
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-451'));
+    const configPath = writeCleanupConfig({ extraRoots: ['scratchpad'] });
+
+    expect(
+      main(['worktree-cleanup', '--dry-run', '--detached', mainRoot, '--config', configPath]),
+    ).toBe(0);
+    expect((parse().detached?.selected ?? []).map((w) => w.path).sort()).toEqual(
+      [inRoot, outside].sort(),
+    );
+  });
+
+  it('a MALFORMED cleanup.extraRoots fails loud (exit 1) and sweeps nothing', () => {
+    // The schema's existing error style: a bad declaration is refused at
+    // config-load time, so the operator learns why cleanup did not honour it
+    // instead of getting a quietly narrower sweep.
+    const mainRoot = makeRepo('malformed');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-451'));
+    const configPath = writeCleanupConfig({ extraRoots: 'scratchpad' });
+
+    const code = main(['worktree-cleanup', '--detached', mainRoot, '--config', configPath]);
+
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/could not load --config/);
+    expect(stderrBuf).toMatch(/cleanup\.extraRoots/);
+    expect(stdoutBuf).toBe('');
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  it('a non-string ENTRY in cleanup.extraRoots is refused the same way, naming the index', () => {
+    const mainRoot = makeRepo('malformed-entry');
+    const configPath = writeCleanupConfig({ extraRoots: ['scratchpad', 7] });
+
+    const code = main(['worktree-cleanup', '--detached', mainRoot, '--config', configPath]);
+
+    expect(code).toBe(1);
+    // `wave config "cleanup.extraRoots"[1] must be a string` — the
+    // quoted-label-then-index shape `normalizeDisposableNames` already prints
+    // for its own bad entries, so an operator reads one error style, not two.
+    expect(stderrBuf).toMatch(/cleanup\.extraRoots"\[1\]/);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('a --config declaring only disposableNames keeps the pre-existing behaviour byte-identical', () => {
+    // The additive guarantee at the CLI seam: an existing consumer config that
+    // never heard of the new key behaves exactly as it did before it existed.
+    const mainRoot = makeRepo('additive');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-451'));
+    const configPath = writeCleanupConfig({ disposableNames: ['.build'] });
+
+    expect(
+      main(['worktree-cleanup', '--detached', mainRoot, '--config', configPath]),
+    ).toBe(0);
+    const parsed = parse();
+    expect(parsed.detached?.removed ?? []).toEqual([]);
+    expect(parsed.detached?.skipped ?? []).toEqual([]);
+    expect(existsSync(outside)).toBe(true);
+  });
+});
+
 // ─── Form 8i: worktree-cleanup --detached — a SEEDED removal failure proves
 //             the sweep's OWN nonzero-exit-code contribution directly (issue
 //             #265) ──────────────────────────────────────────────────────────

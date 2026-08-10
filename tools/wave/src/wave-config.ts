@@ -77,6 +77,92 @@ export interface CleanupConfig {
    * built-in list exists to prevent.
    */
   disposableNames?: string[];
+  /**
+   * ADDITIONAL containment roots for the detached-scratchpad sweep
+   * (`worktree-cleanup --detached`), absolute or repo-root-relative — the
+   * config-side declaration of the engine's
+   * `DetachedSweepOptions.extraRoots`. UNIONED with the marker-derived
+   * worktrees root(s), never a replacement.
+   *
+   * WHY THIS KEY EXISTS. The engine option it feeds had documented itself
+   * since the sweep landed as *the* way for a consumer whose agents make their
+   * scratch checkouts somewhere other than the worktrees root to have them
+   * swept — but it was reachable from the LIBRARY API only. The configured
+   * path — the `worktree-cleanup --detached --config <path>` invocation
+   * wave-close's phase 3 actually runs — had no key to declare such a root
+   * with, so an out-of-root detached scratch checkout stayed registered
+   * indefinitely: counted by the `worktreeCount` E2BIG advisory, selected by
+   * nothing, with both `detached` arrays empty. Reported by the first
+   * installed-form consumer and reproduced on `main`.
+   *
+   * The conservative default is UNCHANGED: no declaration → an out-of-root
+   * checkout is left strictly alone, exactly as before this key existed.
+   * Declaring a root widens ONLY the containment test — every other refusal
+   * the sweep makes (a live branch, a dirty worktree, a locked one, an orphan
+   * holding real files) still holds inside a declared root, which is what
+   * keeps the widening bounded.
+   *
+   * A path, not a name — the mirror image of `disposableNames` above, and the
+   * reason the two keys have separate validators rather than one shared rule:
+   * a containment root IS a location, so `/` is meaningful here and refused
+   * there. Rejected at load time: a non-array, a non-string entry, an
+   * empty/whitespace-only entry, and a `~`-rooted path (nothing expands `~`
+   * here, so it would silently resolve to a literal `~` directory under the
+   * repo root — a declaration that can only ever mean something other than
+   * what its author wrote).
+   */
+  extraRoots?: string[];
+}
+
+/**
+ * Validate a consumer-declared `cleanup.extraRoots` list — the containment
+ * roots the detached-scratchpad sweep unions with its marker-derived ones.
+ *
+ * Deliberately module-private and deliberately NOT
+ * {@link normalizeDisposableNames}: these two keys carry OPPOSITE rules. A
+ * disposable name is a bare entry name matched at any depth, so a `/` in it is
+ * an error; an extra root is a LOCATION, so `/` is the ordinary case and an
+ * absolute path is explicitly supported. Folding them into one validator would
+ * mean one of the two rules stops being enforced.
+ *
+ * The enforcement point is the CONFIG boundary, and only there, because that is
+ * the only boundary where the value arrives untyped: `DetachedSweepOptions`
+ * types `extraRoots` as `readonly string[]`, so a direct library caller is
+ * already held to the array-of-strings shape by `tsc`, and the sweep's own
+ * resolution (trim, resolve against the repo root, realpath-normalize) is
+ * unchanged by this key existing. That is why this validator does not also run
+ * inside the engine the way `normalizeDisposableNames` does — there, the rule
+ * (no globs, no paths, never `.git`) is a SEMANTIC one no type can express, and
+ * a bad name reaching a filesystem decision could delete the wrong thing.
+ *
+ * `undefined`/`null` are "nothing declared" — what keeps an absent key a no-op.
+ *
+ * @param value The raw config value, unvalidated.
+ * @param label How to name the offending field in a thrown message.
+ */
+function validateExtraRoots(value: unknown, label: string): void {
+  if (value === undefined || value === null) return;
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of paths`);
+  }
+
+  for (let i = 0; i < value.length; i++) {
+    const raw: unknown = value[i];
+    if (typeof raw !== 'string') {
+      throw new Error(`${label}[${i}] must be a string`);
+    }
+    const path = raw.trim();
+    if (path.length === 0) {
+      throw new Error(
+        `${label}[${i}] must be a non-empty path — omit the entry entirely rather than declaring an empty one, which would resolve to the repo root itself`,
+      );
+    }
+    if (path[0] === '~') {
+      throw new Error(
+        `${label}[${i}] ${JSON.stringify(raw)} is home-rooted — nothing expands "~" here, so it would resolve to a literal "~" directory under the repo root. Declare an absolute path, or one relative to the repo root.`,
+      );
+    }
+  }
 }
 
 /**
@@ -295,6 +381,13 @@ export interface WaveConfig {
  * engine's own {@link normalizeDisposableNames} — the SAME rule the cleanup
  * module applies when the names reach it — so a glob or a path fails loud at
  * `config validate` time rather than silently at cleanup time.
+ *
+ * `cleanup.extraRoots` is validated beside it via {@link validateExtraRoots},
+ * on the same fail-loud-at-author-time principle. Both keys are optional and
+ * both additions to this schema have been strictly additive: no key here has
+ * ever been renamed, removed or re-typed, which is what lets an existing
+ * consumer config keep validating unchanged (the `wave.config` schema is a
+ * semver contract).
  */
 export function loadWaveConfig(path: string): WaveConfig {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;
@@ -323,6 +416,14 @@ export function loadWaveConfig(path: string): WaveConfig {
   // issue #115 — the consumer-declared disposable set. Absent `cleanup` is the
   // default and is validated as nothing; a present one must be an object, and
   // its `disposableNames` must survive the engine's own exact-names rule.
+  //
+  // `extraRoots` (the detached sweep's declarable containment roots) is
+  // validated beside it under the same rule of engagement — a bad declaration
+  // fails loud HERE, at `config validate` time, rather than silently at cleanup
+  // time — and by its own validator, because the two keys' rules are opposites
+  // (see {@link validateExtraRoots}). Both are validation only: neither writes
+  // a normalized value back, since every reader below already trims what it
+  // reads.
   const cleanup = (raw as { cleanup?: unknown }).cleanup;
   if (cleanup !== undefined) {
     if (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup)) {
@@ -331,6 +432,10 @@ export function loadWaveConfig(path: string): WaveConfig {
     normalizeDisposableNames(
       (cleanup as { disposableNames?: unknown }).disposableNames,
       'wave config "cleanup.disposableNames"',
+    );
+    validateExtraRoots(
+      (cleanup as { extraRoots?: unknown }).extraRoots,
+      'wave config "cleanup.extraRoots"',
     );
   }
 
