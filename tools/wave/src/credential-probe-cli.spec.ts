@@ -19,6 +19,16 @@
  *   4. **Usage.** A bare invocation, an unknown flag, and a stray positional
  *      each print usage and exit 2, consistent with the sibling verbs.
  *
+ * A fifth block was added when the discovery list gained its third member: the
+ * **Bitbucket consumer** shape the field report came from, where a configured,
+ * reachable `BITBUCKET_TOKEN` made `--all` print `ok: true` / `probed: []` and
+ * exit 0. That block pins the four outcomes the list entry changes (configured →
+ * probed; configured-but-failing → exit 1; unconfigured → unchanged; named twice
+ * → probed once). It is the BEHAVIOR half only — the durable half, that no
+ * FUTURE adapter can repeat the omission, is a separate repo-source-reading
+ * guard (`credential-discovery-drift.spec.ts`), because no behavior spec can
+ * assert something about a call site that does not exist yet.
+ *
  * Every environment in this file is INJECTED. The probe must never read the
  * developer's real `GITHUB_TOKEN` / `GITHUB_TOKEN_CMD` while a spec runs — that
  * would be both flaky and, for a `_CMD` pointing at a real keychain, an actual
@@ -41,6 +51,7 @@ import {
   KNOWN_CREDENTIAL_VARIABLES,
   type CredentialProbeReport,
 } from './credential-probe-cli';
+import { BITBUCKET_TOKEN_VAR } from './adapters/bitbucket/bitbucket-api';
 import type { CredentialLookupSpawn, CredentialLookupResult } from './credential-resolver';
 
 const VAR = 'EXAMPLE_TOKEN';
@@ -179,8 +190,21 @@ describe('probeCredential — resolvability, not presence', () => {
 });
 
 describe('discovery — what "every configured credential" means', () => {
-  it('names the two credentials this engine\'s own adapters read', () => {
-    expect([...KNOWN_CREDENTIAL_VARIABLES]).toEqual(['GITHUB_TOKEN', 'LINEAR_API_KEY']);
+  it("names the three credentials this engine's own adapters read", () => {
+    expect([...KNOWN_CREDENTIAL_VARIABLES]).toEqual([
+      'GITHUB_TOKEN',
+      'LINEAR_API_KEY',
+      'BITBUCKET_TOKEN',
+    ]);
+  });
+
+  it('takes the Bitbucket entry FROM the adapter, so the two cannot disagree by construction', () => {
+    // Not a spelling assertion — an identity one. `KNOWN_CREDENTIAL_VARIABLES`
+    // imports the adapter's own exported constant, so a rename of the variable
+    // cannot leave the discovery list pointing at the old name. (The general
+    // case, which no import can cover because the GitHub and Linear factories
+    // pass bare literals, is credential-discovery-drift.spec.ts.)
+    expect(KNOWN_CREDENTIAL_VARIABLES).toContain(BITBUCKET_TOKEN_VAR);
   });
 
   it('selects a credential configured by _CMD or by an ambient value, and no other', () => {
@@ -195,12 +219,43 @@ describe('discovery — what "every configured credential" means', () => {
     ).toEqual(['GITHUB_TOKEN', 'LINEAR_API_KEY']);
   });
 
+  it('discovers the Bitbucket credential from EITHER source — the 1.3.0 gap, closed', () => {
+    // The field report (a Bitbucket + Linear consumer on engine 1.3.0): an
+    // ambient BITBUCKET_TOKEN was configured and reachable, and `--all`
+    // discovered nothing at all. Both sources, since a consumer that has
+    // adopted ADR-0029 carries the _CMD pointer and no ambient value.
+    expect(discoverConfiguredCredentials({ BITBUCKET_TOKEN: 'ambient' })).toEqual([
+      'BITBUCKET_TOKEN',
+    ]);
+    expect(discoverConfiguredCredentials({ BITBUCKET_TOKEN_CMD: 'lookup bb' })).toEqual([
+      'BITBUCKET_TOKEN',
+    ]);
+    // …and it does not displace the others: the pilot consumer's real shape is
+    // a Bitbucket code host beside a Linear tracker.
+    expect(
+      discoverConfiguredCredentials({ LINEAR_API_KEY_CMD: 'lookup lin', BITBUCKET_TOKEN: 'x' }),
+    ).toEqual(['LINEAR_API_KEY', 'BITBUCKET_TOKEN']);
+  });
+
   it('ignores an unconfigured credential and an unrelated *_CMD variable alike', () => {
     // A github-store consumer has no LINEAR_API_KEY, and that is not a defect —
     // nor is an operator's EDITOR_CMD a credential to spawn at a preflight.
+    // Discovery is ENVIRONMENT PRESENCE only: no host detection, no store kind,
+    // no wave config reaches this decision, which is why adding a third
+    // credential inherited the existing selectivity for free.
     expect(discoverConfiguredCredentials({ EDITOR_CMD: 'vim', GITHUB_TOKEN_CMD: '  ' })).toEqual(
       [],
     );
+    // A blank Bitbucket _CMD is the same escape hatch, not a third rule.
+    expect(discoverConfiguredCredentials({ BITBUCKET_TOKEN_CMD: '   ' })).toEqual([]);
+  });
+
+  it('BITBUCKET_EMAIL is NOT a credential and is never discovered (ADR-0023 amendment)', () => {
+    // It is an identifier, not a secret, and deliberately does not travel the
+    // ADR-0029 seam — so a consumer that set only the email has configured no
+    // credential at all, and `--all` must still find nothing.
+    expect(discoverConfiguredCredentials({ BITBUCKET_EMAIL: 'someone@example.com' })).toEqual([]);
+    expect([...KNOWN_CREDENTIAL_VARIABLES]).not.toContain('BITBUCKET_EMAIL');
   });
 
   it('configuredLookupCommand applies the blank rule in ONE place', () => {
@@ -260,6 +315,19 @@ describe('runCredentialProbe — exit codes and selection', () => {
     expect(report).toMatchObject({ ok: true, probed: [], failed: [] });
     // A run must never do nothing and show nothing (the FOR-67 doctrine).
     expect(report.note).toMatch(/no configured credential found/);
+    // The note ENUMERATES the known list by RENDERING it — asserted against the
+    // rendered join, never against a hand-written copy. A hardcoded enumeration
+    // in either place would re-create the exact drift class this list already
+    // suffered once (see credential-discovery-drift.spec.ts).
+    expect(report.note).toContain(KNOWN_CREDENTIAL_VARIABLES.join(', '));
+    // …and the join is not vacuously satisfiable: the third entry really is in
+    // there, by the adapter's own constant rather than by its spelling.
+    expect(report.note).toContain(BITBUCKET_TOKEN_VAR);
+  });
+
+  it('the usage text renders the same list — one source, not a second enumeration', () => {
+    const { stderr } = capture(() => runCredentialProbe([], { env: {} }));
+    expect(stderr).toContain(`known credentials for --all: ${KNOWN_CREDENTIAL_VARIABLES.join(', ')}`);
   });
 
   it('--var names a credential the caller ASSERTS must resolve — unconfigured is exit 1', () => {
@@ -343,6 +411,94 @@ describe('runCredentialProbe — exit codes and selection', () => {
   it('the usage text names the never-execute-the-lookup rule (Convention 8)', () => {
     const { stderr } = capture(() => runCredentialProbe([], { env: {} }));
     expect(stderr).toMatch(/its stdout IS the secret/i);
+  });
+});
+
+// ─── 2b. The Bitbucket consumer — the shape the field report came from ───────
+//
+// Engine 1.3.0 resolved BITBUCKET_TOKEN at two production call sites and never
+// widened the discovery list, so `--all` on a Bitbucket consumer printed
+// `ok: true` / `probed: []` and exited 0 — a silent all-clear at the AFK auth
+// preflight over a credential that was never probed at all. These drive the
+// probe through SYNTHETIC env fixtures only; no real credential is touched and
+// no real lookup is ever spawned (see this file's header).
+
+describe('runCredentialProbe — the Bitbucket credential is discoverable by --all', () => {
+  it('with ONLY a Bitbucket credential configured, --all probes it and exits 0', () => {
+    // The reproduction, inverted: this exact environment used to be an EMPTY
+    // selection. `probed: []` here would be the bug, not a pass.
+    const { code, stdout } = capture(() =>
+      runCredentialProbe(['--all'], {
+        env: { [BITBUCKET_TOKEN_VAR]: 'ambient-fixture' },
+        spawn: fakeSpawn({ stdout: 'bb-fixture-secret' }).spawn,
+      }),
+    );
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout) as CredentialProbeReport;
+    expect(report.ok).toBe(true);
+    expect(report.probed).toHaveLength(1);
+    expect(report.probed[0]).toMatchObject({
+      variable: BITBUCKET_TOKEN_VAR,
+      commandVariable: 'BITBUCKET_TOKEN_CMD',
+      resolved: true,
+      source: 'ambient',
+    });
+    // The run is no longer an empty selection, so it carries no note.
+    expect(report.note).toBeUndefined();
+  });
+
+  it('a Bitbucket credential whose lookup FAILS makes --all exit 1 and report it failed', () => {
+    const { code, stdout, stderr } = capture(() =>
+      runCredentialProbe(['--all'], {
+        env: { BITBUCKET_TOKEN_CMD: 'lookup bb --field token' },
+        spawn: fakeSpawn({ status: 1 }).spawn,
+      }),
+    );
+    expect(code).toBe(1);
+    const report = JSON.parse(stdout) as CredentialProbeReport;
+    expect(report.ok).toBe(false);
+    expect(report.failed).toEqual([BITBUCKET_TOKEN_VAR]);
+    expect(report.probed[0]).toMatchObject({
+      variable: BITBUCKET_TOKEN_VAR,
+      resolved: false,
+      failure: 'lookup-exit',
+      source: 'command',
+      command: 'lookup bb --field token',
+    });
+    expect(stderr).toMatch(/1 of 1 credential\(s\) failed to resolve: BITBUCKET_TOKEN/);
+  });
+
+  it('with NO Bitbucket credential configured, --all is unchanged — absent, no failure, exit 0', () => {
+    // The selectivity that made the wider list safe to ship: a github-store
+    // consumer must not start failing its preflight over a code host it does
+    // not use. Discovery is environment presence, never a host detection.
+    const forbidden: CredentialLookupSpawn = (command) => {
+      throw new Error(`no Bitbucket lookup must be spawned here, but got: ${command}`);
+    };
+    const { code, stdout } = capture(() =>
+      runCredentialProbe(['--all'], {
+        env: { GITHUB_TOKEN: 'ambient-fixture' },
+        spawn: forbidden,
+      }),
+    );
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout) as CredentialProbeReport;
+    expect(report).toMatchObject({ ok: true, failed: [] });
+    expect(report.probed.map((p) => p.variable)).toEqual(['GITHUB_TOKEN']);
+  });
+
+  it('--all --var BITBUCKET_TOKEN probes it ONCE — the de-duplication still holds', () => {
+    const { spawn, calls } = fakeSpawn({ stdout: 'bb-fixture-secret' });
+    const { code, stdout } = capture(() =>
+      runCredentialProbe(['--all', '--var', BITBUCKET_TOKEN_VAR], {
+        env: { BITBUCKET_TOKEN_CMD: 'lookup bb' },
+        spawn,
+      }),
+    );
+    expect(code).toBe(0);
+    expect((JSON.parse(stdout) as CredentialProbeReport).probed).toHaveLength(1);
+    // The real assertion: exactly one lookup was spawned, not two.
+    expect(calls).toEqual(['lookup bb']);
   });
 });
 
