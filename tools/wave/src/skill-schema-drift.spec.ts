@@ -2487,3 +2487,159 @@ describe('skill-schema-drift — the FETCH_HEAD named-ref clause rides all FOUR 
     expect(stripped).not.toContain('ADR-0034');
   });
 });
+
+// ─── every consumer-declarable `cleanup.*` config key is TAUGHT by the phase
+//     that runs the sweep it configures (issue #451) ─────────────────────────
+//
+// The gap this pin closes, in its general form: a config key can be complete in
+// the engine, validated at load time, threaded to its call site — and still be
+// unreachable in practice, because the operator-facing phase that runs the
+// command never names it. `cleanup.extraRoots` was exactly that shape from the
+// other side (the ENGINE option was documented as the way to declare an
+// out-of-root containment root, and the CONFIG key did not exist at all), and
+// the first installed-form consumer paid for it: a detached scratch checkout no
+// invocation could ever declare a root for, counted by the worktree-count
+// advisory and swept by nothing.
+//
+// Same family as the pins above, with the authority on the other end. Instead
+// of pinning a doc LITERAL to an engine CONST, this reads the key set the
+// `CleanupConfig` interface actually declares — from wave-config.ts, the
+// schema's own authority — and asserts the operator doc names every one of
+// them. Deriving the key set rather than transcribing it is what makes this
+// hold for a key added tomorrow, with nobody having to remember to extend a
+// list in this file.
+//
+// Scoped to `cleanup` deliberately: it is the one config section whose keys are
+// consumed by a command an operator types by hand during a phase, so the phase
+// file is where a reader looks for them. `store`/`verify`/`engine` are read by
+// the skills themselves, not typed at a prompt.
+
+const WAVE_CONFIG_TS = join(__dirname, 'wave-config.ts');
+
+const PHASE_3_WORKTREE_CLEANUP_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-close/reference/phase-3-worktree-cleanup.md',
+);
+
+/**
+ * Slice out one `export interface <name> { … }` body by walking braces from the
+ * opener to its match. Throws (never returns `''`) when the interface is
+ * missing or unterminated — a rename must FAIL this pin rather than silently
+ * reduce it to scanning nothing.
+ */
+function interfaceBody(source: string, name: string): string {
+  const opener = `export interface ${name} {`;
+  const from = source.indexOf(opener);
+  if (from < 0) {
+    throw new Error(`interface ${name} not found in wave-config.ts`);
+  }
+  let depth = 0;
+  for (let i = from + opener.length - 1; i < source.length; i++) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(from + opener.length, i);
+    }
+  }
+  throw new Error(`interface ${name} in wave-config.ts is unterminated`);
+}
+
+/**
+ * The property names an interface body declares — matched at the body's own
+ * two-space indentation, so a name merely MENTIONED in a doc comment (` * …`
+ * lines, and every `{@link …}` in them) never counts as a declaration.
+ */
+function declaredKeys(body: string): string[] {
+  return [...body.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]).sort();
+}
+
+/**
+ * The load-bearing assertion: `md` names `cleanup.<key>` for every declared
+ * key, and there was at least one key to check. Throws naming the missing
+ * key(s), so a failure says which key went untaught rather than "expected false
+ * to be true".
+ */
+function assertCleanupKeysTaught(md: string, keys: readonly string[]): void {
+  if (keys.length === 0) {
+    throw new Error(
+      'CleanupConfig declared no keys at all — this pin would pass vacuously. ' +
+        'Re-anchor the extraction in wave-config.ts.',
+    );
+  }
+  const untaught = keys.filter((key) => !md.includes('cleanup.' + key));
+  if (untaught.length > 0) {
+    throw new Error(
+      'phase-3-worktree-cleanup.md never names cleanup.' +
+        untaught.join(' / cleanup.') +
+        ' — every consumer-declarable cleanup key must be taught by the phase that runs ' +
+        'the sweep it configures. A key that exists, validates and is threaded to its call ' +
+        'site is still unreachable if no operator-facing doc says it can be written down.',
+    );
+  }
+}
+
+describe('skill-schema-drift — phase 3 teaches every cleanup.* config key (issue #451)', () => {
+  const cleanupKeys = declaredKeys(
+    interfaceBody(readFileSync(WAVE_CONFIG_TS, 'utf-8'), 'CleanupConfig'),
+  );
+  const phase3Md = readFileSync(PHASE_3_WORKTREE_CLEANUP_MD, 'utf-8');
+
+  it('the extraction finds the real key set — never a vacuous empty', () => {
+    // Belt-and-braces on the derivation itself: a helper that silently stopped
+    // finding anything would make every assertion below pass for free.
+    expect(cleanupKeys).toEqual(['disposableNames', 'extraRoots']);
+  });
+
+  it('the operator doc names every declared key — the new one beside the existing one', () => {
+    expect(() => assertCleanupKeysTaught(phase3Md, cleanupKeys)).not.toThrow();
+    for (const key of cleanupKeys) {
+      expect(phase3Md).toContain('cleanup.' + key);
+    }
+  });
+
+  it('...and states, at that same site, what an UNDECLARED root looks like in the output', () => {
+    // The reading that made this a field report rather than a feature request:
+    // the checkout is registered (so the count includes it) while both detached
+    // arrays stay empty (so nothing names it). A doc that offers the key without
+    // that tell leaves an operator unable to recognize the state it fixes.
+    expect(phase3Md).toContain('worktreeCount');
+    expect(phase3Md).toMatch(/both empty|neither array|\*\*neither\*\* list/);
+  });
+
+  it('NEGATIVE CONTROL — a key the doc does not name is caught, naming that key', () => {
+    expect(() =>
+      assertCleanupKeysTaught(phase3Md, [...cleanupKeys, 'purgeEverything']),
+    ).toThrow(/cleanup\.purgeEverything/);
+  });
+
+  it('NEGATIVE CONTROL — dropping the new key from the doc is caught', () => {
+    // The realistic shape of this defect: a doc edit that keeps the older key
+    // and loses the newer one.
+    const stripped = phase3Md.split('cleanup.extraRoots').join('<dropped>');
+    expect(stripped).not.toEqual(phase3Md); // the strip actually matched
+    expect(() => assertCleanupKeysTaught(stripped, cleanupKeys)).toThrow(
+      /cleanup\.extraRoots/,
+    );
+  });
+
+  it('NEGATIVE CONTROL — an emptied or renamed interface fails loud instead of passing vacuously', () => {
+    expect(() => interfaceBody('// nothing here\n', 'CleanupConfig')).toThrow(
+      /interface CleanupConfig not found/,
+    );
+    expect(() =>
+      interfaceBody('export interface CleanupConfig {\n', 'CleanupConfig'),
+    ).toThrow(/unterminated/);
+    expect(() => assertCleanupKeysTaught(phase3Md, [])).toThrow(/pass vacuously/);
+  });
+
+  it('the extractor reads DECLARATIONS, never a name mentioned in a doc comment', () => {
+    // Guards the discriminator: CleanupConfig's own doc comments name both keys
+    // in prose and in {@link} references, and those must contribute nothing —
+    // otherwise this pin would keep "finding" a key the interface removed.
+    expect(
+      declaredKeys(
+        '  /** mentions ghostKey? and {@link alsoGhost} */\n  realKey?: string[];\n',
+      ),
+    ).toEqual(['realKey']);
+  });
+});

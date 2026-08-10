@@ -339,6 +339,105 @@ describe('normalizeEngineCli — the typed refusal a caller can branch on (AC#2)
   });
 });
 
+// ── the detached sweep's declarable containment roots: `cleanup.extraRoots` ──
+//
+// The config half of issue #451. `DetachedSweepOptions.extraRoots` documented
+// itself as the way to declare a containment root outside the worktrees root,
+// but `CleanupConfig` had no matching key — so the CONFIGURED path (what
+// wave-close phase 3 runs) could not declare one, and an out-of-root detached
+// scratch checkout stayed registered forever. These specs pin the three
+// properties the schema owes: the key is ACCEPTED, its ABSENCE keeps every
+// existing config valid unchanged (the additive/semver guarantee), and a
+// MALFORMED declaration is refused loudly in the same error style the sibling
+// `cleanup.disposableNames` key already uses.
+
+/** Load a config carrying the given raw `cleanup` value. */
+function loadWithCleanup(cleanup: unknown) {
+  return loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, cleanup }));
+}
+
+describe('loadWaveConfig — cleanup.extraRoots: the ACCEPT path', () => {
+  it('accepts repo-root-relative roots and returns them verbatim', () => {
+    const cfg = loadWithCleanup({ extraRoots: ['scratchpad', '.probes/detached'] });
+    expect(cfg.cleanup?.extraRoots).toEqual(['scratchpad', '.probes/detached']);
+  });
+
+  it('accepts an ABSOLUTE root — a containment root is a LOCATION, unlike a disposable name', () => {
+    // The discriminator between the two cleanup keys: `disposableNames` refuses
+    // a `/` outright (a bare entry name, matched at any depth), `extraRoots`
+    // requires it to be meaningful (an absolute path is explicitly supported).
+    const cfg = loadWithCleanup({ extraRoots: ['/var/tmp/agent-scratch'] });
+    expect(cfg.cleanup?.extraRoots).toEqual(['/var/tmp/agent-scratch']);
+  });
+
+  it('accepts both cleanup keys side by side — neither validator rejects the other key', () => {
+    const cfg = loadWithCleanup({
+      disposableNames: ['.build'],
+      extraRoots: ['scratchpad'],
+    });
+    expect(cfg.cleanup?.disposableNames).toEqual(['.build']);
+    expect(cfg.cleanup?.extraRoots).toEqual(['scratchpad']);
+  });
+
+  it('accepts an EMPTY array — a declaration of nothing is a no-op, not an error', () => {
+    expect(loadWithCleanup({ extraRoots: [] }).cleanup?.extraRoots).toEqual([]);
+  });
+});
+
+describe('loadWaveConfig — cleanup.extraRoots: the ABSENCE path stays valid (the additive guarantee)', () => {
+  it('a cleanup object with only disposableNames still validates, and reads undefined', () => {
+    const cfg = loadWithCleanup({ disposableNames: ['.build'] });
+    expect(cfg.cleanup?.disposableNames).toEqual(['.build']);
+    expect(cfg.cleanup?.extraRoots).toBeUndefined();
+  });
+
+  it('a config with NO cleanup key at all is valid and declares nothing', () => {
+    const cfg = loadConfigFromString(JSON.stringify({ store: { kind: 'github' } }));
+    expect(cfg.cleanup).toBeUndefined();
+  });
+
+  it('an explicit null is read as "nothing declared" rather than refused', () => {
+    // Matches how `normalizeDisposableNames` treats null on the sibling key —
+    // deliberately NOT the `engine.cli` stance, whose whole point is that a
+    // written-down null must not degrade quietly to unbound.
+    expect(() => loadWithCleanup({ extraRoots: null })).not.toThrow();
+  });
+});
+
+describe('loadWaveConfig — cleanup.extraRoots: the REJECT path is loud', () => {
+  it('rejects a non-array declaration, naming the field', () => {
+    expect(() => loadWithCleanup({ extraRoots: 'scratchpad' }))
+      .toThrow(/cleanup\.extraRoots.*must be an array of paths/);
+  });
+
+  it('rejects an object declaration too — not merely a bare string', () => {
+    expect(() => loadWithCleanup({ extraRoots: { root: 'scratchpad' } }))
+      .toThrow(/must be an array of paths/);
+  });
+
+  it('rejects a non-string ENTRY, naming the offending index', () => {
+    expect(() => loadWithCleanup({ extraRoots: ['scratchpad', 7] }))
+      .toThrow(/cleanup\.extraRoots"\[1\] must be a string/);
+  });
+
+  it('rejects an empty / whitespace-only entry — it would resolve to the repo root itself', () => {
+    expect(() => loadWithCleanup({ extraRoots: ['   '] }))
+      .toThrow(/cleanup\.extraRoots"\[0\] must be a non-empty path/);
+  });
+
+  it('rejects a `~`-rooted entry — nothing expands it, so it can only mean the wrong directory', () => {
+    expect(() => loadWithCleanup({ extraRoots: ['~/scratch'] }))
+      .toThrow(/home-rooted/);
+  });
+
+  it('a malformed extraRoots is refused even when disposableNames beside it is perfectly valid', () => {
+    // Both keys are validated; a valid sibling must not shield a bad one.
+    expect(() =>
+      loadWithCleanup({ disposableNames: ['.build'], extraRoots: [7] }),
+    ).toThrow(/cleanup\.extraRoots"\[0\]/);
+  });
+});
+
 describe('engine.cli is reachable from the PACKAGE ROOT (AC#3)', () => {
   it('re-exports the config type carrying the field, plus its validator and typed error', () => {
     // Compile-time half — these annotations only typecheck if the barrel really

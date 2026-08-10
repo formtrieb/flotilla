@@ -2411,6 +2411,19 @@ export interface DetachedSweepOptions {
    * their scratch checkouts somewhere other than the worktrees root (a harness
    * scratchpad directory, say) declares that root here; without a declaration
    * such a checkout is left strictly alone, which is the conservative default.
+   *
+   * REACHABLE FROM CONFIG, not only from this API (issue #451). This option
+   * documented itself as the way to declare such a root from the day the sweep
+   * landed, but for a long while it was reachable ONLY by a caller building the
+   * engine functions directly: `CleanupConfig` carried no matching key, so the
+   * CONFIGURED path — `worktree-cleanup --detached --config <path>`, which is
+   * what wave-close's phase 3 runs — could not declare one at all, and an
+   * out-of-root detached scratch checkout stayed registered indefinitely
+   * (counted by {@link checkWorktreeCountAdvisory}, selected by nothing). The
+   * wave config's `cleanup.extraRoots` key is now that declaration, threaded
+   * into this option by the `worktree-cleanup` CLI verb; the config layer
+   * validates its shape at load time. Nothing about this option's own semantics
+   * changed — only who can reach it.
    */
   extraRoots?: readonly string[];
   /**
