@@ -12,9 +12,12 @@
  *
  * This runner is a THIN router, in the house style — it holds no host logic:
  *
- *   detect-host  → routes by host. `github` is the one shipped implementation;
- *                  `bitbucket` / `unknown` fail LOUD and typed for EVERY verb
- *                  (the Bitbucket pilot implements the seam and inherits them).
+ *   detect-host  → routes by host. `github` and `bitbucket` are the two shipped
+ *                  implementations; `unknown` fails LOUD and typed for EVERY
+ *                  verb. Routing is the ROUTER's decision, never the caller's:
+ *                  an injected adapter is honoured only for a host that HAS one,
+ *                  so it can never smuggle an unrecognised remote onto a
+ *                  host path.
  *   create       → `findOpenPrRef` then `createPr` (host-pr.ts owns the
  *                  find-before-create idempotency): an existing open PR for the
  *                  branch is REUSED — and its title/body are RE-WRITTEN to the
@@ -101,11 +104,25 @@ import {
   type HttpProbe,
 } from './host-pr';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
+import {
+  createBitbucketApiFromEnv,
+  bitbucketCreateCreds,
+  BITBUCKET_TOKEN_VAR,
+  BITBUCKET_EMAIL_VAR,
+} from './adapters/bitbucket/bitbucket-api';
 import { resolveCredential } from './credential-resolver';
 import { flag, printJson } from './cli-utils';
 
 const VERBS = ['create', 'arm', 'merge', 'status', 'preflight'] as const;
 type Verb = (typeof VERBS)[number];
+
+/**
+ * The hosts with a shipped adapter. Everything else — today only `unknown` —
+ * gets the typed {@link LandingNotImplementedError} exit on EVERY verb. Named
+ * once so the router, the `create` credential edge, and the injected-adapter
+ * gate below cannot drift apart on which hosts are supported.
+ */
+const IMPLEMENTED_HOSTS: Host[] = ['github', 'bitbucket'];
 
 /**
  * Impure inputs for the `create` and `preflight` verbs, injectable for tests. In
@@ -169,10 +186,15 @@ function usage(message: string): number {
       `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
       '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
       '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
-      '  create + preflight resolve the GitHub credential through the engine credential seam (ADR-0029):',
-      '    GITHUB_TOKEN_CMD (a lookup command, run via the shell, 60s budget) wins over GITHUB_TOKEN.',
+      '  Every verb resolves its host credential through the engine credential seam (ADR-0029):',
+      '    <VAR>_CMD (a lookup command, run via the shell, 60s budget) wins over the ambient <VAR>.',
       '    A configured command that fails is a loud typed error naming the command — never its output,',
-      '    never a fallback to GITHUB_TOKEN. The secret itself is never printed.',
+      '    never a fallback to the ambient variable. The secret itself is never printed.',
+      '    github    → GITHUB_TOKEN / GITHUB_TOKEN_CMD.',
+      '    bitbucket → BITBUCKET_TOKEN / BITBUCKET_TOKEN_CMD, plus BITBUCKET_EMAIL (the Atlassian account',
+      '                email, not a secret) as the Basic-auth username. Without BITBUCKET_EMAIL the landing',
+      '                verbs fall back to Bearer auth (a repository/workspace access token) and `create`,',
+      '                which can only speak Basic, refuses loudly. App passwords no longer work at all.',
       '',
     ].join('\n'),
   );
@@ -184,13 +206,14 @@ function usage(message: string): number {
  *
  * @param args - CLI args; `args[0]` is the verb.
  * @param injected - a {@link LandingHost} to drive the landing verbs
- *   (`arm`/`merge`/`status`) in tests. It is used ONLY when the detected host is
- *   `github`: routing is the ROUTER's decision, never the caller's, so an
- *   injected adapter can never smuggle a non-GitHub wave onto the GitHub path.
- *   When absent, the GitHub adapter is built from the env (impure — the
- *   credential resolver + a construction-time preflight). The `create` and `preflight`
- *   verbs do not use this seam (`create` is on the ADR-0019 `HttpProbe`/`Creds`
- *   boundary; `preflight` reads the posture via `deps.posture`).
+ *   (`arm`/`merge`/`status`) in tests. It is used ONLY once the detected host
+ *   has a shipped adapter ({@link IMPLEMENTED_HOSTS}): routing is the ROUTER's
+ *   decision, never the caller's, so an injected adapter can never smuggle an
+ *   unrecognised remote onto a host path. When absent, the host's own adapter is
+ *   built from the env (impure — the credential resolver + a construction-time
+ *   preflight). The `create` and `preflight` verbs do not use this seam
+ *   (`create` is on the ADR-0019 `HttpProbe`/`Creds` boundary; `preflight` reads
+ *   the posture via `deps.posture`).
  * @param deps - impure inputs for `create` (network seam + env) and `preflight`
  *   (posture reader + env); tests inject them, production defaults to real
  *   `fetch`, `process.env`, and a `GitHubApi` built from the env.
@@ -281,9 +304,9 @@ export async function runHostPr(
     return usage(`could not read the git remote (pass --remote <url>): ${(err as Error).message}`);
   }
 
-  // ── Route by host. Every verb is github-only in M1; others fail loud+typed. ──
+  // ── Route by host. github + bitbucket ship adapters; others fail loud+typed. ──
   const info = detectHost(remoteUrl);
-  if (info.host !== 'github') {
+  if (!IMPLEMENTED_HOSTS.includes(info.host)) {
     return notImplemented(verb, info.host, branch);
   }
 
@@ -309,7 +332,7 @@ export async function runHostPr(
 
   // ── arm | merge | status: build the LandingHost adapter + run the verb. ──
   try {
-    const host: LandingHost = injected ?? (await createGitHubApiFromEnv({ remoteUrl }));
+    const host: LandingHost = injected ?? (await landingHostFor(info, remoteUrl, deps));
     return await dispatch(verb, host, branch as string, method, info.host, deleteBranch);
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
@@ -322,6 +345,29 @@ export async function runHostPr(
     });
     return 1;
   }
+}
+
+/**
+ * Build the host's own {@link LandingHost} adapter. One switch, so `arm`,
+ * `merge` and `status` cannot each grow their own idea of which adapter a host
+ * gets. Both factories resolve their credential through the ADR-0029 seam and
+ * run a construction-time preflight, so a bad credential fails HERE rather than
+ * mid-landing.
+ */
+async function landingHostFor(
+  info: HostInfo,
+  remoteUrl: string,
+  deps: HostPrDeps,
+): Promise<LandingHost & LandingPosture> {
+  if (info.host === 'bitbucket') {
+    return createBitbucketApiFromEnv({
+      remoteUrl,
+      workspace: info.workspace,
+      repo: info.repo,
+      env: deps.env,
+    });
+  }
+  return createGitHubApiFromEnv({ remoteUrl, env: deps.env });
 }
 
 /**
@@ -340,12 +386,13 @@ export async function runHostPr(
  * closing nothing — leaves the wave looking finished with one row quietly open.
  * `allowClosePhraseLoss` is the deliberate override.
  *
- * The GitHub token is RESOLVED through the engine credential seam (ADR-0029) and
+ * The host token is RESOLVED through the engine credential seam (ADR-0029) and
  * never printed; every way that can fail — nothing configured, a lookup command
  * that exits non-zero, times out, or prints nothing — fails loud (exit 1) with
  * an error naming the command, mirroring `createGitHubApiFromEnv`. The Basic-auth
- * credential is `x-access-token:<token>` — the GitHub form host-pr.ts's
- * `HttpProbe` documents.
+ * credential is `x-access-token:<token>` on GitHub and
+ * `<atlassian-account-email>:<api-token>` on Bitbucket Cloud — see
+ * {@link createCredsFor}, which owns the per-host pairing.
  */
 async function runCreate(
   info: HostInfo,
@@ -356,16 +403,15 @@ async function runCreate(
   allowClosePhraseLoss: boolean,
   deps: HostPrDeps,
 ): Promise<number> {
-  // One resolver seam (ADR-0029): `GITHUB_TOKEN_CMD` (a lookup command) wins
-  // over an ambient `GITHUB_TOKEN`, and a configured command that fails is a
-  // typed LOUD error here — never a silent fallback to the ambient variable.
-  // Only `.message` is ever printed: it names the command, never its output.
-  let token: string;
+  // One resolver seam (ADR-0029): `<VAR>_CMD` (a lookup command) wins over the
+  // ambient `<VAR>`, and a configured command that fails is a typed LOUD error
+  // here — never a silent fallback to the ambient variable. Only `.message` is
+  // ever printed: it names the command, never its output. The Bitbucket arm can
+  // also fail for a SECOND reason — no account email to pair the token with —
+  // and that refusal is loud and typed in exactly the same place.
+  let creds: Creds;
   try {
-    token = resolveCredential('GITHUB_TOKEN', {
-      env: deps.env,
-      purpose: 'open a PR through `host-pr create` (ADR-0019)',
-    });
+    creds = createCredsFor(info.host, deps.env);
   } catch (err) {
     const message = (err as Error).message ?? String(err);
     process.stderr.write(`error: ${message}\n`);
@@ -373,7 +419,6 @@ async function runCreate(
     return 1;
   }
 
-  const creds: Creds = { auth: `x-access-token:${token}` };
   const opts = deps.http ? { http: deps.http } : {};
   // Only the reuse-time update reads the guard override; find/create ignore it.
   const updateOpts = { ...opts, allowClosePhraseLoss };
@@ -480,6 +525,39 @@ async function runCreate(
 }
 
 /**
+ * The Basic-auth `user:secret` pair `host-pr create` sends, per host. ONE owner
+ * for the pairing, because the two hosts genuinely differ and a per-call copy is
+ * how such a rule drifts:
+ *
+ *   - **GitHub** — `x-access-token:<token>`, the form host-pr.ts's `HttpProbe`
+ *     documents.
+ *   - **Bitbucket Cloud** — `<atlassian-account-email>:<api-token>`. Measured,
+ *     not assumed (this slice's AC): app passwords, the old
+ *     `username:password` pairing, stopped working on 2026-06-09 and were
+ *     removed on 2026-07-28, and Atlassian's replacement pairs the ACCOUNT
+ *     EMAIL with an API token. So Bitbucket needs a second, non-secret input —
+ *     `BITBUCKET_EMAIL` — and its absence is a loud typed refusal rather than a
+ *     request that would 401 with nothing to read.
+ *
+ * Throws (never returns a partial credential); the caller turns the throw into
+ * the exit-1 JSON payload.
+ */
+function createCredsFor(host: Host, env: NodeJS.ProcessEnv | undefined): Creds {
+  if (host === 'bitbucket') {
+    const token = resolveCredential(BITBUCKET_TOKEN_VAR, {
+      env,
+      purpose: 'open a PR through `host-pr create` on Bitbucket Cloud (ADR-0019)',
+    });
+    return { auth: bitbucketCreateCreds(token, (env ?? process.env)[BITBUCKET_EMAIL_VAR]) };
+  }
+  const token = resolveCredential('GITHUB_TOKEN', {
+    env,
+    purpose: 'open a PR through `host-pr create` (ADR-0019)',
+  });
+  return { auth: `x-access-token:${token}` };
+}
+
+/**
  * The `preflight` verb — the code-host posture probe (ADR-0023 amendment). It is
  * store-BLIND: no `--config`, no store, no `--branch`. It builds a posture reader
  * from the RESOLVED GitHub credential (ADR-0029 — the same construction-time
@@ -493,7 +571,9 @@ async function runCreate(
  */
 async function runPreflight(info: HostInfo, remoteUrl: string, deps: HostPrDeps): Promise<number> {
   try {
-    const posture: LandingPosture = deps.posture ?? (await createGitHubApiFromEnv({ remoteUrl, env: deps.env }));
+    // The posture reader IS the landing adapter on both shipped hosts — one
+    // construction, one credential preflight, three posture reads.
+    const posture: LandingPosture = deps.posture ?? (await landingHostFor(info, remoteUrl, deps));
     const report = await preflightHost(info.host, posture);
     printJson({ ok: report.ok, verb: 'preflight', host: report.host, checks: report.checks });
     return report.ok ? 0 : 1;

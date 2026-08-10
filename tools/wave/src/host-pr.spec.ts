@@ -299,6 +299,34 @@ describe('findOpenPr', () => {
     );
     expect(r).toBeNull();
   });
+
+  it('builds a WELL-FORMED Bitbucket query: BBQL in `q`, `state` as its own parameter', async () => {
+    // The bug this pins: `q` used to carry the whole string
+    // `source.branch.name="b"&state=OPEN`, URL-encoded as ONE value. `q` is
+    // BBQL, whose boolean operator is `and` — Atlassian's own example is
+    // `?q=size>1024+and+attributes="binary"` — so the encoded `&state=OPEN`
+    // was junk inside the expression. A query Bitbucket rejects returns
+    // non-200, which this module reads as "no known open PR", so the caller
+    // proceeds to CREATE: find-before-create silently becomes
+    // create-a-duplicate on every Bitbucket re-run.
+    const { http, calls } = fakeProbe([[isGet, { status: 200, json: { values: [] } }]]);
+    await findOpenPr('bitbucket', { auth: 'u:p' }, 'wave/461-x', { workspace: 'ws', repo: 'repo' }, { http });
+
+    const url = calls[0].url;
+    expect(url).toContain(`q=${encodeURIComponent('source.branch.name="wave/461-x"')}`);
+    expect(url).toContain('&state=OPEN');
+    // The decisive negative: `&state=OPEN` must NOT be encoded into the q value.
+    expect(url).not.toContain(encodeURIComponent('&state=OPEN'));
+    expect(url).not.toContain('%26state');
+  });
+
+  it('the GitHub query is untouched by that fix', async () => {
+    const { http, calls } = fakeProbe([[isGet, { status: 200, json: [] }]]);
+    await findOpenPr('github', { auth: 'u:t' }, 'feat/x', { workspace: 'acme', repo: 'w' }, { http });
+    expect(calls[0].url).toBe(
+      'https://api.github.com/repos/acme/w/pulls?state=open&head=acme%3Afeat%2Fx',
+    );
+  });
 });
 
 // ─── findOpenPrRef (url + host-local number, for the reuse-time update) ───────
@@ -2017,6 +2045,19 @@ describe('LandingNotImplementedError', () => {
     expect(err.message).toMatch(/remote/i);
     expect(err.message).not.toMatch(/A unknown/);
   });
+
+  it('names BOTH shipped adapters — the message is the currency check on which hosts work', () => {
+    // Currency, not cosmetics: this sentence is what an operator reads when a
+    // remote is unrecognised, and it told them 'github' only for as long as
+    // that was true. A message that still said so would send a Bitbucket pilot
+    // looking for a workaround that no longer exists.
+    for (const host of ['unknown', 'bitbucket'] as const) {
+      const message = new LandingNotImplementedError(host).message;
+      expect(message).toMatch(/'github' and 'bitbucket'/);
+      expect(message).not.toMatch(/'github' only/);
+      expect(message).not.toMatch(/supports 'github';/);
+    }
+  });
 });
 
 // ─── mergeRequiredChecks (ruleset-vs-legacy reconciliation) ──────────────────
@@ -2246,6 +2287,86 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
     );
     expect(report.ok).toBe(true);
     expect(report.checks.map((c) => c.status).sort()).toEqual(['pass', 'unknown', 'unknown']);
+  });
+
+  // ─── the same grading, on bitbucket ────────────────────────────────────
+  //
+  // The three reads are host-neutral in SHAPE and not in MEANING, so the
+  // grader is host-aware. What must hold on this host: nothing about the
+  // absence of an arming primitive is ever a hard `fail` (it is a platform
+  // property, not a misconfiguration), and no detail promises an arm.
+
+  describe('bitbucket grading', () => {
+    it('an OFF auto-merge setting is ADVISORY here, where the same value is a hard fail on github', async () => {
+      const posture = fakePosture({ canMerge: true, autoMerge: 'off', required: REQUIRED_PRESENT });
+      const bb = await preflightHost('bitbucket', posture);
+      const gh = await preflightHost('github', posture);
+
+      expect(byName(bb.checks)['allow-auto-merge'].status).toBe('advisory');
+      expect(bb.ok).toBe(true);
+      // The contrast is the assertion: identical posture, different verdict,
+      // because only one of the two hosts has a setting that could be ticked.
+      expect(byName(gh.checks)['allow-auto-merge'].status).toBe('fail');
+      expect(gh.ok).toBe(false);
+    });
+
+    it('the bitbucket auto-merge detail states the MEASUREMENT and what --auto does instead', async () => {
+      const report = await preflightHost('bitbucket', fakePosture({ autoMerge: 'off' }));
+      const detail = byName(report.checks)['allow-auto-merge'].detail;
+      expect(detail).toMatch(/no auto-merge arming primitive/i);
+      expect(detail).toMatch(/merge check/i);
+      expect(detail).toMatch(/DIRECT MERGE/);
+      expect(detail).toMatch(/merge-order/);
+      // It must NOT hand a Bitbucket operator GitHub's fix instruction.
+      expect(detail).not.toMatch(/Settings → General/);
+    });
+
+    it('required-checks present does NOT promise an arm on bitbucket (the github sentence would be false here)', async () => {
+      const bbDetail = byName(
+        (await preflightHost('bitbucket', fakePosture({ required: REQUIRED_PRESENT }))).checks,
+      )['required-checks'].detail;
+      const ghDetail = byName(
+        (await preflightHost('github', fakePosture({ required: REQUIRED_PRESENT }))).checks,
+      )['required-checks'].detail;
+
+      expect(ghDetail).toMatch(/will ARM these PRs/);
+      expect(bbDetail).toMatch(/will NOT arm these PRs/);
+      expect(bbDetail).toMatch(/REFUSED/);
+    });
+
+    it('the pr-merge-token detail names BITBUCKET_TOKEN, and its pass discloses that a blind read is not proof', async () => {
+      const pass = byName((await preflightHost('bitbucket', fakePosture({ canMerge: true }))).checks)['pr-merge-token'];
+      expect(pass.status).toBe('pass');
+      expect(pass.detail).toMatch(/BITBUCKET_TOKEN/);
+      expect(pass.detail).not.toMatch(/GITHUB_TOKEN/);
+      // Absence of evidence is disclosed, never dressed up as a proven grant.
+      expect(pass.detail).toMatch(/absence of evidence/i);
+
+      const fail = byName((await preflightHost('bitbucket', fakePosture({ canMerge: false }))).checks)['pr-merge-token'];
+      expect(fail.status).toBe('fail');
+      expect(fail.detail).toMatch(/write:repository:bitbucket/);
+    });
+
+    it('a read-only credential is the ONLY bitbucket posture that blocks', async () => {
+      for (const autoMerge of ['on', 'off', 'unknown'] as AutoMergeSetting[]) {
+        for (const required of [REQUIRED_PRESENT, REQUIRED_ABSENT, REQUIRED_UNKNOWN]) {
+          const ok = await preflightHost('bitbucket', fakePosture({ canMerge: true, autoMerge, required }));
+          expect(ok.ok).toBe(true);
+          const blocked = await preflightHost('bitbucket', fakePosture({ canMerge: false, autoMerge, required }));
+          expect(blocked.ok).toBe(false);
+        }
+      }
+    });
+
+    it('the github grading is untouched by the host-aware branches (every github detail is byte-identical to its no-host-argument meaning)', async () => {
+      // A regression net for the additive claim: the github texts asserted
+      // across this whole describe block still hold, so the bitbucket branches
+      // added behaviour rather than rewriting the shipped report.
+      const report = await preflightHost('github', fakePosture({ canMerge: true, autoMerge: 'on', required: REQUIRED_PRESENT }));
+      expect(byName(report.checks)['pr-merge-token'].detail).toMatch(/GITHUB_TOKEN/);
+      expect(byName(report.checks)['allow-auto-merge'].detail).toMatch(/"Allow auto-merge" is ON/);
+      expect(byName(report.checks)['required-checks'].detail).toMatch(/Required: ci\/test, ci\/lint\./);
+    });
   });
 });
 

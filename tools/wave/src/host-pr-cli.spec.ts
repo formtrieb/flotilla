@@ -3,14 +3,18 @@
  * ADR-0023).
  *
  * Two things are under test, and only these two — the runner is a THIN router:
- *   1. **detect-host routing.** github → the GitHub landing adapter; bitbucket /
- *      unknown → a typed adapter-not-implemented exit. Driven by `--remote`, so
- *      no git process and no network are touched.
+ *   1. **detect-host routing.** github → the GitHub landing adapter, bitbucket →
+ *      the Bitbucket one; an unknown host → a typed adapter-not-implemented exit
+ *      on EVERY verb. Driven by `--remote`, so no git process and no network are
+ *      touched.
  *   2. **The verb → engine mapping + exit codes.** The arm INTENT itself is
- *      host-pr.spec.ts's job; the request shaping is real-github-api.spec.ts's.
+ *      host-pr.spec.ts's job; the request shaping is real-github-api.spec.ts's
+ *      and bitbucket-api.spec.ts's.
  *
- * Every test injects a LandingHost, so `createGitHubApiFromEnv` (which would do
- * a real `GET /user` preflight) is never reached.
+ * Every test injects a LandingHost (or, for the Bitbucket end-to-end block, a
+ * real `RealBitbucketApi` over a fixture HTTP seam), so neither adapter factory
+ * — and therefore no credential resolution and no network — is ever reached
+ * except where a test is specifically about that failure.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -28,6 +32,12 @@ import {
   type AutoMergeSetting,
   type RequiredChecksInfo,
 } from './host-pr';
+import {
+  RealBitbucketApi,
+  type BitbucketHttp,
+  type BitbucketHttpRequest,
+  type BitbucketHttpResponse,
+} from './adapters/bitbucket/bitbucket-api';
 
 const GITHUB_REMOTE = 'git@github.com:example-org/example-repo.git';
 const BITBUCKET_REMOTE = 'git@bitbucket.org:example-team/example-repo.git';
@@ -91,29 +101,215 @@ afterEach(() => {
 const out = (): Record<string, unknown> => JSON.parse(stdout);
 
 describe('host-pr routing (detect-host)', () => {
-  it('bitbucket → exit 1 with a typed adapter-not-implemented payload, and NO host call', async () => {
+  it('an unknown host (GitLab) → exit 1 with a typed adapter-not-implemented payload, and NO host call', async () => {
     const { host, calls } = fakeHost({ status: openPr('clean') });
-    const code = await runHostPr(['arm', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', UNKNOWN_REMOTE], host);
 
     expect(code).toBe(1);
-    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'bitbucket' });
-    // The ROUTER decides by host — an injected adapter must not smuggle a
-    // bitbucket wave onto the GitHub path.
+    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
+    // The ROUTER decides by host — an injected adapter must not smuggle an
+    // unrecognised remote onto a host path.
     expect(calls).toEqual([]);
   });
 
-  it('an unknown host (GitLab) → exit 1, adapter-not-implemented', async () => {
-    const { host } = fakeHost({});
-    const code = await runHostPr(['status', '--branch', 'b', '--remote', UNKNOWN_REMOTE], host);
-    expect(code).toBe(1);
-    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
+  it('EVERY verb refuses an unknown host, not just the landing three', async () => {
+    for (const args of [
+      ['status', '--branch', 'b'],
+      ['arm', '--branch', 'b'],
+      ['merge', '--branch', 'b'],
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'x'],
+      ['preflight'],
+    ]) {
+      stdout = '';
+      const { host, calls } = fakeHost({ status: openPr('clean') });
+      const code = await runHostPr([...args, '--remote', UNKNOWN_REMOTE], host);
+      expect(code).toBe(1);
+      expect(out()).toMatchObject({
+        ok: false,
+        code: 'adapter-not-implemented',
+        host: 'unknown',
+        verb: args[0],
+      });
+      expect(calls).toEqual([]);
+    }
   });
 
   it('the not-implemented message names the host and points at the LandingHost seam', async () => {
     const { host } = fakeHost({});
-    await runHostPr(['merge', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
-    expect(String(out().error)).toMatch(/bitbucket/);
-    expect(String(out().error)).toMatch(/LandingHost|adapter/i);
+    await runHostPr(['merge', '--branch', 'b', '--remote', UNKNOWN_REMOTE], host);
+    expect(String(out().error)).toMatch(/remote/i);
+    expect(String(out().error)).toMatch(/github|bitbucket/);
+  });
+
+  it('bitbucket is a SHIPPED adapter now — the landing verbs route to it instead of refusing', async () => {
+    const { host, calls } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(['status', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, verb: 'status', host: 'bitbucket', state: 'open' });
+    expect(out().code).toBeUndefined();
+    expect(calls).toEqual(['getPrStatus:b']);
+  });
+});
+
+// ─── the Bitbucket landing verbs, end to end through the REAL adapter ────────
+//
+// The blocks below drive `runHostPr` with a genuine `RealBitbucketApi` over a
+// fixture HTTP seam, so the arm INTENT (host-pr.ts) and the adapter's typed
+// refusal (bitbucket-api.ts) are exercised together, exactly as a pilot's
+// `wave-close --auto` would. This is the AC that the Bitbucket adapter
+// "inherits the verbs with no new skills" — the router, the intent, the exit
+// codes and the JSON shape are all the shipped ones.
+
+describe('host-pr on bitbucket — arm | merge | status through RealBitbucketApi', () => {
+  const bbHost = (
+    routes: Array<[(req: BitbucketHttpRequest) => boolean, BitbucketHttpResponse]>,
+  ): { host: RealBitbucketApi; calls: BitbucketHttpRequest[] } => {
+    const calls: BitbucketHttpRequest[] = [];
+    const http: BitbucketHttp = {
+      async request(req) {
+        calls.push(req);
+        for (const [match, res] of routes) if (match(req)) return res;
+        return { status: 404, json: null };
+      },
+    };
+    return { host: new RealBitbucketApi('ws', 'repo', 'Bearer t', http), calls };
+  };
+
+  const bbPr = (over: Record<string, unknown> = {}) => ({
+    id: 7,
+    state: 'OPEN',
+    links: { html: { href: 'https://bitbucket.org/ws/repo/pull-requests/7' } },
+    source: { branch: { name: 'b' }, commit: { hash: 'abc123' } },
+    destination: { branch: { name: 'main' } },
+    ...over,
+  });
+
+  const prList = (values: unknown[]): [(r: BitbucketHttpRequest) => boolean, BitbucketHttpResponse] => [
+    (r) => r.url.includes('/pullrequests?'),
+    { status: 200, json: { values } },
+  ];
+  const restrictions = (values: unknown[]): [(r: BitbucketHttpRequest) => boolean, BitbucketHttpResponse] => [
+    (r) => r.url.includes('/branch-restrictions'),
+    { status: 200, json: { values } },
+  ];
+  const buildStatuses = (values: unknown[]): [(r: BitbucketHttpRequest) => boolean, BitbucketHttpResponse] => [
+    (r) => r.url.includes('/statuses'),
+    { status: 200, json: { values } },
+  ];
+  const REQUIRE_ONE = restrictions([
+    { kind: 'require_passing_builds_to_merge', pattern: '*', value: 1, branch_match_kind: 'glob' },
+  ]);
+
+  it('status resolves a MERGED PR — the tier-2 done-reconcile evidence, in the shipped vocabulary', async () => {
+    const { host } = bbHost([prList([bbPr({ state: 'MERGED' })])]);
+    const code = await runHostPr(['status', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      ok: true,
+      verb: 'status',
+      host: 'bitbucket',
+      state: 'merged',
+      url: 'https://bitbucket.org/ws/repo/pull-requests/7',
+      prUrl: 'https://bitbucket.org/ws/repo/pull-requests/7',
+      number: 7,
+      prNumber: 7,
+    });
+  });
+
+  it('status on a branch with no PR answers `none` at exit 0 — an answer, not a failure', async () => {
+    const { host } = bbHost([prList([])]);
+    const code = await runHostPr(['status', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, state: 'none' });
+  });
+
+  it('arm on a PR with nothing pending DIRECT-MERGES — the measured degrade, since this host cannot arm', async () => {
+    const { host } = bbHost([
+      prList([bbPr()]),
+      restrictions([]), // no required builds → nothing to wait for
+      [(r) => r.method === 'POST' && r.url.endsWith('/merge'), { status: 200, json: { merge_commit: { hash: 'cafe1' } } }],
+    ]);
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, verb: 'arm', host: 'bitbucket', outcome: 'merged', sha: 'cafe1' });
+  });
+
+  it('arm on a PR whose required build has not reported REFUSES — it never merges past a gate', async () => {
+    const { host, calls } = bbHost([
+      prList([bbPr()]),
+      REQUIRE_ONE,
+      buildStatuses([]), // the check-attach latency window: nothing reported yet
+    ]);
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, verb: 'arm', outcome: 'refused' });
+    expect(String(out().reason)).toMatch(/auto-merge|merge-order/i);
+    // The decisive assertion: no merge was POSTed.
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('arm on a PR whose required build PASSED merges directly', async () => {
+    const { host } = bbHost([
+      prList([bbPr()]),
+      REQUIRE_ONE,
+      buildStatuses([{ state: 'SUCCESSFUL' }]),
+      [(r) => r.method === 'POST' && r.url.endsWith('/merge'), { status: 200, json: { merge_commit: { hash: 'cafe2' } } }],
+    ]);
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'merged', sha: 'cafe2' });
+  });
+
+  it('merge --delete-branch merges and then DELETEs the head ref, reporting the deletion structurally', async () => {
+    const { host, calls } = bbHost([
+      prList([bbPr()]),
+      restrictions([]),
+      [(r) => r.method === 'POST' && r.url.endsWith('/merge'), { status: 200, json: { merge_commit: { hash: 'cafe3' } } }],
+      [(r) => r.method === 'DELETE', { status: 204, json: null }],
+    ]);
+    const code = await runHostPr(
+      ['merge', '--branch', 'wave/461-x', '--delete-branch', '--remote', BITBUCKET_REMOTE],
+      host,
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      outcome: 'merged',
+      branchDeletion: { branch: 'wave/461-x', deleted: true },
+    });
+    expect(calls.some((c) => c.method === 'DELETE' && c.url.includes('/refs/branches/wave/461-x'))).toBe(true);
+  });
+
+  it('a FAILED branch deletion is a reported degradation, never a merge failure', async () => {
+    const { host } = bbHost([
+      prList([bbPr()]),
+      restrictions([]),
+      [(r) => r.method === 'POST' && r.url.endsWith('/merge'), { status: 200, json: { merge_commit: { hash: 'cafe4' } } }],
+      [(r) => r.method === 'DELETE', { status: 400, json: { error: { message: 'Branch not found' } } }],
+    ]);
+    const code = await runHostPr(['merge', '--branch', 'b', '--delete-branch', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(0); // the merge landed
+    expect(out()).toMatchObject({ ok: true, outcome: 'merged' });
+    expect((out().branchDeletion as { deleted: boolean; error: string }).deleted).toBe(false);
+    expect((out().branchDeletion as { error: string }).error).toMatch(/Branch not found/);
+  });
+
+  it('an already-merged PR is an idempotent no-op — no write of any kind', async () => {
+    const { host, calls } = bbHost([prList([bbPr({ state: 'MERGED' })])]);
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'already-merged' });
+    expect(calls.every((c) => c.method === 'GET')).toBe(true);
+  });
+
+  it('a host error surfaces LOUDLY as exit 1 with Bitbucket\'s own message, never a silent success', async () => {
+    const { host } = bbHost([
+      [(r) => r.url.includes('/pullrequests?'), { status: 403, json: { error: { message: 'Access denied' } } }],
+    ]);
+    const code = await runHostPr(['status', '--branch', 'b', '--remote', BITBUCKET_REMOTE], host);
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, verb: 'status', host: 'bitbucket' });
+    expect(String(out().error)).toMatch(/Access denied/);
   });
 });
 
@@ -633,25 +829,19 @@ describe('host-pr create — find-before-create idempotency', () => {
   });
 });
 
-describe('host-pr create — routing (detect-host, github only)', () => {
-  it('bitbucket → exit 1, adapter-not-implemented, and NO http call', async () => {
+describe('host-pr create — routing (detect-host: github + bitbucket ship adapters)', () => {
+  /** The Bitbucket credential pair (ADR-0029 secret + the non-secret username). */
+  const BB_ENV = {
+    BITBUCKET_TOKEN: 'test-token',
+    BITBUCKET_EMAIL: 'dev@example.com',
+  } as NodeJS.ProcessEnv;
+
+  it('an unknown host (GitLab) → exit 1, adapter-not-implemented, and NO http call', async () => {
     const { http, requests } = fakeHttp({
       get: () => {
-        throw new Error('routing must reject a non-github host before any network');
+        throw new Error('routing must reject a host with no adapter before any network');
       },
     });
-    const code = await runHostPr(
-      ['create', '--branch', 'b', '--title', 'T', '--body', 'x', '--remote', BITBUCKET_REMOTE],
-      undefined,
-      { http, env: ENV },
-    );
-    expect(code).toBe(1);
-    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'bitbucket' });
-    expect(requests).toEqual([]);
-  });
-
-  it('an unknown host (GitLab) → exit 1, adapter-not-implemented', async () => {
-    const { http } = fakeHttp({});
     const code = await runHostPr(
       ['create', '--branch', 'b', '--title', 'T', '--body', 'x', '--remote', UNKNOWN_REMOTE],
       undefined,
@@ -659,6 +849,79 @@ describe('host-pr create — routing (detect-host, github only)', () => {
     );
     expect(code).toBe(1);
     expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
+    expect(requests).toEqual([]);
+  });
+
+  it('bitbucket runs the SAME find-before-create path — no second implementation, just the host gate removed', async () => {
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: { values: [] } }), // Bitbucket's paged shape
+      post: () => ({
+        status: 201,
+        json: { links: { html: { href: 'https://bitbucket.org/ws/repo/pull-requests/12' } } },
+      }),
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', BITBUCKET_REMOTE],
+      undefined,
+      { http, env: BB_ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      ok: true,
+      verb: 'create',
+      host: 'bitbucket',
+      outcome: 'created',
+      url: 'https://bitbucket.org/ws/repo/pull-requests/12',
+    });
+    // find first, then create — the cross-host idempotency, unchanged.
+    expect(requests.map((r) => r.method)).toEqual(['GET', 'POST']);
+    // Basic auth pairs the ATLASSIAN ACCOUNT EMAIL with the API token. App
+    // passwords (`username:app_password`) stopped working on 2026-06-09.
+    expect(requests[0].auth).toBe('dev@example.com:test-token');
+  });
+
+  it('the open-PR query is well-formed BBQL: `state` is its OWN parameter, never an `&` inside `q`', async () => {
+    // BBQL's boolean operator is `and`; an `&` encoded into the `q` value is
+    // junk inside the expression, and a rejected query reads as "no open PR" —
+    // which turns find-before-create into create-a-duplicate.
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: { values: [] } }),
+      post: () => ({ status: 201, json: { links: { html: { href: 'https://bitbucket.org/ws/repo/pull-requests/1' } } } }),
+    });
+    await runHostPr(
+      ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', BITBUCKET_REMOTE],
+      undefined,
+      { http, env: BB_ENV },
+    );
+    const q = requests[0].url;
+    expect(q).toContain(`q=${encodeURIComponent('source.branch.name="wave/EX-1-x"')}`);
+    expect(q).toContain('&state=OPEN');
+    expect(q).not.toContain(encodeURIComponent('&state=OPEN'));
+  });
+
+  it('bitbucket without BITBUCKET_EMAIL refuses LOUDLY rather than sending a request that would 401', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-1', '--remote', BITBUCKET_REMOTE],
+      undefined,
+      { http, env: { BITBUCKET_TOKEN: 'test-token' } },
+    );
+    expect(code).toBe(1);
+    expect(String(out().error)).toMatch(/BITBUCKET_EMAIL/);
+    expect(requests).toEqual([]);
+  });
+
+  it('bitbucket with no credential at all is the engine-owned typed error, never an anonymous request', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'Fixes EX-1', '--remote', BITBUCKET_REMOTE],
+      undefined,
+      { http, env: {} },
+    );
+    expect(code).toBe(1);
+    expect(String(out().error)).toMatch(/BITBUCKET_TOKEN is required/);
+    expect(requests).toEqual([]);
   });
 });
 
@@ -988,16 +1251,34 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     expect(out().ok).toBe(true);
   });
 
-  it('bitbucket → exit 1, adapter-not-implemented, and the posture is NEVER probed', async () => {
-    const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, { posture: throwingPosture });
-    expect(code).toBe(1);
-    expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'bitbucket' });
-  });
-
-  it('an unknown host (GitLab) → exit 1, adapter-not-implemented', async () => {
+  it('an unknown host (GitLab) → exit 1, adapter-not-implemented, and the posture is NEVER probed', async () => {
     const code = await runHostPr(['preflight', '--remote', UNKNOWN_REMOTE], undefined, { posture: throwingPosture });
     expect(code).toBe(1);
     expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
+  });
+
+  it('bitbucket reports the same three checks — and its allow-auto-merge OFF is ADVISORY, never a hard fail', async () => {
+    // Bitbucket Cloud has no arming primitive to enable, so an `off` here is a
+    // platform property rather than a fixable setting. Grading it `fail` (as a
+    // visible GitHub `off` with required checks is graded) would leave every
+    // correctly-configured Bitbucket consumer permanently red.
+    const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+      posture: fakePosture({
+        canMerge: true,
+        autoMerge: 'off',
+        required: { state: 'present', contexts: [], detail: 'two successful builds' },
+      }),
+    });
+    expect(code).toBe(0);
+    const o = out();
+    expect(o).toMatchObject({ ok: true, verb: 'preflight', host: 'bitbucket' });
+    const checks = o.checks as { name: string; status: string; detail: string }[];
+    expect(checks.map((c) => c.name)).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+    const autoMerge = checks.find((c) => c.name === 'allow-auto-merge');
+    expect(autoMerge?.status).toBe('advisory');
+    expect(autoMerge?.detail).toMatch(/no auto-merge arming primitive/i);
+    // The required-checks line must NOT promise an arm this host cannot perform.
+    expect(checks.find((c) => c.name === 'required-checks')?.detail).not.toMatch(/will ARM these PRs/);
   });
 
   it('with no injected posture, a missing GITHUB_TOKEN fails loud (exit 1) without printing a token', async () => {
@@ -1005,5 +1286,14 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     expect(code).toBe(1);
     expect(out()).toMatchObject({ ok: false, verb: 'preflight' });
     expect(String(out().error)).toMatch(/GITHUB_TOKEN/);
+  });
+
+  it('with no injected posture on bitbucket, a missing BITBUCKET_TOKEN fails loud (exit 1) without printing a token', async () => {
+    const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+      env: {} as NodeJS.ProcessEnv,
+    });
+    expect(code).toBe(1);
+    expect(out()).toMatchObject({ ok: false, verb: 'preflight', host: 'bitbucket' });
+    expect(String(out().error)).toMatch(/BITBUCKET_TOKEN/);
   });
 });

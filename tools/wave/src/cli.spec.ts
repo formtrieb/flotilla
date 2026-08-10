@@ -4901,11 +4901,14 @@ describe('host-pr subcommand routing', () => {
   });
 
   it('routes "host-pr" as a known subcommand, NOT as an unknown one', async () => {
-    // A bitbucket remote → the typed adapter-not-implemented exit, which proves
-    // the args reached the host-pr runner (network is never touched).
+    // An UNRECOGNISED remote → the typed adapter-not-implemented exit, which
+    // proves the args reached the host-pr runner (network is never touched).
+    // This probe used a bitbucket remote until bitbucket became a shipped
+    // adapter; a host with an adapter now builds one (and would need a
+    // credential), so the routing proof moved to a host that still has none.
     const code = await mainAsync([
       'host-pr', 'status', '--branch', 'b',
-      '--remote', 'git@bitbucket.org:ws/repo.git',
+      '--remote', 'git@gitlab.com:ws/repo.git',
     ]);
     expect(code).toBe(1);
     expect(stderrBuf).not.toMatch(/unknown subcommand/);
@@ -4922,12 +4925,14 @@ describe('host-pr subcommand routing', () => {
     expect(stderrBuf).toMatch(/async/i);
   });
 
-  it('routes "host-pr create" as a known subcommand (FOR-28) — bitbucket → typed not-implemented', async () => {
-    // A bitbucket remote proves the create verb reached the host-pr runner and
-    // was host-gated there — no network, no GITHUB_TOKEN needed.
+  it('routes "host-pr create" as a known subcommand (FOR-28) — an unrecognised host → typed not-implemented', async () => {
+    // An unrecognised remote proves the create verb reached the host-pr runner
+    // and was host-gated there — no network, no credential needed. (Same
+    // reason as the status probe above for not using a bitbucket remote: that
+    // host has a shipped adapter now.)
     const code = await mainAsync([
       'host-pr', 'create', '--branch', 'b', '--title', 'T', '--body', 'x',
-      '--remote', 'git@bitbucket.org:ws/repo.git',
+      '--remote', 'git@gitlab.com:ws/repo.git',
     ]);
     expect(code).toBe(1);
     expect(stderrBuf).not.toMatch(/unknown subcommand/);

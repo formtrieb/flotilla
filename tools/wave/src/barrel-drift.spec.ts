@@ -258,6 +258,50 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     upsertLine: 'Adapter-internal body-codec helper (see ParsedBody above).',
     upsertSection: 'Adapter-internal body-codec helper (see ParsedBody above).',
   },
+  // ─── the Bitbucket LANDING adapter ──────────────────────────────────────
+  //
+  // Read the asymmetry with `./adapters/github/*` before assuming this block
+  // is an oversight: the GitHub adapter is root-exported because it is ALSO
+  // the tracker seam — `GitHubIssuesStore` (a shipped, consumer-wired
+  // `IssueStore`) is constructed from a `GitHubApi`, so a consumer legitimately
+  // reaches for `RealGitHubApi` / `createGitHubApiFromEnv` / `GitHubHttp` by
+  // name. Bitbucket is a code HOST here and nothing else: there is no
+  // `BitbucketIssuesStore`, no `IssueStore` takes this adapter, and the ONLY
+  // constructor of it is the engine's own `host-pr` detect-host router, which
+  // consumers drive as a CLI verb (`host-pr create|arm|merge|status|preflight`)
+  // rather than as an import. So these are module-local by the same standard
+  // every other entry here is held to.
+  //
+  // Honest caveat, stated so it cannot rot silently: `src/index.ts` is outside
+  // this slice's declared Files globs, so root-export parity was not an option
+  // to weigh here even had the reasoning above come out the other way. A future
+  // row that gives Bitbucket a tracker-side surface (or a consumer that needs
+  // to inject `BitbucketHttp` from outside the engine) is the trigger to move
+  // these onto the barrel and delete this block.
+  './adapters/bitbucket/bitbucket-api': {
+    RealBitbucketApi:
+      'The Bitbucket Cloud landing adapter (LandingHost + LandingPosture, ADR-0023). Constructed only by the host-pr detect-host router; consumers reach it through the `host-pr` CLI verb group, never by importing it — unlike RealGitHubApi, which is also the GitHubIssuesStore API seam. See the block comment above.',
+    createBitbucketApiFromEnv:
+      'The CLI-edge factory for the adapter above (credential resolve + construction preflight). Its one call site is host-pr-cli\'s router; no consumer wiring path reaches it, because no IssueStore takes a Bitbucket API.',
+    BitbucketApiFactoryOptions: 'The options type of the factory directly above — same reasoning, and unusable without it.',
+    BitbucketApiError:
+      "The adapter's typed non-2xx error. It never crosses the engine boundary: host-pr-cli catches every landing throw and prints `.message` into its JSON payload, so a consumer branches on the payload, not on this class.",
+    BitbucketHttp:
+      "The adapter-LOCAL network seam (ADR-0019 discipline — distinct from host-pr's cross-host HttpProbe, which IS root-exported). Injected by this adapter's own spec suite; the same standard FakeGitHubHttp/FakeLinearHttp are held to.",
+    BitbucketHttpRequest: 'The request type of the adapter-local seam above — test-only, same reasoning.',
+    BitbucketHttpResponse: 'The response type of the adapter-local seam above — test-only, same reasoning.',
+    defaultBitbucketHttp:
+      'The real-fetch implementation of the adapter-local seam above. It is the class\'s own default argument; a consumer that wanted it would already be constructing the adapter by hand, which is the path this block explains is not a supported one.',
+    bitbucketAuthHeader:
+      "Builds the Authorization header from the resolved credential (Basic email:token, or Bearer for an access token). A pure helper of the factory — exported so the spec can pin BOTH documented shapes without a network, not so a consumer can authenticate by hand.",
+    bitbucketCreateCreds:
+      "Builds the Basic user:secret pair `host-pr create` needs on Bitbucket, or throws the BITBUCKET_EMAIL instruction. Its one call site is host-pr-cli's create edge; exported for the same spec-pinning reason as bitbucketAuthHeader.",
+    bitbucketBranchRestrictionApplies:
+      "Decides whether one branch-restriction entry covers a branch (Bitbucket glob semantics, deliberately over-matching). Exported so its safety-critical over-match direction is spec-pinnable on its own; it is an internal step of the required-builds read, not a consumer question.",
+    BITBUCKET_TOKEN_VAR:
+      "The ambient credential variable name (ADR-0029 naming rule). A consumer SETS this variable in its settings env block — it never reads the constant, and host-pr's own error messages already name it verbatim.",
+    BITBUCKET_EMAIL_VAR: 'The Basic-auth username variable name — same set-it-never-read-it reasoning as BITBUCKET_TOKEN_VAR directly above.',
+  },
   './adapters/conformance/issue-store-conformance': {
     ConformanceHarness:
       "This module imports `vitest` (a devDependency of @formtrieb/flotilla-engine, never a runtime dependency) to register its suite via describe/it. Re-exporting anything from it at the package root would make `vitest` a load-time transitive import for EVERY installed-form consumer — package resolution would break for a consumer who never calls this symbol and has not installed vitest.",
