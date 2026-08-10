@@ -90,8 +90,9 @@ where an operator — human or agent — actually reads them.
 ### Not yet proven
 
 - The loud `STILL OPEN:` close line has passed its specs but has not yet been read in
-  anger — the first live reading is this release's own step-7 close, and the playbook
-  now leans on it.
+  anger — and this release cannot read it: no open issue is resolved by this publish,
+  so the playbook's step-7 close has nothing to close this time. The first live
+  reading waits for the next release that ships a fix whose issue is still open.
 - One operational report stays open and unreproduced after a six-probe matrix (two
   filesystem locations × three npm versions): `npm ci --prefix` failing spuriously in
   dispatched contexts (#418). The capture playbook on the issue is the current state
