@@ -521,9 +521,15 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
   /**
    * Whether the resolved credential can merge PRs on the bound repo.
    *
-   * `GET /2.0/user/permissions/repositories?q=repository.full_name="w/r"` — the
-   * effective repository permission for the AUTHENTICATED USER (`read` |
-   * `write` | `admin`); `write` or higher can merge.
+   * `GET /2.0/user/workspaces/{workspace}/permissions/repositories?q=repository.name="r"`
+   * — the effective repository permission for the AUTHENTICATED USER (`read` |
+   * `write` | `admin`); `write` or higher can merge. The workspace-scoped
+   * endpoint, deliberately: the unscoped `/user/permissions/repositories` this
+   * read first shipped on is marked DEPRECATED in Atlassian's OpenAPI ("Please
+   * use the workspace scoped alternative", swagger.v3.json, read 2026-08-10),
+   * and the workspace-scoped form's documented filter example is
+   * `q=repository.name="…"` — the workspace already rides the path, so the
+   * `full_name` predicate the old read filtered on has nothing left to add.
    *
    * The deliberate departure from the GitHub sibling (which throws on any
    * non-200): a NON-200 here resolves to `true`, not `false` and not a throw.
@@ -538,8 +544,8 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
    * rather than claiming a permission was proven.
    */
   async canMergePullRequests(): Promise<boolean> {
-    const q = encodeURIComponent(`repository.full_name="${this.workspace}/${this.repo}"`);
-    const res = await this.send('GET', `${API}/user/permissions/repositories?q=${q}`);
+    const q = encodeURIComponent(`repository.name="${this.repo}"`);
+    const res = await this.send('GET', `${API}/user/workspaces/${this.workspace}/permissions/repositories?q=${q}`);
     if (res.status !== 200) return true; // no user context → no evidence → never a finding
     const first = valuesOf(res.json)[0];
     if (first === undefined) return true; // the credential is not a user of this repo → likewise

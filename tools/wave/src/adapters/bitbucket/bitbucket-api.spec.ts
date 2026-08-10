@@ -491,7 +491,7 @@ describe('RealBitbucketApi — LandingPosture', () => {
       ['write', true],
       ['read', false],
     ] as const) {
-      const { http } = fakeHttp([[urlHas('/user/permissions/repositories'), page([{ permission }])]]);
+      const { http } = fakeHttp([[urlHas('/user/workspaces/ws/permissions/repositories'), page([{ permission }])]]);
       expect(await api(http).canMergePullRequests()).toBe(expected);
     }
   });
@@ -505,7 +505,7 @@ describe('RealBitbucketApi — LandingPosture', () => {
       { status: 403, json: null },
       { status: 200, json: { values: [] } },
     ]) {
-      const { http } = fakeHttp([[urlHas('/user/permissions/repositories'), res]]);
+      const { http } = fakeHttp([[urlHas('/user/workspaces/ws/permissions/repositories'), res]]);
       expect(await api(http).canMergePullRequests()).toBe(true);
     }
   });

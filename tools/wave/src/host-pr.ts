@@ -2037,7 +2037,9 @@ const BITBUCKET_AUTO_CONSEQUENCE =
 function prMergeTokenCheck(canMerge: boolean, host: Host): HostPreflightCheck {
   if (host === 'bitbucket') {
     // Bitbucket's merge-capability read is USER-scoped
-    // (`GET /2.0/user/permissions/repositories`), and a repository/project/
+    // (`GET /2.0/user/workspaces/{workspace}/permissions/repositories` — the
+    // workspace-scoped form; its unscoped predecessor is vendor-deprecated),
+    // and a repository/project/
     // workspace access token has no user context to grade — so a `pass` here
     // means "no evidence of a read-only credential", not "write access proven".
     // Saying that plainly is the ADR-0023-amendment discipline (absence of

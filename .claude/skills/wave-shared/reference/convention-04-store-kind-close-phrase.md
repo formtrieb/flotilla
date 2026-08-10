@@ -29,8 +29,10 @@ The `--body` you pass carries the store-kind close phrase above, verbatim, and p
 # exit 0 → stdout JSON carries .url (outcome: created | reused) — pin that as the row's PR URL.
 # exit 1 + outcome: reuse-refused → the body you passed would have dropped the live PR's close
 #   phrase; nothing was written. Fix the body (or pass --allow-close-phrase-loss deliberately).
-# create reads GITHUB_TOKEN from the environment (never printed); github-only in M1,
-# bitbucket/unknown fail loud + typed like the landing verbs.
+# create reads the host's credential from the environment (never printed) — GITHUB_TOKEN
+# on a github remote; BITBUCKET_TOKEN + BITBUCKET_EMAIL on a bitbucket one (the Atlassian
+# API-token Basic pair, ADR-0023 amendment 2026-08-10). unknown hosts fail loud + typed
+# like the landing verbs.
 
 # Read-only alternative — use THIS to ask whether a branch already has a PR:
 {{wave-cli}} host-pr status --branch <branch>
