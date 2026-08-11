@@ -25,6 +25,7 @@
  *   {{wave-cli}} spine set-branch <spine-path> <id> <branch> [--model <m>]
  *   {{wave-cli}} spine replace-closed-by <spine-path> <body-file>
  *   {{wave-cli}} spine add-disclosure <spine-path> <row-id> --iter <n> --source <s> --text <t>
+ *   {{wave-cli}} spine add-disclosure <spine-path> --wave --source <s> --text <t>
  *   {{wave-cli}} spine set-disposition <spine-path> <disclosure-ref> <disposition>
  *   {{wave-cli}} spine check-disclosures <spine-path>
  *   {{wave-cli}} spine human-gated <spine-path> [--workers <a,b>]
@@ -56,7 +57,7 @@
  *                     then flush. The body lives in a file (not argv) so it can
  *                     carry newlines / a multi-line `## Closed-By` block.
  *
- * ── Disclosures (ADR-0027) ────────────────────────────────────────────────────
+ * ── Disclosures (ADR-0027, ADR-0038) ──────────────────────────────────────────
  *   add-disclosure    Capture one disclosure — a Convention-9 wiring gap, a
  *                     Convention-10 runtime residue, or a same-shaped
  *                     Reviewer/Coordinator finding — against <row-id> at
@@ -65,6 +66,17 @@
  *                     Prints the created disclosure-ref (`<row-id>.<ordinal>`)
  *                     to stdout AFTER the flush — that ref is what
  *                     `set-disposition` addresses.
+ *
+ *                     TWO FORMS, the second ADDITIVE (ADR-0038 / ADR-0035):
+ *                     `--wave` captures WAVE-SCOPED — a find about the wave's
+ *                     own machinery (the sweep, a preflight posture, the
+ *                     merge-order tool) that no Plan-Table row and no dispatch
+ *                     iteration owns. It takes NO <row-id> and NO `--iter`
+ *                     (passing either alongside `--wave` is a usage 2), and
+ *                     mints a `wave.<ordinal>` ref. Everything downstream is
+ *                     identical: same table, same `set-disposition`, same
+ *                     `check-disclosures` counting. The row-scoped form above
+ *                     keeps its exact shape, validation and output.
  *   set-disposition   Set exactly one entry's disposition. The vocabulary is
  *                     exactly `resolved-in-slice | scope-extension | filed:<id>
  *                     | dropped:<reason>`; anything else (including `open`, the
@@ -120,6 +132,7 @@ import {
   createSpineStore,
   ensureDisclosuresSection,
   DISPOSITION_VOCABULARY,
+  WAVE_SCOPE_ITER_CELL,
   type SpineIo,
   type DisclosureSource,
   defaultSpineIo,
@@ -169,8 +182,11 @@ const SPINE_OP_ARGS: Readonly<Record<string, string>> = {
   'set-branch': '<spine-path> <id> <branch> [--model <m>]',
   'replace-closed-by': '<spine-path> <body-file>',
   'set-status': '<spine-path> <status>',
+  // ONE entry, TWO forms — the wave-scoped alternative (ADR-0038) is additive,
+  // so it is advertised on the same line rather than as a second op name (which
+  // would change the `available:` vocabulary the FOR-11 guard reads back).
   'add-disclosure':
-    '<spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>',
+    '<spine-path> (<row-id> --iter <n> | --wave) --source <worker|reviewer|coordinator> --text <t>',
   'set-disposition': `<spine-path> <disclosure-ref> <${DISPOSITION_VOCABULARY}>`,
   'check-disclosures': '<spine-path>',
   'human-gated': '<spine-path> [--workers <a,b>]',
@@ -188,6 +204,34 @@ function printUsage(): void {
       '',
     ].join('\n'),
   );
+}
+
+/**
+ * Every `add-disclosure` flag that CONSUMES the token after it. Named once so
+ * {@link hasBareFlag} can step over those values instead of matching inside
+ * them.
+ */
+const ADD_DISCLOSURE_VALUE_FLAGS: readonly string[] = ['--iter', '--source', '--text'];
+
+/**
+ * True when `name` appears as a BOOLEAN flag of its own — not as the VALUE of a
+ * value-taking flag. `args.includes('--wave')` would read
+ * `--text "--wave"` as a mode switch and silently discard the operator's row
+ * scope; the `--text` of a disclosure is free prose lifted from an agent's
+ * report, so "no operator would ever type that" is not a guarantee this parser
+ * gets to make. Same reason `flag()` reads a value positionally rather than by
+ * scanning: argv is positional, and pretending otherwise is where the quiet
+ * bugs live.
+ */
+function hasBareFlag(args: string[], name: string): boolean {
+  for (let i = 0; i < args.length; i++) {
+    if (ADD_DISCLOSURE_VALUE_FLAGS.includes(args[i])) {
+      i += 1; // skip that flag's value — it is data, never a flag
+      continue;
+    }
+    if (args[i] === name) return true;
+  }
+  return false;
 }
 
 // ─── the human lane (ADR-0012) ───────────────────────────────────────────────
@@ -485,7 +529,10 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
           `disclosures: ${open.length} open of ${total} — archive gate BLOCKED (ADR-0027)`,
           ...open.map(
             (d) =>
-              `  ${d.ref}  row ${d.rowId}  iter ${d.iter}  (${d.source})  ${d.text}`,
+              // A wave-scoped entry (ADR-0038) has no iteration — print the same
+              // house marker the spine itself carries, never `null`. Row-scoped
+              // lines are byte-identical to before.
+              `  ${d.ref}  row ${d.rowId}  iter ${d.iter ?? WAVE_SCOPE_ITER_CELL}  (${d.source})  ${d.text}`,
           ),
           `disposition each: spine set-disposition ${path} <ref> <${DISPOSITION_VOCABULARY}>`,
           '',
@@ -613,6 +660,34 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       const iterRaw = flag(args, '--iter');
       const sourceRaw = flag(args, '--source');
       const text = flag(args, '--text');
+
+      // ── The wave-scoped form (ADR-0038), additive on this same op ──────────
+      // Both forms need `--source` + `--text`; only this one is legal WITHOUT a
+      // <row-id> and WITHOUT `--iter`, and mixing the two spellings is a usage
+      // error rather than a silent preference for one of them.
+      if (hasBareFlag(args, '--wave')) {
+        if (sourceRaw === undefined || text === undefined) {
+          printUsage();
+          return 2;
+        }
+        if ((rowId !== undefined && !rowId.startsWith('--')) || iterRaw !== undefined) {
+          process.stderr.write(
+            'error: --wave is the wave-scoped form (ADR-0038): it takes no <row-id> and no --iter\n',
+          );
+          return 2;
+        }
+        // `--source` / `--text` are NOT checked here — same split as below: the
+        // store's constructor owns those invariants (and the wave-scoped one
+        // owns the sentinel-collision refusal), landing as exit 1.
+        apply = (store) => {
+          createdRef = store.addWaveDisclosure({
+            source: sourceRaw as DisclosureSource,
+            text,
+          }).ref;
+        };
+        break;
+      }
+
       // A `--`-prefixed token in the positional slot means <row-id> was OMITTED
       // and the first flag slid into its place — a usage error, not a domain
       // one ("no Plan-Table row with id --iter" would be a baffling exit 1).

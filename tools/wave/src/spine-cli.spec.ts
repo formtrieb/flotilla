@@ -8,7 +8,7 @@ import { runSpine } from './spine-cli';
 // this module's ops now flow through (issue #77).
 import { main } from './cli';
 import { readSpine, HUMAN_GATED_WORKER } from './wave-md-rw';
-import { readDisclosures } from './spine-store';
+import { readDisclosures, WAVE_SCOPE_ITER_CELL } from './spine-store';
 
 const FIXTURE = readFileSync(
   join(__dirname, '__fixtures__/minimal-spine.md'),
@@ -471,6 +471,124 @@ _(none yet)_
       expect(runSpine(['check-disclosures'])).toBe(2);
     });
 
+    // ── The wave-scoped form (ADR-0038), additive on the same op ─────────────
+    //
+    // `--wave` captures a find about the wave's own machinery: no <row-id>, no
+    // `--iter`, everything downstream identical. The row-scoped spelling above
+    // is unchanged, which is what makes this additive on the CLI contract
+    // (ADR-0035) rather than a second, incompatible verb.
+
+    it('add-disclosure --wave captures with no row and no iter, prints a `wave.<n>` ref, and flushes', () => {
+      const path = writeTmpSpine();
+      const code = runSpine([
+        'add-disclosure', path, '--wave',
+        '--source', 'coordinator',
+        '--text', 'the phase-3 sweep left an errored worktree still listed',
+      ]);
+      expect(code).toBe(0);
+      expect(printed().trim()).toBe('wave.1');
+
+      const after = readFileSync(path, 'utf-8');
+      expect(after).toContain(
+        `| wave.1 | wave | ${WAVE_SCOPE_ITER_CELL} | coordinator | open | the phase-3 sweep left an errored worktree still listed |`,
+      );
+      // The fixture predates ADR-0027 — the section grew, everything else held.
+      expect(after).toContain('branch wave-orch/01-thing');
+      expect(readSpine(after).planTable[0].state).toBe('planned');
+      // A second wave-scoped capture continues the same 1-based sequence.
+      expect(runSpine(['add-disclosure', path, '--wave', '--source', 'reviewer', '--text', 'another'])).toBe(0);
+      expect(readDisclosures(readFileSync(path, 'utf-8')).map((d) => d.ref)).toEqual([
+        'wave.1', 'wave.2',
+      ]);
+    });
+
+    it('add-disclosure --wave refuses the MIXED spellings — a <row-id> or an --iter beside it is usage 2, nothing written', () => {
+      const path = writeTmpSpine();
+      const before = readFileSync(path, 'utf-8');
+      // A positional row id alongside --wave: which scope did the operator mean?
+      expect(
+        runSpine(['add-disclosure', path, ROW_ID, '--wave', '--source', 'worker', '--text', 't']),
+      ).toBe(2);
+      // An --iter alongside --wave: a wave-scoped find comes out of no dispatch.
+      expect(
+        runSpine(['add-disclosure', path, '--wave', '--iter', '1', '--source', 'worker', '--text', 't']),
+      ).toBe(2);
+      // Both halves of the shared arg pair are still required.
+      expect(runSpine(['add-disclosure', path, '--wave', '--source', 'worker'])).toBe(2);
+      expect(runSpine(['add-disclosure', path, '--wave', '--text', 't'])).toBe(2);
+      expect(stderrSpy).toHaveBeenCalled();
+      expect(readFileSync(path, 'utf-8')).toBe(before);
+    });
+
+    it('a `--text` whose VALUE is "--wave" stays row-scoped — the mode switch reads flags, not data', () => {
+      // `args.includes('--wave')` would silently discard the operator's row
+      // scope here. Disclosure text is free prose lifted from an agent report,
+      // so this is data the parser must step over, not a mode switch.
+      const path = writeTmpSpine();
+      expect(
+        runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', '--wave']),
+      ).toBe(0);
+      expect(printed().trim()).toBe('01.1');
+      expect(readFileSync(path, 'utf-8')).toContain('| 01.1 | 01 | 1 | worker | open | --wave |');
+    });
+
+    it('add-disclosure --wave on a spine whose Plan-Table took the `wave` id → domain exit 1, nothing written', () => {
+      // The sentinel shares the ref namespace with a row of the same id, so the
+      // store refuses rather than mint a ref whose scope cannot be read back.
+      const dir = mkdtempSync(join(tmpdir(), 'spine-cli-wave-'));
+      const path = join(dir, 'WAVE.md');
+      writeFileSync(path, FIXTURE.replace(/\| 01 {2}\|/, '| wave |'), 'utf-8');
+      const before = readFileSync(path, 'utf-8');
+
+      expect(runSpine(['add-disclosure', path, '--wave', '--source', 'coordinator', '--text', 't'])).toBe(1);
+      expect(stderrSpy).toHaveBeenCalled();
+      expect(readFileSync(path, 'utf-8')).toBe(before);
+    });
+
+    it('the archive gate counts a wave-scoped entry identically: open BLOCKS, a terminal disposition clears', () => {
+      const path = writeTmpSpine();
+      expect(runSpine(['check-disclosures', path])).toBe(0);
+      stdoutSpy.mockClear();
+
+      expect(
+        runSpine(['add-disclosure', path, '--wave', '--source', 'coordinator', '--text', 'the sweep left residue']),
+      ).toBe(0);
+      stdoutSpy.mockClear();
+
+      // A wave-scoped entry blocks on its own — no row-scoped entry in sight.
+      expect(runSpine(['check-disclosures', path])).not.toBe(0);
+      const blocked = printed();
+      expect(blocked).toContain('archive gate BLOCKED');
+      expect(blocked).toContain('wave.1');
+      expect(blocked).toContain('the sweep left residue');
+      // The blocked line prints the house marker, never a bare `null`.
+      expect(blocked).toContain(`iter ${WAVE_SCOPE_ITER_CELL}`);
+      expect(blocked).not.toContain('iter null');
+      stdoutSpy.mockClear();
+
+      // The SAME disposition verb, addressed by the ref the capture printed.
+      expect(runSpine(['set-disposition', path, 'wave.1', 'filed:#487'])).toBe(0);
+      expect(runSpine(['check-disclosures', path])).toBe(0);
+      expect(printed()).toContain('archive gate CLEAR');
+    });
+
+    it('a row-scoped and a wave-scoped entry block the same gate together, and each clears independently', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'row gap']);
+      runSpine(['add-disclosure', path, '--wave', '--source', 'coordinator', '--text', 'wave gap']);
+
+      expect(runSpine(['set-disposition', path, '01.1', 'resolved-in-slice'])).toBe(0);
+      expect(runSpine(['check-disclosures', path])).not.toBe(0); // wave.1 still open
+      expect(runSpine(['set-disposition', path, 'wave.1', 'dropped:measured, no defect'])).toBe(0);
+      expect(runSpine(['check-disclosures', path])).toBe(0);
+
+      const after = readFileSync(path, 'utf-8');
+      expect(after).toContain('| 01.1 | 01 | 1 | worker | resolved-in-slice | row gap |');
+      expect(after).toContain(
+        `| wave.1 | wave | ${WAVE_SCOPE_ITER_CELL} | coordinator | dropped:measured, no defect | wave gap |`,
+      );
+    });
+
     it('create renders the Disclosures section into a FRESH spine (ADR-0027)', () => {
       const writes: Record<string, string> = {};
       const payload = JSON.stringify({
@@ -540,6 +658,34 @@ describe('cli.ts routes the disclosure verbs (ADR-0027 wiring)', () => {
     expect(usage).toContain('spine add-disclosure');
     expect(usage).toContain('spine set-disposition');
     expect(usage).toContain('spine check-disclosures');
+  });
+
+  it('the WAVE-SCOPED form reaches the store through the router too, and the gate answers on it (ADR-0038)', () => {
+    // Same Convention-9 wiring claim as the row-scoped path above: engine-
+    // complete but router-unreachable is the class this repo has already paid
+    // for, so the whole path is pinned — `main(['spine', …])`, not `runSpine`.
+    const path = writeTmpSpine();
+
+    expect(main(['spine', 'add-disclosure', path, '--wave', '--source', 'coordinator', '--text', 'sweep residue'])).toBe(0);
+    expect(readFileSync(path, 'utf-8')).toContain(
+      `| wave.1 | wave | ${WAVE_SCOPE_ITER_CELL} | coordinator | open | sweep residue |`,
+    );
+
+    expect(main(['spine', 'check-disclosures', path])).not.toBe(0);
+    expect(main(['spine', 'set-disposition', path, 'wave.1', 'scope-extension'])).toBe(0);
+    expect(main(['spine', 'check-disclosures', path])).toBe(0);
+
+    // The mixed spelling is refused identically through the router.
+    expect(main(['spine', 'add-disclosure', path, '--wave', '--iter', '1', '--source', 'worker', '--text', 't'])).toBe(2);
+  });
+
+  it('the router usage advertises BOTH capture forms on the one op', () => {
+    expect(main([])).toBe(2);
+    const usage = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    // The row-scoped spelling is still advertised verbatim…
+    expect(usage).toContain('spine add-disclosure <spine-path> <row-id> --iter <n>');
+    // …and the wave-scoped one is advertised beside it, not instead of it.
+    expect(usage).toContain('spine add-disclosure <spine-path> --wave');
   });
 });
 

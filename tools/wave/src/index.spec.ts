@@ -833,6 +833,24 @@ const BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT = [
 ].sort();
 
 /**
+ * The wave-scoped-disclosure family (ADR-0038) — the capture verb for a find
+ * about the wave's own machinery, owned by no Plan-Table row and no iteration,
+ * plus the two sentinel cells that let a root-only consumer tell the two scopes
+ * apart in a parsed entry (`wave` in `Row`, the em dash in `Iter`).
+ *
+ * Recorded as its own family for the reason the block comment above states: the
+ * root surface grows only by a decision somebody typed. Its type half
+ * (`WaveDisclosureInput`) is erased at runtime and so is not counted here — the
+ * barrel's compile-time re-export of it is proven by `tsc --noEmit`, as with
+ * every other type in this file. Sorted, as the probe sorts.
+ */
+const WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT = [
+  'WAVE_SCOPE_ITER_CELL',
+  'WAVE_SCOPE_ROW',
+  'addWaveDisclosureToSource',
+].sort();
+
+/**
  * The whole-root total as of the newest recorded slice. Deliberately written as
  * ARITHMETIC over the per-slice families rather than as a fresh absolute number:
  * `135` stays anchored to the commit it was measured at, and each later slice
@@ -848,7 +866,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT.length +
   WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT.length +
   WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT.length +
-  BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length;
+  BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length +
+  WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1382,5 +1401,12 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // this arithmetic follows — a failure here means either a stowaway or an
     // addition nobody recorded, and both are the check working.
     expect(Object.keys(rootExports)).toHaveLength(ROOT_RUNTIME_EXPORT_COUNT_NOW);
+
+    // The count alone is necessary but not sufficient: a stowaway arriving in
+    // the same edit that drops an intended export sums to the identical total.
+    // So the newest family is also asserted PRESENT by name, not just counted.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT),
+    );
   });
 });

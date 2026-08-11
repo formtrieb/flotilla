@@ -64,6 +64,17 @@ export {
   type Disclosure,
   type DisclosureInput,
   type DisclosureSource,
+  // The WAVE-SCOPED half of the same surface (ADR-0038): a find about the
+  // wave's own machinery, owned by no Plan-Table row and no iteration. Paired
+  // onto the barrel WITH its constructor — the disclosure surface is itself the
+  // precedent for what an engine-complete-but-root-unreachable landing costs
+  // (issue #177) — and with the two sentinel cells a root-only consumer needs to
+  // tell the two scopes apart in a parsed entry, exactly as `OPEN_DISPOSITION` /
+  // `DISCLOSURE_SOURCES` already carry the row-scoped vocabulary across.
+  addWaveDisclosureToSource,
+  WAVE_SCOPE_ROW,
+  WAVE_SCOPE_ITER_CELL,
+  type WaveDisclosureInput,
 } from './spine-store';
 
 export {
