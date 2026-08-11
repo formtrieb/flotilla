@@ -17,8 +17,16 @@
 # (credential-probe-cli.ts, behind `credential-probe --all`), the sidecar
 # reader `verdict-acked` reads through (sidecar.ts), the spine CLI
 # (spine-cli.ts) plus the WAVE.md reader/writer it reads through
-# (wave-md-rw.ts) — the pair behind BOTH `spine check-disclosures` and
-# `spine check-awaiting-human`, phase 6's two fail-closed archive gates — and
+# (wave-md-rw.ts), and the spine store module (spine-store.ts). Phase 6's two
+# fail-closed archive gates do NOT share a module — that shared-module
+# assumption is exactly what produced the original gap here: `check-awaiting-human`
+# goes through the shared WAVE.md reader/writer (wave-md-rw.ts: readSpine /
+# humanHeldRowIds), while `check-disclosures` goes through the spine store
+# module (spine-store.ts: createSpineStore / openDisclosures), which owns the
+# `## Disclosures` section parsing OUTRIGHT with its own private line model. A
+# fix confined to either gate's own module needs its own entry here — do not
+# assume one entry covers both gates.
+#
 # the credential resolver every host write in phases 2, 4b and 5 goes
 # through (credential-resolver.ts).
 #
@@ -32,7 +40,7 @@
 # — deliberately deferred at triage, not decided against. If you're about to
 # build one, or to argue one away, that argument belongs at THIS pointer,
 # not re-derived from scratch.
-ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts|closed-by\.ts|credential-probe-cli\.ts|credential-resolver\.ts|sidecar\.ts|spine-cli\.ts|wave-md-rw\.ts)$'
+ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts|closed-by\.ts|credential-probe-cli\.ts|credential-resolver\.ts|sidecar\.ts|spine-cli\.ts|wave-md-rw\.ts|spine-store\.ts)$'
 
 # WRITE THE BRANCHES OUT, or iterate a real array — never `for BRANCH in $BRANCHES`
 # (wave-shared Convention 12: zsh does not word-split, so a space-separated
