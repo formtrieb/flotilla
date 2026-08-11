@@ -28,6 +28,8 @@ Read every `{{wave-cli}}` below as that one string: `{{wave-cli}} <verb> …` fo
 | `{{wave-cli}} host-pr status --branch <b> [--remote <url>]` | done-reconcile host-evidence probe: `{ ok, verb:"status", host, branch, state:"open"\|"merged"\|"closed-unmerged"\|"none", url?, number? }`. `none` is a valid answer (no PR), not a failure. |
 | `{{wave-cli}} host-pr merge --branch <b> [--method …] [--delete-branch]` | merge now, no arm intent (caller already decided). Idempotent. Same shape as `arm`, plus — with `--delete-branch` (consumer KW-F6) — it deletes the PR's **remote** head branch through the host API after a successful merge and reports the outcome under `branchDeletion:{ branch, deleted, error? }`. A failed delete is a reported degradation (`deleted:false`), **never** a merge failure (exit stays 0). `arm` threads the identical flag (row above) — its immediate-merge outcome deletes the same way; only its deferred `armed` outcome cannot delete synchronously. |
 | `{{wave-cli}} host-pr preflight [--remote <url>]` | code-host posture probe for the `--auto` confirm (ADR-0023 amendment): `{ ok, verb:"preflight", host, checks:[{name,status,detail}] }` for `pr-merge-token` / `allow-auto-merge` / `required-checks`, plus `create-credentials` on `bitbucket` only (`null`/omitted on every other host — GitHub's create credential is the token `pr-merge-token` already grades). `create-credentials` grades whether `BITBUCKET_EMAIL` is set for `host-pr create`; it is advisory-never-fail — the landing verbs this skill calls (`arm`/`merge`/`status`/`preflight`) authenticate with Bearer and stay unaffected either way. **Store-blind** — detect-host-routed, **no `--config`**, **no `--branch`** (required checks read against the default branch) — so it answers on **every** store kind, unlike the store-preflight it replaced here. `status` may be `pass`/`fail`/`advisory`/`unknown`; only `fail` blocks. |
+| `{{wave-cli}} spine add-disclosure <wave-file> <row-id> --iter <n> --source <worker\|reviewer\|coordinator> --text "<gap>"` | **row-scoped capture** (ADR-0027): records one find against a Plan-Table row at disposition `open` and prints the minted ref `<row-id>.<ordinal>` — that ref is the address `set-disposition` takes. Materializes the `## Disclosures` section on a spine that predates it. An unknown `<row-id>` or an out-of-vocabulary `--source` is a loud domain failure with **nothing written**. |
+| `{{wave-cli}} spine add-disclosure <wave-file> --wave --source <worker\|reviewer\|coordinator> --text "<gap>"` | **wave-scoped capture** (ADR-0038): the same verb for a find about the wave's own machinery — the worktree sweep, a preflight posture, the merge-order tool — that no Plan-Table row and no iteration owns. `--wave` replaces both the `<row-id>` positional and `--iter`; passing either alongside it is a usage error (exit 2), so the two forms can never be silently mixed. Renders `wave` in the `Row` cell, `—` in `Iter`, and mints a `wave.<ordinal>` ref. Everything downstream is identical: same table, same `set-disposition`, and `check-disclosures` counts it exactly like a row-scoped entry — open blocks the archive, a terminal disposition clears it. |
 | `{{wave-cli}} spine check-disclosures <wave-file>` | the fail-closed archive gate (ADR-0027, phase 6): exits `0` iff no `open` disclosure remains in the spine's `## Disclosures` section, non-zero otherwise. On a non-zero exit, prints one line per still-open entry (`<ref>  row <id>  iter <n>  (<source>)  <text>`) — **read the exit code, not this prose** (the convention-coupled parse-back class, #141/#146). A spine with no `## Disclosures` section at all (predates ADR-0027, or nothing was ever captured) reads as already clear. |
 | `{{wave-cli}} spine set-disposition <wave-file> <disclosure-ref> <disposition>` | dispositions exactly one open entry. `<disposition>` must be one of `resolved-in-slice \| scope-extension \| filed:<id> \| dropped:<reason>` — anything else, including `open` (the capture default, not a decision), is refused loud with **nothing written**. |
 | any command, no args | usage |
@@ -50,6 +52,7 @@ Read every `{{wave-cli}}` below as that one string: `{{wave-cli}} <verb> …` fo
 | `host-pr arm` / `merge` | landed (`armed`/`merged`/`already-merged`) — incl. a `--delete-branch` request whose deletion FAILED on either verb (`branchDeletion.deleted:false` is a reported degradation, not a merge/arm failure) | did not land (`no-pr`/`refused`), no adapter (`adapter-not-implemented`), or host error | usage (incl. `--delete-branch` on a verb other than `arm`/`merge`) |
 | `host-pr status` | probe answered (read `state`; `none` is a valid answer) | host error | usage |
 | `host-pr preflight` | no check `fail`ed (checks may be `advisory`/`unknown`) | a check `fail`ed, no adapter (`adapter-not-implemented`), or host error / missing token | usage |
+| `spine add-disclosure` | captured at `open`, flushed, the minted ref printed on stdout AFTER the flush (never a ref that did not land) | unknown `<row-id>`, out-of-vocabulary `--source`, empty `--text`, or `--wave` on a spine whose Plan-Table already took the `wave` id — nothing written | usage: a missing `--source`/`--text`, a non-positive-integer `--iter`, or `--wave` mixed with a `<row-id>`/`--iter` |
 | `spine check-disclosures` | `0 open of N` — archive gate CLEAR | `≥1 open of N` — archive gate BLOCKED (ADR-0027); an unreadable/corrupt spine blocks the same way (fail-closed) | usage (missing `<wave-file>`) |
 | `spine set-disposition` | disposition written, flushed | unknown disclosure-ref, or a disposition outside the vocabulary (including `open`) — nothing written | usage (missing `<disclosure-ref>`/`<disposition>`) |
 
@@ -60,22 +63,26 @@ Phase 6 runs this before touching the archive move — the gate reads `check-dis
 ```bash
 {{wave-cli}} spine check-disclosures <wave-file>
 # clear:
-#   disclosures: 0 open of 3 — archive gate CLEAR
+#   disclosures: 0 open of 4 — archive gate CLEAR
 #   exit 0 → continue straight to the archive Guards
 
 # blocked:
-#   disclosures: 1 open of 3 — archive gate BLOCKED (ADR-0027)
-#     01.1  row 01  iter 1  (worker)  gate 8 ships inert
+#   disclosures: 2 open of 4 — archive gate BLOCKED (ADR-0027)
+#     01.1    row 01    iter 1  (worker)       gate 8 ships inert
+#     wave.1  row wave  iter —  (coordinator)  the sweep left an errored worktree listed
 #     disposition each: spine set-disposition <wave-file> <ref> <resolved-in-slice|scope-extension|filed:<id>|dropped:<reason>>
 #   exit 1 → do NOT archive
+#   (the second line is a WAVE-SCOPED entry — `row wave`, `iter —`, owned by no
+#    row and no iteration; the same verb dispositions it — ADR-0038)
 
-# disposition the entry the gate named — the vocabulary is exactly four
+# disposition EVERY entry the gate named — the vocabulary is exactly four
 # tokens, `open` itself is refused (it's the capture default, not a decision):
 {{wave-cli}} spine set-disposition <wave-file> 01.1 "filed:#210"
+{{wave-cli}} spine set-disposition <wave-file> wave.1 "filed:#210"
 
 # re-run — the very same check now flips green:
 {{wave-cli}} spine check-disclosures <wave-file>
-# → disclosures: 0 open of 3 — archive gate CLEAR
+# → disclosures: 0 open of 4 — archive gate CLEAR
 # exit 0 → now archive
 ```
 

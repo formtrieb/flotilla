@@ -6,12 +6,15 @@ import {
   renderDisclosuresSection,
   ensureDisclosuresSection,
   addDisclosureToSource,
+  addWaveDisclosureToSource,
   setDispositionInSource,
   openDisclosures,
   isSettableDisposition,
   normalizeDisclosureText,
   DISCLOSURE_SOURCES,
   OPEN_DISPOSITION,
+  WAVE_SCOPE_ROW,
+  WAVE_SCOPE_ITER_CELL,
 } from './spine-store';
 import { readSpine, renderSpine } from './wave-md-rw';
 
@@ -300,6 +303,195 @@ describe('Disclosures — the fail-closed open-disclosure check (ADR-0027)', () 
   });
 });
 
+// ─── Wave-scoped disclosures (ADR-0038) ──────────────────────────────────────
+//
+// A find about the wave's OWN machinery — the worktree sweep, a preflight
+// posture, the merge-order tool — belongs to no Plan-Table row and to no
+// dispatch iteration, so the row-scoped constructor rejects it outright. These
+// specs pin the additive second form (ADR-0035): the row-scoped verb keeps its
+// exact shape, and the new entry kind is a FULL CITIZEN of the machinery that
+// already exists — rendered, parsed back byte-preserving, addressable by
+// `set-disposition`, and counted by the archive gate identically.
+
+describe('Disclosures — the wave-scoped form is additive (ADR-0038)', () => {
+  it('captures with no row and no iteration, at `open`, under a `wave.<ordinal>` ref', () => {
+    const { source, disclosure } = addWaveDisclosureToSource(freshSpine(), {
+      source: 'coordinator',
+      text: 'the phase-3 sweep left an errored worktree still listed',
+    });
+
+    expect(disclosure.ref).toBe('wave.1');
+    expect(disclosure.rowId).toBe(WAVE_SCOPE_ROW);
+    expect(disclosure.ordinal).toBe(1);
+    // No dispatch produced it, so there is no iteration to record — `null`,
+    // never a fabricated `1`.
+    expect(disclosure.iter).toBeNull();
+    expect(disclosure.disposition).toBe(OPEN_DISPOSITION);
+
+    // It lands in the SAME table, with the house not-applicable marker in Iter.
+    expect(source).toContain(
+      `| wave.1 | wave | ${WAVE_SCOPE_ITER_CELL} | coordinator | open | the phase-3 sweep left an errored worktree still listed |`,
+    );
+  });
+
+  it('round-trips BYTE-PRESERVING through the same printer/parser pair as a row-scoped entry', () => {
+    let src = freshSpine();
+    src = addDisclosureToSource(src, {
+      rowId: '156',
+      iter: 2,
+      source: 'worker',
+      text: 'wiring lies outside the declared globs',
+    }).source;
+    src = addWaveDisclosureToSource(src, {
+      source: 'coordinator',
+      text: 'the merge-order tool ran against a stale anchor | twice',
+    }).source;
+    src = addWaveDisclosureToSource(src, {
+      source: 'reviewer',
+      text: 'second wave-scoped find',
+    }).source;
+
+    const entries = readDisclosures(src);
+    expect(entries.map((d) => d.ref)).toEqual(['156.1', 'wave.1', 'wave.2']);
+    // Wave-scoped ordinals are their own 1-based sequence, exactly like a row's.
+    expect(entries.map((d) => d.iter)).toEqual([2, null, null]);
+
+    // Re-rendering each parsed entry reproduces its source line, byte for byte.
+    const lines = src.split('\n');
+    for (const entry of entries) {
+      expect(lines[entry.line]).toBe(renderDisclosureRow(entry));
+    }
+    // …and re-rendering the WHOLE section from the parsed entries matches the
+    // slice of source it came from — mixed scopes included.
+    const start = lines.indexOf('## Disclosures');
+    const rendered = renderDisclosuresSection(entries).split('\n');
+    expect(lines.slice(start, start + rendered.length)).toEqual(rendered);
+
+    // A raw pipe in wave-scoped prose survives the escape/unescape round-trip.
+    expect(entries[1].text).toBe('the merge-order tool ran against a stale anchor | twice');
+  });
+
+  it('is disposition-addressable by the ref it printed, touching exactly that entry', () => {
+    let before = freshSpine();
+    before = addDisclosureToSource(before, {
+      rowId: '156', iter: 1, source: 'worker', text: 'row gap',
+    }).source;
+    const { source: withWave, disclosure } = addWaveDisclosureToSource(before, {
+      source: 'coordinator',
+      text: 'wave gap',
+    });
+
+    const after = setDispositionInSource(withWave, disclosure.ref, 'filed:#487');
+    expect(readDisclosures(after).map((d) => [d.ref, d.disposition])).toEqual([
+      ['156.1', 'open'],
+      ['wave.1', 'filed:#487'],
+    ]);
+
+    // Exactly one line differs — the sibling row-scoped entry is byte-identical.
+    const a = withWave.split('\n');
+    const b = after.split('\n');
+    expect(a.length).toBe(b.length);
+    expect(a.map((l, i) => (l === b[i] ? -1 : i)).filter((i) => i !== -1)).toEqual([
+      readDisclosures(after)[1].line,
+    ]);
+  });
+
+  it('is counted by the archive gate exactly like a row-scoped entry — open blocks, terminal clears', () => {
+    const { source: open } = addWaveDisclosureToSource(freshSpine(), {
+      source: 'coordinator',
+      text: 'a close-phase find nobody owns',
+    });
+    // The gate reads `openDisclosures` — the wave-scoped entry blocks on its own,
+    // with no row-scoped entry anywhere in the spine.
+    expect(openDisclosures(open).map((d) => d.ref)).toEqual(['wave.1']);
+
+    const cleared = setDispositionInSource(open, 'wave.1', 'dropped:noise, measured');
+    expect(openDisclosures(cleared)).toEqual([]);
+    expect(readDisclosures(cleared)).toHaveLength(1);
+  });
+
+  it('materializes the section on a spine that predates ADR-0027, leaving every other section byte-identical', () => {
+    const { source: after, disclosure } = addWaveDisclosureToSource(ARCHIVED_SRC, {
+      source: 'coordinator',
+      text: 'the sweep needs `cleanup.extraRoots`',
+    });
+    expect(disclosure.ref).toBe('wave.1');
+    expect(after.startsWith(ARCHIVED_SRC.replace(/\n$/, ''))).toBe(true);
+    expect(readSpine(after).planTable[0].state).toBe('planned');
+  });
+
+  it('fails loud on empty text and an unknown source — the same two rules as row-scoped capture', () => {
+    const src = freshSpine();
+    expect(() => addWaveDisclosureToSource(src, { source: 'coordinator', text: '  \n ' })).toThrow(/empty/);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => addWaveDisclosureToSource(src, { source: 'nobody' as any, text: 'g' })).toThrow(/unknown source/);
+    // Multi-line prose is normalized, not rejected — capture stays cheap.
+    expect(
+      addWaveDisclosureToSource(src, { source: 'coordinator', text: 'first\n\nsecond' }).disclosure.text,
+    ).toBe('first second');
+  });
+
+  it('refuses to mint a ref whose scope could not be read back — a Plan-Table row named `wave` takes the sentinel', () => {
+    const collide = renderSpine(
+      META,
+      [{ id: WAVE_SCOPE_ROW, title: 'a row that took the sentinel', worker: 'background', risk: 'mechanical' }],
+      { issues: [], cells: [] },
+      'all pass.',
+    );
+    expect(() => addWaveDisclosureToSource(collide, { source: 'coordinator', text: 'g' })).toThrow(
+      /wave-scoped sentinel/,
+    );
+    // …and nothing was written on the way out.
+    expect(readDisclosures(collide)).toEqual([]);
+    // The row-scoped verb is unaffected: that row is still capturable by id.
+    expect(
+      addDisclosureToSource(collide, { rowId: WAVE_SCOPE_ROW, iter: 1, source: 'worker', text: 'g' })
+        .disclosure.ref,
+    ).toBe('wave.1');
+  });
+
+  it('leaves the ROW-scoped form untouched — same bytes, same four rejections', () => {
+    const src = freshSpine();
+    // The rendered shape is unchanged: a real integer in Iter, no sentinel.
+    const { source: rowScoped } = addDisclosureToSource(src, {
+      rowId: '156', iter: 3, source: 'reviewer', text: 'a gap',
+    });
+    expect(rowScoped).toContain('| 156.1 | 156 | 3 | reviewer | open | a gap |');
+    expect(readDisclosures(rowScoped)[0].iter).toBe(3);
+
+    // …and every rejection it had before still fires, with the same messages.
+    const base = { rowId: '156', iter: 1, source: 'worker' as const, text: 'a gap' };
+    expect(() => addDisclosureToSource(src, { ...base, rowId: '999' })).toThrow(/no Plan-Table row/);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => addDisclosureToSource(src, { ...base, source: 'nobody' as any })).toThrow(/unknown source/);
+    expect(() => addDisclosureToSource(src, { ...base, iter: 0 })).toThrow(/invalid iter/);
+    expect(() => addDisclosureToSource(src, { ...base, text: '   ' })).toThrow(/empty/);
+    // The sentinel is NOT a magic row id at the row-scoped door either: an
+    // absent `wave` row is rejected like any other unknown id.
+    expect(() => addDisclosureToSource(src, { ...base, rowId: WAVE_SCOPE_ROW })).toThrow(
+      /no Plan-Table row/,
+    );
+  });
+
+  it('the parser accepts the sentinel Iter cell and NOTHING else non-numeric (the section stays strict)', () => {
+    const { source } = addWaveDisclosureToSource(freshSpine(), {
+      source: 'coordinator',
+      text: 'gap',
+    });
+    // The sentinel parses to `null`…
+    expect(readDisclosures(source)[0].iter).toBeNull();
+    // …while any other non-numeric Iter is still corruption, not a second
+    // sentinel — a lenient read here would let a mangled section pass the gate.
+    for (const bad of ['n/a', '-', '0', '', 'null']) {
+      const mangled = source.replace(
+        `| wave.1 | wave | ${WAVE_SCOPE_ITER_CELL} |`,
+        `| wave.1 | wave | ${bad} |`,
+      );
+      expect(() => readDisclosures(mangled)).toThrow(/malformed Iter/);
+    }
+  });
+});
+
 describe('SpineStore — the disclosure verbs on the store surface', () => {
   it('add → open → disposition → clear, all through the store', () => {
     const s = spineStoreFromSource(freshSpine());
@@ -341,6 +533,31 @@ describe('SpineStore — the disclosure verbs on the store surface', () => {
     expect(s.branchesByIssueId()['156']).toBe('wave/156-spine-disclosures');
     expect(s.spine().frontmatter.status).toBe('closed');
     // …and the section is still exactly where the parser expects it.
+    expect(readDisclosures(s.source())).toEqual(s.disclosures());
+  });
+
+  it('addWaveDisclosure rides the same store seam — add → open → disposition → clear (ADR-0038)', () => {
+    const s = spineStoreFromSource(freshSpine());
+
+    const row = s.addDisclosure({ rowId: '156', iter: 1, source: 'worker', text: 'row gap' });
+    const wave = s.addWaveDisclosure({ source: 'coordinator', text: 'the sweep left residue' });
+    expect(row.ref).toBe('156.1');
+    expect(wave.ref).toBe('wave.1');
+
+    // Both kinds are counted by the ONE gate reader — no second predicate.
+    expect(s.openDisclosures().map((d) => d.ref)).toEqual(['156.1', 'wave.1']);
+
+    s.setDisposition('156.1', 'resolved-in-slice');
+    expect(s.openDisclosures().map((d) => d.ref)).toEqual(['wave.1']);
+    s.setDisposition('wave.1', 'filed:#487');
+    expect(s.openDisclosures()).toEqual([]);
+
+    // The mutation went through the same byte-preserving seam as every other op.
+    expect(s.source()).toContain(
+      `| wave.1 | wave | ${WAVE_SCOPE_ITER_CELL} | coordinator | filed:#487 | the sweep left residue |`,
+    );
+    // …and the surrounding spine is still fully parseable.
+    expect(s.rowState('156')).toBe('planned');
     expect(readDisclosures(s.source())).toEqual(s.disclosures());
   });
 

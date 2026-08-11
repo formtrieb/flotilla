@@ -41,6 +41,28 @@ wave-close runs only once the wave is **all-in-review**: every Plan-Table row's 
 
 Do not open PRs or archive for a wave that has unfinished rows.
 
+## Capture a find where it surfaces — the window closes at the archive
+
+A find that surfaces while you are closing is captured into the spine **the moment it surfaces**, in the phase it surfaced in — not at the end of the run, and never out of your own memory. The capture window runs from verdict-routing through every close phase and ends **hard at the archive move in phase 6** (ADR-0038): while the spine is live it is a write target, once archived it is evidence, and a find that arrives after that goes straight onto the tracker as a bare issue with a provenance line instead.
+
+One verb, two spellings — reach for whichever the find actually is:
+
+- **Row-scoped** — a Plan-Table row and an iteration own the find (a stuck row's residue, a merged row's leftover branch):
+  ```bash
+  {{wave-cli}} spine add-disclosure <wave-file> <row-id> --iter <n> --source coordinator --text "<the gap>"
+  ```
+- **Wave-scoped** — the find is about the wave's OWN machinery and no row owns it: the worktree sweep, a phase-2 auth posture, the merge-order tool itself.
+  ```bash
+  {{wave-cli}} spine add-disclosure <wave-file> --wave --source coordinator --text "<the gap>"
+  ```
+  Do **not** hang such a find on an arbitrary "affected" row to make it fit the row-scoped form: that corrupts row-scoped counting and has no answer at all for a find with no affected row (the option ADR-0038 rejected by name).
+
+Both forms land in the same table, both are counted by phase 6's disclosure gate, and `coordinator` is the source for anything you observed yourself. Both invocations are in the command table at [reference/close-mechanics.md](reference/close-mechanics.md).
+
+**Why this is doctrine and not a gate.** The phase-6 gate forces a *disposition* onto what was recorded; it can never force *capture* — you cannot gate what was never written down, so this rule is capture's only carrier, deliberately (ADR-0038). What it protects is less the lost find than the **uncounted** one: the spine's Disclosures table is the occurrence counter for sub-ticket findings, and a find that lived only in one session's memory never reaches the recurrence that earns it a ticket.
+
+**A close-visible measurement you can predict at routing is pre-captured there instead** — as a measurement-point disclosure, so the archive gate later forces the measurement itself to happen and its disposition carries the measured evidence. Pre-capture carries what you could foresee; this window carries what you could not (ADR-0038). Neither replaces the other.
+
 ## Procedure
 
 Each phase's full worked body — guards, worked command blocks, live-finding annotations, and that phase's own Common-Mistakes bullets — lives in its own file under [reference/](reference/), named by phase number. **Load every file in that directory, not a subset picked by name** — a sibling's "phase N" citation resolves to real prose only once the whole directory has been read. This loader deliberately does not enumerate what's in there: a new guard or a new live finding is a new edit to its one phase file, with zero edits to this file or to any sibling phase file required. The numbering below (`1`, `2`, `3`, `4`, `4a`, `4b`, `5`, `6`) is the stable identifier sibling skills cite (e.g. "wave-close phase 4b").

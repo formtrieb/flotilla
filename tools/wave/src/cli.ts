@@ -484,6 +484,7 @@ function printUsage(): void {
       // line and asserts each real op appears in it. Detail lines may follow.
       '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures|human-gated|check-awaiting-human> <spine-path> [...args]',
       '    spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>   # ADR-0027: capture at verdict-routing',
+      '    spine add-disclosure <spine-path> --wave --source <worker|reviewer|coordinator> --text <t>   # ADR-0038: wave-scoped capture — no row, no iteration; the window runs to the archive',
       '    spine set-disposition <spine-path> <disclosure-ref> <resolved-in-slice|scope-extension|filed:ID|dropped:REASON>',
       '    spine check-disclosures <spine-path>   # fail-closed archive gate: exit != 0 iff an `open` disclosure remains',
       // The ADR-0012 human-lane pair. Dispatched by spine-cli's own table like

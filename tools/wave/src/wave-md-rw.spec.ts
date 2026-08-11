@@ -49,8 +49,12 @@ import {
   ensureDisclosuresSection as ensureDisclosuresSectionFromRoot,
   readDisclosures as readDisclosuresFromRoot,
   addDisclosureToSource as addDisclosureToSourceFromRoot,
+  addWaveDisclosureToSource as addWaveDisclosureToSourceFromRoot,
   setDispositionInSource as setDispositionInSourceFromRoot,
+  WAVE_SCOPE_ROW as WAVE_SCOPE_ROW_FROM_ROOT,
+  WAVE_SCOPE_ITER_CELL as WAVE_SCOPE_ITER_CELL_FROM_ROOT,
   type Disclosure as DisclosureFromRoot,
+  type WaveDisclosureInput as WaveDisclosureInputFromRoot,
 } from './index';
 
 // ─── Golden fixture — a real-shape WAVE.md spine ──────────────────────────────
@@ -1039,6 +1043,39 @@ describe('package root re-exports — the disclosure surface (issue #177)', () =
     const entries: DisclosureFromRoot[] = readDisclosuresFromRoot(dispositioned);
     expect(entries).toHaveLength(1);
     expect(entries[0].disposition).toBe('resolved-in-slice');
+  });
+
+  it('the WAVE-SCOPED capture verb + its two sentinel cells cross the barrel too (ADR-0038)', () => {
+    // The same barrel-gap class this describe block exists for, one term later:
+    // the wave-scoped half is engine-complete, and a consumer reaching the
+    // package root must be able to capture AND to tell the two scopes apart in
+    // a parsed entry. The compile-time half — `WaveDisclosureInput` really
+    // crossing — is the annotation below, asserted by `tsc --noEmit`.
+    const rendered = renderSpine(rootMeta, rootRoster, { issues: [], cells: [] }, 'ok.');
+
+    const input: WaveDisclosureInputFromRoot = {
+      source: 'coordinator',
+      text: 'a close-phase find owned by no row',
+    };
+    const { source: withWave, disclosure } = addWaveDisclosureToSourceFromRoot(rendered, input);
+
+    expect(disclosure.ref).toBe(`${WAVE_SCOPE_ROW_FROM_ROOT}.1`);
+    expect(disclosure.iter).toBeNull();
+    expect(withWave).toContain(
+      `| wave.1 | ${WAVE_SCOPE_ROW_FROM_ROOT} | ${WAVE_SCOPE_ITER_CELL_FROM_ROOT} | coordinator | open |`,
+    );
+
+    // Root-only, a consumer discriminates on the same two sentinels the engine
+    // writes — no private literal to re-spell.
+    const parsed = readDisclosuresFromRoot(withWave);
+    expect(parsed.filter((d) => d.rowId === WAVE_SCOPE_ROW_FROM_ROOT)).toHaveLength(1);
+
+    // …and the root's own disposition verb closes it out by the printed ref.
+    expect(
+      readDisclosuresFromRoot(
+        setDispositionInSourceFromRoot(withWave, disclosure.ref, 'filed:#487'),
+      )[0].disposition,
+    ).toBe('filed:#487');
   });
 });
 

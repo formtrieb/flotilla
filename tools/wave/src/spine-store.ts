@@ -15,8 +15,11 @@
  * the caller commits intent (setRowState / upsertDispatchLogEntry) BEFORE the
  * irreversible side-effect (worktree create, worker spawn), so a kill between the
  * two is recoverable. ADR-0027 extends that doctrine to disclosures: captured at
- * verdict-routing (the moment of knowledge), enforced at archive (the terminal
- * boundary), so a Coordinator death in between loses nothing.
+ * the moment of knowledge, enforced at archive (the terminal boundary), so a
+ * Coordinator death in between loses nothing. ADR-0038 states how far "the
+ * moment of knowledge" reaches: the capture window spans verdict-routing through
+ * every close phase and ends hard at the archive — which is why this module
+ * carries TWO capture constructors, one per scope, and one gate over both.
  */
 
 import {
@@ -38,7 +41,9 @@ import {
 //
 // A *disclosure* is a Convention-9 wiring gap, a Convention-10 runtime residue,
 // or a same-shaped Reviewer/Coordinator finding. It is captured into the spine
-// at verdict-routing and must carry a disposition before the wave archives.
+// where it surfaces — at verdict-routing, or during any close phase while the
+// spine is still live (ADR-0038) — and must carry a disposition before the wave
+// archives.
 //
 // The section is engine-rendered AND engine-parsed — never hand-authored by a
 // skill, never grep-parsed by one (ADR-0027 rejects the skill-side-markdown
@@ -50,6 +55,36 @@ import {
 /** Who observed the gap. Source-neutral storage — this is provenance, not kind. */
 export const DISCLOSURE_SOURCES = ['worker', 'reviewer', 'coordinator'] as const;
 export type DisclosureSource = (typeof DISCLOSURE_SOURCES)[number];
+
+// ─── Wave-scoped disclosures (ADR-0038) ──────────────────────────────────────
+//
+// A find about the wave's OWN machinery — the worktree sweep, a preflight
+// posture, the merge-order tool — is owned by no Plan-Table row and comes out of
+// no dispatch iteration, so the row-scoped capture above has nothing to validate
+// it against. ADR-0038 makes that shape first-class rather than hanging it on an
+// arbitrary "affected" row (the option the ADR rejected: it corrupts row-scoped
+// counting and has no answer at all for a find with no affected row).
+//
+// The storage is the SAME table, deliberately: a wave-scoped entry renders,
+// parses, dispositions and counts exactly like a row-scoped one — two sentinel
+// cells are the whole difference, so the archive gate needed no change at all.
+
+/**
+ * The sentinel that occupies a wave-scoped entry's `Row` cell — and therefore
+ * the prefix of its ref (`wave.1`, `wave.2`, …).
+ *
+ * It shares the ordinal namespace with any row of the same id, which is why
+ * {@link addWaveDisclosureToSource} refuses to capture at all when the
+ * Plan-Table actually holds a row spelled `wave`.
+ */
+export const WAVE_SCOPE_ROW = 'wave';
+
+/**
+ * The `Iter` cell a wave-scoped entry renders: the spine's house
+ * not-applicable marker (the same em dash the Plan-Table's empty `PR` /
+ * `Reports → Verdicts` cells carry). Parsed back as `iter: null`.
+ */
+export const WAVE_SCOPE_ITER_CELL = '—';
 
 /**
  * The capture-time default. Deliberately NOT settable through
@@ -74,19 +109,27 @@ export const DISPOSITION_VOCABULARY =
 /** One parsed `## Disclosures` entry. */
 export interface Disclosure {
   /**
-   * The stable address `<row-id>.<ordinal>` (e.g. `156.1`, `FOR-90.2`).
+   * The stable address `<row-id>.<ordinal>` (e.g. `156.1`, `FOR-90.2`) — or
+   * `wave.<ordinal>` for a wave-scoped entry (ADR-0038).
    * The ordinal is 1-based PER ROW and never reused — there is no delete verb,
    * so a ref, once printed, addresses the same entry for the life of the spine.
    * Dot-joined on purpose: `<id>-<n>` is already the sidecar report/verdict
    * spelling, and a disclosure-ref must not read like a sidecar path.
    */
   ref: string;
-  /** The Plan-Table row this disclosure was raised against. */
+  /**
+   * The Plan-Table row this disclosure was raised against — or
+   * {@link WAVE_SCOPE_ROW} when the find is about the wave's own machinery and
+   * belongs to no row (ADR-0038).
+   */
   rowId: string;
   /** 1-based ordinal within `rowId`. */
   ordinal: number;
-  /** The dispatch iteration the disclosure came out of. */
-  iter: number;
+  /**
+   * The dispatch iteration the disclosure came out of — `null` for a
+   * wave-scoped entry, which came out of no dispatch at all (ADR-0038).
+   */
+  iter: number | null;
   source: DisclosureSource;
   /** `open` at capture; one of {@link DISPOSITION_VOCABULARY} once dispositioned. */
   disposition: string;
@@ -96,10 +139,22 @@ export interface Disclosure {
   line: number;
 }
 
-/** What a caller supplies at capture; `disposition` is always `open`. */
+/** What a caller supplies at ROW-scoped capture; `disposition` is always `open`. */
 export interface DisclosureInput {
   rowId: string;
   iter: number;
+  source: DisclosureSource;
+  text: string;
+}
+
+/**
+ * What a caller supplies at WAVE-scoped capture (ADR-0038). Deliberately a
+ * SEPARATE input type rather than an optional-field widening of
+ * {@link DisclosureInput}: the two fields it drops are exactly the two the
+ * row-scoped constructor validates, so "no row, no iteration" is a shape the
+ * type system states rather than a runtime combination to police.
+ */
+export interface WaveDisclosureInput {
   source: DisclosureSource;
   text: string;
 }
@@ -203,10 +258,17 @@ export function normalizeDisclosureText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Render one entry's table row. Paired with {@link readDisclosures}. */
+/**
+ * Render one entry's table row. Paired with {@link readDisclosures}.
+ *
+ * A `null` iter — the wave-scoped case (ADR-0038) — renders the house
+ * not-applicable marker {@link WAVE_SCOPE_ITER_CELL}; every other cell is
+ * written exactly as before, so a row-scoped entry's bytes are unchanged.
+ */
 export function renderDisclosureRow(d: Disclosure): string {
   const c = escapeDisclosureCell;
-  return `| ${c(d.ref)} | ${c(d.rowId)} | ${d.iter} | ${c(d.source)} | ${c(d.disposition)} | ${c(d.text)} |`;
+  const iterCell = d.iter === null ? WAVE_SCOPE_ITER_CELL : String(d.iter);
+  return `| ${c(d.ref)} | ${c(d.rowId)} | ${iterCell} | ${c(d.source)} | ${c(d.disposition)} | ${c(d.text)} |`;
 }
 
 /**
@@ -283,12 +345,17 @@ export function readDisclosures(source: string): Disclosure[] {
           'expected "<row-id>.<ordinal>".',
       );
     }
-    const iter = Number(iterRaw);
-    if (!Number.isInteger(iter) || iter < 1) {
-      throw new Error(
-        `readDisclosures: malformed Iter "${iterRaw}" at line ${i + 1} — ` +
-          'expected a positive integer.',
-      );
+    // The wave-scoped sentinel (ADR-0038) is the ONE non-numeric Iter cell the
+    // parser accepts; everything else is still held to a positive integer.
+    let iter: number | null = null;
+    if (iterRaw !== WAVE_SCOPE_ITER_CELL) {
+      iter = Number(iterRaw);
+      if (!Number.isInteger(iter) || iter < 1) {
+        throw new Error(
+          `readDisclosures: malformed Iter "${iterRaw}" at line ${i + 1} — ` +
+            `expected a positive integer or "${WAVE_SCOPE_ITER_CELL}" (wave-scoped, ADR-0038).`,
+        );
+      }
     }
     if (!(DISCLOSURE_SOURCES as readonly string[]).includes(sourceRaw)) {
       throw new Error(
@@ -410,6 +477,73 @@ export function addDisclosureToSource(
     );
   }
 
+  return insertDisclosureEntry(source, {
+    rowId,
+    iter: input.iter,
+    source: input.source,
+    text,
+  });
+}
+
+/**
+ * Capture a WAVE-SCOPED disclosure at `open` (ADR-0038) — a find about the
+ * wave's own machinery, owned by no Plan-Table row and no iteration. Additive
+ * beside {@link addDisclosureToSource} (ADR-0035): the row-scoped constructor
+ * above is untouched, down to its error strings.
+ *
+ * Same two vocabulary rules as row-scoped capture (non-empty text, a known
+ * source — a close-phase find is a Coordinator find, and `coordinator` is
+ * already in the vocabulary), and ONE rule of its own: the `wave` sentinel must
+ * actually be free. A Plan-Table row spelled `wave` would share this entry's
+ * ref namespace, so the scope of an already-minted ref could no longer be read
+ * back off the spine — refuse rather than mint it.
+ */
+export function addWaveDisclosureToSource(
+  source: string,
+  input: WaveDisclosureInput,
+): { source: string; disclosure: Disclosure } {
+  const text = normalizeDisclosureText(input.text ?? '');
+  if (!text) {
+    throw new Error('addDisclosure: --text is empty; a disclosure needs a gap description.');
+  }
+  if (!(DISCLOSURE_SOURCES as readonly string[]).includes(input.source)) {
+    throw new Error(
+      `addDisclosure: unknown source "${input.source}"; expected one of: ${DISCLOSURE_SOURCES.join(', ')}.`,
+    );
+  }
+  const planTable = readSpine(source).planTable;
+  if (planTable.some((r) => r.id === WAVE_SCOPE_ROW)) {
+    throw new Error(
+      `addDisclosure: cannot capture wave-scoped — the Plan-Table has a row with id "${WAVE_SCOPE_ROW}", ` +
+        'which is the wave-scoped sentinel; capture it against that row instead.',
+    );
+  }
+
+  return insertDisclosureEntry(source, {
+    rowId: WAVE_SCOPE_ROW,
+    iter: null,
+    source: input.source,
+    text,
+  });
+}
+
+/**
+ * The shared write half of both capture verbs: materialize the section, mint
+ * the next ordinal within `rowId`, and splice one rendered row in.
+ *
+ * Every input is already validated by the caller — this helper enforces no
+ * vocabulary of its own, which is why it stays module-private (the constructors
+ * above are the domain's only doors in).
+ */
+function insertDisclosureEntry(
+  source: string,
+  entry: {
+    rowId: string;
+    iter: number | null;
+    source: DisclosureSource;
+    text: string;
+  },
+): { source: string; disclosure: Disclosure } {
   const withSection = ensureDisclosuresSection(source);
   const model = splitLines(withSection);
   const section = findDisclosuresSection(model.lines);
@@ -420,16 +554,16 @@ export function addDisclosureToSource(
   const existing = readDisclosures(withSection);
   const ordinal =
     existing
-      .filter((d) => d.rowId === rowId)
+      .filter((d) => d.rowId === entry.rowId)
       .reduce((max, d) => Math.max(max, d.ordinal), 0) + 1;
   const disclosure: Disclosure = {
-    ref: `${rowId}.${ordinal}`,
-    rowId,
+    ref: `${entry.rowId}.${ordinal}`,
+    rowId: entry.rowId,
     ordinal,
-    iter: input.iter,
-    source: input.source,
+    iter: entry.iter,
+    source: entry.source,
     disposition: OPEN_DISPOSITION,
-    text,
+    text: entry.text,
     line: -1, // filled in below, once the insert point is known
   };
 
@@ -517,8 +651,14 @@ export interface SpineStore {
   openDisclosures(): Disclosure[];
   /** Materialize the `## Disclosures` section if absent; byte-identical no-op otherwise. */
   ensureDisclosuresSection(): void;
-  /** Capture one disclosure at `open`; returns the created entry (its `ref` is the address). */
+  /** Capture one ROW-scoped disclosure at `open`; returns the created entry (its `ref` is the address). */
   addDisclosure(input: DisclosureInput): Disclosure;
+  /**
+   * Capture one WAVE-scoped disclosure at `open` (ADR-0038) — no row, no
+   * iteration. Same return contract as {@link SpineStore.addDisclosure}, and
+   * the entry it mints is counted by the archive gate identically.
+   */
+  addWaveDisclosure(input: WaveDisclosureInput): Disclosure;
   /** Disposition exactly one entry, addressed by `ref`. Throws outside the vocabulary. */
   setDisposition(ref: string, disposition: string): void;
 
@@ -578,6 +718,11 @@ export function spineStoreFromSource(initial: string, path?: string, io?: SpineI
     },
     addDisclosure(input) {
       const { source: next, disclosure } = addDisclosureToSource(src, input);
+      rebind(next);
+      return disclosure;
+    },
+    addWaveDisclosure(input) {
+      const { source: next, disclosure } = addWaveDisclosureToSource(src, input);
       rebind(next);
       return disclosure;
     },
