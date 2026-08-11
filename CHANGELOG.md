@@ -9,6 +9,77 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.4.0] — 2026-08-11
+
+Same-day follow-through on ADR-0038: the Disclosure capture window now spans the whole
+wave — a Coordinator find that surfaces during a close phase is captured where it
+surfaces, wave-scoped and first-class — and the chronically-manual worktree removal is
+promoted from documented exception to designed path, on its doc half and its report half
+alike. Minor per ADR-0035: one additive CLI input form, three new root exports, and one
+public-type widening that gets its own heads-up below because a root-only consumer's
+arithmetic on it breaks at compile time.
+
+### Added
+
+- **`spine add-disclosure --wave` — a wave-scoped Disclosure is first-class (ADR-0038).**
+  A find about the wave's own machinery — the sweep, a preflight posture, the merge-order
+  tool — is owned by no Plan-Table row and no iteration; the new boolean flag replaces the
+  `<row-id>` positional and `--iter` on the same op. A wave-scoped entry renders as row
+  `wave` with an em-dash Iter cell, round-trips byte-preserving, is addressable by
+  `set-disposition` via its printed `wave.<ordinal>` ref, and is counted by the
+  `check-disclosures` archive gate exactly like a row-scoped entry (open blocks, terminal
+  clears). Mixing `--wave` with a `<row-id>` or `--iter` is a usage error with nothing
+  written; a spine whose Plan-Table actually holds a row named `wave` gets a defensive
+  refusal on the wave-scoped path only. Three new root exports carry the form:
+  `addWaveDisclosureToSource`, `WAVE_SCOPE_ROW`, `WAVE_SCOPE_ITER_CELL`. The row-scoped
+  form keeps byte-identical shape, validation, and output — verified at review by a
+  differential probe against the pre-change tree.
+- **The wave-close skill teaches the close-phase capture doctrine (ADR-0038).**
+  Capture-at-discovery in the skill body's judgment layer, one backstop line ahead of the
+  phase-6 disclosure gate, and the capture verb's rows — both forms — in the
+  close-mechanics command table. The capture window ends hard at the archive: a
+  post-archive find files directly as a bare tracker issue.
+- **An exhausted `erroredStillListed` entry says a re-run cannot succeed (issue #483).**
+  A worktree the engine already classified disposable, still listed after its bounded
+  retry AND the scoped `--force` fallback, now carries an additive
+  `manualRecovery { message, commands }`: the message states the obstruction is
+  deterministic, the commands are copy-pasteable and name that worktree's actual path.
+  Transient-shaped entries keep the previous reading; no existing key or exit-code
+  meaning changed.
+
+### Changed
+
+- **`Disclosure.iter` widens `number` → `number | null` at the package root — the
+  heads-up (issue #489).** `null` is the wave-scoped form's not-applicable marker. Every
+  row-scoped entry still parses and renders an integer, so no runtime behaviour changed
+  for the existing form — but a root-only consumer doing arithmetic on `d.iter` now fails
+  at compile time rather than reading a silent `null`. That loud failure is deliberate;
+  the rejected alternative was an `iter: 0` sentinel hidden inside a numeric type.
+- **The phase-3 close reference prescribes the sandbox-off force-removal as the ordinary
+  path (issue #483).** Three consecutive closes proved the manual step is not the
+  exception on a sandboxed harness — a fourth occurred while this release's own wave
+  closed. One canonical sequence: sandbox-off `git worktree remove --force` per worktree,
+  then `git worktree prune`; the `prune` + `rm -rf` variant is demoted to the fallback
+  when force-removal itself fails. The step stays manual and privilege-escalating by
+  design — the human stays in the escalation.
+- **CONTEXT.md's Disclosure entry and ADR-0038** (`docs/adr/0038-a-find-is-captured-where-it-surfaces.md`)
+  carry the full window: capture where the find surfaces, from verdict-routing through
+  every close phase, measurement points pre-captured at routing, archive as the hard
+  boundary.
+
+### Not yet proven
+
+- **`manualRecovery` has never been read live.** The wave that shipped it hit its own
+  trigger (`erroredStillListed`, the fourth consecutive occurrence) with the pre-merge
+  engine still running the sweep. The next close on a sandboxed harness is the field's
+  first live read.
+- **A consumer-side wave-scoped capture has not yet occurred.** The form is exercised
+  live through the real CLI on scratch spines (worker and reviewer independently), and
+  this repo's own close exercised the gate half on a row-scoped entry — but no genuine
+  close-phase Coordinator find has ridden the new form end-to-end yet.
+- **Bitbucket's write half remains unproven** (unchanged since 1.3.0; the read half is
+  live-verified).
+
 ## [1.3.1] — 2026-08-11
 
 The night after the Bitbucket landing host shipped, this release closes its first
