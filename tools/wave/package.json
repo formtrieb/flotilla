@@ -3,6 +3,7 @@
   "version": "1.4.0",
   "description": "Wave-orchestration engine for flotilla — conflict/parallelism reasoning, DoR gating, merge order, and tracker-agnostic issue stores.",
   "license": "Apache-2.0",
+  "author": "Michael Helmbrecht",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/formtrieb/flotilla.git",
