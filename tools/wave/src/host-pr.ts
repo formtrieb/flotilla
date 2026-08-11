@@ -2314,7 +2314,15 @@ function createCredentialsCheck(host: Host, env: NodeJS.ProcessEnv): HostPreflig
       name: 'create-credentials',
       status: 'advisory',
       detail:
-        `${BITBUCKET_EMAIL_VAR} is not set. The LANDING verbs are UNAFFECTED — \`host-pr arm | merge | status | ` +
+        // MAINTENANCE: this leading sentence names bitbucketCreateCreds's full
+        // precondition set directly — today that set is exactly "absent OR
+        // empty" (the helper's own `email === undefined || email.length === 0`
+        // guard). Unlike the quoted refusal below, which is read verbatim off
+        // `err` and so updates itself automatically, this sentence does NOT:
+        // if that guard ever grows a second precondition, widen the wording
+        // here to match, or this sentence will assert a fact the helper did
+        // not actually refuse on while the quoted half stays correct.
+        `${BITBUCKET_EMAIL_VAR} is not set, or is set to an empty string. The LANDING verbs are UNAFFECTED — \`host-pr arm | merge | status | ` +
         `preflight\` authenticate with Bearer (a repository/workspace access token) and keep working exactly as ` +
         `they do now, which is why this is an advisory and not a failure. What WILL refuse is \`host-pr create\`, ` +
         `verbatim: "${errMessage(err)}" — and in flotilla's wave pipeline that is not an edge case: the Worker ` +

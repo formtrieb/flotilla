@@ -2529,6 +2529,14 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
       expect((await check('bitbucket', { [BITBUCKET_EMAIL_VAR]: '' }))?.status).toBe('advisory');
     });
 
+    it('the EMPTY-STRING detail names the empty case truthfully — not just "is not set"', async () => {
+      // A reader who DID set the variable (to '') must not be told they did
+      // not set it at all. Pins the exact leading-sentence wording so a future
+      // edit cannot silently regress back to the absent-only phrasing.
+      const detail = (await check('bitbucket', { [BITBUCKET_EMAIL_VAR]: '' }))?.detail ?? '';
+      expect(detail).toContain(`${BITBUCKET_EMAIL_VAR} is not set, or is set to an empty string.`);
+    });
+
     it('the advisory detail states BOTH halves — landing unaffected, AND create refuses on every wave row', async () => {
       const detail = (await check('bitbucket', NO_EMAIL))?.detail ?? '';
 
