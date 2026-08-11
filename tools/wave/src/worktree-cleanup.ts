@@ -785,6 +785,55 @@
  * amendment. This is a scoped carve-out of that stance for a THIRD kind of
  * obstruction the original two paragraphs never named, not a reversal of it.
  *
+ * ── a loud, per-entry report for the EXHAUSTED reading (issue #483) ───────────
+ *
+ * The #304 amendment above narrows "NO force flag" for a THIRD obstruction
+ * (this module's OWN physical delete leaving a residual on content it had
+ * ALREADY classified disposable) — but the `force` it threads through is
+ * computed uniformly as `dirtyAllJunk || orphanAllJunk`, with no further
+ * distinction for WHY an entry carries that classification. Issue #142's
+ * harness-denied-path shape sets `dirtyAllJunk` too, so a worktree stuck for
+ * that DETERMINISTIC, OS-level-permission reason (the original "NO force
+ * flag" stance's own subject, re-affirmed at the top of the #304 section:
+ * force cannot make the sandbox grant bytes it has refused) reaches the SAME
+ * `opts.force` path, mechanically indistinguishable from a recoverable
+ * residual right up until the moment the forced removal ALSO fails. Three
+ * consecutive wave closes confirmed exactly that outcome, every time, for
+ * every worktree whose only divergence was the tracked, harness-denied paths
+ * every checkout carries by design (`.claude/skills/**`, `.claude/settings.json`):
+ * the bounded retry (FOR-84) ran, the #304 force fallback ran, and the entry
+ * still landed in `erroredStillListed` — the phase-3 skill reference's
+ * documented "manual step" every single time, never the exception it was
+ * originally written to describe.
+ *
+ * `executeCleanup` already HOLDS the one signal that tells the two readings
+ * apart, at the exact point it classifies an entry into `erroredStillListed`:
+ * `forceEligible` (the same `dirtyAllJunk || orphanAllJunk` flag
+ * {@link WorktreeRemover.remove}'s `opts.force` was already computed from for
+ * that same attempt). TRUE there means this entry was already classified
+ * disposable AND had both the retry and the scoped force fallback run against
+ * it before landing here — the obstruction is therefore the deterministic
+ * OS-level one the "NO force flag" stance already names, not the transient
+ * race the retry exists to clear, and a bare re-run of `worktree-cleanup`
+ * cannot succeed. FALSE means neither classification ever applied — a plain,
+ * still-registered worktree that landed here anyway is the ordinary
+ * TRANSIENT reading, unchanged: a re-run MAY yet clear it.
+ *
+ * {@link WorktreeEntry.manualRecovery} (additive — ADR-0035: no existing key
+ * or exit-code meaning changes) carries that EXHAUSTED reading explicitly on
+ * the entry itself, rather than leaving an operator to re-derive it from
+ * `dirtyAllJunk`/`orphanAllJunk` by hand: a `message` stating plainly that a
+ * re-run cannot succeed, and pre-filled, copy-pasteable `commands` naming
+ * THIS worktree's own path — the SAME `git worktree remove --force <path>`
+ * the engine's own scoped fallback already tried, now prescribed by the
+ * phase-3 reference as the ORDINARY manual recovery (run outside the sandbox,
+ * where the OS grants the delete the harness itself refused), then
+ * `git worktree prune`. The `prune` + `rm -rf` variant is not gone — it is
+ * the documented FALLBACK for when the forced removal itself still fails,
+ * not the first-reached step. Absent on a transient entry, and absent on
+ * every entry outside `erroredStillListed` — `removed`, `skipped`,
+ * `deregisteredNotDeleted`, `errors` all keep today's reading unchanged.
+ *
  * ── a repo-internal location with no lifecycle at all (issue #355) ────────────
  *
  * Every population above is a WORKTREE, and every one of them accumulated
@@ -891,6 +940,41 @@ export interface WorktreeEntry {
    * entries), so every existing `CleanupResult` consumer stays valid.
    */
   retried?: boolean;
+  /**
+   * Present only on a `CleanupResult.erroredStillListed` entry (issue #483)
+   * that was ALREADY classified disposable (`dirtyAllJunk`/`orphanAllJunk`)
+   * and for which BOTH the bounded retry (FOR-84) AND the scoped `--force`
+   * fallback (issue #304) already ran against it — see the file-level "a
+   * loud, per-entry report for the EXHAUSTED reading" doc section. Its
+   * presence alone is the exhausted/transient split within that one bucket:
+   * absent means either this entry was never classified disposable in the
+   * first place (the ordinary TRANSIENT reading, unchanged — a re-run MAY
+   * yet clear a short-lived OS race) or it belongs to some other class
+   * entirely (`removed`, `skipped`, `deregisteredNotDeleted`, `errors`).
+   * ADDITIVE (ADR-0035): no existing key or exit-code meaning changes, and a
+   * transient-shaped entry's own reading is untouched.
+   */
+  manualRecovery?: {
+    /**
+     * States explicitly that a re-run cannot succeed: the obstruction — the
+     * sandboxed harness's own write-deny on the physical delete — is
+     * DETERMINISTIC, not the transient race the bounded retry exists to
+     * clear.
+     */
+    message: string;
+    /**
+     * Copy-pasteable manual-recovery commands, in run order, naming THIS
+     * worktree's own path — the sandbox-off sequence
+     * `phase-3-worktree-cleanup.md` now prescribes as the ORDINARY path for
+     * this shape (`git worktree remove --force <path>` then
+     * `git worktree prune`; the `prune` + `rm -rf` variant is that doc's own
+     * documented FALLBACK for when the forced removal itself still fails).
+     * This module only ever NAMES the commands — it never runs them itself;
+     * the sandbox-disabled privilege escalation stays a deliberate, manual,
+     * human step (out of scope for this module by design).
+     */
+    commands: string[];
+  };
 }
 
 /**
@@ -968,7 +1052,12 @@ export interface CleanupResult {
    * AFTER the bounded one-shot retry (FOR-84) also threw-yet-still-listed — a
    * first-attempt survivor whose retry then succeeds is `removed` (with
    * `retried: true`) instead. Operator playbook: this is the prune/retry case,
-   * not a defect.
+   * not a defect — UNLESS the entry also carries {@link
+   * WorktreeEntry.manualRecovery} (issue #483), in which case it already was
+   * classified disposable and had both the retry AND the scoped `--force`
+   * fallback (issue #304) run against it: a re-run cannot succeed, and the
+   * entry itself names the manual recovery. See the file-level "a loud,
+   * per-entry report for the EXHAUSTED reading" doc section.
    */
   erroredStillListed: WorktreeEntry[];
   /**
@@ -1419,6 +1508,35 @@ export function listAllWorktrees(
 }
 
 /**
+ * Build the additive {@link WorktreeEntry.manualRecovery} payload for an
+ * EXHAUSTED `erroredStillListed` entry (issue #483) — see the file-level "a
+ * loud, per-entry report for the EXHAUSTED reading" doc section. Pure string
+ * assembly, pulled out so the message and the two-command recovery sequence
+ * are written down exactly ONCE and every caller quotes the same wording.
+ *
+ * The two commands are the SAME `git worktree remove --force <path>` the
+ * engine's own scoped fallback (issue #304) already tried against `path` —
+ * prescribed here as the ORDINARY manual recovery for this shape (run
+ * outside the sandbox, where the OS grants the delete the harness itself
+ * refused), followed by `git worktree prune`. This function only ever NAMES
+ * the commands; it never executes them.
+ */
+function exhaustedManualRecovery(
+  worktreePath: string,
+): NonNullable<WorktreeEntry['manualRecovery']> {
+  return {
+    message:
+      'This worktree was already classified disposable, and both the bounded ' +
+      'retry (FOR-84) and the scoped --force fallback (issue #304) already ran ' +
+      'against it — a re-run of worktree-cleanup cannot succeed. The ' +
+      "obstruction is the sandboxed harness's own write-deny on the physical " +
+      'delete, which is deterministic, not the transient race the retry exists ' +
+      'to clear. Remove it manually, with the sandbox disabled.',
+    commands: [`git worktree remove --force ${worktreePath}`, 'git worktree prune'],
+  };
+}
+
+/**
  * Execute a cleanup: invoke the remover for each selected-clean worktree,
  * collect errors, and return a structured result.
  *
@@ -1521,7 +1639,22 @@ export function executeCleanup(
         // its own class (never the generic `errors`, never branch hygiene) so
         // an operator can tell "removal failed, worktree intact and prunable"
         // apart from any other error.
-        erroredStillListed.push(wt);
+        //
+        // issue #483: `forceEligible` is the exact signal that already
+        // decided whether THIS attempt (and its retry, if any) carried
+        // `opts.force` — see the file-level "a loud, per-entry report for the
+        // EXHAUSTED reading" doc section. TRUE means the entry was already
+        // classified disposable and had both the bounded retry AND the
+        // scoped force fallback (issue #304) run against it, so the
+        // obstruction is the deterministic OS-level one and a re-run cannot
+        // succeed: the entry carries the additive `manualRecovery` naming
+        // exactly that. FALSE leaves the entry byte-identical to before (the
+        // TRANSIENT reading, unchanged).
+        erroredStillListed.push(
+          forceEligible
+            ? { ...wt, manualRecovery: exhaustedManualRecovery(wt.path) }
+            : wt,
+        );
         break;
       case 'errored':
         // A genuine failure: the removal threw and git no longer lists the

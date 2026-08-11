@@ -6488,3 +6488,150 @@ describe('the --orphans close path reaches the Scribe scratch dir (issue #355)',
     expect(result.scratch?.removed).toHaveLength(1);
   });
 });
+
+// ─── 34. A loud, per-entry report for the EXHAUSTED erroredStillListed
+//     reading (issue #483) ──────────────────────────────────────────────────
+//
+// Three consecutive wave closes showed the classified-disposable shape
+// (`dirtyAllJunk`/`orphanAllJunk`) landing in `erroredStillListed` even AFTER
+// both the bounded retry (FOR-84) and the scoped `--force` fallback (issue
+// #304) ran against it — the deterministic sandbox write-deny on the
+// physical delete that neither mechanism can override. `executeCleanup`
+// already holds the one signal that tells that EXHAUSTED reading apart from
+// the ordinary TRANSIENT one within the same `erroredStillListed` bucket:
+// `forceEligible` (`dirtyAllJunk || orphanAllJunk`). This section pins the
+// additive `WorktreeEntry.manualRecovery` surface built from it.
+describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed reading (issue #483)', () => {
+  const NOOP_PAUSE = () => {};
+
+  /** A remover that always throws — models a removal git still lists, on every attempt. */
+  function alwaysThrowRemover(): {
+    remover: WorktreeRemover;
+    removeSpy: ReturnType<typeof vi.fn>;
+  } {
+    const removeSpy = vi.fn(() => {
+      throw new Error(`ENOTEMPTY: directory not empty, rmdir '${AGENT_PATH_A}'`);
+    });
+    return { remover: { remove: removeSpy }, removeSpy };
+  }
+
+  it('a dirtyAllJunk-classified worktree still erroredStillListed after the retry AND the force fallback carries manualRecovery naming its own path', () => {
+    const { remover, removeSpy } = alwaysThrowRemover();
+    const junky: WorktreeEntry = {
+      path: AGENT_PATH_A,
+      branch: 'wave/483-junky',
+      head: 'a'.repeat(40),
+      dirty: true,
+      dirtyAllJunk: true,
+    };
+
+    const result = executeCleanup(
+      { selected: [junky], skipped: [] },
+      { remover, stillListed: () => true, retryPause: NOOP_PAUSE, skipBranchHygiene: true },
+    );
+
+    // Both the bounded retry AND the scoped force fallback ran: two attempts,
+    // both carrying `{ force: true }` (the classifier-disposable override).
+    expect(removeSpy).toHaveBeenCalledTimes(2);
+    expect(removeSpy).toHaveBeenNthCalledWith(1, AGENT_PATH_A, { force: true });
+    expect(removeSpy).toHaveBeenNthCalledWith(2, AGENT_PATH_A, { force: true });
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    const entry = result.erroredStillListed[0];
+    expect(entry.path).toBe(AGENT_PATH_A);
+    expect(entry.manualRecovery).toBeDefined();
+    expect(entry.manualRecovery?.message).toMatch(/cannot succeed/i);
+    expect(entry.manualRecovery?.message).toMatch(/deterministic/i);
+    expect(entry.manualRecovery?.commands).toEqual([
+      `git worktree remove --force ${AGENT_PATH_A}`,
+      'git worktree prune',
+    ]);
+  });
+
+  it('an orphanAllJunk-classified worktree still erroredStillListed after the retry AND the force fallback ALSO carries manualRecovery', () => {
+    const { remover } = alwaysThrowRemover();
+    const orphanJunky: WorktreeEntry = {
+      path: AGENT_PATH_A,
+      branch: null,
+      head: 'a'.repeat(40),
+      dirty: false,
+      orphan: true,
+      orphanAllJunk: true,
+    };
+
+    const result = executeCleanup(
+      { selected: [orphanJunky], skipped: [] },
+      { remover, stillListed: () => true, retryPause: NOOP_PAUSE, skipBranchHygiene: true },
+    );
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    expect(result.erroredStillListed[0].manualRecovery).toBeDefined();
+    expect(result.erroredStillListed[0].manualRecovery?.commands).toEqual([
+      `git worktree remove --force ${AGENT_PATH_A}`,
+      'git worktree prune',
+    ]);
+  });
+
+  it('a PLAIN clean worktree (never classified disposable) that lands in erroredStillListed keeps the TRANSIENT reading — no manualRecovery, today\'s reading unchanged', () => {
+    const { remover, removeSpy } = alwaysThrowRemover();
+    const clean: WorktreeEntry = {
+      path: AGENT_PATH_A,
+      branch: 'wave/483-transient',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+
+    const result = executeCleanup(
+      { selected: [clean], skipped: [] },
+      { remover, stillListed: () => true, retryPause: NOOP_PAUSE, skipBranchHygiene: true },
+    );
+
+    // Neither attempt was force-eligible — plainly clean, never classified.
+    expect(removeSpy).toHaveBeenNthCalledWith(1, AGENT_PATH_A, { force: false });
+    expect(removeSpy).toHaveBeenNthCalledWith(2, AGENT_PATH_A, { force: false });
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    expect(result.erroredStillListed[0].manualRecovery).toBeUndefined();
+    // The transient-shaped entry is byte-identical to the pre-#483 shape.
+    expect(result.erroredStillListed[0]).toEqual(clean);
+  });
+
+  it('a genuinely-dirty non-junk worktree never reaches the remover at all, so it can never be misread as EXHAUSTED', () => {
+    const { remover, removeSpy } = alwaysThrowRemover();
+    const dirtyReal: WorktreeEntry = {
+      path: AGENT_PATH_A,
+      branch: 'wave/483-real',
+      head: 'a'.repeat(40),
+      dirty: true,
+      dirtyAllJunk: false,
+    };
+
+    const plan = planCleanup([dirtyReal]);
+    expect(plan.selected).toHaveLength(0);
+
+    const result = executeCleanup(plan, { remover, skipBranchHygiene: true });
+
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(result.erroredStillListed).toHaveLength(0);
+  });
+
+  it('deregisteredNotDeleted NEVER carries manualRecovery, even for a classifier-disposable entry — the field is scoped strictly to erroredStillListed', () => {
+    const { remover } = fakeRemover(); // never throws
+    const junky: WorktreeEntry = {
+      path: AGENT_PATH_A,
+      branch: 'wave/483-deregistered',
+      head: 'a'.repeat(40),
+      dirty: true,
+      dirtyAllJunk: true,
+    };
+
+    const result = executeCleanup(
+      { selected: [junky], skipped: [] },
+      { remover, pathExists: () => true, retryPause: NOOP_PAUSE, skipBranchHygiene: true },
+    );
+
+    expect(result.deregisteredNotDeleted).toHaveLength(1);
+    expect(result.deregisteredNotDeleted[0].manualRecovery).toBeUndefined();
+    expect(result.erroredStillListed).toHaveLength(0);
+  });
+});
