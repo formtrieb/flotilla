@@ -31,6 +31,25 @@
  * not part of this issue. This issue ships only the tested module.
  */
 
+// The ONE import this module has, and a DELIBERATE cycle
+// (`adapters/bitbucket/bitbucket-api` imports `AutoMergeUnavailableError` and
+// `DEFAULT_MERGE_METHOD` back from here). It exists so the `create-credentials`
+// preflight check below can GRADE `host-pr create`'s own precondition instead of
+// restating a second, parallel copy of it — the drift class this repo already
+// closed for the credential-discovery list, which imports `BITBUCKET_TOKEN_VAR`
+// from the same module for the same reason. Restating either the variable NAME
+// or the "email must be present" RULE here would produce a check that can
+// silently disagree with the verb it predicts, which is worse than no check.
+//
+// The cycle is safe because it is CALL-TIME-ONLY in both directions: nothing
+// here reads `BITBUCKET_EMAIL_VAR` or calls `bitbucketCreateCreds` at module
+// evaluation (both are used inside `createCredentialsCheck`'s body), and nothing
+// there evaluates this module's exports at ITS module evaluation either (both
+// imported values are used inside method bodies / default parameters). Keep it
+// that way: a top-level evaluation across this edge, in either file, would
+// resolve to `undefined` under whichever load order arrives first.
+import { BITBUCKET_EMAIL_VAR, bitbucketCreateCreds } from './adapters/bitbucket/bitbucket-api';
+
 // ─── Host detection ──────────────────────────────────────────────────────────
 
 /** Supported PR hosts. `unknown` is the safe fallback for any unparseable remote. */
@@ -1975,10 +1994,21 @@ export interface LandingPosture {
 export type CheckStatus = 'pass' | 'fail' | 'not-applicable' | 'advisory' | 'unknown';
 
 /**
- * The three code-host checks `host-pr preflight` reports. Single-owner (ADR-0023
+ * The code-host checks `host-pr preflight` reports. Single-owner (ADR-0023
  * amendment): they left `cli-store preflight` entirely — one fact, one owner.
+ *
+ * The first three are POSTURE reads (they come off the {@link LandingPosture}
+ * seam and are graded per host). `create-credentials` is the odd one out and is
+ * named generically on purpose: it grades an AMBIENT credential-form fact rather
+ * than a host read, and only a host whose `create` verb has a precondition the
+ * landing verbs do not share emits it at all — today that is Bitbucket Cloud
+ * alone (see {@link createCredentialsCheck} for why GitHub omits it).
  */
-export type HostCheckName = 'pr-merge-token' | 'allow-auto-merge' | 'required-checks';
+export type HostCheckName =
+  | 'pr-merge-token'
+  | 'allow-auto-merge'
+  | 'required-checks'
+  | 'create-credentials';
 
 /** One probed code-host precondition. */
 export interface HostPreflightCheck {
@@ -1998,11 +2028,23 @@ export interface HostPreflightReport {
  * Probe the code host's landing posture through the {@link LandingPosture} seam
  * (ADR-0023 amendment). Reports `pr-merge-token`, `allow-auto-merge`, and
  * `required-checks` — the three checks the `--auto` confirm and `wave-setup`
- * onboarding read. Advisory by design: the probe informs the confirm, the ARM
- * OUTCOME stays the ground truth. `unknown` never blocks; only a visible-OFF
- * auto-merge WITH required checks is a hard `fail`.
+ * onboarding read — plus, on a host whose `create` verb has its own credential
+ * precondition, `create-credentials`. Advisory by design: the probe informs the
+ * confirm, the ARM OUTCOME stays the ground truth. `unknown` never blocks; only
+ * a visible-OFF auto-merge WITH required checks is a hard `fail`.
+ *
+ * @param env - the environment the AMBIENT (non-posture) half of the report is
+ *   read from — today only the Bitbucket Basic-auth username variable the
+ *   `create-credentials` check grades. Threaded rather than read from
+ *   `process.env` at a new site so the check is exercisable from a spec with an
+ *   injected environment; `host-pr-cli`'s `HostPrDeps.env` is the seam that
+ *   feeds it. Defaults to `process.env` for a caller that has no opinion.
  */
-export async function preflightHost(host: Host, posture: LandingPosture): Promise<HostPreflightReport> {
+export async function preflightHost(
+  host: Host,
+  posture: LandingPosture,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<HostPreflightReport> {
   const canMerge = await posture.canMergePullRequests();
   const autoMerge = await posture.getAutoMergeSetting();
   // Read against the DEFAULT branch (no branch arg). `getRequiredChecks` is
@@ -2014,6 +2056,12 @@ export async function preflightHost(host: Host, posture: LandingPosture): Promis
     allowAutoMergeCheck(autoMerge, required.state, host),
     requiredChecksCheck(required, host),
   ];
+  // Appended, never interleaved: the three posture checks keep their names,
+  // their grading, their detail text AND their order on every host, so this
+  // slice is additive to the shipped report rather than a rewrite of it.
+  const createCredentials = createCredentialsCheck(host, env);
+  if (createCredentials !== null) checks.push(createCredentials);
+
   return { ok: checks.every((c) => c.status !== 'fail'), host, checks };
 }
 
@@ -2189,6 +2237,101 @@ function requiredChecksCheck(required: RequiredChecksInfo, host: Host): HostPref
     name: 'required-checks',
     status: 'unknown',
     detail: `${required.detail} Verify the branch's required checks by hand if you need certainty; \`--auto\` still works — the arm intent is decided per-PR from each PR's live merge-state, and the arm outcome is the ground truth (ADR-0023).`,
+  };
+}
+
+/**
+ * The token half handed to {@link bitbucketCreateCreds} when it is used as a
+ * PREDICATE below. Deliberately a fixed non-secret literal: the create-credential
+ * precondition grades ONLY the email half, so the token value is irrelevant to
+ * the answer — and resolving a real credential to ask a question that does not
+ * depend on it would turn an advisory probe into a credential read.
+ */
+const CREATE_CREDS_PROBE_TOKEN = 'preflight-probe-not-a-credential';
+
+/**
+ * Grade whether `host-pr create` can authenticate on this host — the one
+ * precondition the LANDING verbs do not share, and therefore the one thing a
+ * green landing posture does not already prove.
+ *
+ * ## Why it exists
+ *
+ * On Bitbucket Cloud the account email is an OPTIONAL half of the auth header
+ * (`bitbucketAuthHeader`): present → Basic `email:token`, absent → `Bearer
+ * token`. Bearer is legitimate for `arm | merge | status`, so the adapter
+ * constructs cleanly, its construction-time preflight passes, and all three
+ * posture checks above report green WITHOUT ever looking at the variable. The
+ * refusal lives one verb further on, in `create`, which rides the shared
+ * cross-host Basic-auth seam (the ADR-0019 boundary this does not widen) — and
+ * `create` runs inside the Worker TERMINATOR, after dispatch, per row. So the
+ * only thing missing was something that says so BEFORE a row burns.
+ *
+ * ## Why `advisory` and never `fail`
+ *
+ * A land-only consumer — one that lands pre-existing PRs and never opens one
+ * through flotilla — has a genuinely healthy posture without the email, and must
+ * not be refused. `preflightHost` derives `ok` as "no check is `fail`", so an
+ * `advisory` leaves `ok` and the CLI exit code exactly where they were.
+ * The DETAIL is what has to carry the weight instead: it states both halves —
+ * the landing verbs are unaffected, AND `create` will refuse, which on a WAVE
+ * consumer means every row fails at termination.
+ *
+ * ## Why nothing is reported on GitHub (`null`, not `not-applicable`)
+ *
+ * Three reasons, in order of weight. (1) There is no second fact to report:
+ * GitHub's create credential is `x-access-token:<the same token>` that
+ * `pr-merge-token` already grades, so a GitHub row would restate an
+ * already-graded fact under a second name — one fact, two owners, which is the
+ * drift the ADR-0023 amendment collapsed the store-preflight duplicates to
+ * avoid. (2) A permanently-inert row is noise on a report a human reads at the
+ * `--auto` confirm — the same reasoning that stops the Bitbucket branches above
+ * from promising an arm nothing can perform. (3) Omission keeps the shipped
+ * GitHub report byte-identical — same three checks, same order, same text — so
+ * a consumer that reads it by shape sees no change at all. The trade accepted:
+ * a reader cannot tell "not applicable here" from "nobody implemented it";
+ * the check-name union and this doc comment are where that is answered.
+ *
+ * ## Why it CALLS the create helper instead of re-testing the rule
+ *
+ * {@link bitbucketCreateCreds} is the AUTHORITY on what `create` requires — it
+ * is the function `create` actually runs. Calling it as a predicate means the
+ * check cannot drift from the verb it predicts: if the precondition changes, or
+ * its teaching text does, this advisory follows automatically, because the
+ * refusal it quotes IS the refusal the terminator would print. The returned
+ * pair is discarded unread on the pass path — it is never logged, never printed,
+ * and never reaches the report.
+ */
+function createCredentialsCheck(host: Host, env: NodeJS.ProcessEnv): HostPreflightCheck | null {
+  if (host !== 'bitbucket') return null;
+
+  const email = env[BITBUCKET_EMAIL_VAR];
+  try {
+    // PREDICATE USE — the return value is deliberately unused (it is a
+    // credential pair). Only "did it throw?" is read.
+    bitbucketCreateCreds(CREATE_CREDS_PROBE_TOKEN, email);
+  } catch (err) {
+    return {
+      name: 'create-credentials',
+      status: 'advisory',
+      detail:
+        `${BITBUCKET_EMAIL_VAR} is not set. The LANDING verbs are UNAFFECTED — \`host-pr arm | merge | status | ` +
+        `preflight\` authenticate with Bearer (a repository/workspace access token) and keep working exactly as ` +
+        `they do now, which is why this is an advisory and not a failure. What WILL refuse is \`host-pr create\`, ` +
+        `verbatim: "${errMessage(err)}" — and in flotilla's wave pipeline that is not an edge case: the Worker ` +
+        `terminator calls \`host-pr create\` on EVERY row, so a wave dispatched against this repo fails at each ` +
+        `row's termination step, after the work is done. Set ${BITBUCKET_EMAIL_VAR} (a plain identifier, not a ` +
+        `secret — it belongs in the tracked settings env block, not the ADR-0029 credential seam) before ` +
+        `dispatching a wave. A land-only consumer that never opens a PR through flotilla can ignore this.`,
+    };
+  }
+
+  return {
+    name: 'create-credentials',
+    status: 'pass',
+    detail:
+      `${BITBUCKET_EMAIL_VAR} is set, so \`host-pr create\` has the Basic-auth pair Bitbucket Cloud requires — the ` +
+      `ATLASSIAN ACCOUNT EMAIL paired with an API token — and the Worker terminator can open a PR on every row. ` +
+      `Presence only: the value is graded, never read into this report and never printed.`,
   };
 }
 
