@@ -9,6 +9,67 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.3.1] — 2026-08-11
+
+The night after the Bitbucket landing host shipped, this release closes its first
+field-reported gap, grades its one unstated precondition at the preflight, and settles —
+in an ADR with a structural guard — the import-cycle precedent that check created on its
+way in. Patch per ADR-0035: no export, config, or CLI *input* changes; the one additive
+*output* change (a fourth preflight check) gets its own heads-up below because an
+exhaustive `switch` in a consumer breaks on it.
+
+### Added
+
+- **`host-pr preflight` reports a fourth check on a Bitbucket host: `create-credentials`.**
+  It grades `host-pr create`'s own precondition — the account-email half of the
+  Basic-auth pair — by asking the create path's own helper (the predicate is "did it
+  throw?", and the advisory quotes the refusal verbatim), so the check and the verb it
+  predicts cannot drift apart. Advisory-never-fail: the landing verbs authenticate with
+  Bearer and keep working; what refuses without the email is `create`, on every Worker
+  terminator, after the work is done — which is exactly why it is worth knowing at
+  preflight. Absent on non-Bitbucket hosts. **Heads-up: the exported `HostCheckName`
+  union widens from three members to four — additive, but a consumer switching
+  exhaustively over it stops compiling.** Not yet proven: exercised against synthetic
+  environments only, never live Bitbucket — the adapter's write half still awaits its
+  pilot wave.
+- **The call-time-only cycle doctrine, settled and spec-guarded (ADR-0037).** An engine
+  module may import an adapter-owned canonical fact when the alternative is re-spelling
+  it (the parallel-rule drift class); the edge must be call-time-only in both
+  directions; a second cycle — not the first — is the named trigger for extracting a
+  shared leaf module. The one accepted cycle (`host-pr` ⇄ the Bitbucket adapter) now
+  carries a load-order drift-spec: both load orders, each in a genuinely fresh module
+  registry, asserting all four crossing runtime bindings. Falsified during development,
+  not assumed — a temporary top-level read across one edge failed only the
+  adapter-first order, the silent-in-production shape the spec exists to catch.
+
+### Fixed
+
+- **`credential-probe --all` discovers the Bitbucket credential** — the pilot's
+  field-reported gap: the discovery list now imports the adapter's own variable name
+  rather than not knowing it, so `--all` probes what the adapter actually resolves;
+  a call-site drift spec guards the coupling.
+- **The create-credentials advisory tells the truth about an empty email:** a
+  SET-but-empty `BITBUCKET_EMAIL` used to be told it "is not set" — right consequence
+  (the helper refuses empty exactly like absent), wrong fact. It now reads "is not set,
+  or is set to an empty string", the wording is pinned by a spec assertion, and a
+  maintenance comment binds the advisory's leading sentence to the helper's precondition
+  set so a future second precondition cannot make it state a wrong fact while quoting a
+  right one. Grading is unchanged on every path.
+
+### Docs (plugin half)
+
+- All four skill-doc enumerations of the host preflight now count **four** checks,
+  naming `create-credentials` with its Bitbucket-only, advisory-never-fail semantics —
+  the onboarding step, both setup-mechanics surfaces, and the close-mechanics reference.
+- The wave-close phase-4a self-repair detection surface caught up twice: widened by the
+  archive gates, the credential seam and three more modules, then by the disclosures
+  gate's own module (`spine-store.ts`) — closing the gap where a wave fixing that gate's
+  parser would have run its own archive gate on the pre-fix code, undetected. The
+  maintenance comment now records that the two fail-closed archive gates live in
+  different modules (correcting an inaccurate shared-module claim on the way).
+- ADR-0029's consumer count catches up with the shipped adapters; ADR-0037 records the
+  import-cycle precedent in full.
+
 ## [1.3.0] — 2026-08-10
 
 The third release of one day, and the fastest field-report-to-shipped-feature arc yet:
