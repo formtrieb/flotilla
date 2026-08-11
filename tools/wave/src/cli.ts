@@ -371,6 +371,7 @@ import {
   // than defined here on purpose: `store-preflight` reports the SAME comparison
   // as an advisory, and cli.ts already depends on cli-store (the reverse
   // direction would be a circular import). One comparison, two surfaces.
+  // Cycle-avoidance stays the default here; ADR-0037 is only a narrow engine-adapter exception, which this edge is not.
   compareEngineVersion,
   engineVersionExitCode,
 } from './cli-store';

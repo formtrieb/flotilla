@@ -593,6 +593,7 @@ const PLAN_TABLE_SEP = '|---|---|---|---|---|---|---|---|---|';
 // `DISCLOSURES_TABLE_SEP` — `ensureDisclosuresSection` composed on top of
 // `renderSpine`'s output must see the section as already present (a
 // byte-identical no-op), which is exactly what `spine create` does today.
+// Cycle-avoidance stays the default here; ADR-0037 names the doctrine without flipping this engine-internal instance.
 const DISCLOSURES_HEADING = '## Disclosures';
 const DISCLOSURES_TABLE_HEADER =
   '| Ref | Row | Iter | Source | Disposition | Text |';

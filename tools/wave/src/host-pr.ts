@@ -48,6 +48,15 @@
 // imported values are used inside method bodies / default parameters). Keep it
 // that way: a top-level evaluation across this edge, in either file, would
 // resolve to `undefined` under whichever load order arrives first.
+//
+// ADR-0037 settles this as the engine-wide rule (an adapter-owned canonical
+// fact may be imported when the alternative is re-spelling it, edge
+// call-time-only in both directions) and promotes the call-time-only
+// invariant from this comment to a structural guard: load-order-drift.spec.ts
+// exercises both load orders in isolated module registries and asserts the
+// crossing bindings. One call-time-only cycle is accepted and guarded; a
+// SECOND adapter-owned fact the engine must grade is the trigger to extract a
+// shared leaf module and dissolve both cycles into it.
 import { BITBUCKET_EMAIL_VAR, bitbucketCreateCreds } from './adapters/bitbucket/bitbucket-api';
 
 // ─── Host detection ──────────────────────────────────────────────────────────
