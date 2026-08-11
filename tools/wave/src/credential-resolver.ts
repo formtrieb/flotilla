@@ -1,11 +1,16 @@
 /**
  * credential-resolver.ts — the ONE engine-owned credential seam (ADR-0029).
  *
- * Every edge that needs a secret — the github store factory, the linear store
- * factory, and the `host-pr` create/preflight edge — asks this module, and this
- * module is the only place in the engine that knows where a secret can come
- * from. Before ADR-0029 each edge read its own ambient variable; those copies
- * are gone, because a per-edge copy is exactly how a precedence rule drifts.
+ * Every edge that needs a secret — the github and linear store factories, the
+ * Bitbucket landing-host factory, and the `host-pr` create/preflight edge —
+ * asks this module, and this module is the only place in the engine that
+ * knows where a secret can come from. Before ADR-0029 each edge read its own
+ * ambient variable; those copies are gone, because a per-edge copy is exactly
+ * how a precedence rule drifts. `credential-discovery-drift.spec.ts` is the
+ * authority for the current, complete set of production callers — it
+ * reconciles every {@link resolveCredential} call site against the discovery
+ * list by symbol identity, so this comment does not have to be kept current
+ * by hand as adapters are added.
  *
  * ## The contract, in one paragraph
  *
