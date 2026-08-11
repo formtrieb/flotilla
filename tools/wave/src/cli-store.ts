@@ -49,6 +49,7 @@
  * module would put a second owner between the verb and the preflight, which is
  * the drift ADR-0032 exists to end. The router verb is the usual thin case
  * router; the logic is here. See {@link compareEngineVersion}.
+ * Cycle-avoidance stays the default here; ADR-0037 is only a narrow engine-adapter exception, which this edge is not.
  *
  * ── The ROOT SURFACE of this module (issue #325) ─────────────────────────────
  * RECORDED DECISION, so the next reader does not have to re-derive it from the
