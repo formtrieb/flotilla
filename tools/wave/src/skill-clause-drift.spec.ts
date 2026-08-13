@@ -380,6 +380,18 @@ const COORDINATOR_AS_ADDRESS: ReadonlyArray<RegExp> = [
   /\b(?:ask|asks|asking|tell|tells|telling)\s+the\s+coordinator\b/i,
   /\bthe\s+coordinator\s+(?:decides|picks|chooses|wants|knows|can\s+act)\b/i,
   /\bthe\s+coordinator\s+must\s+(?:decide|see|sequence|pick|choose)\b/i,
+  // Notification verbs — the shape a STOP reaches for. A session does not get
+  // pinged; only a person does, so "ping the Coordinator" is an address even
+  // though no decision verb follows it. The `\b` before `ping` is load-bearing:
+  // without it this fires on "Skipping the Coordinator's own observations",
+  // which is correct session usage and ships in this very corpus (negative
+  // control below).
+  /\b(?:ping|pings|pinging|notify|notifies|notifying|alert|alerts|alerting)\s+the\s+coordinator\b/i,
+  // The attributive noun form, which no verb pattern above can reach: a
+  // `--question "<the Coordinator decision needed>"` placeholder is text that
+  // lands in a human-read tracker field, so it addresses the reader of that
+  // field — the Operator.
+  /\bthe\s+coordinator(?:'s)?\s+decision\b/i,
 ];
 
 function coordinatorAddresses(md: string): string[] {
@@ -458,11 +470,30 @@ describe('skill-clause-drift — the rollout corrections (the human is not "the 
     expect(
       coordinatorAddresses('mark them clearly so the coordinator knows they need a human to act'),
     ).toHaveLength(1);
+    // The two shapes the wave-start rollout removed, which the original three
+    // patterns could not reach: a notification verb with no decision verb
+    // behind it, and the attributive noun inside a flag-question placeholder.
+    expect(
+      coordinatorAddresses('flag `needs-attention` on the tracker, then ping the Coordinator:'),
+    ).toHaveLength(1);
+    expect(
+      coordinatorAddresses('  --question "<the Coordinator decision needed>" \\'),
+    ).toHaveLength(1);
     // …and the session usages the corpus legitimately carries do NOT fire.
     expect(coordinatorAddresses('the Coordinator implements it directly in a foreground row')).toEqual([]);
     expect(coordinatorAddresses('the Coordinator must fill anchorSha into every dispatch brief')).toEqual([]);
     expect(coordinatorAddresses('disclose it so the Coordinator can clean up after landing')).toEqual([]);
     expect(coordinatorAddresses('if a Reviewer flags the diff base and the Coordinator confirms it')).toEqual([]);
+    // The near-miss that motivated the `\b` in the notification pattern: this
+    // line ships in wave-start's Common Mistakes and contains the literal
+    // substring "ping the Coordinator" inside "Skipping". A pattern without the
+    // word boundary turns a correct session usage into a false blocker.
+    expect(
+      coordinatorAddresses("Skipping the Coordinator's own observations, or mis-attributing `--source`."),
+    ).toEqual([]);
+    // The attributive-noun pattern is scoped to `decision` on purpose — the
+    // corpus legitimately describes what the session decided.
+    expect(coordinatorAddresses('the Coordinator decided the dispatch order from the spine')).toEqual([]);
 
     // (b) the report prescription, with the two tokens this rollout removed put
     // back exactly where they stood. Same extractor, same region slice.

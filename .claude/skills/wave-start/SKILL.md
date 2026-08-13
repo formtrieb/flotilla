@@ -7,7 +7,7 @@ description: Use when dispatching a Status:draft or Status:ready WAVE.md spine �
 
 Run the in-flight dispatch loop for one `Status: ready` spine: flip it to `in-flight`, fan out the Workers in isolated worktrees, dispatch a Reviewer for **every** row, route each Verdict through the tested state-machine, and bring every row to `in-review`. **This skill never merges and never closes** — it ends with each issue `in-review` (fine state `pr-created`, coarse rung `in-review`) and a PR open. Landing is `wave-close` (later P7.4 / M2).
 
-Your job is the **judgment**: deciding the dispatch order, reacting to each routed outcome (transition / re-dispatch / STOP), and choosing what to do when the loop STOPs (flag `needs-attention`, ping the Coordinator). The mechanical glue — composing the Workflow script, the exact routing-verb invocations, the WAL ordering — lives in [reference/workflow-driver.md](reference/workflow-driver.md) and [reference/start-mechanics.md](reference/start-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
+Your job is the **judgment**: deciding the dispatch order, reacting to each routed outcome (transition / re-dispatch / STOP), and choosing what to do when the loop STOPs (flag `needs-attention`, ping the Operator). The mechanical glue — composing the Workflow script, the exact routing-verb invocations, the WAL ordering — lives in [reference/workflow-driver.md](reference/workflow-driver.md) and [reference/start-mechanics.md](reference/start-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
 
 Load **wave-shared** by name first — `/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin (wave-shared's own [plugin-namespaced by-name loads](../wave-shared/SKILL.md) note has the finding) — it owns the canonical agent-boundary JSON schemas (`WORKER_REPORT_SCHEMA`, `REVIEWER_VERDICT_SCHEMA`) you paste into the Workflow driver, plus the auth-preflight / deterministic-routing / atomic-spine conventions this skill obeys.
 
@@ -172,12 +172,12 @@ For each tuple, route through the tested verbs — **never by eye** (full invoca
 
 ### 8. STOP → flag needs-attention
 
-A `stop` outcome (`public-api-approval-required`, `reviewer-questions-blocking`, `re-dispatch-cap-exhausted`, `same-file-conflict`, `worker-failed`, `worker-stalled`) halts that row. Set the orthogonal `needs-attention` flag on the tracker so a concurrent wave / human sees it, then ping the Coordinator:
+A `stop` outcome (`public-api-approval-required`, `reviewer-questions-blocking`, `re-dispatch-cap-exhausted`, `same-file-conflict`, `worker-failed`, `worker-stalled`) halts that row. Set the orthogonal `needs-attention` flag on the tracker so a concurrent wave / human sees it, then ping the Operator:
 
 ```bash
 {{wave-cli}} issue-store flag <id> \
   --kind <recoverable-stop|terminal-failure> \
-  --question "<the Coordinator decision needed>" \
+  --question "<the decision needed from the Operator>" \
   --option "<option A>" --option "<option B>"
 ```
 
