@@ -542,9 +542,20 @@ WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
 #   outcome.type=='transition' && nextState 'report-in' → proceed to 7b
 #   else apply outcome directly (transition→re-dispatched: step 7d; stop: step 8)
 
-# 7b. Reviewer-phase routing (state = reviewing)
-{{wave-cli}} route-verdict --verdict "$VERDICT" --iteration "$ITER" --risk "$RISKCLASS" --state reviewing
+# 7b. Reviewer-phase routing (state is VERDICT-keyed, not iteration-keyed —
+#     the legal source state is not uniform across verdicts. `re-dispatched`
+#     is the ONLY state the 2nd changes-requested's cap-exhaustion STOP is
+#     reachable from; every other verdict/iteration cell routes from
+#     `reviewing` instead — including `approve`, which is a noop FROM
+#     `re-dispatched` (transition() has no case for it there).
+RSTATE=$([ "$VERDICT" = "changes-requested" ] && [ "$ITER" -gt 1 ] && echo re-dispatched || echo reviewing)
+{{wave-cli}} route-verdict --verdict "$VERDICT" --iteration "$ITER" --risk "$RISKCLASS" --state "$RSTATE"
 #   → { "event": "...", "outcome": { "type": "...", ... } }
+#   A noop here is NEVER a legitimate nothing-to-do: with --state picked by
+#   RSTATE above, every verdict/iteration cell this row can reach maps to a
+#   transition or a stop (Verified routing outputs below). A noop means THIS
+#   call passed a --state the resolved event is not legal from — a CALLER BUG
+#   to investigate, never something to log-and-continue past.
 
 # 7c. Apply (WAL — spine first, then rung)
 # transition → approved:  render the verdict, then open the PR through the
