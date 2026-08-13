@@ -1,6 +1,6 @@
 ---
 name: report
-description: Use when a consumer's agent has a fully-analyzed finding ABOUT FLOTILLA ITSELF — a bug, a wiring gap, a dead pointer, doc drift — discovered while running the installed plugin/engine in a consumer repo, and it is ready to file upstream at flotilla's own public repo in the house format. Triggers on "report this to flotilla", "file this upstream", "this looks like a flotilla bug, not ours", "report this finding to the maintainers", "file an issue against flotilla".
+description: Use when an agent has a fully-analyzed finding ABOUT FLOTILLA ITSELF — a bug, a step that is wired to nothing, a pointer to something that no longer exists, documentation that no longer matches the code — found while running flotilla in your own repo, and it is ready to file upstream at flotilla's own public repo in the format its maintainers expect. Triggers on "report this to flotilla", "file this upstream", "this looks like a flotilla bug, not ours", "report this finding to the maintainers", "file an issue against flotilla".
 ---
 
 # report

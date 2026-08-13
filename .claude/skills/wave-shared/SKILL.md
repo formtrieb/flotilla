@@ -1,6 +1,6 @@
 ---
 name: wave-shared
-description: Library skill the wave execution skills (wave-start, wave-reviewer, wave-close) load for the canonical agent-boundary JSON schemas and the shared auth-preflight, deterministic-routing, and atomic-spine-write conventions. Invoked by name by its siblings — never model-invoked.
+description: Shared reference that the wave execution skills — wave-start, wave-reviewer, wave-close — load for the exact result shapes a dispatched agent has to return, and for the working rules they all follow: checking access to the tracker and the code host up front, handling each review outcome the same way every time, and writing to a wave's plan file without ever leaving it half-written. Loaded by name by those skills; never picked on its own.
 disable-model-invocation: true
 ---
 
