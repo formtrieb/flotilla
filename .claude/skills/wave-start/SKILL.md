@@ -7,7 +7,7 @@ description: Use when dispatching a Status:draft or Status:ready WAVE.md spine �
 
 Run the in-flight dispatch loop for one `Status: ready` spine: flip it to `in-flight`, fan out the Workers in isolated worktrees, dispatch a Reviewer for **every** row, route each Verdict through the tested state-machine, and bring every row to `in-review`. **This skill never merges and never closes** — it ends with each issue `in-review` (fine state `pr-created`, coarse rung `in-review`) and a PR open. Landing is `wave-close` (later P7.4 / M2).
 
-Your job is the **judgment**: deciding the dispatch order, reacting to each routed outcome (transition / re-dispatch / STOP), and choosing what to do when the loop STOPs (flag `needs-attention`, ping the Coordinator). The mechanical glue — composing the Workflow script, the exact routing-verb invocations, the WAL ordering — lives in [reference/workflow-driver.md](reference/workflow-driver.md) and [reference/start-mechanics.md](reference/start-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
+Your job is the **judgment**: deciding the dispatch order, reacting to each routed outcome (transition / re-dispatch / STOP), and choosing what to do when the loop STOPs (flag `needs-attention`, ping the Operator). The mechanical glue — composing the Workflow script, the exact routing-verb invocations, the WAL ordering — lives in [reference/workflow-driver.md](reference/workflow-driver.md) and [reference/start-mechanics.md](reference/start-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
 
 Load **wave-shared** by name first — `/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin (wave-shared's own [plugin-namespaced by-name loads](../wave-shared/SKILL.md) note has the finding) — it owns the canonical agent-boundary JSON schemas (`WORKER_REPORT_SCHEMA`, `REVIEWER_VERDICT_SCHEMA`) you paste into the Workflow driver, plus the auth-preflight / deterministic-routing / atomic-spine conventions this skill obeys.
 
@@ -172,12 +172,12 @@ For each tuple, route through the tested verbs — **never by eye** (full invoca
 
 ### 8. STOP → flag needs-attention
 
-A `stop` outcome (`public-api-approval-required`, `reviewer-questions-blocking`, `re-dispatch-cap-exhausted`, `same-file-conflict`, `worker-failed`, `worker-stalled`) halts that row. Set the orthogonal `needs-attention` flag on the tracker so a concurrent wave / human sees it, then ping the Coordinator:
+A `stop` outcome (`public-api-approval-required`, `reviewer-questions-blocking`, `re-dispatch-cap-exhausted`, `same-file-conflict`, `worker-failed`, `worker-stalled`) halts that row. Set the orthogonal `needs-attention` flag on the tracker so a concurrent wave / human sees it, then ping the Operator:
 
 ```bash
 {{wave-cli}} issue-store flag <id> \
   --kind <recoverable-stop|terminal-failure> \
-  --question "<the Coordinator decision needed>" \
+  --question "<the decision needed from the Operator>" \
   --option "<option A>" --option "<option B>"
 ```
 
@@ -251,3 +251,7 @@ This step is **report-only**. When every dispatched, non-parked row is at `pr-cr
 - **Letting a Scribe failure STOP the row.** A sidecar-write failure is logged loud and recovered at routing (step 7.0) — it is not a `worker-failed` STOP. The Worker's report is still in-band; only the durable copy needs re-writing, through the verb.
 - **Deferring disclosure capture to memory, or to `wave-close` (ADR-0027).** A Convention 9/10/11 gap read off `judgmentCalls`/`reviewerFocusItems` at routing (step 7, sub-step 0a) is captured **then**, through `spine add-disclosure` — not remembered for later, not left for `wave-close` to somehow discover. `wave-close`'s job is enforcing that every captured disclosure has a disposition, not doing the capturing.
 - **Skipping the Coordinator's own observations, or mis-attributing `--source`.** The capture duty is source-neutral — a gap the Coordinator itself notices while routing (neither agent named it) is still captured, `--source coordinator`; do not silently fold it into a `worker`/`reviewer` entry it did not come from, and do not skip it because no agent flagged it first.
+
+## Operator register (Convention 16)
+
+**Everything you print for the person at this session is operator-directed output, and it holds one register.** Plain language, direct address ("du"/"you"), self-explaining. Translate every internal reference — a decision-record number, a convention number, a finding id, a wave slug, a retro path — into the one-line consequence it carries for them, instead of naming it. Introduce a domain term with a half-sentence the first time it appears in a session, then use it freely. End the run with an operator block: what happened → where it lives → what you do next. Operator-directed text follows the operator's own language; the artifacts you write — issues, PRs, decision records, spine entries — stay English. **Installed form is strict** — no internal token reaches the operator. **Source form**, flotilla's own repo, may append one compact reference pointer after the plain text. Full clause text, the operator mini-glossary, and the mistakes it closes: [wave-shared/reference/convention-16-operator-register.md](../wave-shared/reference/convention-16-operator-register.md), read as a file beside this skill's own directory — no skill invocation, no namespace to guess.

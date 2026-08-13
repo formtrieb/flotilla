@@ -209,7 +209,7 @@ const MIN_BODY_CITATIONS = 130; // 146 ADR/retro/finding citations in those bodi
  * number AND its one-liner (replaced together — see the pairing test below), and
  * this line.
  */
-const HIGHEST_ALLOCATED_CONVENTION = 15;
+const HIGHEST_ALLOCATED_CONVENTION = 16;
 
 /** The config field every resolution block must name (ADR-0032). */
 const BINDING_FIELD = /\bengine\.cli\b/;
