@@ -84,11 +84,31 @@ import type { LinearApi } from './adapters/linear/linear-api';
 import type { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { DEFAULT_LINEAR_STATES, type LinearStateMap } from './adapters/linear/linear-issues-store';
 import { RISK_VALUES, WORKER_VALUES } from './header-parser';
-import { flag, printJson } from './cli-utils';
+import { flag, printJson, describeConfigLoadError } from './cli-utils';
+
+/**
+ * Read `--config <path>` (default `wave.config.json`, resolved against cwd)
+ * through `loadWaveConfig`, turning a missing-file failure into a teaching
+ * message (issue #505) rather than letting Node's bare ENOENT reach the
+ * caller — see {@link describeConfigLoadError}. Every OTHER `loadWaveConfig`
+ * failure (malformed JSON, an unknown store kind, …) already names its own
+ * fix and rethrows unchanged.
+ */
+function loadConfigOrTeach(args: string[]): WaveConfig {
+  const explicitConfigPath = flag(args, '--config');
+  const configPath = explicitConfigPath ?? 'wave.config.json';
+  try {
+    return loadWaveConfig(configPath);
+  } catch (err) {
+    throw new Error(
+      describeConfigLoadError(err, configPath, explicitConfigPath !== undefined),
+    );
+  }
+}
 
 export async function resolveStore(args: string[], injected?: IssueStore): Promise<IssueStore> {
   if (injected) return injected;
-  const config = loadWaveConfig(flag(args, '--config') ?? 'wave.config.json');
+  const config = loadConfigOrTeach(args);
   if (config.store.kind === 'github') {
     const githubApi = await createGitHubApiFromEnv();
     return buildStore(config, { githubApi });
@@ -625,7 +645,7 @@ function preflightUsage(message: string): number {
   process.stderr.write(
     [
       `error: ${message}`,
-      'usage: cli-store preflight [--config <path>] [--expect <plugin-version>]',
+      'usage: cli-store preflight [--config <path>] [--expect <plugin-version>]   # prints the StorePreflightReport as JSON',
       '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
       '  --expect <plugin-version> additionally reports the plugin/engine lockstep',
       '  comparison as an ADVISORY check (ADR-0032) — it never fails the preflight.',
@@ -691,7 +711,7 @@ export async function runStorePreflight(args: string[], injected?: IssueStore): 
   }
   let config: WaveConfig;
   try {
-    config = loadWaveConfig(flag(args, '--config') ?? 'wave.config.json');
+    config = loadConfigOrTeach(args);
   } catch (err) {
     // config unreadable/invalid → a usage-class problem (couldn't even run the probe).
     process.stderr.write(`error: ${(err as Error).message}\n`);

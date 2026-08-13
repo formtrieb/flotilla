@@ -346,6 +346,8 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
   './cli-utils': {
     flag: "Internal CLI argv-flag lookup (`--name value` extraction) for this engine's own verb parsers — not a consumer-facing API; a root-only consumer parses its own argv.",
     printJson: "Internal CLI stdout-JSON helper for this engine's own verb output — not a consumer-facing API.",
+    describeConfigLoadError:
+      "Internal CLI wave.config.json-load-error teaching helper (issue #505) for this engine's own verb runners — not a consumer-facing API; a root-only consumer wraps its own loadWaveConfig call.",
   },
 };
 

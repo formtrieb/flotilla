@@ -155,61 +155,128 @@ export interface HostPrDeps {
 
 const MERGE_METHODS: MergeMethod[] = ['squash', 'merge', 'rebase'];
 
-function usage(message: string): number {
+/**
+ * The FULL multi-verb usage dump — every verb's usage line, its prose, and the
+ * shared credential-resolution + flag-default footer. Reserved for when the
+ * caller hasn't named a verb we recognize yet (no verb at all, or an unknown
+ * one): with no verb to narrow by, the whole contract is the only thing that
+ * teaches. See {@link VERB_CONTRACT} for the per-verb alternative (issue #505)
+ * — the `host-pr arm --pr` misfire this replaces answered a ONE-FLAG mistake
+ * with this entire ~60-line dump; correct lesson, oversized price.
+ */
+function fullUsageLines(): string[] {
+  return [
+    // NB: deliberately NO --config. host-pr talks to the code HOST, not the
+    // tracker, so there is no store to build and no wave.config.json to read.
+    `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
+    `         create: --branch <branch> --title <title> --body <body> [--base <branch>] [--allow-close-phrase-loss]`,
+    `                 (a WRITE: the PR body carries the store-kind close phrase, and a reuse rewrites both fields)`,
+    `         arm: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
+    `         merge: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
+    `         status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
+    `         preflight: (no --branch — a repo-level probe)`,
+    '',
+    '  create    Open the PR for --branch (find-before-create): an existing OPEN PR on the branch is reused',
+    '            (never duplicated) and a missing one is created. Requires --title and --body.',
+    '            NOT a read-only probe. "Idempotent" describes CREATION only: reuse RE-WRITES the live PR\'s',
+    '            title AND body to the --title/--body you pass (last-writer-wins), so running this twice with',
+    '            different arguments changes the PR twice. To ask whether a branch already has a PR without',
+    '            touching it, use the read-only `status` verb instead.',
+    '            A reuse that would drop the close phrase the live body carries — replacing it with a body',
+    '            that has none — is REFUSED (exit 1, outcome reuse-refused, with a reason) rather than',
+    '            silently merging a PR that closes nothing; --allow-close-phrase-loss overrides it.',
+    '            Output: a single JSON object on stdout.',
+    '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
+    '            already clean → direct merge. Idempotent. With --delete-branch, deletes the head branch',
+    '            on the decision paths that merge IMMEDIATELY (clean, or a refused-arm controlled degrade)',
+    '            — best-effort, reported in `branchDeletion`, never an arm failure. When the decision instead',
+    '            ARMS (auto-merge enabled, the host merges later out of process), nothing is deleted at this',
+    '            call — the deferral is recorded explicitly in the armed outcome\'s `reason`.',
+    '            Output: a single JSON object on stdout.',
+    '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
+    '            With --delete-branch, deletes the PR head branch after a successful merge (branch hygiene,',
+    '            consumer KW-F6) — best-effort: a failed delete is reported in `branchDeletion`, never a merge',
+    '            failure. `arm` accepts the same flag with its own (partially deferred) semantics — see above.',
+    '            Output: a single JSON object on stdout.',
+    '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only.',
+    '            Output: a single JSON object on stdout.',
+    '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
+    '            On bitbucket it also reports create-credentials — an ADVISORY (it never changes the exit code)',
+    '            stating whether BITBUCKET_EMAIL is set, because `host-pr create` refuses without it while the',
+    '            landing verbs do not, and a wave calls create on every row.',
+    '            Store-blind (no --config, no --branch) — identical on every store kind (ADR-0023 amendment).',
+    '            Output: a single JSON object on stdout.',
+    '',
+    '  --remote defaults to `git remote get-url origin`.',
+    `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
+    '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
+    '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
+    '  Every verb resolves its host credential through the engine credential seam (ADR-0029):',
+    '    <VAR>_CMD (a lookup command, run via the shell, 60s budget) wins over the ambient <VAR>.',
+    '    A configured command that fails is a loud typed error naming the command — never its output,',
+    '    never a fallback to the ambient variable. The secret itself is never printed.',
+    '    github    → GITHUB_TOKEN / GITHUB_TOKEN_CMD.',
+    '    bitbucket → BITBUCKET_TOKEN / BITBUCKET_TOKEN_CMD, plus BITBUCKET_EMAIL (the Atlassian account',
+    '                email, not a secret) as the Basic-auth username. Without BITBUCKET_EMAIL the landing',
+    '                verbs fall back to Bearer auth (a repository/workspace access token) and `create`,',
+    '                which can only speak Basic, refuses loudly. App passwords no longer work at all.',
+  ];
+}
+
+/**
+ * Every verb's OWN contract section (issue #505) — printed INSTEAD OF
+ * {@link fullUsageLines} once the verb is known, so a wrong or missing flag on
+ * (say) `arm` teaches only `arm`'s own shape. Each ends with an explicit
+ * output-format line: every verb's stdout is a single JSON object (the module
+ * docblock's own guarantee), stated here per verb so a caller never has to go
+ * looking for that guarantee.
+ */
+const VERB_CONTRACT: Record<Verb, readonly string[]> = {
+  create: [
+    'usage: host-pr create --branch <branch> --title <title> --body <body> [--base <branch>] [--remote <url>] [--allow-close-phrase-loss]',
+    '  Opens the PR for --branch (find-before-create): an existing OPEN PR is REUSED — and its title AND body',
+    '  are RE-WRITTEN to the values you pass (last-writer-wins) — so this is NOT a read-only probe; use `status`',
+    '  for that. A reuse that would drop the live body\'s close phrase is REFUSED (exit 1, reuse-refused) unless',
+    '  --allow-close-phrase-loss is passed.',
+    'output: a single JSON object on stdout',
+  ],
+  arm: [
+    `usage: host-pr arm --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
+    '  Lands the PR by the ADR-0023 arm intent: pending checks → enable auto-merge; already clean → direct',
+    '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
+    'output: a single JSON object on stdout',
+  ],
+  merge: [
+    `usage: host-pr merge --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
+    '  Merges the PR now, no arm intent (the caller has already decided). Idempotent. --delete-branch deletes',
+    '  the PR head branch after a successful merge (best-effort).',
+    'output: a single JSON object on stdout',
+  ],
+  status: [
+    'usage: host-pr status --branch <branch> [--remote <url>]',
+    '  Reports the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only — never writes.',
+    'output: a single JSON object on stdout',
+  ],
+  preflight: [
+    'usage: host-pr preflight [--remote <url>]   # no --branch — a repo-level probe',
+    '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks (plus',
+    '  create-credentials on bitbucket). Store-blind — identical on every store kind (ADR-0023 amendment).',
+    'output: a single JSON object on stdout',
+  ],
+};
+
+/**
+ * Render a usage error. With a KNOWN `verb`, prints ONLY that verb's own
+ * contract section ({@link VERB_CONTRACT}) — never the full multi-verb dump
+ * (issue #505: the `arm --pr` flag-typo misfire that answered a one-flag
+ * mistake with the entire ~60-line usage). Without a known verb (none given,
+ * or an unrecognized one) {@link fullUsageLines} is what teaches — the caller
+ * hasn't told us which contract they meant yet.
+ */
+function usage(message: string, verb?: Verb): number {
+  const contract = verb !== undefined ? VERB_CONTRACT[verb] : undefined;
   process.stderr.write(
-    [
-      `error: ${message}`,
-      // NB: deliberately NO --config. host-pr talks to the code HOST, not the
-      // tracker, so there is no store to build and no wave.config.json to read.
-      `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
-      `         create: --branch <branch> --title <title> --body <body> [--base <branch>] [--allow-close-phrase-loss]`,
-      `                 (a WRITE: the PR body carries the store-kind close phrase, and a reuse rewrites both fields)`,
-      `         arm: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
-      `         merge: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
-      `         status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
-      `         preflight: (no --branch — a repo-level probe)`,
-      '',
-      '  create    Open the PR for --branch (find-before-create): an existing OPEN PR on the branch is reused',
-      '            (never duplicated) and a missing one is created. Requires --title and --body.',
-      '            NOT a read-only probe. "Idempotent" describes CREATION only: reuse RE-WRITES the live PR\'s',
-      '            title AND body to the --title/--body you pass (last-writer-wins), so running this twice with',
-      '            different arguments changes the PR twice. To ask whether a branch already has a PR without',
-      '            touching it, use the read-only `status` verb instead.',
-      '            A reuse that would drop the close phrase the live body carries — replacing it with a body',
-      '            that has none — is REFUSED (exit 1, outcome reuse-refused, with a reason) rather than',
-      '            silently merging a PR that closes nothing; --allow-close-phrase-loss overrides it.',
-      '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
-      '            already clean → direct merge. Idempotent. With --delete-branch, deletes the head branch',
-      '            on the decision paths that merge IMMEDIATELY (clean, or a refused-arm controlled degrade)',
-      '            — best-effort, reported in `branchDeletion`, never an arm failure. When the decision instead',
-      '            ARMS (auto-merge enabled, the host merges later out of process), nothing is deleted at this',
-      '            call — the deferral is recorded explicitly in the armed outcome\'s `reason`.',
-      '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
-      '            With --delete-branch, deletes the PR head branch after a successful merge (branch hygiene,',
-      '            consumer KW-F6) — best-effort: a failed delete is reported in `branchDeletion`, never a merge',
-      '            failure. `arm` accepts the same flag with its own (partially deferred) semantics — see above.',
-      '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url).',
-      '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
-      '            On bitbucket it also reports create-credentials — an ADVISORY (it never changes the exit code)',
-      '            stating whether BITBUCKET_EMAIL is set, because `host-pr create` refuses without it while the',
-      '            landing verbs do not, and a wave calls create on every row.',
-      '            Store-blind (no --config, no --branch) — identical on every store kind (ADR-0023 amendment).',
-      '',
-      '  --remote defaults to `git remote get-url origin`.',
-      `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
-      '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
-      '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
-      '  Every verb resolves its host credential through the engine credential seam (ADR-0029):',
-      '    <VAR>_CMD (a lookup command, run via the shell, 60s budget) wins over the ambient <VAR>.',
-      '    A configured command that fails is a loud typed error naming the command — never its output,',
-      '    never a fallback to the ambient variable. The secret itself is never printed.',
-      '    github    → GITHUB_TOKEN / GITHUB_TOKEN_CMD.',
-      '    bitbucket → BITBUCKET_TOKEN / BITBUCKET_TOKEN_CMD, plus BITBUCKET_EMAIL (the Atlassian account',
-      '                email, not a secret) as the Basic-auth username. Without BITBUCKET_EMAIL the landing',
-      '                verbs fall back to Bearer auth (a repository/workspace access token) and `create`,',
-      '                which can only speak Basic, refuses loudly. App passwords no longer work at all.',
-      '',
-    ].join('\n'),
+    [`error: ${message}`, ...(contract ?? fullUsageLines()), ''].join('\n'),
   );
   return 2;
 }
@@ -248,7 +315,7 @@ export async function runHostPr(
   // checks against the DEFAULT branch). Every other verb needs one.
   const branch = flag(args, '--branch');
   if (verb !== 'preflight' && (branch === undefined || branch.length === 0)) {
-    return usage('--branch <branch> is required');
+    return usage('--branch <branch> is required', verb);
   }
 
   // `--allow-close-phrase-loss` is create's deliberate-overwrite override: it
@@ -260,6 +327,7 @@ export async function runHostPr(
   if (allowClosePhraseLoss && verb !== 'create') {
     return usage(
       `--allow-close-phrase-loss is only supported by 'create' (it governs the reuse rewrite); '${verb}' never rewrites a PR body`,
+      verb,
     );
   }
 
@@ -272,13 +340,16 @@ export async function runHostPr(
   if (verb === 'create') {
     title = flag(args, '--title');
     if (title === undefined || title.length === 0) {
-      return usage('--title <title> is required for create');
+      return usage('--title <title> is required for create', verb);
     }
     body = flag(args, '--body');
     if (body === undefined || body.length === 0) {
       // The body carries the store-kind close phrase (Convention 4); an empty
       // one would open a PR that closes nothing. Refuse, do not default.
-      return usage('--body <body> is required for create (it carries the store-kind close phrase)');
+      return usage(
+        '--body <body> is required for create (it carries the store-kind close phrase)',
+        verb,
+      );
     }
     base = flag(args, '--base') ?? 'main';
   }
@@ -289,7 +360,10 @@ export async function runHostPr(
     if (rawMethod !== undefined && !MERGE_METHODS.includes(rawMethod as MergeMethod)) {
       // Never silently downgrade to the default: a caller who asked for a merge
       // method flotilla does not know must be told, not quietly squash-merged.
-      return usage(`invalid --method "${rawMethod}" — expected one of: ${MERGE_METHODS.join(', ')}`);
+      return usage(
+        `invalid --method "${rawMethod}" — expected one of: ${MERGE_METHODS.join(', ')}`,
+        verb,
+      );
     }
     method = (rawMethod as MergeMethod) ?? DEFAULT_MERGE_METHOD;
   }
@@ -307,6 +381,7 @@ export async function runHostPr(
   if (deleteBranch && verb !== 'merge' && verb !== 'arm') {
     return usage(
       `--delete-branch is only supported by 'arm' and 'merge' (branch-hygiene steps); '${verb}' does not delete branches`,
+      verb,
     );
   }
 
@@ -314,7 +389,10 @@ export async function runHostPr(
   try {
     remoteUrl = flag(args, '--remote') ?? gitRemoteUrl();
   } catch (err) {
-    return usage(`could not read the git remote (pass --remote <url>): ${(err as Error).message}`);
+    return usage(
+      `could not read the git remote (pass --remote <url>): ${(err as Error).message}`,
+      verb,
+    );
   }
 
   // ── Route by host. github + bitbucket ship adapters; others fail loud+typed. ──

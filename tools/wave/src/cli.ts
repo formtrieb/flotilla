@@ -466,23 +466,28 @@ function printUsage(): void {
   process.stderr.write(
     [
       'usage:',
-      '  flotilla-engine <issue-path> [<issue-path> ...]',
-      '  flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]',
-      '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
-      '  flotilla-engine files-drift <issue-path> <sha-range>',
-      '  flotilla-engine merge-order <wave-md-path>',
-      '  flotilla-engine closed-by <closed-by-line>',
-      '  flotilla-engine detect-host <remote-url>',
-      '  flotilla-engine worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]',
+      // Every line below carries an inline OUTPUT-FORMAT note (issue #505 —
+      // the `dor`-prints-text surprise class: five sibling verbs print JSON,
+      // and nothing said which of the others didn't) — text/JSON/nothing, so a
+      // caller knows how to consume a verb's stdout without probing it first.
+      '  flotilla-engine <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL per issue), not JSON',
+      '  flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL + gate lines), not JSON',
+      '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints text, same as the file form',
+      '  flotilla-engine files-drift <issue-path> <sha-range>   # prints text, with a JSON block embedded at the end',
+      '  flotilla-engine merge-order <wave-md-path>   # prints JSON',
+      '  flotilla-engine closed-by <closed-by-line>   # prints JSON',
+      '  flotilla-engine detect-host <remote-url>   # prints JSON',
+      '  flotilla-engine worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]   # prints JSON',
       '    --detached   also sweep REGISTERED detached-HEAD scratch checkouts under the worktrees root (the E2BIG population); --dry-run previews the same plan',
-      '  flotilla-engine conflict-map <issue-path> [<issue-path> ...]',
-      '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore',
-      '  flotilla-engine cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
-      '  flotilla-engine issue-store <op> [...args] [--config <path>]',
+      '  flotilla-engine conflict-map <issue-path> [<issue-path> ...]   # prints JSON',
+      '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints JSON',
+      '  flotilla-engine cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]   # prints JSON',
+      '  flotilla-engine host-pr <create|arm|merge|status|preflight> --branch <b> [--remote <url>] [--method <m>]   # prints JSON on every verb (see `host-pr <verb>`\'s own usage error for that verb\'s contract)',
+      '  flotilla-engine issue-store <op> [...args] [--config <path>]   # per-op output — most read ops print JSON, create/publishDocument print the plain id as text, several mutation ops print nothing on success (see `issue-store <op>`\'s own usage error for that op\'s contract)',
       // This ONE line must name every op spine-cli's own dispatch table reports
       // — cli.spec.ts's FOR-11 guard reads the first `flotilla-engine spine `
       // line and asserts each real op appears in it. Detail lines may follow.
-      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures|human-gated|check-awaiting-human> <spine-path> [...args]',
+      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures|human-gated|check-awaiting-human> <spine-path> [...args]   # per-op output — mostly JSON on reads; several write ops print nothing or a bare id/ref on success',
       '    spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>   # ADR-0027: capture at verdict-routing',
       '    spine add-disclosure <spine-path> --wave --source <worker|reviewer|coordinator> --text <t>   # ADR-0038: wave-scoped capture — no row, no iteration; the window runs to the archive',
       '    spine set-disposition <spine-path> <disclosure-ref> <resolved-in-slice|scope-extension|filed:ID|dropped:REASON>',
@@ -493,19 +498,19 @@ function printUsage(): void {
       // op list; these two lines add the per-op detail an operator needs.
       '    spine human-gated <spine-path> [--workers <a,b>]   # ADR-0012: list the wave\'s human lane (JSON); empty is a legitimate answer, never a gate',
       '    spine check-awaiting-human <spine-path> [--workers <a,b>]   # fail-closed archive gate: exit != 0 iff a human-gated row still holds a live claim',
-      '  flotilla-engine config validate <path>',
-      '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
-      '  flotilla-engine store-preflight [--config <path>]',
-      '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret',
-      '  flotilla-engine route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>',
-      '  flotilla-engine route-outcome --outcome <o> --state <s>',
-      '  flotilla-engine validate-report <file>',
-      '  flotilla-engine validate-verdict <file>',
-      '  flotilla-engine write-report <json-file> --dir <reportsDir> --id <id> --iter <n>',
-      '  flotilla-engine write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>',
-      '  flotilla-engine verdict-acked <verdictsDir> <id>',
-      '  flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>',
-      '  flotilla-engine version [--expect <plugin-version>]   # ADR-0032: the engine version, and the lockstep comparison (alias: --version)',
+      '  flotilla-engine config validate <path>   # prints text (a one-line ok/error message), not JSON',
+      '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]   # prints JSON',
+      '  flotilla-engine store-preflight [--config <path>]   # prints JSON',
+      '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
+      '  flotilla-engine route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>   # prints JSON',
+      '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
+      '  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON',
+      '  flotilla-engine validate-verdict <file>   # prints text ("valid"), not JSON',
+      '  flotilla-engine write-report <json-file> --dir <reportsDir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
+      '  flotilla-engine write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
+      '  flotilla-engine verdict-acked <verdictsDir> <id>   # prints JSON',
+      '  flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>   # prints text (the rendered markdown), not JSON',
+      '  flotilla-engine version [--expect <plugin-version>]   # ADR-0032: the engine version, and the lockstep comparison (alias: --version); prints JSON',
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
       '',
@@ -710,7 +715,7 @@ function runFilesDrift(args: string[]): number {
     process.stderr.write(
       [
         'error: files-drift requires two arguments',
-        'usage: flotilla-engine files-drift <issue-path> <sha-range>',
+        'usage: flotilla-engine files-drift <issue-path> <sha-range>   # prints text, with a JSON block embedded at the end',
         '',
       ].join('\n'),
     );
@@ -800,7 +805,7 @@ function runMergeOrder(
     process.stderr.write(
       [
         'error: merge-order requires one argument',
-        'usage: flotilla-engine merge-order <wave-md-path>',
+        'usage: flotilla-engine merge-order <wave-md-path>   # prints JSON',
         '',
       ].join('\n'),
     );
@@ -838,7 +843,7 @@ function runClosedBy(args: string[]): number {
     process.stderr.write(
       [
         'error: closed-by requires one argument',
-        'usage: flotilla-engine closed-by <closed-by-line>',
+        'usage: flotilla-engine closed-by <closed-by-line>   # prints JSON',
         '',
       ].join('\n'),
     );
@@ -866,7 +871,7 @@ function runDetectHost(args: string[]): number {
     process.stderr.write(
       [
         'error: detect-host requires one argument',
-        'usage: flotilla-engine detect-host <remote-url>',
+        'usage: flotilla-engine detect-host <remote-url>   # prints JSON',
         '',
       ].join('\n'),
     );
@@ -1202,7 +1207,7 @@ function runWorktreeCleanup(args: string[]): number {
       process.stderr.write(
         [
           `error: worktree-cleanup: unknown flag ${a}`,
-          'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--detached] [--config <path>]',
+          'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--detached] [--config <path>]   # prints JSON',
           '',
         ].join('\n'),
       );
@@ -1669,7 +1674,7 @@ function runVerdictAcked(args: string[]): number {
     process.stderr.write(
       [
         'error: verdict-acked requires <verdictsDir> <id>',
-        'usage: flotilla-engine verdict-acked <verdictsDir> <id>',
+        'usage: flotilla-engine verdict-acked <verdictsDir> <id>   # prints JSON',
         '',
       ].join('\n'),
     );
@@ -1720,7 +1725,7 @@ function runRenderVerdict(args: string[]): number {
     process.stderr.write(
       [
         'error: render-verdict requires <verdictsDir> <id> --anchor <sha>',
-        'usage: flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>',
+        'usage: flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>   # prints text (the rendered markdown), not JSON',
         '',
       ].join('\n'),
     );
