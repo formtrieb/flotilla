@@ -87,7 +87,13 @@ export interface LinearApi {
   getComments(identifier: string): Promise<{ body: string }[]>;
   /** Set the workflow state by NAME (the impl resolves the team's state id). Throws on unknown state name. */
   setState(identifier: string, stateName: string): Promise<void>;
-  /** PR attachments from the GitHub integration (closing probe). */
+  /**
+   * PR attachments from the GitHub integration (closing probe). Deliberately
+   * NEVER includes cards minted by {@link upsertAttachment}: those carry no
+   * `sourceType: 'github'` (Linear derives `sourceType` from integration
+   * `source` metadata this adapter never sets), so the two attachment kinds
+   * coexist on the same issue without either read confusing the other.
+   */
   getPrAttachments(identifier: string): Promise<LinearPrAttachment[]>;
   /**
    * Identifiers of issues NATIVELY blocking this one, via Linear's own
@@ -118,6 +124,32 @@ export interface LinearApi {
    * happened, so a failed native mirror is logged/disclosed, never fatal.
    */
   addBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void>;
+  /**
+   * Upsert a native attachment card on the issue, keyed by `input.url` (issue
+   * #511, mechanics proven consumer-side): a repeated call with the SAME url
+   * updates the existing card's `title`/`subtitle` rather than creating a
+   * duplicate — the idempotency rides Linear's OWN upsert-by-url semantics on
+   * `attachmentCreate`, not a find-before-create this adapter has to
+   * implement. Used by {@link ../linear-issues-store.LinearIssuesStore.close}
+   * to give the closing PR a visible card in the issue's attachment section
+   * (next to the body-codec `Closed-by:` line), independent of the
+   * GitHub-integration-only {@link getPrAttachments} substrate the closing
+   * probe reads — see that method's own doc for why the two never overlap.
+   */
+  upsertAttachment(
+    identifier: string,
+    input: {
+      /**
+       * Linear's own identity key for the card ("also used as an unique
+       * identifier for the attachment" — `AttachmentCreateInput.url`'s
+       * published schema doc): the SAME url on a later call updates
+       * `title`/`subtitle` in place rather than minting a duplicate.
+       */
+      url: string;
+      title: string;
+      subtitle: string;
+    },
+  ): Promise<void>;
   /**
    * Whether the workspace has the GitHub integration installed — the substrate
    * the closing probe ({@link getPrAttachments}) depends on. Without it a

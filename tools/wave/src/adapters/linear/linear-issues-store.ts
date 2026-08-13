@@ -469,6 +469,22 @@ export class LinearIssuesStore implements IssueStore {
     description = tickAcs(description, ackedAcIndexes);
     await this.api.setDescription(id, description);
 
+    // Native attachment upsert (issue #511 — mechanics proven consumer-side):
+    // give the closing PR a visible card in the issue's own attachment
+    // section too, next to the `Closed-by:` body line. Unconditional (not
+    // gated by `states.doneState`) and idempotent on Linear's OWN
+    // upsert-by-url semantics — a re-entrant close() with the same `prUrl`
+    // (wave-close is re-entrant, ADR-0018) updates this ONE card's subtitle
+    // rather than minting a second one. Deliberately independent of the
+    // GitHub-integration-only evidence `readClosing`/`getPrAttachments` read
+    // — see `LinearApi.getPrAttachments`'s doc for why this write can never
+    // feed that probe.
+    await this.api.upsertAttachment(id, {
+      url: prUrl,
+      title: closingAttachmentTitle(prUrl),
+      subtitle: 'merged',
+    });
+
     // Opt-in done-state fallback (FOR-13). Dead unless a consumer sets
     // `states.doneState` — the default/recommended path above is the whole
     // method, byte-for-byte unchanged. When set, ONLY act if the tracker's own
@@ -726,6 +742,19 @@ export class LinearIssuesStore implements IssueStore {
     }
     await this.api.addLabel(id, target);
   }
+}
+
+/**
+ * A short, human-readable attachment title for the closing-PR card (issue
+ * #511): extracts a PR/MR number from the common host URL shapes (GitHub
+ * `/pull/<n>`, Bitbucket `/pull-requests/<n>`, GitLab `/merge_requests/<n>`)
+ * so the card reads e.g. "PR #130" instead of a bare URL. Falls back to a
+ * generic label for any other host — `AttachmentCreateInput.title` is
+ * required (`String!`), so a title is always produced.
+ */
+function closingAttachmentTitle(prUrl: string): string {
+  const m = /\/(?:pull|pull-requests|merge_requests)\/(\d+)/.exec(prUrl);
+  return m ? `PR #${m[1]}` : 'Closing PR';
 }
 
 /**
