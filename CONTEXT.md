@@ -50,7 +50,11 @@ The durable, repo-local `WAVE.md` markdown that holds the wave's orchestration s
 _Avoid_: manifest, state file, ledger.
 
 **Coordinator**:
-The (mostly-idle) foreground session that plans a wave and spawns/supervises its workers. Human-in-the-loop STOPs pause it.
+The (mostly-idle) foreground session that plans a wave and spawns/supervises its workers. Human-in-the-loop STOPs pause it. The session, never the person — the human directing it is the **Operator**.
+
+**Operator**:
+The person at the live session an agent is working for — the addressee of every user-directed line an agent prints, and the decider at every human gate (a STOP, a held row's release, an arm confirm). A role, not an identity: a flotilla maintainer, a consumer developer, or a first-time adopter may each hold it, and the word means the same in every case.
+_Avoid_: the Coordinator (the session, never the person), user (the harness's own overloaded term), consumer (the adopting repo/organization, not the person at the session).
 
 **Worker**:
 A background agent that executes one issue in its own isolated `/tmp` worktree and reports back via a schema-validated return.
@@ -189,7 +193,7 @@ The two forms every distribution layer exists in — the skills as local `.claud
 _Avoid_: dev mode (implies a runtime toggle — the binding is static, tracked config), dogfood mode (same problem).
 
 **Dual-form**:
-A *prose reference* stated in both its in-repo form and its installed form, so whichever context is live, the reader picks the one that resolves — established for cross-skill by-name references (wave-shared's load note, project-local first). Prose only: an *invocation* is never dual-form — the engine invocation is a single setup-time binding (`engine.cli`, ADR-0032) that fails loud, never a chained alternative.
+A *prose reference* stated in both its in-repo form and its installed form, so whichever context is live, the reader picks the one that resolves — retained for by-name recommendations addressed to a human (slash commands). Agent-side cross-skill loading is outside its scope entirely: that is a sibling-path read against the loading skill's own base directory, one spelling in every context (ADR-0040). Prose only: an *invocation* is never dual-form — the engine invocation is a single setup-time binding (`engine.cli`, ADR-0032) that fails loud, never a chained alternative.
 _Avoid_: fallback (the resolving form is chosen by reading context, and invocations never chain at runtime), alias.
 
 ### Provenance
@@ -215,6 +219,10 @@ _Avoid_: tier (unqualified), level, layer.
 **Promotion**:
 The move of a rule from a prose Enforcement Tier to a structural one, earned — never automatic: a rule whose violation fails *silently* (plausible wrong result, no-op with a success echo) becomes a Promotion candidate at its **second live occurrence**; a loudly-failing rule may stay prose until recurrence is chronic (ADR-0034). Prose is a rule's draft mode, structure its production mode — tokens are the rent a rule pays until it earns structure.
 _Avoid_: migration (sounds like data movement), hardening (vague), graduation.
+
+**Operator register**:
+The speech register every skill holds in output directed at the **Operator** — plain language, direct address ("du"), self-explaining: internal references (ADR numbers, convention numbers, finding ids, wave slugs, retro paths) are translated into their one-line consequence, a domain term gets a half-sentence introduction at its first use per session, and every skill run ends in an operator block (what happened → where it lives → what you do next). Strict in installed form; in source form (flotilla itself) a compact reference pointer may follow the plain text (Convention 16, ADR-0039).
+_Avoid_: consumer mode (not a mode — the register is the default, the source-form pointer is the exception), simplification (nothing is omitted — evidence moves position, the message stays whole).
 
 ## Relationships
 
