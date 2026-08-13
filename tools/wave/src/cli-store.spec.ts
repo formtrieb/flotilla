@@ -337,6 +337,78 @@ describe('preflightStore (FOR-12) — probes TRACKER preconditions through the A
     expect(report.checks.find((c) => c.name === 'tracker-host-integration')?.status).toBe('not-applicable');
   });
 
+  // ── issue #493 — tracker-host-integration stops asserting a code-host
+  // conclusion it cannot know, and honours the documented FOR-13 n/a condition ──
+  //
+  // reference/setup-mechanics.md's per-store check table: "n/a when
+  // `states.doneState` is set — the FOR-13 fallback". The pre-fix engine probed
+  // `hasGitHubIntegration()` UNCONDITIONALLY and only consulted `doneState` when
+  // the integration was ABSENT — so a workspace with the integration installed
+  // (e.g. from other repos sharing it) and `doneState` configured reported
+  // `pass`, never `not-applicable`, and never even looked at `doneState` first.
+
+  it('AC1 — states.doneState configured (integration ALSO installed) → not-applicable, not probed, ok unaffected', async () => {
+    const api = new InMemoryLinearApi(); // default: hasGitHubIntegration() → true
+    const integrationSpy = vi.spyOn(api, 'hasGitHubIntegration');
+    const store = new LinearIssuesStore({ api });
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', states: { doneState: 'Done' } } },
+      store,
+    );
+
+    const check = report.checks.find((c) => c.name === 'tracker-host-integration');
+    expect(check?.status).toBe('not-applicable');
+    expect(report.ok).toBe(true); // ok is unaffected either way (not-applicable never blocks)
+    // "instead of probing" (AC1) — the integration API must not be called at all
+    // once doneState decides the check is n/a.
+    expect(integrationSpy).not.toHaveBeenCalled();
+  });
+
+  it('AC2 — without doneState, a `pass` states what was probed and CONDITIONS the done-derivation claim on a GitHub code host', async () => {
+    const api = new InMemoryLinearApi(); // hasGitHubIntegration() → true, no doneState configured
+    const store = new LinearIssuesStore({ api });
+    const report = await preflightStore({ store: { kind: 'linear', team: 'EX' } }, store);
+
+    const check = report.checks.find((c) => c.name === 'tracker-host-integration');
+    expect(check?.status).toBe('pass');
+    // States what was actually probed — the Linear WORKSPACE's integration —
+    // rather than a conclusion about this repo.
+    expect(check?.detail).toContain('Linear↔GitHub integration is installed');
+    // Conditions the done-derivation claim on a GitHub code host instead of
+    // promising the closing attachment unconditionally.
+    expect(check?.detail).toContain('GitHub code host');
+    expect(check?.detail).toContain('any other code host');
+    // Must NOT assert the closing attachment as an unqualified fact about THIS
+    // repo — the old wording asserted it as if the code host were already known.
+    expect(check?.detail).not.toMatch(/^Linear↔GitHub integration is installed — a merged PR creates/);
+  });
+
+  it('field-report false-reassurance case — linear store, Bitbucket code host, FOR-13 doneState configured (the reported consumer shape exactly)', async () => {
+    // Reproduces the field report's evidence verbatim: `linear` store, team
+    // `DEV`-shaped config, `states.doneState: "Done"` (the FOR-13 fallback) —
+    // and the Linear↔GitHub integration IS installed (workspace-wide, from
+    // other repos sharing the workspace), while THIS repo's code host is
+    // Bitbucket, confirmed separately by `host-pr preflight` (out of this
+    // check's seam entirely — LinearApi reaches the tracker only). The pre-fix
+    // engine reported `pass` with "a merged PR creates the closing attachment
+    // the done-derivation reads" — false for this consumer, since the
+    // integration can never see a Bitbucket PR. The fix reports
+    // `not-applicable` instead: doneState is configured, so done resolves via
+    // the forced flip and the integration/closing-attachment question is moot.
+    const api = new InMemoryLinearApi();
+    api.setGitHubIntegration(true);
+    const store = new LinearIssuesStore({ api });
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', states: { doneState: 'Done' } } },
+      store,
+    );
+
+    const check = report.checks.find((c) => c.name === 'tracker-host-integration');
+    expect(check?.status).toBe('not-applicable');
+    expect(check?.detail).not.toContain('closing attachment');
+    expect(report.ok).toBe(true);
+  });
+
   it('linear: a configured doneState the team lacks is caught by the catalog check', async () => {
     const store = new LinearIssuesStore({ api: new InMemoryLinearApi() });
     const report = await preflightStore(
