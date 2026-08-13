@@ -1508,6 +1508,28 @@ export function listAllWorktrees(
 }
 
 /**
+ * POSIX single-quote a value for safe interpolation into a printed shell
+ * command (issue #515). A worktree's absolute path is exactly the kind of
+ * string a copy-pasted repair command must carry verbatim, and this repo's
+ * own checkout path is a live example of why that cannot be done bare — the
+ * hazard, and the quoting remedy, are already documented one layer up for
+ * `workflow-driver.md`'s `REPO_ROOT` interpolation (see
+ * `skill-schema-drift.spec.ts`'s "path constants are shell-quoted" block);
+ * this is the same class of hazard, reaching the engine's own
+ * `manualRecovery` output instead of a skill-authored brief.
+ *
+ * Wraps the value in single quotes and escapes any embedded single quote as
+ * `'\''` (close the quote, emit an escaped literal quote, reopen the quote)
+ * — the standard POSIX technique, since single quotes admit no escape
+ * sequence of their own. A space or a non-ASCII character (e.g. a
+ * typographic en-dash) needs no special-casing: neither is special inside
+ * single quotes.
+ */
+function shellQuoteSingle(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Build the additive {@link WorktreeEntry.manualRecovery} payload for an
  * EXHAUSTED `erroredStillListed` entry (issue #483) — see the file-level "a
  * loud, per-entry report for the EXHAUSTED reading" doc section. Pure string
@@ -1519,7 +1541,10 @@ export function listAllWorktrees(
  * prescribed here as the ORDINARY manual recovery for this shape (run
  * outside the sandbox, where the OS grants the delete the harness itself
  * refused), followed by `git worktree prune`. This function only ever NAMES
- * the commands; it never executes them.
+ * the commands; it never executes them. The path is shell-quoted (issue
+ * #515, {@link shellQuoteSingle}) so a copy-paste of the first command does
+ * not silently split into several arguments on a checkout whose path
+ * contains a space.
  */
 function exhaustedManualRecovery(
   worktreePath: string,
@@ -1532,7 +1557,10 @@ function exhaustedManualRecovery(
       "obstruction is the sandboxed harness's own write-deny on the physical " +
       'delete, which is deterministic, not the transient race the retry exists ' +
       'to clear. Remove it manually, with the sandbox disabled.',
-    commands: [`git worktree remove --force ${worktreePath}`, 'git worktree prune'],
+    commands: [
+      `git worktree remove --force ${shellQuoteSingle(worktreePath)}`,
+      'git worktree prune',
+    ],
   };
 }
 
