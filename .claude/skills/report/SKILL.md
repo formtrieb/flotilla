@@ -91,6 +91,16 @@ no Header-Block, no eligibility label — the same existence-not-readiness shape
 any wave-provenance disclosure gets (ADR-0027). Whoever triages it upstream
 runs the identical premise-currency check any wave-provenance bare issue gets.
 
+A filed report is written in **English** — the title and every authored line of
+Gap and Provenance — regardless of the language the consumer session happens to
+run in. flotilla's public repo, docs, and triage all operate in English; a
+report in the session's language hands upstream triage a translation job first.
+The conversation *around* the report (the interview, the render, the confirm
+question) stays in whatever language the operator is speaking — only the
+composed artifact is English. One exception inside the artifact: **verbatim
+evidence stays verbatim** — quoted command output, error text, and doc excerpts
+go in exactly as captured, whatever language they arrived in.
+
 ```markdown
 > *This report was composed by an AI agent from a consumer session and filed
 > only after the operator's explicit confirmation.*
@@ -208,5 +218,9 @@ surface, exactly as it is when `gh` fails for any other reason.
 - **Investigating from scratch.** This skill composes an already-analyzed
   finding; it is not a debugging tool. If the finding isn't analyzed yet, go
   analyze it, then come back.
+- **Composing the report in the consumer session's language.** The interview
+  and the confirm question follow the operator's language; the filed artifact
+  does not — title, Gap, and Provenance are English (The house format above),
+  with only verbatim evidence kept as captured.
 - **Using this for a finding about the consumer's own repo.** Wrong tracker
   entirely — this skill's one and only target is flotilla's own public repo.
