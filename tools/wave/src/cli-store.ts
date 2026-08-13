@@ -425,7 +425,10 @@ export function engineVersionPreflightCheck(
  *     amendment); `state-catalog` is a REAL check (issue #131): GitHub's claims
  *     ARE labels, which is exactly why they need verifying, not why the check
  *     should be skipped — see {@link githubChecks};
- *   - linear → the GitHub integration + the workflow-state catalog (ADR-0020);
+ *   - linear → the GitHub integration + the workflow-state catalog (ADR-0020).
+ *     `tracker-host-integration` is n/a WITHOUT probing whenever
+ *     `states.doneState` is configured (FOR-13 fallback, issue #493) — see
+ *     {@link linearChecks};
  *   - markdown → all n/a (a local dev/dogfood store).
  * Pure over the seam — `store` may wrap an in-memory fake (test) or a real impl.
  *
@@ -523,7 +526,6 @@ async function githubChecks(api: GitHubApi, storeConfig: GitHubStoreConfig): Pro
 }
 
 async function linearChecks(api: LinearApi, storeConfig: LinearStoreConfig): Promise<PreflightCheck[]> {
-  const hasIntegration = await api.hasGitHubIntegration();
   const catalog = await api.listStates();
   const catalogNames = new Set(catalog.map((c) => c.name));
 
@@ -543,28 +545,49 @@ async function linearChecks(api: LinearApi, storeConfig: LinearStoreConfig): Pro
   const missing = [...new Set(required)].filter((n) => !catalogNames.has(n));
   const catalogOk = missing.length === 0;
 
-  // A missing integration is a hard FAIL — UNLESS the consumer opted into the
-  // FOR-13 no-integration `doneState` fallback, in which case its absence is
-  // expected (done resolves via the forced flip, not the attachment probe).
+  // `tracker-host-integration` (issue #493 / field report). When
+  // `states.doneState` is configured (the FOR-13 fallback), done resolves via
+  // the forced flip on merge-confirmation, NEVER via the closing attachment the
+  // Linear↔GitHub integration would create — so whether that integration is
+  // installed is not a precondition here at all, and reference/setup-mechanics.md
+  // documents exactly that: this check is `not-applicable` whenever `doneState`
+  // is set. The pre-fix version probed anyway and reported `pass`/`fail` on
+  // whatever the integration happened to be, which is a check that ran and
+  // answered a question nobody needed answered. Fixed here by deciding on
+  // `doneState` FIRST and skipping the probe entirely on that branch — the
+  // integration API is not even called.
   let integration: PreflightCheck;
-  if (hasIntegration) {
-    integration = {
-      name: 'tracker-host-integration',
-      status: 'pass',
-      detail: 'Linear↔GitHub integration is installed — a merged PR creates the closing attachment the done-derivation reads.',
-    };
-  } else if (effective.doneState !== undefined) {
+  if (effective.doneState !== undefined) {
     integration = {
       name: 'tracker-host-integration',
       status: 'not-applicable',
-      detail: `Linear↔GitHub integration is NOT installed, but states.doneState ("${effective.doneState}") is configured — rows resolve to done via the FOR-13 fallback once the wave confirms the merge.`,
+      detail: `states.doneState ("${effective.doneState}") is configured — rows resolve to done via the FOR-13 fallback, so the Linear↔GitHub integration was not probed.`,
     };
   } else {
-    integration = {
-      name: 'tracker-host-integration',
-      status: 'fail',
-      detail: 'Linear↔GitHub integration is NOT installed and no states.doneState fallback is configured — merged PRs will never resolve rows to done (ADR-0020). Install the integration or set states.doneState.',
-    };
+    const hasIntegration = await api.hasGitHubIntegration();
+    // The LinearApi seam reaches the TRACKER only (see the code-host-facts note
+    // below) — it has no way to learn THIS repo's code host, so a `pass` here
+    // can state only what was actually probed (the Linear WORKSPACE's GitHub
+    // integration) and must CONDITION the done-derivation conclusion on a
+    // GitHub code host rather than assert it unconditionally. Asserting it
+    // unconditionally was the false-reassurance the field report caught: the
+    // integration can be installed workspace-wide (from other repos sharing the
+    // workspace) while THIS repo's PRs are on a different code host (e.g.
+    // Bitbucket), where no closing attachment is ever created and `pass` would
+    // have promised one anyway.
+    integration = hasIntegration
+      ? {
+          name: 'tracker-host-integration',
+          status: 'pass',
+          detail:
+            'Linear↔GitHub integration is installed — on a GitHub code host, a merged PR creates the closing attachment the done-derivation reads; on any other code host (e.g. Bitbucket), that attachment is never created and states.doneState must be configured for done-derivation to work.',
+        }
+      : {
+          name: 'tracker-host-integration',
+          status: 'fail',
+          detail:
+            'Linear↔GitHub integration is NOT installed and no states.doneState fallback is configured — merged PRs will never resolve rows to done (ADR-0020). Install the integration or set states.doneState.',
+        };
   }
 
   // Code-host facts (pr-merge-token / allow-auto-merge / required-checks) are NOT
