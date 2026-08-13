@@ -474,11 +474,23 @@ describe('RealBitbucketApi.deleteBranch', () => {
     expect(calls[0].url).toMatch(/refs\/branches\/wave\/a%20b$/);
   });
 
-  it('a failed delete throws, so the merge path can record it as a structural degradation', async () => {
+  it(
+    'field-report case (#495): a 404 after a successful merge reads as already-gone success, ' +
+      'not an error — Bitbucket may auto-clean the source branch on merge, and the DELETE this ' +
+      'call issues afterwards lands on a ref that is already gone',
+    async () => {
+      const { http } = fakeHttp([
+        [isMethod('DELETE'), { status: 404, json: { error: { message: 'Branch not found' } } }],
+      ]);
+      await expect(api(http).deleteBranch('wave/DES-100-angular-22-ts6')).resolves.toBeUndefined();
+    },
+  );
+
+  it('a NON-404 failure still throws, so the merge path can record it as a failed, best-effort deletion', async () => {
     const { http } = fakeHttp([
-      [isMethod('DELETE'), { status: 400, json: { error: { message: 'Branch not found' } } }],
+      [isMethod('DELETE'), { status: 400, json: { error: { message: 'Branch is the default branch' } } }],
     ]);
-    await expect(api(http).deleteBranch('gone')).rejects.toThrow(/Branch not found/);
+    await expect(api(http).deleteBranch('gone')).rejects.toThrow(/Branch is the default branch/);
   });
 });
 
