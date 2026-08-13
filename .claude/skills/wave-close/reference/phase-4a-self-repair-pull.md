@@ -12,7 +12,14 @@
 # real-github-api.ts, github-api-factory.ts, real-linear-api.ts,
 # linear-api-factory.ts, cli-store.ts — because a probe-logic fix confined to
 # that layer (the FOR-23 / real-linear-api.ts precedent) would otherwise
-# evade this check. Also widened to cover the closed-by classifier
+# evade this check. Bitbucket has no issues-store / api-factory layer of its
+# own — it is a host-only (PR-landing) adapter, not an IssueStore, so its
+# entire transport lives in the one file host-pr's arm/merge/status/preflight
+# /create verbs call through directly: adapters/bitbucket/bitbucket-api.ts.
+# That file gained its entry here after the row-495 miss recorded under
+# MAINTENANCE DUTY below — the same defect class the FOR-23 precedent above
+# already names, now confirmed against the third shipped host. Also widened
+# to cover the closed-by classifier
 # (closed-by.ts, behind the `closed-by` verb), the credential-probe CLI
 # (credential-probe-cli.ts, behind `credential-probe --all`), the sidecar
 # reader `verdict-acked` reads through (sidecar.ts), the spine CLI
@@ -40,7 +47,38 @@
 # — deliberately deferred at triage, not decided against. If you're about to
 # build one, or to argue one away, that argument belongs at THIS pointer,
 # not re-derived from scratch.
-ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts|closed-by\.ts|credential-probe-cli\.ts|credential-resolver\.ts|sidecar\.ts|spine-cli\.ts|wave-md-rw\.ts|spine-store\.ts)$'
+#
+# OCCURRENCE (this duty coming due, not in the abstract): row 495 changed
+# adapters/bitbucket/bitbucket-api.ts — the deleteBranch status handling
+# reached by host-pr --delete-branch — and this list, before the
+# bitbucket/(bitbucket-api) entry below existed, named no file under
+# adapters/bitbucket/** at all. The pattern covered the GitHub and Linear
+# transport/factory layers, so it read as adapter-aware while actually being
+# adapter-aware for only two of the three shipped hosts; phase 4a reported
+# that branch clean. Harmless on this repo (remote is GitHub — the landing
+# verbs never route through the Bitbucket adapter); load-bearing on a
+# Bitbucket consumer, where host-pr arm|merge|status|preflight are all
+# detect-host-routed and reach this file for every host write. Adding the
+# entry below is the narrow fix; it does NOT settle the OPEN QUESTION above
+# — that question stays open.
+ENGINE_SURFACE='^tools/wave/src/(adapters/(issue-store|markdown-fs-store|github/(github-issues-store|real-github-api|github-api-factory)|linear/(linear-issues-store|real-linear-api|linear-api-factory)|bitbucket/(bitbucket-api))\.ts|issue-store-cli\.ts|cli-store\.ts|merge-order\.ts|worktree-cleanup\.ts|host-pr(-cli)?\.ts|cli\.ts|closed-by\.ts|credential-probe-cli\.ts|credential-resolver\.ts|sidecar\.ts|spine-cli\.ts|wave-md-rw\.ts|spine-store\.ts)$'
+
+# Worked example (the row-495 evidence case this entry closes, walked against
+# the pattern above — run these two probes yourself if you touch this list):
+#   $ echo 'tools/wave/src/adapters/bitbucket/bitbucket-api.ts' | grep -E "$ENGINE_SURFACE"
+#   tools/wave/src/adapters/bitbucket/bitbucket-api.ts
+#   → MATCH. The changed Bitbucket transport path (deleteBranch, reached by
+#     host-pr --delete-branch) is now inside the surface — the row-495 miss
+#     is closed.
+# The check has to be able to fail too, or the entry above is broad enough to
+# rubber-stamp everything under adapters/bitbucket/** — which would defeat
+# the purpose as completely as matching nothing did. A path outside the
+# surface still misses:
+#   $ echo 'tools/wave/src/adapters/bitbucket/bitbucket-api.spec.ts' | grep -E "$ENGINE_SURFACE"
+#   (no output)
+#   → NO MATCH. The spec file is deliberately not part of the engine
+#     surface — the pattern anchors on the exact `bitbucket-api.ts` filename
+#     ($ after `\.ts`), so `bitbucket-api.spec.ts` cannot satisfy it.
 
 # WRITE THE BRANCHES OUT, or iterate a real array — never `for BRANCH in $BRANCHES`
 # (wave-shared Convention 12: zsh does not word-split, so a space-separated
