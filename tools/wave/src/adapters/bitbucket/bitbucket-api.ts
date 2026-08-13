@@ -515,13 +515,35 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
    * survive. Throws on any other status so the merge path records a structural
    * {@link BranchDeletionResult} degradation — a failed delete never un-merges
    * the PR.
+   *
+   * **404 is ALSO success (issue #495, a live field report).** Bitbucket Cloud
+   * can remove the pull request's source branch as a side effect of the merge
+   * itself — a repo-level "delete source branch" / `close_source_branch`
+   * posture — so by the time this DELETE reaches the ref, the branch is
+   * already gone. Atlassian's own OpenAPI document's `responses` object for
+   * this exact operation lists 404 with the description "The specified
+   * repository or branch does not exist"
+   * (developer.atlassian.com/cloud/bitbucket/swagger.v3.json, path
+   * `/repositories/{workspace}/{repo_slug}/refs/branches/{name}`, `delete`,
+   * read 2026-08-13). The repository half of that either/or is not live here:
+   * this call always follows a successful {@link mergePullRequest} against the
+   * SAME `this.base()` repository path, so a 404 on the ref sub-resource can
+   * only mean the branch is gone, never the repo — a not-found ref is exactly
+   * the STATE this call is trying to reach, not a failure of it. Treating it
+   * as a throw made a successful merge report `branchDeletion.deleted: false`
+   * with an error, sending the operator down the documented manual-sweep
+   * fallback for a branch that was never there to sweep. A genuinely failing
+   * delete (a branch that still exists but cannot be removed — protected,
+   * permission-denied, or a transient host error) is any OTHER status
+   * (403 included) and still throws below, so that case stays a reported,
+   * best-effort-failed deletion, never silently swallowed.
    */
   async deleteBranch(branch: string): Promise<void> {
     const ref = branch.split('/').map(encodeURIComponent).join('/');
     const res = await this.send('DELETE', `${this.base()}/refs/branches/${ref}`);
     // 204 is the documented success; 200 is tolerated defensively, exactly as
-    // the GitHub sibling does.
-    if (res.status !== 204 && res.status !== 200) {
+    // the GitHub sibling does; 404 is ALSO success — see the docblock above.
+    if (res.status !== 204 && res.status !== 200 && res.status !== 404) {
       throw new BitbucketApiError(res.status, 'deleteBranch', bbMessage(res.json, 'deleteBranch'));
     }
   }
