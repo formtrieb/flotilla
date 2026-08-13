@@ -369,6 +369,25 @@ describe('skill-descriptions-guard — the listing a consumer reads first carrie
     }
   });
 
+  it('every description stays inside the harness limit of 1024 characters', () => {
+    // Not a house preference — the platform's own frontmatter contract, read
+    // from the Agent Skills documentation during this rewrite: `description` is
+    // required, must be non-empty, and is capped at 1024 characters. A rewrite
+    // that trades a terse internal token for a paragraph of plain language is
+    // exactly the change that walks into that ceiling, so the ceiling is pinned
+    // here rather than discovered by a consumer whose skill silently fails to
+    // load. The widest description in the corpus today sits around 590.
+    for (const rel of SURFACES) {
+      const description = DESCRIPTIONS.get(rel) as string;
+      expect(
+        description.length,
+        `${rel}'s description is ${description.length} characters — past the 1024-character ` +
+          `frontmatter limit. Plain language costs words; cut the least load-bearing clause, ` +
+          `never a trigger phrase.`,
+      ).toBeLessThanOrEqual(1024);
+    }
+  });
+
   it.each(listDescribedSurfaces())('%s reads consumer-first — no internal token', (rel) => {
     const description = DESCRIPTIONS.get(rel) as string;
     const offenders = internalTokensIn(description);
@@ -550,6 +569,15 @@ describe('skill-descriptions-guard — negative controls: the guard is red on th
     for (const sentence of legal) {
       expect(internalTokensIn(sentence), `false positive on: ${sentence}`).toEqual([]);
     }
+  });
+
+  it('the 1024-character predicate fires one character past the limit', () => {
+    // Cheap, and it is the one predicate whose bound could be typo'd by an
+    // order of magnitude and stay green forever on a corpus that is nowhere
+    // near it.
+    const live = DESCRIPTIONS.get('.claude/skills/wave-start/SKILL.md') as string;
+    expect(live.length).toBeLessThanOrEqual(1024);
+    expect(live.padEnd(1025, 'x').length).toBeGreaterThan(1024);
   });
 
   it('the extractor fails loud instead of scanning nothing', () => {
