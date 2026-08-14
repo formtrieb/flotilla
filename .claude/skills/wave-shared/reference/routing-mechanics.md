@@ -18,6 +18,7 @@ Reading the configured value is only half an instruction. The other half is **ho
 # dogfooding session in THIS checkout reads out of its own config:
 wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }
 
+# --state is verdict-keyed, not iteration-keyed (wave-start/reference/start-mechanics.md §7b) — reviewing is correct for this approve/iteration-1 cell, not a fixed value for every call.
 wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing
 ```
 
