@@ -145,9 +145,29 @@ HELD_IDS=$(node -e '
 #   parked is silent. Report it in step 9 same as a HELD row, without the
 #   "waiting on <blocker>" clause.
 
-# 4. Host auth-preflight (one-shot)
+# 4. Host auth-preflight (one-shot) — verify the credential the engine actually
+#    uses, never a host CLI's own separately-authenticated login (SKILL.md step 4;
+#    the two-credentials reasoning lives in wave-setup's own Credentials section,
+#    not restated here).
 {{wave-cli}} detect-host "$(git -C "$REPO" remote get-url origin)"   # → { host, workspace, repo }
-#   then gh auth status (GitHub) — fail → STOP before the flip
+#   host === unknown → proceed silently, no auth needed (unchanged).
+#   Otherwise run BOTH engine-credential verbs before the flip:
+{{wave-cli}} credential-probe --all    # value-free; exit 0 = every configured credential resolves
+{{wave-cli}} host-pr preflight         # store-blind, detect-host-routed, no --config/--branch
+#     → { ok, verb: "preflight", host, checks: [ { name, status, detail }, … ] }
+#   WHICH CHECK EARNS THE STOP: credential-probe exit 1, OR the `pr-merge-token`
+#   check reporting `fail` (direct evidence of no write reach) → STOP before the
+#   flip, wave stays ready, no Worker dispatched. The OTHER host-pr preflight
+#   checks (allow-auto-merge, required-checks, Bitbucket's create-credentials)
+#   stay advisory at this step — wave-close's landing-posture concern, not this
+#   gate's — never STOP the wave over one of those alone.
+#   `gh auth status` is OPTIONAL operator convenience only, run by hand if useful
+#   (e.g. a manual `gh repo create` this session) — it grades a DIFFERENT
+#   credential and is never prescribed here and never a STOP condition. Grading
+#   it as THE verification is wrong in both directions: a false STOP (gh's own
+#   login broken, engine token healthy) and a silent false PASS (gh healthy,
+#   engine token unset/expired/under-scoped, failing at the first terminator's
+#   host-pr create) — full write-up: SKILL.md step 4.
 
 # 4a. Worktree-count advisory — the E2BIG preflight (issue #238). One sandbox
 #     filesystem-deny entry per REGISTERED worktree, profile cached per session:
