@@ -8,4 +8,4 @@ A disclosure raised under this convention does not stop at the brief: `wave-star
 
 ### Live occurrence (evidence)
 
-**2026-07-22, second consumer wave, finding PC-F2** (doc slug 2026-07-22-postgres-ci): a lane Worker's self-started compose project — container, volume, network, a bound host port — survived worktree cleanup and later held the port during a local reproduction, cascading into a blocked repro session. The consumer mitigated ad-hoc with a per-wave brief clause; this convention generalizes that fix upstream so future consumers don't have to rediscover it.
+A consumer wave's self-started compose project survived worktree cleanup and later blocked a local reproduction — the incident this convention generalizes from, ad-hoc per-wave clause turned standing rule (history: `../evidence/convention-10-runtime-residue.md`, read via the sibling-path read when actually wanted, ADR-0040).
