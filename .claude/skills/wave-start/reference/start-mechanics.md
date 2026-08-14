@@ -488,6 +488,8 @@ A copy that is neither is not eligible to dispatch. There is no engine verb behi
 
 **Why this is a gate here and not just a note in `workflow-driver.md`.** The rule lives with its full rationale and its currency-assertion checklist in `workflow-driver.md` (where a Coordinator composing the script is already reading); this file names it as a required step in the dispatch sequence, in the same place the other pre-fan-out gates (4a, 4b, 4c) live, so a Coordinator following the phase sequence mechanically cannot skip past it the way a note living only in prose elsewhere could be skimmed over. Both motivating occurrences — a frozen template that outlived the cwd-persistence fix, and the compose-fresh anchor-diff that caught a falsified reviewer-isolation claim one wave later — are recorded as evidence in `workflow-driver.md`'s own section.
 
+**Its tracker-currency sibling, one row per compose, not once per wave (ADR-0041).** The gate above governs whether the SCRIPT TEXT is current; a SEPARATE, per-row fact can go stale independently of it — whether each row's EMBEDDED SPEC (`issue.issueSpec`, and now `issue.scopeGrants`) still matches what the tracker holds for that row. Every recompose — this fresh dispatch, a cap=1 re-dispatch (step 7d below), or a wave-resume `redispatch` hand-off — re-reads the row through `issue-store read` and re-embeds the result, UNCONDITIONALLY: never "only if I annotated this row since the last compose." `workflow-driver.md`'s "The recompose-refetch rule" states the rule in full, including why the condition itself is the failure mode it replaces and the same-round boundary it deliberately does not retroactively fix.
+
 ## Routing a tuple `{ id, risk, iteration, report, verdict }`
 
 ```bash
@@ -664,6 +666,18 @@ fi
 #   into the MAIN repo's shared .git/config — sandbox-write-denied for a
 #   worktree-isolated agent, and the exact second edge W26-F1 hit right behind
 #   the stale-registration one (recovered only by hand via `git symbolic-ref`).
+
+#   RE-COMPOSE, DO NOT REUSE THE ROUND-1 ROW (ADR-0041, unconditional — never
+#   "only if this row was annotated"): before composing the iteration-2 row,
+#   re-read this row through `issue-store read` and re-embed the result as
+#   `issue.issueSpec`, and re-project any `scope-extension`-disposition
+#   disclosures this row now carries into `issue.scopeGrants`. Both are the
+#   SAME re-derivation "The driver compose-currency gate" above performs for
+#   the Workflow SCRIPT text, one level down — the tracker instead of the
+#   document. See workflow-driver.md "The recompose-refetch rule" for the full
+#   rule, the same-round boundary it deliberately does NOT retroactively fix,
+#   and why a wave-resume `redispatch` hand-off is the identical case, not a
+#   separate one.
 
 # 8. stop → flag needs-attention
 {{wave-cli}} issue-store flag "$ID" \
