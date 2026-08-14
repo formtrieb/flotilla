@@ -218,6 +218,14 @@ _Avoid_: packaged plugin contents (implies a curated subset that does not exist)
 The context a file-path-shaped skill reference resolves against — the *skill file* for anchored markdown links, the *plugin-clone root* for bare path citations, *cwd plus installed artifacts* for command fragments. A reference is defective when written against the wrong anchor for its class, not when its target is missing from the package (ADR-0031); a consumer session's cwd is the consumer repo, never the clone.
 _Avoid_: broken link (names the symptom, not the class), missing file (the file usually exists — the anchor is wrong).
 
+**Citation**:
+A path or identifier authored text *points at* — something the reader can follow — and the population the reference guards check. A citation must resolve against its **Resolution anchor**; a dead citation is a defect of the text, never of the guard.
+_Avoid_: mention (may be a **Subject path**), link (one syntactic form among several).
+
+**Subject path**:
+A path authored text *talks about* rather than points at — real in the other distribution form (a consumer-scaffolded location, deliberately absent in flotilla's own clone) or deliberately unreal (a spec fixture). Never marked in the checked text: the checked text never carries its own exemption — a subject is declared guard-side in a named, self-policing class (ADR-0043).
+_Avoid_: exception/ignore (the guard is not switched off — the class is a falsifiable claim about the path), dead path (that names a **Citation** defect; a subject path is not a citation).
+
 **Source form / Installed form**:
 The two forms every distribution layer exists in — the skills as local `.claude/skills/` (source) vs. the installed plugin, the engine as vendored `tools/wave` sources (source) vs. the published npm package. A repo runs exactly **one** form per layer, statically bound through tracked config: the skills layer via the `enabledPlugins` self-disable in the tracked settings, the engine layer via the `engine.cli` binding in the wave config (ADR-0032). flotilla itself is the only repo that runs source form on both layers — it builds what it runs; every consumer runs installed form. Mixed forms are the defect both bindings exist to prevent.
 _Avoid_: dev mode (implies a runtime toggle — the binding is static, tracked config), dogfood mode (same problem).
@@ -266,6 +274,7 @@ _Avoid_: consumer mode (not a mode — the register is the default, the source-f
 - **Arming** hands an approved row's merge to the code host; landing evidence flows back through the done-reconcile hierarchy **tracker attachment > host PR state > nothing** (ADR-0023).
 - The **Echo-Guard** is defense-in-depth *over* the auth anchors, never one of them: the tracked settings-deny entries own the gitignored-file-read vector, the **Lookup-Command** indirection owns the direct-execution vector (ADR-0029), and the guard covers only what a command's own text reveals.
 - The **Sweep** accounts for every registered worktree: an incomplete removal carries its **Survivor set** and, when exhausted, **Manual recovery**; a worktree outside every **Containment root** is reported **Unaccounted** — removal of both belongs to the **Operator**, never to a more forceful sweep (ADR-0042).
+- A **Citation** must resolve against its **Resolution anchor**; a **Subject path** is exempted guard-side in a named, self-policing class — the checked text never carries its own exemption (ADR-0043).
 
 ## Flagged ambiguities
 
