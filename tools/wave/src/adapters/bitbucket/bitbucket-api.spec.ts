@@ -588,6 +588,73 @@ describe('RealBitbucketApi — LandingPosture', () => {
     expect(r.detail).toMatch(/Advisory only/);
   });
 
+  // ── issue #543 — the scope hint on the merge-checks read's own refusal ────
+
+  it(
+    'refused for insufficient privileges (403, Bitbucket\'s own "lack …  privilege scopes" wording) → ' +
+      "the detail names admin:repository:bitbucket and says no narrower read scope exists",
+    async () => {
+      const { http } = fakeHttp([
+        [
+          urlHas('/branch-restrictions'),
+          {
+            status: 403,
+            json: { error: { message: 'Your credentials lack one or more required privilege scopes.' } },
+          },
+        ],
+      ]);
+      const r = await api(http).getRequiredChecks('main');
+      expect(r.state).toBe('unknown');
+      // The generic Bitbucket refusal is still present verbatim …
+      expect(r.detail).toMatch(/Your credentials lack one or more required privilege scopes/);
+      // … but it no longer stands alone: the scope is named, plus the "no
+      // narrower read scope" claim — the whole point of this issue.
+      expect(r.detail).toMatch(/admin:repository:bitbucket/);
+      expect(r.detail).toMatch(/no narrower read scope/i);
+      // Shape/status discipline (AC3): still report-only, still `unknown`,
+      // still advisory — this is message text only.
+      expect(r.contexts).toEqual([]);
+      expect(r.detail).toMatch(/Advisory only/);
+    },
+  );
+
+  it('an UNRELATED Bitbucket refusal on the very same read gains no scope hint (AC2)', async () => {
+    // Same endpoint, same op, same 403 — but Bitbucket's own message says
+    // something else entirely ("Access denied", the wording the getPrStatus
+    // spec above already pins for a plain permission refusal). A blanket
+    // "attach the scope hint to every failure on this path" would be wrong
+    // here: this credential is not short a scope, it has none of this repo.
+    const { http } = fakeHttp([
+      [urlHas('/branch-restrictions'), { status: 403, json: { error: { message: 'Access denied' } } }],
+    ]);
+    const r = await api(http).getRequiredChecks('main');
+    expect(r.state).toBe('unknown');
+    expect(r.detail).toMatch(/Access denied/);
+    expect(r.detail).not.toMatch(/admin:repository:bitbucket/);
+  });
+
+  it('the SAME privilege-scope wording on an UNRELATED Bitbucket call gains no scope hint (AC2)', async () => {
+    // `getRequiredChecks()` with no branch argument reads the repo itself
+    // first (`mainBranch()`, a different endpoint, gated by a different
+    // scope) before ever reaching the branch-restrictions read. Even if THAT
+    // call is refused with Bitbucket's identical privilege-scope wording, the
+    // hint must not fire — it names the branch-restriction/merge-check scope
+    // specifically, and attaching it here would misdirect the operator.
+    const { http } = fakeHttp([
+      [
+        (req) => req.url === 'https://api.bitbucket.org/2.0/repositories/ws/repo',
+        {
+          status: 403,
+          json: { error: { message: 'Your credentials lack one or more required privilege scopes.' } },
+        },
+      ],
+    ]);
+    const r = await api(http).getRequiredChecks();
+    expect(r.state).toBe('unknown');
+    expect(r.detail).toMatch(/Your credentials lack one or more required privilege scopes/);
+    expect(r.detail).not.toMatch(/admin:repository:bitbucket/);
+  });
+
   it('with no branch argument it resolves the repo mainbranch first', async () => {
     const { http, calls } = fakeHttp([
       [
