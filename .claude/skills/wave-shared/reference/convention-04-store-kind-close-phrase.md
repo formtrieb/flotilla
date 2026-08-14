@@ -50,10 +50,7 @@ The sanctioned alternative for docs/meta PRs that legitimately discuss other wor
 
 When this footgun *does* fire, the detection side is the closing probe: an issue closed by a stray mention leaves **no closing-PR evidence**, so `issue-store read-closing` reports it `closed-unknown` — the fourth outcome, an "evidence claim, not a verdict" (ADR-0020). The done-reconcile must **report** such a row, never auto-flag it as a rejection: `closed-unmerged` is reserved for a PR that was found and did not merge, and a mention-closed row is not that. Prevention (this convention) and honest detection (`closed-unknown`) are the two halves of the same W2-F1c defect.
 
-Two live occurrences are the evidence this is a real footgun, not a hypothetical:
-
-- **w2 (2026-07-16):** `FOR-13` resolved to `Done` mid-session with the trigger unconfirmed at the time — PR #9's title/body named "FOR-13" though FOR-13 was not the row that PR landed (docs/retros/2026-07-16-hardening-w2.md).
-- **2026-07-19:** a docs-only PR (#29) whose **title** mentioned `FOR-6` and `FOR-33` — no Convention-4 close phrase anywhere in the body — was squash-merged, and the Linear GitHub integration moved both issues to `Done` before either had even been dispatched in the wave that was about to build them. Recovery required an out-of-band state reset (raw-GraphQL reopen) before the wave could run.
+This is a real footgun, not a hypothetical — it has fired twice, on a bare title mention with no close phrase anywhere in the body (history: `../evidence/convention-04-store-kind-close-phrase.md`, read via the sibling-path read when actually wanted, ADR-0040).
 
 ### The reviewer-verdict render — the other half of the PR body
 
