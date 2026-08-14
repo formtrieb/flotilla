@@ -550,6 +550,150 @@ describe('issue-store-cli', () => {
   });
 });
 
+// ─── issue #505 — every usage error teaches the complete first lesson ───────
+//
+// The motivating misfires (2026-08-13 coordination session): `triage-apply`'s
+// `{state, category, comment}` input shape was discoverable only by reading
+// `contract.ts`, and a wrong/missing flag on a KNOWN op used to answer with the
+// full nineteen-op dump rather than that op's own contract. These specs prove
+// both AC1 (the inline worked-example shape) and AC3 (per-op contract, not the
+// full dump) actually fire — none of this is new BEHAVIOUR (exit codes are
+// unchanged, pinned above), only the stderr TEXT a caller reads.
+
+describe('issue-store-cli — usage errors teach the op\'s own contract (issue #505)', () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let stderr: string;
+
+  beforeEach(() => {
+    stderr = '';
+    errSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        stderr += chunk.toString();
+        return true;
+      });
+  });
+
+  afterEach(() => {
+    errSpy.mockRestore();
+  });
+
+  // ── AC1 — the inline input-shape worked example (≤6 lines) ─────────────────
+
+  it('triage-apply without --input shows its OWN {state, category, comment} shape inline — the reference case', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['triage-apply', 'x#01'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('"state"');
+    expect(stderr).toContain('"category"');
+    expect(stderr).toContain('"comment"');
+    // The whole contract section (error line included) is a compact worked
+    // example, not a source-code hunt.
+    expect(stderr.trim().split('\n').length).toBeLessThanOrEqual(6);
+  });
+
+  it('create without --input shows the bare CreateInput shape inline ({title, filingHint, bodySections})', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['create'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('"title"');
+    expect(stderr).toContain('"filingHint"');
+    expect(stderr).toContain('"bodySections"');
+  });
+
+  it('annotate without --patch shows the AnnotatePatch shape inline', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['annotate', 'x#01'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('"risk"');
+    expect(stderr).toContain('"worker"');
+    expect(stderr).toContain('"bodySections"');
+  });
+
+  it('amend without --patch shows the AmendPatch shape inline', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['amend', 'x#01'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('"sections"');
+  });
+
+  it('publishDocument without --input shows the PublishDocumentInput shape inline', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['publishDocument'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('"title"');
+    expect(stderr).toContain('"bodySections"');
+  });
+
+  it('flag without --kind shows a worked full-invocation example (its "input" is flags, not a file)', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['flag', 'x#01'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('--kind recoverable-stop');
+    expect(stderr).toContain('--option');
+  });
+
+  // ── AC3 — a known op's usage error names only ITS OWN contract, never the
+  //         full multi-op dump; the full dump survives for an unknown op ──────
+
+  it("a KNOWN op's usage error names only that op — sibling op names are absent", async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['triage-apply', 'x#01'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('triage-apply');
+    // Sibling op names that the FULL dump would list must be absent — this is
+    // the tell that distinguishes "this op's contract" from "the whole list".
+    expect(stderr).not.toContain('publishDocument');
+    expect(stderr).not.toContain('triage-close');
+    expect(stderr).not.toContain('clear-flag');
+    expect(stderr).not.toContain('parse-ref');
+  });
+
+  it('an UNKNOWN op still gets the full dump — every op name present', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore(['frobnicate'], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('create');
+    expect(stderr).toContain('triage-apply');
+    expect(stderr).toContain('publishDocument');
+    expect(stderr).toContain('clear-flag');
+  });
+
+  it('a missing op ALSO gets the full dump — there is no op yet to narrow by', async () => {
+    const store = tmpStore();
+    const code = await runIssueStore([], store);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('create');
+    expect(stderr).toContain('clear-flag');
+  });
+
+  // ── AC4 — each op's usage line states its output format ────────────────────
+
+  it('a text-output op (create) states its plain-text output; a JSON op (read) states "as JSON"', async () => {
+    await runIssueStore(['create'], tmpStore());
+    expect(stderr).toMatch(/plain text \(not JSON\)/);
+
+    stderr = '';
+    await runIssueStore(['read'], tmpStore());
+    expect(stderr).toMatch(/as JSON/);
+    expect(stderr).not.toContain('plain text');
+  });
+
+  it('a no-stdout-on-success op (annotate) says so, distinguishing it from the JSON ops', async () => {
+    await runIssueStore(['annotate', 'x#01'], tmpStore());
+    expect(stderr).toMatch(/nothing on success/);
+  });
+});
+
 describe('issue-store-cli — triage ops (ADR-0015)', () => {
   let outSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;

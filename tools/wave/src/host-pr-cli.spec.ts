@@ -619,6 +619,93 @@ describe('host-pr usage errors (exit 2)', () => {
   });
 });
 
+// ─── issue #505 — a known verb's usage error teaches ONLY its own contract ──
+//
+// The motivating misfire: `host-pr arm --pr <url>` (the flag guessed from
+// `create`'s response shape) left --branch missing, and the pre-fix error
+// answered with the ENTIRE ~60-line multi-verb dump — the correct lesson at
+// an oversized price. These specs prove the per-verb contract fires for a
+// KNOWN verb, and that the full dump survives for an unknown/absent one.
+
+describe('host-pr usage errors — per-verb contract vs the full dump (issue #505)', () => {
+  it("a KNOWN verb's usage error (arm, missing --branch) names ONLY arm's own contract", async () => {
+    const code = await runHostPr(['arm', '--remote', GITHUB_REMOTE]);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('usage: host-pr arm --branch');
+    expect(stderr).toContain('output: a single JSON object on stdout');
+    // Text that ONLY the full multi-verb dump carries must be absent — the
+    // tell that this is arm's contract, not the whole usage() text.
+    expect(stderr).not.toContain('Report the code-host landing posture');
+    expect(stderr).not.toContain('GITHUB_TOKEN_CMD');
+    expect(stderr).not.toContain('NOT a read-only probe');
+  });
+
+  it('the arm --pr misfire itself: a --pr typo leaves --branch missing, and the error stays SHORT (arm-only), not the ~60-line dump', async () => {
+    const code = await runHostPr([
+      'arm',
+      '--pr',
+      'https://github.com/example-org/example-repo/pull/1',
+      '--remote',
+      GITHUB_REMOTE,
+    ]);
+
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--branch/);
+    expect(stderr).toContain('usage: host-pr arm --branch');
+    // The oversized-price tell: the full dump runs to dozens of lines; the
+    // per-verb contract is a handful.
+    expect(stderr.trim().split('\n').length).toBeLessThan(10);
+  });
+
+  it("a wrong --method on a KNOWN verb (merge) names merge's own contract, not create's or preflight's", async () => {
+    const code = await runHostPr([
+      'merge',
+      '--branch',
+      'b',
+      '--remote',
+      GITHUB_REMOTE,
+      '--method',
+      'fast-forward',
+    ]);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('usage: host-pr merge --branch');
+    expect(stderr).not.toContain('find-before-create');
+    expect(stderr).not.toContain('create-credentials');
+  });
+
+  it('an UNKNOWN verb still gets the full dump — the credential footer and every verb\'s own prose included', async () => {
+    const code = await runHostPr(['bogus', '--branch', 'b']);
+
+    expect(code).toBe(2);
+    // preflight's own prose line — present ONLY in the full dump.
+    expect(stderr).toContain('Report the code-host landing posture');
+    expect(stderr).toContain('GITHUB_TOKEN_CMD');
+  });
+
+  it('no verb at all still gets the full dump', async () => {
+    const code = await runHostPr([]);
+
+    expect(code).toBe(2);
+    expect(stderr).toContain('GITHUB_TOKEN_CMD');
+  });
+
+  // ── AC4: each verb's own contract states its output format ─────────────────
+
+  it('arm, merge, and status each state "a single JSON object on stdout" in their own usage error', async () => {
+    for (const argv of [
+      ['arm', '--remote', GITHUB_REMOTE],
+      ['merge', '--remote', GITHUB_REMOTE],
+      ['status', '--remote', GITHUB_REMOTE],
+    ]) {
+      stderr = '';
+      await runHostPr(argv);
+      expect(stderr).toContain('output: a single JSON object on stdout');
+    }
+  });
+});
+
 // ─── host-pr create (FOR-28 / ADR-0019 find-before-create) ──────────────────
 //
 // `create` is on the OTHER seam from arm/merge/status: the cross-host Basic-auth

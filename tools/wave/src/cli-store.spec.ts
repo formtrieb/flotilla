@@ -129,6 +129,32 @@ describe('resolveStore', () => {
 
     expect(createLinearApiFromEnv).toHaveBeenCalledWith({ team: 'EX', project: undefined });
   });
+
+  // ─── config-miss teaches the fix (issue #505) ──────────────────────────────
+  //
+  // The motivating misfire: `issue-store triage-apply` run without `--config`
+  // in a repo lacking a `wave.config.json` used to surface a bare fs ENOENT —
+  // Node's message, not an operator's. `resolveStore` is the ONE place every
+  // store-backed CLI verb goes through, so fixing it here fixes it everywhere
+  // (`issue-store <op>`, `dor --id`, `conflict-map --id`) without touching
+  // each call site.
+
+  it('a missing DEFAULT wave.config.json (no --config passed) teaches "pass --config <path>", never a bare ENOENT', async () => {
+    // No --config in argv → resolveStore falls back to the literal
+    // 'wave.config.json', resolved against cwd (tools/wave during this test
+    // run) — which genuinely has none, so this exercises the real fs path.
+    await expect(resolveStore([])).rejects.toThrow(
+      'no wave.config.json in cwd — pass --config <path>',
+    );
+    await expect(resolveStore([])).rejects.not.toThrow(/ENOENT/);
+  });
+
+  it('a missing EXPLICIT --config path names the path, not "pass --config" (the caller already did)', async () => {
+    const missing = join(mkdtempSync(join(tmpdir(), 'cli-store-miss-')), 'wave.config.json');
+
+    await expect(resolveStore(['--config', missing])).rejects.toThrow('--config');
+    await expect(resolveStore(['--config', missing])).rejects.not.toThrow(/ENOENT/);
+  });
 });
 
 // A fresh Linear team that has every default state EXCEPT "In Review" — the
