@@ -97,15 +97,24 @@ function main() {
   const name = findUnquotedExpansion(command);
   if (!name) process.exit(0);
 
+  // Occurrence history (Convention 14 position — provenance, not live teaching):
+  // this shape recurred six times unpromoted, ten silent no-op writes behind a
+  // false success echo among them (docs/adr/0034), before the seventh — an
+  // unquoted `set -- $pair` in a Coordinator flip loop, hours before this hook
+  // landed — became the spec's first blocked case. See conv12-guard.spec.ts and
+  // wave-shared/reference/convention-12-no-command-in-a-shell-variable.md
+  // ("The severity precedent" / "Live occurrences") for the dated record.
   process.stderr.write(
     `Convention-12 guard: this command contains an UNQUOTED parameter expansion ($${name}). ` +
       `Under zsh an unquoted expansion is NOT word-split — a command or flag string held in a ` +
       `variable arrives as ONE token, the call runs nothing (exit 127) or runs wrong, and any ` +
-      `trailing success echo prints anyway (six live occurrences, the last one ten silent no-op ` +
-      `writes behind a false success echo). Rewrite instead of overriding: (1) write the value ` +
-      `out literally in the command; (2) double-quote the expansion ("$${name}") where a single ` +
-      `word is intended; (3) for a loop or multi-step logic, write a script file and run it via ` +
-      `bash <file> — bash word-splits explicitly and the file's content is not this tool call's ` +
+      `trailing success echo prints anyway. This guard deliberately blocks ANY unquoted expansion, ` +
+      `in ANY position — a VALUE, not only a command or its flags — because narrowing the block to ` +
+      `command positions only would require the shell parsing this speed bump is designed not to do. ` +
+      `Rewrite instead of overriding: (1) write the value out literally in the command; ` +
+      `(2) double-quote the expansion ("$${name}") — the sanctioned form whenever a value, not a ` +
+      `command, is what is meant; (3) for a loop or multi-step logic, write a script file and run it ` +
+      `via bash <file> — bash word-splits explicitly and the file's content is not this tool call's ` +
       `text. Never hold a command or its flags in a shell variable, and never let a captured ` +
       `value cross a Bash-call boundary — shell state does not survive between calls.\n`,
   );

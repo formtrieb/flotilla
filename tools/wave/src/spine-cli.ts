@@ -409,7 +409,7 @@ function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
       'two exits, and only these two:',
       '  1. THE HUMAN ACTS — do the gated work, then let wave-start dispatch the row.',
       '     It leaves `planned`, stops matching this gate, and the wave finishes normally.',
-      `  2. PARK + UNCLAIM (ADR-0022) — the row leaves the wave for re-planning:`,
+      `  2. PARK + UNCLAIM — the row leaves the wave for re-planning:`,
       `       flotilla-engine spine set-row-state ${abs} <id> parked`,
       '       flotilla-engine issue-store unclaim <id>',
       '     `parked` is terminal AND claim-releasing, so the row drops out of this gate.',
@@ -526,7 +526,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       }
       process.stdout.write(
         [
-          `disclosures: ${open.length} open of ${total} — archive gate BLOCKED (ADR-0027)`,
+          `disclosures: ${open.length} open of ${total} — archive gate BLOCKED`,
           ...open.map(
             (d) =>
               // A wave-scoped entry (ADR-0038) has no iteration — print the same
@@ -672,7 +672,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
         }
         if ((rowId !== undefined && !rowId.startsWith('--')) || iterRaw !== undefined) {
           process.stderr.write(
-            'error: --wave is the wave-scoped form (ADR-0038): it takes no <row-id> and no --iter\n',
+            'error: --wave takes no <row-id> and no --iter — pass --wave alone with --source and --text to add a wave-scoped disclosure\n',
           );
           return 2;
         }

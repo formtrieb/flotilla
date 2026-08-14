@@ -186,7 +186,7 @@ function fullUsageLines(): string[] {
     '            that has none — is REFUSED (exit 1, outcome reuse-refused, with a reason) rather than',
     '            silently merging a PR that closes nothing; --allow-close-phrase-loss overrides it.',
     '            Output: a single JSON object on stdout.',
-    '  arm       Land the PR by the ADR-0023 arm intent: pending checks → enable auto-merge;',
+    '  arm       Land the PR by deciding per-PR from its live merge state: pending checks → enable auto-merge;',
     '            already clean → direct merge. Idempotent. With --delete-branch, deletes the head branch',
     '            on the decision paths that merge IMMEDIATELY (clean, or a refused-arm controlled degrade)',
     '            — best-effort, reported in `branchDeletion`, never an arm failure. When the decision instead',
@@ -204,14 +204,14 @@ function fullUsageLines(): string[] {
     '            On bitbucket it also reports create-credentials — an ADVISORY (it never changes the exit code)',
     '            stating whether BITBUCKET_EMAIL is set, because `host-pr create` refuses without it while the',
     '            landing verbs do not, and a wave calls create on every row.',
-    '            Store-blind (no --config, no --branch) — identical on every store kind (ADR-0023 amendment).',
+    '            Store-blind (no --config, no --branch) — identical on every store kind.',
     '            Output: a single JSON object on stdout.',
     '',
     '  --remote defaults to `git remote get-url origin`.',
     `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
     '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
     '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
-    '  Every verb resolves its host credential through the engine credential seam (ADR-0029):',
+    '  Every verb resolves its host credential through the engine credential seam:',
     '    <VAR>_CMD (a lookup command, run via the shell, 60s budget) wins over the ambient <VAR>.',
     '    A configured command that fails is a loud typed error naming the command — never its output,',
     '    never a fallback to the ambient variable. The secret itself is never printed.',
@@ -242,7 +242,7 @@ const VERB_CONTRACT: Record<Verb, readonly string[]> = {
   ],
   arm: [
     `usage: host-pr arm --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
-    '  Lands the PR by the ADR-0023 arm intent: pending checks → enable auto-merge; already clean → direct',
+    '  Lands the PR by deciding per-PR from its live merge state: pending checks → enable auto-merge; already clean → direct',
     '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
     'output: a single JSON object on stdout',
   ],
@@ -260,7 +260,7 @@ const VERB_CONTRACT: Record<Verb, readonly string[]> = {
   preflight: [
     'usage: host-pr preflight [--remote <url>]   # no --branch — a repo-level probe',
     '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks (plus',
-    '  create-credentials on bitbucket). Store-blind — identical on every store kind (ADR-0023 amendment).',
+    '  create-credentials on bitbucket). Store-blind — identical on every store kind.',
     'output: a single JSON object on stdout',
   ],
 };
@@ -637,13 +637,13 @@ function createCredsFor(host: Host, env: NodeJS.ProcessEnv | undefined): Creds {
   if (host === 'bitbucket') {
     const token = resolveCredential(BITBUCKET_TOKEN_VAR, {
       env,
-      purpose: 'open a PR through `host-pr create` on Bitbucket Cloud (ADR-0019)',
+      purpose: 'open a PR through `host-pr create` on Bitbucket Cloud',
     });
     return { auth: bitbucketCreateCreds(token, (env ?? process.env)[BITBUCKET_EMAIL_VAR]) };
   }
   const token = resolveCredential('GITHUB_TOKEN', {
     env,
-    purpose: 'open a PR through `host-pr create` (ADR-0019)',
+    purpose: 'open a PR through `host-pr create`',
   });
   return { auth: `x-access-token:${token}` };
 }

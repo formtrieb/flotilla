@@ -255,8 +255,9 @@ export function probeCredential(
       failure: 'unexpected',
       message:
         `${variable} could not be probed: the lookup threw an unexpected ` +
-        `${errorClassName(err)}. Its message is deliberately not reported — ` +
-        'only a typed CredentialResolutionError is known to be value-free (ADR-0029).',
+        `${errorClassName(err)}. Its message is deliberately not reported — an untyped throw carries no ` +
+        'guarantee that its text is free of the lookup command\'s own output, so only a typed ' +
+        'credential-resolution failure is known to be safe to print.',
     };
   }
 }
@@ -285,7 +286,7 @@ function printUsage(): void {
   process.stderr.write(
     [
       'usage:',
-      '  credential-probe --all                          # probe every CONFIGURED credential (ADR-0029)',
+      '  credential-probe --all                          # probe every CONFIGURED credential',
       '  credential-probe --var <VAR> [--var <VAR> ...]  # probe exactly these (e.g. GITHUB_TOKEN)',
       '',
       '  Answers "can every configured credential be resolved right now?" by exit',
@@ -293,8 +294,8 @@ function printUsage(): void {
       '  NEVER prints the secret, the lookup stdout, or the lookup stderr — only',
       '  the variable name, the configured command (a pointer), and a typed failure.',
       '',
-      '  Do NOT run a configured <VAR>_CMD value yourself: its stdout IS the secret.',
-      '  This verb is the sanctioned check (wave-shared Convention 8).',
+      '  Do NOT run a configured <VAR>_CMD value yourself: its stdout IS the secret. This verb is the',
+      '  sanctioned way to check it — it runs the lookup and reports only whether it resolved.',
       '',
       `  known credentials for --all: ${KNOWN_CREDENTIAL_VARIABLES.join(', ')}`,
       '',

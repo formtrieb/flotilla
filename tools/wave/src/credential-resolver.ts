@@ -226,8 +226,10 @@ function resolveOnce(variable: string, opts: ResolveCredentialOptions): string {
       'not-configured',
       undefined,
       `${variable} is required to ${opts.purpose ?? 'run this command'}, and neither source is configured. ` +
-        `Set ${commandVariable} to a lookup command that prints the secret on stdout (ADR-0029) — ` +
-        `the per-project indirection — or export ${variable} directly (the ephemeral-environment path).`,
+        `Set ${commandVariable} to a lookup command that prints the secret on stdout — the per-project ` +
+        `indirection that keeps the secret itself out of the ambient environment — or export ${variable} ` +
+        `directly for an ephemeral environment (a CI job, a short-lived container) with no keychain to look up. ` +
+        `Background: https://github.com/formtrieb/flotilla/blob/main/docs/adr/0029-credentials-resolve-through-a-per-project-lookup-command.md`,
     );
   }
   return ambient;
@@ -247,7 +249,8 @@ function runLookup(
 ): string {
   const result = spawn(command, CREDENTIAL_LOOKUP_TIMEOUT_MS);
   const neverFallsBack =
-    `The credential was NOT resolved, and ${variable} is never used as a fallback (ADR-0029). ` +
+    `The credential was NOT resolved, and ${variable} is never used as a fallback — a failing lookup command ` +
+    `is always a loud error, never a silent switch to the ambient variable. ` +
     `The command's own output is deliberately not reported — it would be the secret.`;
 
   if (result.timedOut) {

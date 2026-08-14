@@ -606,7 +606,7 @@ async function linearChecks(api: LinearApi, storeConfig: LinearStoreConfig): Pro
           name: 'tracker-host-integration',
           status: 'fail',
           detail:
-            'Linear↔GitHub integration is NOT installed and no states.doneState fallback is configured — merged PRs will never resolve rows to done (ADR-0020). Install the integration or set states.doneState.',
+            'Linear↔GitHub integration is NOT installed and no states.doneState fallback is configured — merged PRs will never resolve rows to done. Install the Linear↔GitHub integration, or set states.doneState in wave.config.json to a Linear workflow state name. Background: https://github.com/formtrieb/flotilla/blob/main/docs/adr/0020-linear-claims-live-in-workflow-states-triage-vocabulary-stays-labels.md',
         };
   }
 
@@ -648,9 +648,9 @@ function preflightUsage(message: string): number {
       'usage: cli-store preflight [--config <path>] [--expect <plugin-version>]   # prints the StorePreflightReport as JSON',
       '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
       '  --expect <plugin-version> additionally reports the plugin/engine lockstep',
-      '  comparison as an ADVISORY check (ADR-0032) — it never fails the preflight.',
+      '  comparison as an ADVISORY check — it never fails the preflight.',
       '  For code-host posture (pr-merge-token, allow-auto-merge, required-checks) run',
-      '  `host-pr preflight` — it is store-blind and reports on every store kind (ADR-0023).',
+      '  `host-pr preflight` — it is store-blind and reports on every store kind.',
       '',
     ].join('\n'),
   );
