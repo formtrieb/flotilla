@@ -1,6 +1,6 @@
 ---
 name: to-prd
-description: Use when turning the current conversation, spec, or design discussion into a PRD published as an issue on the project tracker. Triggers on "write a PRD", "turn this into a PRD", "draft a product requirements doc", or when an upstream design session is ready to be captured as a planning artifact for slicing.
+description: Use when turning the current conversation, spec, or design discussion into a product requirements document, published as an issue on the project tracker so the plan is written down before anyone builds it. Triggers on "write a PRD", "turn this into a PRD", "draft a product requirements doc", or when an upstream design session is ready to be captured as a planning artifact for slicing.
 ---
 
 # to-prd

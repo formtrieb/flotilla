@@ -1,6 +1,6 @@
 ---
 name: wave-resume
-description: Use when a wave Coordinator was killed mid-wave and you need to reconstruct state and resume — read the spine (WAL authority), reconcile against live worktrees + on-disk sidecars + merged PRs, re-project the coarse ledger, then re-dispatch only what the reconciler says. Triggers on "resume wave <slug>", "the coordinator died — pick up wave <slug>", "reconcile and resume".
+description: Use when a running wave was interrupted part-way — a crash, a closed window, a machine that went away — and it has to be picked up where it stopped. Reads the wave's own plan file, compares it against the working copies still on disk, the results the agents left behind, and the pull requests that have already merged, brings the tracker back in step with reality, and re-runs only the work that is genuinely still outstanding. Triggers on "resume wave <slug>", "the coordinator died — pick up wave <slug>", "reconcile and resume".
 ---
 
 # wave-resume

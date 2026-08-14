@@ -1,6 +1,6 @@
 ---
 name: wave-start
-description: Use when dispatching a Status:draft or Status:ready WAVE.md spine — auto-flip draft→ready via spine set-status, flip to in-flight, re-verify DOR + conflict-map + intra-wave Blocked-by membership + the human gate (HELD and human-gated rows are skipped, never dispatched), fan out Workers (worktree-isolated, schema-validated WorkerReport) then universal Reviewers (schema-validated ReviewerVerdict), route each Verdict deterministically, cap=1 re-dispatch, STOP→needs-attention. Ends at every non-HELD row in-review — NEVER merges. Triggers on "start the wave <slug>", "dispatch wave <slug>", "run wave-start".
+description: Use when running a wave that has already been planned — re-checks the batch is still safe to run side by side, leaves alone anything parked for a human to decide, then puts one background agent on each issue in its own copy of the repo, has a second agent re-run the tests and review the result, and either opens a pull request or sends the work back for exactly one more attempt. Anything that goes wrong is flagged on the tracker for you. It stops with every pull request open and waiting — it never merges. Triggers on "start the wave <slug>", "dispatch wave <slug>", "run wave-start".
 ---
 
 # wave-start

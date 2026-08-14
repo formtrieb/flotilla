@@ -1,6 +1,6 @@
 ---
 name: wave-close
-description: Use when finishing a wave's host-side work — recompute the advisory merge order, clean up agent worktrees, flag stuck rows, and archive the spine. Re-entrant + idempotent; opt-in --auto partial-arms the order-free rows through the engine host-pr verb and exits (ADR-0023). Triggers on "close the wave <slug>", "finalise wave <slug>", "archive wave <slug>".
+description: Use when finishing a wave — works out which order the open pull requests should land in, deletes the working copies the agents ran in, flags anything that got stuck so it is not lost, and files the wave's plan away. Safe to run again if it was interrupted. Add --auto and it also tells the pull requests that do not depend on each other to merge themselves once their checks pass, then stops. Triggers on "close the wave <slug>", "finalise wave <slug>", "archive wave <slug>".
 ---
 
 # wave-close
