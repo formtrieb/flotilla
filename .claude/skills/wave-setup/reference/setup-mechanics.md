@@ -637,6 +637,50 @@ Convention 8's stage-2 gate (wave-shared's Convention 8 reference, "The structur
 
 **Why the floor moved off the beta line (issue #391).** It read `>=0.1.0-beta.2` until the 1.0.0 contract freeze made that value stale in two ways at once: a prerelease of a superseded pre-1.0 line is not an install target this scaffold should still be blessing, and — because a prerelease comparator is the loosest thing a floor can say — it told a consumer that the *older* of two supported answers was acceptable. `1.0.0` carries every carve-out `0.1.0-beta.2` did, so raising the floor loses nothing and drops the beta line from the supported set. **Keep this value moving with the release era, not with every guard change:** the floor exists to keep a consumer off a guard that *catches less* than this doc describes, so a refusal-message or docstring change does not raise it. The pointer-free refusal that landed with this issue is exactly that case — a legibility fix, not a detection-strength one — so the floor stayed at the era's own number when `1.0.1` shipped that fix. **That is now measured rather than argued** (2026-08-01, issue #397, against both published artifacts): `1.0.0` and `1.0.1` refuse the same command identically — exit 2, same family-3 match — so a consumer pinned at the floor runs a guard of full strength with worse text, which is precisely the trade this rule exists to allow.
 
+### Trackability verification (issue #494)
+
+Both artifacts this scaffold writes — the tracked `.claude/settings.json` above and its tracked Echo-Guard hook copy (the `cp` destination in the Echo-Guard subsection above) — land inside `.claude/`, and a consumer's pre-existing `.gitignore` is exactly as likely to already exclude that whole directory as any other path in the repo. Writing either file then succeeds on disk with no error; `git add .claude` stages nothing and still exits 0; `git status` reports a clean tree. Nothing in that sequence is loud — a `wave-setup` run can report success with the scaffold silently absent from every future worktree, and every dispatched agent then runs with no allowlist, no env block, no echo-guard (the NF-F1 stall class, arrived at silently — see the "Beyond the engine CLI" note above). **Run this verification immediately after [Procedure step 9](../SKILL.md#procedure) writes the scaffold, before reporting success — never take a clean `git status` as proof.**
+
+```bash
+git check-ignore .claude/settings.json
+git check-ignore .claude/hooks/echo-guard.cjs
+```
+
+Each call's exit code is the verdict — this is the one place in the flow that has to read an exit code rather than a JSON report, because there is no engine verb standing between the write and the consumer's own `.gitignore`:
+
+- **Exit 1 (no match) on both** — trackable. Continue to the cross-check below.
+- **Exit 0 (a match) on either** — **STOP.** Do not report success. The consumer's `.gitignore` excludes a path this scaffold depends on; fix the `.gitignore`, never the scaffold — see the narrowing recipe below.
+
+#### The narrowing recipe — why a file negation alone cannot undo it
+
+A consumer's pre-existing rule is commonly a wholesale directory ignore, plain and unremarkable — the ordinary output of a starter template, nothing exotic:
+
+```gitignore
+# Claude Code
+.claude/
+CLAUDE.md
+```
+
+**Adding `!.claude/settings.json` underneath this does not work — git's own documented traversal behavior, not a bug to route around.** Once a directory itself matches an exclude pattern, git does not descend into it to evaluate further patterns for anything inside it — `.claude/` excludes the directory as one unit, so there is nothing left for a later `!.claude/settings.json` line to re-include; git never looks inside far enough to find it. The fix has to stop excluding the directory itself and exclude its *contents* instead, one level down, so an individually-scoped negation still has something to act on:
+
+```gitignore
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+```
+
+`.claude/*` excludes every direct child of `.claude/` — files and subdirectories alike — without excluding `.claude/` itself, so git still descends into it. `!.claude/settings.json` then re-includes that one file; `!.claude/hooks/` re-includes the `hooks/` directory as a unit, and because nothing excludes *its* contents, `echo-guard.cjs` comes back in with it. `.claude/settings.local.json` and any other file directly under `.claude/` this recipe does not name stay ignored, exactly as intended — neither appears in a negation.
+
+#### The `git add --dry-run` cross-check
+
+Confirm the narrowing actually resolved the way the two `git check-ignore` calls above imply, from the staging side:
+
+```bash
+git add --dry-run .claude
+```
+
+It must list exactly the two scaffolded paths — `.claude/settings.json` and the Echo-Guard hook copy — and nothing else new under `.claude/` (an already-tracked file re-listing is expected; a *new* file beyond the two scaffolded ones is not, and is its own signal to re-check the `.gitignore` edit). A shorter or empty listing means the narrowing recipe did not take.
+
 ### Scaffold-vs-live allowlist reconciliation (issue #269)
 
 > **This reconciliation predates the ADR-0032 scaffold rewrite above** — it diffed the live file against a scaffold that still named six engine-CLI forms (the published package, the local `tsx` binary, and the `resume-cli.ts`/`spine-cli.ts` aliases, each with and without the proxy prefix). The generic scaffold now names exactly one form, and the four `resume-cli.ts`/`spine-cli.ts` rows below have since been **removed from this repo's live tracked file** — dropped in the same change that respelled their last two call-sites to the unified subverb form (see the reconciled bullet above). Read those four rows as history: they record what the live file carried and why it stopped, not entries to look for today. Everything else this table found and dispositioned (the 16-entry stale-pre-router-path removal) is unaffected and already actioned. A fresh reconciliation pass against the new single-form baseline is a follow-up outside this slice's declared scope.
