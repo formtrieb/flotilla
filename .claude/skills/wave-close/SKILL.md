@@ -63,6 +63,14 @@ Both forms land in the same table, both are counted by phase 6's disclosure gate
 
 **A close-visible measurement you can predict at routing is pre-captured there instead** — as a measurement-point disclosure, so the archive gate later forces the measurement itself to happen and its disposition carries the measured evidence. Pre-capture carries what you could foresee; this window carries what you could not (ADR-0038). Neither replaces the other.
 
+## Coordination misfires — a self-reported line in the closing report
+
+The operator block this skill ends with (Convention 16) carries one more line: **how many engine-CLI usage errors (exit 2) and hook/guard blocks you — the Coordinator, this session — hit across this wave's own coordination**, each with a one-line cause (a guessed flag, a config-miss `ENOENT`, an input shape read from source instead of `--help`, an assumed output shape — whatever it actually was). This counts only your own misfires, never a Worker's or Reviewer's — the harness has no way to see into another session's exits, so it is self-reported, and the line says so.
+
+**State it explicitly even when it's zero:** `coordination misfires: 0`. Silence is not the same claim as "none happened" — an absent line reads as *never counted*, not *clean* (the same deferred-is-not-pass discipline the DoR gates hold elsewhere in this pipeline), so a clean wave spells out the zero exactly like a wave with misfires spells out the count.
+
+This is deliberately **prose-tier** (ADR-0034 draft mode): the lightest possible counter, not new engine machinery, added at the one place every wave already reports. What accumulating this line across waves is *for* — the recurrence it feeds — is in [reference/close-mechanics.md](reference/close-mechanics.md).
+
 ## Procedure
 
 Each phase's full worked body — guards, worked command blocks, live-finding annotations, and that phase's own Common-Mistakes bullets — lives in its own file under [reference/](reference/), named by phase number. **Load every file in that directory, not a subset picked by name** — a sibling's "phase N" citation resolves to real prose only once the whole directory has been read. This loader deliberately does not enumerate what's in there: a new guard or a new live finding is a new edit to its one phase file, with zero edits to this file or to any sibling phase file required. The numbering below (`1`, `2`, `3`, `4`, `4a`, `4b`, `5`, `6`) is the stable identifier sibling skills cite (e.g. "wave-close phase 4b").
