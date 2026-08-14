@@ -7,7 +7,7 @@ description: Use when finishing a wave — works out which order the open pull r
 
 The operational terminator for a wave: confirm every row has reached `in-review`, clean up the wave's agent worktrees **before** anything merges (a worktree or a plain branch-checkout both silently break `--delete-branch`), recompute and **print** the advisory merge order (read-only — no parser-consumed section is mutated) so the human merges each PR and then verifies branch deletion as its own checked step, **land each merged row `done`** via the done-reconcile (the existing `issue-store close` verb) — **ticking the reviewer-met ACs it carries** (`--acked`, derived per-row from the FINAL Reviewer verdict via the engine's `verdict-acked` verb, FOR-17) — flag any closed-unmerged or stuck rows, **gate the archive on TWO fail-closed engine checks — both read by exit code alone, both blocking**: every disclosure carrying a disposition (`spine check-disclosures`, ADR-0027) *and* no human-gated row still holding the live `queued` claim it was never dispatched to release (`spine check-awaiting-human`, [reference/phase-6-archive.md](reference/phase-6-archive.md)) — and archive the spine to `_archive/`.
 
-Load **wave-shared** by name first — `/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin (wave-shared's own [plugin-namespaced by-name loads](../wave-shared/SKILL.md) note has the finding) — it owns the auth-preflight / atomic-spine conventions this skill obeys.
+Read [`../wave-shared/SKILL.md`](../wave-shared/SKILL.md) and every file under [`../wave-shared/reference/`](../wave-shared/reference/) first, resolved against this skill's own base directory — no skill invocation, no namespace to guess (ADR-0040) — it owns the auth-preflight / atomic-spine conventions this skill obeys.
 
 Your job is the **judgment** — the terminality gate, deciding when a closed-unmerged PR or a stuck row becomes a `needs-attention` flag (and when a row with *no* merge evidence is merely reported, not flagged), and calling the archive at the right moment. Each phase's worked sequence — exact invocations, live-finding annotations, Common Mistakes — lives with that phase under [reference/](reference/); the pieces genuinely common to every phase (CLI resolution, the full command reference, exit-code tables, shared JSON shapes) live in [reference/close-mechanics.md](reference/close-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
 
@@ -69,7 +69,7 @@ Each phase's full worked body — guards, worked command blocks, live-finding an
 
 ### 1. Load wave-shared + gate
 
-Load wave-shared (`/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin), read the spine, and confirm the terminality gate before doing anything else; a re-run on an already-archived wave is a guarded no-op past this point.
+Read `../wave-shared/SKILL.md` and every file under `../wave-shared/reference/`, resolved against this skill's own base directory, read the spine, and confirm the terminality gate before doing anything else; a re-run on an already-archived wave is a guarded no-op past this point.
 
 ### 2. Auth preflight (skip when no host writes pending)
 

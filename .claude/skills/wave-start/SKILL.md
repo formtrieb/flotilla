@@ -9,7 +9,7 @@ Run the in-flight dispatch loop for one `Status: ready` spine: flip it to `in-fl
 
 Your job is the **judgment**: deciding the dispatch order, reacting to each routed outcome (transition / re-dispatch / STOP), and choosing what to do when the loop STOPs (flag `needs-attention`, ping the Operator). The mechanical glue — composing the Workflow script, the exact routing-verb invocations, the WAL ordering — lives in [reference/workflow-driver.md](reference/workflow-driver.md) and [reference/start-mechanics.md](reference/start-mechanics.md). You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`).
 
-Load **wave-shared** by name first — `/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin (wave-shared's own [plugin-namespaced by-name loads](../wave-shared/SKILL.md) note has the finding) — it owns the canonical agent-boundary JSON schemas (`WORKER_REPORT_SCHEMA`, `REVIEWER_VERDICT_SCHEMA`) you paste into the Workflow driver, plus the auth-preflight / deterministic-routing / atomic-spine conventions this skill obeys.
+Read [`../wave-shared/SKILL.md`](../wave-shared/SKILL.md) and every file under [`../wave-shared/reference/`](../wave-shared/reference/) first, resolved against this skill's own base directory — no skill invocation, no namespace to guess (ADR-0040) — it owns the canonical agent-boundary JSON schemas (`WORKER_REPORT_SCHEMA`, `REVIEWER_VERDICT_SCHEMA`) you paste into the Workflow driver, plus the auth-preflight / deterministic-routing / atomic-spine conventions this skill obeys.
 
 ## When to Use
 

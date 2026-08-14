@@ -80,6 +80,18 @@ arithmetic on it breaks at compile time.
 - **Bitbucket's write half remains unproven** (unchanged since 1.3.0; the read half is
   live-verified).
 
+### Known issues
+
+- **First `wave-start` on an installed-form consumer needs one manual `/flotilla:wave-shared`
+  invocation (every release ≤ 1.4.0).** `wave-shared` declares `disable-model-invocation:
+  true`, which removes it from what a model may load by name in any context — so the
+  by-name load instruction wave-start and wave-close carried was never actually
+  executable. Project-local this stayed hidden behind a working cwd read; the first
+  fully-external consumer run hit it live and the operator had to invoke
+  `/flotilla:wave-shared` by hand to get past it. Fixed going forward: the execution
+  skills read `wave-shared` as a sibling file instead of loading it by name, so no
+  release after 1.4.0 needs the workaround.
+
 ## [1.3.1] — 2026-08-11
 
 The night after the Bitbucket landing host shipped, this release closes its first

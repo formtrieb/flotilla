@@ -1,6 +1,6 @@
 # Phase 1 — Load wave-shared + gate
 
-Load **wave-shared** first — `/wave-shared` project-local, `/flotilla:wave-shared` once consumed via the installed plugin (wave-shared's own [plugin-namespaced by-name loads](../../wave-shared/SKILL.md) note has the finding) — for its auth-preflight and atomic-spine conventions.
+Read `../wave-shared/SKILL.md` and every file under `../wave-shared/reference/`, resolved against wave-close's own base directory (not this reference file's, which sits one level deeper) — for its auth-preflight and atomic-spine conventions.
 
 Read the spine and confirm the terminality gate before doing anything else:
 
