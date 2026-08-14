@@ -6543,7 +6543,7 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
     expect(entry.manualRecovery?.message).toMatch(/cannot succeed/i);
     expect(entry.manualRecovery?.message).toMatch(/deterministic/i);
     expect(entry.manualRecovery?.commands).toEqual([
-      `git worktree remove --force ${AGENT_PATH_A}`,
+      `git worktree remove --force '${AGENT_PATH_A}'`,
       'git worktree prune',
     ]);
   });
@@ -6567,9 +6567,46 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
     expect(result.erroredStillListed).toHaveLength(1);
     expect(result.erroredStillListed[0].manualRecovery).toBeDefined();
     expect(result.erroredStillListed[0].manualRecovery?.commands).toEqual([
-      `git worktree remove --force ${AGENT_PATH_A}`,
+      `git worktree remove --force '${AGENT_PATH_A}'`,
       'git worktree prune',
     ]);
+  });
+
+  it('a worktree path containing BOTH a space and a non-ASCII character (issue #515) is safely single-quoted in the printed commands', () => {
+    // This repo's own checkout path is a ready-made live fixture for this
+    // class (two spaces, one typographic en-dash) — the class is otherwise
+    // invisible on a CI runner where every path is boring.
+    const spacedPath =
+      '/Users/neo/Documents/Brain/Freelancer/Projects – Clients/Projektionisten/DSW21/' +
+      '06 Development/flotilla/.claude/worktrees/wf_f61d54a0-64f-1';
+    const { remover } = alwaysThrowRemover();
+    const junky: WorktreeEntry = {
+      path: spacedPath,
+      branch: 'wave/515-spaced',
+      head: 'a'.repeat(40),
+      dirty: true,
+      dirtyAllJunk: true,
+    };
+
+    const result = executeCleanup(
+      { selected: [junky], skipped: [] },
+      { remover, stillListed: () => true, retryPause: NOOP_PAUSE, skipBranchHygiene: true },
+    );
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    const commands = result.erroredStillListed[0].manualRecovery?.commands ?? [];
+    expect(commands).toEqual([`git worktree remove --force '${spacedPath}'`, 'git worktree prune']);
+
+    // Prove the check can fail (Convention 11): the UNQUOTED bare form this
+    // spec exists to rule out — the pre-fix shape — parses on a POSIX shell
+    // as MORE than one argument to `git worktree remove`, so asserting the
+    // printed command against that bare interpolation is a genuinely
+    // falsifiable claim, not a tautology.
+    const bareForm = `git worktree remove --force ${spacedPath}`;
+    expect(commands[0]).not.toBe(bareForm);
+    expect(bareForm.split(' ').length).toBeGreaterThan(5); // splits into many argv words
+    expect(commands[0].startsWith("git worktree remove --force '")).toBe(true);
+    expect(commands[0].endsWith("'")).toBe(true);
   });
 
   it('a PLAIN clean worktree (never classified disposable) that lands in erroredStillListed keeps the TRANSIENT reading — no manualRecovery, today\'s reading unchanged', () => {
