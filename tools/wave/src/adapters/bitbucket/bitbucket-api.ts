@@ -647,6 +647,12 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
    * to report and `contexts` stays empty even when `state` is `present`. That
    * is also exactly why this adapter does NOT implement host-pr's optional
    * `CheckAttachReader` — see the note on {@link mergeabilityOf}.
+   *
+   * **Scope hint (field report, third ask, 2026-08-13):** when the branch-
+   * restriction read itself is refused for lacking a privilege scope, Bitbucket's
+   * own message — "Your credentials lack one or more required privilege
+   * scopes." — names no scope, so it is appended here, and ONLY here: see
+   * {@link mergeChecksScopeHint}.
    */
   async getRequiredChecks(branch?: string): Promise<RequiredChecksInfo> {
     try {
@@ -657,7 +663,9 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
       return {
         state: 'unknown',
         contexts: [],
-        detail: `Could not probe Bitbucket merge checks: ${errMessage(err)}. Advisory only — the wave is not blocked.`,
+        detail:
+          `Could not probe Bitbucket merge checks: ${errMessage(err)}.${mergeChecksScopeHint(err)} ` +
+          `Advisory only — the wave is not blocked.`,
       };
     }
   }
@@ -973,4 +981,46 @@ function bbMessage(json: unknown, op: string): string | undefined {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The scope Bitbucket's own privilege-scope refusal never names, appended to
+ * {@link RealBitbucketApi.getRequiredChecks}'s `detail` — and PER-OPERATION
+ * rather than a constant tacked onto every Bitbucket failure (issue #543, the
+ * third and last ask of the field report that shipped {@link getPrStatus}'s
+ * 404-is-success handling and the host-aware credentials rewrite before it).
+ *
+ * Two conditions both have to hold, not the status code alone:
+ *
+ *   1. `err.op === 'getRequiredChecks'` — the branch-restriction read this
+ *      class issues ONLY from {@link RealBitbucketApi.requiredBuilds}, never
+ *      from an unrelated call. A 403 on `mainBranch()` (a different endpoint,
+ *      gated by a different scope) must not borrow this hint.
+ *   2. Bitbucket's own message names a privilege-scope shortfall, not some
+ *      other 403 reason (an inaccessible repository reads "Access denied" on
+ *      this very host — see the `getPrStatus` spec — and that message must
+ *      never be told to add a scope it already has).
+ *
+ * The scope named — `admin:repository:bitbucket` — and the "no narrower read
+ * scope" claim are MEASURED, not guessed (ADR-0030: no Bitbucket credential is
+ * reachable from this repo, so the read is against Atlassian's own docs,
+ * read 2026-08-14): the branch-restrictions collection this class reads for BOTH
+ * `require_passing_builds_to_merge` and `allow_auto_merge_when_builds_pass` is
+ * gated on `admin:repository:bitbucket` for an API-token credential, and
+ * Atlassian's own API-token permissions reference lists no finer-grained read
+ * scope for it (support.atlassian.com/bitbucket-cloud/docs/api-token-permissions,
+ * read 2026-08-14) — the same "no per-pull-request arming call" discipline
+ * {@link RealBitbucketApi.enableAutoMerge} already measures rather than assumes.
+ */
+function mergeChecksScopeHint(err: unknown): string {
+  const isPrivilegeScopeRefusal =
+    err instanceof BitbucketApiError &&
+    err.op === 'getRequiredChecks' &&
+    err.status === 403 &&
+    /privilege scopes?/i.test(err.message);
+  if (!isPrivilegeScopeRefusal) return '';
+  return (
+    " Branch-restriction and merge-check reads need Bitbucket's 'admin:repository:bitbucket' scope — " +
+    'there is no narrower read scope for them.'
+  );
 }
