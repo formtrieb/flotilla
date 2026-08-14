@@ -1,6 +1,6 @@
 ---
 name: wave-shared
-description: Shared reference that the wave execution skills — wave-start, wave-reviewer, wave-close — load for the exact result shapes a dispatched agent has to return, and for the working rules they all follow: checking access to the tracker and the code host up front, handling each review outcome the same way every time, and writing to a wave's plan file without ever leaving it half-written. Read via a sibling-path file read by those skills, from their own base directory; never picked on its own.
+description: Shared reference that the wave execution skills — wave-start, wave-reviewer, wave-close — load for the exact result shapes a dispatched agent has to return, and for the working rules they all follow: checking access to the tracker and the code host up front, handling each review outcome the same way every time, and writing to a wave's plan file without ever leaving it half-written. Read via a sibling-path file read by those skills, from their own base directory rather than loaded by name; never picked on its own.
 disable-model-invocation: true
 ---
 
