@@ -910,6 +910,83 @@
  * MAY yet clear it — and `manualRecovery` stays scoped to `erroredStillListed`
  * only, additive, with no existing key changing shape (ADR-0035).
  *
+ * ── the errno alone cannot carry the denial: ENOTEMPTY can BE the harness
+ *    write-deny, not just the transient race it was modelled as (issue #542) ──
+ *
+ * The #528 fix above closes the flip for the shape its own regression spec
+ * modelled: a sandbox denial thrown mid-traversal as a non-ENOTEMPTY errno
+ * (`EACCES`/`EPERM`). Live measurement — the first close run against the
+ * fixed engine, then a second independent close the same day (occurrences 4
+ * and 5 of the flip overall, 1 and 2 with the #528 fix already shipped) —
+ * showed the flip surviving anyway: three CLEAN worktrees whose checkouts
+ * carried nothing but tracked, harness-denied paths (`.claude/settings.json`,
+ * `.claude/skills/**`) still read `erroredStillListed` with `dirty: false`
+ * and NO `manualRecovery` on the very first run of the fixed engine — the
+ * TRANSIENT reading, against an obstruction that is not transient at all.
+ *
+ * The reason: on the real harness, the denial does not surface as the clean
+ * mid-traversal permission error the #528 spec modelled. The denied CHILDREN
+ * make their enclosing directory undeletable, so the call that fails reports
+ * the directory as NOT EMPTY — an `ENOTEMPTY` byte-indistinguishable, by
+ * errno alone, from the genuine Finder/editor race the bounded retry (FOR-84)
+ * exists to clear. `!attempt.enotempty` — the #528 signal — is therefore
+ * FALSE for this shape, and `forceEligible` is false too (a plainly-clean
+ * worktree, exactly like #528's own subject), so `exhausted` stays false:
+ * TRANSIENT. Only a SECOND, independent listing — which now sees run 1's own
+ * partial deletion as fresh `git status` divergence and reclassifies
+ * `dirtyAllJunk: true` — reaches EXHAUSTED, the same one-run-late shape #528
+ * already named and closed for the OTHER errno family.
+ *
+ * Two candidate fixes were weighed against the code, not merely against the
+ * symptom, before choosing:
+ *
+ *   1. Re-probe the worktree's `git status` after the failed attempt, so run
+ *      1's own report already carries what a fresh run 2 would say (mirroring
+ *      {@link probeWorktreeGitState} at the exact point `executeCleanup`
+ *      classifies the throw). REJECTED: it answers the question by asking git
+ *      the SAME question `dirtyAllJunk` already answers, just a second time —
+ *      an extra subprocess spawn, a dependency on `.git` still being
+ *      self-scoped at the exact moment of the probe (true here because FOR-86
+ *      deletes `.git` last, but not a property this classifier should have to
+ *      re-derive), and evidence one step removed from the thing that actually
+ *      failed: a repo-wide status delta, when what actually matters is
+ *      narrower — what THIS removal attempt could not clear.
+ *   2. Probe the residue the failed attempt itself left behind, on the
+ *      filesystem, directly. CHOSEN. {@link isSurvivorSetExclusivelyDenied} is
+ *      the filesystem-scan counterpart of {@link isDisposableStatusPath},
+ *      applied to what SURVIVED the attempt rather than to a status-line
+ *      delta: it reuses the exact same {@link HARNESS_DENIED_DIRS} /
+ *      {@link HARNESS_DENIED_FILES} allowlist that predicate already owns, so
+ *      the two evidence sources (git-status-driven pre-attempt, filesystem-
+ *      driven post-attempt) agree on what "denied" means by construction, not
+ *      by two people maintaining two lists in sync. It needs no git
+ *      subprocess, no self-scoped `.git`, and answers the narrower, more
+ *      directly relevant question: not "is the repo dirty" but "is what THIS
+ *      call could not delete exactly the shape we already know the harness
+ *      refuses".
+ *
+ * {@link RemovalAttempt}'s `erroredStillListed` variant now also carries
+ * `deniedResidue` (computed only when `enotempty` is true — a non-ENOTEMPTY
+ * throw already reads EXHAUSTED via the #528 signal alone, so the filesystem
+ * scan is skipped rather than run needlessly). `executeCleanup` reads
+ * EXHAUSTED as `forceEligible || !attempt.enotempty || attempt.deniedResidue`
+ * — THREE independent sufficient signals, any one alone enough; all three
+ * false keeps today's TRANSIENT reading exactly as before. `exhaustedManualRecovery`
+ * is unchanged by this: it is still told only whether `forceEligible` fired,
+ * because routes two (#528) and three (#542) share the identical "plainly
+ * clean, deterministically denied" wording — the message and its two
+ * prescribed commands are untouched (correct as they are, and proven so
+ * live).
+ *
+ * The residue check's own SAFETY DIRECTION is deliberately the opposite of
+ * its sibling {@link isDirExclusivelyJunk}: an unreadable or already-gone
+ * directory returns `false` (NOT exclusively denied), never vacuous `true` —
+ * see that function's own doc comment for why treating "cannot inspect it" as
+ * confirming evidence would be unsound here specifically. A dedicated spec
+ * proves the negative case explicitly: a real on-disk survivor set that MIXES
+ * denied-path content with genuinely-real leftover content stays TRANSIENT,
+ * not just the case where nothing survived to inspect at all.
+ *
  * ── a repo-internal location with no lifecycle at all (issue #355) ────────────
  *
  * Every population above is a WORKTREE, and every one of them accumulated
@@ -1018,7 +1095,7 @@ export interface WorktreeEntry {
   retried?: boolean;
   /**
    * Present only on a `CleanupResult.erroredStillListed` entry that reached
-   * the EXHAUSTED reading via either of TWO independent routes. Route one
+   * the EXHAUSTED reading via any of THREE independent routes. Route one
    * (issue #483): the entry was ALREADY classified disposable
    * (`dirtyAllJunk`/`orphanAllJunk`) and had BOTH the bounded retry (FOR-84)
    * AND the scoped `--force` fallback (issue #304) run against it — see the
@@ -1028,9 +1105,15 @@ export interface WorktreeEntry {
    * same non-ENOTEMPTY (deterministic) obstruction both before AND after that
    * same bounded retry; see the file-level "the classification flip" doc
    * section for why a PRE-attempt classification is not the only signal that
-   * can reach this reading. Absent means NEITHER route fired: this attempt's
-   * failure was ENOTEMPTY-shaped (or cleared before classification) on a
-   * worktree that was also never classified disposable — the ordinary
+   * can reach this reading. Route three (issue #542): also PLAINLY clean, and
+   * the failure IS ENOTEMPTY-shaped — but the survivor set the failed attempt
+   * left on disk is exclusively harness-denied paths, the real-harness shape
+   * where the denial itself surfaces as an ENOTEMPTY rather than the
+   * non-ENOTEMPTY errno route two's signal alone can see; see the file-level
+   * "the errno alone cannot carry the denial" doc section. Absent means NO
+   * route fired: this attempt's failure was ENOTEMPTY-shaped with a survivor
+   * set that was not exclusively denied (or cleared before classification) on
+   * a worktree that was also never classified disposable — the ordinary
    * TRANSIENT reading, unchanged — a re-run MAY yet clear a short-lived OS
    * race — or the entry belongs to some other class entirely (`removed`,
    * `skipped`, `deregisteredNotDeleted`, `errors`). ADDITIVE (ADR-0035): no
@@ -1771,23 +1854,34 @@ export function executeCleanup(
         // an operator can tell "removal failed, worktree intact and prunable"
         // apart from any other error.
         //
-        // issue #483 (widened by issue #528 — see the file-level "the
-        // classification flip" doc section): TWO independent signals now
-        // reach the EXHAUSTED reading. `forceEligible` is the ORIGINAL one —
-        // TRUE means the entry was already classified disposable
+        // issue #483 (widened by issue #528, widened again by issue #542 —
+        // see the file-level "the classification flip" and "the errno alone
+        // cannot carry the denial" doc sections): THREE independent signals
+        // now reach the EXHAUSTED reading. `forceEligible` is the ORIGINAL
+        // one — TRUE means the entry was already classified disposable
         // (`dirtyAllJunk`/`orphanAllJunk`) and had both the bounded retry AND
         // the scoped force fallback (issue #304) run against it. `!attempt.
-        // enotempty` is the NEW one: this attempt's own failure (evaluated
+        // enotempty` is the #528 one: this attempt's own failure (evaluated
         // AFTER the same bounded retry, unconditionally) is not the
         // transient race that retry exists to clear, whatever `planCleanup`
         // classified the entry as before the attempt ever ran — the shape a
         // PLAINLY clean worktree hits when its physical delete is
-        // deterministically denied. Either signal alone is sufficient for
-        // EXHAUSTED; `exhaustedManualRecovery` is told which one fired so it
-        // never claims a plainly-clean worktree was "already classified
-        // disposable" when it was not. Neither signal true → the entry stays
-        // byte-identical to before (the TRANSIENT reading, unchanged).
-        const exhausted = forceEligible || !attempt.enotempty;
+        // deterministically denied with a non-ENOTEMPTY errno. `attempt.
+        // deniedResidue` is the #542 one, for the case `!attempt.enotempty`
+        // cannot see at all: on the real harness the denial itself often
+        // surfaces AS an ENOTEMPTY (the denied children make the directory
+        // look "not empty" to the failing call), byte-indistinguishable from
+        // the transient race by errno alone — `deniedResidue` answers the
+        // question from evidence instead, inspecting what physically
+        // SURVIVED the attempt rather than which error was thrown (see
+        // {@link isSurvivorSetExclusivelyDenied}). Any one signal alone is
+        // sufficient for EXHAUSTED; `exhaustedManualRecovery` is told only
+        // whether `forceEligible` fired (both other signals share its
+        // "plainly clean" wording) so it never claims a plainly-clean
+        // worktree was "already classified disposable" when it was not.
+        // Every signal false → the entry stays byte-identical to before (the
+        // TRANSIENT reading, unchanged).
+        const exhausted = forceEligible || !attempt.enotempty || attempt.deniedResidue;
         erroredStillListed.push(
           exhausted
             ? { ...wt, manualRecovery: exhaustedManualRecovery(wt.path, forceEligible) }
@@ -1831,7 +1925,18 @@ export function executeCleanup(
  *                                 so `executeCleanup` can tell a deterministic
  *                                 obstruction apart from that race WITHOUT
  *                                 needing this entry to have been pre-classified
- *                                 disposable.
+ *                                 disposable. Also carries `deniedResidue`
+ *                                 (issue #542 — see the file-level "the errno
+ *                                 alone cannot carry the denial" doc section):
+ *                                 on the real harness the sandbox denial itself
+ *                                 surfaces AS an ENOTEMPTY (the denied children
+ *                                 make the directory look "not empty"), so
+ *                                 `enotempty` alone cannot tell that shape apart
+ *                                 from the genuine transient race. `deniedResidue`
+ *                                 is computed only when `enotempty` is true, by
+ *                                 inspecting what physically SURVIVED the attempt
+ *                                 ({@link isSurvivorSetExclusivelyDenied}) rather
+ *                                 than the thrown error's errno.
  *   - `errored`                 — the remover threw and git no longer lists it
  *                                 (a genuine failure), carrying its message.
  *
@@ -1843,7 +1948,7 @@ export function executeCleanup(
 type RemovalAttempt =
   | { kind: 'removed' }
   | { kind: 'deregisteredNotDeleted' }
-  | { kind: 'erroredStillListed'; enotempty: boolean }
+  | { kind: 'erroredStillListed'; enotempty: boolean; deniedResidue: boolean }
   | { kind: 'errored'; message: string };
 
 function attemptWorktreeRemoval(
@@ -1878,7 +1983,18 @@ function attemptWorktreeRemoval(
       // `RemovalAttempt` doc comment and the file-level "the classification
       // flip" doc section for why `executeCleanup` needs this even for an
       // entry that was never pre-classified disposable.
-      return { kind: 'erroredStillListed', enotempty: isEnotempty(err) };
+      const enotempty = isEnotempty(err);
+      return {
+        kind: 'erroredStillListed',
+        enotempty,
+        // issue #542: an ENOTEMPTY on the real harness can BE the denial
+        // (the denied children make the directory look "not empty"), so
+        // `enotempty` alone is not decisive — only worth the filesystem scan
+        // when the error is ENOTEMPTY-shaped in the first place; a
+        // non-ENOTEMPTY throw already reads EXHAUSTED via `!attempt.enotempty`
+        // in `executeCleanup`, with no need for this second signal at all.
+        deniedResidue: enotempty && isSurvivorSetExclusivelyDenied(nodePath.resolve(worktreePath)),
+      };
     }
     return { kind: 'errored', message: describeError(err) };
   }
@@ -4780,6 +4896,76 @@ function isStatusExclusivelyDisposable(porcelain: string): boolean {
     if (path.includes(' -> ')) return false;
     return isDisposableStatusPath(line.slice(0, 2), path);
   });
+}
+
+/**
+ * Whether every entry still physically on disk under `root` (recursively) sits
+ * under a harness-denied path — {@link HARNESS_DENIED_DIRS} /
+ * {@link HARNESS_DENIED_FILES}, the SAME allowlist {@link isDisposableStatusPath}
+ * consults — the FILESYSTEM-scan counterpart of that `git status`-driven
+ * predicate, applied to the SURVIVOR SET a failed removal attempt leaves
+ * behind rather than to a status-line delta (issue #542 — see the file-level
+ * "the errno alone cannot carry the denial" doc section for the live-measured
+ * shape this answers: on the real harness a removal blocked purely by
+ * harness-denied content surfaces as ENOTEMPTY, so `isEnotempty` alone reads
+ * it as the transient race the bounded retry exists to clear, when it is in
+ * fact the exact deterministic obstruction the EXHAUSTED reading exists to
+ * name).
+ *
+ * The worktree's OWN top-level `.git` is skipped rather than checked against
+ * the allowlist: {@link physicallyDeleteGitLast} deletes every OTHER entry
+ * before `.git` (FOR-86), so `.git` surviving a phase-1 failure is expected
+ * scaffolding, not evidence either way — checking it against the allowlist
+ * would make this function return `false` on every single occurrence of the
+ * shape it exists to catch. Only the TOP-level `.git` gets this exemption; a
+ * directory that is not itself the worktree's own gitfile is always checked
+ * normally, so a genuinely-nested `.git`-named entry (there is no such thing
+ * in a real worktree, but a malformed fixture could construct one) is not
+ * silently waved through.
+ *
+ * A directory that is itself fully under an entry in {@link HARNESS_DENIED_DIRS}
+ * is treated as ONE allowlisted unit and not recursed into further — mirrors
+ * how {@link isDisposableStatusPath} treats the same set, and how
+ * {@link isDirExclusivelyJunk} treats {@link JUNK_DIR_NAMES} — so an empty
+ * leftover denied directory (its own tracked content already deleted, only the
+ * directory entry itself surviving) still reads as fully accounted for.
+ *
+ * An unreadable or already-gone directory returns `false` — DELIBERATELY the
+ * OPPOSITE convention from {@link isDirExclusivelyJunk}'s vacuous `true` for an
+ * ORPHAN directory (there, nothing real is left to lose; here, "cannot read
+ * it" carries no evidence either way about why THIS removal attempt failed).
+ * Reading an inconclusive scan as confirming exhaustion would misclassify
+ * every worktree this function cannot actually inspect — including, notably,
+ * every existing unit-level fixture in this spec suite that models a removal
+ * attempt against a path that was never a real directory to begin with.
+ * `false` keeps the caller on the ordinary TRANSIENT reading, the same
+ * "unrecognized is real, skip it" safety bias {@link isDisposableStatusPath}
+ * already documents for its own unrecognized case.
+ */
+function isSurvivorSetExclusivelyDenied(
+  root: string,
+  dir: string = root,
+  isWorktreeTopLevel = true,
+): boolean {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+
+  for (const entry of entries) {
+    if (isWorktreeTopLevel && entry.name === '.git') continue;
+    const entryPath = nodePath.join(dir, entry.name);
+    const relPath = nodePath.relative(root, entryPath).split(nodePath.sep).join('/');
+    if (entry.isDirectory()) {
+      if (HARNESS_DENIED_DIRS.some((d) => isUnderDir(relPath, d))) continue;
+      if (!isSurvivorSetExclusivelyDenied(root, entryPath, false)) return false;
+      continue;
+    }
+    if (!HARNESS_DENIED_FILES.has(relPath)) return false;
+  }
+  return true;
 }
 
 /** True when `err` is a Node errno exception with `code === 'ENOTEMPTY'`. */
