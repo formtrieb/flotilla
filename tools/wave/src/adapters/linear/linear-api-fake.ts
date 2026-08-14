@@ -70,6 +70,21 @@ export class InMemoryLinearApi implements LinearApi {
   private readonly issues = new Map<string, StoredIssue>();
   private readonly commentsByIssue = new Map<string, string[]>();
   private readonly attachmentsByIssue = new Map<string, LinearPrAttachment[]>();
+  /**
+   * Upserted (non-github-sourced) attachment cards (issue #511), keyed
+   * GLOBALLY by url — mirrors Linear's own published schema doc on
+   * `AttachmentCreateInput.url`: "also used as an unique identifier for the
+   * attachment. If another attachment is created with the same `url` value,
+   * existing record is updated instead." A DIFFERENT substrate from
+   * {@link attachmentsByIssue} on purpose: that map is only what the
+   * GitHub-integration's `simulateMergedPrClose`/`simulateUnmergedClose`
+   * hooks populate (the closing probe's evidence base); this one is only what
+   * {@link upsertAttachment} populates, and `getPrAttachments` never reads it.
+   */
+  private readonly upsertedAttachments = new Map<
+    string,
+    { issueIdentifier: string; title: string; subtitle: string }
+  >();
   private readonly documents = new Map<string, StoredDocument>();
   /** blocked identifier → its NATIVE blocker identifiers (ADR-0020 read-union). */
   private readonly nativeBlockedBy = new Map<string, string[]>();
@@ -228,6 +243,27 @@ export class InMemoryLinearApi implements LinearApi {
     const list = this.nativeBlockedBy.get(blockedIdentifier) ?? [];
     list.push(blockerIdentifier);
     this.nativeBlockedBy.set(blockedIdentifier, list);
+  }
+
+  /**
+   * Upsert one attachment card, keyed globally by `input.url` (issue #511) —
+   * models `RealLinearApi.upsertAttachment` / Linear's own upsert-by-url
+   * semantics on `attachmentCreate`: a repeated call with the SAME url
+   * overwrites `title`/`subtitle` in place rather than appending a second
+   * card. Deliberately writes into {@link upsertedAttachments}, never
+   * {@link attachmentsByIssue} — see that field's doc for why the two
+   * substrates never merge.
+   */
+  async upsertAttachment(
+    identifier: string,
+    input: { url: string; title: string; subtitle: string },
+  ): Promise<void> {
+    this.mustGet(identifier);
+    this.upsertedAttachments.set(input.url, {
+      issueIdentifier: identifier,
+      title: input.title,
+      subtitle: input.subtitle,
+    });
   }
 
   async hasGitHubIntegration(): Promise<boolean> {
@@ -396,6 +432,21 @@ export class InMemoryLinearApi implements LinearApi {
       ...(doc.project !== undefined ? { project: doc.project } : {}),
     });
     return id;
+  }
+
+  /**
+   * Test affordance (issue #511): the upserted (non-github-sourced)
+   * attachment cards currently recorded for `identifier`, oldest-insertion
+   * order — what a live `attachments` query would show alongside (but
+   * distinct from) the github-sourced ones {@link getPrAttachments} returns.
+   * NOT part of `LinearApi` — mirrors `addNativeRelation`'s test-only stance.
+   */
+  listUpsertedAttachments(identifier: string): { url: string; title: string; subtitle: string }[] {
+    const out: { url: string; title: string; subtitle: string }[] = [];
+    for (const [url, rec] of this.upsertedAttachments) {
+      if (rec.issueIdentifier === identifier) out.push({ url, title: rec.title, subtitle: rec.subtitle });
+    }
+    return out;
   }
 
   /**

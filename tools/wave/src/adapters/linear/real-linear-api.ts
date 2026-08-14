@@ -206,6 +206,32 @@ const CREATE_ISSUE_RELATION_MUTATION = `mutation CreateIssueRelation($input: Iss
  */
 const BLOCKS_RELATION_TYPE = 'blocks';
 
+/**
+ * The attachment upsert (issue #511, mechanics proven consumer-side).
+ * `attachmentCreate` IS the upsert — no find-before-create needed on this
+ * side. Read verbatim from Linear's published GraphQL schema
+ * (`linear/linear` → `packages/sdk/src/schema.graphql`, read 2026-08-14, this
+ * dispatch — ADR-0030 declared-unexecutable-path comparison, no live
+ * credential available here): `AttachmentCreateInput.url`'s doc string reads
+ * "Attachment location which is also used as an unique identifier for the
+ * attachment. If another attachment is created with the same `url` value,
+ * existing record is updated instead." — the exact idempotency the consumer
+ * report proved live. `issueId: String!` accepts either a UUID or a human
+ * identifier per its own doc string, but this adapter always resolves and
+ * passes the UUID (consistent with every other mutation here). The schema
+ * carries NO `sourceType` input field — `Attachment.sourceType` is a DERIVED
+ * read field ("the integration type... or 'unknown' if source is absent"),
+ * and `AttachmentCreateInput` has no `source` field either — so a card minted
+ * here can never read back `sourceType: 'github'` and can never be picked up
+ * by {@link toPrAttachment}'s github-sourced filter (see that function's doc
+ * and `LinearApi.getPrAttachments`'s).
+ */
+const UPSERT_ATTACHMENT_MUTATION = `mutation UpsertAttachment($input: AttachmentCreateInput!) {
+  attachmentCreate(input: $input) {
+    success
+  }
+}`;
+
 /** `addLabel`'s auto-create fallback: mirrors Task 3's seam-doc "auto-create missing labels" contract. */
 const CREATE_ISSUE_LABEL_MUTATION = `mutation CreateIssueLabel($input: IssueLabelCreateInput!) {
   issueLabelCreate(input: $input) {
@@ -500,6 +526,26 @@ export class RealLinearApi implements LinearApi {
     const payload = data.issueRelationCreate as Record<string, unknown> | undefined;
     if (payload?.success !== true) {
       throw new LinearApiError('CreateIssueRelation', 200, 'issueRelationCreate did not report success');
+    }
+  }
+
+  /**
+   * Upsert one attachment card, keyed by `input.url` (issue #511). No
+   * find-before-create: `attachmentCreate` itself is the upsert (see
+   * {@link UPSERT_ATTACHMENT_MUTATION}'s doc). `issueId` is resolved to the
+   * UUID via the same `resolveIssue` every other write already uses.
+   */
+  async upsertAttachment(
+    identifier: string,
+    input: { url: string; title: string; subtitle: string },
+  ): Promise<void> {
+    const node = await this.resolveIssue(identifier);
+    const { data } = await this.gql('UpsertAttachment', UPSERT_ATTACHMENT_MUTATION, {
+      input: { issueId: node.uuid, url: input.url, title: input.title, subtitle: input.subtitle },
+    });
+    const payload = data.attachmentCreate as Record<string, unknown> | undefined;
+    if (payload?.success !== true) {
+      throw new LinearApiError('UpsertAttachment', 200, 'attachmentCreate did not report success');
     }
   }
 

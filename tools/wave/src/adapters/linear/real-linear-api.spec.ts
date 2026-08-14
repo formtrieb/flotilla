@@ -591,6 +591,76 @@ describe('RealLinearApi', () => {
     });
   });
 
+  // ── attachment upsert (issue #511, mechanics proven consumer-side) ────────
+  describe('upsertAttachment', () => {
+    it('resolves the issue uuid and POSTs attachmentCreate with issueId/url/title/subtitle', async () => {
+      const { api, http } = makeApi({
+        IssueByIdentifier: () => issueByIdentifierResponse(),
+        UpsertAttachment: (req) => {
+          expect(req.variables).toEqual({
+            input: {
+              issueId: 'issue-uuid-16',
+              url: 'https://github.com/o/r/pull/511',
+              title: 'PR #511',
+              subtitle: 'merged',
+            },
+          });
+          return { status: 200, json: { data: { attachmentCreate: { success: true } } } };
+        },
+      });
+      await expect(
+        api.upsertAttachment('EX-16', {
+          url: 'https://github.com/o/r/pull/511',
+          title: 'PR #511',
+          subtitle: 'merged',
+        }),
+      ).resolves.toBeUndefined();
+      expect(http.requests).toHaveLength(2); // the resolveIssue read + the mutation
+    });
+
+    it('sends NO find-before-create read for the url — attachmentCreate is asked to upsert directly (one mutation call)', async () => {
+      const { api, http } = makeApi({
+        IssueByIdentifier: () => issueByIdentifierResponse(),
+        UpsertAttachment: () => ({ status: 200, json: { data: { attachmentCreate: { success: true } } } }),
+      });
+      await api.upsertAttachment('EX-16', { url: 'https://x/1', title: 't', subtitle: 's' });
+      const upsertCalls = http.requests.filter((r) => r.query.includes('UpsertAttachment'));
+      expect(upsertCalls).toHaveLength(1);
+    });
+
+    it('throws LinearApiError when attachmentCreate does not report success', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: () => issueByIdentifierResponse(),
+        UpsertAttachment: () => ({ status: 200, json: { data: { attachmentCreate: { success: false } } } }),
+      });
+      await expect(
+        api.upsertAttachment('EX-16', { url: 'https://x/1', title: 't', subtitle: 's' }),
+      ).rejects.toSatisfy((e: unknown) => e instanceof LinearApiError && e.op === 'UpsertAttachment');
+    });
+
+    it('propagates a LinearApiError when the GraphQL response carries errors[] (HTTP 200)', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: () => issueByIdentifierResponse(),
+        UpsertAttachment: () => ({ status: 200, json: { data: null, errors: [{ message: 'not allowed' }] } }),
+      });
+      await expect(
+        api.upsertAttachment('EX-16', { url: 'https://x/1', title: 't', subtitle: 's' }),
+      ).rejects.toSatisfy((e: unknown) => e instanceof LinearApiError && e.message.includes('GraphQL error'));
+    });
+
+    it('throws a plain (non-wire) error when the identifier is unknown', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: () => ({ status: 200, json: { data: { issues: { nodes: [] } } } }),
+      });
+      await expect(
+        api.upsertAttachment('EX-999', { url: 'https://x/1', title: 't', subtitle: 's' }),
+      ).rejects.toThrow(/EX-999/);
+      await expect(
+        api.upsertAttachment('EX-999', { url: 'https://x/1', title: 't', subtitle: 's' }),
+      ).rejects.not.toBeInstanceOf(LinearApiError);
+    });
+  });
+
   // ── Document facet (ADR-0017): a PRD is a NATIVE Linear Document ───────────
   describe('createDocument', () => {
     it('resolves the project id and POSTs documentCreate with title/content/projectId, returns the uuid', async () => {

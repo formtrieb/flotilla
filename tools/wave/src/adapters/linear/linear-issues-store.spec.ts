@@ -706,3 +706,76 @@ describe('LinearIssuesStore — opt-in done-state fallback (FOR-13)', () => {
     expect(await api.getComments(id)).toHaveLength(1); // not doubled
   });
 });
+
+// ── native attachment upsert (issue #511 — mechanics proven consumer-side) ──
+// close() additionally upserts a native Linear attachment card for the
+// closing PR (next to the body-codec `Closed-by:` line), so the dedicated
+// attachment section carries a visible ticket→PR link for the whole
+// in-review window too — independent of the GitHub-integration-only evidence
+// readClosing/getPrAttachments read (see LinearApi.getPrAttachments's doc for
+// why the two substrates never merge).
+describe('LinearIssuesStore — close() upserts the closing PR as a native attachment (issue #511)', () => {
+  const PR = 'https://github.com/o/r/pull/511';
+
+  it('close() upserts exactly one attachment card for the closing PR URL, subtitle "merged" (AC#1)', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const id = await store.create(baseInput());
+    await store.close(id, PR, []);
+    const cards = api.listUpsertedAttachments(id);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ url: PR, subtitle: 'merged' });
+    expect(cards[0].title).toBeTruthy(); // AttachmentCreateInput.title is required (String!)
+  });
+
+  it('a repeated close() with the same issue+URL leaves exactly one attachment card — idempotent via Linear\'s own URL upsert (AC#1)', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const id = await store.create(baseInput());
+    await store.close(id, PR, []);
+    await store.close(id, PR, []); // re-entrant re-close (wave-close, ADR-0018)
+    expect(api.listUpsertedAttachments(id)).toHaveLength(1);
+  });
+
+  it('the upserted card title carries a recognizable PR number for a GitHub-shaped closing PR URL', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const id = await store.create(baseInput());
+    await store.close(id, 'https://github.com/o/r/pull/130', []);
+    expect(api.listUpsertedAttachments(id)[0].title).toBe('PR #130');
+  });
+
+  it('falls back to a generic title for a closing PR URL shape it cannot parse a number from', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const id = await store.create(baseInput());
+    await store.close(id, 'https://example.com/not-a-pr-url', []);
+    expect(api.listUpsertedAttachments(id)[0].title).toBe('Closing PR');
+  });
+
+  it('readClosing/getPrAttachments evidence base is UNTOUCHED by the upserted card — the closing probe still reports no PR evidence (AC#4 disclosure)', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api }); // no doneState — state is left alone
+    const id = await store.create(baseInput());
+    await store.transition(id, 'in-review');
+    await store.close(id, PR, []);
+    // the upsert landed...
+    expect(api.listUpsertedAttachments(id)).toHaveLength(1);
+    // ...into a DIFFERENT substrate from what the closing probe reads:
+    expect(await api.getPrAttachments(id)).toEqual([]);
+    expect((await store.readClosing(id)).state).toBe('open'); // untouched — still derived
+  });
+
+  it('a genuinely merged PR (GitHub-integration attachment) is still read correctly alongside the separately-upserted card', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const id = await store.create(baseInput());
+    api.simulateMergedPrClose(id, PR); // the REAL integration attachment
+    await store.close(id, PR, []); // our upsert lands too, into the OTHER substrate
+    expect(api.listUpsertedAttachments(id)).toHaveLength(1); // our card
+    expect(await api.getPrAttachments(id)).toEqual([{ url: PR, merged: true }]); // probe evidence, untouched
+    const closing = await store.readClosing(id);
+    expect(closing.state).toBe('merged');
+    expect(closing.prUrl).toBe(PR);
+  });
+});

@@ -92,6 +92,42 @@ describe('InMemoryLinearApi Document facet — team attachment (ADR-0017 amendme
   });
 });
 
+// ── attachment upsert (issue #511, mechanics proven consumer-side) ─────────
+describe('InMemoryLinearApi attachment upsert (issue #511)', () => {
+  it('upsertAttachment records a card readable via listUpsertedAttachments', async () => {
+    const api = new InMemoryLinearApi();
+    const id = (await api.createIssue({ title: 't', description: '', labels: [] })).identifier;
+    await api.upsertAttachment(id, { url: 'https://x/pr/1', title: 'PR #1', subtitle: 'merged' });
+    expect(api.listUpsertedAttachments(id)).toEqual([
+      { url: 'https://x/pr/1', title: 'PR #1', subtitle: 'merged' },
+    ]);
+  });
+
+  it('a second upsertAttachment call with the SAME url updates the card in place — no duplicate (models Linear\'s own upsert-by-url)', async () => {
+    const api = new InMemoryLinearApi();
+    const id = (await api.createIssue({ title: 't', description: '', labels: [] })).identifier;
+    await api.upsertAttachment(id, { url: 'https://x/pr/1', title: 'PR #1', subtitle: 'open' });
+    await api.upsertAttachment(id, { url: 'https://x/pr/1', title: 'PR #1', subtitle: 'merged' });
+    expect(api.listUpsertedAttachments(id)).toEqual([
+      { url: 'https://x/pr/1', title: 'PR #1', subtitle: 'merged' },
+    ]);
+  });
+
+  it('upsertAttachment throws on an unknown identifier (models resolveIssue)', async () => {
+    const api = new InMemoryLinearApi();
+    await expect(
+      api.upsertAttachment('EX-999', { url: 'https://x/pr/1', title: 't', subtitle: 's' }),
+    ).rejects.toThrow(/EX-999/);
+  });
+
+  it('is a substrate SEPARATE from getPrAttachments — an upserted card never appears there', async () => {
+    const api = new InMemoryLinearApi();
+    const id = (await api.createIssue({ title: 't', description: '', labels: [] })).identifier;
+    await api.upsertAttachment(id, { url: 'https://x/pr/1', title: 'PR #1', subtitle: 'merged' });
+    expect(await api.getPrAttachments(id)).toEqual([]);
+  });
+});
+
 describe('InMemoryLinearApi store-preflight substrate (FOR-12)', () => {
   it('hasGitHubIntegration defaults to true and is togglable', async () => {
     const api = new InMemoryLinearApi();
