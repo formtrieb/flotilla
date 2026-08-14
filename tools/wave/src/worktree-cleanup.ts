@@ -834,6 +834,82 @@
  * every entry outside `erroredStillListed` — `removed`, `skipped`,
  * `deregisteredNotDeleted`, `errors` all keep today's reading unchanged.
  *
+ * ── the classification flip: a PLAINLY clean worktree denied mid-traversal
+ *    reads TRANSIENT on the run that hits it, EXHAUSTED only on the next
+ *    (issue #528) ────────────────────────────────────────────────────────────
+ *
+ * The #483 amendment above reads EXHAUSTED off exactly one signal:
+ * `forceEligible` (`dirtyAllJunk || orphanAllJunk`), a classification
+ * `planCleanup` reaches BEFORE the removal is ever attempted. Two consecutive,
+ * byte-identical `worktree-cleanup --wave … --orphans --detached` calls
+ * against the SAME stuck worktree gave the operator two different readings
+ * (live, three worktrees at once, 2026-08-13): run 1 — `dirty:false`,
+ * `manualRecovery` absent, TRANSIENT ("a re-run MAY clear it"); run 2 —
+ * `dirty:true`, `dirtyAllJunk:true`, `manualRecovery` present, EXHAUSTED
+ * ("a re-run cannot succeed", with the sandbox-off commands). Nothing ran
+ * between the two calls except run 1 itself.
+ *
+ * CONFIRMED, not merely hypothesized — a dedicated spec drives this against a
+ * REAL git worktree and a REAL, deterministically-denied physical delete,
+ * never a hand-set `dirtyAllJunk`/`orphanAllJunk` flag: the mechanism
+ * recorded when this was filed (run 1's OWN partial deletion is what moves
+ * the worktree into the `dirtyAllJunk` class run 2 then reads) is exactly
+ * what happens. `physicallyDeleteGitLast`'s phase 1 deletes a worktree's
+ * top-level entries one at a time; when one entry's own delete is genuinely
+ * denied (a sandbox write-deny, never `ENOTEMPTY`), the surrounding `for`
+ * loop throws immediately and propagates — but whatever entries were ALREADY
+ * deleted before the loop reached the denied one stay deleted, on disk,
+ * uncommitted. `planCleanup` selected this worktree as PLAINLY clean (the
+ * `dirtyAllJunk`/`orphanAllJunk` override in `planCleanup` is never even
+ * asked the question for it), so `forceEligible` is computed `false` for run
+ * 1's attempt and stays `false` — it is captured once, BEFORE the attempt,
+ * and the attempt's own side effects can never feed back into it. Run 1
+ * therefore reports TRANSIENT even though the obstruction it just hit is
+ * exactly the deterministic one the EXHAUSTED reading exists to name. Only a
+ * SECOND, independent `listAgentWorktrees` call re-probes the (now-altered)
+ * disk state, sees the partial deletion as fresh `git status` divergence,
+ * and — because every path that delete could reach happened to be
+ * disposable-shaped — reclassifies `dirtyAllJunk:true`, which is what
+ * finally makes run 2's `forceEligible` true. Nothing about that reclassify
+ * is guaranteed in general (a partial delete could just as easily leave
+ * behind genuinely-dirty, non-disposable content instead), which is exactly
+ * why run 2's correctness was never the gap here — run 1's was.
+ *
+ * The fix does not touch `planCleanup` or the pre-attempt classification at
+ * all — a genuinely-dirty, non-junk worktree still never reaches the remover,
+ * unchanged. It gives `executeCleanup` a SECOND, independent EXHAUSTED
+ * signal that needs no pre-classification: {@link RemovalAttempt}'s
+ * `erroredStillListed` variant now carries `enotempty`, threaded out of
+ * {@link attemptWorktreeRemoval}'s catch alongside the existing `stillListed`
+ * check. `isEnotempty` is the SAME test {@link runWithEnotemptyRetry} already
+ * uses to name the one recognized transient-race shape (Finder/Spotlight/a
+ * stale language server); everything else reaching this class — `EACCES`,
+ * `EPERM`, the sandboxed harness's own write-deny — is the deterministic
+ * obstruction the "NO force flag" stance already names, whether or not
+ * `planCleanup` happened to have excused the content in advance.
+ * `executeCleanup` now reads EXHAUSTED as `forceEligible || !attempt.
+ * enotempty`, evaluated against the attempt AFTER the bounded retry (FOR-84
+ * still runs unconditionally for both incomplete outcomes, unchanged) — so
+ * the FIRST run already carries the correct reading, and a second identical
+ * run reaches the same conclusion by the same route, not by having to first
+ * observe the classification the first run's own side effect produced.
+ *
+ * {@link exhaustedManualRecovery} is told WHICH signal fired
+ * (`wasClassifiedDisposable`) so its message stays honest: a plainly-clean
+ * worktree was never "already classified disposable", and claiming so would
+ * be exactly the small untruth an operator copy-pastes past without reading
+ * closely. The route-two wording additionally names the mechanism just
+ * confirmed above — this run's own partial delete may already have changed
+ * what is left on disk, so even a bare re-run is not to be trusted to
+ * converge on its own.
+ *
+ * Two invariants from the #483 section carry over UNCHANGED, and a dedicated
+ * regression spec pins both: the genuinely-transient path (an ENOTEMPTY-shaped
+ * failure, `attempt.enotempty: true`, on a worktree `planCleanup` never
+ * classified disposable) still reports no `manualRecovery` at all — a re-run
+ * MAY yet clear it — and `manualRecovery` stays scoped to `erroredStillListed`
+ * only, additive, with no existing key changing shape (ADR-0035).
+ *
  * ── a repo-internal location with no lifecycle at all (issue #355) ────────────
  *
  * Every population above is a WORKTREE, and every one of them accumulated
@@ -941,18 +1017,25 @@ export interface WorktreeEntry {
    */
   retried?: boolean;
   /**
-   * Present only on a `CleanupResult.erroredStillListed` entry (issue #483)
-   * that was ALREADY classified disposable (`dirtyAllJunk`/`orphanAllJunk`)
-   * and for which BOTH the bounded retry (FOR-84) AND the scoped `--force`
-   * fallback (issue #304) already ran against it — see the file-level "a
-   * loud, per-entry report for the EXHAUSTED reading" doc section. Its
-   * presence alone is the exhausted/transient split within that one bucket:
-   * absent means either this entry was never classified disposable in the
-   * first place (the ordinary TRANSIENT reading, unchanged — a re-run MAY
-   * yet clear a short-lived OS race) or it belongs to some other class
-   * entirely (`removed`, `skipped`, `deregisteredNotDeleted`, `errors`).
-   * ADDITIVE (ADR-0035): no existing key or exit-code meaning changes, and a
-   * transient-shaped entry's own reading is untouched.
+   * Present only on a `CleanupResult.erroredStillListed` entry that reached
+   * the EXHAUSTED reading via either of TWO independent routes. Route one
+   * (issue #483): the entry was ALREADY classified disposable
+   * (`dirtyAllJunk`/`orphanAllJunk`) and had BOTH the bounded retry (FOR-84)
+   * AND the scoped `--force` fallback (issue #304) run against it — see the
+   * file-level "a loud, per-entry report for the EXHAUSTED reading" doc
+   * section. Route two (issue #528): the entry was PLAINLY clean — never
+   * classified disposable at all — but its own removal attempt failed on the
+   * same non-ENOTEMPTY (deterministic) obstruction both before AND after that
+   * same bounded retry; see the file-level "the classification flip" doc
+   * section for why a PRE-attempt classification is not the only signal that
+   * can reach this reading. Absent means NEITHER route fired: this attempt's
+   * failure was ENOTEMPTY-shaped (or cleared before classification) on a
+   * worktree that was also never classified disposable — the ordinary
+   * TRANSIENT reading, unchanged — a re-run MAY yet clear a short-lived OS
+   * race — or the entry belongs to some other class entirely (`removed`,
+   * `skipped`, `deregisteredNotDeleted`, `errors`). ADDITIVE (ADR-0035): no
+   * existing key or exit-code meaning changes, and a genuinely-transient
+   * entry's own reading is untouched.
    */
   manualRecovery?: {
     /**
@@ -1545,18 +1628,38 @@ function shellQuoteSingle(value: string): string {
  * #515, {@link shellQuoteSingle}) so a copy-paste of the first command does
  * not silently split into several arguments on a checkout whose path
  * contains a space.
+ *
+ * @param wasClassifiedDisposable Which of the two EXHAUSTED signals fired
+ *   (issue #528 — see the file-level "the classification flip" doc section):
+ *   `true` for the original #483 route (`dirtyAllJunk`/`orphanAllJunk`, this
+ *   entry already excused by `planCleanup` before the attempt ran); `false`
+ *   for the new #528 route (a PLAINLY clean worktree whose own removal
+ *   attempt failed deterministically). The message must not claim the first
+ *   route for an entry that only ever reached the second — an operator
+ *   copy-pasting past a small untruth is exactly the failure mode this field
+ *   exists to prevent.
  */
 function exhaustedManualRecovery(
   worktreePath: string,
+  wasClassifiedDisposable: boolean,
 ): NonNullable<WorktreeEntry['manualRecovery']> {
-  return {
-    message:
-      'This worktree was already classified disposable, and both the bounded ' +
+  const message = wasClassifiedDisposable
+    ? 'This worktree was already classified disposable, and both the bounded ' +
       'retry (FOR-84) and the scoped --force fallback (issue #304) already ran ' +
       'against it — a re-run of worktree-cleanup cannot succeed. The ' +
       "obstruction is the sandboxed harness's own write-deny on the physical " +
       'delete, which is deterministic, not the transient race the retry exists ' +
-      'to clear. Remove it manually, with the sandbox disabled.',
+      'to clear. Remove it manually, with the sandbox disabled.'
+    : 'This worktree was plainly clean, but its removal failed with the same ' +
+      'non-ENOTEMPTY obstruction on both the first attempt and the bounded ' +
+      'retry (FOR-84) — the deterministic sandboxed-harness write-deny, not ' +
+      'the transient Finder/editor race that retry exists to clear. This ' +
+      "attempt's own partial delete may already have changed what is left " +
+      'on disk, so a bare re-run cannot be trusted to converge either — a ' +
+      're-run of worktree-cleanup cannot succeed. Remove it manually, with ' +
+      'the sandbox disabled.';
+  return {
+    message,
     commands: [
       `git worktree remove --force ${shellQuoteSingle(worktreePath)}`,
       'git worktree prune',
@@ -1661,29 +1764,37 @@ export function executeCleanup(
         // never handed to branch hygiene (an incomplete removal is not clean).
         deregisteredNotDeleted.push(wt);
         break;
-      case 'erroredStillListed':
+      case 'erroredStillListed': {
         // Still incomplete after the retry: the throwing-yet-still-listed
         // ENOTEMPTY class (FOR-73 — W18-F1), unchanged in meaning. Recorded in
         // its own class (never the generic `errors`, never branch hygiene) so
         // an operator can tell "removal failed, worktree intact and prunable"
         // apart from any other error.
         //
-        // issue #483: `forceEligible` is the exact signal that already
-        // decided whether THIS attempt (and its retry, if any) carried
-        // `opts.force` — see the file-level "a loud, per-entry report for the
-        // EXHAUSTED reading" doc section. TRUE means the entry was already
-        // classified disposable and had both the bounded retry AND the
-        // scoped force fallback (issue #304) run against it, so the
-        // obstruction is the deterministic OS-level one and a re-run cannot
-        // succeed: the entry carries the additive `manualRecovery` naming
-        // exactly that. FALSE leaves the entry byte-identical to before (the
-        // TRANSIENT reading, unchanged).
+        // issue #483 (widened by issue #528 — see the file-level "the
+        // classification flip" doc section): TWO independent signals now
+        // reach the EXHAUSTED reading. `forceEligible` is the ORIGINAL one —
+        // TRUE means the entry was already classified disposable
+        // (`dirtyAllJunk`/`orphanAllJunk`) and had both the bounded retry AND
+        // the scoped force fallback (issue #304) run against it. `!attempt.
+        // enotempty` is the NEW one: this attempt's own failure (evaluated
+        // AFTER the same bounded retry, unconditionally) is not the
+        // transient race that retry exists to clear, whatever `planCleanup`
+        // classified the entry as before the attempt ever ran — the shape a
+        // PLAINLY clean worktree hits when its physical delete is
+        // deterministically denied. Either signal alone is sufficient for
+        // EXHAUSTED; `exhaustedManualRecovery` is told which one fired so it
+        // never claims a plainly-clean worktree was "already classified
+        // disposable" when it was not. Neither signal true → the entry stays
+        // byte-identical to before (the TRANSIENT reading, unchanged).
+        const exhausted = forceEligible || !attempt.enotempty;
         erroredStillListed.push(
-          forceEligible
-            ? { ...wt, manualRecovery: exhaustedManualRecovery(wt.path) }
+          exhausted
+            ? { ...wt, manualRecovery: exhaustedManualRecovery(wt.path, forceEligible) }
             : wt,
         );
         break;
+      }
       case 'errored':
         // A genuine failure: the removal threw and git no longer lists the
         // worktree. Never reclassified — stays a loud per-item error.
@@ -1711,7 +1822,16 @@ export function executeCleanup(
  *   - `deregisteredNotDeleted`  — the remover returned WITHOUT throwing yet the
  *                                 directory survives on disk (`pathExists` true).
  *   - `erroredStillListed`      — the remover THREW and git still lists the
- *                                 worktree (`stillListed` true).
+ *                                 worktree (`stillListed` true). Carries
+ *                                 `enotempty` (issue #528 — see the file-level
+ *                                 "the classification flip" doc section): the
+ *                                 SAME `isEnotempty` test
+ *                                 {@link runWithEnotemptyRetry} already uses to
+ *                                 name the one recognized transient-race shape,
+ *                                 so `executeCleanup` can tell a deterministic
+ *                                 obstruction apart from that race WITHOUT
+ *                                 needing this entry to have been pre-classified
+ *                                 disposable.
  *   - `errored`                 — the remover threw and git no longer lists it
  *                                 (a genuine failure), carrying its message.
  *
@@ -1723,7 +1843,7 @@ export function executeCleanup(
 type RemovalAttempt =
   | { kind: 'removed' }
   | { kind: 'deregisteredNotDeleted' }
-  | { kind: 'erroredStillListed' }
+  | { kind: 'erroredStillListed'; enotempty: boolean }
   | { kind: 'errored'; message: string };
 
 function attemptWorktreeRemoval(
@@ -1753,7 +1873,12 @@ function attemptWorktreeRemoval(
     // list` membership check): still listed → the throwing-yet-still-listed
     // ENOTEMPTY class; genuinely gone → a real failure.
     if (stillListed(nodePath.resolve(worktreePath))) {
-      return { kind: 'erroredStillListed' };
+      // issue #528: carry the ENOTEMPTY-family signal out with the
+      // classification, not just the bare fact of a throw — see the
+      // `RemovalAttempt` doc comment and the file-level "the classification
+      // flip" doc section for why `executeCleanup` needs this even for an
+      // entry that was never pre-classified disposable.
+      return { kind: 'erroredStillListed', enotempty: isEnotempty(err) };
     }
     return { kind: 'errored', message: describeError(err) };
   }

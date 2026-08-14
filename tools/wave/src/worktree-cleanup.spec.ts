@@ -251,9 +251,22 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-/** Type-erasing cast to reach vitest's mock methods on the mocked `rmSync`. */
-function asRmSyncMock(fn: typeof rmSync): { mockImplementationOnce: (impl: () => void) => void } {
-  return fn as unknown as { mockImplementationOnce: (impl: () => void) => void };
+/**
+ * Type-erasing cast to reach vitest's mock methods on the mocked `rmSync`.
+ * `mockImplementation` (issue #528) is the PERSISTENT sibling of
+ * `mockImplementationOnce` — every existing caller passes a zero-arg
+ * callback, which remains assignable to the widened `(...args: unknown[])`
+ * signature below (a JS callback may always ignore extra arguments), so this
+ * widening is backward-compatible with every pre-#528 call site.
+ */
+function asRmSyncMock(fn: typeof rmSync): {
+  mockImplementationOnce: (impl: (...args: unknown[]) => void) => void;
+  mockImplementation: (impl: (...args: unknown[]) => void) => void;
+} {
+  return fn as unknown as {
+    mockImplementationOnce: (impl: (...args: unknown[]) => void) => void;
+    mockImplementation: (impl: (...args: unknown[]) => void) => void;
+  };
 }
 
 /**
@@ -6504,13 +6517,39 @@ describe('the --orphans close path reaches the Scribe scratch dir (issue #355)',
 describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed reading (issue #483)', () => {
   const NOOP_PAUSE = () => {};
 
-  /** A remover that always throws — models a removal git still lists, on every attempt. */
+  /**
+   * A remover that always throws a genuinely ENOTEMPTY-shaped error (`.code`
+   * set, not just the message text) — models a removal git still lists, on
+   * every attempt, via the SAME transient-race shape (issue #528)
+   * {@link RemovalAttempt}'s `enotempty` flag now inspects. Reuses the
+   * file-level {@link makeEnotempty} so this and every other real-`ENOTEMPTY`
+   * fixture in this file stay byte-identical in shape.
+   */
   function alwaysThrowRemover(): {
     remover: WorktreeRemover;
     removeSpy: ReturnType<typeof vi.fn>;
   } {
     const removeSpy = vi.fn(() => {
-      throw new Error(`ENOTEMPTY: directory not empty, rmdir '${AGENT_PATH_A}'`);
+      throw makeEnotempty(AGENT_PATH_A);
+    });
+    return { remover: { remove: removeSpy }, removeSpy };
+  }
+
+  /**
+   * A remover that always throws a DETERMINISTIC (non-ENOTEMPTY) error — the
+   * exact shape a sandboxed harness's own write-deny produces (issue #528),
+   * on a worktree `planCleanup` never classified disposable.
+   */
+  function alwaysThrowDeniedRemover(): {
+    remover: WorktreeRemover;
+    removeSpy: ReturnType<typeof vi.fn>;
+  } {
+    const removeSpy = vi.fn(() => {
+      const err = new Error(
+        `EACCES: permission denied, unlink '${AGENT_PATH_A}/locked/keep.txt'`,
+      ) as NodeJS.ErrnoException;
+      err.code = 'EACCES';
+      throw err;
     });
     return { remover: { remove: removeSpy }, removeSpy };
   }
@@ -6633,6 +6672,40 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
     expect(result.erroredStillListed[0]).toEqual(clean);
   });
 
+  it('issue #528: a PLAINLY clean worktree whose removal fails with the SAME deterministic (non-ENOTEMPTY) obstruction on both the first attempt and the bounded retry now reads EXHAUSTED, without ever having been classified disposable', () => {
+    const { remover, removeSpy } = alwaysThrowDeniedRemover();
+    const plainlyClean: WorktreeEntry = {
+      path: AGENT_PATH_A,
+      branch: 'wave/528-plain',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+
+    const result = executeCleanup(
+      { selected: [plainlyClean], skipped: [] },
+      { remover, stillListed: () => true, retryPause: NOOP_PAUSE, skipBranchHygiene: true },
+    );
+
+    // Never force-eligible — never classified disposable, exactly like the
+    // TRANSIENT case above; that half of the #483 contract is unchanged.
+    expect(removeSpy).toHaveBeenNthCalledWith(1, AGENT_PATH_A, { force: false });
+    expect(removeSpy).toHaveBeenNthCalledWith(2, AGENT_PATH_A, { force: false });
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    const entry = result.erroredStillListed[0];
+    expect(entry.manualRecovery).toBeDefined();
+    expect(entry.manualRecovery?.message).toMatch(/cannot succeed/i);
+    expect(entry.manualRecovery?.message).toMatch(/deterministic/i);
+    // Honesty check (the whole point of threading `wasClassifiedDisposable`
+    // through `exhaustedManualRecovery`): this worktree was NEVER classified
+    // disposable, and the message must not claim otherwise.
+    expect(entry.manualRecovery?.message).not.toMatch(/already classified disposable/i);
+    expect(entry.manualRecovery?.commands).toEqual([
+      `git worktree remove --force '${AGENT_PATH_A}'`,
+      'git worktree prune',
+    ]);
+  });
+
   it('a genuinely-dirty non-junk worktree never reaches the remover at all, so it can never be misread as EXHAUSTED', () => {
     const { remover, removeSpy } = alwaysThrowRemover();
     const dirtyReal: WorktreeEntry = {
@@ -6670,5 +6743,236 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
     expect(result.deregisteredNotDeleted).toHaveLength(1);
     expect(result.deregisteredNotDeleted[0].manualRecovery).toBeUndefined();
     expect(result.erroredStillListed).toHaveLength(0);
+  });
+});
+
+// ─── 35. The two-run classification flip against a REAL git worktree
+//     (issue #528) ──────────────────────────────────────────────────────────
+//
+// Section 34 pins the EXHAUSTED/TRANSIENT split at the `executeCleanup` unit
+// level with hand-built `WorktreeEntry` fixtures and an injected remover —
+// sufficient to pin the classification LOGIC, but not to prove the actual
+// two-run FLIP the issue reports: that logic alone cannot show run 1's own
+// removal attempt is what changes what run 2 then reads.
+//
+// This section drives the full `listAgentWorktrees` → `planCleanup` →
+// `executeCleanup` pipeline TWICE, back to back, against one REAL git
+// worktree and one REAL, deterministically-denied physical delete — never a
+// hand-set `dirtyAllJunk`/`orphanAllJunk` flag. `rmSync` is mocked
+// module-wide (see the file-level comment above `vi.mock('node:fs', ...)`)
+// with a PERSISTENT (not one-shot) override so ONE specific path is
+// genuinely undeletable on EVERY attempt across BOTH runs, while everything
+// else the module tries to delete goes through the REAL `rmSync` — the SAME
+// "real fs fixture, one narrow injected throw" idiom Section 10/11 already
+// establish for the ENOTEMPTY family, here modelling a deterministic,
+// non-ENOTEMPTY denial instead.
+describe('the two-run classification flip against a REAL git worktree (issue #528)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+  let realRmSync: typeof rmSync;
+
+  beforeAll(async () => {
+    const fsActual = await vi.importActual<typeof import('node:fs')>('node:fs');
+    realRmSync = fsActual.rmSync;
+    const cpActual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = cpActual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    asRmSyncMock(rmSync).mockImplementation((...args: unknown[]) =>
+      (realRmSync as unknown as (...a: unknown[]) => void)(...args),
+    );
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          realRmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  /** Real `git`, bypassing the mock — fixture SETUP and independent verification. */
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /**
+   * A real repo with a real worktree under `.claude/worktrees/wf_<name>`,
+   * GENUINELY clean at checkout — unlike `makeHarnessDeniedWorktree` (issue
+   * #150 section above), NOTHING is pre-deleted here. The worktree's own
+   * `.claude/` is its ONLY top-level tracked content besides `.git`, holding:
+   *   - `.claude/agents/wave-reviewer.md`  — ordinary, deletable content that
+   *     also happens to sit under a `HARNESS_DENIED_DIRS` path (`.claude/
+   *     agents`), so a bare unstaged DELETION of it reads disposable.
+   *   - `.claude/vendor/data.bin`          — the genuinely-denied content;
+   *     `.claude/vendor` is NOT in any disposable allowlist, but since this
+   *     fixture ensures it is NEVER actually deleted, it never appears in
+   *     `git status` at all and its own name is therefore irrelevant to the
+   *     classification this section proves.
+   */
+  function makeCleanWorktree(name: string): { mainRoot: string; worktreePath: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-528-')));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(mainRoot, '.claude', 'agents', 'wave-reviewer.md'), 'agent config\n');
+    mkdirSync(join(mainRoot, '.claude', 'vendor'), { recursive: true });
+    writeFileSync(join(mainRoot, '.claude', 'vendor', 'data.bin'), 'vendored\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'track worktree content'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    const relPath = join('.claude', 'worktrees', name);
+    realGit(['worktree', 'add', '-q', relPath, '-b', `wave/528-${name}`], mainRoot);
+    const worktreePath = join(mainRoot, relPath);
+    return { mainRoot, worktreePath };
+  }
+
+  /** Is `path` still registered per real `git worktree list --porcelain`? */
+  function stillRegistered(mainRoot: string, worktreePath: string): boolean {
+    return realGit(['worktree', 'list', '--porcelain'], mainRoot)
+      .split('\n')
+      .some((line) => line === `worktree ${worktreePath}`);
+  }
+
+  /**
+   * Installs a PERSISTENT `rmSync` override that models the exact shape a
+   * sandboxed harness's write-deny produces mid-delete: the SAME single call
+   * `physicallyDeleteGitLast`'s phase 1 makes for this worktree's ONLY
+   * top-level entry (`.claude`) really deletes whatever it legitimately can
+   * (`.claude/agents`, via the REAL `rmSync`) and leaves the one genuinely
+   * undeletable path (`.claude/vendor/data.bin`) exactly as it was, then
+   * throws an `EACCES` the SAME way on EVERY subsequent call — first
+   * attempt, bounded retry (FOR-84), and any later run alike. The
+   * obstruction is deterministic, never a one-shot race: this is what makes
+   * the fixture "genuinely denied", not a hand-set flag.
+   */
+  function installDeterministicDenial(worktreePath: string): void {
+    const claudeDir = join(worktreePath, '.claude');
+    const agentsDir = join(claudeDir, 'agents');
+    const deniedFile = join(claudeDir, 'vendor', 'data.bin');
+
+    asRmSyncMock(rmSync).mockImplementation((...args: unknown[]) => {
+      if (args[0] === claudeDir) {
+        if (existsSync(agentsDir)) {
+          realRmSync(agentsDir, { recursive: true, force: true });
+        }
+        const err = new Error(
+          `EACCES: permission denied, unlink '${deniedFile}'`,
+        ) as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return (realRmSync as unknown as (...a: unknown[]) => void)(...args);
+    });
+  }
+
+  it('AC1/AC2/AC3: run 1 already reads EXHAUSTED (the fix), run 2 reads the SAME, and run 1\'s own partial deletion is CONFIRMED as the mechanism that would otherwise flip run 2 alone', () => {
+    const { mainRoot, worktreePath } = makeCleanWorktree('wf_528-flip');
+
+    // Precondition, stated so a failure downstream is unambiguous: the
+    // fixture really is clean — the premise the issue itself states ("a
+    // clean worktree"), never a pre-set dirtyAllJunk flag.
+    const preStatus = realGit(['status', '--porcelain', '--untracked-files=all'], worktreePath);
+    expect(preStatus.trim()).toBe('');
+
+    installDeterministicDenial(worktreePath);
+
+    // ── run 1 ──────────────────────────────────────────────────────────────
+    const entries1 = listAgentWorktrees(mainRoot);
+    expect(entries1).toHaveLength(1);
+    expect(entries1[0].dirty).toBe(false); // still clean — nothing has run yet
+    expect(entries1[0].dirtyAllJunk).toBeUndefined();
+
+    const plan1 = planCleanup(entries1);
+    // Selected as a PLAIN clean worktree — the dirtyAllJunk/orphanAllJunk
+    // override in planCleanup is never even reached for it.
+    expect(plan1.selected.map((e) => e.path)).toEqual([worktreePath]);
+
+    const result1 = executeCleanup(plan1, {
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+
+    expect(result1.errors).toEqual([]);
+    expect(result1.erroredStillListed).toHaveLength(1);
+    expect(existsSync(worktreePath)).toBe(true); // still there — not removed
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
+
+    // THE FIX (AC3): the FIRST run already reads EXHAUSTED, not TRANSIENT.
+    const entry1 = result1.erroredStillListed[0];
+    expect(entry1.manualRecovery).toBeDefined();
+    expect(entry1.manualRecovery?.message).toMatch(/cannot succeed/i);
+    expect(entry1.manualRecovery?.message).toMatch(/deterministic/i);
+
+    // ── the partial-deletion mechanism, CONFIRMED (AC2) ──────────────────
+    // Run 1's own attempt (plus its internal bounded retry) really deleted
+    // `.claude/agents` from disk and could never touch `.claude/vendor`. A
+    // completely fresh, independent probe now sees that as `git status`
+    // divergence — and, because the deleted path happens to be exactly
+    // disposable-shaped, this is exactly the mechanism the issue's
+    // hypothesis named: run 1's partial deletion is what would move the
+    // worktree into the `dirtyAllJunk` class, were a naive re-run to trust
+    // only a fresh classification instead of what just actually happened.
+    expect(existsSync(join(worktreePath, '.claude', 'agents'))).toBe(false);
+    expect(existsSync(join(worktreePath, '.claude', 'vendor', 'data.bin'))).toBe(true);
+    const midStatus = realGit(['status', '--porcelain', '--untracked-files=all'], worktreePath);
+    expect(midStatus.split('\n').filter((l) => l.length > 0)).toEqual([
+      ' D .claude/agents/wave-reviewer.md',
+    ]);
+
+    // ── run 2: a completely fresh, independent invocation (AC1) ──────────
+    const entries2 = listAgentWorktrees(mainRoot);
+    expect(entries2).toHaveLength(1);
+    expect(entries2[0].dirty).toBe(true);
+    expect(entries2[0].dirtyAllJunk).toBe(true); // the flip run 2 alone used to need
+
+    const plan2 = planCleanup(entries2);
+    // This time selected via the dirtyAllJunk override — a DIFFERENT route
+    // through planCleanup than run 1 took.
+    expect(plan2.selected.map((e) => e.path)).toEqual([worktreePath]);
+
+    const result2 = executeCleanup(plan2, {
+      repoRoot: mainRoot,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+
+    expect(result2.erroredStillListed).toHaveLength(1);
+    const entry2 = result2.erroredStillListed[0];
+    expect(entry2.manualRecovery).toBeDefined();
+    // Run 2 reaches EXHAUSTED via the ORIGINAL #483 route (pre-classified
+    // disposable) — its wording differs from run 1's (#528 route), and both
+    // are equally honest about which route fired.
+    expect(entry2.manualRecovery?.message).toMatch(/already classified disposable/i);
+
+    // The worktree is still fully registered and its one undeletable path is
+    // still untouched — a re-run genuinely cannot succeed, on either run.
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
   });
 });
