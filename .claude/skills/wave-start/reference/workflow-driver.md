@@ -116,11 +116,24 @@ A copy that is neither freshly extracted nor currency-checked is not eligible to
 - **Termination step 4 is the `host-pr status --branch` re-query recipe**, never a `PR_URL=$(...)` capture-then-guard shape. A copy still prescribing a capture-plus-guard predates the Convention-12/13 fix and will teach the Worker a shape the worktree-isolation guard refuses outright.
 - **The two inlined `*_SCHEMA` literals deep-equal the exported engine consts**, `anyOf`-free. `skill-schema-drift.spec.ts` is the automated form of this one for what ships on `main`; the checklist item is for a HAND diff when comparing two composed copies that may not both be on `main` yet.
 - **`REQUIRED_ROW_FIELDS` names every scalar field the copy's OWN `workerBrief`/`reviewerBrief` actually interpolate.** A field added to a brief but not to that array is exactly how the narrow `anchorSha`-only predecessor of this assertion missed `branch` one wave-generation later (Authoring constraint #7 below).
+- **Both `workerBrief()` and `reviewerBrief()` render a `## Granted scope extension` section.** A copy missing either heading predates ADR-0041's structured-grant field — see "The recompose-refetch rule" below. Without it a granted, in-scope file reads to the Reviewer as an unverified overrun again, the exact live gap ADR-0041 closes.
 
 **Both motivating occurrences, recorded as evidence.**
 
 - **Occurrence 1 — a frozen template outlived the cwd-persistence fix.** `docs/retros/2026-07-30-beta1-double-wave.md` (finding DW-F3): a Convention-13 row and, independently, the Echo-Guard row both measured that cwd does NOT persist between a dispatched subagent's Bash calls that same wave — yet the Scribe brief actually dispatched that wave still opened with a `cd` to `REPO_ROOT` in call 1 and ran its engine verb in call 3, resting on the incidental fact that the dispatch root already was the repo root, not on anything the brief itself established. The wave's own Coordinator compensated by hand, per row, rather than by re-extracting a corrected copy — the ten ad-hoc currency assertions this rule exists to replace with a mechanism. `#353` (the fix carried in this document today: step 1 is a bare `pwd` compared against the compose-time literal, never a `cd`) is what closed it.
 - **Occurrence 2 — the rule's first measured payoff, one wave later.** `#356` (landed as commit `e41c016`, "restore the dead-end assertion, reconcile the reviewer-isolation posture, bound the shell-function remedy"): `reviewerBrief()`'s SECRET-SAFE clause stated the Reviewer's `agent()` call carried the WORKER's measured isolation posture (`isolation: 'worktree'`) instead of its own (no `isolation` key at all, Stage 3) — a claim the repo had just falsified by adding the Worker-scoped posture note in the first place. A **compose-fresh anchor-diff** — diffing the freshly-extracted script against the previous compose before that wave's dispatch — caught the mismatch before it reached a Reviewer brief. This is the first occasion the rule (informally applied) paid for itself measurably, rather than being argued for in the abstract.
+
+### The recompose-refetch rule — the tracker-currency sibling (ADR-0041)
+
+**Every recompose re-fetches the row's issue spec, unconditionally.** Whenever a row's brief is composed again — a re-dispatch iteration (§Re-dispatch below) or a wave-resume `redispatch` hand-off (`wave-resume/SKILL.md` step 8, which hands its `redispatch` rows straight back to THIS driver's own compose step, so nothing wave-resume-specific has to restate the rule separately) — the Coordinator re-reads the row through `issue-store read` and re-embeds the result as `issue.issueSpec` before that round's `ISSUES` entry is composed. No condition, no memory: never "re-fetch only if I annotated this row since the last compose." That condition is exactly the remembering whose failure produced the observed gap — live occurrence, wave `2026-08-13-consumer-boundary-a`, row 499's two review rounds: the Coordinator DID grant a scope extension and DID write it to the tracker via `annotate`, and the round-2 brief still carried the pre-grant spec, because nothing forced the re-embed the fix requires. A conditional rule is also blind to a third-party tracker write the Coordinator never made itself — an unconditional one is not.
+
+This is the tracker-currency sibling of "The compose-fresh-or-verify rule" immediately above, one level down: that rule asks whether the SCRIPT TEXT still matches this document; this one asks whether each row's EMBEDDED SPEC still matches the tracker. Same shape, same remedy — re-derive fresh, every time, never inherit a previous compose's answer.
+
+**The grant rides along as data, not only as a widened glob.** A recompose that re-fetches `issueSpec` alone still hands the Reviewer a widened Files list with no way to tell a GRANTED widening from an accidental one — a widened glob never conveys that a decision was made, by whom, or what it is bound to. The optional `scopeGrants` field (§Per-row data below) is the other half of the fix: it is what makes the grant itself, not merely its effect on the glob, visible to both briefs. It is sourced as a **projection** of this row's `scope-extension`-disposition disclosures in the spine, built fresh at every compose alongside `issueSpec` — never authored by hand, and never a second source of truth: the spine stays the sole durable record.
+
+**The same-round boundary is deliberate, not a gap this rule is meant to close.** Row objects are sealed at fan-out (§Harness constraint above) — a grant spoken at routing time (`start-mechanics.md` step 7.0a) reaches only the NEXT compose. The round already in flight keeps whatever `scopeGrants` it was dispatched with (ordinarily none, for a row's first grant), and its Reviewer may still have to re-derive the forcing with an honest caveat if it is asked to verify an out-of-glob touch before the grant reaches it. That is the documented fallback (ADR-0041 Decision 4) and it stays correct behavior: closing it would mean injecting live spine state into an already-dispatched brief, which breaks fan-out sealing for a case the fallback already handles.
+
+**Resume is not a separate case.** `wave-resume` never composes a brief itself — its own reconciliation ends at step 8, which hands every `redispatch` row back to `wave-start`'s dispatch loop, i.e. this exact compose step. A resumed re-dispatch is therefore an ordinary recompose under this rule, with no wave-resume-specific wiring required: the unconditional re-fetch and the `scopeGrants` projection both apply exactly as they do for a cap=1 re-dispatch.
 
 ## Authoring constraints
 
@@ -355,10 +368,21 @@ const VERDICTS_DIR = '<absolute .flotilla/waves/<slug>/verdicts>'
 
 const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('\n')
 
+// Renders a row's granted scope extensions (ADR-0041) — a projection of this
+// row's scope-extension disclosures in the spine, never authored by hand
+// (§Per-row data, "The recompose-refetch rule" above). Absent or empty alike
+// render as "- none", matching j()'s own stance on an empty reviewerHints.
+const renderGrants = (grants) =>
+  (grants && grants.length ? grants : ['none']).map((g) =>
+    typeof g === 'string'
+      ? `- ${g}`
+      : `- **${g.paths.join(', ')}** — granted at iteration ${g.grantedAtIteration} (disclosure \`${g.disclosureRef}\`): ${g.reason}`
+  ).join('\n')
+
 // ── Per-row data — Coordinator fills this from the spine before invoking ──
 // Each: { id, slug, worker, risk, iteration, model, anchorSha, coordinatorBranch,
 //         depsSetup, issueSpec, prTitle, closePhrase, reviewerHints, siblingBranches,
-//         iteration1HeadSha? }
+//         iteration1HeadSha?, scopeGrants? }
 // `worker` is copied straight off the row's Plan-Table Worker cell. It is not
 // interpolated into any brief — it exists so `assertNotHumanGated` below can
 // refuse to compose a row no agent may pick up (see §The human gate).
@@ -373,6 +397,16 @@ const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('
 // WorkerReport's `commitShas` (last entry) — the Coordinator already holds that
 // report when composing the re-dispatch (it is the same `report` in the routed
 // `{ id, risk, iteration, report, verdict }` tuple). Absent on iteration 1.
+// scopeGrants is OPTIONAL and array-valued, like reviewerHints (ADR-0041): each
+// entry is { paths: string[], reason: string, grantedAtIteration: number,
+// disclosureRef: string } — a PROJECTION of this row's `scope-extension`-
+// disposition disclosures in the spine (`spine add-disclosure` / `set-disposition`,
+// ADR-0027), built fresh at EVERY compose by "The recompose-refetch rule" above.
+// The spine stays the sole durable record: this field is never authored by hand
+// and never a second source of truth, only the compose-time READING of what the
+// spine already holds for this row. Absent, or an empty array, on a row with no
+// scope-extension disclosures yet — both render as "none" in both briefs
+// (renderGrants below), which is the ordinary case.
 const ISSUES = [
   {
     id: 'NN',
@@ -404,6 +438,12 @@ const ISSUES = [
     // declared Files globs, risk. NOT a tracker id/path: the store config that
     // would resolve one may itself be gitignored and absent from this worktree.
     issueSpec: '<embed title + body + acceptance criteria + Files globs + risk here>',
+    // OPTIONAL (ADR-0041) — this row's granted scope extensions, projected from
+    // the spine's scope-extension disclosures AT THIS COMPOSE (see "The
+    // recompose-refetch rule" above). Omit, or leave [], on a row with none yet.
+    scopeGrants: [
+      // { paths: ['<path>'], reason: '<why the touch was forced>', grantedAtIteration: 1, disclosureRef: '<row-id>.<ordinal>' },
+    ],
     // The PR-open inputs the Worker passes to `host-pr create` (the Worker has no
     // wave.config.json in its worktree, so the Coordinator supplies both):
     //   prTitle     — the PR title. Composed WITHOUT any bare tracker id
@@ -461,6 +501,11 @@ ISSUES.forEach((issue) => { issue.branch = `wave/${issue.id}-${issue.slug}` })
 //     hints yet" — `j()` already renders it as `- none`); a naive
 //     string-emptiness check would wrongly reject that valid empty case
 //     (`String([]) === ''`), so it is out of scope for this assertion.
+//   - scopeGrants (ADR-0041) — an array, not a scalar, exactly like
+//     reviewerHints above: an EMPTY array or an ABSENT field are both valid
+//     ("no grants yet" — `renderGrants()` below renders either as `- none`),
+//     so the identical string-emptiness objection applies and it is out of
+//     scope for this assertion for the same reason.
 //   - iteration — a number compared (`issue.iteration > 1`), not rendered
 //     into text on the path that would ever see it; an absent value
 //     misroutes to the iteration-1 branch rather than rendering "undefined",
@@ -620,6 +665,16 @@ stay strictly within the declared Files globs.
 
 ${issue.issueSpec}
 
+## Granted scope extension
+${renderGrants(issue.scopeGrants)}
+A grant above is PURPOSE-BOUND and ROW-SCOPED (ADR-0041) — it sanctions the
+stated reason at the granted paths for this row's remaining rounds, never a
+blanket pass for the file. Treat each granted path as in-scope ONLY for the
+purpose stated beside it; a change at a granted path serving a DIFFERENT
+reason is still an out-of-glob touch and still needs its own disclosure
+(Policy clause 7 / wave-shared Convention 9 below) — a grant is a decision
+about one forcing reason, not a standing exemption for the path.
+
 ## Policy clauses (obey verbatim)
 1. AC-vs-repo-policy conflict: repo policy wins; flag under Judgment calls.
 2. Commit policy: new commits only — never \`git commit --amend\` on a pushed commit.
@@ -771,6 +826,18 @@ either — the full spec (title, body, acceptance criteria, declared Files
 globs, risk) is embedded below; use it for the per-AC verification.
 
 ${issue.issueSpec}
+
+## Granted scope extension
+${renderGrants(issue.scopeGrants)}
+Verify a change at a granted path AGAINST THE STATED REASON above — never flag
+a granted path as a Files-glob overrun, and never re-derive whether the touch
+was forced: that judgment was already made when the grant was recorded
+(ADR-0041), and re-deriving it here is exactly the duplicated work this field
+exists to remove. A change AT a granted path but serving a DIFFERENT purpose
+than the stated reason is still reportable — the grant covers the reason, not
+the path unconditionally. A change at a path with NO grant listed above is
+reviewed exactly as before this row ever had one: an ordinary files-drift
+check, Convention 9's wiring-disclosure duty included.
 
 ## Worker Report digest
 Outcome: ${report.outcome}
