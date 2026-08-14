@@ -340,6 +340,123 @@ function resolveAnchoredLink(ref: Reference): boolean {
   return existsSync(resolve(CLONE_ROOT, dirname(ref.file), target));
 }
 
+/**
+ * Class-(a) EXTENSION: the `#anchor` fragment. Until this addition,
+ * `resolveAnchoredLink` (above) stripped the fragment with `.split('#')[0]`
+ * before testing existence — a link whose FILE resolves and whose HEADING
+ * does not was therefore indistinguishable from a correct one. This is the
+ * other half of the same address, verified against the target file's own
+ * headings.
+ *
+ * SLUG ALGORITHM — SCOPE DECISION (recorded here and in the PR body). This
+ * implements a documented ASCII SUBSET of GitHub's real heading-slug
+ * algorithm, not the exact rendering behaviour: reproducing that exactly
+ * would mean embedding GitHub's own Unicode-punctuation table (the
+ * `github-slugger` package), a dependency this test-only file does not carry
+ * and the corpus does not need. The subset:
+ *
+ *   1. a markdown link `[label](url)` inside a heading collapses to its
+ *      LABEL — the url must never leak its own word-characters (a path
+ *      segment like `docs`/`adr`/`0030`) into the slug;
+ *   2. lowercase;
+ *   3. every character that is not an ASCII letter, digit, underscore,
+ *      space, or hyphen is DROPPED. This reproduces both live corner cases
+ *      already in the corpus (asserted below against the real headings, not
+ *      synthetic ones): a parenthesised `(issue #355)` collapses to a
+ *      trailing `-issue-355` (the parens and `#` are dropped, the digits
+ *      survive); an em-dash leaves a DOUBLE hyphen (the dash character is
+ *      dropped, but its two flanking spaces are NOT collapsed — each becomes
+ *      its own hyphen in step 4, which is what produces the double hyphen);
+ *   4. each remaining space becomes exactly ONE hyphen, one at a time — a
+ *      run of N spaces becomes a run of N hyphens, never collapsed to one;
+ *   5. a slug that repeats within one file gets GitHub's own de-duplication
+ *      suffix (`-1`, `-2`, …) in heading order, the same behaviour
+ *      `github-slugger` implements.
+ *
+ * BOUNDARY, stated so a reader can tell a deliberate limit from an
+ * oversight: GitHub's real algorithm keeps non-ASCII LETTERS (accented
+ * Latin, CJK, …) as slug content; this subset drops them along with every
+ * other stripped character, same as any other punctuation. No heading in the
+ * guarded corpus contains one (checked at authoring time — every `^#`
+ * heading in `.claude/skills/**` and `.claude/agents/**` is ASCII prose, the
+ * only non-ASCII characters present being em/en dashes and smart quotes,
+ * both already handled by step 3). This is therefore a live but currently
+ * UNEXERCISED boundary, not a known-wrong case: a heading that does someday
+ * carry such a character would slug SHORTER here than GitHub's real anchor,
+ * so a genuinely correct link into it FAILS this check rather than silently
+ * passing. The guard fails CLOSED at the boundary, never open — an
+ * unverifiable slug reads as a dead one, not as a skip.
+ */
+function slugifyHeading(rawHeadingText: string): string {
+  const labelOnly = rawHeadingText.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+  const lowered = labelOnly.toLowerCase();
+  const stripped = lowered.replace(/[^a-z0-9_ -]/g, '');
+  return stripped.replace(/ /g, '-');
+}
+
+const HEADING_LINE = /^#{1,6}\s+(.*)$/;
+
+/** Every heading TEXT in a markdown file, in document order, fenced code
+ * excluded (a `#`-prefixed shell comment inside a fence is not a heading —
+ * same fence-tracking discipline as `extractCitations` uses). */
+function extractHeadingTexts(md: string): string[] {
+  const out: string[] = [];
+  let inFence = false;
+  for (const line of md.split('\n')) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = HEADING_LINE.exec(line);
+    if (m) out.push(m[1].trim());
+  }
+  return out;
+}
+
+/** The full anchor SET a markdown file exposes — GitHub's own
+ * de-duplication suffix applied to a repeated slug, in heading order. */
+function headingAnchors(md: string): Set<string> {
+  const seen = new Map<string, number>();
+  const anchors = new Set<string>();
+  for (const text of extractHeadingTexts(md)) {
+    const base = slugifyHeading(text);
+    const priorOccurrences = seen.get(base) ?? 0;
+    seen.set(base, priorOccurrences + 1);
+    anchors.add(priorOccurrences === 0 ? base : `${base}-${priorOccurrences}`);
+  }
+  return anchors;
+}
+
+type AnchorFragmentVerdict = 'no-fragment' | 'ok' | 'dead' | 'out-of-scope';
+
+/**
+ * SCOPE DECISION (recorded here and in the PR body): a fragment resolves
+ * ONLY against a target file inside the guarded population `SOURCES` already
+ * holds — every markdown file under `.claude/skills/` and `.claude/agents/`
+ * (`SKILL_DOCS`). A fragment whose target FILE resolves (the class-(a)
+ * dead-path predicate above already proved that) but which sits OUTSIDE that
+ * population — an ADR, a retro, `CONTEXT.md`, anything this guard has never
+ * read the headings of — is judged `'out-of-scope'` and treated as a FAILURE
+ * by the assertion below, never silently skipped: this guard has nothing to
+ * verify such a fragment against, and trusting an anchor it never inspected
+ * is exactly the silent pass this row exists to close. Widening the guarded
+ * population to cover a real future case is a deliberate, loud edit to
+ * `SKILL_DIRS` — not a silent exemption carved out here.
+ */
+function verifyAnchorFragment(ref: Reference): AnchorFragmentVerdict {
+  const hashIndex = ref.target.indexOf('#');
+  if (hashIndex === -1) return 'no-fragment';
+  const fragment = ref.target.slice(hashIndex + 1);
+  if (!fragment) return 'no-fragment';
+  const targetPath = ref.target.slice(0, hashIndex);
+  const absolute = resolve(CLONE_ROOT, dirname(ref.file), targetPath);
+  const cloneRelative = relative(CLONE_ROOT, absolute).split(sep).join('/');
+  const source = SOURCES.get(cloneRelative);
+  if (source === undefined) return 'out-of-scope';
+  return headingAnchors(source).has(fragment) ? 'ok' : 'dead';
+}
+
 const INLINE_CODE = /`([^`\n]+)`/g;
 /** A bare, placeholder-free, slash-bearing path — no spaces (a command
  * fragment has them), no `<…>`/`$`/`*` (a template or glob has them). */
@@ -741,6 +858,95 @@ describe('skill-reference-guard — class (a): anchored markdown links resolve f
       host,
     );
     expect(resolveAnchoredLink(planted[0])).toBe(true);
+  });
+});
+
+// ─── class (a) extension: #anchor fragments resolve against real headings ────
+
+describe('skill-reference-guard — class (a) extension: #anchor fragments resolve against target headings', () => {
+  it('the slug derivation reproduces both live corner cases already in the corpus (real headings, not synthetic ones)', () => {
+    // (1) a parenthesised issue reference collapses to a trailing `-issue-NNN`
+    // form — the real heading behind `#gitignore-scaffold--the-scribe-scratch-
+    // path-issue-355`, cited from three different skill files.
+    expect(
+      slugifyHeading('`.gitignore` scaffold — the Scribe scratch path (issue #355)'),
+    ).toBe('gitignore-scaffold--the-scribe-scratch-path-issue-355');
+
+    // (2) an em-dash leaves a DOUBLE hyphen behind — the real heading behind
+    // `#the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-
+    // lifecycle-issue-355`. Both corner cases (the parenthesised issue AND
+    // the em-dash) live in this single heading at once.
+    expect(
+      slugifyHeading(
+        'The Scribe scratch sweep — a repo-internal location that had no lifecycle (issue #355)',
+      ),
+    ).toBe('the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-lifecycle-issue-355');
+
+    // A markdown link inside a heading contributes its LABEL only — the
+    // url's own word-characters (`docs`, `adr`, `0030`, …) must not leak in.
+    expect(
+      slugifyHeading(
+        '6. Documented-form comparison *(required when the row\'s core path is unexecutable — [ADR-0030](../../docs/adr/0030-deferred-core-path-requires-documented-form-comparison.md))*',
+      ),
+    ).not.toMatch(/docs|deferred|comparison-md/);
+  });
+
+  it('every real #anchor fragment in the corpus resolves against its target headings (a guard that matches nothing is green for the wrong reason)', () => {
+    const withFragments = ALL_ANCHORED.filter((ref) => ref.target.includes('#'));
+    expect(withFragments.length).toBeGreaterThan(0);
+    const bad = withFragments
+      .map((ref) => [ref, verifyAnchorFragment(ref)] as const)
+      .filter(([, verdict]) => verdict === 'dead' || verdict === 'out-of-scope')
+      .map(([ref, verdict]) => `${ref.file} → ${ref.target}  [${verdict}]`);
+    expect(
+      bad,
+      `cross-reference link(s) whose #anchor fragment does not resolve against the target ` +
+        `file's own headings ('dead'), or whose target file sits outside the guarded ` +
+        `.claude/skills+.claude/agents population this guard reads headings from ` +
+        `('out-of-scope' — see verifyAnchorFragment's docstring for why that fails rather ` +
+        `than skips). Fix the heading reference, or the heading itself:\n  ` + bad.join('\n  '),
+    ).toEqual([]);
+  });
+
+  it('negative control — a planted dead fragment on a real, guarded target file fails the same predicate', () => {
+    const planted: Reference = {
+      file: '.claude/skills/wave-setup/SKILL.md',
+      target: 'reference/setup-mechanics.md#this-heading-does-not-exist-anywhere',
+    };
+    expect(verifyAnchorFragment(planted)).toBe('dead');
+  });
+
+  it('positive control — a live fragment on a real, guarded target resolves through the same pipeline', () => {
+    const live: Reference = {
+      file: '.claude/skills/wave-setup/SKILL.md',
+      target: 'reference/setup-mechanics.md#github-token-permissions',
+    };
+    expect(verifyAnchorFragment(live)).toBe('ok');
+  });
+
+  it('a link with no fragment is untouched by this predicate — the dead-path check alone still governs it', () => {
+    const noFragment: Reference = {
+      file: '.claude/skills/wave-plan/SKILL.md',
+      target: '../wave-shared/SKILL.md',
+    };
+    expect(verifyAnchorFragment(noFragment)).toBe('no-fragment');
+  });
+
+  it('out-of-scope — a fragment into a real file outside .claude/skills and .claude/agents fails CLOSED, not silently', () => {
+    // The target file genuinely exists and the class-(a) dead-path predicate
+    // already resolves it — proving 'out-of-scope' below is a scope
+    // decision, not a disguised dead-path failure.
+    const outside: Reference = {
+      file: '.claude/skills/wave-reviewer/SKILL.md',
+      target: '../../../docs/adr/0004-ac-ground-truth-is-the-reviewer-verdict.md#amendment-2026-07-28',
+    };
+    expect(resolveAnchoredLink(outside)).toBe(true);
+    expect(verifyAnchorFragment(outside)).toBe('out-of-scope');
+  });
+
+  it('a repeated heading slug within one file gets the same de-duplication suffix GitHub uses', () => {
+    const anchors = headingAnchors('## Setup\n\nbody\n\n## Setup\n\nbody again\n\n## Setup\n\nonce more\n');
+    expect(anchors).toEqual(new Set(['setup', 'setup-1', 'setup-2']));
   });
 });
 
