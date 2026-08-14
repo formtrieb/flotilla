@@ -57,7 +57,7 @@ The person at the live session an agent is working for — the addressee of ever
 _Avoid_: the Coordinator (the session, never the person), user (the harness's own overloaded term), consumer (the adopting repo/organization, not the person at the session).
 
 **Worker**:
-A background agent that executes one issue in its own isolated `/tmp` worktree and reports back via a schema-validated return.
+A background agent that executes one issue in its own isolated worktree — created under the repo's worktree **Containment root**, never a system temp dir — and reports back via a schema-validated return.
 
 **Reviewer**:
 The independent agent that re-runs the verify gate and judges a worker's output, returning a schema-validated verdict.
@@ -168,6 +168,32 @@ _Avoid_: using it to answer landing-posture questions — that is the Host-Prefl
 The code-host posture probe (`host-pr preflight`, detect-host-routed, store-blind — no `--config`): allow-auto-merge, required-checks, merge-token capability, read through the landing seam on every store kind. `unknown` means "the token cannot see this setting" — absence of evidence, never blocking, never requiring admin rights. Advisory by design: the arm outcome remains the ground truth (ADR-0023 Amendment 2026-07-20).
 _Avoid_: treating a probe result as a landing guarantee (the behind/recomputing race is not probeable); conflating `unknown` with a visible OFF.
 
+### Cleanup
+
+**Sweep**:
+The removal pass (`worktree-cleanup`, run standalone or as wave-close phase 3) over flotilla's disposable worktree populations — registered agent worktrees, orphan dirs, scribe scratch payloads, detached scratchpad checkouts — each enumerated only inside the **Containment roots**. It removes what is disposable and *accounts* for the rest: what it cannot remove carries evidence and **Manual recovery**, what it cannot see is reported **Unaccounted**. Removal of either belongs to the **Operator** — the sweep owes accounting, never removal (ADR-0042).
+_Avoid_: garbage collection (implies force), cleanup (the generic verb — the Sweep is the pass).
+
+**Containment root**:
+A directory the **Sweep** may reason about: only a worktree *strictly inside* one (equality is not containment) is ever a candidate for anything. The set is the engine's worktree-root markers plus the consumer-declared `cleanup.extraRoots` — static strings by design, so a per-session path is structurally outside every root.
+_Avoid_: allowlist (it gates candidacy, not permission), root (unqualified).
+
+**Transient / Exhausted (removal reading)**:
+The two readings of an incomplete removal after the bounded retry: *transient* — consistent with the race the retry exists to clear, worth a future re-run; *exhausted* — deterministically stuck, no re-run will converge, carries **Manual recovery**. Judged on evidence (the **Survivor set**), never on an errno alone.
+_Avoid_: failed (the generic thrown-error class is a separate report bucket).
+
+**Survivor set**:
+What physically remains under a worktree after a failed removal attempt — the evidence the exhausted reading is judged on, and (ADR-0042) disclosed on the report entry rather than discarded after the verdict.
+_Avoid_: leftovers, residue (unqualified — residue spans both this and **Unaccounted**).
+
+**Manual recovery**:
+The exhausted removal's handoff payload on the report entry — a why-message plus the exact operator commands. The sweep's half of "accounting, never removal" for the residue it can see (ADR-0042).
+_Avoid_: force fallback (that is the scoped pre-classification step for classifier-disposable entries, not this handoff).
+
+**Unaccounted (worktree)**:
+A registered worktree that is neither the primary checkout nor in any of the **Sweep**'s populations — counted but in no list, typically because it lives outside every **Containment root** (the Reviewer's out-of-repo probe checkout is the canonical case). Reported advisorily (additive field + notice line), never a failure exit: the set has legitimate inhabitants, e.g. a human's long-lived second worktree (ADR-0042).
+_Avoid_: orphan (a specific in-root population), leaked (presumes it is a defect — it may be someone's workspace).
+
 ### Auth
 
 **Lookup-Command**:
@@ -239,6 +265,7 @@ _Avoid_: consumer mode (not a mode — the register is the default, the source-f
 - A **PRD** is sliced by `to-issues` into many grabbable **IssueView**s, each carrying a **Parent** backlink to it; the PRD's *consumed* status is derived from those backlinks, never written — the same derive-don't-write discipline as the **Coarse state** bookends.
 - **Arming** hands an approved row's merge to the code host; landing evidence flows back through the done-reconcile hierarchy **tracker attachment > host PR state > nothing** (ADR-0023).
 - The **Echo-Guard** is defense-in-depth *over* the auth anchors, never one of them: the tracked settings-deny entries own the gitignored-file-read vector, the **Lookup-Command** indirection owns the direct-execution vector (ADR-0029), and the guard covers only what a command's own text reveals.
+- The **Sweep** accounts for every registered worktree: an incomplete removal carries its **Survivor set** and, when exhausted, **Manual recovery**; a worktree outside every **Containment root** is reported **Unaccounted** — removal of both belongs to the **Operator**, never to a more forceful sweep (ADR-0042).
 
 ## Flagged ambiguities
 
