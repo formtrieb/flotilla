@@ -93,7 +93,7 @@ Two adapters ship, and the credential differs:
 | Detected host | Credential | Notes |
 |---|---|---|
 | `github` | `GITHUB_TOKEN` / `GITHUB_TOKEN_CMD` | See [GitHub token permissions](#github-token-permissions) below. |
-| `bitbucket` | `BITBUCKET_TOKEN` / `BITBUCKET_TOKEN_CMD`, **plus `BITBUCKET_EMAIL`** | Bitbucket Cloud's REST Basic auth pairs your **Atlassian account email** with an **API token** (`--user '{atlassian_account_email}:{api_token}'`). Scope the token `read:repository:bitbucket` + `write:repository:bitbucket`. **App passwords no longer work at all** — Atlassian stopped them on 2026-06-09 and removed them on 2026-07-28. `BITBUCKET_EMAIL` is an identifier, not a secret: it belongs in the tracked `env` block next to the `BITBUCKET_TOKEN_CMD` pointer, never in the keychain. Leaving it unset makes the landing verbs authenticate with `Authorization: Bearer` instead (a repository/project/workspace access token); `host-pr create` cannot use that form and refuses loudly, naming `BITBUCKET_EMAIL`. |
+| `bitbucket` | `BITBUCKET_TOKEN` / `BITBUCKET_TOKEN_CMD`, **plus `BITBUCKET_EMAIL`** for the `create` verb | Two token *flavors* satisfy `BITBUCKET_TOKEN`, and only one of them opens a PR — see [SKILL.md's Bitbucket token section](../SKILL.md#bitbucket-token--the-two-flavors-and-which-one-host-pr-create-needs). An **Atlassian account API token**, paired with the account's own email, authenticates Basic (`--user '{atlassian_account_email}:{api_token}'`); scope it per [Bitbucket token permissions](#bitbucket-token-permissions) below. **App passwords no longer work at all** — Atlassian stopped them on 2026-06-09 and removed them on 2026-07-28. `BITBUCKET_EMAIL` is an identifier, not a secret: it belongs in the tracked `env` block next to the `BITBUCKET_TOKEN_CMD` pointer, never in the keychain. Leaving `BITBUCKET_EMAIL` unset makes the landing verbs authenticate with `Authorization: Bearer` instead — the second flavor, a **workspace or repository access token** with no account email attached; `host-pr create` cannot use that form and refuses loudly, naming `BITBUCKET_EMAIL`. |
 
 **What the checks mean on `bitbucket`** (ADR-0023's 2026-08-10 amendment): `allow-auto-merge` reads Bitbucket's `allow_auto_merge_when_builds_pass` branch restriction on the default branch and reports `on` / `off` honestly (`unknown` only when the credential could not see it) — but it is **never a `fail`, whatever the value**, because Bitbucket Cloud exposes **no per-pull-request arming call** in its REST API. Ticking that restriction enables a *human* to click Merge and have Bitbucket watch the build; it gives the engine nothing to call. So there is no misconfiguration for an operator to fix here, and a `fail` would be permanently red on a correctly-configured consumer — noise, not a signal. `required-checks` reads Bitbucket's `require_passing_builds_to_merge` branch restriction, which states a **count** rather than named contexts, so it reports the minimum and names nothing. `pr-merge-token` reads a **user-scoped** permission endpoint, which an access token has no user context for — a `pass` there means "no evidence of a read-only credential", and its `detail` says so; the merge write remains the ground truth. `create-credentials` is the fourth check, and it is **Bitbucket-only** — it never appears in the report on any other host, because on GitHub the create credential is the same `GITHUB_TOKEN` `pr-merge-token` already grades. It reports `pass` when `BITBUCKET_EMAIL` is set and `advisory` (never `fail`) when it is absent or an empty string: the landing verbs stay unaffected either way (they authenticate with Bearer), so the gap is never fatal to `--auto`, but `host-pr create` — which the Worker terminator calls on every wave row — refuses without it, and the `detail` names that consequence up front.
 
@@ -103,7 +103,7 @@ Each check's `status` is one of `pass` / `fail` / `advisory` / `unknown` (the sh
 
 | Check (`name`) | Meaning |
 |---|---|
-| `pr-merge-token` | `pass` if `GITHUB_TOKEN` can merge PRs on the bound repo; `fail` (with a write-access fix) if not. |
+| `pr-merge-token` | `pass` if the detected host's landing credential (`GITHUB_TOKEN` on `github`, `BITBUCKET_TOKEN` on `bitbucket`) can merge PRs on the bound repo; `fail` (with a write-access fix) if not — see the `bitbucket` note below the table for how this check reads on that host specifically. |
 | `allow-auto-merge` | `pass` when the repo setting is ON. A visible **OFF** grades by context: **required checks present → `fail`** (arming is structurally impossible; the fix instruction names Settings → General → Pull Requests / `allow_auto_merge=true`), **none → `advisory`** (a clean PR direct-merges today). `unknown` when the token cannot see the setting (below maintain/admin) — never blocks, never demands admin. |
 | `required-checks` | report-only: `advisory` whether present (names the contexts; `--auto` arms) or absent (confirming means an immediate merge); `unknown` when the branch-protection read needs admin the token lacks. |
 | `create-credentials` | **Bitbucket-only** — omitted (`null`) from the checks array entirely on `github` and every other host, because GitHub's create credential is the same `GITHUB_TOKEN` `pr-merge-token` already grades (one fact, one owner). On `bitbucket`: `pass` when `BITBUCKET_EMAIL` is set, **`advisory`** (never `fail`) when it is absent or an empty string — the landing verbs (`arm`/`merge`/`status`/`preflight`) authenticate with Bearer and stay unaffected either way; only `host-pr create` needs the Basic-auth pair this check grades, and its `detail` names that consequence plus the fix. |
@@ -136,6 +136,23 @@ Neither preflight substitutes for checking scope up front — `store-preflight`/
 **`repo` (classic) covers every row above in one scope.** A fine-grained PAT does not bundle the same way — GitHub splits `repo` into separate repository permissions, so a fine-grained setup needs **`Issues`, `Pull requests`, and `Contents`, each Read and write**, named individually. Granting only the one the arm mutation needs (`Pull requests`) is the exact way a fine-grained token passes `store-preflight` (which never labels an issue) and then fails the first `addLabel`/`removeLabel` call mid-wave.
 
 **One more gate that is not an engine API call at all: `workflow` scope (classic) / `Workflows: Read and write` (fine-grained) — only if a wave will touch `.github/workflows/**`.** This is not a GitHub REST/GraphQL permission the engine's HTTP calls exercise; it is enforced by GitHub directly on the `git push` itself, refusing a pushed commit that adds or modifies a workflow file unless the token carries it — independent of every scope above being correct. Nothing in `store-preflight`/`host-pr preflight` probes this (it is a push-time git-protocol check, not an API read), so a wave that plans to touch workflow files needs this checked by hand, against the wave's own declared Files globs, before dispatch — this is exactly the gap that STOPped a wave at the push step once already (issue-tracked as W23).
+
+## Bitbucket token permissions
+
+Same discipline as the GitHub table above, and the same reason it matters: neither preflight substitutes for checking scope up front. `store-preflight` never touches the code host at all, and `host-pr preflight` grades only what its four checks can see — a token can clear both and still fail the one call neither preflight probes, `host-pr create`, which is gated on `BITBUCKET_EMAIL` rather than on a scope. Two independent things to get right before the first wave: the **scope** on the token, and — per [SKILL.md's Bitbucket token section](../SKILL.md#bitbucket-token--the-two-flavors-and-which-one-host-pr-create-needs) — **which flavor** of token is being scoped (an Atlassian account API token and a workspace/repository access token are not interchangeable, and the table below applies to the account-API-token flavor, the one that can open a PR at all).
+
+**The documented minimal set** — sufficient for every landing verb (`status`/`preflight`/`arm`/`merge`) and, paired with `BITBUCKET_EMAIL`, for `create` too:
+
+| Scope | Grants |
+|---|---|
+| `read:repository:bitbucket` | reading the repo, its pull requests, and its branch-restriction/build-status posture — every read the engine's Bitbucket adapter issues |
+| `write:repository:bitbucket` | opening/updating/merging a pull request, deleting the landed branch |
+
+**`read:pipeline` — recommended, live-verified 2026-08-13.** Without it, `host-pr preflight`'s `allow-auto-merge` and `required-checks` checks both report `unknown` — never `fail` (a wave still runs), but the credential cannot see the build-status posture either check grades, so `--auto` cannot tell a clean row from a red-build one. Granting `read:pipeline` on top of the minimal pair, verified against a live Bitbucket consumer: both checks move from `unknown` to `advisory` with real content instead — `allow-auto-merge` reads whether "Allow automatic merge when builds pass" is enabled on the default branch (read as **not enabled** on that consumer's `main`), `required-checks` reports the configured passing-build count (`require_passing_builds_to_merge`, ≥1 required on that consumer). The practical consequence: the engine's refuse logic for a row whose required builds have not all reported success — REFUSED at `wave-close --auto` — only becomes reachable once this scope is granted; without it, that refuse logic never sees the data it needs to fire at all.
+
+**`admin:repository` — the broader option, named for consumers who already grant it.** It is a superset of the two repository scopes above (and more besides) — this is not a recommendation to grant it *for* flotilla specifically, only a note that a token already carrying it for other reasons needs nothing added for the engine's own call surface.
+
+**Not yet re-tested: the documented pair alone, with no pull-request-specific scopes layered on top.** The minimal set above was verified sufficient for `create`/`arm`/`merge` on a live consumer that had additionally granted pull-request-specific scopes on its own judgment, alongside the repository pair — the repository pair *alone*, with nothing else added, has not been independently re-tested. Treat the table above as the documented floor, not yet a confirmed-minimal one; a maintainer re-check with exactly `read:repository:bitbucket` + `write:repository:bitbucket` and nothing else is the open item.
 
 ## `WaveConfig` fields
 
@@ -732,11 +749,18 @@ The three artifacts: the keychain item, the `<VAR>_CMD` env entry, and its match
 
 The SKILL.md [Credentials](../SKILL.md#credentials) section owns the **judgment** (the two first-class paths, the live-gate vs. "ACL bind" framing, the AFK-incompatibility of per-invocation-confirmation resolvers, the direnv+keychain half-measure); this is the concrete scaffold. Like the AFK harness config above, it lands in the consumer repo's **tracked** `.claude/settings.json` — the same file, not a second one — because a dispatched Worker/Reviewer worktree carries tracked files only, and the `<VAR>_CMD` entry has to reach that worktree for the wave's own dispatched agents to resolve the credential, not only the operator's interactive session.
 
-Run this once per credential the consumer needs (`GITHUB_TOKEN` always; `LINEAR_API_KEY` too, for a `linear` store). macOS `security` is the worked example below — the same three-artifact shape applies to any platform-native secret store or session-authenticated CLI (`op`, …), substituting that tool's own create/read invocation.
+Run this once per credential the consumer needs — the code-host landing credential (`GITHUB_TOKEN` on `github`; `BITBUCKET_TOKEN` on `bitbucket`) plus `LINEAR_API_KEY` for a `linear` store. macOS `security` is the worked example below — the same three-artifact shape applies to any platform-native secret store or session-authenticated CLI (`op`, …), substituting that tool's own create/read invocation.
 
 **1. The keychain item.** The default ACL (no `-T` restriction) governs *steady-state* reads, not the very first one: the **first** value-read (`-w`) of a freshly created item prompts the operator once, interactively, for authorization — clicking **Always Allow** on that prompt (see the live-gate below) is what makes *every later* read promptless. An attribute-only read (`find-generic-password` without `-w`) never triggers this prompt, so it cannot stand in as a check that the value-read path is promptless.
 
 ```bash
+security add-generic-password -a $USER -s flotilla-github-token -w
+```
+
+**Replacing a regenerated token.** `add-generic-password` refuses outright when an item under that same account/service pair already exists — it does not overwrite. A bare re-run after rotating the token (revoked-and-reissued PAT, a new Bitbucket API token, …) leaves the *old* item, and every `_CMD` lookup keeps resolving the stale value with nothing loud to say so. Delete the existing item before re-adding:
+
+```bash
+security delete-generic-password -a $USER -s flotilla-github-token
 security add-generic-password -a $USER -s flotilla-github-token -w
 ```
 
@@ -763,7 +787,19 @@ For a `linear` store, add `LINEAR_API_KEY_CMD` the same way, against its own key
 }
 ```
 
-**3. The `permissions.deny` entry** — one per scaffolded `<VAR>_CMD`, the exact command string as the `Bash(...)` prefix, merged into the same `deny` array as the secret-echo anchor:
+**On a Bitbucket-hosted consumer, `BITBUCKET_TOKEN_CMD` replaces `GITHUB_TOKEN_CMD` in this same block** — it is the code-host landing credential, not an addition alongside it (see [SKILL.md's Credentials](../SKILL.md#credentials) for the derivation). `BITBUCKET_EMAIL`, once this wave will run `host-pr create`, joins the same block as a **plain value, not a `_CMD` entry** — it is an identifier, not a secret, so there is no keychain item and no lookup command for it at all:
+
+```json
+{
+  "env": {
+    "NODE_USE_ENV_PROXY": "1",
+    "BITBUCKET_TOKEN_CMD": "security find-generic-password -a $USER -s flotilla-bitbucket-token -w",
+    "BITBUCKET_EMAIL": "operator@example.com"
+  }
+}
+```
+
+**3. The `permissions.deny` entry** — one per scaffolded `<VAR>_CMD`, the exact command string as the `Bash(...)` prefix, merged into the same `deny` array as the secret-echo anchor. `BITBUCKET_EMAIL` gets no entry here either — nothing about it is worth denying a read of, since it carries no secret:
 
 ```json
 {
@@ -794,7 +830,9 @@ For a `linear` store, add `LINEAR_API_KEY_CMD` the same way, against its own key
 
 The first block (`Read`/`cat`/`less`/`more`/`head`/`tail` against the gitignored settings/`.env` files) is the pre-existing secret-echo anchor (wave-shared Convention 8, FOR-81) — unchanged, universal, scaffolded identically for every consumer. The trailing two lines are the ADR-0029 addition: **per credential**, keyed to the exact command just written into that credential's `<VAR>_CMD` — this is what closes the residual vector (the environment now carries a pointer, so the leak class becomes "execute the lookup command directly," and this entry blocks the agent harness's own Bash tool from doing that). It anchors the direct form only — an `echo $(security …)` wrapper is out of scope here, left to the separate PreToolUse-hook candidate. It does not restrict the engine's own resolution: `credential-resolver.ts`'s `child_process` spawn runs *inside* an already-allowlisted CLI invocation (`store-preflight`, `host-pr`, a store verb), a different actor than an agent's Bash tool reaching for the command directly.
 
-**The live-gate — first-read Always-Allow click, then `store-preflight`.** Once all three artifacts exist, the operator does one interactive step **in their own terminal** (never through a dispatched Worker — this is a one-time human click, not something an AFK agent can or should resolve) to authorize the item's very first value-read, then confirms resolution through the engine:
+On a Bitbucket-hosted consumer, the `flotilla-github-token` line above is replaced by its `BITBUCKET_TOKEN_CMD` counterpart (`Bash(security find-generic-password -a $USER -s flotilla-bitbucket-token -w:*)`) — same substitution as the `env` block above, credential for credential, never an addition alongside the GitHub line. `BITBUCKET_EMAIL` never appears in this array: it carries no secret, so there is nothing here for it to anchor.
+
+**The live-gate — first-read Always-Allow click, then `store-preflight`.** Once all three artifacts exist, the operator does two interactive steps **in their own terminal** (never through a dispatched Worker — this is a one-time human click, not something an AFK agent can or should resolve) to authorize the item's very first value-read, then a third step that confirms resolution through the engine — and that third step is a **different vantage point**, not a continuation of the same bare terminal:
 
 1. **Trigger the first read, value-free.** Run the exact `<VAR>_CMD` form with its output redirected away, so the secret is never displayed even once:
 
@@ -806,11 +844,13 @@ The first block (`Read`/`cat`/`less`/`more`/`head`/`tail` against the gitignored
 
 2. **Click Always Allow** on the system dialog when it appears — not the one-time "Allow", which leaves the *next* read prompting again. This is the step that flips the item from "prompts every value-read" to "reads promptless from here on."
 
-3. **Re-run `store-preflight`** (or any engine call that constructs the store/host client — it resolves the credential as a side effect):
+3. **Re-run `store-preflight`** (or any engine call that constructs the store/host client — it resolves the credential as a side effect) — **through the harness (the Claude Code session running wave-setup), not the bare terminal steps 1–2 just used:**
 
    ```bash
    {{wave-cli}} store-preflight --config wave.config.json
    ```
+
+   **Why this step changes vantage point and steps 1–2 don't.** `<VAR>_CMD` lives only in the tracked settings `env` block — a channel the harness loads and a bare external shell does not. Steps 1–2 don't need it: they exercise the keychain item directly, with the literal `security …` command, to answer a question that has nothing to do with `<VAR>_CMD` at all (is the item authorized for value-reads yet?). Step 3 is different — it asks the engine to resolve `<VAR>_CMD` the same way a dispatched Worker will, so it has to run somewhere that same variable is actually set. Run it in the operator's own bare terminal anyway and it fails with a real, correctly-worded "not configured" error (e.g. `LINEAR_API_KEY is required … and neither source is configured` when the terminal has no `LINEAR_API_KEY_CMD` set) — accurate about *that terminal's* environment, and easy to misread as a broken scaffold. It is neither: the identical command, run through the harness, resolves cleanly. Live occurrence: an operator followed this step literally in a bare terminal, hit exactly this false failure, and only found the true state (`credential-probe --all` → `resolved: true` for every configured credential) by re-running inside the harness — a diagnostic round-trip this note exists to close.
 
 A clean exit is the live-gate: the keychain item is readable and Always-Allowed, the `<VAR>_CMD` command is spelled correctly, and the engine's precedence resolves it ahead of any stray ambient variable. Read only the exit code — never execute the `<VAR>_CMD` value directly to "check" it; its stdout **is** the secret, and the engine's own resolution inside the preflight is the sanctioned check (SECRET-SAFE).
 
