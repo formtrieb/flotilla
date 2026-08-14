@@ -494,7 +494,7 @@ export function closePhraseLossReason(
   return (
     `Refused: the open PR's body carries the close phrase "${existing}", and the body passed here carries none. ` +
     `Rewriting it would leave a PR that merges normally while closing nothing — the row silently never reaches ` +
-    `\`done\` (wave-shared Convention 4). Pass a body that carries the store-kind close phrase; if you only wanted ` +
+    `\`done\`. Pass a body that carries the store-kind close phrase; if you only wanted ` +
     `to know whether this branch already has a PR, use the READ-ONLY \`host-pr status\` verb (\`create\` is a write ` +
     `— its reuse rewrites title and body). To overwrite deliberately anyway, re-run with --allow-close-phrase-loss.`
   );
@@ -862,8 +862,8 @@ export class LandingNotImplementedError extends Error {
           // with no adapter: there is nothing to implement, because we could not
           // tell what to implement against.
           `Could not identify the code host from the git remote, so there is no landing adapter to route to ` +
-            `(host-pr create|arm|merge|status|preflight supports 'github' and 'bitbucket'; ADR-0023). Check the remote URL, or pass --remote <url> explicitly.`
-        : `No landing adapter for host '${host}' — host-pr create|arm|merge|status|preflight is implemented for 'github' and 'bitbucket' (ADR-0023). ` +
+            `(host-pr create|arm|merge|status|preflight supports 'github' and 'bitbucket'). Check the remote URL, or pass --remote <url> explicitly.`
+        : `No landing adapter for host '${host}' — host-pr create|arm|merge|status|preflight is implemented for 'github' and 'bitbucket' only. ` +
             `Implementing the LandingHost interface for ${host} is all that is required; no skill changes are needed.`,
     );
   }
@@ -1766,7 +1766,9 @@ function terminalStatus(status: PrLandingStatus, branch: string): LandingOutcome
       outcome: 'refused',
       prNumber: status.number,
       prUrl: status.url,
-      reason: 'The PR is closed without a merge — flotilla never re-opens a PR (ADR-0005). Resolve by hand.',
+      reason:
+        'The PR is closed without a merge, and flotilla never re-opens a closed PR. Open a new PR for this ' +
+        'branch, or re-open the existing one by hand on the code host, then re-run.',
     };
   }
   if (status.number === undefined) {
@@ -2081,15 +2083,15 @@ export async function preflightHost(
  * branches are additive, never a rewrite of the shipped GitHub report.
  */
 const BITBUCKET_NO_ARM =
-  'Bitbucket Cloud exposes NO per-pull-request auto-merge arming primitive in its REST API (measured 2026-08-10; ADR-0023 ' +
-  'records the finding). Its nearest equivalent — the "Allow automatic merge when builds pass" merge check — is ' +
-  'triggered by a human clicking Merge in the pull-request UI, not by an API call.';
+  'Bitbucket Cloud exposes NO per-pull-request auto-merge arming primitive in its REST API. Its nearest ' +
+  'equivalent — the "Allow automatic merge when builds pass" merge check — is triggered by a human clicking ' +
+  'Merge in the pull-request UI, not by an API call.';
 
 /** What that gap MEANS for a wave, said once so every posture branch says it identically. */
 const BITBUCKET_AUTO_CONSEQUENCE =
   '`wave-close --auto` therefore lands a Bitbucket row by DIRECT MERGE when nothing required is pending, and ' +
   'REFUSES a row whose required builds have not all reported success — land that tail via the advisory ' +
-  'merge-order (ADR-0023).';
+  'merge-order instead.';
 
 function prMergeTokenCheck(canMerge: boolean, host: Host): HostPreflightCheck {
   if (host === 'bitbucket') {
@@ -2184,7 +2186,8 @@ function allowAutoMergeCheck(
       detail:
         'Could not read the "Allow auto-merge" setting — the GITHUB_TOKEN cannot see it (GitHub hides it below maintain/admin). ' +
         'This is advisory only and never blocks: an external consumer token needs no admin rights. Verify by hand under ' +
-        'Settings → General → Pull Requests, and tick "Allow auto-merge" if it is off. The arm outcome remains the ground truth (ADR-0023).',
+        'Settings → General → Pull Requests, and tick "Allow auto-merge" if it is off. The arm outcome remains the ground ' +
+        'truth regardless of what this check reports.',
     };
   }
   // setting === 'off' — a VISIBLE off, graded by whether there is anything to arm for.
@@ -2195,7 +2198,7 @@ function allowAutoMergeCheck(
       detail:
         'The repo setting "Allow auto-merge" is OFF (the GitHub default) and this branch has required status checks — a checks-pending PR ' +
         'CANNOT be armed, so `wave-close --auto` cannot land those rows. Fix: Settings → General → Pull Requests → tick "Allow auto-merge" ' +
-        '(API: PATCH /repos/{owner}/{repo} with allow_auto_merge=true). Until then, land this wave via the advisory merge-order (ADR-0023).',
+        '(API: PATCH /repos/{owner}/{repo} with allow_auto_merge=true). Until then, land this wave via the advisory merge-order instead.',
     };
   }
   return {
@@ -2204,7 +2207,7 @@ function allowAutoMergeCheck(
     detail:
       'The repo setting "Allow auto-merge" is OFF (the GitHub default), but this branch has no required status checks to wait for — ' +
       'a clean PR direct-merges today, so arming is not needed yet. Tick "Allow auto-merge" (Settings → General → Pull Requests) before CI ' +
-      'is added, so checks-pending PRs can be armed then (ADR-0023).',
+      'is added, so checks-pending PRs can be armed once CI exists.',
   };
 }
 
@@ -2226,7 +2229,7 @@ function requiredChecksCheck(required: RequiredChecksInfo, host: Host): HostPref
         detail:
           `${required.detail}${named} \`--auto\` will NOT arm these PRs — ${BITBUCKET_NO_ARM} A row whose ` +
           `required builds have all reported success is merged directly; any other row is REFUSED and lands via ` +
-          `the advisory merge-order (ADR-0023).`,
+          `the advisory merge-order instead.`,
       };
     }
     return {
@@ -2239,13 +2242,13 @@ function requiredChecksCheck(required: RequiredChecksInfo, host: Host): HostPref
     return {
       name: 'required-checks',
       status: 'advisory',
-      detail: `${required.detail} There is nothing to wait for, so confirming \`--auto\` means these PRs merge IMMEDIATELY — backed by the Worker's verify run and the Reviewer's independent one, not by CI. This is expected, not a fault (ADR-0023).`,
+      detail: `${required.detail} There is nothing to wait for, so confirming \`--auto\` means these PRs merge IMMEDIATELY — backed by the Worker's verify run and the Reviewer's independent one, not by CI. This is expected, not a fault.`,
     };
   }
   return {
     name: 'required-checks',
     status: 'unknown',
-    detail: `${required.detail} Verify the branch's required checks by hand if you need certainty; \`--auto\` still works — the arm intent is decided per-PR from each PR's live merge-state, and the arm outcome is the ground truth (ADR-0023).`,
+    detail: `${required.detail} Verify the branch's required checks by hand if you need certainty; \`--auto\` still works — the arm intent is decided per-PR from each PR's live merge-state, and the arm outcome is the ground truth.`,
   };
 }
 
@@ -2337,7 +2340,7 @@ function createCredentialsCheck(host: Host, env: NodeJS.ProcessEnv): HostPreflig
         `verbatim: "${errMessage(err)}" — and in flotilla's wave pipeline that is not an edge case: the Worker ` +
         `terminator calls \`host-pr create\` on EVERY row, so a wave dispatched against this repo fails at each ` +
         `row's termination step, after the work is done. Set ${BITBUCKET_EMAIL_VAR} (a plain identifier, not a ` +
-        `secret — it belongs in the tracked settings env block, not the ADR-0029 credential seam) before ` +
+        `secret — it belongs in the tracked settings env block, not a resolved credential) before ` +
         `dispatching a wave. A land-only consumer that never opens a PR through flotilla can ignore this.`,
     };
   }
