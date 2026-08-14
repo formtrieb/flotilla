@@ -93,7 +93,7 @@ Recompute and print the advisory merge order, merge each PR through the engine h
 
 ### 4a. Self-repair check + pull to completion before you reconcile (W4-F1 / W5-F3)
 
-Detect whether this wave's own rows changed the engine surface wave-close depends on, then pull `main` to a verified completion before phase 5 reconciles against it.
+Detect whether this wave's own rows changed the engine surface wave-close depends on, then pull `main` to a verified completion before phase 5 reconciles against it. A mandatory pre-pull check against the three harness write-denied path classes (`.claude/skills/**`, `.claude/agents/**`, `.claude/settings.json`) decides sandbox-on vs sandbox-off *before* the pull runs, rather than diagnosing a half-applied pull after the fact.
 
 ### 4b. `--auto` — partial-arm confirm + arm-and-exit (opt-in)
 
