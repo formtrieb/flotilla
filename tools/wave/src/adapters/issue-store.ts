@@ -196,7 +196,14 @@ const DECORATION_ONLY_FIELDS = ['unblocks', 'parent', 'estimatedWallclock'] as c
  * - `bare-carries-decoration-only-fields` — a bare input with a
  *   {@link DECORATION_ONLY_FIELDS} stowaway.
  * - `bare-without-body` — a bare input whose `bodySections` carries no authored
- *   content at all (absent, `[]`, or every entry's `markdown` blank).
+ *   content at all (absent, `[]`, or every entry's `markdown` blank) **or**
+ *   whose `bodySections` carries an entry that is present but malformed — a
+ *   missing/blank/non-string `heading`, or a missing/non-string `markdown`
+ *   (#530). Both are the same claim at bottom ("this bare issue does not
+ *   actually have the authored body it needs"), so they share the
+ *   discriminant; {@link CreateInputError.fields} still tells them apart —
+ *   `['bodySections']` for the no-content case, the dotted per-entry path
+ *   (e.g. `['bodySections[0].heading']`) for a malformed entry.
  */
 export type CreateInputFailure =
   | 'header-block-half-written'
@@ -237,7 +244,9 @@ export class CreateInputError extends Error {
     readonly failure: CreateInputFailure,
     /**
      * The {@link CreateInput} field names this rejection names — the missing
-     * Header-Block fields, the stowaways, or `['bodySections']`. Field NAMES
+     * Header-Block fields, the stowaways, `['bodySections']`, or (a malformed
+     * entry within an otherwise-present `bodySections`, #530) the dotted
+     * per-entry path, e.g. `['bodySections[0].heading']`. Field NAMES/PATHS
      * only: never the authored values, which are the caller's content.
      */
     readonly fields: readonly string[],
@@ -267,6 +276,76 @@ function hasBareBodyContent(sections: CreateInput['bodySections']): boolean {
   );
 }
 
+/**
+ * Validate the SHAPE of every entry a BARE create's `bodySections` actually
+ * supplies, before {@link hasBareBodyContent} — or any adapter's serializer —
+ * ever reads a field off one. A bare issue's `bodySections` IS its entire
+ * body, so every present entry must already be a well-formed
+ * `{ heading: string, markdown: string }`; that is a DIFFERENT claim from
+ * "carries authored content", which is {@link hasBareBodyContent}'s question
+ * and stays untouched here.
+ *
+ * Checked per entry:
+ * - `heading` — must be a non-blank string. Missing, blank (whitespace-only),
+ *   or non-string all fail: every adapter's serializer reads `heading`
+ *   unconditionally (`` `## ${s.heading}` ``, `RESERVED_SECTIONS.includes(
+ *   s.heading.trim()…)` ), so an entry with `markdown` present and non-blank
+ *   but `heading` absent sails straight past {@link hasBareBodyContent} — it
+ *   correctly sees authored content — and crashes three frames later inside a
+ *   tracker adapter's body-codec with a raw `TypeError`, not a typed refusal
+ *   (#530, the live symptom this closes).
+ * - `markdown` — must be a string. Missing or non-string fails here, because
+ *   {@link hasBareBodyContent} calls `.trim()` on it unconditionally and would
+ *   crash the same raw way. A markdown that IS a string but blank/whitespace
+ *   is deliberately left alone — that is a content question, answered by
+ *   {@link hasBareBodyContent} below (spec-pinned unchanged: all-blank
+ *   `markdown` across every entry, and the "one non-blank section is enough"
+ *   case, both stay exactly as they were).
+ *
+ * Throws the SAME {@link CreateInputFailure} discriminant,
+ * `'bare-without-body'`, that an absent/empty/all-blank `bodySections`
+ * already throws — the fix direction's "same teaching shape the
+ * missing-bodySections error already has" — rather than minting a new public
+ * union member: both claims reduce to "this bare issue does not actually have
+ * the authored body it needs," just discovered at a different granularity.
+ * {@link CreateInputError.fields} still lets a caller tell them apart: plain
+ * `['bodySections']` for "no content anywhere," the dotted per-entry path
+ * (e.g. `['bodySections[0].heading']`) for "this one entry is malformed."
+ *
+ * Deliberately NOT exported, same reasoning as {@link hasBareBodyContent}: one
+ * owner — the classifier — checks the shape of a bare issue's entire body, so
+ * every caller of every adapter's `create()` inherits the refusal without a
+ * per-adapter check.
+ */
+function validateBareBodySectionsShape(sections: CreateInput['bodySections']): void {
+  if (!Array.isArray(sections)) return;
+  sections.forEach((entry, index) => {
+    const headingOk = typeof entry?.heading === 'string' && entry.heading.trim() !== '';
+    const markdownOk = typeof entry?.markdown === 'string';
+    if (headingOk && markdownOk) return;
+
+    const badFields: string[] = [];
+    const complaints: string[] = [];
+    if (!headingOk) {
+      badFields.push('heading');
+      complaints.push('`heading` must be a non-blank string');
+    }
+    if (!markdownOk) {
+      badFields.push('markdown');
+      complaints.push('`markdown` must be a string');
+    }
+
+    throw new CreateInputError(
+      'bare-without-body',
+      badFields.map((f) => `bodySections[${index}].${f}`),
+      `create: bodySections[${index}] is malformed — ${complaints.join(' and ')}. ` +
+        `Every bodySections entry needs the shape ` +
+        `{ heading: string, markdown: string }, e.g. ` +
+        `{ heading: "Gap", markdown: "…the gap prose…" }.`,
+    );
+  });
+}
+
 /** A {@link CreateInput} whose whole wave Header-Block is present (the decorated path). */
 export type DecoratedCreateInput = CreateInput &
   Required<Pick<CreateInput, (typeof HEADER_BLOCK_FIELDS)[number]>>;
@@ -289,12 +368,14 @@ export type CreateShape =
  *
  * **Throws** a typed {@link CreateInputError} on a PARTIAL Header-Block (some of
  * {@link HEADER_BLOCK_FIELDS} supplied, some not), on a bare input carrying a
- * {@link DECORATION_ONLY_FIELDS} stowaway, and on a bare input with no authored
- * body content. All three are the same fail-loud stance the body-codec takes on
- * a present-but-unparseable `## Blocked by`: an ABSENT Header-Block is a
- * legitimate claim ("this is a bare issue"), a BROKEN one is not, and silently
- * completing a half-written header would mint a wave-eligible issue out of a
- * caller bug.
+ * {@link DECORATION_ONLY_FIELDS} stowaway, on a bare input with no authored
+ * body content, and on a bare input whose `bodySections` carries a malformed
+ * entry — a missing/blank `heading` or a missing `markdown` (#530). All four
+ * are the same fail-loud stance the body-codec takes on a present-but-
+ * unparseable `## Blocked by`: an ABSENT Header-Block is a legitimate claim
+ * ("this is a bare issue"), a BROKEN one is not, and silently completing a
+ * half-written header (or a half-written body-section entry) would mint a
+ * wave-eligible issue out of a caller bug.
  *
  * **Why the body requirement lives HERE (#309).** It arrived as a predicate at
  * the issue-store CLI, applied to whatever this function classified as bare —
@@ -337,6 +418,15 @@ export function classifyCreateInput(input: CreateInput): CreateShape {
           `(${HEADER_BLOCK_FIELDS.join(', ')}) now.`,
       );
     }
+    // #530: a bare issue's `bodySections` entries must already be well-formed
+    // before anything asks whether they carry content — a malformed entry
+    // (missing/blank `heading`, missing `markdown`) is a shape bug, not a
+    // "no content" claim, and the content check below cannot safely tell the
+    // two apart (it calls `.trim()` on `markdown` unconditionally). Checked
+    // BEFORE `hasBareBodyContent` so every caller gets a typed, teaching
+    // refusal instead of a raw `TypeError` — either right here, or three
+    // frames later inside a tracker adapter's serializer.
+    validateBareBodySectionsShape(input.bodySections);
     // #278's requirement, at its root (#309): a bare issue's `bodySections` IS
     // its entire authored content, so an absent/empty/all-blank one would file
     // an issue with literally nothing in its body (measured: ten dispositions

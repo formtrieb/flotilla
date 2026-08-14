@@ -162,3 +162,194 @@ describe('classifyCreateInput — typed rejections (#309: the classifier owns th
     expect(err.stack).toBeTruthy();
   });
 });
+
+// #530: a bare bodySections entry that is present but MALFORMED — a missing
+// heading, a missing markdown, a blank heading, or a non-string value — used
+// to sail past classification (markdown present and non-blank is enough for
+// `hasBareBodyContent` to call the input non-empty) and crash three frames
+// later inside a tracker adapter's serializer with a raw, un-teaching
+// `TypeError: Cannot read properties of undefined (reading 'trim')`. These
+// specs pin the typed, teaching refusal in its place — the SAME
+// `bare-without-body` discriminant an absent/empty/all-blank `bodySections`
+// already throws (the fix direction's "same teaching shape the
+// missing-bodySections error already has"), distinguished by `err.fields`
+// (a dotted per-entry path here, plain `['bodySections']` there) rather than
+// by a new public union member.
+describe('classifyCreateInput — a malformed bodySections entry on a BARE input (#530)', () => {
+  function rejectionOf(input: CreateInput): CreateInputError {
+    try {
+      classifyCreateInput(input);
+    } catch (err) {
+      expect(err).toBeInstanceOf(CreateInputError);
+      return err as CreateInputError;
+    }
+    throw new Error('expected classifyCreateInput to reject, but it returned');
+  }
+
+  const TITLE = { title: 'Gate 8 ships inert', filingHint: 'gate-8-ships-inert' };
+
+  it('an entry missing `heading` (markdown present) is refused — no TypeError, nothing filed', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [
+        { markdown: 'the verify config is never threaded through.' } as unknown as {
+          heading: string;
+          markdown: string;
+        },
+      ],
+    });
+    expect(err.failure).toBe('bare-without-body');
+    expect(err.fields).toEqual(['bodySections[0].heading']);
+    expect(err.code).toBe('create-input-invalid');
+  });
+
+  it('an entry missing `markdown` (heading present) is refused the same way', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [
+        { heading: 'Gap' } as unknown as { heading: string; markdown: string },
+      ],
+    });
+    expect(err.failure).toBe('bare-without-body');
+    expect(err.fields).toEqual(['bodySections[0].markdown']);
+  });
+
+  it('an entry with a BLANK (whitespace-only) heading is refused', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [{ heading: '   ', markdown: 'authored prose here.' }],
+    });
+    expect(err.failure).toBe('bare-without-body');
+    expect(err.fields).toEqual(['bodySections[0].heading']);
+  });
+
+  it('a non-string heading value is refused (not just an absent one)', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [
+        { heading: 42, markdown: 'authored prose here.' } as unknown as {
+          heading: string;
+          markdown: string;
+        },
+      ],
+    });
+    expect(err.failure).toBe('bare-without-body');
+    expect(err.fields).toEqual(['bodySections[0].heading']);
+  });
+
+  it('a non-string markdown value is refused (not just an absent one)', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [
+        { heading: 'Gap', markdown: null } as unknown as {
+          heading: string;
+          markdown: string;
+        },
+      ],
+    });
+    expect(err.failure).toBe('bare-without-body');
+    expect(err.fields).toEqual(['bodySections[0].markdown']);
+  });
+
+  it('both fields malformed in the same entry are named together', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [{ heading: '', markdown: undefined } as unknown as {
+        heading: string;
+        markdown: string;
+      }],
+    });
+    expect(err.fields).toEqual(['bodySections[0].heading', 'bodySections[0].markdown']);
+  });
+
+  it('names the offending entry INDEX when the malformed entry is not the first', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [
+        { heading: 'Gap', markdown: 'fine.' },
+        { markdown: 'this one is missing its heading.' } as unknown as {
+          heading: string;
+          markdown: string;
+        },
+      ],
+    });
+    expect(err.fields).toEqual(['bodySections[1].heading']);
+  });
+
+  it('the message names the entry, the offending field, and the expected entry shape', () => {
+    const message = rejectionOf({
+      ...TITLE,
+      bodySections: [
+        { markdown: 'the verify config is never threaded through.' } as unknown as {
+          heading: string;
+          markdown: string;
+        },
+      ],
+    }).message;
+    expect(message).toContain('bodySections[0]');
+    expect(message).toContain('heading');
+    expect(message).toContain('{ heading: string, markdown: string }');
+  });
+
+  it('a well-formed multi-entry bare input is NOT rejected (negative control)', () => {
+    expect(
+      classifyCreateInput({
+        ...TITLE,
+        bodySections: [
+          { heading: 'Gap', markdown: 'the verify config is never threaded through.' },
+          { heading: 'Provenance', markdown: 'wave hardening, row 3, iteration 1.' },
+        ],
+      }),
+    ).toEqual({ kind: 'bare' });
+  });
+
+  // Regression guard: this new per-entry shape check must not swallow the
+  // OLDER `bare-without-body` failure it now runs ahead of — well-formed
+  // entries whose `markdown` is blank across the board are still a content
+  // question, not a shape defect, and must still be spec-pinned unchanged.
+  it('does NOT reclassify the existing all-blank-markdown case — `bare-without-body` still fires', () => {
+    const err = rejectionOf({
+      ...TITLE,
+      bodySections: [
+        { heading: 'Gap', markdown: '   ' },
+        { heading: 'Provenance', markdown: '' },
+      ],
+    });
+    expect(err.failure).toBe('bare-without-body');
+  });
+
+  // Same regression guard for the "one non-blank section is enough" case: a
+  // well-formed entry with blank markdown alongside a well-formed entry with
+  // real content must still classify as bare, not be rejected as malformed.
+  it('does NOT reject a well-formed entry whose markdown happens to be blank, alongside a real one', () => {
+    expect(
+      classifyCreateInput({
+        ...TITLE,
+        bodySections: [
+          { heading: 'Gap', markdown: '   ' },
+          { heading: 'Provenance', markdown: 'wave hardening, row 3, iteration 1.' },
+        ],
+      }),
+    ).toEqual({ kind: 'bare' });
+  });
+
+  // A DECORATED input's bodySections is a lighter-weight surface (optional,
+  // additive prose) and is deliberately UNTOUCHED by this bare-only rule —
+  // the pinned negative control for that lives in the `classifyCreateInput`
+  // shape-classification describe block above. Re-asserted here, named to
+  // this issue, so a future reader who lands on THIS describe block sees the
+  // boundary too.
+  it('a DECORATED input with a blank-markdown bodySections entry is still classified, not rejected (#530 does not touch decorated)', () => {
+    const DECORATED: CreateInput = {
+      title: 'A real slice',
+      filingHint: 'a-real-slice',
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/x.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'does the thing', checked: false }],
+      bodySections: [{ heading: 'What to build', markdown: '   ' }],
+    };
+    expect(classifyCreateInput(DECORATED).kind).toBe('decorated');
+  });
+});
