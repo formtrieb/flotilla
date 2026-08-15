@@ -10,6 +10,8 @@ The single dispatch mechanism (ADR-0016: no dual prose-vs-driver selector, no ex
 
 **The `prUrl`-on-`done`/`done-with-concerns` invariant still holds on this path — it is enforced by the Worker brief, not the schema.** `workerBrief()`'s Termination step 4 ("Confirm the PR by asking the HOST") and its Report section both state the requirement in prose; there is no structural rejection at the `agent({ schema })` boundary here for a `done` report that omits `prUrl`. **And that is now a placement decision, not only a shape the boundary forces:** a boundary-portable form of the same invariant is no longer hypothetical — measured with positive and negative controls, a top-level `if`/`then` is **accepted at this boundary and genuinely enforced**, including its conditional half. It is still the wrong rung for this rule, because the antecedent is `outcome` — a field the Worker itself authors. The same probes watched an agent told to report a finishing outcome for which it had no URL: it neither invented a URL nor failed, it reported a *non-finishing* outcome instead. A root conditional here would convert "the field is missing" into "the field is present and the outcome is wrong" — a loud failure traded for a quiet one ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md) Amendment 2026-08-14). `tools/wave/src/skill-schema-drift.spec.ts` asserts this literal stays free of any top-level combinator, with a negative control proving that assertion actually fires — so the W5-F1 regression cannot silently ship again.
 
+**And the brief is no longer the only tier that holds it.** Prose was not converging: three live occurrences across waves, the brief strengthened between them, each one a Worker that ran the host re-query correctly, read a `url` back, and then wrote a finishing report without it. So the invariant now also sits at the **engine's sidecar-write gate** — `write-report` emits a loud exit-0 `notice:` when a report carrying a finishing outcome reaches the write with a `prUrl` that is missing or empty, and **writes the sidecar anyway.** Three properties are load-bearing and none of them is negotiable. It is a **notice, never a refusal**: the report is valid data about work that genuinely happened, the missing URL is a finding *about* that report, and refusing the write would cost a finished row the durable record ADR-0024's whole Scribe stage exists to guarantee. **Usable means non-empty**, because an empty-string `prUrl` is the neighbouring failure class that actually shipped (issue #303), not a hypothetical. And it **does not replace the Coordinator's terminator re-query** — the gate makes the omission loud where it happens; the backstop still recovers the URL. The notice rides the Scribe's `notice` field into `SIDECAR-WRITE NOTICE <id>` in the Coordinator's log, which is what makes a silent omission a logged one ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md): a rule earns its enforcement tier).
+
 ## Harness constraint that shapes the decomposition (read first)
 
 A Workflow `script` is plain JS with **no filesystem and no local-module import** — it cannot `import tools/wave/src/*` or read a file. Its `agent()` calls, however, are full subagents (bash, fs, all tools). So the driver splits in two:
@@ -747,7 +749,7 @@ ${issue.closePhrase}"
    The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline, policy clause 6): do not reference any other issue id anywhere.
 
    Run that command **bare** — no \`|\`, no \`$( )\`, no assignment. Its JSON lands in your tool output, where you can read it; you do not need it in a shell variable, and step 4 explains why you must not put it in one.
-4. **Confirm the PR by asking the HOST, in a separate Bash call — never by carrying a value from step 3** (wave-shared Convention 12, half two). Reporting an empty/absent \`prUrl\` on a \`done\` outcome is the live failure this step exists to stop: the Reviewer skips its PR-body check ("PR is not yet opened"), the Coordinator's terminator reads it as "no PR exists" and opens a duplicate, and the spine records nothing. **The confirmation is a re-query, not a guard on a capture**, because in your dispatch a guard on a capture cannot run at all:
+4. **Confirm the PR by asking the HOST, in a separate Bash call — never by carrying a value from step 3** (wave-shared Convention 12, half two). A finishing report with a missing or empty \`prUrl\` is the live failure this step exists to stop. **The confirmation is a re-query, not a guard on a capture**, because in your dispatch a guard on a capture cannot run at all:
    \`\`\`bash
    ${WAVE_CLI} host-pr status --branch ${issue.branch}
    # → { ok, verb, host, branch, state: open|merged|closed-unmerged|none, url?, prUrl? }
@@ -758,7 +760,7 @@ ${issue.closePhrase}"
 
    **This step confirms the PR EXISTS — it is not, on its own, proof that step 3's rewrite landed as intended.** A \`reuse-refused\` outcome at step 3 makes NO write, so of course the PR is still there and this re-query still finds it — that is expected, not evidence of success. If step 3 returned a non-zero exit or \`outcome: reuse-refused\`, this step's \`state: open\`/\`url\`-present answer does not override that: carry step 3's own outcome forward (see its comment above), never let this step's mere confirmation that a PR exists stand in for "my rewrite succeeded."
 
-   Never report \`outcome: done\` with a missing, empty, \`null\`, or \`undefined\` \`prUrl\`. An honest \`blocked\` is a correct answer; a \`done\` carrying an empty URL is not.
+   Never report \`done\`/\`done-with-concerns\` with a missing or empty \`prUrl\` — an honest \`blocked\` is a correct answer where a blank URL is not, and the engine's \`write-report\` gate emits a loud \`notice:\` on one that reaches the sidecar write anyway.
 
    **Why a re-query and not a capture guard — read this before you improvise a shorter form.** Three earlier versions of this step prescribed a capture plus a guard, and all three were unrunnable from a worktree-isolated dispatch. \`case\`/\`esac\` is refused standing alone. Splitting the capture into call 1 and the guard into call 2 fails twice over: shell state does not survive between your Bash calls, so the guard would inspect an unset variable — and the isolation check refuses that guard call outright for naming a variable it cannot resolve. Fusing them back into one call is refused too. The discriminator is not fusion and not the control structure: it is the **\`$VAR\` expansion**, refused in any position, in any call. The full station-by-station reproduction is Catalog entry 1 in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\`. \`host-pr status\` sidesteps every one of them by carrying nothing across a call boundary — the host is asked again, and answers again.
 
@@ -778,15 +780,11 @@ it, and a resume asking for row \`${issue.id}\` gets nothing back. Live occurren
 of six Workers in one wave decorated this field; two records landed under a name nothing
 could resolve, and the third was not written at all.
 
-**On \`done\`/\`done-with-concerns\`, \`prUrl\` MUST be exactly the \`url\` value Termination
-step 4's \`host-pr status\` re-query answered — never omitted, never re-typed from memory,
-never left blank because you already saw it once during Termination.** There is no other
-legitimate source for this field and no legitimate reason for it to be absent on these two
-outcomes. Live occurrence (the W3-F2 recurrence class): two Workers in consecutive waves
-ran the fresh re-query correctly, read a \`url\` back, and then wrote a \`done\` report with
-\`prUrl\` absent anyway — step 4 told them how to CONFIRM the PR, not, explicitly enough,
-how to CARRY that value into THIS field of THIS report. State it here, as the one place it
-counts: the value is that re-query's \`url\`, verbatim, or the report is not \`done\`.
+**On \`done\`/\`done-with-concerns\`, \`prUrl\` MUST be the \`url\` Termination step 4's re-query
+answered, verbatim.** Omitting it blinds the Reviewer's PR-body check and invites a
+duplicate PR. The rule is enforced below this prose: \`write-report\` emits a loud
+\`notice:\` when a finishing report reaches the sidecar write without a usable URL, and the
+Coordinator reads it at routing.
 
 ## Reviewer-handoff hints (from Coordinator)
 ${j(issue.reviewerHints)}`

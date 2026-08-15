@@ -349,6 +349,29 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     describeConfigLoadError:
       "Internal CLI wave.config.json-load-error teaching helper (issue #505) for this engine's own verb runners — not a consumer-facing API; a root-only consumer wraps its own loadWaveConfig call.",
   },
+  // ─── the finishing-outcome prUrl gate (issue #556) ──────────────────────
+  //
+  // Both symbols exist to serve ONE internal call site: `write-report`'s
+  // post-write notice hook in route-cli.ts. A consumer reaches that gate the
+  // way it reaches every other write-verb behaviour — by running the CLI verb
+  // and reading the `notice:` line off stderr (the Scribe's documented exit-0
+  // channel) — never by importing the predicate and calling it itself. The
+  // enum a consumer legitimately reasons about is already root-exported as
+  // WORKER_OUTCOME_VALUES; this is a partition of it, cut for the gate.
+  //
+  // Honest caveat, stated the way the Bitbucket block above states its own:
+  // `src/index.ts` is outside this row's declared Files globs, so root-export
+  // parity was not an option to weigh here even had the reasoning come out the
+  // other way. A future row that gives a CONSUMER a reason to ask "is this
+  // outcome a finishing one?" in its own code — a consumer-side driver, or a
+  // second gate outside this engine — is the trigger to move these onto the
+  // barrel and delete this block.
+  './worker-report-schema': {
+    FINISHING_OUTCOMES:
+      "The `done`/`done-with-concerns` partition of WORKER_OUTCOME_VALUES (which IS root-exported). It exists so the sidecar-write gate and the schema's own anyOf branch read ONE set rather than two hand-kept lists; a consumer asking the same question already has outcomeToEvent(o) === 'worker-done'.",
+    finishingReportLacksUsablePrUrl:
+      "The gate predicate behind `write-report`'s exit-0 prUrl notice (ADR-0034: a rule earns its enforcement tier). Its single call site is route-cli.ts's postWriteNotice hook; consumers drive it through the `write-report` verb and read the `notice:` line, exactly as they drive the decorated-id normalization next to it.",
+  },
 };
 
 // ─── the real check ────────────────────────────────────────────────────────
