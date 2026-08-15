@@ -72,7 +72,13 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { DEFAULT_ELIGIBILITY, RUNG_PRECEDENCE, type IssueStore } from './adapters/issue-store';
+import {
+  DEFAULT_ELIGIBILITY,
+  RUNG_PRECEDENCE,
+  parseGoalContainer,
+  type IssueStore,
+  type GoalContainer,
+} from './adapters/issue-store';
 import { buildStore } from './store-factory';
 import { loadWaveConfig, type WaveConfig, type StoreConfig, type GitHubStoreConfig, type LinearStoreConfig } from './wave-config';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
@@ -118,6 +124,60 @@ export async function resolveStore(args: string[], injected?: IssueStore): Promi
     return buildStore(config, { linearApi });
   }
   return buildStore(config);
+}
+
+// ── the Goal container binding (ADR-0044 decision 4) ──────────────────────
+
+/**
+ * Read the consumer's declared goal-container binding out of a loaded wave
+ * config — `store.goal.container`.
+ *
+ * The binding is a SETUP-TIME config fact, and this is the one place it is read,
+ * so no store carries it as construction state and `buildStore`'s contract is
+ * untouched by the Goal facet existing. `undefined` means "nothing declared",
+ * which each store answers for itself: GitHub falls back to `milestone`,
+ * MarkdownFs to its goal file, and Linear refuses loudly — deliberately, because
+ * live consumer conventions disagree about what a Linear project MEANS.
+ *
+ * A present-but-wrong value fails HERE, at config-read time, through
+ * {@link parseGoalContainer} — "configured means authoritative" (ADR-0029): a
+ * malformed declaration must never be quietly read as unbound, which on GitHub
+ * would silently fall back to a container the author did not ask for.
+ *
+ * SHAPE NOTE, stated so it reads as a known seam rather than a cast nobody
+ * noticed: `store.goal` is read structurally because `wave-config.ts`'s
+ * `StoreConfig` interfaces do not yet declare it. `loadWaveConfig` returns the
+ * parsed JSON verbatim, so the key survives the load untouched and the value is
+ * validated here rather than trusted — but the typed field belongs on
+ * `MarkdownStoreConfig`/`GitHubStoreConfig`/`LinearStoreConfig` beside
+ * `eligibility`, and adding it there is the outstanding wiring step.
+ */
+export function readGoalContainer(config: WaveConfig): GoalContainer | undefined {
+  const goal = (config.store as { goal?: unknown }).goal;
+  if (goal === undefined || goal === null) return undefined;
+  if (typeof goal !== 'object' || Array.isArray(goal)) {
+    throw new Error('wave config "store.goal" must be an object');
+  }
+  return parseGoalContainer((goal as { container?: unknown }).container);
+}
+
+/**
+ * The goal-verb counterpart of {@link resolveStore}: the container role a goal
+ * op addresses, or `undefined` when nothing is declared.
+ *
+ * Mirrors `resolveStore`'s own injected-store short-circuit exactly, and for the
+ * same reason: with a store injected there is no config path to read at all, so
+ * the binding is `undefined` and the injected store applies its own rule (its
+ * default, or its loud refusal). That keeps the two resolutions in lockstep — a
+ * caller can never end up with a config-derived binding pointed at a store built
+ * from somewhere else.
+ */
+export function resolveGoalContainer(
+  args: string[],
+  injected?: IssueStore,
+): GoalContainer | undefined {
+  if (injected) return undefined;
+  return readGoalContainer(loadConfigOrTeach(args));
 }
 
 // ── store-preflight (FOR-12) ──────────────────────────────────────────────

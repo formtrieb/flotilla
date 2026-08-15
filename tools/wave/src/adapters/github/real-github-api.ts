@@ -5,7 +5,8 @@
  */
 
 import type {
-  GitHubApi, GhIssue, GhStateReason, CreateIssueInput, ClosingPrState, RequiredChecksInfo, RulesetChecksInfo,
+  GitHubApi, GhIssue, GhMilestone, GhStateReason, CreateIssueInput, CreateMilestoneInput,
+  ClosingPrState, RequiredChecksInfo, RulesetChecksInfo,
   ReportedCheck,
 } from './github-api';
 import {
@@ -243,6 +244,93 @@ export class RealGitHubApi implements GitHubApi {
       const items = Array.isArray(res.json) ? (res.json as Record<string, unknown>[]) : [];
       for (const it of items) out.push({ body: typeof it.body === 'string' ? it.body : '' });
       if (items.length < 100) break;
+    }
+    return out;
+  }
+
+  // ─── Goal facet substrate (ADR-0044): milestones ────────────────────────
+  //
+  // Documented form, all four endpoints read 2026-08-15:
+  //   docs.github.com/en/rest/issues/milestones  — create (201), get (200),
+  //     list (200, `state` defaults to `open`, `per_page` max 100)
+  //   docs.github.com/en/rest/issues/issues      — the `milestone` QUERY param on
+  //     "List repository issues" ("If an integer is passed, it should refer to a
+  //     milestone by its `number` field") and the `milestone` BODY field on
+  //     "Update an issue" ("The number of the milestone to associate this issue
+  //     with", 200).
+  //
+  // UNPROVEN LIVE — the writes need a credential this slice does not have, and
+  // the reads were not probed either (ADR-0030's declared-unexecutable path; the
+  // divergence report rides the row's own disclosure). The first `goal` station
+  // run on a github-store consumer is the live gate, the same stance
+  // {@link addBlockedBy} records for its own mirror.
+
+  async createMilestone(input: CreateMilestoneInput): Promise<{ number: number }> {
+    const res = await this.send('POST', `${this.base()}/milestones`, {
+      title: input.title,
+      description: input.description,
+    });
+    // 201, not 200 — the create endpoints in this file are consistent about it.
+    if (res.status !== 201) {
+      throw new GitHubApiError(res.status, 'createMilestone', ghMessage(res.json, 'createMilestone'));
+    }
+    return { number: Number((res.json as Record<string, unknown>).number) };
+  }
+
+  async getMilestone(number: number): Promise<GhMilestone> {
+    const res = await this.send('GET', `${this.base()}/milestones/${number}`);
+    if (res.status !== 200) throw new GitHubApiError(res.status, 'getMilestone');
+    return toGhMilestone(res.json);
+  }
+
+  async listMilestones(): Promise<GhMilestone[]> {
+    const out: GhMilestone[] = [];
+    for (let page = 1; ; page++) {
+      // `state=all` is load-bearing: the endpoint defaults to `open`, and a goal
+      // panel that dropped closed finish lines would make shipped goals vanish.
+      const res = await this.send(
+        'GET',
+        `${this.base()}/milestones?state=all&per_page=100&page=${page}`,
+      );
+      if (res.status !== 200) throw new GitHubApiError(res.status, 'listMilestones');
+      const items = Array.isArray(res.json) ? (res.json as Record<string, unknown>[]) : [];
+      for (const it of items) out.push(toGhMilestone(it));
+      if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
+    }
+    return out;
+  }
+
+  async setIssueMilestone(issueNumber: number, milestoneNumber: number): Promise<void> {
+    const res = await this.send('PATCH', `${this.base()}/issues/${issueNumber}`, {
+      milestone: milestoneNumber,
+    });
+    if (res.status !== 200) {
+      throw new GitHubApiError(res.status, 'setIssueMilestone', ghMessage(res.json, 'setIssueMilestone'));
+    }
+  }
+
+  async listMilestoneIssues(milestoneNumber: number): Promise<GhIssue[]> {
+    // A missing milestone must FAIL rather than read as an empty goal: the list
+    // endpoint below answers 200 + `[]` for a milestone number that does not
+    // exist on some responses, and "no members" and "no such goal" are different
+    // claims — the same absent-vs-broken line the create classifier draws. So
+    // the milestone is resolved first, and its 404 is the one that surfaces.
+    await this.getMilestone(milestoneNumber);
+    const out: GhIssue[] = [];
+    for (let page = 1; ; page++) {
+      // `state=all` for the same reason `listMilestones` uses it, one level down:
+      // `done` is a frontier reading, so closed members must come back.
+      const res = await this.send(
+        'GET',
+        `${this.base()}/issues?milestone=${milestoneNumber}&state=all&per_page=100&page=${page}`,
+      );
+      if (res.status !== 200) throw new GitHubApiError(res.status, 'listMilestoneIssues');
+      const items = Array.isArray(res.json) ? (res.json as Record<string, unknown>[]) : [];
+      for (const it of items) {
+        if (it.pull_request) continue; // the issues endpoint also lists PRs — drop them
+        out.push(toGhIssue(it));
+      }
+      if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
     }
     return out;
   }
@@ -881,6 +969,23 @@ function toGhIssue(json: unknown): GhIssue {
     state: o.state === 'closed' ? 'closed' : 'open',
     stateReason: reason === 'completed' || reason === 'not_planned' || reason === 'reopened' ? reason : null,
     ...(updatedAt !== undefined ? { updatedAt } : {}),
+  };
+}
+
+/**
+ * Project a REST milestone resource onto {@link GhMilestone}. Narrowed the same
+ * defensive way {@link toGhIssue} is: `description` is documented "string or
+ * null", and the null lands as `''` rather than as a `"null"` string — a goal
+ * with no prose has empty prose, which is what {@link GhMilestone.description}
+ * promises.
+ */
+function toGhMilestone(json: unknown): GhMilestone {
+  const o = (json ?? {}) as Record<string, unknown>;
+  return {
+    number: Number(o.number),
+    title: typeof o.title === 'string' ? o.title : '',
+    description: typeof o.description === 'string' ? o.description : '',
+    state: o.state === 'closed' ? 'closed' : 'open',
   };
 }
 

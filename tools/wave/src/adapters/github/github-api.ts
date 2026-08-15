@@ -83,6 +83,32 @@ export interface CreateIssueInput {
 }
 
 /**
+ * The raw GitHub **milestone** substrate — the Goal facet's native container on
+ * this store (ADR-0044 decision 4). Milestone is the only GitHub container with
+ * DIRECT issue membership, which is exactly why it can be a default no consumer
+ * convention collides with: it is not a naming choice, it is the one shape that
+ * answers "which issues are in this?" natively.
+ *
+ * `state` is carried for fidelity and is deliberately NOT consulted by the
+ * frontier: whether the CONTAINER is open or closed says nothing about whether
+ * its members are done, and closing it is the Operator's act (ADR-0044 decision
+ * 5). Same stance {@link GhStateReason} takes toward the `done` derivation.
+ */
+export interface GhMilestone {
+  number: number;
+  title: string;
+  /** Free prose; the empty string when the milestone carries none. */
+  description: string;
+  state: 'open' | 'closed';
+}
+
+/** What the Goal facet hands the seam to mint a milestone. */
+export interface CreateMilestoneInput {
+  title: string;
+  description: string;
+}
+
+/**
  * The GitHub seam.
  *
  * It `extends LandingHost` (ADR-0023): the GitHub adapter IS the GitHub landing
@@ -251,6 +277,66 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    * leaves the landing behaviour exactly as it was before this read existed.
    */
   getReportedChecks(ref: string): Promise<ReportedCheck[]>;
+
+  // ── Goal facet substrate (ADR-0044) — milestones ─────────────────────────
+  //
+  // Four reads and one write, mirroring the facet's own read-heavy shape. No
+  // milestone CLOSE verb is declared, and the omission is the point: the facet
+  // has no `closeGoal`, so a close verb here would be unreachable surface —
+  // the same reasoning that keeps GitHub's documented
+  // `DELETE …/dependencies/blocked_by` off {@link addBlockedBy}'s side of this
+  // seam.
+
+  /**
+   * Mint a milestone; return its server-assigned `number` (the store's opaque
+   * goal id, ADR-0001). Real impl: `POST /repos/{owner}/{repo}/milestones` with
+   * `{title, description}` → **201** (docs.github.com/en/rest/issues/milestones,
+   * read 2026-08-15).
+   */
+  createMilestone(input: CreateMilestoneInput): Promise<{ number: number }>;
+
+  /**
+   * Fetch one milestone; throw on a number that does not resolve. Real impl:
+   * `GET /repos/{owner}/{repo}/milestones/{milestone_number}` → 200 (same doc
+   * page).
+   */
+  getMilestone(number: number): Promise<GhMilestone>;
+
+  /**
+   * Every milestone on the repo, OPEN AND CLOSED. Real impl: `GET
+   * /repos/{owner}/{repo}/milestones?state=all` — `state` defaults to `open`, so
+   * the parameter is load-bearing: a goal panel that silently dropped closed
+   * finish lines would make a shipped goal look like one that never existed.
+   * PAGINATED (`per_page` default 30, max 100) and MUST page to exhaustion, the
+   * same reason {@link listOpenIssues} does.
+   */
+  listMilestones(): Promise<GhMilestone[]>;
+
+  /**
+   * Join an issue to a milestone — the curation write. Real impl: `PATCH
+   * /repos/{owner}/{repo}/issues/{issue_number}` with `{milestone: <number>}` →
+   * 200 (docs.github.com/en/rest/issues/issues, read 2026-08-15: the field
+   * accepts "The number of the milestone to associate this issue with").
+   * Idempotent by nature — re-setting the same milestone is the same write.
+   *
+   * Deliberately no un-assign path (`{milestone: null}` is documented and not
+   * declared): curation joins members, and removing one is a human act in the
+   * tracker, the same additive-only stance {@link addBlockedBy} takes.
+   */
+  setIssueMilestone(issueNumber: number, milestoneNumber: number): Promise<void>;
+
+  /**
+   * Every issue in a milestone, OPEN AND CLOSED — the frontier's member list.
+   * Real impl: `GET /repos/{owner}/{repo}/issues?milestone={number}&state=all`
+   * (same doc page: "If an integer is passed, it should refer to a milestone by
+   * its `number` field"), paginated to exhaustion and with pull requests
+   * filtered out exactly as {@link listOpenIssues} does.
+   *
+   * `state=all` is not an optimization: `done` is one of the five frontier
+   * readings, so a member list that returned only open issues would report a
+   * finished goal as an empty one. Throws on an unknown milestone number.
+   */
+  listMilestoneIssues(milestoneNumber: number): Promise<GhIssue[]>;
   // The three code-host posture reads — `canMergePullRequests`,
   // `getAutoMergeSetting`, `getRequiredChecks` — are inherited from
   // `LandingPosture` (host-pr.ts). They were declared here (FOR-12/ADR-0023) but

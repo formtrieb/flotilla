@@ -1007,3 +1007,207 @@ describe('issue-store-cli — close reports the native end-state loudly (#399)',
     expect(errCaptured).not.toMatch(/STILL OPEN/);
   });
 });
+
+// ── the Goal facet ops (ADR-0044) ───────────────────────────────────────────
+//
+// The facet's own behaviour is proven across all three stores in
+// `adapters/goal-facet.spec.ts`. This block pins the CLI CONTRACT the skills
+// consume: which ops exist, what each prints, which exit code each returns, and
+// — the load-bearing one — that a store which cannot resolve a container binding
+// surfaces its refusal as a domain failure naming the config key, rather than
+// being papered over at this layer.
+describe('issue-store-cli — goal ops', () => {
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let outCaptured: string;
+  let errCaptured: string;
+
+  beforeEach(() => {
+    outCaptured = '';
+    errCaptured = '';
+    outSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        outCaptured += chunk.toString();
+        return true;
+      });
+    errSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        errCaptured += chunk.toString();
+        return true;
+      });
+  });
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  function writeGoalInput(input: unknown): string {
+    const p = join(mkdtempSync(join(tmpdir(), 'goal-in-')), 'goal.json');
+    writeFileSync(p, JSON.stringify(input), 'utf-8');
+    return p;
+  }
+
+  it('goal-create prints the opaque id as TEXT (not JSON), and goal-read round-trips it', async () => {
+    const store = tmpStore();
+    const p = writeGoalInput({
+      title: '1.0.0',
+      filingHint: 'one-oh-oh',
+      description: 'the contract freeze',
+    });
+
+    expect(await runIssueStore(['goal-create', '--input', p], store)).toBe(0);
+    const id = outCaptured.trim();
+    expect(id.length).toBeGreaterThan(0);
+    expect(() => JSON.parse(id)).toThrow(); // plain text, like `create`/`publishDocument`
+
+    outCaptured = '';
+    expect(await runIssueStore(['goal-read', id], store)).toBe(0);
+    const goal = JSON.parse(outCaptured) as {
+      id: string;
+      title: string;
+      description: string;
+      container: string;
+      memberIds: string[];
+    };
+    expect(goal).toMatchObject({
+      id,
+      title: '1.0.0',
+      container: 'goal-file',
+      memberIds: [],
+    });
+    expect(goal.description).toContain('the contract freeze');
+  });
+
+  it('goal-list prints GoalView[] as JSON', async () => {
+    const store = tmpStore();
+    const p = writeGoalInput({ title: 'g', filingHint: 'g' });
+    await runIssueStore(['goal-create', '--input', p], store);
+    outCaptured = '';
+
+    expect(await runIssueStore(['goal-list'], store)).toBe(0);
+    const goals = JSON.parse(outCaptured) as { title: string }[];
+    expect(goals).toHaveLength(1);
+    expect(goals[0].title).toBe('g');
+  });
+
+  it('goal-assign curates a member in, printing NOTHING on success', async () => {
+    const store = tmpStore();
+    const issueInput = writeInput();
+    await runIssueStore(['create', '--input', issueInput], store);
+    const issueId = outCaptured.trim();
+    outCaptured = '';
+    await runIssueStore(['goal-create', '--input', writeGoalInput({ title: 'g', filingHint: 'g' })], store);
+    const goalId = outCaptured.trim();
+    outCaptured = '';
+
+    expect(await runIssueStore(['goal-assign', goalId, issueId], store)).toBe(0);
+    expect(outCaptured).toBe(''); // a mutation op, like transition/annotate
+
+    await runIssueStore(['goal-read', goalId], store);
+    expect((JSON.parse(outCaptured) as { memberIds: string[] }).memberIds).toEqual([issueId]);
+  });
+
+  it('goal-frontier prints the full reading — states, counts, the open remainder, and `complete`', async () => {
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeInput()], store);
+    const issueId = outCaptured.trim();
+    outCaptured = '';
+    await runIssueStore(['goal-create', '--input', writeGoalInput({ title: 'g', filingHint: 'g' })], store);
+    const goalId = outCaptured.trim();
+    await runIssueStore(['goal-assign', goalId, issueId], store);
+    outCaptured = '';
+
+    expect(await runIssueStore(['goal-frontier', goalId], store)).toBe(0);
+    const frontier = JSON.parse(outCaptured) as {
+      goalId: string;
+      readings: { id: string; state: string }[];
+      counts: Record<string, number>;
+      open: { id: string }[];
+      complete: boolean;
+    };
+    expect(frontier.goalId).toBe(goalId);
+    expect(frontier.readings).toEqual([
+      { id: issueId, state: 'actionable', unresolvedBlockers: [] },
+    ]);
+    expect(frontier.counts.actionable).toBe(1);
+    expect(frontier.open.map((r) => r.id)).toEqual([issueId]);
+    expect(frontier.complete).toBe(false);
+  });
+
+  it('a store that cannot resolve a binding fails as a DOMAIN failure naming the config key', async () => {
+    // Linear has no default container, so an unbound goal op must surface the
+    // refusal rather than have the CLI quietly choose one. Exit 1 (the store
+    // threw), never exit 0 and never a usage error — the caller's INPUT is fine;
+    // the repo's configuration is what is missing.
+    const store = new LinearIssuesStore({ api: new InMemoryLinearApi() });
+    const p = writeGoalInput({ title: 'g', filingHint: 'g' });
+
+    expect(await runIssueStore(['goal-create', '--input', p], store)).toBe(1);
+    expect(errCaptured).toContain('store.goal.container');
+    expect(outCaptured).toBe(''); // nothing minted, nothing printed
+
+    // …and the SAME store with the binding declared works, so the failure above
+    // is about the missing binding and not about the store being unusable.
+    errCaptured = '';
+    const bound = new LinearIssuesStore({ api: new InMemoryLinearApi() });
+    expect(await bound.createGoal({ title: 'g', filingHint: 'g' }, 'project')).toBeTruthy();
+  });
+
+  it('every goal op teaches ITS OWN contract on a usage error, never the full op list', async () => {
+    const store = tmpStore();
+    for (const [args, marker] of [
+      [['goal-create'], 'goal-create --input'],
+      [['goal-read'], 'goal-read <goalId>'],
+      [['goal-assign'], 'goal-assign <goalId> <issueId>'],
+      [['goal-frontier'], 'goal-frontier <goalId>'],
+    ] as [string[], string][]) {
+      errCaptured = '';
+      expect(await runIssueStore(args, store)).toBe(2);
+      expect(errCaptured).toContain(marker);
+      // the per-op section, not the nineteen-op dump (issue #505).
+      expect(errCaptured).not.toContain('publishDocument|readDocument');
+    }
+  });
+
+  it('goal-create rejects a malformed input file, and an input missing title/filingHint, as USAGE errors', async () => {
+    const store = tmpStore();
+    const bad = join(mkdtempSync(join(tmpdir(), 'goal-bad-')), 'x.json');
+    writeFileSync(bad, '{ not json', 'utf-8');
+    expect(await runIssueStore(['goal-create', '--input', bad], store)).toBe(2);
+
+    expect(
+      await runIssueStore(['goal-create', '--input', writeGoalInput({ filingHint: 'g' })], store),
+    ).toBe(2);
+    expect(errCaptured).toContain('title');
+
+    errCaptured = '';
+    expect(
+      await runIssueStore(['goal-create', '--input', writeGoalInput({ title: 'g' })], store),
+    ).toBe(2);
+    expect(errCaptured).toContain('filingHint');
+  });
+
+  it('an unknown goal id is a DOMAIN failure (exit 1), not a usage error', async () => {
+    const store = tmpStore();
+    expect(await runIssueStore(['goal-read', 'nope'], store)).toBe(1);
+    expect(await runIssueStore(['goal-frontier', 'nope'], store)).toBe(1);
+  });
+
+  it('there is NO goal-close op and NO goal-dispatch op — an unknown op, not a hidden one', async () => {
+    // ADR-0044 decisions 5 and 6, at the CLI: the runner must not have quietly
+    // grown a completion or execution verb. `unknown op` is the answer, and the
+    // full op list is what the caller gets, since they have not named a contract.
+    const store = tmpStore();
+    for (const op of ['goal-close', 'goal-complete', 'goal-dispatch', 'goal-start']) {
+      errCaptured = '';
+      expect(await runIssueStore([op, 'x'], store)).toBe(2);
+      expect(errCaptured).toContain(`unknown op "${op}"`);
+    }
+    // Non-vacuity: a REAL op does not answer `unknown op`.
+    errCaptured = '';
+    await runIssueStore(['goal-list'], store);
+    expect(errCaptured).not.toContain('unknown op');
+  });
+});

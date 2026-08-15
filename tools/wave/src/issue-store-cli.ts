@@ -64,6 +64,24 @@
  *   flag     <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...]  → raises needs-attention (ADR-0006); nothing on stdout
  *   clear-flag <id>                                → clears needs-attention; nothing on stdout
  *
+ * Goal facet ops (ADR-0044). Each addresses the native container bound by
+ * `store.goal.container` in wave.config.json — GitHub defaults to `milestone`
+ * and the markdown store to its goal file, while LINEAR HAS NO DEFAULT, so a
+ * goal op against a linear store with no binding declared fails (exit 1) naming
+ * the missing key rather than silently picking a container:
+ *   goal-create --input <CreateGoalInput.json>     → prints the opaque goal id (text, not JSON)
+ *   goal-read <goalId>                             → prints the GoalView (JSON)
+ *   goal-list                                      → prints GoalView[] (JSON)
+ *   goal-assign <goalId> <issueId>                 → joins a member by curation; nothing on stdout
+ *   goal-frontier <goalId>                         → prints the GoalFrontier (JSON): per member
+ *              done | in-motion | actionable | blocked | unready, plus counts,
+ *              the open remainder, and `complete`. READ-ONLY — it reports that
+ *              the frontier is empty and never closes the container, which is
+ *              the Operator's act in the tracker (ADR-0044).
+ *
+ * There is deliberately NO goal-close op and NO goal-dispatch op: the facet
+ * exposes neither, so neither has a runner here (sight, never permission).
+ *
  * Exit codes:
  *   0 — success (result on stdout — see the per-op output-format tag above)
  *   1 — domain failure (store threw)
@@ -86,10 +104,11 @@ import type {
   ClaimRung,
   NeedsAttentionPayload,
   PublishDocumentInput,
+  CreateGoalInput,
 } from './adapters/issue-store';
 import type { ApplyTriageInput } from './contract';
 import { flag, printJson } from './cli-utils';
-import { resolveStore } from './cli-store';
+import { resolveStore, resolveGoalContainer } from './cli-store';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
 
@@ -127,10 +146,15 @@ type Op =
   | 'triage-close'
   | 'flag'
   | 'clear-flag'
-  | 'read-closing';
+  | 'read-closing'
+  | 'goal-create'
+  | 'goal-read'
+  | 'goal-list'
+  | 'goal-assign'
+  | 'goal-frontier';
 
 const FULL_OP_LIST =
-  'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close> [...args] [--config <path>]';
+  'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-frontier> [...args] [--config <path>]';
 
 /**
  * Every op's own contract section (issue #505) — printed INSTEAD OF the full
@@ -227,6 +251,31 @@ const OP_CONTRACT: Record<Op, readonly string[]> = {
   'read-closing': [
     'usage: issue-store read-closing <id> [--config <path>]',
     'output: the ClosingState, as JSON',
+  ],
+  'goal-create': [
+    'usage: issue-store goal-create --input <CreateGoalInput.json> [--config <path>]',
+    '  input shape: { "title": "...", "filingHint": "...", "description": "..." }',
+    '  the container comes from wave.config.json "store.goal.container" —',
+    '    github defaults to "milestone", markdown to its goal file, linear has NO default',
+    'output: the opaque new goal id, as plain text (not JSON)',
+  ],
+  'goal-read': [
+    'usage: issue-store goal-read <goalId> [--config <path>]',
+    'output: the GoalView {id, title, description, container, memberIds}, as JSON',
+  ],
+  'goal-list': [
+    'usage: issue-store goal-list [--config <path>]',
+    'output: GoalView[], as JSON',
+  ],
+  'goal-assign': [
+    'usage: issue-store goal-assign <goalId> <issueId> [--config <path>]',
+    'output: nothing on success (exit 0, empty stdout)',
+  ],
+  'goal-frontier': [
+    'usage: issue-store goal-frontier <goalId> [--config <path>]',
+    'output: the GoalFrontier, as JSON — one reading per member',
+    '  (done | in-motion | actionable | blocked | unready), plus counts,',
+    '  the open remainder, and `complete`. Read-only: it never closes the goal.',
   ],
 };
 
@@ -539,6 +588,72 @@ export async function runIssueStore(
         const id = args[1];
         if (id === undefined) return usage('read-closing requires an <id>', 'read-closing');
         printJson(await store.readClosing(id));
+        return 0;
+      }
+
+      // ── Goal facet ops (ADR-0044) ──────────────────────────────────────
+      //
+      // Each resolves the container binding from the SAME `--config` the store
+      // came from (`resolveGoalContainer` mirrors `resolveStore`'s own
+      // injected-store short-circuit), then hands it to the verb. A binding the
+      // store cannot honour — absent on linear, or a role it does not realize —
+      // throws `GoalBindingError` from the store and lands as a domain failure
+      // (exit 1) naming `store.goal.container`, never a silent container pick.
+
+      case 'goal-create': {
+        const inputPath = flag(args, '--input');
+        if (inputPath === undefined) {
+          return usage('goal-create requires --input <path>', 'goal-create');
+        }
+        let input: CreateGoalInput;
+        try {
+          input = JSON.parse(readFileSync(inputPath, 'utf-8')) as CreateGoalInput;
+        } catch (err) {
+          return usage(
+            `cannot read --input ${inputPath}: ${(err as Error).message}`,
+            'goal-create',
+          );
+        }
+        if (typeof input?.title !== 'string' || input.title.trim() === '') {
+          return usage('goal-create requires a non-empty "title"', 'goal-create');
+        }
+        if (typeof input.filingHint !== 'string' || input.filingHint.trim() === '') {
+          return usage('goal-create requires a non-empty "filingHint"', 'goal-create');
+        }
+        const id = await store.createGoal(input, resolveGoalContainer(args, injected));
+        process.stdout.write(id + '\n');
+        return 0;
+      }
+
+      case 'goal-read': {
+        const goalId = args[1];
+        if (goalId === undefined) return usage('goal-read requires a <goalId>', 'goal-read');
+        printJson(await store.readGoal(goalId, resolveGoalContainer(args, injected)));
+        return 0;
+      }
+
+      case 'goal-list': {
+        printJson(await store.listGoals(resolveGoalContainer(args, injected)));
+        return 0;
+      }
+
+      case 'goal-assign': {
+        const goalId = args[1];
+        const issueId = args[2];
+        if (goalId === undefined) return usage('goal-assign requires a <goalId>', 'goal-assign');
+        if (issueId === undefined) {
+          return usage('goal-assign requires an <issueId>', 'goal-assign');
+        }
+        await store.assignToGoal(goalId, issueId, resolveGoalContainer(args, injected));
+        return 0;
+      }
+
+      case 'goal-frontier': {
+        const goalId = args[1];
+        if (goalId === undefined) {
+          return usage('goal-frontier requires a <goalId>', 'goal-frontier');
+        }
+        printJson(await store.readGoalFrontier(goalId, resolveGoalContainer(args, injected)));
         return 0;
       }
 

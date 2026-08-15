@@ -66,6 +66,29 @@ export interface LinearPrAttachment {
   merged: boolean;
 }
 
+/**
+ * The raw Linear **project** substrate — the Goal facet's native container on
+ * this store, and the ONLY realization v1 ships (ADR-0044 decision 4).
+ *
+ * There is no default binding on Linear, deliberately: one shipped consumer runs
+ * Initiative=Epic / Project=User Story (motivated by Linear's timeline and
+ * health views living at project/initiative level, not on issues), while
+ * ADR-0017 once sketched "Wave ≈ Linear Project". Both conventions are live, so
+ * any built-in choice here would silently overwrite somebody's meaning — hence
+ * `store.goal.container` is explicit on this store and a goal verb without it
+ * refuses loudly.
+ *
+ * `id` is Linear's project UUID and IS the store's opaque goal id (ADR-0001) —
+ * the one place a Linear UUID legitimately crosses this seam, because a project
+ * has no human `<TEAM>-<n>` identifier the way an issue does.
+ */
+export interface LinearProject {
+  id: string;
+  name: string;
+  /** Free prose; the empty string when the project carries none. */
+  description: string;
+}
+
 export interface LinearApi {
   /** Create an issue; return the server-assigned human identifier. */
   createIssue(input: LinearCreateIssueInput): Promise<{ identifier: string }>;
@@ -187,4 +210,55 @@ export interface LinearApi {
    * consumer's panel.
    */
   listDocuments(): Promise<{ id: string; title: string; content: string }[]>;
+
+  // ── Goal facet substrate (ADR-0044) — projects ───────────────────────────
+  //
+  // Four reads and one write, mirroring the GitHub milestone half. No project
+  // CLOSE/archive verb is declared: the facet has no `closeGoal`, so one would
+  // be unreachable surface — the same reasoning that keeps the documented
+  // relation-DELETE off {@link addBlockedBy}'s side of this seam.
+
+  /**
+   * Mint a project under the api's configured TEAM and return its id (the
+   * store's opaque goal id, ADR-0001). Real impl: `projectCreate(input:
+   * ProjectCreateInput!)` → `ProjectPayload { success, project { id } }`.
+   * `ProjectCreateInput` requires `name: String!` and `teamIds: [String!]!`
+   * (Linear's published GraphQL schema, read 2026-08-15) — so a project is
+   * never an orphan here, exactly as `createDocument` is never one.
+   */
+  createProject(input: { name: string; description: string }): Promise<{ id: string }>;
+
+  /**
+   * Fetch one project; throws on an unknown id. Real impl: `project(id: String!):
+   * Project!`. Never scope-filtered — an id the caller already holds resolves.
+   */
+  getProject(id: string): Promise<LinearProject>;
+
+  /**
+   * The projects in the api's own TEAM scope — never workspace-wide, the same
+   * stance {@link listDocuments} takes and for the same reason: a goal panel
+   * showing every team's finish lines is not this consumer's panel.
+   */
+  listProjects(): Promise<LinearProject[]>;
+
+  /**
+   * Join an issue to a project — the curation write. Real impl: `issueUpdate(id,
+   * input: { projectId })`; `IssueUpdateInput.projectId: String` is the
+   * documented field. Idempotent by nature (a single pointer on the issue).
+   *
+   * Deliberately no un-assign path (`projectId: null` would be the shape):
+   * curation joins members, and removing one is a human act in the tracker —
+   * the additive-only stance {@link addBlockedBy} already takes.
+   */
+  setIssueProject(identifier: string, projectId: string): Promise<void>;
+
+  /**
+   * Every issue in a project, OPEN AND CLOSED — the frontier's member list.
+   * Real impl: the `Project.issues` connection, paged to exhaustion.
+   *
+   * Unlike {@link listOpenIssues} this one must NOT filter by state: `done` is
+   * one of the five frontier readings, so dropping closed members would report a
+   * finished goal as an empty one. Throws on an unknown project id.
+   */
+  listProjectIssues(projectId: string): Promise<LinearIssue[]>;
 }

@@ -9,8 +9,10 @@
 import type {
   GitHubApi,
   GhIssue,
+  GhMilestone,
   GhStateReason,
   CreateIssueInput,
+  CreateMilestoneInput,
   ClosingPrState,
   RequiredChecksInfo,
   RulesetChecksInfo,
@@ -396,6 +398,69 @@ export class InMemoryGitHubApi implements GitHubApi {
 
   async getRulesetRequiredChecks(): Promise<RulesetChecksInfo> {
     return this.rulesetChecks;
+  }
+
+  // ─── Goal facet substrate (ADR-0044) — milestones ──────────────────────
+  //
+  // Held exactly as the real host holds it: milestones in their own numbering
+  // space (GitHub numbers milestones independently of issues — a fake that
+  // shared one counter would make an id mix-up in the store invisible here),
+  // and membership as a per-ISSUE pointer, which is what makes
+  // `setIssueMilestone` naturally idempotent and `listMilestoneIssues` a scan
+  // rather than a second list to keep in sync.
+
+  private readonly milestones = new Map<number, GhMilestone>();
+  private milestoneCounter = 0;
+  /** issue number → the milestone number it belongs to (absent = no milestone). */
+  private readonly milestoneByIssue = new Map<number, number>();
+
+  async createMilestone(input: CreateMilestoneInput): Promise<{ number: number }> {
+    const number = ++this.milestoneCounter;
+    this.milestones.set(number, {
+      number,
+      title: input.title,
+      description: input.description,
+      state: 'open',
+    });
+    return { number };
+  }
+
+  async getMilestone(number: number): Promise<GhMilestone> {
+    const ms = this.milestones.get(number);
+    if (!ms) throw new Error(`GitHub milestone not found: #${number}`);
+    return { ...ms };
+  }
+
+  async listMilestones(): Promise<GhMilestone[]> {
+    // OPEN AND CLOSED (`state=all` on the real endpoint) — a closed finish line
+    // is still a finish line.
+    return [...this.milestones.values()].map((m) => ({ ...m }));
+  }
+
+  async setIssueMilestone(issueNumber: number, milestoneNumber: number): Promise<void> {
+    if (!this.issues.has(issueNumber)) {
+      throw new Error(`GitHub issue not found: #${issueNumber}`);
+    }
+    if (!this.milestones.has(milestoneNumber)) {
+      throw new Error(`GitHub milestone not found: #${milestoneNumber}`);
+    }
+    this.milestoneByIssue.set(issueNumber, milestoneNumber);
+    // The real `PATCH /issues/{n}` moves `updated_at`; the fake models the same
+    // rule so a curation write is observably a write.
+    this.mutate(issueNumber, () => {
+      /* the membership itself lives outside GhIssue — this is the stamp only */
+    });
+  }
+
+  async listMilestoneIssues(milestoneNumber: number): Promise<GhIssue[]> {
+    if (!this.milestones.has(milestoneNumber)) {
+      throw new Error(`GitHub milestone not found: #${milestoneNumber}`);
+    }
+    // OPEN AND CLOSED: `done` is one of the five frontier readings, so a member
+    // list that dropped closed issues would report a finished goal as empty.
+    return [...this.issues.values()]
+      .filter((i) => this.milestoneByIssue.get(i.number) === milestoneNumber)
+      .map((i) => ({ ...i, labels: [...i.labels] }));
   }
 
   private mutate(number: number, fn: (i: GhIssue) => void): void {

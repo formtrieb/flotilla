@@ -31,6 +31,7 @@ import {
   RUNG_PRECEDENCE,
   classifyCreateInput,
   CreateInputError,
+  requireGoalContainer,
   validateAmendPatch,
   type IssueStore,
   type CreateInput,
@@ -42,8 +43,16 @@ import {
   type PublishDocumentInput,
   type DocumentView,
   type ClosingState,
+  type CreateGoalInput,
+  type GoalContainer,
+  type GoalView,
   withTriageDisclaimer,
 } from '../issue-store';
+import {
+  computeGoalFrontier,
+  type GoalFrontier,
+  type GoalMemberFacts,
+} from '../../goal-frontier';
 import type { GitHubApi, GhIssue } from './github-api';
 import {
   serializeBody,
@@ -61,6 +70,15 @@ const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
 const CLOSED_BY = 'Closed-by';
 /** Orthogonal needs-attention label (ADR-0006) — NOT a wave/<rung> claim. */
 const NEEDS_ATTENTION_LABEL = 'wave/needs-attention';
+/**
+ * The one Goal container this store realizes, and its default (ADR-0044
+ * decision 4). Milestone is GitHub's only native container with DIRECT issue
+ * membership, so defaulting to it collides with no consumer convention — unlike
+ * Linear, where "project" already means different things in different shipped
+ * workspaces and therefore gets no default at all.
+ */
+const GOAL_CONTAINERS_REALIZED: readonly GoalContainer[] = ['milestone'];
+const DEFAULT_GOAL_CONTAINER: GoalContainer = 'milestone';
 /** Identity label for a PRD document (ADR-0011) — never an eligibility token. */
 const DEFAULT_DOCUMENT_LABEL = 'prd';
 
@@ -635,6 +653,182 @@ export class GitHubIssuesStore implements IssueStore {
       }
     }
     await this.api.addLabel(n, target);
+  }
+
+  // ── Goal facet (ADR-0044): a Goal is a GitHub MILESTONE ───────────────────
+
+  /**
+   * Resolve the container role this call addresses, or refuse loudly. Runs as
+   * the FIRST statement of every goal verb — before any id is resolved and
+   * before any write — so a refused binding does nothing, the same
+   * no-partial-application property `classifyCreateInput` gives `create()`.
+   */
+  private goalRole(container: GoalContainer | undefined): GoalContainer {
+    return requireGoalContainer({
+      storeKind: 'github',
+      configured: container,
+      fallback: DEFAULT_GOAL_CONTAINER,
+      realizable: GOAL_CONTAINERS_REALIZED,
+    });
+  }
+
+  async createGoal(input: CreateGoalInput, container?: GoalContainer): Promise<string> {
+    this.goalRole(container);
+    const { number } = await this.api.createMilestone({
+      title: input.title,
+      description: input.description ?? '',
+    });
+    return String(number); // filingHint ignored — the id is the opaque milestone number (ADR-0001)
+  }
+
+  async readGoal(id: string, container?: GoalContainer): Promise<GoalView> {
+    const role = this.goalRole(container);
+    const n = this.goalNumber(id);
+    const ms = await this.api.getMilestone(n); // throws on unknown id
+    const members = await this.api.listMilestoneIssues(n);
+    return {
+      id,
+      title: ms.title,
+      description: ms.description,
+      container: role,
+      memberIds: members.map((m) => String(m.number)),
+    };
+  }
+
+  /**
+   * Every milestone on the repo, each with its curated membership.
+   *
+   * Costs one member-list read PER milestone, and that is a deliberate
+   * acceptance rather than an oversight: {@link GoalView.memberIds} is part of
+   * the contract all three stores answer identically, and a list arm that
+   * returned an empty membership would be reporting `[]` where it means "not
+   * fetched" — the absent-vs-empty confusion this codebase refuses everywhere
+   * else. A goal panel reads a handful of finish lines, not a wave-sized set.
+   */
+  async listGoals(container?: GoalContainer): Promise<GoalView[]> {
+    const role = this.goalRole(container);
+    const milestones = await this.api.listMilestones();
+    const out: GoalView[] = [];
+    for (const ms of milestones) {
+      const members = await this.api.listMilestoneIssues(ms.number);
+      out.push({
+        id: String(ms.number),
+        title: ms.title,
+        description: ms.description,
+        container: role,
+        memberIds: members.map((m) => String(m.number)),
+      });
+    }
+    return out;
+  }
+
+  async assignToGoal(
+    goalId: string,
+    issueId: string,
+    container?: GoalContainer,
+  ): Promise<void> {
+    this.goalRole(container);
+    const milestone = this.goalNumber(goalId);
+    const issue = Number(issueId);
+    if (!Number.isInteger(issue)) {
+      throw new Error(`Malformed GitHub issue id: ${issueId}`);
+    }
+    // Idempotent by nature: the membership is a single pointer on the issue, so
+    // re-joining writes the same value. Additive only — there is no un-assign
+    // path, matching the seam.
+    await this.api.setIssueMilestone(issue, milestone);
+  }
+
+  async readGoalFrontier(
+    goalId: string,
+    container?: GoalContainer,
+  ): Promise<GoalFrontier> {
+    this.goalRole(container);
+    const n = this.goalNumber(goalId);
+    const members = await this.api.listMilestoneIssues(n); // throws on unknown goal id
+    const facts: GoalMemberFacts[] = [];
+    for (const gh of members) facts.push(await this.goalMemberFacts(gh));
+    return computeGoalFrontier(goalId, facts);
+  }
+
+  /** A goal id → the milestone number it names; throws on a non-integer id. */
+  private goalNumber(id: string): number {
+    const n = Number(id);
+    if (!Number.isInteger(n)) throw new Error(`Malformed GitHub milestone id: ${id}`);
+    return n;
+  }
+
+  /**
+   * What this store can SEE about one goal member — the frontier's whole input.
+   *
+   * Read off the raw `GhIssue` rather than through `read()`, and that is the
+   * load-bearing choice: `read()` projects an `IssueView` and THROWS on a bare
+   * member (no `## Files` section to parse), and a bare member is exactly what
+   * the `goal` station files at a cut. Going through `read()` would make a
+   * fresh goal unreadable; going around it makes `unready` observable.
+   */
+  private async goalMemberFacts(gh: GhIssue): Promise<GoalMemberFacts> {
+    const closed = gh.state === 'closed';
+    const id = String(gh.number);
+    // A closed member is `done` whatever else is true of it, so its blockers are
+    // not read at all — one saved round-trip per finished member, and no
+    // dependency edge can change a terminal reading.
+    if (closed) {
+      return { id, closed: true, claimed: false, eligible: false, unresolvedBlockers: [] };
+    }
+    // The body codec sees blockers only on a DECORATED member; a bare one has no
+    // `## Blocked by` section and `parseBody` throws on it. That throw is not a
+    // failure here — it is the bare case — so it degrades to "no codec refs" and
+    // the native side below still carries the ADR-0044 bare arm's edges.
+    let codec: BlockedBy = 'none';
+    try {
+      codec = parseBody(gh.body).blockedBy;
+    } catch {
+      codec = 'none';
+    }
+    const union = await this.unionBlockedBy(gh.number, codec);
+    return {
+      id,
+      closed: false,
+      claimed:
+        this.rungOf(gh.labels) !== null || gh.labels.includes(NEEDS_ATTENTION_LABEL),
+      eligible: this.isEligible(gh.labels),
+      unresolvedBlockers: await this.unresolvedBlockers(union),
+    };
+  }
+
+  /**
+   * Which of a member's read-union blockers are still in the way.
+   *
+   * A blocker counts as UNRESOLVED unless this store positively read it closed.
+   * Two cases land there deliberately:
+   *
+   *  - a **cross-repo** ref (`other#5`). This repo-scoped API cannot address it,
+   *    and the alternative — resolving it against THIS repo's `#5` — is the
+   *    silently-wrong answer `refToIssueNumber` already refuses to give on the
+   *    write side.
+   *  - a ref whose read **throws** (deleted, renumbered, rate-limited).
+   *
+   * Both are "no evidence", and `actionable` is a positive claim that nothing
+   * blocks the member — so no-evidence must never be able to counterfeit it.
+   * That is the `closed-unknown` discipline (W2-F1c) applied to the frontier.
+   */
+  private async unresolvedBlockers(blockedBy: BlockedBy): Promise<IssueRef[]> {
+    if (blockedBy === 'none') return [];
+    const out: IssueRef[] = [];
+    for (const ref of blockedBy) {
+      if (ref.slug !== undefined) {
+        out.push(ref); // cross-repo — unaddressable here, so never provably clear
+        continue;
+      }
+      try {
+        const blocker = await this.api.getIssue(ref.issue);
+        if (blocker.state !== 'closed') out.push(ref);
+      } catch {
+        out.push(ref); // unreadable ⇒ unresolved, never silently cleared
+      }
+    }
+    return out;
   }
 }
 

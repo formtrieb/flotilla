@@ -429,3 +429,124 @@ describe('MarkdownFsStore — Triage facet (ADR-0015)', () => {
     expect((await store.readTriage('tri#03')).title).toBe('1984 — a novel reference');
   });
 });
+
+// ── the Goal facet's markdown STORAGE shape (ADR-0044) ──────────────────────
+//
+// The tracker-agnostic contract cases live in `adapters/goal-facet.spec.ts`,
+// which proves the facet round-trips on all three stores. This file pins what
+// that suite deliberately cannot see: where the goal file lands, and that a goal
+// is structurally never mistakable for an issue on this storage.
+describe('MarkdownFsStore — the goal file (ADR-0044)', () => {
+  let root: string;
+  let store: MarkdownFsStore;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'mdfs-goal-'));
+    store = new MarkdownFsStore({ repoRoot: root, slug: SLUG });
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const goalsDir = () => join(root, '.scratch', SLUG, 'goals');
+  const issuesDir = () => join(root, '.scratch', SLUG, 'issues');
+
+  async function goalSource(id: string): Promise<string> {
+    const nn = /#goal-(\d+)$/.exec(id)?.[1];
+    const names = await readdir(goalsDir());
+    const name = names.find((n) => n.startsWith(`${nn}-`));
+    if (name === undefined) throw new Error(`no goal file for ${id}`);
+    return readFile(join(goalsDir(), name), 'utf-8');
+  }
+
+  it('writes the goal BESIDE issues/, never inside it — a goal is not an issue', async () => {
+    const id = await store.createGoal({ title: '1.0.0', filingHint: 'one-oh-oh' });
+    expect(await readdir(goalsDir())).toEqual(['01-one-oh-oh.md']);
+    // the issues/ tree is untouched — nothing for listOpen/listClaimed to scan.
+    await expect(readdir(issuesDir())).rejects.toThrow();
+    expect(id).toBe(`${SLUG}#goal-01`);
+  });
+
+  it('the goal file is an H1 + prose + a `## Members` list', async () => {
+    const id = await store.createGoal({
+      title: '1.0.0',
+      filingHint: 'one-oh-oh',
+      description: 'the contract freeze',
+    });
+    const src = await goalSource(id);
+    expect(src).toMatch(/^# 1\.0\.0$/m);
+    expect(src).toContain('the contract freeze');
+    expect(src).toMatch(/^## Members\s*$/m);
+    // …and NONE of the issue-shaped machinery: no eligibility stamp, no
+    // Header-Block, no AC checklist. A goal cannot be read as a wave issue.
+    expect(src).not.toMatch(/^\*\*Status:\*\*/m);
+    expect(src).not.toMatch(/^\*\*Risk:\*\*/m);
+    expect(src).not.toMatch(/^##\s+Acceptance criteria\s*$/im);
+  });
+
+  it('goals number in their OWN sequence, independent of the issue NNs', async () => {
+    await store.create(baseInput({ title: 'an issue' }));
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    // The issue took 01 in issues/; the goal takes 01 in goals/. Separate id
+    // spaces, exactly as milestone numbers are separate from issue numbers on
+    // GitHub — so a goal id is never confusable with an issue id BY VALUE and
+    // must never be compared across kinds.
+    expect(goal).toBe(`${SLUG}#goal-01`);
+    const second = await store.createGoal({ title: 'g2', filingHint: 'g2' });
+    expect(second).toBe(`${SLUG}#goal-02`);
+  });
+
+  it('assignToGoal appends to the `## Members` list, once per member', async () => {
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const a = await store.create(baseInput({ title: 'a' }));
+    const b = await store.create(baseInput({ title: 'b' }));
+    await store.assignToGoal(goal, a);
+    await store.assignToGoal(goal, b);
+    await store.assignToGoal(goal, a); // idempotent
+
+    const src = await goalSource(goal);
+    expect(src.split('\n').filter((l) => l === `- ${a}`)).toHaveLength(1);
+    expect(src).toContain(`- ${b}`);
+    // exactly one Members section — the append must never shadow-duplicate it.
+    expect(src.split('\n').filter((l) => /^##\s+Members\s*$/.test(l))).toHaveLength(1);
+  });
+
+  it('membership is read from the Members SECTION only — prose bullets are not members', async () => {
+    const goal = await store.createGoal({
+      title: 'g',
+      filingHint: 'g',
+      description: 'why this exists:\n- not a member\n- also not a member',
+    });
+    const issue = await store.create(baseInput());
+    await store.assignToGoal(goal, issue);
+    expect((await store.readGoal(goal)).memberIds).toEqual([issue]);
+    // …and the prose survived the curation write untouched.
+    expect(await goalSource(goal)).toContain('- not a member');
+  });
+
+  it('assignToGoal refuses an issue this store cannot resolve — no ghost members', async () => {
+    // A membership list naming an unresolvable id would read back as a
+    // permanently `unready` member in every frontier, forever.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    await expect(store.assignToGoal(goal, `${SLUG}#99`)).rejects.toThrow(/Issue not found/);
+    expect((await store.readGoal(goal)).memberIds).toEqual([]);
+  });
+
+  it('a cross-SLUG blocker is UNRESOLVED — this store cannot see another slug\'s tree', async () => {
+    // The markdown counterpart of GitHub's cross-repo case: `actionable` is a
+    // positive claim that nothing blocks the member, and an edge pointing at a
+    // tree this instance cannot read is no evidence at all.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const member = await store.create(
+      baseInput({ title: 'waits on another slug', blockedBy: [{ slug: 'other-slug', issue: 4 }] }),
+    );
+    await store.assignToGoal(goal, member);
+    const reading = (await store.readGoalFrontier(goal)).readings[0];
+    expect(reading.state).toBe('blocked');
+    expect(reading.unresolvedBlockers).toEqual([{ slug: 'other-slug', issue: 4 }]);
+  });
+
+  it('a goal id is not parseRef-invertible — a goal is never a blocker ref', async () => {
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    expect(() => store.parseRef(goal)).toThrow();
+  });
+});

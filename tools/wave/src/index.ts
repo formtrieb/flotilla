@@ -816,6 +816,15 @@ export {
   type PreflightCheck,
   type StorePreflightReport,
   type StorePreflightOptions,
+  // The Goal-container binding's config edge (ADR-0044 decision 4), shipped
+  // beside `resolveStore` because it is the same job one key over: turn the
+  // consumer's `wave.config.json` into the runtime value a verb needs.
+  // `readGoalContainer` answers it for a config a caller already loaded;
+  // `resolveGoalContainer` is the argv-facing spelling the CLI ops use, with
+  // `resolveStore`'s own injected-store short-circuit so the two stay in
+  // lockstep.
+  readGoalContainer,
+  resolveGoalContainer,
 } from './cli-store';
 
 export {
@@ -837,6 +846,10 @@ export {
   type LinearCreateIssueInput,
   type LinearPrAttachment,
   type LinearStateType,
+  // The Goal facet's Linear substrate (ADR-0044) — the PROJECT realization, the
+  // only one v1 ships. Initiative is a named follow-up, refused by name rather
+  // than silently capped.
+  type LinearProject,
 } from './adapters/linear/linear-api';
 
 export {
@@ -883,6 +896,11 @@ export {
   type GhStateReason,
   type ClosingPrState,
   type CreateIssueInput,
+  // The Goal facet's GitHub substrate (ADR-0044) — milestone is the only
+  // native container with direct issue membership, which is what lets it be a
+  // default no consumer convention can collide with.
+  type GhMilestone,
+  type CreateMilestoneInput,
 } from './adapters/github/github-api';
 
 export {
@@ -971,6 +989,59 @@ export {
   TRIAGE_DISCLAIMER,
   withTriageDisclaimer,
 } from './adapters/issue-store';
+
+// The GOAL FACET (ADR-0044) — the finish line, bound to a native container.
+//
+// Shipped whole, for the reason the `IssueStore` block above states: a
+// third-party adapter author implementing a custom store must be able to NAME
+// every shape the contract now requires of them, and a root-only consumer
+// driving `buildStore`'s handle must be able to CATCH what the goal verbs
+// throw. So the container vocabulary (`GoalContainer`/`GOAL_CONTAINERS`), the
+// two verb shapes (`CreateGoalInput`/`GoalView`), the typed binding refusal
+// (`GoalBindingError`/`GoalBindingFailure`), and the two binding resolvers
+// (`parseGoalContainer` for a consumer validating its own config,
+// `requireGoalContainer` for an adapter applying the same rule flotilla's three
+// do) all cross the barrel.
+//
+// `requireGoalContainer` is deliberately exported even though it reads as
+// internal: it is the ONE implementation of "which container does this verb
+// address, and when does that refuse?", shared by all three shipped adapters
+// exactly as `normalizeEngineCli` is the one implementation of the `engine.cli`
+// rule. A fourth adapter re-deriving it would be a second rule that can drift —
+// the outcome ADR-0044 decision 4 exists to prevent.
+export {
+  type GoalContainer,
+  GOAL_CONTAINERS,
+  type CreateGoalInput,
+  type GoalView,
+  GoalBindingError,
+  type GoalBindingFailure,
+  parseGoalContainer,
+  requireGoalContainer,
+} from './adapters/issue-store';
+
+// The FRONTIER (ADR-0044 decision 5) — a Goal's derived open remainder.
+//
+// Pure engine, store-blind: `computeGoalFrontier`/`classifyGoalMember` turn the
+// facts an adapter can see about each member into exactly one of five readings.
+// Root-exported because the reading IS the consumer-facing answer — a `goal`
+// panel, a report renderer, or a consumer's own script reads `GoalFrontier`
+// off the verb and needs to name its shape; and `GOAL_MEMBER_STATES` is the
+// vocabulary it enumerates rather than re-spelling.
+//
+// Note what is NOT here and cannot be: nothing writes. The frontier is derived
+// on every read, so there is no durable release marker for an agent to author
+// (the measured Wayfinder failure mode) and no verb here that could close a
+// goal — that is the Operator's act in the tracker.
+export {
+  type GoalMemberState,
+  GOAL_MEMBER_STATES,
+  type GoalMemberFacts,
+  type GoalMemberReading,
+  type GoalFrontier,
+  classifyGoalMember,
+  computeGoalFrontier,
+} from './goal-frontier';
 
 // The TYPED CREATE REJECTION (ADR-0027, the bare-filing path).
 //

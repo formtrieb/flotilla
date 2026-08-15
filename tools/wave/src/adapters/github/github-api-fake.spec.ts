@@ -129,3 +129,89 @@ describe('InMemoryGitHubApi deleteBranch (consumer KW-F6)', () => {
     expect(api.deletedRemoteBranches).toEqual(['wave/x']);
   });
 });
+
+describe('InMemoryGitHubApi milestones (the Goal container substrate, ADR-0044)', () => {
+  it('milestones number in their OWN space, independent of issues', async () => {
+    // Real GitHub numbers milestones separately from issues, so milestone #1 and
+    // issue #1 coexist and mean different things. A fake sharing one counter
+    // would hide an id mix-up in the store — the exact confusion that showed up
+    // once already when a conformance case compared a goal id to an issue id.
+    const api = new InMemoryGitHubApi();
+    const issue = await api.createIssue({ title: 'i', body: '', labels: [] });
+    const milestone = await api.createMilestone({ title: 'm', description: '' });
+    expect(issue.number).toBe(1);
+    expect(milestone.number).toBe(1);
+  });
+
+  it('createMilestone → getMilestone round-trips, open by default', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number } = await api.createMilestone({ title: '1.0.0', description: 'the freeze' });
+    expect(await api.getMilestone(number)).toEqual({
+      number,
+      title: '1.0.0',
+      description: 'the freeze',
+      state: 'open',
+    });
+  });
+
+  it('getMilestone / listMilestoneIssues / setIssueMilestone throw on an unknown milestone', async () => {
+    const api = new InMemoryGitHubApi();
+    const issue = await api.createIssue({ title: 'i', body: '', labels: [] });
+    await expect(api.getMilestone(99)).rejects.toThrow(/milestone not found/i);
+    await expect(api.listMilestoneIssues(99)).rejects.toThrow(/milestone not found/i);
+    await expect(api.setIssueMilestone(issue.number, 99)).rejects.toThrow(/milestone not found/i);
+  });
+
+  it('setIssueMilestone throws on an unknown issue', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number } = await api.createMilestone({ title: 'm', description: '' });
+    await expect(api.setIssueMilestone(404, number)).rejects.toThrow(/issue not found/i);
+  });
+
+  it('membership is a per-ISSUE pointer, so re-assigning is idempotent and re-pointing MOVES', async () => {
+    const api = new InMemoryGitHubApi();
+    const a = await api.createMilestone({ title: 'a', description: '' });
+    const b = await api.createMilestone({ title: 'b', description: '' });
+    const issue = await api.createIssue({ title: 'i', body: '', labels: [] });
+
+    await api.setIssueMilestone(issue.number, a.number);
+    await api.setIssueMilestone(issue.number, a.number); // idempotent
+    expect((await api.listMilestoneIssues(a.number)).map((i) => i.number)).toEqual([issue.number]);
+
+    await api.setIssueMilestone(issue.number, b.number);
+    expect(await api.listMilestoneIssues(a.number)).toEqual([]);
+    expect((await api.listMilestoneIssues(b.number)).map((i) => i.number)).toEqual([issue.number]);
+  });
+
+  it('listMilestoneIssues returns members OPEN AND CLOSED — `done` is a frontier reading', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number: milestone } = await api.createMilestone({ title: 'm', description: '' });
+    const open = await api.createIssue({ title: 'open', body: '', labels: [] });
+    const closed = await api.createIssue({ title: 'closed', body: '', labels: [] });
+    await api.setIssueMilestone(open.number, milestone);
+    await api.setIssueMilestone(closed.number, milestone);
+    await api.nativeClose(closed.number);
+
+    const members = await api.listMilestoneIssues(milestone);
+    expect(members.map((m) => m.number).sort()).toEqual([open.number, closed.number].sort());
+    // …and listOpenIssues still filters, so the two reads are genuinely different.
+    expect((await api.listOpenIssues()).map((i) => i.number)).toEqual([open.number]);
+  });
+
+  it('listMilestones returns open AND closed milestones (the real endpoint needs state=all)', async () => {
+    const api = new InMemoryGitHubApi();
+    await api.createMilestone({ title: 'a', description: '' });
+    await api.createMilestone({ title: 'b', description: '' });
+    expect((await api.listMilestones()).map((m) => m.title).sort()).toEqual(['a', 'b']);
+  });
+
+  it('the curation write moves the issue\'s updatedAt — a write is observably a write', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number: milestone } = await api.createMilestone({ title: 'm', description: '' });
+    const issue = await api.createIssue({ title: 'i', body: '', labels: [] });
+    const before = (await api.getIssue(issue.number)).updatedAt;
+    await api.setIssueMilestone(issue.number, milestone);
+    const after = (await api.getIssue(issue.number)).updatedAt;
+    expect(Date.parse(after as string)).toBeGreaterThan(Date.parse(before as string));
+  });
+});
