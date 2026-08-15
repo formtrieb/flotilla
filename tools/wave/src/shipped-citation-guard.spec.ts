@@ -194,6 +194,58 @@ import { tmpdir } from 'node:os';
 /** `tools/wave` — the npm package root. */
 const PACKAGE_ROOT = join(__dirname, '..');
 
+// ---------------------------------------------------------------------------
+// The dead-citation teaching — carried in the FAILURE OUTPUT, not only in a doc
+// ---------------------------------------------------------------------------
+
+/**
+ * What a dead-citation failure has to teach, at the moment it fires.
+ *
+ * Rules 2-5 all fail on one question — "this cited document does not exist" —
+ * and the answer they wanted was never obvious from the failure itself. Both
+ * live occurrences of that gap ended the same way: an author under the failing
+ * constraint escaped through whatever field they still controlled. One hid a
+ * real, consumer-side path inside a multi-word command span the bare-path
+ * regex cannot match; the other renamed a deliberately-absent planted fixture
+ * to a `.txt` extension so the extractor would stop seeing it, trading fixture
+ * realism for guard silence. Neither dodge was wrong about the CONTENT, and
+ * neither showed up anywhere: no gate failed, no report recorded it, so the
+ * next author paid the same cost again.
+ *
+ * Nothing new is built for that class — the mechanism already existed. Code
+ * lines are data, comment lines are citations, which is exactly how this
+ * guard's OWN planted fixtures have always stayed invisible to it. What was
+ * missing was discoverability at the moment of pressure, and the proximal spot
+ * is this message rather than a document the author is not currently reading
+ * (measured: a general clause elsewhere does not hold, a specific hint at the
+ * failing spot does). Rule 2's "name its subject instead" branch is one of the
+ * two answers, so this text sits BESIDE that teaching rather than replacing it
+ * (ADR-0043, third decision).
+ */
+const DEAD_CITATION_TEACHING =
+  'TWO ANSWERS ARE SANCTIONED here, and re-spelling the path at a document that was ' +
+  'consolidated away is neither:\n' +
+  '  (1) A FIXTURE BELONGS IN CODE LINES. Code is data; comment lines are citations. ' +
+  'Every extractor in this guard reads comment lines only, so a realistic planted path ' +
+  'in a string literal has always passed — move the fixture into code rather than ' +
+  'trading its realism for guard silence (renaming its extension is that trade).\n' +
+  '  (2) A COMMENT NAMES ITS SUBJECT, NOT THE PATH. Naming the thing — "the Worker ' +
+  "brief's Report block, composed by `workerBrief()` in the wave-start skill's workflow " +
+  'driver" — leaves nothing for the extractor to resolve, and that is the intended pass. ' +
+  'A dead-looking path in a comment invites the reader to chase it, so this is better ' +
+  'prose, not a lost capability.';
+
+/**
+ * The one failure shape every "this cited document must exist" rule fails with
+ * (rules 2, 3, 5, and rule 4's three applications of them): what was found,
+ * then what to do about it. Composing it in one place is what keeps the
+ * teaching in the FAILURE OUTPUT of all six rather than in whichever message
+ * someone remembered to update.
+ */
+function deadCitationFailure(subject: string, dead: readonly string[]): string {
+  return `${subject}:\n${dead.join('\n')}\n\n${DEAD_CITATION_TEACHING}`;
+}
+
 /** The repository root — where a `.claude/…` citation is resolved from. */
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 
@@ -704,9 +756,10 @@ describe('rule 2 — no shipped doc-comment cites a skill document that does not
     expect(checked).toBeGreaterThan(0);
     expect(
       dead,
-      'shipped doc-comments citing a skill document that exists under no spelling ' +
-        '(re-spelling the path is not the fix when the document was consolidated away — ' +
-        `name its subject instead):\n${dead.join('\n')}`,
+      deadCitationFailure(
+        'shipped doc-comments citing a skill document that exists under no spelling',
+        dead,
+      ),
     ).toEqual([]);
   });
 
@@ -778,10 +831,11 @@ describe('rule 3 — no shipped header pointer aims at a document that does not 
     expect(checked).toBeGreaterThan(0);
     expect(
       dead,
-      'shipped header pointers aiming at a markdown document that exists under no ' +
-        'spelling. Ten of these were removed by the row that added this rule; the fix ' +
-        'is to NAME the subject, not to re-spell the path:\n' +
-        dead.join('\n'),
+      deadCitationFailure(
+        'shipped header pointers aiming at a markdown document that exists under no ' +
+          'spelling (ten of these were removed by the row that added this rule)',
+        dead,
+      ),
     ).toEqual([]);
   });
 
@@ -857,10 +911,12 @@ describe('rule 5 — no shipped module carries an unlabeled canonical/schema pro
     // on a live synthetic citation.
     expect(
       dead,
-      'shipped modules carrying an unlabeled canonical/schema prose citation aiming ' +
-        'at a path that exists under no spelling. Six of these were removed by the row ' +
-        'that added this rule; the fix is to NAME the subject, not to re-spell the path:\n' +
-        dead.join('\n'),
+      deadCitationFailure(
+        'shipped modules carrying an unlabeled canonical/schema prose citation aiming at ' +
+          'a path that exists under no spelling (six of these were removed by the row ' +
+          'that added this rule)',
+        dead,
+      ),
     ).toEqual([]);
   });
 
@@ -951,9 +1007,12 @@ describe('rule 4 — a spec file is held to the same resolution rule (the DECIDE
     }
     expect(
       dead,
-      'spec doc-comments citing a document that exists under no spelling. A spec is ' +
-        'the first thing an editor of its module reads, which is why this rule exists ' +
-        "(see this file's \"The spec-file question\" note):\n" + dead.join('\n'),
+      deadCitationFailure(
+        'spec doc-comments citing a document that exists under no spelling. A spec is ' +
+          'the first thing an editor of its module reads, which is why this rule exists ' +
+          "(see this file's \"The spec-file question\" note)",
+        dead,
+      ),
     ).toEqual([]);
   });
 
@@ -965,7 +1024,7 @@ describe('rule 4 — a spec file is held to the same resolution rule (the DECIDE
         if (!existsSync(join(REPO_ROOT, path))) dead.push(`${rel}:${line} [${label}] → ${path}`);
       }
     }
-    expect(dead, `dead header pointers in spec files:\n${dead.join('\n')}`).toEqual([]);
+    expect(dead, deadCitationFailure('dead header pointers in spec files', dead)).toEqual([]);
   });
 
   it('every unlabeled prose citation in a spec doc-comment resolves', () => {
@@ -978,7 +1037,7 @@ describe('rule 4 — a spec file is held to the same resolution rule (the DECIDE
     }
     expect(
       dead,
-      `dead unlabeled prose citations in spec files:\n${dead.join('\n')}`,
+      deadCitationFailure('dead unlabeled prose citations in spec files', dead),
     ).toEqual([]);
   });
 
@@ -1004,6 +1063,77 @@ describe('rule 4 — a spec file is held to the same resolution rule (the DECIDE
     // ...and the repaired spec no longer carries it, under either spelling.
     const repaired = readFileSync(join(PACKAGE_ROOT, 'src/stop-condition-state-machine.spec.ts'), 'utf-8');
     expect(repaired).not.toContain('stop-condition-handling.md');
+  });
+});
+
+describe('the dead-citation FAILURE OUTPUT teaches the two sanctioned answers (ADR-0043)', () => {
+  /**
+   * The message a failing `expect(…)` really carries, read off the thrown error
+   * rather than off the string handed in. That difference is the whole point:
+   * the teaching has to reach the author AT THE FAILURE, which is a claim about
+   * the output, not about a constant sitting in this file.
+   */
+  function observedFailure(run: () => void): string {
+    try {
+      run();
+    } catch (err) {
+      return String((err as Error)?.message ?? err);
+    }
+    throw new Error('expected the assertion to FAIL — this control proves nothing if it passes');
+  }
+
+  it('a real dead citation fails with both answers in the message an author actually sees', () => {
+    // Same extractor, same resolution question, same failure composer as rule 2's
+    // live assertion — only the corpus is a plant.
+    const planted =
+      '/**\n * Mirrors: .claude/skills/wave-shared/references/worker-brief-template.md §Block 5\n */\n';
+    const dead = extractSkillDocCitations(planted)
+      .filter(({ path }) => !existsSync(join(REPO_ROOT, path)))
+      .map(({ path, line }) => `planted:${line} → ${path}`);
+    expect(dead).toHaveLength(1);
+
+    const observed = observedFailure(() => {
+      expect(
+        dead,
+        deadCitationFailure(
+          'shipped doc-comments citing a skill document that exists under no spelling',
+          dead,
+        ),
+      ).toEqual([]);
+    });
+
+    // What was found…
+    expect(observed).toContain(dead[0]);
+    // …and, in the same breath, what the two sanctioned answers are.
+    expect(observed).toContain('A FIXTURE BELONGS IN CODE LINES');
+    expect(observed).toContain('A COMMENT NAMES ITS SUBJECT, NOT THE PATH');
+  });
+
+  it('the teaching names the fixture answer, the subject answer, and rules out the extension dodge', () => {
+    // The second occurrence's actual workaround was an extension rename, so the
+    // message says that trade out loud rather than leaving it to be reinvented.
+    expect(DEAD_CITATION_TEACHING).toMatch(/code lines/i);
+    expect(DEAD_CITATION_TEACHING).toMatch(/comment lines are citations/i);
+    expect(DEAD_CITATION_TEACHING).toMatch(/renaming its extension/i);
+    expect(DEAD_CITATION_TEACHING).toMatch(/names its subject/i);
+    // …and it teaches without citing anything itself: a message that carried a
+    // form-dependent path would be the very defect rule 1 exists to catch.
+    expect(findFormDependentPaths(DEAD_CITATION_TEACHING)).toEqual([]);
+  });
+
+  it('rule 2\'s "name its subject" branch is unchanged — the teaching sits beside the rule, never loosens it', () => {
+    // Strictness is not what moved. A dead citation in a comment still fails,
+    // and a subject-naming comment still passes, exactly as before.
+    const stillDead = extractSkillDocCitations(
+      ' * see .claude/skills/wave-shared/references/worker-brief-template.md\n',
+    );
+    expect(stillDead).toHaveLength(1);
+    expect(existsSync(join(REPO_ROOT, stillDead[0].path))).toBe(false);
+    expect(
+      extractSkillDocCitations(
+        " * Mirrors: the Worker brief's Report block, composed by `workerBrief()`.\n",
+      ),
+    ).toEqual([]);
   });
 });
 

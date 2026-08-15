@@ -25,6 +25,14 @@
  *       Day-one prey: `.claude/skills/README.md` still cited two
  *       `docs/superpowers/plans/…` design docs that the publication cut
  *       (ADR-0026) left behind in the private archive.
+ *       ONE named exemption, and it is a class rather than a per-occurrence
+ *       hatch: a CONSUMER-SCAFFOLD path is a SUBJECT the documentation is
+ *       talking about, not a citation it is pointing with — real in every
+ *       consumer's installed form, absent from this clone by construction. The
+ *       class is paired and self-policing in both directions
+ *       ({@link CONSUMER_SCAFFOLD_PAIRS}), and it lives here rather than as a
+ *       marker in the prose because the checked text never carries its own
+ *       exemption (ADR-0043).
  *
  *   (c) `{{wave-cli}}` resolution blocks — the engine-invocation BINDING
  *       anchor: the consumer's own `wave.config.json`. ADR-0031 originally had
@@ -121,6 +129,56 @@ const RUNTIME_ARTIFACT_PREFIXES = [
   'tools/wave/node_modules/', // installed dependencies — the one absence ADR-0031 names
   'tools/wave/coverage/', // test output
 ] as const;
+
+/**
+ * CONSUMER-SCAFFOLD paths: the INSTALLED-FORM locations `wave-setup` writes
+ * into a consumer repo, each paired with the SOURCE-FORM counterpart this clone
+ * actually carries (ADR-0032's vocabulary; ADR-0043's second decision).
+ *
+ * A path in this class is real for every reader the documentation is written
+ * for, and absent here on purpose: flotilla runs the source form on both
+ * distribution layers, so it never scaffolds the consumer-side location for
+ * itself. Without the class, a docs row teaching the scaffold cannot NAME the
+ * path it documents and has to describe it instead — strictly less useful to
+ * the reader the documentation exists for, and a cost no gate ever reports. The
+ * exemption therefore lives HERE, in the guard, as a named class; it is never a
+ * marker inside the checked text, which would just hand the author a switch to
+ * turn the guard off with (ADR-0043's first decision).
+ *
+ * The PAIR is what keeps the class self-policing, in both directions:
+ *
+ *   - `consumerPath` must NOT resolve in the clone. An entry that starts
+ *     resolving has stopped being an exemption and become a hole — delete it,
+ *     the same discipline `ANCHORED_LINK_ALLOWLIST` already enforces below.
+ *   - `sourceForm` MUST resolve. A pair whose source-form counterpart was
+ *     renamed or deleted goes loud here, instead of leaving the documentation
+ *     quietly teaching a consumer location nothing on either side of the
+ *     distribution seam still backs.
+ *
+ * Entries match EXACTLY, never by prefix: the class exempts the one scaffolded
+ * artifact it names, not a directory a future dead citation could hide in.
+ */
+const CONSUMER_SCAFFOLD_PAIRS: ReadonlyArray<{
+  readonly consumerPath: string;
+  readonly sourceForm: string;
+  readonly why: string;
+}> = [
+  {
+    consumerPath: '.claude/hooks/echo-guard.cjs',
+    sourceForm: 'tools/wave/hooks/echo-guard.cjs',
+    why: "wave-setup's Echo-Guard scaffold copies the packaged hook to this path in every consumer repo; flotilla's own tracked hooks block points at the vendored counterpart instead (the documented dogfood exception in setup-mechanics.md), so the consumer-side location is never created here.",
+  },
+];
+
+/**
+ * True when `target` is a consumer-scaffold path — real in the installed form,
+ * absent from this clone by construction. The citation stays IN the class-(b)
+ * population: this is a verdict on the resolution predicate, not a hole in the
+ * extractor.
+ */
+function isConsumerScaffoldPath(target: string): boolean {
+  return CONSUMER_SCAFFOLD_PAIRS.some((pair) => pair.consumerPath === target);
+}
 
 /**
  * Class-(a) links that legitimately resolve to nothing. Every entry carries its
@@ -960,9 +1018,9 @@ describe('skill-reference-guard — class (b): bare path citations resolve clone
   it('every bare path citation exists in the plugin clone', () => {
     const dead = [
       ...new Set(
-        ALL_CITATIONS.filter((ref) => !resolveCloneRootCitation(ref)).map(
-          (ref) => `${ref.target}  (cited in ${ref.file})`,
-        ),
+        ALL_CITATIONS.filter(
+          (ref) => !isConsumerScaffoldPath(ref.target) && !resolveCloneRootCitation(ref),
+        ).map((ref) => `${ref.target}  (cited in ${ref.file})`),
       ),
     ];
     expect(
@@ -972,7 +1030,12 @@ describe('skill-reference-guard — class (b): bare path citations resolve clone
         `is existence, which is what buys rename/deletion protection. Repoint the ` +
         `prose at what survives (do NOT demote the citation to a slug — ADR-0031 ` +
         `rejected that), or, for a genuinely gitignored runtime path, add its ` +
-        `prefix to RUNTIME_ARTIFACT_PREFIXES:\n  ` +
+        `prefix to RUNTIME_ARTIFACT_PREFIXES. If the path is one wave-setup ` +
+        `SCAFFOLDS into a consumer repo — real in the installed form, absent here ` +
+        `by construction — it is a SUBJECT, not a dead citation: pair it with its ` +
+        `source-form counterpart in CONSUMER_SCAFFOLD_PAIRS rather than describing ` +
+        `it around, and never mark it up inside the prose to dodge this rule ` +
+        `(ADR-0043):\n  ` +
         dead.join('\n  '),
     ).toEqual([]);
   });
@@ -1012,6 +1075,98 @@ describe('skill-reference-guard — class (b): bare path citations resolve clone
     // A file-relative code span is class (a) territory, not clone-root.
     expect(
       extractBarePathCitations('full flags: `reference/routing-mechanics.md`\n', '.claude/skills/x.md'),
+    ).toEqual([]);
+  });
+});
+
+// ─── class (b) extension: the paired consumer-scaffold class (ADR-0043) ──────
+
+describe('skill-reference-guard — class (b) extension: consumer-scaffold paths are a SUBJECT, not a dead citation', () => {
+  it('a bare citation of a consumer-scaffold path passes, through the same extractor and the same predicate the real assertion uses', () => {
+    const planted = extractBarePathCitations(
+      'copy the guard to `.claude/hooks/echo-guard.cjs` and commit it\n',
+      '.claude/skills/wave-setup/SKILL.md',
+    );
+    // It is a full member of the class-(b) population — the extractor sees it,
+    // the resolver says it is absent, and the CLASS is the only thing standing
+    // between those two facts and a failure.
+    expect(planted).toHaveLength(1);
+    expect(planted[0].target).toBe('.claude/hooks/echo-guard.cjs');
+    expect(resolveCloneRootCitation(planted[0])).toBe(false);
+    expect(isConsumerScaffoldPath(planted[0].target)).toBe(true);
+  });
+
+  it('the live wave-setup documents really do cite the consumer hook path bare — the class is load-bearing, not decorative', () => {
+    const cited = ALL_CITATIONS.filter((r) => r.target === '.claude/hooks/echo-guard.cjs');
+    const files = new Set(cited.map((r) => r.file));
+    expect(
+      files,
+      'the occurrence-1 revert is gone: wave-setup no longer NAMES the path it documents, ' +
+        'which is the silent narrowing ADR-0043 exists to stop',
+    ).toContain('.claude/skills/wave-setup/SKILL.md');
+    expect(files).toContain('.claude/skills/wave-setup/reference/setup-mechanics.md');
+    // Every one of them would fail the class-(b) resolution predicate on its
+    // own, so the exemption is doing real work rather than covering nothing.
+    for (const ref of cited) expect(resolveCloneRootCitation(ref)).toBe(false);
+  });
+
+  it('every pair is still exempt for its stated reason — consumer path ABSENT, source form PRESENT', () => {
+    expect(CONSUMER_SCAFFOLD_PAIRS.length).toBeGreaterThan(0);
+    expect(
+      new Set(CONSUMER_SCAFFOLD_PAIRS.map((p) => p.consumerPath)).size,
+      'duplicate consumerPath in CONSUMER_SCAFFOLD_PAIRS — one entry per scaffolded artifact',
+    ).toBe(CONSUMER_SCAFFOLD_PAIRS.length);
+
+    for (const pair of CONSUMER_SCAFFOLD_PAIRS) {
+      expect(
+        existsSync(resolve(CLONE_ROOT, pair.consumerPath)),
+        `obsolete consumer-scaffold entry: ${pair.consumerPath} now RESOLVES in the clone, so ` +
+          `it is an ordinary citation and the exemption is a hole — delete the pair`,
+      ).toBe(false);
+      expect(
+        existsSync(resolve(CLONE_ROOT, pair.sourceForm)),
+        `broken consumer-scaffold pair: ${pair.consumerPath}'s source-form counterpart ` +
+          `${pair.sourceForm} is missing — the docs would be teaching a scaffold location ` +
+          `nothing on either side of the distribution seam still backs`,
+      ).toBe(true);
+      // Both halves must name the same artifact; that is what makes the row a
+      // PAIR rather than two unrelated paths filed next to each other.
+      expect(
+        pair.sourceForm.split('/').pop(),
+        `${pair.consumerPath} is paired with ${pair.sourceForm}, which is a different artifact`,
+      ).toBe(pair.consumerPath.split('/').pop());
+      expect(pair.why.length).toBeGreaterThan(20); // a justification, not a shrug
+    }
+  });
+
+  it('the exemption is EXACT-MATCH, never a prefix — a dead sibling in the same scaffolded directory still fails', () => {
+    // The narrowness is the whole safety property: an exempted directory would
+    // let a genuinely dead citation ride in beside the real one.
+    const sibling = extractBarePathCitations(
+      'its neighbour `.claude/hooks/conv12-guard.cjs` ships alongside it\n',
+      '.claude/skills/wave-setup/SKILL.md',
+    );
+    expect(sibling).toHaveLength(1);
+    expect(isConsumerScaffoldPath(sibling[0].target)).toBe(false);
+    expect(resolveCloneRootCitation(sibling[0])).toBe(false);
+  });
+
+  it('no inline marker anywhere in the corpus switches this guard off from inside the checked text (ADR-0043)', () => {
+    // The rejected option, pinned: the exemption is a guard-side class, so the
+    // guarded corpus must never hold its own key. If a marker convention is
+    // ever introduced, this is where the decision has to be re-argued.
+    const markerShapes = /<!--\s*guard[- ]?(?:off|ignore|skip)|\bguard-ignore\b|\bsubject-path:/i;
+    // The detector is not a no-op regex: it fires on each shape it names.
+    expect(markerShapes.test('<!-- guard-off -->')).toBe(true);
+    expect(markerShapes.test('`.claude/hooks/echo-guard.cjs` <!-- guard-ignore -->')).toBe(true);
+    expect(markerShapes.test('subject-path: .claude/hooks/echo-guard.cjs')).toBe(true);
+    expect(markerShapes.test('the echo-guard hook the scaffold copies')).toBe(false);
+
+    const marked = SKILL_DOCS.filter((f) => markerShapes.test(SOURCES.get(f) as string));
+    expect(
+      marked,
+      'a skill document carries an inline guard-suppression marker — ADR-0043 rejects the ' +
+        'author-controlled escape outright: name the class in CONSUMER_SCAFFOLD_PAIRS instead',
     ).toEqual([]);
   });
 });

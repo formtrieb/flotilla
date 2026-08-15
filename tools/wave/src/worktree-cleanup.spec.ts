@@ -7347,8 +7347,15 @@ describe('executeCleanup — the errno alone cannot carry the denial (issue #542
     // Model exactly the SURVIVOR SET the live occurrence measured: only the
     // harness-denied `.claude/skills` subtree (HARNESS_DENIED_DIRS) is still
     // on disk after the (simulated) attempt.
+    //
+    // The planted file's realistic markdown extension is deliberate and is
+    // irrelevant to the predicate under test — HARNESS_DENIED_DIRS matches on
+    // the directory prefix, never the extension. It lives in CODE lines at
+    // every site in this section, which is what keeps it a fixture rather than
+    // a citation: the shipped-citation guard resolves paths named in COMMENT
+    // lines, and this one names a file that exists for nobody, by design.
     mkdirSync(join(root, '.claude', 'skills'), { recursive: true });
-    writeFileSync(join(root, '.claude', 'skills', 'foo.txt'), 'skill content\n');
+    writeFileSync(join(root, '.claude', 'skills', 'foo.md'), 'skill content\n');
 
     const removeSpy = vi.fn(() => {
       throw makeEnotempty(root);
@@ -7392,7 +7399,7 @@ describe('executeCleanup — the errno alone cannot carry the denial (issue #542
   it('a real on-disk survivor set that MIXES denied-path content with genuinely-real leftover content stays TRANSIENT, even though the error is ENOTEMPTY-shaped', () => {
     const root = makeTempWorktreeDir('wt-cleanup-542-mixed-');
     mkdirSync(join(root, '.claude', 'skills'), { recursive: true });
-    writeFileSync(join(root, '.claude', 'skills', 'foo.txt'), 'skill content\n');
+    writeFileSync(join(root, '.claude', 'skills', 'foo.md'), 'skill content\n');
     // A genuinely real leftover sits alongside the denied content — nothing
     // here entitles the classifier to call this exhausted; this is the
     // negative control that pins `walkSurvivorSet`'s own verdict,
@@ -7554,7 +7561,7 @@ describe('the classification flip against a REAL git worktree, ENOTEMPTY-shaped 
     realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
     mkdirSync(join(mainRoot, '.claude', 'skills'), { recursive: true });
     writeFileSync(join(mainRoot, '.claude', 'settings.json'), '{}\n');
-    writeFileSync(join(mainRoot, '.claude', 'skills', 'foo.txt'), 'skill\n');
+    writeFileSync(join(mainRoot, '.claude', 'skills', 'foo.md'), 'skill\n');
     realGit(['add', '-A'], mainRoot);
     realGit(['commit', '-q', '-m', 'track worktree content'], mainRoot);
     mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
@@ -7585,7 +7592,7 @@ describe('the classification flip against a REAL git worktree, ENOTEMPTY-shaped 
   function installDeterministicEnotemptyDenial(worktreePath: string): void {
     const claudeDir = join(worktreePath, '.claude');
     const settingsFile = join(claudeDir, 'settings.json');
-    const skillFile = join(claudeDir, 'skills', 'foo.txt');
+    const skillFile = join(claudeDir, 'skills', 'foo.md');
 
     asRmSyncMock(rmSync).mockImplementation((...args: unknown[]) => {
       if (args[0] === claudeDir) {
@@ -7645,11 +7652,11 @@ describe('the classification flip against a REAL git worktree, ENOTEMPTY-shaped 
     // (matching the live occurrence's post-run-1 `D` entries) while the
     // undeletable `.claude/skills` directory itself survives.
     expect(existsSync(join(worktreePath, '.claude', 'settings.json'))).toBe(false);
-    expect(existsSync(join(worktreePath, '.claude', 'skills', 'foo.txt'))).toBe(false);
+    expect(existsSync(join(worktreePath, '.claude', 'skills', 'foo.md'))).toBe(false);
     expect(existsSync(join(worktreePath, '.claude', 'skills'))).toBe(true);
     const midStatus = realGit(['status', '--porcelain', '--untracked-files=all'], worktreePath);
     expect(midStatus.split('\n').filter((l) => l.length > 0).sort()).toEqual(
-      [' D .claude/settings.json', ' D .claude/skills/foo.txt'].sort(),
+      [' D .claude/settings.json', ' D .claude/skills/foo.md'].sort(),
     );
 
     // ── run 2: a completely fresh, independent invocation ────────────────
