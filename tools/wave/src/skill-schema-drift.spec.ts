@@ -1003,6 +1003,146 @@ describe('skill-schema-drift — the retired Scribe cd-to-REPO_ROOT split stays 
   });
 });
 
+describe('skill-schema-drift — the Scribe brief carries provenance + the filing-clerk framing (issue #577)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  /**
+   * `scribeBrief()`'s own body, sliced to itself — a whole-file scan would be
+   * satisfied by the classifier-refusal doc section (added alongside this
+   * brief text, below) restating the same phrases in prose; this pin is about
+   * what actually reaches the Scribe agent as brief TEXT.
+   */
+  function scribeBriefBody(md: string): string {
+    return contractRegion(
+      md,
+      'workflow-driver.md scribeBrief() body',
+      'function scribeBrief(kind, issue, iter, payload) {',
+      '// The stage wrapper ALWAYS returns',
+    );
+  }
+
+  it('carries the provenance clause — producing agent label (both kinds) and the same-run-one-stage-earlier phrasing', () => {
+    const region = scribeBriefBody(driverMd);
+    // The SAME template serves both brief kinds — `kind` is a runtime
+    // parameter, not two separate copies — so pinning the ternary that
+    // computes `producer` for BOTH branches is what proves report symmetry,
+    // not two separate assertions that could drift apart.
+    expect(region).toContain(
+      "const producer = kind === 'report' ? `worker:${issue.id}` : `review:${issue.id}`",
+    );
+    expect(region).toMatch(/same workflow run, one stage\s+earlier, journal-recorded/);
+    expect(region).toMatch(/did not produce this payload and are not\s+endorsing it/);
+  });
+
+  it('never attempts the workflow run id — every interpolated fact stays script-knowable', () => {
+    const region = scribeBriefBody(driverMd);
+    expect(region).toMatch(/workflow run's own id is not one of them/);
+    // No `${...runId...}`-shaped interpolation anywhere in the brief — the
+    // corrected-away hypothesis from the ticket's own "Settled direction".
+    expect(region).not.toMatch(/\$\{[^}]*run[Ii]d[^}]*\}/);
+  });
+
+  it("carries the sharpened filing-clerk framing — the review is not the Scribe's, altering the payload is the only forbidden act, persisting an approve is not approval by the writer", () => {
+    const region = scribeBriefBody(driverMd);
+    expect(region).toMatch(/review is not the\s+Scribe's/);
+    expect(region).toMatch(/is the only act this brief forbids/);
+    expect(region).toMatch(/is not approval by the writer/);
+  });
+
+  it('NEGATIVE CONTROL — the region fails loud when its start anchor is gone', () => {
+    expect(() => scribeBriefBody('# no scribeBrief here\n')).toThrow(
+      /contract region start anchor missing in workflow-driver\.md scribeBrief\(\) body/,
+    );
+  });
+
+  it('NEGATIVE CONTROL — the provenance + framing assertions actually fire when the clause is stripped', () => {
+    const stripped = driverMd.replace(
+      /\*\*Provenance, stated once[\s\S]*?is the only act this brief forbids\. /,
+      '',
+    );
+    expect(stripped).not.toEqual(driverMd); // the replace actually matched
+    const region = scribeBriefBody(stripped);
+    expect(region).not.toMatch(/same workflow run, one stage\s+earlier, journal-recorded/);
+    expect(region).not.toMatch(/review is not the\s+Scribe's/);
+  });
+});
+
+describe('skill-schema-drift — the classifier refusal is documented as an absorbed failure class, with its datum, tripwire, and recurrence ledger (issue #577)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  function failureClassSection(md: string): string {
+    return contractRegion(
+      md,
+      'workflow-driver.md classifier-refusal failure-class section',
+      '## The Scribe can be blocked by the harness safety classifier',
+      '## The bare-id contract',
+    );
+  }
+
+  it('names the classifier refusal as an absorbed failure class, not a broken invariant', () => {
+    const region = failureClassSection(driverMd);
+    expect(region).toMatch(/absorbed failure class/);
+    expect(region).toMatch(/not a broken invariant/);
+  });
+
+  it('records the non-determinism datum — one block, one pass, same brief shape, dated 2026-08-15', () => {
+    const region = failureClassSection(driverMd);
+    expect(region).toContain('2026-08-15');
+    expect(region).toMatch(/One block, one pass/);
+    expect(region).toMatch(/same brief shape/);
+  });
+
+  it('states the tripwire — three total blocks trigger an escalation grill on the named target', () => {
+    const region = failureClassSection(driverMd);
+    expect(region).toMatch(/tripwire is three total blocks/i);
+    expect(region).toMatch(/escalation grill/);
+    expect(region).toMatch(/Reviewer persisting its OWN\s+verdict through the write verb/);
+    expect(region).toMatch(/ADR-0024 amendment/);
+  });
+
+  it('states the recurrence ledger instruction with the failure class — each block is a wave-scoped disclosure appended to issue #577', () => {
+    const region = failureClassSection(driverMd);
+    expect(region).toMatch(/wave-scoped\s+disclosure/);
+    expect(region).toMatch(/append to issue #577/);
+    expect(region).toMatch(/reopen or reference-file/);
+  });
+
+  it('coheres with the sidecar-write-gate notice as a DIFFERENT finding riding the same Scribe result shape', () => {
+    const region = failureClassSection(driverMd);
+    expect(region).toMatch(/SCRIBE_RESULT_SCHEMA/);
+    expect(region).toMatch(/whether the write ran at all/);
+  });
+
+  it('NEGATIVE CONTROL — the section fails loud when its start anchor is gone', () => {
+    expect(() => failureClassSection('# nothing here\n')).toThrow(
+      /contract region start anchor missing in workflow-driver\.md classifier-refusal failure-class section/,
+    );
+  });
+
+  it('NEGATIVE CONTROL — the tripwire + ledger assertions actually fire when that paragraph is stripped', () => {
+    const stripped = driverMd.replace(
+      /\*\*The recurrence ledger\.\*\*[\s\S]*?deliberately not decided or built here\.\n\n/,
+      '',
+    );
+    expect(stripped).not.toEqual(driverMd); // the replace actually matched
+    const region = failureClassSection(stripped);
+    expect(region).not.toMatch(/tripwire is three total blocks/i);
+    expect(region).not.toMatch(/append to issue #577/);
+  });
+});
+
+describe('skill-schema-drift — the SIDECAR-WRITE NOTICE header mention matches the real log call shape (kind + id, issue #577 rider)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  it('names the log line as `SIDECAR-WRITE NOTICE <kind> <id>`, matching the actual `log()` call', () => {
+    expect(driverMd).toContain('SIDECAR-WRITE NOTICE <kind> <id>');
+  });
+
+  it('NEGATIVE CONTROL — the stale `<id>`-only form is gone', () => {
+    expect(driverMd).not.toContain('SIDECAR-WRITE NOTICE <id>` in');
+  });
+});
+
 /**
  * Finds `openCh` at or after `fromIdx` and walks bracket depth to the
  * matching `closeCh`, returning the balanced substring (inclusive of both

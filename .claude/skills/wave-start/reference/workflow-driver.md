@@ -10,7 +10,7 @@ The single dispatch mechanism (ADR-0016: no dual prose-vs-driver selector, no ex
 
 **The `prUrl`-on-`done`/`done-with-concerns` invariant still holds on this path — it is enforced by the Worker brief, not the schema.** `workerBrief()`'s Termination step 4 ("Confirm the PR by asking the HOST") and its Report section both state the requirement in prose; there is no structural rejection at the `agent({ schema })` boundary here for a `done` report that omits `prUrl`. **And that is now a placement decision, not only a shape the boundary forces:** a boundary-portable form of the same invariant is no longer hypothetical — measured with positive and negative controls, a top-level `if`/`then` is **accepted at this boundary and genuinely enforced**, including its conditional half. It is still the wrong rung for this rule, because the antecedent is `outcome` — a field the Worker itself authors. The same probes watched an agent told to report a finishing outcome for which it had no URL: it neither invented a URL nor failed, it reported a *non-finishing* outcome instead. A root conditional here would convert "the field is missing" into "the field is present and the outcome is wrong" — a loud failure traded for a quiet one ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md) Amendment 2026-08-14). `tools/wave/src/skill-schema-drift.spec.ts` asserts this literal stays free of any top-level combinator, with a negative control proving that assertion actually fires — so the W5-F1 regression cannot silently ship again.
 
-**And the brief is no longer the only tier that holds it.** Prose was not converging: three live occurrences across waves, the brief strengthened between them, each one a Worker that ran the host re-query correctly, read a `url` back, and then wrote a finishing report without it. So the invariant now also sits at the **engine's sidecar-write gate** — `write-report` emits a loud exit-0 `notice:` when a report carrying a finishing outcome reaches the write with a `prUrl` that is missing or empty, and **writes the sidecar anyway.** Three properties are load-bearing and none of them is negotiable. It is a **notice, never a refusal**: the report is valid data about work that genuinely happened, the missing URL is a finding *about* that report, and refusing the write would cost a finished row the durable record ADR-0024's whole Scribe stage exists to guarantee. **Usable means non-empty**, because an empty-string `prUrl` is the neighbouring failure class that actually shipped (issue #303), not a hypothetical. And it **does not replace the Coordinator's terminator re-query** — the gate makes the omission loud where it happens; the backstop still recovers the URL. The notice rides the Scribe's `notice` field into `SIDECAR-WRITE NOTICE <id>` in the Coordinator's log, which is what makes a silent omission a logged one ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md): a rule earns its enforcement tier).
+**And the brief is no longer the only tier that holds it.** Prose was not converging: three live occurrences across waves, the brief strengthened between them, each one a Worker that ran the host re-query correctly, read a `url` back, and then wrote a finishing report without it. So the invariant now also sits at the **engine's sidecar-write gate** — `write-report` emits a loud exit-0 `notice:` when a report carrying a finishing outcome reaches the write with a `prUrl` that is missing or empty, and **writes the sidecar anyway.** Three properties are load-bearing and none of them is negotiable. It is a **notice, never a refusal**: the report is valid data about work that genuinely happened, the missing URL is a finding *about* that report, and refusing the write would cost a finished row the durable record ADR-0024's whole Scribe stage exists to guarantee. **Usable means non-empty**, because an empty-string `prUrl` is the neighbouring failure class that actually shipped (issue #303), not a hypothetical. And it **does not replace the Coordinator's terminator re-query** — the gate makes the omission loud where it happens; the backstop still recovers the URL. The notice rides the Scribe's `notice` field into `SIDECAR-WRITE NOTICE <kind> <id>` in the Coordinator's log, which is what makes a silent omission a logged one ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md): a rule earns its enforcement tier).
 
 ## Harness constraint that shapes the decomposition (read first)
 
@@ -75,6 +75,53 @@ Three readings, and the third is a **correction** the asserted wording did not c
 3. **The silence is CONDITIONAL on a rival copy existing.** Row 4 — no copy anywhere up-tree — did not silently do the wrong thing; it failed loud, exit `1`. So the npm-first form is not universally silent, as the pre-measurement wording implied. It is silent precisely when a *different* valid copy is reachable from the wrong cwd, which is why the `pwd` check stays: the dangerous case is the one that looks like success.
 
 Neither form is rescued by a `cd` (it does not survive), by fusing one on (Convention 13, both mechanisms), or by making `WAVE_CLI` absolute: the config layer validates `engine.cli` as **repo-relative and non-absolute** precisely so the tracked-settings allowlist can match it (Authoring constraint #4), so an absolute form trades a checkable cwd precondition for a permission dialog mid-AFK-dispatch with nobody to answer it. What *does* generalize is the part the resolved design uses — make every argument absolute, and observe the one thing left that cannot be.
+
+## The Scribe can be blocked by the harness safety classifier — an absorbed failure class
+
+A dispatched Scribe is a live subagent, and the harness runs its own safety classifier
+over what an agent transcript looks like it is doing. On one live wave
+(2026-08-15-goal-facet, row 570, iteration 1), the verdict-Scribe persisting a
+schema-validated `approve` `ReviewerVerdict` was refused mid-transcript — `[Self-Approval]`:
+from inside the Scribe's own isolated transcript, writing an `approve` it never witnessed
+being produced read as fabricating a review approval feeding a public-API merge pipeline.
+The verdict was genuine — the schema-validated return of the independent `wave-reviewer`
+agent, one pipeline stage earlier, in-band in the same workflow's journal — and the
+documented recovery held exactly as designed: the Coordinator wrote the sidecar through
+`write-verdict` at routing time (§Degenerate `n = 1`), so nothing was lost.
+
+**This is an absorbed failure class, not a broken invariant.** The Scribe stage's claim
+stays best-effort, exactly as ADR-0024 built it: try/catch, passthrough, a loud
+`SIDECAR-WRITE FAILED` log, and the routing-time recovery are the whole answer here, not a
+gap to close. One occurrence across every wave run so far does not justify a structural
+change (ADR-0034 occurrence arithmetic). The provenance clause and filing-clerk framing
+`scribeBrief()` now carries (above — the producing agent's pipeline label, "same workflow
+run, one stage earlier, journal-recorded", and the statement that persisting an approve is
+not approval by the writer) ship **unproven, as probability-lowering**: a synthetic probe of
+a harness safety classifier has no reproducible positive control, so a live wave's Scribe
+stage is the only measurement available, and the datum below is the whole of it so far.
+
+**The non-determinism datum (2026-08-15).** One block, one pass: the very next wave's
+verdict-Scribe ran the same brief shape, carrying another `approve` verdict, and passed
+clean — sidecar present, nothing in that wave's spine disclosing a failure. The classifier's
+refusal is measured non-deterministic on the same brief shape, which is why this fix ships
+as text the classifier can read, not a mechanism change.
+
+**The recurrence ledger.** Each further occurrence of this failure class — a Scribe (either
+brief kind) refused by the harness classifier — is a wave-scoped disclosure, dispositioned
+as an append to issue #577 (reopen or reference-file, per its own close protocol), never a
+fresh ticket. **The tripwire is three total blocks**, counted across every wave: at that
+count, open an escalation grill on the named target — the Reviewer persisting its OWN
+verdict through the write verb, unisolated, in the same session where the engine and sidecar
+directories already live, with a provenance-complete transcript and validate-then-write
+already covering shape. That fork needs its own grill and an ADR-0024 amendment; it is
+deliberately not decided or built here.
+
+This finding rides the same `SCRIBE_RESULT_SCHEMA` shape as an entirely different one: the
+engine's sidecar-write-gate `notice:` (§Why this copy's `WORKER_REPORT_SCHEMA` drops `anyOf`,
+above) is a finding **about a report's content** — a `prUrl` missing at a write that still
+succeeded — while a classifier block is a finding about **whether the write ran at all**,
+surfaced before the verb is ever reached. Two different findings, riding the same Scribe
+result shape; keep them apart when reading a wave's disclosures.
 
 ## The bare-id contract — why the id is fixed at both ends of the write
 
@@ -939,7 +986,33 @@ verdict, branchReviewed, riskClass, workerReportDigest, acVerification[], review
 function scribeBrief(kind, issue, iter, payload) {
   const dir = kind === 'report' ? REPORTS_DIR : VERDICTS_DIR
   const verb = kind === 'report' ? 'write-report' : 'write-verdict'
+  // The producing agent's OWN pipeline label — Stage 1 (`worker:<id>`) for a
+  // report, Stage 3 (`review:<id>`) for a verdict — always the stage
+  // immediately before this Scribe's own in the SAME pipeline() fan-out
+  // (§Dispatch loop, below). Script-knowable at compose+dispatch time from the
+  // same `issue` this brief already carries; nothing new is asked of the
+  // Coordinator. Feeds the provenance clause immediately below.
+  const producer = kind === 'report' ? `worker:${issue.id}` : `review:${issue.id}`
+  // The wave slug, read back off the already-filled sidecar dir rather than
+  // asked for as a fresh compose-time constant — REPORTS_DIR/VERDICTS_DIR are
+  // always `<REPO_ROOT>/.flotilla/waves/<slug>/reports|verdicts` (§Scribe
+  // compose-time constants, above), so the path segment second from the end is
+  // the slug regardless of which of the two dirs this call filled `dir` from.
+  const waveSlug = dir.split('/').slice(-2, -1)[0]
   return `You are a Wave Scribe. Persist one ${kind} sidecar THROUGH THE ENGINE — do not reformat, re-type, or "fix" anything in the payload.
+
+**Provenance, stated once so a transcript reading only this brief can see it.** This
+\`${kind}\` payload was produced by \`${producer}\` — the same workflow run, one stage
+earlier, journal-recorded — not by you. You did not produce this payload and are not
+endorsing it: wave \`${waveSlug}\`, row \`${issue.id}\`, iteration \`${iter}\` are the
+compose-time facts that place it; the workflow run's own id is not one of them, because
+nothing in this script can read it. **The filing-clerk framing.** The review is not the
+Scribe's — it was never asked of you, and nothing here asks for one now. Altering the
+payload — reformatting it, re-typing it, or "fixing" anything in it, in either direction —
+is the only act this brief forbids. If this payload carries a verdict and that verdict
+reads \`approve\`, persisting it through \`${verb}\` below is not approval by the writer:
+whatever approval happened, happened one stage earlier, at \`${producer}\`; this write
+makes that record durable, it does not make it yours.
 
 **\`--id\` IS NOT YOURS TO VARY.** It is fixed below as \`${issue.id}\` — the compose-time
 row id, straight off the wave spine — and it alone decides which row this sidecar is filed
