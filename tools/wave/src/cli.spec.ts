@@ -2573,6 +2573,121 @@ describe('worktree-cleanup subcommand — errored-yet-still-listed forces visibl
   });
 });
 
+// ─── Form 8g2: worktree-cleanup — the survivor evidence reaches the JSON
+//              through BOTH invocation forms (issue #560) ───────────────────
+//
+// The engine-level coverage of WHAT the survivor walk reports lives in
+// worktree-cleanup.spec.ts §37. What this router spec answers is the wiring
+// question that class has been burned by before: a field the engine computes
+// and the CLI never prints is a field nobody reads. `erroredStillListed`'s
+// entries are serialized WHOLE here, so the evidence rides along structurally
+// — and the two invocation forms are asserted separately anyway, because
+// "structurally" is a claim about code nobody re-checks after the next edit.
+//
+// The FULL close-sweep form (no scope flags) and the SCOPED single-branch form
+// (`--branches`) run the identical `executeCleanup` on plans that differ only
+// in which worktrees were selected, so the assertion is that the evidence is
+// present and IDENTICAL across both — a scoped close must not report less than
+// an unscoped one about the same worktree.
+//
+// `node:fs` is deliberately left real in this file, so the removal is made to
+// fail the way issue #417's fixture does: permission bits. A worktree directory
+// with its write bit cleared cannot have its children unlinked, so the physical
+// delete throws for real while the directory stays READABLE — which is exactly
+// the state the survivor walk exists to inspect.
+describe('worktree-cleanup — the erroredStillListed survivor evidence rides both CLI forms (issue #560)', () => {
+  let repo: string;
+  let worktreePath: string;
+  const BRANCH = 'wave/560-cli-survivors';
+
+  type SurvivorEntry = {
+    path: string;
+    survivors?: { paths: string[]; total: number; exclusivelyDenied: boolean };
+  };
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'wave-cli-560-'));
+    worktreePath = join(repo, '.claude', 'worktrees', 'wf_560-survivors');
+    mkdirSync(join(worktreePath, 'src'), { recursive: true });
+    writeFileSync(join(worktreePath, 'src', 'index.ts'), 'export {};\n');
+    writeFileSync(join(worktreePath, 'README.md'), '# readme\n');
+    // The worktree's own gitfile, so `defaultWorktreeRemover` takes its
+    // ORDINARY path rather than the half-removed recovery branch (FOR-86).
+    writeFileSync(join(worktreePath, '.git'), 'gitdir: /nowhere/.git/worktrees/x\n');
+    // Deny writes on the worktree directory itself: its children can still be
+    // read and listed, but not unlinked. The physical delete throws; the walk
+    // reads the survivors it left.
+    chmodSync(worktreePath, 0o500);
+
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      const sub = cmdArgs[0];
+      if (sub === 'worktree' && cmdArgs[1] === 'list') {
+        return `worktree ${worktreePath}\nHEAD ${'a'.repeat(40)}\nbranch refs/heads/${BRANCH}\n`;
+      }
+      if (sub === 'rev-parse') return `${worktreePath}\n`; // self-resolving toplevel → not an orphan
+      if (sub === 'status') return ''; // clean → selected for removal
+      if (sub === 'worktree' && cmdArgs[1] === 'remove') {
+        throw new Error(`git worktree remove: cannot remove worktree at '${worktreePath}'`);
+      }
+      return '';
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      chmodSync(worktreePath, 0o700); // restore write, or the temp tree leaks
+    } catch {
+      // best-effort
+    }
+    try {
+      rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  /** Drive one form and return its single `erroredStillListed` entry. */
+  function runForm(args: string[]): SurvivorEntry {
+    stdoutBuf = '';
+    const code = main(args);
+    expect(code).toBe(1); // an incomplete removal is still a visible failure
+    const parsed = JSON.parse(stdoutBuf) as { erroredStillListed: SurvivorEntry[] };
+    expect(parsed.erroredStillListed).toHaveLength(1);
+    return parsed.erroredStillListed[0];
+  }
+
+  it('the FULL close-sweep form prints the survivors, their total, and the exclusively-denied verdict', () => {
+    const entry = runForm(['worktree-cleanup', repo]);
+
+    expect(entry.path).toBe(worktreePath);
+    expect(entry.survivors).toBeDefined();
+    expect(entry.survivors?.paths).toEqual(['README.md', 'src/index.ts']);
+    expect(entry.survivors?.total).toBe(2);
+    // Ordinary deletable content survived, so the verdict is honestly `false`
+    // — the first-attempt shape ADR-0042 records, reaching an operator's
+    // terminal for the first time instead of being dropped inside the engine.
+    expect(entry.survivors?.exclusivelyDenied).toBe(false);
+    // The worktree's own `.git` is excluded from the named set exactly as it is
+    // from the verdict (expected FOR-86 scaffolding, evidence of nothing).
+    expect(entry.survivors?.paths).not.toContain('.git');
+  });
+
+  it('the SCOPED single-branch form (--branches) reports the SAME evidence — a scoped close never sees less than an unscoped one', () => {
+    const scoped = runForm(['worktree-cleanup', repo, '--branches', BRANCH]);
+    const full = runForm(['worktree-cleanup', repo]);
+
+    expect(scoped.survivors).toBeDefined();
+    // Derived from the other form's own output rather than transcribed, so
+    // this stays a PARITY assertion rather than two snapshots that happen to
+    // agree — the same discipline the --detached dry-run parity test uses.
+    expect(scoped.survivors).toEqual(full.survivors);
+    expect(scoped.path).toBe(worktreePath);
+  });
+});
+
 // ─── Form 8h: worktree-cleanup --detached — the CLI wiring (issues #238/#250;
 //             co-located here from worktree-cleanup.spec.ts per issue #265) ──
 //

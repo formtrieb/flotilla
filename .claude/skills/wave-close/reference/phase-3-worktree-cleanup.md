@@ -57,6 +57,21 @@ The `--wave` flag scopes the registered-worktree removal to branches in this spi
 
   A genuine failure (removal threw AND the worktree is gone from the list) stays in plain `errors` — never reclassified into either of the two fields above, and never carries `manualRecovery` either.
 
+  **Every `erroredStillListed` entry now also NAMES what the failed removal physically left behind (issue #560 — `WorktreeEntry.survivors`, additive).** Until this shipped, the engine walked the survivor set, judged it, used the verdict, and threw the set away: the report claimed strictly less than the sweep already knew, and three separate live occurrences of the two-run flip could not be settled afterwards because nobody had written down *what survived*. The classification table above is unchanged by this — **these fields are evidence, never a re-grading; no entry's TRANSIENT/EXHAUSTED reading moved** — but they are what you copy into the record when you report an incomplete removal:
+
+  | field | what it says | how to read it |
+  | --- | --- | --- |
+  | `survivors.paths` | the surviving paths, relative to the worktree, `/`-separated and sorted — a **bounded sample** (at most 20), never the whole set | *shape* evidence: all under `.claude/**`/`.vscode` → the harness write-deny; ordinary source/build paths present → the delete aborted before it exhausted its permissions |
+  | `survivors.total` | how many survivors there were | *magnitude* evidence. `paths.length < total` simply means the list is a sample — that alone is not a problem |
+  | `survivors.truncated` | present (`true`) only when counting hit its own budget: `total` is then a **floor**, not a total | absent (the normal case) → `total` is exact |
+  | `survivors.exclusivelyDenied` | whether **every** survivor sits under a harness-denied path — the verdict the EXHAUSTED reading's third route (issue #542) is computed from | `true` → the obstruction really is the harness's own write-deny. `false` → ordinary deletable content is still standing, so that route cannot fire yet, whatever the reading says |
+  | *(the field is absent entirely)* | the walk was **inconclusive** — the directory could not be read at all (already gone, or unreadable) | not "nothing survived". Absent means we could not look; an empty `paths` with `total: 0` would be the claim that we looked and found nothing |
+
+  Two things worth knowing before you read the numbers:
+
+  - **This is the survivor set of the LAST attempt, after the engine's own junk purge ran** — the bounded retry re-purges allowlisted junk before it re-attempts. So `survivors` names what could not be cleared *even after the engine's best effort*, which is the question you actually have in front of an unremovable worktree.
+  - **A first-attempt `exclusivelyDenied: false` is expected, not a defect.** A delete that aborts early has not yet exhausted its permissions when the question is asked, so ordinary content is still in the survivor set and the verdict cannot fire. That is the structural finding ADR-0042 records; whether the delete path should be rebuilt to exhaust-then-classify is a **deferred, separate decision** that reopens once these fields have been read on a real close. **If you are reading `survivors` on a live close for the first time, that reading is the input to that decision — record `paths`, `total` and `exclusivelyDenied` verbatim in the close report rather than summarizing them.**
+
 Either way, verify on disk after cleanup — e.g. `ls .claude/worktrees/` (or wherever this repo's worktrees live) against `errors` / `deregisteredNotDeleted` / `erroredStillListed` — rather than trusting `git worktree list`'s silence; the directory may still sit in the repo, potentially holding an editor/language-server indexing job. Removing a confirmed orphan may need the sandbox disabled (harness worktree paths are commonly write-denied).
 
 ## Worktree ACCUMULATION is its own failure mode — E2BIG, and why cleanup alone does not heal it
