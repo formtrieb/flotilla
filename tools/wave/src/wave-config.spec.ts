@@ -6,7 +6,23 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { EngineCliBindingError, loadWaveConfig, normalizeEngineCli } from './wave-config';
+import {
+  EngineCliBindingError,
+  loadWaveConfig,
+  normalizeEngineCli,
+  type GitHubStoreConfig,
+  type LinearStoreConfig,
+  type MarkdownStoreConfig,
+} from './wave-config';
+// The container vocabulary as the FACET owns it — imported so the specs below
+// compare the typed config field against the adapter's own closed union and its
+// own parser, rather than against a second list restated in this file.
+import {
+  GOAL_CONTAINERS,
+  GoalBindingError,
+  parseGoalContainer,
+  type GoalContainer,
+} from './adapters/issue-store';
 // The SAME engine-invocation surface, imported through the PACKAGE ROOT rather
 // than the module file — proves the barrel actually re-exports it, so a
 // root-only consumer can read the binding and catch its refusal typed
@@ -435,6 +451,185 @@ describe('loadWaveConfig — cleanup.extraRoots: the REJECT path is loud', () =>
     expect(() =>
       loadWithCleanup({ disposableNames: ['.build'], extraRoots: [7] }),
     ).toThrow(/cleanup\.extraRoots"\[0\]/);
+  });
+});
+
+// ── the Goal container binding: `store.goal.container` (ADR-0044 decision 4) ──
+//
+// The key shipped with the Goal facet as a structural read off the parsed JSON
+// and worked end-to-end — but `wave.config.json`'s schema is a SEMVER CONTRACT,
+// and it said nothing about a key the engine acts on. These specs pin the three
+// properties the typed field owes, and one it deliberately does NOT:
+//
+//   ACCEPT   — every role in the facet's own vocabulary survives the load, on
+//              every store variant, readable off the typed field.
+//   ABSENCE  — a config with no `goal` key loads BYTE-IDENTICALLY to before the
+//              field existed. That is the whole additive/Minor claim.
+//   VOCAB    — the type is the ADAPTER-OWNED union, not a lookalike restated in
+//              wave-config.ts that could drift away from `GOAL_CONTAINERS`.
+//   NOT-VALIDATION — `loadWaveConfig` still does not grade the role. The
+//              refusal ladder (unbound / unknown-container / unrealized-
+//              container) stays store-side, and a spec asserting that is what
+//              stops a later "while we're typing it, let's validate it too"
+//              from quietly creating a second, disagreeing ladder.
+
+/** Load a config carrying the given raw `store` object. */
+function loadWithStore(store: unknown) {
+  return loadConfigFromString(JSON.stringify({ store }));
+}
+
+/** The `store.goal.container` a loaded config carries, read off the TYPED field. */
+function loadedRole(store: unknown): GoalContainer | undefined {
+  return loadWithStore(store).store.goal?.container;
+}
+
+describe('loadWaveConfig — store.goal.container: the ACCEPT path', () => {
+  it.each(GOAL_CONTAINERS)('accepts the "%s" role and reads it back off the typed field', (role) => {
+    expect(loadedRole({ kind: 'github', goal: { container: role } })).toBe(role);
+  });
+
+  it('carries the field on the MARKDOWN variant', () => {
+    const store = { kind: 'markdown', repoRoot: '.', slug: '2026-06-06-x', goal: { container: 'goal-file' } };
+    expect(loadedRole(store)).toBe('goal-file');
+  });
+
+  it('carries the field on the GITHUB variant', () => {
+    expect(loadedRole({ kind: 'github', goal: { container: 'milestone' } })).toBe('milestone');
+  });
+
+  it('carries the field on the LINEAR variant — the one store with no default', () => {
+    expect(loadedRole({ kind: 'linear', team: 'ex', goal: { container: 'project' } })).toBe('project');
+  });
+
+  it('leaves the binding beside every other store key untouched', () => {
+    // A realistic linear config: the goal key must not disturb, or be disturbed
+    // by, the keys that were already there.
+    const cfg = loadWithStore({
+      kind: 'linear',
+      team: 'ex',
+      project: 'Example Project',
+      eligibility: ['ready-for-agent'],
+      states: { queued: 'Todo' },
+      goal: { container: 'project' },
+    });
+    const store = cfg.store as LinearStoreConfig;
+    expect(store.goal?.container).toBe('project');
+    expect(store.team).toBe('ex');
+    expect(store.eligibility).toEqual(['ready-for-agent']);
+    expect(store.states?.queued).toBe('Todo');
+  });
+
+  it('is typed as the FACET vocabulary on all three variants — the compile-time half', () => {
+    // These annotations only typecheck if `goal.container` really is
+    // GoalContainer-typed on each variant; `tsc --noEmit` is the assertion, and
+    // all four declared roles appear so none of them is accidentally excluded.
+    const markdownBound: MarkdownStoreConfig = {
+      kind: 'markdown',
+      repoRoot: '.',
+      slug: '2026-06-06-x',
+      goal: { container: 'goal-file' },
+    };
+    const githubBound: GitHubStoreConfig = { kind: 'github', goal: { container: 'milestone' } };
+    const linearBound: LinearStoreConfig = { kind: 'linear', team: 'ex', goal: { container: 'project' } };
+    const linearDeferred: LinearStoreConfig = {
+      kind: 'linear',
+      team: 'ex',
+      goal: { container: 'initiative' },
+    };
+
+    // The NARROWING assertion, and the one that catches a widening: a field
+    // typed `string` would still accept every literal above, so only assigning
+    // it OUT to the closed union proves the union is what it is.
+    const narrowed: GoalContainer | undefined = githubBound.goal?.container;
+
+    expect(markdownBound.goal?.container).toBe('goal-file');
+    expect(narrowed).toBe('milestone');
+    expect(linearBound.goal?.container).toBe('project');
+    expect(linearDeferred.goal?.container).toBe('initiative');
+  });
+});
+
+describe('loadWaveConfig — store.goal.container: the ABSENCE path (the additive/Minor guarantee)', () => {
+  it('a config with NO goal key loads BYTE-IDENTICALLY to the authored object', () => {
+    // The whole additive claim in one assertion: an existing consumer config —
+    // every key it had before this field existed — round-trips unchanged, and
+    // the load invents no `goal` key of its own.
+    const authored = {
+      store: {
+        kind: 'markdown',
+        repoRoot: '.',
+        slug: '2026-06-06-x',
+        eligibility: ['ready-for-agent'],
+      },
+      verify: { profiles: [{ name: 'p', appliesTo: ['src/**'], commands: [{ command: 'echo hi' }] }] },
+      cleanup: { disposableNames: ['.build'] },
+    };
+    expect(loadConfigFromString(JSON.stringify(authored))).toEqual(authored);
+  });
+
+  it('reads undefined off the typed field when nothing is declared, on every variant', () => {
+    expect(loadedRole({ kind: 'github' })).toBeUndefined();
+    expect(loadedRole({ kind: 'linear', team: 'ex' })).toBeUndefined();
+    expect(loadedRole({ kind: 'markdown', repoRoot: '.', slug: '2026-06-06-x' })).toBeUndefined();
+  });
+
+  it('a present goal object with no container is valid and declares nothing', () => {
+    expect(loadWithStore({ kind: 'github', goal: {} }).store.goal).toEqual({});
+    expect(loadedRole({ kind: 'github', goal: {} })).toBeUndefined();
+  });
+});
+
+describe('store.goal.container: the typed vocabulary IS the facet\'s own', () => {
+  it('every role the config field accepts is a role the FACET parser accepts', () => {
+    // The drift guard the imported union buys. A second, hand-copied list in
+    // wave-config.ts could add or lose a role without `GOAL_CONTAINERS`
+    // noticing; this walks the facet's vocabulary through the config field and
+    // back out through the facet's own parser.
+    for (const role of GOAL_CONTAINERS) {
+      expect(parseGoalContainer(loadedRole({ kind: 'github', goal: { container: role } }))).toBe(role);
+    }
+  });
+
+  // NEGATIVE CONTROL (wave-shared Convention 11). The two configs below differ
+  // by exactly one string, and the assertions pull in opposite directions: a
+  // vocabulary hardwired to accept fails the second, one hardwired to reject
+  // fails the first. Only a check that actually reads the value survives both.
+  it('NEGATIVE CONTROL: one role name is the whole difference between accepted and refused', () => {
+    expect(parseGoalContainer(loadedRole({ kind: 'github', goal: { container: 'milestone' } })))
+      .toBe('milestone');
+    expect(() => parseGoalContainer(loadedRole({ kind: 'github', goal: { container: 'epic' } })))
+      .toThrow(GoalBindingError);
+  });
+});
+
+describe('store.goal.container: typing did NOT move the refusal ladder', () => {
+  // The settled direction, pinned so it cannot be undone by a well-meant later
+  // row: only a STORE knows which roles it realizes and whether an ABSENT
+  // binding is fatal (GitHub and MarkdownFs default, Linear refuses), so the
+  // ladder has exactly one owner and the loader is not it.
+  it('loads a config carrying an UNKNOWN role verbatim, rather than refusing it here', () => {
+    // Widened to `unknown` the same way `readGoalContainer` widens it: the
+    // interface says what a config OUGHT to carry, this file says what one DID.
+    const goal: unknown = loadWithStore({ kind: 'github', goal: { container: 'epic' } }).store.goal;
+    expect((goal as { container?: unknown }).container).toBe('epic');
+  });
+
+  it('loads a LINEAR config with no binding at all — `unbound` is the store\'s refusal, not the loader\'s', () => {
+    expect(() => loadWithStore({ kind: 'linear', team: 'ex' })).not.toThrow();
+  });
+
+  it('the refusal a bad role DOES get is the facet\'s typed one, naming the dotted key', () => {
+    const err = (() => {
+      try {
+        parseGoalContainer('epic');
+      } catch (e) {
+        return e as GoalBindingError;
+      }
+      throw new Error('expected "epic" to be refused');
+    })();
+    expect(err).toBeInstanceOf(GoalBindingError);
+    expect(err.failure).toBe('unknown-container');
+    expect(err.field).toBe('store.goal.container');
   });
 });
 
