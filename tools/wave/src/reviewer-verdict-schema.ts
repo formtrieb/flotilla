@@ -481,10 +481,17 @@ export const REVIEWER_VERDICT_JSON_SCHEMA = {
     gitStateSane: { type: 'boolean' },
     // The Documented-Form Comparison (ADR-0030). FLAT + OPTIONAL: the field is
     // absent from `required` above and carries no top-level combinator of its
-    // own, so the whole schema stays boundary-safe (W5-F1 — the agent tool's
-    // input_schema validation rejects a top-level anyOf/oneOf/allOf outright,
-    // which is why the "required WHEN a trigger fired" half lives in contract
-    // prose, not in the schema). `sources` is `minItems: 1` — that is the
+    // own. Measured with positive and negative controls: a top-level
+    // anyOf/oneOf/allOf IS rejected outright at the agent({ schema }) boundary
+    // (W5-F1), while a top-level if/then is accepted and genuinely enforced —
+    // so the boundary does not force this field flat. It stays flat because
+    // the antecedent, `trigger`, is a field the Reviewer itself authors:
+    // cornered on a consequent it cannot satisfy, an author changes the
+    // antecedent rather than failing, so a root conditional would buy shape
+    // and never truth (ADR-0034 Amendment 2026-08-14 — engine refusal and
+    // schema boundary are separate rungs). The "required WHEN a trigger
+    // fired" half lives in contract prose instead — a placement decision, not
+    // a boundary-forced one. `sources` is `minItems: 1` — that is the
     // structural half of the no-restatement rule: a comparison must cite at
     // least one document the Reviewer read in its own dispatch.
     documentedFormComparison: {
