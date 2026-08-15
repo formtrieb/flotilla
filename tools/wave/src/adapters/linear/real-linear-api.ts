@@ -491,6 +491,16 @@ export class RealLinearApi implements LinearApi {
     const out: LinearIssue[] = [];
     let after: string | undefined;
     for (;;) {
+      // ACCEPTED DIVERGENCE — page size 100 where the vendor documents 50.
+      // Linear's pagination reference (linear.app/developers/pagination, re-read
+      // 2026-08-15) states "The first 50 results are returned by default without
+      // query arguments" and names no maximum; this asks for twice the documented
+      // default, deliberately. Reason: the loop below drains `pageInfo.hasNextPage`
+      // to cursor exhaustion rather than trusting one page, so the number decides
+      // how many round-trips a full read costs and can never decide WHAT it
+      // returns — a smaller page is more requests for the identical result set.
+      // The same deliberate 100 is stated at the adapter's three other paged
+      // reads: `listDocuments`, `listProjects`, `listProjectIssues`.
       const { data } = await this.gql('ListOpenIssues', LIST_OPEN_ISSUES_QUERY, { filter, first: 100, after });
       const connection = (data.issues ?? {}) as Record<string, unknown>;
       const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
@@ -719,6 +729,11 @@ export class RealLinearApi implements LinearApi {
     const out: { id: string; title: string; content: string }[] = [];
     let after: string | undefined;
     for (;;) {
+      // ACCEPTED DIVERGENCE — page size 100 where the vendor documents 50
+      // ("The first 50 results are returned by default without query arguments",
+      // linear.app/developers/pagination, re-read 2026-08-15; no maximum stated).
+      // Deliberate: this loop drains the cursor to exhaustion, so the page size
+      // changes only the round-trip count of a full read, never its result set.
       const { data } = await this.gql('ListDocuments', LIST_DOCUMENTS_QUERY, { filter, first: 100, after });
       const connection = (data.documents ?? {}) as Record<string, unknown>;
       const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
@@ -774,6 +789,11 @@ export class RealLinearApi implements LinearApi {
     for (;;) {
       const { data } = await this.gql('ListTeamProjects', LIST_TEAM_PROJECTS_QUERY, {
         teamId: this.teamId,
+        // ACCEPTED DIVERGENCE — page size 100 where the vendor documents 50
+        // ("The first 50 results are returned by default without query arguments",
+        // linear.app/developers/pagination, re-read 2026-08-15; no maximum stated).
+        // Deliberate: this loop drains the cursor to exhaustion, so the page size
+        // changes only the round-trip count of a full read, never its result set.
         first: 100,
         after,
       });
@@ -804,6 +824,11 @@ export class RealLinearApi implements LinearApi {
     for (;;) {
       const { data } = await this.gql('ListProjectIssues', LIST_PROJECT_ISSUES_QUERY, {
         id: projectId,
+        // ACCEPTED DIVERGENCE — page size 100 where the vendor documents 50
+        // ("The first 50 results are returned by default without query arguments",
+        // linear.app/developers/pagination, re-read 2026-08-15; no maximum stated).
+        // Deliberate: this loop drains the cursor to exhaustion, so the page size
+        // changes only the round-trip count of a full read, never its result set.
         first: 100,
         after,
       });

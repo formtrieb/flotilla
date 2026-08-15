@@ -641,6 +641,30 @@ export function validateAmendPatch(patch: AmendPatch): void {
 //    {@link IssueStore.readGoalFrontier} REPORTS; closing the container is the
 //    Operator's act in the tracker. The station owes accounting, never the
 //    declaration (ADR-0042's sentence, one station over).
+//
+// ── ID-SPACE HAZARD: a goal id and an issue id are NOT the same kind of thing ─
+//
+// Every verb below takes BOTH kinds of id, and they belong to two SEPARATE
+// opaque spaces (ADR-0001, applied twice over): a goal id names a CONTAINER, an
+// issue id names a MEMBER. Neither is parsed by the engine, and neither is
+// comparable to the other. Stated here rather than left to be discovered,
+// because the failure mode is the quiet one:
+//
+//  - **They collide BY VALUE on GitHub.** A goal id is the milestone's
+//    `number` and an issue id is the issue's `number`, both stringified — so
+//    goal `'1'` and issue `'1'` are the same three bytes and different things.
+//  - **And on no other store.** MarkdownFs keeps the spaces visibly apart
+//    (`probe#goal-01` vs `probe#01`) and Linear hands out distinct UUIDs. So a
+//    bare `goalId === issueId` comparison reads FALSE on two of three stores
+//    and can read TRUE on the third — a bug that passes its own test suite on
+//    the majority of adapters and misfires only on the shipped default.
+//
+// The rule that follows: **a comparison must carry the space, never just the
+// value.** A goal id is only ever compared against another goal id
+// ({@link GoalView.id}); a member id only ever against
+// {@link GoalView.memberIds} or a {@link GoalFrontier} entry. Nothing in the
+// engine performs a cross-space comparison today — this is recorded BEFORE a
+// consumer of the frontier query trips it, not after.
 
 /**
  * The native container roles a Goal can be realized as (ADR-0044 decision 4).
@@ -820,7 +844,14 @@ export interface CreateGoalInput {
  * value written here.
  */
 export interface GoalView {
-  /** The container's opaque id (ADR-0001) — never parsed by the engine. */
+  /**
+   * The container's opaque id (ADR-0001) — never parsed by the engine, and in
+   * the GOAL id space, which is not the issue id space. It is comparable to
+   * another goal id and to nothing else: on GitHub this value and a member's
+   * id are both a bare `number`, so `'1'` here and `'1'` in
+   * {@link memberIds} are the same bytes and different things. See the
+   * id-space note in the facet banner above.
+   */
   id: string;
   title: string;
   /** Free prose; empty string when the container carries none. */
@@ -833,6 +864,8 @@ export interface GoalView {
    * derives `done` from them, and a membership list that silently dropped
    * finished work would make a completed goal indistinguishable from an empty
    * one.
+   *
+   * ISSUE-space ids, never comparable to {@link id} — see the facet banner.
    */
   memberIds: string[];
 }
@@ -1174,6 +1207,14 @@ export interface IssueStore {
    * Touches ONLY container membership: never the claim ledger, never the triage
    * dimension, never the eligibility marker, never the open/closed state.
    * Throws on an unknown goal id or issue id.
+   *
+   * The two ids are from DIFFERENT opaque spaces and are not interchangeable —
+   * on GitHub they collide by value (milestone `'1'`, issue `'1'`), so passing
+   * them in the wrong order is a call that can succeed against the wrong pair.
+   * See the id-space note in the facet banner above.
+   *
+   * @param goalId  a GOAL-space id — {@link GoalView.id}.
+   * @param issueId an ISSUE-space id — the same space {@link create} returns.
    */
   assignToGoal(
     goalId: string,

@@ -10,17 +10,74 @@
 import { readFileSync } from 'node:fs';
 import type { VerifyConfig } from './verify';
 import { normalizeDisposableNames } from './worktree-cleanup';
+// The container vocabulary the Goal facet OWNS, imported rather than re-spelled
+// — see the `store.goal.container` block below for why a hand-copied second
+// union here would be a defect rather than a convenience. TYPE-ONLY, so it is
+// erased at runtime and adds no module edge in either direction.
+import type { GoalContainer } from './adapters/issue-store';
+
+// ── the Goal container binding: `store.goal.container` (ADR-0044 decision 4) ──
+//
+// The one SETUP-TIME fact the Goal facet needs: which native container role a
+// goal is realized as on this consumer's tracker. It is declared on the STORE
+// config because that is where the tracker itself is chosen, and it is read
+// exactly once, at the CLI edge (`readGoalContainer`, cli-store.ts) — so no
+// store carries it as construction state and `buildStore`'s contract is
+// untouched by the facet existing.
+//
+// TYPED, not a passthrough. The key shipped with the facet as a structural read
+// off the parsed JSON. That worked end-to-end, but it left `wave.config.json`'s
+// schema — a SEMVER CONTRACT — silent about a key the engine acts on, which is
+// the one thing a contract may not be. Declaring it is strictly ADDITIVE: the
+// field is optional on all three variants, so a config carrying no `goal` key
+// parses, validates and reads back exactly as it did before the field existed.
+// That is what makes this a MINOR, the same ruling `engine` (ADR-0032) and
+// `cleanup` took at their own introductions.
+//
+// The type is the ADAPTER-OWNED {@link GoalContainer} union, imported. A second,
+// hand-copied `'milestone' | 'project' | …` spelled here could silently
+// disagree with `GOAL_CONTAINERS` and with the refusal ladder that applies it —
+// the parallel-rule drift class this repo closes systematically, and the reason
+// ADR-0037 permits an engine module to import an adapter-owned canonical fact
+// rather than re-spell it. There is no cycle to weigh here: the import is
+// type-only, and `adapters/issue-store.ts` imports `contract.ts` and
+// `goal-frontier.ts` and nothing else, so no edge points back.
+//
+// TYPING IS NOT VALIDATION, and deliberately does not become it. `loadWaveConfig`
+// does NOT check the role. The refusal ladder — `unbound` / `unknown-container`
+// / `unrealized-container` — stays exactly where the facet put it, store-side
+// behind `parseGoalContainer` + `requireGoalContainer`, because only a STORE
+// knows which roles it realizes and whether an ABSENT binding is fatal (GitHub
+// and MarkdownFs default; Linear refuses). A second check here would be a
+// lookalike of that ladder, free to disagree with it — precisely what the
+// imported union above exists to prevent one line up. So the type buys the
+// compile-time half and a named place in the schema; the runtime half is
+// unchanged, and `readGoalContainer` still re-checks what it reads, because
+// JSON arrives untyped whatever the interface says.
 
 export interface MarkdownStoreConfig {
   kind: 'markdown';
   repoRoot: string;
   slug: string;
   eligibility?: string[];
+  /**
+   * The Goal container role this consumer binds (ADR-0044) — see the block
+   * above. MarkdownFs realizes `goal-file` and defaults to it, so an absent
+   * binding is the ordinary case here rather than a refusal.
+   */
+  goal?: { container?: GoalContainer };
 }
 
 export interface GitHubStoreConfig {
   kind: 'github';
   eligibility?: string[];
+  /**
+   * The Goal container role this consumer binds (ADR-0044) — see the block
+   * above. GitHub realizes `milestone` and defaults to it (its only native
+   * container with direct issue membership), so an absent binding is the
+   * ordinary case; declaring anything else is refused as `unrealized-container`.
+   */
+  goal?: { container?: GoalContainer };
 }
 
 export interface LinearStateMapConfig {
@@ -49,6 +106,14 @@ export interface LinearStoreConfig {
   states?: LinearStateMapConfig;
   /** Schema-category → existing consumer label (e.g. {"bug":"Bug"}). */
   categoryLabels?: Record<string, string>;
+  /**
+   * The Goal container role this consumer binds (ADR-0044) — see the block
+   * above {@link MarkdownStoreConfig}. Linear is the one store with NO default:
+   * live consumer conventions disagree about what a Linear project MEANS, so an
+   * absent binding is refused as `unbound` rather than guessed at, and this is
+   * the key that answers it.
+   */
+  goal?: { container?: GoalContainer };
 }
 
 export type StoreConfig = MarkdownStoreConfig | GitHubStoreConfig | LinearStoreConfig;
@@ -387,7 +452,12 @@ export interface WaveConfig {
  * both additions to this schema have been strictly additive: no key here has
  * ever been renamed, removed or re-typed, which is what lets an existing
  * consumer config keep validating unchanged (the `wave.config` schema is a
- * semver contract).
+ * semver contract). `store.goal.container` (ADR-0044) joins that list as the
+ * newest additive optional key — and is the one addition this function
+ * deliberately does NOT validate: its refusal ladder is store-side, for the
+ * reason spelled out above {@link MarkdownStoreConfig}. The key survives the
+ * load verbatim, which is exactly what `readGoalContainer` (cli-store.ts) then
+ * re-checks.
  */
 export function loadWaveConfig(path: string): WaveConfig {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;

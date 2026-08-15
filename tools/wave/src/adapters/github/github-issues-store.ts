@@ -734,8 +734,16 @@ export class GitHubIssuesStore implements IssueStore {
       throw new Error(`Malformed GitHub issue id: ${issueId}`);
     }
     // Idempotent by nature: the membership is a single pointer on the issue, so
-    // re-joining writes the same value. Additive only — there is no un-assign
-    // path, matching the seam.
+    // re-joining writes the same value.
+    //
+    // ADDITIVE ONLY, deliberately — and this is the seam side of a DOCUMENTED-
+    // FORM departure recorded in full at `RealGitHubApi.setIssueMilestone`:
+    // GitHub's "Update an issue" documents `milestone: null` as the un-assign
+    // form, and nothing here realizes it. The facet has a join verb and no
+    // LEAVE verb by design (ADR-0044) — curation-leave is the Operator's act in
+    // the tracker, the same line that keeps `closeGoal` off the seam — so the
+    // absence is the contract holding, not this method falling short of the
+    // endpoint. A facet-side unassign is its own engine slice.
     await this.api.setIssueMilestone(issue, milestone);
   }
 

@@ -288,6 +288,21 @@ export class RealGitHubApi implements GitHubApi {
     for (let page = 1; ; page++) {
       // `state=all` is load-bearing: the endpoint defaults to `open`, and a goal
       // panel that dropped closed finish lines would make shipped goals vanish.
+      //
+      // `sort` and `direction` are DELIBERATELY left unpinned, and this comment
+      // is the acceptance rather than a to-do. "List milestones"
+      // (docs.github.com/en/rest/issues/milestones, re-read 2026-08-15)
+      // documents `sort` as `due_on | completeness`, **default `due_on`**, and
+      // `direction` as `asc | desc`, **default `asc`** — so this query INHERITS
+      // the vendor's ordering and would follow it if GitHub ever changed it.
+      // Accepted because order is IMMATERIAL to the facet: `listGoals` answers
+      // a SET of finish lines, `GoalView` carries no rank, and the frontier
+      // reads membership rather than position. Pinning a server-side sort would
+      // be a promise the contract does not make, and a caller that wants an
+      // order sorts the result itself — the ordinary discipline everywhere else
+      // in this adapter. `per_page` is a different question and IS pinned: the
+      // documented default is 30 against a max of 100, and that one is about
+      // round-trips, not order.
       const res = await this.send(
         'GET',
         `${this.base()}/milestones?state=all&per_page=100&page=${page}`,
@@ -300,6 +315,27 @@ export class RealGitHubApi implements GitHubApi {
     return out;
   }
 
+  /**
+   * Set an issue's milestone — the Goal facet's JOIN, and only the join.
+   *
+   * DELIBERATE DEPARTURE from the documented form. "Update an issue"
+   * (docs.github.com/en/rest/issues/issues, re-read 2026-08-15) types the
+   * `milestone` body field as **"null or string or integer"** and documents it
+   * as *"The number of the milestone to associate this issue with or use null
+   * to remove the current milestone."* The `null` UN-ASSIGN arm is realized by
+   * nothing here — and the signature makes it UNREACHABLE rather than merely
+   * unused: `milestoneNumber` is a `number`, so no caller can express the null
+   * form even by accident.
+   *
+   * That is the facet's shape, not an oversight. ADR-0044 gives the Goal facet
+   * a join verb and no LEAVE verb, on the same line that keeps `closeGoal` off
+   * the seam: curation-leave is the Operator's act in the tracker, and a
+   * facet-side unassign is its own engine slice with its own design pass (who
+   * may remove a member, on whose authority, and what the frontier reports
+   * mid-leave) — not a passthrough this method can quietly grow. Widening the
+   * parameter to `number | null` is therefore a CONTRACT change, not a
+   * convenience, and belongs to that slice.
+   */
   async setIssueMilestone(issueNumber: number, milestoneNumber: number): Promise<void> {
     const res = await this.send('PATCH', `${this.base()}/issues/${issueNumber}`, {
       milestone: milestoneNumber,

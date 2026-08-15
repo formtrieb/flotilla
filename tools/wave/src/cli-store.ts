@@ -144,16 +144,23 @@ export async function resolveStore(args: string[], injected?: IssueStore): Promi
  * malformed declaration must never be quietly read as unbound, which on GitHub
  * would silently fall back to a container the author did not ask for.
  *
- * SHAPE NOTE, stated so it reads as a known seam rather than a cast nobody
- * noticed: `store.goal` is read structurally because `wave-config.ts`'s
- * `StoreConfig` interfaces do not yet declare it. `loadWaveConfig` returns the
- * parsed JSON verbatim, so the key survives the load untouched and the value is
- * validated here rather than trusted — but the typed field belongs on
- * `MarkdownStoreConfig`/`GitHubStoreConfig`/`LinearStoreConfig` beside
- * `eligibility`, and adding it there is the outstanding wiring step.
+ * SHAPE NOTE — why a TYPED field is still re-checked here. `store.goal` is now
+ * declared on all three `StoreConfig` variants (`wave-config.ts`), so the read
+ * below is by NAME rather than through a structural cast, and the schema — a
+ * semver contract — finally names a key the engine acts on. What that does NOT
+ * do is make the value trustworthy: `loadWaveConfig` hands back parsed JSON
+ * under the interface, so the declaration describes what a config OUGHT to
+ * carry and proves nothing about what THIS one does. Hence every runtime narrow
+ * below survives the typing unchanged, and the refusal stays a
+ * {@link parseGoalContainer} call rather than being duplicated into the loader:
+ * the container ladder has exactly one owner (ADR-0044), and a second copy at
+ * config-load time could disagree with it.
  */
 export function readGoalContainer(config: WaveConfig): GoalContainer | undefined {
-  const goal = (config.store as { goal?: unknown }).goal;
+  // Read the TYPED field, then immediately widen to `unknown`: what the
+  // interface promises and what the file contains are different claims, and
+  // only the second one is checked below.
+  const goal: unknown = config.store.goal;
   if (goal === undefined || goal === null) return undefined;
   if (typeof goal !== 'object' || Array.isArray(goal)) {
     throw new Error('wave config "store.goal" must be an object');

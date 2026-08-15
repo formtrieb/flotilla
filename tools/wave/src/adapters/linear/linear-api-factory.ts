@@ -18,6 +18,12 @@
  * issue tracker, not the code host (the PR itself still lives on GitHub in
  * both M1/M2 consumers). `resolveStore` (cli-store.ts) passes them through
  * from `config.store`.
+ *
+ * POINTER: the adapter's page size (100) departs from Linear's documented
+ * default (50). That accepted divergence is declared at its four points of
+ * departure — the `first: 100` call sites in `real-linear-api.ts`
+ * (`listOpenIssues`, `listDocuments`, `listProjects`, `listProjectIssues`) —
+ * because that is where a reader changing the value will be.
  */
 
 import type { LinearApi } from './linear-api';
