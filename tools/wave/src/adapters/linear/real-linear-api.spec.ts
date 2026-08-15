@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { RealLinearApi, LinearApiError } from './real-linear-api';
 import { FakeLinearHttp, type LinearHttpFakeHandler } from './linear-http-fake';
+import {
+  PROJECT_BLOCKS_RELATION_TYPE,
+  PROJECT_RELATION_ANCHOR_TYPE,
+} from './linear-api';
 import type { LinearHttpResponse } from './linear-http';
 
 /** The team-catalog response `ensureCatalog()` resolves once, on first use. */
@@ -925,13 +929,26 @@ describe('RealLinearApi', () => {
       );
     });
 
-    it('getProject maps the node onto LinearProject', async () => {
+    it('getProject maps the node onto LinearProject, status CATEGORY included', async () => {
       const { api } = makeApi({
         GetProject: (req) => {
           expect(req.variables).toEqual({ id: 'prj-uuid-1' });
           return {
             status: 200,
-            json: { data: { project: { id: 'prj-uuid-1', name: '1.0.0', description: 'd' } } },
+            json: {
+              data: {
+                project: {
+                  id: 'prj-uuid-1',
+                  name: '1.0.0',
+                  description: 'd',
+                  // `ProjectStatus.type`, not `.name`: the NAME is
+                  // consumer-customizable and so unreadable as a rule, while the
+                  // fixed category is what the frontier maps (ADR-0045
+                  // decision 2).
+                  status: { type: 'started' },
+                },
+              },
+            },
           };
         },
       });
@@ -939,7 +956,24 @@ describe('RealLinearApi', () => {
         id: 'prj-uuid-1',
         name: '1.0.0',
         description: 'd',
+        statusType: 'started',
       });
+    });
+
+    it('an unreadable status category degrades to `backlog` — never to a closed or eligible reading', async () => {
+      // The safe direction, and the same evidence discipline `closed-unknown`
+      // takes: a category this adapter cannot read makes the member read
+      // `unready`, never `done` and never `actionable`. Absent evidence must not
+      // clear a member.
+      for (const status of [undefined, null, {}, { type: 'invented' }]) {
+        const { api } = makeApi({
+          GetProject: () => ({
+            status: 200,
+            json: { data: { project: { id: 'p', name: 'n', description: '', status } } },
+          }),
+        });
+        expect((await api.getProject('p')).statusType, JSON.stringify(status)).toBe('backlog');
+      }
     });
 
     it('getProject reports a NULL node as a domain 404, not a wire failure', async () => {
@@ -1107,6 +1141,332 @@ describe('RealLinearApi', () => {
       });
       await expect(api.listProjectIssues('nope')).rejects.toThrow(/not found/i);
       expect(http.requests).toHaveLength(1); // it never got as far as listing
+    });
+  });
+
+  // ── initiatives, and native project dependencies (ADR-0045) ───────────────
+  //
+  // These pin the WIRE SHAPE of the two pieces this row could not prove live:
+  // the direct-membership read and the project-relation write. Neither has a
+  // credential to run against, so the variables sent are the strongest evidence
+  // available short of a real call — and for `includeSubInitiatives` in
+  // particular the vendor's DEFAULT is the wrong answer, so "we sent it
+  // explicitly" is exactly the claim that needs a check behind it.
+  describe('initiatives and project relations (ADR-0045)', () => {
+    it('createInitiative sends NO team — an initiative lives above teams', async () => {
+      // The asymmetry with `createProject`, which must resolve the team first
+      // because `ProjectCreateInput.teamIds` is required. Asserted as an ABSENCE
+      // plus a request count, because a stray `ResolveTeamCatalog` round-trip is
+      // the shape a copy-paste from the project arm would take.
+      const { api, http } = makeApi({
+        CreateInitiative: (req) => {
+          const vars = req.variables as { input: Record<string, unknown> };
+          expect(vars.input).toEqual({ name: 'Epic', description: 'the span' });
+          expect(vars.input).not.toHaveProperty('teamId');
+          expect(vars.input).not.toHaveProperty('teamIds');
+          return {
+            status: 200,
+            json: { data: { initiativeCreate: { success: true, initiative: { id: 'init-1' } } } },
+          };
+        },
+      });
+      expect(await api.createInitiative({ name: 'Epic', description: 'the span' })).toEqual({
+        id: 'init-1',
+      });
+      expect(http.requests).toHaveLength(1); // no catalog resolve at all
+    });
+
+    it('createInitiative reports a non-success payload as a typed API error', async () => {
+      const { api } = makeApi({
+        CreateInitiative: () => ({
+          status: 200,
+          json: { data: { initiativeCreate: { success: false, initiative: null } } },
+        }),
+      });
+      await expect(api.createInitiative({ name: 'x', description: '' })).rejects.toBeInstanceOf(
+        LinearApiError,
+      );
+    });
+
+    it('getInitiative reports a NULL node as a domain 404, not a wire failure', async () => {
+      const { api } = makeApi({
+        GetInitiative: () => ({ status: 200, json: { data: { initiative: null } } }),
+      });
+      await expect(api.getInitiative('nope')).rejects.toThrow(/initiative not found/i);
+    });
+
+    it('listInitiatives uses the ROOT connection — workspace-wide, with no team variable', async () => {
+      // ADR-0045 decision 5 at the wire: initiatives span teams, so a team
+      // filter would silently hide a cross-team finish line. The absence of a
+      // team variable IS the scope claim.
+      const { api, http } = makeApi({
+        ListInitiatives: (req) => {
+          const vars = req.variables as { first: number; after?: string; teamId?: string };
+          expect(vars.teamId).toBeUndefined();
+          expect(req.query).toContain('initiatives(');
+          expect(req.query).not.toContain('team(');
+          return vars.after === undefined
+            ? {
+                status: 200,
+                json: {
+                  data: {
+                    initiatives: {
+                      nodes: [{ id: 'init-1', name: 'Design epic', description: '' }],
+                      pageInfo: { hasNextPage: true, endCursor: 'c1' },
+                    },
+                  },
+                },
+              }
+            : {
+                status: 200,
+                json: {
+                  data: {
+                    initiatives: {
+                      nodes: [{ id: 'init-2', name: 'Dev epic', description: '' }],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              };
+        },
+      });
+      const initiatives = await api.listInitiatives();
+      expect(initiatives.map((i) => i.id)).toEqual(['init-1', 'init-2']); // paged to exhaustion
+      expect(http.requests).toHaveLength(2);
+    });
+
+    it('listInitiativeProjects sends includeSubInitiatives:false — the vendor default is the WRONG answer', async () => {
+      // The single highest-risk line in this realization. Linear documents
+      // `Initiative.projects(includeSubInitiatives:)` as "Defaults to true", so
+      // omitting it would return a SUB-initiative's projects as this goal's own
+      // direct members — the flattening ADR-0045 decision 1 rejects, arriving
+      // through a default rather than through a query anyone wrote.
+      const { api } = makeApi({
+        GetInitiative: () => ({
+          status: 200,
+          json: { data: { initiative: { id: 'init-1', name: 'Epic', description: '' } } },
+        }),
+        ListInitiativeProjects: (req) => {
+          expect(req.query).toContain('includeSubInitiatives: false');
+          return {
+            status: 200,
+            json: {
+              data: {
+                initiative: {
+                  projects: {
+                    nodes: [
+                      {
+                        id: 'prj-1',
+                        name: 'story',
+                        description: '',
+                        status: { type: 'paused' },
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            },
+          };
+        },
+      });
+      const members = await api.listInitiativeProjects('init-1');
+      expect(members).toEqual([
+        { id: 'prj-1', name: 'story', description: '', statusType: 'paused' },
+      ]);
+    });
+
+    it('listInitiativeProjects FAILS on an unknown initiative rather than reading back empty', async () => {
+      const { api, http } = makeApi({
+        GetInitiative: () => ({ status: 200, json: { data: { initiative: null } } }),
+      });
+      await expect(api.listInitiativeProjects('nope')).rejects.toThrow(/not found/i);
+      expect(http.requests).toHaveLength(1); // resolved first, never listed
+    });
+
+    it('addProjectToInitiative FINDS BEFORE IT CREATES — the join entity is not idempotent by nature', async () => {
+      // Unlike `setIssueProject`, which writes a pointer, this membership is an
+      // `InitiativeToProject` row: calling the mutation twice would mint two.
+      // The facet documents `assignToGoal` as idempotent, so the guard is bought
+      // here.
+      const existing = {
+        id: 'prj-1',
+        name: 'already in',
+        description: '',
+        status: { type: 'backlog' },
+      };
+      const { api, http } = makeApi({
+        GetInitiative: () => ({
+          status: 200,
+          json: { data: { initiative: { id: 'init-1', name: 'E', description: '' } } },
+        }),
+        ListInitiativeProjects: () => ({
+          status: 200,
+          json: {
+            data: {
+              initiative: {
+                projects: { nodes: [existing], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            },
+          },
+        }),
+        CreateInitiativeToProject: () => {
+          throw new Error('the mutation must not run for an existing member');
+        },
+      });
+      await api.addProjectToInitiative('init-1', 'prj-1');
+      expect(http.requests.some((r) => r.query.includes('CreateInitiativeToProject'))).toBe(false);
+    });
+
+    it('addProjectToInitiative sends {initiativeId, projectId} for a member not yet joined', async () => {
+      const { api } = makeApi({
+        GetInitiative: () => ({
+          status: 200,
+          json: { data: { initiative: { id: 'init-1', name: 'E', description: '' } } },
+        }),
+        ListInitiativeProjects: () => ({
+          status: 200,
+          json: {
+            data: {
+              initiative: {
+                projects: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            },
+          },
+        }),
+        GetProject: () => ({
+          status: 200,
+          json: {
+            data: {
+              project: { id: 'prj-2', name: 'new', description: '', status: { type: 'backlog' } },
+            },
+          },
+        }),
+        CreateInitiativeToProject: (req) => {
+          expect(req.variables).toEqual({
+            input: { initiativeId: 'init-1', projectId: 'prj-2' },
+          });
+          return {
+            status: 200,
+            json: { data: { initiativeToProjectCreate: { success: true } } },
+          };
+        },
+      });
+      await expect(api.addProjectToInitiative('init-1', 'prj-2')).resolves.toBeUndefined();
+    });
+
+    it('getProjectBlockedBy reads the INVERSE side and keeps ONLY blocking relations', async () => {
+      // Direction: a relation "A blocks B" is stored on A and surfaces on B as
+      // an inverse — the same asymmetry the issue arm reads. And a `related`
+      // edge is not a dependency: counting it would report `blocked` over a
+      // merely-adjacent project.
+      const { api } = makeApi({
+        GetProject: () => ({
+          status: 200,
+          json: {
+            data: {
+              project: { id: 'prj-b', name: 'B', description: '', status: { type: 'backlog' } },
+            },
+          },
+        }),
+        ListProjectInverseRelations: (req) => {
+          expect(req.query).toContain('inverseRelations');
+          expect(req.query).not.toContain('\n    relations(');
+          return {
+            status: 200,
+            json: {
+              data: {
+                project: {
+                  inverseRelations: {
+                    nodes: [
+                      { type: PROJECT_BLOCKS_RELATION_TYPE, project: { id: 'prj-a' } },
+                      { type: 'related', project: { id: 'prj-neighbour' } },
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            },
+          };
+        },
+      });
+      expect(await api.getProjectBlockedBy('prj-b')).toEqual(['prj-a']);
+    });
+
+    it('addProjectBlockedBy sends the five REQUIRED input fields, blocker-as-source', async () => {
+      // `ProjectRelationCreateInput` requires anchorType / projectId /
+      // relatedAnchorType / relatedProjectId / type (published schema, read
+      // 2026-08-15). The two milestone ids are deliberately absent: the facet
+      // anchors at whole-project granularity.
+      //
+      // The VALUES of `type` and the two anchor types are the row's declared
+      // unproven pieces — Linear types all three as free `String` — so pinning
+      // them here at least makes a silent drift impossible: a change to either
+      // constant fails this assertion.
+      const project = (id: string) => ({
+        status: 200 as const,
+        json: {
+          data: {
+            project: { id, name: id, description: '', status: { type: 'backlog' } },
+          },
+        },
+      });
+      const { api } = makeApi({
+        GetProject: (req) => project((req.variables as { id: string }).id),
+        CreateProjectRelation: (req) => {
+          expect(req.variables).toEqual({
+            input: {
+              projectId: 'prj-a', // the BLOCKER is the source that "blocks"
+              relatedProjectId: 'prj-b', // …and the BLOCKED project is the target
+              type: PROJECT_BLOCKS_RELATION_TYPE,
+              anchorType: PROJECT_RELATION_ANCHOR_TYPE,
+              relatedAnchorType: PROJECT_RELATION_ANCHOR_TYPE,
+            },
+          });
+          return {
+            status: 200,
+            json: {
+              data: { projectRelationCreate: { success: true, projectRelation: { id: 'rel-1' } } },
+            },
+          };
+        },
+      });
+      await expect(api.addProjectBlockedBy('prj-b', 'prj-a')).resolves.toBeUndefined();
+    });
+
+    it('addProjectBlockedBy resolves BOTH sides first, so an unknown project is a domain 404', async () => {
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: null } } }),
+        CreateProjectRelation: () => {
+          throw new Error('the mutation must not run when a side does not resolve');
+        },
+      });
+      await expect(api.addProjectBlockedBy('prj-b', 'nope')).rejects.toThrow(/not found/i);
+    });
+
+    it('addProjectBlockedBy reports a non-success payload as a typed API error', async () => {
+      const { api } = makeApi({
+        GetProject: (req) => ({
+          status: 200,
+          json: {
+            data: {
+              project: {
+                id: (req.variables as { id: string }).id,
+                name: 'p',
+                description: '',
+                status: { type: 'backlog' },
+              },
+            },
+          },
+        }),
+        CreateProjectRelation: () => ({
+          status: 200,
+          json: { data: { projectRelationCreate: { success: false } } },
+        }),
+      });
+      await expect(api.addProjectBlockedBy('prj-b', 'prj-a')).rejects.toBeInstanceOf(
+        LinearApiError,
+      );
     });
   });
 });

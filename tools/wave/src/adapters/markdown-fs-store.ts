@@ -41,6 +41,7 @@ import {
   HEADER_BLOCK_FIELDS,
   classifyCreateInput,
   CreateInputError,
+  GoalMemberJoinError,
   requireGoalContainer,
   validateAmendPatch,
   type IssueStore,
@@ -55,6 +56,7 @@ import {
   type DocumentView,
   type ClosingState,
   type CreateGoalInput,
+  type CreateGoalMemberInput,
   type GoalContainer,
   type GoalView,
   withTriageDisclaimer,
@@ -694,6 +696,54 @@ export class MarkdownFsStore implements IssueStore {
       ),
       'utf-8',
     );
+  }
+
+  /**
+   * Mint a bare ISSUE member and curate it into the goal file, in one act
+   * (ADR-0045 decision 3). This store's binding is issue-direct, so the act is
+   * the shipped bare create plus the shipped curation write — every bare
+   * invariant `create()` holds is inherited, not re-implemented.
+   *
+   * The goal is located BEFORE the mint, so an unknown goal id files nothing —
+   * and a declared `blockedBy` is refused before the mint too, because on this
+   * store `create()` raises `bare-blocked-by-unrepresentable` as its first act:
+   * a markdown issue's ONLY blocker representation is the Header-Block line a
+   * bare issue must not carry. That refusal is the honest one here and it
+   * reaches this verb unchanged.
+   */
+  async createGoalMember(
+    goalId: string,
+    input: CreateGoalMemberInput,
+    container?: GoalContainer,
+  ): Promise<string> {
+    this.goalRole(container);
+    const located = await this.locateGoal(goalId);
+    if (!located) throw new Error(`Goal not found: ${goalId}`);
+    const blockedBy = input.blockedBy ?? [];
+    const memberId = await this.create({
+      title: input.title,
+      filingHint: input.filingHint,
+      bodySections: input.bodySections,
+      ...(blockedBy.length > 0
+        ? { blockedBy: blockedBy.map((id) => this.parseRef(id)) }
+        : {}),
+    });
+    try {
+      await this.assignToGoal(goalId, memberId, container);
+    } catch (err) {
+      throw new GoalMemberJoinError(
+        'membership',
+        goalId,
+        memberId,
+        err,
+        `createGoalMember: issue "${memberId}" WAS created, but curating it ` +
+          `into goal "${goalId}" failed — ${(err as Error)?.message ?? String(err)}. ` +
+          `It is NOT rolled back (ADR-0045: residue is reported, never silently ` +
+          `deleted), so "${memberId}" exists right now and is the thing to fix: ` +
+          `assignToGoal("${goalId}", "${memberId}").`,
+      );
+    }
+    return memberId;
   }
 
   async readGoalFrontier(

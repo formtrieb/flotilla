@@ -31,6 +31,7 @@ import {
   RUNG_PRECEDENCE,
   classifyCreateInput,
   CreateInputError,
+  GoalMemberJoinError,
   requireGoalContainer,
   validateAmendPatch,
   type IssueStore,
@@ -44,6 +45,7 @@ import {
   type DocumentView,
   type ClosingState,
   type CreateGoalInput,
+  type CreateGoalMemberInput,
   type GoalContainer,
   type GoalView,
   withTriageDisclaimer,
@@ -745,6 +747,53 @@ export class GitHubIssuesStore implements IssueStore {
     // absence is the contract holding, not this method falling short of the
     // endpoint. A facet-side unassign is its own engine slice.
     await this.api.setIssueMilestone(issue, milestone);
+  }
+
+  /**
+   * Mint a bare ISSUE member and join it to the milestone, in one act (ADR-0045
+   * decision 3). The milestone binding's member kind is `issue`, so this is
+   * exactly the shipped bare create plus the shipped curation write — the
+   * station gets one path where it used to need two, and every bare invariant
+   * `create()` holds is inherited rather than re-implemented.
+   *
+   * The goal is resolved BEFORE the mint (an unknown milestone files nothing),
+   * and the `blockedBy` refusal this store already owns — a cross-REPO ref,
+   * which a native GitHub dependency cannot address — fires inside `create()`,
+   * still before any write.
+   */
+  async createGoalMember(
+    goalId: string,
+    input: CreateGoalMemberInput,
+    container?: GoalContainer,
+  ): Promise<string> {
+    this.goalRole(container);
+    const milestone = this.goalNumber(goalId);
+    await this.api.getMilestone(milestone); // pre-validation: an unknown goal mints nothing
+    const blockedBy = input.blockedBy ?? [];
+    const memberId = await this.create({
+      title: input.title,
+      filingHint: input.filingHint,
+      bodySections: input.bodySections,
+      ...(blockedBy.length > 0
+        ? { blockedBy: blockedBy.map((id) => this.parseRef(id)) }
+        : {}),
+    });
+    try {
+      await this.api.setIssueMilestone(Number(memberId), milestone);
+    } catch (err) {
+      throw new GoalMemberJoinError(
+        'membership',
+        goalId,
+        memberId,
+        err,
+        `createGoalMember: issue "${memberId}" WAS created, but joining it to ` +
+          `milestone "${goalId}" failed — ${(err as Error)?.message ?? String(err)}. ` +
+          `It is NOT rolled back (ADR-0045: residue is reported, never silently ` +
+          `deleted), so "${memberId}" exists right now and is the thing to fix: ` +
+          `assignToGoal("${goalId}", "${memberId}").`,
+      );
+    }
+    return memberId;
   }
 
   async readGoalFrontier(

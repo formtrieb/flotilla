@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { GitHubIssuesStore } from './github-issues-store';
 import { InMemoryGitHubApi, githubConformanceHooks } from './github-api-fake';
 import type { CreateInput, AnnotatePatch } from '../issue-store';
+import { CreateInputError } from '../issue-store';
 import { parseBody } from '../body-codec';
 import {
   runIssueStoreConformance,
@@ -624,5 +625,110 @@ describe('GitHubIssuesStore — the Goal is a milestone (ADR-0044)', () => {
   it('a goal id that is not an integer is refused as malformed, never read as an empty goal', async () => {
     await expect(store.readGoal('not-a-number')).rejects.toThrow(/milestone id/i);
     await expect(store.readGoalFrontier('not-a-number')).rejects.toThrow(/milestone id/i);
+  });
+
+  // ── createGoalMember (ADR-0045 decision 3) ───────────────────────────────
+  it('createGoalMember files a BARE issue and stamps the milestone — one act, both halves', async () => {
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const id = await store.createGoalMember(goal, {
+      title: 'a workstream that must exist',
+      filingHint: 'a-workstream',
+      bodySections: [{ heading: 'Gap', markdown: 'the shape is not known yet.' }],
+    });
+
+    // The membership is the NATIVE milestone stamp, not a body line.
+    expect((await api.listMilestoneIssues(Number(goal))).map((i) => String(i.number))).toEqual([
+      id,
+    ]);
+    // …and the issue is BARE: no labels at all, so no eligibility token and
+    // nothing for `listOpen` to surface. Existence first, readiness later.
+    const gh = await api.getIssue(Number(id));
+    expect(gh.labels).toEqual([]);
+    expect(gh.body).toContain('the shape is not known yet.');
+    expect(gh.body).not.toMatch(/^##\s+Files\s*$/im);
+    expect((await store.listOpen('wave-ready')).map((v) => v.id)).not.toContain(id);
+  });
+
+  it('createGoalMember on an UNKNOWN milestone files NOTHING — pre-validated before the mint', async () => {
+    const before = (await api.listOpenIssues()).length;
+    await expect(
+      store.createGoalMember('4242', {
+        title: 'x',
+        filingHint: 'x',
+        bodySections: [{ heading: 'Gap', markdown: 'g' }],
+      }),
+    ).rejects.toThrow();
+    expect((await api.listOpenIssues()).length).toBe(before);
+  });
+
+  it('createGoalMember draws the blockedBy edge NATIVELY, between two bare members', async () => {
+    // ADR-0045 decision 4 at the storage layer: the dependency is a real GitHub
+    // issue dependency and NOT a `## Blocked by` body section, so both members
+    // stay bare while the edge is still readable by the frontier.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const blocker = await store.createGoalMember(goal, {
+      title: 'workstream A',
+      filingHint: 'a',
+      bodySections: [{ heading: 'Gap', markdown: 'A must exist first.' }],
+    });
+    const blocked = await store.createGoalMember(goal, {
+      title: 'workstream B',
+      filingHint: 'b',
+      bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+      blockedBy: [blocker],
+    });
+
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(blocker)]);
+    expect((await api.getIssue(Number(blocked))).body).not.toMatch(/^##\s+Blocked by\s*$/im);
+
+    const frontier = await store.readGoalFrontier(goal);
+    const reading = frontier.readings.find((r) => r.id === blocked);
+    expect(reading?.state).toBe('blocked');
+    expect(reading?.unresolvedBlockers).toEqual([{ issue: Number(blocker) }]);
+  });
+
+  it('a blockedBy id this store cannot read as a MEMBER id refuses before any write', async () => {
+    // `CreateGoalMemberInput.blockedBy` is MEMBER-space (ADR-0045), and a GitHub
+    // member id is a bare issue number in THIS repo — so a cross-repo blocker is
+    // not merely refused here, it is unnameable, which is the right answer:
+    // another repo's issue is not a member of this repo's milestone. The
+    // `create()`-level `bare-blocked-by-unrepresentable` refusal still guards
+    // the ref-shaped path (see the bare-create facet suite); this verb never
+    // reaches it because the id fails to parse first.
+    //
+    // What matters either way is the timing, and that is what is asserted: the
+    // refusal lands before anything is filed and before anything is curated in.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const before = (await api.listOpenIssues()).length;
+
+    await expect(
+      store.createGoalMember(goal, {
+        title: 'B',
+        filingHint: 'b',
+        bodySections: [{ heading: 'Gap', markdown: 'B waits on another repo.' }],
+        blockedBy: ['other#5'],
+      }),
+    ).rejects.toThrow(/parseRef/);
+
+    expect((await api.listOpenIssues()).length).toBe(before);
+    expect((await store.readGoal(goal)).memberIds).toEqual([]);
+  });
+
+  it('…and the same-repo member id it CAN read is accepted — the refusal is about the id, not the arm', async () => {
+    // The positive control for the clause above: without it, an implementation
+    // that refused every `blockedBy` would look identical.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const blocker = await store.createGoalMember(goal, {
+      title: 'A',
+      filingHint: 'a',
+      bodySections: [{ heading: 'Gap', markdown: 'A first.' }],
+    });
+    const blocked = await store.createGoalMember(goal, {
+      title: 'B',
+      filingHint: 'b',
+      bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+      blockedBy: [blocker],
+    });
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(blocker)]);
   });
 });

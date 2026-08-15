@@ -613,10 +613,12 @@ export function validateAmendPatch(patch: AmendPatch): void {
   }
 }
 
-// ── Goal facet (ADR-0044) — the finish line, bound to a native container ─────
+// ── Goal facet (ADR-0044 / ADR-0045) — the finish line, bound to a container ─
 //
-// A **Goal** is a named finish line whose members are issues in ONE native
-// container, joined by curation. It earns a facet here rather than living as
+// A **Goal** is a named finish line whose members are the DIRECT native members
+// of ONE native container, joined by curation (ADR-0045 decision 1 — issues for
+// the three issue-direct roles, projects for a Linear Initiative; never a
+// flattening query). It earns a facet here rather than living as
 // skill prose over a host CLI, and the reversal is recorded: the 2026-07-31 note
 // "milestones are a product artifact, deliberately outside the seam" was true
 // for a maintainer's hand-driven cut on one tracker (ambient `gh` auth, a human
@@ -672,14 +674,13 @@ export function validateAmendPatch(patch: AmendPatch): void {
  * one: a consumer must not be able to smuggle a container assumption into the
  * engine.
  *
- * `initiative` is DECLARED here and realized by nothing — deliberately. Linear
- * initiatives hold projects, not issues, so their membership is transitive and
- * may not even be `assignToGoal`-shaped; that is a contract-shape question worth
- * its own design, and no bound consumer exists until it lands. Naming it in the
- * vocabulary is what makes the deferral a NAMED follow-up rather than a silent
- * cap: a consumer that binds `initiative` gets
- * {@link GoalBindingError} with `failure: 'unrealized-container'` telling it so,
- * instead of the "not a container at all" answer an omitted member would give.
+ * `initiative` was DECLARED-but-unrealized in ADR-0044 and is REALIZED — on the
+ * Linear store, and only there — by ADR-0045. It is also the one role whose
+ * members are not issues: an initiative holds PROJECTS, so under that binding
+ * every member id in this facet is a project id. See {@link GoalMemberKind}.
+ * The other three stores still answer an `initiative` binding with
+ * {@link GoalBindingError} `failure: 'unrealized-container'`, which is what
+ * keeps "GitHub has no initiative" a named refusal rather than a silent cap.
  */
 export type GoalContainer = 'milestone' | 'project' | 'initiative' | 'goal-file';
 
@@ -690,6 +691,159 @@ export const GOAL_CONTAINERS: readonly GoalContainer[] = [
   'initiative',
   'goal-file',
 ];
+
+/**
+ * What KIND of thing a Goal's direct members are — the whole of ADR-0045
+ * decision 1 in one type. A Goal's members are the bound container's **direct
+ * native members**, never a flattening query, so the member kind is a fact about
+ * the BINDING and nothing else:
+ *
+ *  - `issue` for the three issue-direct roles (GitHub Milestone · Linear
+ *    Project · MarkdownFs goal file) — byte-identical to what ADR-0044 shipped;
+ *  - `project` for a Linear Initiative, which holds projects and not issues.
+ *
+ * The transitive read this replaced was falsified against the live consumer
+ * workspace: 13 of 19 initiative-member projects there are EMPTY, so an
+ * issue-flattening frontier would report a goal complete over unbuilt stories.
+ * A member kind that follows the binding cannot make that mistake — an empty
+ * project is a member, and reads `unready` for exactly the reason a bare ticket
+ * does.
+ */
+export type GoalMemberKind = 'issue' | 'project';
+
+/**
+ * Container role → the kind of its DIRECT members (ADR-0045 decision 1). Data
+ * rather than a switch so every caller — contract, adapter, conformance suite —
+ * reads ONE mapping instead of three lookalikes, the same one-owner discipline
+ * {@link requireGoalContainer} applies to the binding itself.
+ */
+export const GOAL_MEMBER_KIND_BY_CONTAINER: Readonly<
+  Record<GoalContainer, GoalMemberKind>
+> = {
+  milestone: 'issue',
+  project: 'issue',
+  'goal-file': 'issue',
+  initiative: 'project',
+};
+
+/** The kind of member a Goal bound to `container` holds (ADR-0045 decision 1). */
+export function goalMemberKind(container: GoalContainer): GoalMemberKind {
+  return GOAL_MEMBER_KIND_BY_CONTAINER[container];
+}
+
+/**
+ * The typed refusal for a member id whose KIND does not follow the binding
+ * (ADR-0045 decision 3). Structured for the same reason
+ * {@link GoalBindingError} is: a caller routes on `expected`/`container`, never
+ * on message text.
+ *
+ * It exists because of ONE concrete confusion, named in the grill: under an
+ * initiative binding, "add this to the goal" most naturally reaches for the
+ * ISSUE somebody is looking at, not the project that issue lives in. That call
+ * site is precisely where the transitive misunderstanding ADR-0045 rejected
+ * would otherwise pass silently — an issue id would resolve to nothing, or
+ * (worse) to some unrelated object — so it refuses BEFORE any write, naming
+ * both what it got and what the binding wants.
+ *
+ * **PUBLIC API**, for the reason {@link GoalBindingError} is: a root-only
+ * consumer holding a store from `buildStore` can RECEIVE this from a goal verb,
+ * so it must be able to NAME it.
+ */
+export class GoalMemberKindError extends Error {
+  readonly name = 'GoalMemberKindError';
+  readonly code = 'goal-member-kind-invalid';
+  constructor(
+    /** The member kind this binding requires. */
+    readonly expected: GoalMemberKind,
+    /** The binding that decided it. */
+    readonly container: GoalContainer,
+    /** The offending id, AS PASSED — an opaque tracker id, never a secret. */
+    readonly memberId: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Refuse an ISSUE-shaped id at a call whose binding wants a PROJECT member
+ * (ADR-0045 decision 3) — the ONE direction the id-kind rule fires in, and the
+ * asymmetry is deliberate rather than an oversight:
+ *
+ *  - under `initiative` an issue-shaped id is a *categorically* different
+ *    object from the project the verb addresses, and the mistake is the
+ *    predictable one, so it refuses;
+ *  - under the three ISSUE-direct bindings nothing new is checked at all, so
+ *    those three behave byte-identically to what ADR-0044 shipped. A store that
+ *    already threw its own "malformed id" there keeps throwing exactly that.
+ *
+ * The RULE and its message live here, once; the SHAPE question — "is this id in
+ * my issue space?" — is adapter-owned, because only the adapter knows its own
+ * id format (ADR-0001: the engine never parses an id). Same split
+ * {@link requireGoalContainer} draws between the shared refusal and the
+ * per-store `realizable` list.
+ */
+export function requireGoalMemberKind(opts: {
+  /** How to name this store in the refusal message. */
+  storeKind: string;
+  /** The resolved binding this call addresses. */
+  container: GoalContainer;
+  /** The id as passed by the caller. */
+  memberId: string;
+  /** Adapter-owned: does this id belong to THIS store's issue space? */
+  isIssueShaped: (id: string) => boolean;
+}): void {
+  const expected = goalMemberKind(opts.container);
+  if (expected !== 'project') return; // issue-direct bindings: unchanged, on purpose
+  if (!opts.isIssueShaped(opts.memberId)) return;
+  throw new GoalMemberKindError(
+    expected,
+    opts.container,
+    opts.memberId,
+    `goal: the ${opts.storeKind} store's "${opts.container}" binding holds ` +
+      `PROJECT members, but "${opts.memberId}" is an issue-space id ` +
+      `(ADR-0045: a Goal's members are the container's DIRECT native members, ` +
+      `never the issues inside them). Pass the project id the issue lives in — ` +
+      `or, if the goal should hold issues directly, bind ` +
+      `"store.goal.container" to "project" instead. Nothing was written.`,
+  );
+}
+
+/**
+ * The typed failure of {@link IssueStore.createGoalMember} AFTER its member was
+ * already minted (ADR-0045 decision 3's no-silent-rollback line).
+ *
+ * `createGoalMember` is "mint a bare direct member and join it, in one act", and
+ * the honest failure mode of a two-write act is that the first write lands and
+ * the second does not. Rolling the mint back would be a *deletion* this facet
+ * has no verb for and no right to perform; swallowing the failure would return
+ * an id for a member that is in no goal. So the residue is REPORTED: this error
+ * names the member that exists and is unattached, so the caller can join it by
+ * hand or re-run. Same `closed-unknown` honesty line — report what happened,
+ * never claim what cannot be proven.
+ *
+ * **PUBLIC API** for the same reason the two goal errors above are.
+ */
+export class GoalMemberJoinError extends Error {
+  readonly name = 'GoalMemberJoinError';
+  readonly code = 'goal-member-join-failed';
+  constructor(
+    /** Which half of the act failed: the membership join, or a `blockedBy` edge. */
+    readonly stage: 'membership' | 'blocked-by',
+    /** The goal the member was meant to join. */
+    readonly goalId: string,
+    /**
+     * The member that WAS minted and is now residue — the whole point of this
+     * class. Never rolled back, always named.
+     */
+    readonly memberId: string,
+    /** Whatever the underlying write threw, carried verbatim for a caller that wants it. */
+    readonly reason: unknown,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Why a goal-container binding was refused (ADR-0044 decision 4, applying the
@@ -808,9 +962,9 @@ export function requireGoalContainer(opts: {
       `goal: the ${opts.storeKind} store does not realize the "${role}" container — ` +
         `it ships ${opts.realizable.map((r) => `"${r}"`).join(' | ')}. ` +
         (role === 'initiative'
-          ? `The initiative realization is a NAMED follow-up, not a silent cap ` +
-            `(ADR-0044): initiatives hold projects rather than issues, so their ` +
-            `membership is transitive and may not be assignToGoal-shaped. `
+          ? `An initiative is a LINEAR container and is realized on the linear ` +
+            `store only (ADR-0045): its members are projects rather than issues, ` +
+            `and no other shipped tracker has that shape to bind. `
           : '') +
         `Change "store.goal.container" in wave.config.json.`,
     );
@@ -859,15 +1013,73 @@ export interface GoalView {
   /** Which native container role this goal is realized as. */
   container: GoalContainer;
   /**
-   * The member issue ids, by CURATION — every issue joined to the container,
+   * The DIRECT member ids, by CURATION — every native member of the container,
    * open and closed alike. Closed members are kept deliberately: the frontier
    * derives `done` from them, and a membership list that silently dropped
    * finished work would make a completed goal indistinguishable from an empty
    * one.
    *
-   * ISSUE-space ids, never comparable to {@link id} — see the facet banner.
+   * **The KIND of these ids follows {@link container}** (ADR-0045 decision 1):
+   * issue-space ids under the three issue-direct roles, PROJECT-space ids under
+   * `initiative`. Never a flattening query — under `initiative` these are the
+   * member projects themselves, not the issues inside them, because a
+   * transitive list would report a goal complete over empty member projects.
+   * Never comparable to {@link id} either way — see the facet banner.
    */
   memberIds: string[];
+}
+
+/**
+ * What the `goal` station hands the store to mint a **bare direct member** of a
+ * Goal and join it in ONE act (ADR-0045 decision 3). Member-kind-generic on
+ * purpose: the same input mints a bare ISSUE under the three issue-direct
+ * bindings and a PROJECT under `initiative`, because the member kind is the
+ * binding's fact and never the caller's.
+ *
+ * Why a facet verb rather than "call `create` then `assignToGoal`": at a goal's
+ * cut, filing the member and curating it in are one intention, and the two-call
+ * shape has a silent failure the one-call shape does not (a filed member nobody
+ * joined). Under `initiative` there is no two-call route at all — `create`
+ * mints issues, and an initiative holds projects.
+ */
+export interface CreateGoalMemberInput {
+  /** The member's human-facing name (an issue title; a project name). */
+  title: string;
+  /**
+   * Store-internal filing hint — the SAME opacity contract as
+   * {@link CreateInput.filingHint}. MarkdownFs weaves it into the path-id;
+   * GitHub and Linear ignore it. The returned id is fully opaque (ADR-0001).
+   */
+  filingHint: string;
+  /**
+   * The member's authored free prose. It is the WHOLE authored body and must
+   * carry real content — a member minted with nothing to read is the bare
+   * filing ADR-0027 already refuses (`bare-without-body`).
+   *
+   * Issue members: {@link CreateInput.bodySections} verbatim, so every bare
+   * invariant holds byte-for-byte (no Header-Block, no eligibility marker).
+   * Project members: woven into the project's description, which is the only
+   * prose surface a Linear project has.
+   */
+  bodySections: { heading: string; markdown: string }[];
+  /**
+   * Dependency edges to draw NATIVELY at the cut (ADR-0045 decision 4) — the
+   * station writes the edges it already knows instead of leaving the Operator
+   * to hand-click them later, which is the misplaced-block error class the
+   * grill named.
+   *
+   * **MEMBER-space opaque ids, not `IssueRef`s** — the same space
+   * {@link GoalView.memberIds} lives in, because a blocker of a project member
+   * IS another project and has no `IssueRef` spelling. The adapter realizes
+   * each edge in its own native shape (a Linear project relation under
+   * `initiative`; ADR-0044's shipped bare-issue arm elsewhere) and REFUSES
+   * typed, before any write, when its storage cannot represent the edge at all
+   * — `CreateInputError` with `'bare-blocked-by-unrepresentable'`, the
+   * precedent one member kind over.
+   *
+   * Absent and `[]` both declare nothing to realize.
+   */
+  blockedBy?: readonly string[];
 }
 
 /**
@@ -1197,36 +1409,97 @@ export interface IssueStore {
   listGoals(container?: GoalContainer): Promise<GoalView[]>;
 
   /**
-   * Join an issue to a Goal **by curation** — the deliberate human act that
-   * makes the frontier editable (a bare member that outgrows its placeholder
-   * becomes a PRD whose slices join here while the placeholder closes). Never an
-   * automatism, and never derived from a PRD backlink: a PRD belongs to a Goal
-   * only derivedly, through member slices (ADR-0044 decision 2).
+   * Join a DIRECT member to a Goal **by curation** — the deliberate human act
+   * that makes the frontier editable (a bare member that outgrows its
+   * placeholder becomes a PRD whose slices join here while the placeholder
+   * closes). Never an automatism, and never derived from a PRD backlink: a PRD
+   * belongs to a Goal only derivedly, through member slices (ADR-0044
+   * decision 2).
    *
-   * Idempotent — re-joining an issue already in the container is a no-op.
+   * **The member id's KIND follows the binding** (ADR-0045 decision 3), which
+   * is why the parameter is `memberId` and not `issueId`: an issue under the
+   * three issue-direct roles, a PROJECT under `initiative`. There is
+   * deliberately no second, project-shaped verb — the member kind is the
+   * binding's fact, not the verb's.
+   *
+   * Under a PROJECT-member binding an issue-shaped id is refused typed
+   * ({@link GoalMemberKindError}) BEFORE any write, because "I meant the issue
+   * *inside* the goal" is the exact transitive confusion ADR-0045 rejected and
+   * this is the call site where it would otherwise pass silently. Under the
+   * three issue-direct bindings nothing new is checked and behaviour is
+   * byte-identical to what ADR-0044 shipped.
+   *
+   * Idempotent — re-joining a member already in the container is a no-op.
    * Touches ONLY container membership: never the claim ledger, never the triage
    * dimension, never the eligibility marker, never the open/closed state.
-   * Throws on an unknown goal id or issue id.
+   * Throws on an unknown goal id or member id.
    *
    * The two ids are from DIFFERENT opaque spaces and are not interchangeable —
    * on GitHub they collide by value (milestone `'1'`, issue `'1'`), so passing
    * them in the wrong order is a call that can succeed against the wrong pair.
    * See the id-space note in the facet banner above.
    *
-   * @param goalId  a GOAL-space id — {@link GoalView.id}.
-   * @param issueId an ISSUE-space id — the same space {@link create} returns.
+   * @param goalId   a GOAL-space id — {@link GoalView.id}.
+   * @param memberId a MEMBER-space id of the kind {@link goalMemberKind} names
+   *                 for this binding — the space {@link GoalView.memberIds}
+   *                 lives in.
    */
   assignToGoal(
     goalId: string,
-    issueId: string,
+    memberId: string,
     container?: GoalContainer,
   ): Promise<void>;
 
   /**
-   * The **frontier query** (ADR-0044 decision 5): read every member of a Goal
-   * and classify each into exactly one of `done` / `in-motion` / `actionable` /
-   * `blocked` / `unready` — see {@link GoalFrontier}. Read-only and free: no
-   * write, no state, no durable marker.
+   * Mint a **bare direct member** of a Goal and join it, in ONE act (ADR-0045
+   * decision 3) — the cut pass's whole write surface.
+   *
+   * What "bare" means per member kind, and why the burden differs:
+   *  - ISSUE members: ADR-0027's bare filing verbatim — the authored prose and
+   *    nothing else, no Header-Block and no eligibility marker, so nothing this
+   *    verb mints can be drawn by a wave until a human sharpens it. Every bare
+   *    invariant `create()` holds, this holds.
+   *  - PROJECT members: a Linear project is *born* bare — a name, prose, and a
+   *    backlog status carry no eligibility semantics at all — so there is no
+   *    extra invariant to protect.
+   *
+   * Ordering is the contract, not an implementation detail. The goal id and the
+   * container binding are resolved BEFORE anything is minted (no partial
+   * application, the discipline `create()` and `applyTriage()` already apply),
+   * and an unrepresentable `blockedBy` edge is refused before the mint too. If
+   * the JOIN nonetheless fails after the mint, {@link GoalMemberJoinError}
+   * names the minted member id: the residue is reported, never silently rolled
+   * back — this facet has no delete verb and no right to invent one.
+   *
+   * Creation is goal-ANCHORED: there is no free-floating member-create here.
+   * Minting a container's member without a container is tracker admin, not
+   * facet surface.
+   *
+   * @returns the minted member's opaque id (ADR-0001), in the same MEMBER space
+   *          {@link GoalView.memberIds} lives in.
+   */
+  createGoalMember(
+    goalId: string,
+    input: CreateGoalMemberInput,
+    container?: GoalContainer,
+  ): Promise<string>;
+
+  /**
+   * The **frontier query** (ADR-0044 decision 5): read every DIRECT member of a
+   * Goal and classify each into exactly one of `done` / `in-motion` /
+   * `actionable` / `blocked` / `unready` — see {@link GoalFrontier}. Read-only
+   * and free: no write, no state, no durable marker.
+   *
+   * ONE vocabulary at every member granularity (ADR-0045 decision 2): the five
+   * readings and the classification rule are the same whatever the member kind
+   * is; the ADAPTER states {@link GoalMemberFacts} honestly per kind. For a
+   * PROJECT member that reads: closed ← the project's own `completed`/`canceled`
+   * status (the issue rule's mirror); claimed ← `started`/`paused`, or a
+   * wave-claimed open issue inside; eligible ← an open issue inside carrying the
+   * eligibility marker; blockers ← native project relations. An EMPTY project
+   * therefore reads `unready` for exactly the reason a bare ticket does, which
+   * is the whole point — a frontier structurally blind to empty members cannot
+   * make `actionable`'s positive claim honestly.
    *
    * `blocked` is derived through the #381 read-union (body-codec ∪ native
    * relations), so a bare member depending on another bare member is visible

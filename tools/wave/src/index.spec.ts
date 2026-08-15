@@ -905,6 +905,45 @@ const GOAL_FACET_FAMILY_ADDED_AT_ROOT = [
 ].sort();
 
 /**
+ * The MEMBER-KIND family (ADR-0045) — the Goal facet's second slice, recorded
+ * separately rather than folded into the family above, so the arithmetic keeps
+ * saying WHICH decision each addition belongs to. Seven VALUE names across two
+ * modules, and every one of them follows from a single sentence: a Goal's
+ * members are the bound container's DIRECT native members, so the member KIND is
+ * a fact about the binding.
+ *
+ *  - `./adapters/issue-store` — the kind vocabulary as data and as a function
+ *    (`GOAL_MEMBER_KIND_BY_CONTAINER`, `goalMemberKind`), the ONE shared id-kind
+ *    refusal every adapter applies rather than re-derives
+ *    (`requireGoalMemberKind`) and its typed rejection (`GoalMemberKindError`),
+ *    plus the typed post-mint residue report (`GoalMemberJoinError`).
+ *  - `./adapters/linear/linear-api` — the two pinned project-relation strings
+ *    (`PROJECT_BLOCKS_RELATION_TYPE`, `PROJECT_RELATION_ANCHOR_TYPE`). They ride
+ *    the root precisely BECAUSE they are the least-proven values in that
+ *    adapter: Linear types both as free `String`, so a consumer whose workspace
+ *    answers differently must be able to name which two constants to report.
+ *
+ * The TYPE half — `GoalMemberKind`, `CreateGoalMemberInput`, `GoalBlocker`,
+ * `LinearInitiative`, `LinearProjectStatusType` — is erased at runtime and so is
+ * invisible here; `tsc --noEmit` and barrel-drift.spec.ts pin it instead.
+ *
+ * The ADR-0044 claim above still holds unchanged and is worth re-reading against
+ * this list: `createGoalMember` adds a WRITE verb to the facet, and it is still
+ * not a dispatch verb — what it mints is BARE, carrying no eligibility marker,
+ * so nothing it files can be drawn by a wave until a person sharpens it. Sight
+ * and existence; never permission. Sorted, as the probe sorts.
+ */
+const GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT = [
+  'GOAL_MEMBER_KIND_BY_CONTAINER',
+  'GoalMemberJoinError',
+  'GoalMemberKindError',
+  'PROJECT_BLOCKS_RELATION_TYPE',
+  'PROJECT_RELATION_ANCHOR_TYPE',
+  'goalMemberKind',
+  'requireGoalMemberKind',
+].sort();
+
+/**
  * The whole-root total as of the newest recorded slice. Deliberately written as
  * ARITHMETIC over the per-slice families rather than as a fresh absolute number:
  * `135` stays anchored to the commit it was measured at, and each later slice
@@ -922,7 +961,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT.length +
   BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length +
   WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length +
-  GOAL_FACET_FAMILY_ADDED_AT_ROOT.length;
+  GOAL_FACET_FAMILY_ADDED_AT_ROOT.length +
+  GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1461,11 +1501,14 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
     expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT),
+    );
+    // …and the families before it stay present: the arrayContaining above moves
+    // to whatever the newest slice is, so without these lines each family's own
+    // by-name assertion would live exactly one slice and then be replaced.
+    expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(GOAL_FACET_FAMILY_ADDED_AT_ROOT),
     );
-    // …and the family before it stays present: the arrayContaining above moves
-    // to whatever the newest slice is, so without this line each family's own
-    // by-name assertion would live exactly one slice and then be replaced.
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT),
     );

@@ -35,8 +35,11 @@ import {
   DEFAULT_ELIGIBILITY,
   RUNG_PRECEDENCE,
   classifyCreateInput,
+  goalMemberKind,
   requireGoalContainer,
+  requireGoalMemberKind,
   validateAmendPatch,
+  GoalMemberJoinError,
   type IssueStore,
   type CreateInput,
   type AnnotatePatch,
@@ -48,16 +51,23 @@ import {
   type DocumentView,
   type ClosingState,
   type CreateGoalInput,
+  type CreateGoalMemberInput,
   type GoalContainer,
   type GoalView,
   withTriageDisclaimer,
 } from '../issue-store';
 import {
   computeGoalFrontier,
+  type GoalBlocker,
   type GoalFrontier,
   type GoalMemberFacts,
 } from '../../goal-frontier';
-import type { LinearApi, LinearIssue } from './linear-api';
+import type {
+  LinearApi,
+  LinearIssue,
+  LinearProject,
+  LinearProjectStatusType,
+} from './linear-api';
 import {
   serializeBody,
   serializeBareBody,
@@ -77,8 +87,10 @@ const NEEDS_ATTENTION_LABEL = 'wave/needs-attention';
 /** State categories that project to the terminal `done` bookend (ADR-0020, lossy per ADR-0002 — a duplicate-close is a close). */
 const CLOSED_TYPES = new Set(['completed', 'canceled', 'duplicate']);
 /**
- * The Goal containers this store realizes (ADR-0044 decision 4) — `project`, and
- * only `project`, in v1.
+ * The Goal containers this store realizes — `project` (ADR-0044 decision 4) and
+ * `initiative` (ADR-0045). BOTH, and only on this store: an initiative is a
+ * Linear shape, so github and markdown-fs still answer that binding with
+ * `GoalBindingError: 'unrealized-container'`.
  *
  * There is deliberately NO default beside this list. GitHub can default to
  * Milestone because it is the only native container with direct issue
@@ -90,13 +102,18 @@ const CLOSED_TYPES = new Set(['completed', 'canceled', 'duplicate']);
  * either silently would overwrite somebody's meaning, so the binding is explicit
  * and a goal verb without one refuses loudly, naming the config key.
  *
- * `initiative` is absent here on purpose and is refused BY NAME (see
- * {@link requireGoalContainer}): initiatives hold projects, not issues, so their
- * membership is transitive and may not even be `assignToGoal`-shaped. That is a
- * contract-shape question worth its own design — a named follow-up, never a
- * silent cap.
+ * The two roles differ in MEMBER KIND, which is the whole of ADR-0045
+ * decision 1: a `project`-bound goal holds issues, an `initiative`-bound goal
+ * holds PROJECTS. Every goal verb below therefore branches on the resolved role
+ * rather than assuming issues — and {@link goalMemberKind} is where that branch
+ * reads its answer, so the two arms cannot drift apart.
  */
-const GOAL_CONTAINERS_REALIZED: readonly GoalContainer[] = ['project'];
+const GOAL_CONTAINERS_REALIZED: readonly GoalContainer[] = ['project', 'initiative'];
+
+/** Project status categories that project to the frontier's `done` bookend (ADR-0045 decision 2 — the issue rule's mirror). */
+const CLOSED_PROJECT_STATUS = new Set<LinearProjectStatusType>(['completed', 'canceled']);
+/** Project status categories that read as CLAIMED — somebody has it (ADR-0045 decision 2). */
+const CLAIMED_PROJECT_STATUS = new Set<LinearProjectStatusType>(['started', 'paused']);
 
 /**
  * Thrown by {@link LinearIssuesStore.transition} when a `setState` call
@@ -787,7 +804,17 @@ export class LinearIssuesStore implements IssueStore {
     await this.api.addLabel(id, target);
   }
 
-  // ── Goal facet (ADR-0044): a Goal is a native Linear PROJECT ──────────────
+  // ── Goal facet — a Goal is a Linear PROJECT (ADR-0044) or, under an
+  //    `initiative` binding, a Linear INITIATIVE whose members are PROJECTS
+  //    (ADR-0045) ──────────────────────────────────────────────────────────
+  //
+  // Every verb below resolves the role first and then branches on the MEMBER
+  // KIND that role implies. The branch is deliberately explicit at each verb
+  // rather than hidden behind a per-role strategy object: there are exactly two
+  // arms, they read differently at every step (an issue's claim is a workflow
+  // state; a project's is a status category plus what is inside it), and a
+  // reader who opens `readGoalFrontier` should see both without chasing a
+  // dispatch table.
 
   /**
    * Resolve the container role this call addresses, or refuse loudly. Runs as
@@ -807,8 +834,49 @@ export class LinearIssuesStore implements IssueStore {
     });
   }
 
+  /**
+   * Is this id in THIS store's ISSUE space? The adapter-owned half of the
+   * id-kind rule (ADR-0045 decision 3) — the shared refusal lives in
+   * {@link requireGoalMemberKind}, and only the adapter can answer the shape
+   * question, because only it knows its own id format (ADR-0001).
+   *
+   * A Linear issue id is `<TEAM>-<n>` and a project/initiative id is a UUID, so
+   * the two spaces are genuinely distinguishable here — unlike GitHub, where a
+   * milestone number and an issue number are the same three bytes.
+   *
+   * **Deliberately TIGHTER than {@link parseRef}'s `/^(.+)-(\d+)$/`, and this
+   * is a fix rather than a style choice.** That pattern is greedy and matches a
+   * UUID whose final group happens to be all digits —
+   * `550e8400-e29b-41d4-a716-446655440000` splits as
+   * `550e8400-e29b-41d4-a716` + `446655440000` — so reusing it here would have
+   * REFUSED a perfectly legitimate project id, at random, depending on the last
+   * twelve characters a server handed out. The conformance suite surfaced the
+   * same collision on the fake's own `prj-1` ids before any live call could.
+   *
+   * Requiring an UPPERCASE team key and exactly one hyphen excludes both: a
+   * Linear team key is uppercase (`ENG-123`), and a UUID is lowercase hex in
+   * five hyphen-separated groups. The two directions of error are not
+   * symmetric, which is why the tight side is the right side: a false POSITIVE
+   * blocks a valid join with a confident, wrong explanation, while a false
+   * NEGATIVE merely lets the call reach the api, which throws "project not
+   * found" — still loud, just less well-taught.
+   *
+   * `parseRef` is untouched: it inverts ids this store itself minted, which is a
+   * different question with a different tolerance.
+   */
+  private isIssueShapedId(id: string): boolean {
+    return /^[A-Z][A-Z0-9]*-\d+$/.test(id);
+  }
+
   async createGoal(input: CreateGoalInput, container?: GoalContainer): Promise<string> {
-    this.goalRole(container);
+    const role = this.goalRole(container);
+    if (role === 'initiative') {
+      const { id } = await this.api.createInitiative({
+        name: input.title,
+        description: input.description ?? '',
+      });
+      return id; // filingHint ignored — the id is the opaque initiative id (ADR-0001)
+    }
     const { id } = await this.api.createProject({
       name: input.title,
       description: input.description ?? '',
@@ -818,6 +886,20 @@ export class LinearIssuesStore implements IssueStore {
 
   async readGoal(id: string, container?: GoalContainer): Promise<GoalView> {
     const role = this.goalRole(container);
+    if (role === 'initiative') {
+      const initiative = await this.api.getInitiative(id); // throws on unknown id
+      // DIRECT member projects — never the issues inside them (ADR-0045
+      // decision 1). Empty member projects are included, which is the whole
+      // point: they are exactly the members a flattening read would erase.
+      const members = await this.api.listInitiativeProjects(id);
+      return {
+        id,
+        title: initiative.name,
+        description: initiative.description,
+        container: role,
+        memberIds: members.map((m) => m.id),
+      };
+    }
     const project = await this.api.getProject(id); // throws on unknown id
     const members = await this.api.listProjectIssues(id);
     return {
@@ -830,16 +912,36 @@ export class LinearIssuesStore implements IssueStore {
   }
 
   /**
-   * Every project in this api's TEAM scope, each with its curated membership.
-   * One member-list read per project — the same deliberate acceptance the GitHub
-   * arm records: an empty `memberIds` would mean "not fetched", and absent-vs-
-   * empty is a distinction this codebase refuses to blur.
+   * Every goal container this store can see in the bound role, each with its
+   * curated membership. One member-list read per container — the same
+   * deliberate acceptance the GitHub arm records: an empty `memberIds` would
+   * mean "not fetched", and absent-vs-empty is a distinction this codebase
+   * refuses to blur.
+   *
+   * **Scope diverges by role, deliberately and documented** (ADR-0045
+   * decision 5): projects are listed in this api's TEAM scope, initiatives
+   * WORKSPACE-wide. Initiatives live above teams — the recorded consumer's own
+   * initiatives span Design and Dev — so a team filter would silently hide
+   * cross-team finish lines. The extra width costs nothing, because `listGoals`
+   * is sight and never the wave candidate set.
    */
   async listGoals(container?: GoalContainer): Promise<GoalView[]> {
     const role = this.goalRole(container);
-    const projects = await this.api.listProjects();
     const out: GoalView[] = [];
-    for (const project of projects) {
+    if (role === 'initiative') {
+      for (const initiative of await this.api.listInitiatives()) {
+        const members = await this.api.listInitiativeProjects(initiative.id);
+        out.push({
+          id: initiative.id,
+          title: initiative.name,
+          description: initiative.description,
+          container: role,
+          memberIds: members.map((m) => m.id),
+        });
+      }
+      return out;
+    }
+    for (const project of await this.api.listProjects()) {
       const members = await this.api.listProjectIssues(project.id);
       out.push({
         id: project.id,
@@ -854,24 +956,195 @@ export class LinearIssuesStore implements IssueStore {
 
   async assignToGoal(
     goalId: string,
-    issueId: string,
+    memberId: string,
     container?: GoalContainer,
   ): Promise<void> {
-    this.goalRole(container);
+    const role = this.goalRole(container);
+    // The id-kind gate, BEFORE any write (ADR-0045 decision 3). It fires only
+    // where the binding's members are projects; under `project` this is a no-op
+    // and the arm below is byte-identical to what ADR-0044 shipped.
+    requireGoalMemberKind({
+      storeKind: 'linear',
+      container: role,
+      memberId,
+      isIssueShaped: (id) => this.isIssueShapedId(id),
+    });
+    if (role === 'initiative') {
+      // Idempotence is bought explicitly here: the membership is a join ENTITY
+      // (`InitiativeToProject`), so a repeat call would mint a second row
+      // without the api's find-before-create.
+      await this.api.addProjectToInitiative(goalId, memberId);
+      return;
+    }
     // Idempotent by nature: the membership is a single pointer on the issue, so
     // re-joining writes the same value. Additive only — no un-assign path.
-    await this.api.setIssueProject(issueId, goalId);
+    await this.api.setIssueProject(memberId, goalId);
+  }
+
+  /**
+   * Mint a bare direct member and join it, in one act (ADR-0045 decision 3).
+   *
+   * Ordering is the whole contract here, and it runs in exactly this sequence:
+   * resolve the binding → resolve the GOAL (so an unknown goal mints nothing) →
+   * mint → join → draw the declared edges. A failure after the mint is reported
+   * with the minted id attached rather than rolled back.
+   */
+  async createGoalMember(
+    goalId: string,
+    input: CreateGoalMemberInput,
+    container?: GoalContainer,
+  ): Promise<string> {
+    const role = this.goalRole(container);
+    const blockedBy = input.blockedBy ?? [];
+
+    if (goalMemberKind(role) === 'issue') {
+      // Pre-validate the goal BEFORE the mint — otherwise a typo'd goal id
+      // would file a real issue nobody asked for and then fail.
+      await this.api.getProject(goalId);
+      // The declared edges become `IssueRef`s so the shipped bare arm realizes
+      // them exactly as `create()` always has — same native relations, same
+      // best-effort mirror, no second code path.
+      const memberId = await this.create({
+        title: input.title,
+        filingHint: input.filingHint,
+        bodySections: input.bodySections,
+        ...(blockedBy.length > 0
+          ? { blockedBy: blockedBy.map((id) => this.parseRef(id)) }
+          : {}),
+      });
+      try {
+        await this.api.setIssueProject(memberId, goalId);
+      } catch (err) {
+        throw joinFailed('membership', goalId, memberId, err, 'issue');
+      }
+      return memberId;
+    }
+
+    // ── the initiative arm: a PROJECT member ────────────────────────────────
+    await this.api.getInitiative(goalId); // pre-validation, before any mint
+    // Every declared blocker must resolve BEFORE the mint too, so an
+    // unresolvable edge cannot leave a minted project behind. `getProject`
+    // throws on an unknown id — the same "refuse before any write" property the
+    // bare-issue arm gets from `classifyCreateInput`.
+    for (const blockerId of blockedBy) await this.api.getProject(blockerId);
+
+    const { id: memberId } = await this.api.createProject({
+      name: input.title,
+      // A project's description is its only prose surface, so the authored
+      // sections are woven into it — the same bytes `serializeBareBody`
+      // produces for an issue member, and nothing else. A project born this way
+      // carries no eligibility semantics at all (ADR-0045 decision 3), so there
+      // is no bare invariant to protect the way there is for an issue.
+      description: serializeBareBody(input.bodySections),
+    });
+    try {
+      await this.api.addProjectToInitiative(goalId, memberId);
+    } catch (err) {
+      throw joinFailed('membership', goalId, memberId, err, 'project');
+    }
+    for (const blockerId of blockedBy) {
+      try {
+        await this.api.addProjectBlockedBy(memberId, blockerId);
+      } catch (err) {
+        // NOT best-effort, deliberately — unlike the issue mirror, whose edge is
+        // already recorded authoritatively in the body codec. A project relation
+        // is the ONLY representation this dependency has, so swallowing the
+        // failure would silently drop the edge that is the feature.
+        throw joinFailed('blocked-by', goalId, memberId, err, 'project');
+      }
+    }
+    return memberId;
   }
 
   async readGoalFrontier(
     goalId: string,
     container?: GoalContainer,
   ): Promise<GoalFrontier> {
-    this.goalRole(container);
-    const members = await this.api.listProjectIssues(goalId); // throws on unknown goal id
+    const role = this.goalRole(container);
     const facts: GoalMemberFacts[] = [];
+    if (role === 'initiative') {
+      // throws on an unknown goal id
+      for (const project of await this.api.listInitiativeProjects(goalId)) {
+        facts.push(await this.goalProjectMemberFacts(project));
+      }
+      return computeGoalFrontier(goalId, facts);
+    }
+    const members = await this.api.listProjectIssues(goalId); // throws on unknown goal id
     for (const issue of members) facts.push(await this.goalMemberFacts(issue));
     return computeGoalFrontier(goalId, facts);
+  }
+
+  /**
+   * What this store can SEE about one PROJECT goal member — the per-kind half of
+   * ADR-0045 decision 2, mapped onto the SAME four facts the issue arm states.
+   *
+   * Each mapping and why it is the honest one:
+   *
+   *  - `closed` ← the project's own `completed`/`canceled` status category. The
+   *    exact mirror of an issue's terminal state category, and the same lossy
+   *    collapse ADR-0002 already sanctions.
+   *  - `claimed` ← `started`/`paused`, OR at least one wave-claimed OPEN issue
+   *    inside. Two sources because a member can be in motion two ways: a human
+   *    moved the project, or a wave drew a row out of it. `paused` reads
+   *    in-motion rather than blocked because `blocked` asserts a NAMED
+   *    unresolved dependency, which paused lacks — the station's report shows
+   *    the native status alongside the reading, so nothing is hidden.
+   *  - `eligible` ← at least one OPEN issue inside carrying the eligibility
+   *    marker. This is what makes `actionable` mean literally "a wave could draw
+   *    here now": an EMPTY project has no such issue and reads `unready`, which
+   *    is the reading the live consumer's 13-of-19 empty member projects need,
+   *    and an all-untriaged story reads `unready` too (sharpen first).
+   *  - `unresolvedBlockers` ← native project relations whose other side is not
+   *    closed, named as bare project ids ({@link GoalBlocker}).
+   *
+   * Closed short-circuits everything below it, exactly as the issue arm does: a
+   * finished member is `done` whatever else is true of it, so its issues and its
+   * relations are not read at all.
+   */
+  private async goalProjectMemberFacts(project: LinearProject): Promise<GoalMemberFacts> {
+    const id = project.id;
+    if (CLOSED_PROJECT_STATUS.has(project.statusType)) {
+      return { id, closed: true, claimed: false, eligible: false, unresolvedBlockers: [] };
+    }
+    const issues = await this.api.listProjectIssues(id);
+    const open = issues.filter((i) => !CLOSED_TYPES.has(i.stateType));
+    const claimedInside = open.some(
+      (i) => this.rungOf(i.stateName) !== null || i.labels.includes(NEEDS_ATTENTION_LABEL),
+    );
+    return {
+      id,
+      closed: false,
+      claimed: CLAIMED_PROJECT_STATUS.has(project.statusType) || claimedInside,
+      eligible: open.some((i) => this.isEligible(i.labels)),
+      unresolvedBlockers: await this.unresolvedProjectBlockers(id),
+    };
+  }
+
+  /**
+   * Which of a project member's native relations are still in the way.
+   *
+   * A blocker counts as UNRESOLVED unless this store positively read it into a
+   * closed status category — and a relation whose other side cannot be read at
+   * all (deleted, or a transport refusal) lands there too. `actionable` is a
+   * positive claim that nothing blocks the member, so an unreadable edge must
+   * never counterfeit one: the same `closed-unknown` evidence discipline the
+   * issue arm applies, one member kind over.
+   *
+   * A failure of the RELATION read itself is not swallowed into "no blockers"
+   * for the same reason — it propagates, so the frontier reports an error
+   * rather than a clean bill of health it cannot back.
+   */
+  private async unresolvedProjectBlockers(projectId: string): Promise<GoalBlocker[]> {
+    const out: GoalBlocker[] = [];
+    for (const blockerId of await this.api.getProjectBlockedBy(projectId)) {
+      try {
+        const blocker = await this.api.getProject(blockerId);
+        if (!CLOSED_PROJECT_STATUS.has(blocker.statusType)) out.push(blockerId);
+      } catch {
+        out.push(blockerId); // unreadable ⇒ unresolved, never silently cleared
+      }
+    }
+    return out;
   }
 
   /**
@@ -942,6 +1215,43 @@ export class LinearIssuesStore implements IssueStore {
     }
     return out;
   }
+}
+
+/**
+ * Build the {@link GoalMemberJoinError} for a `createGoalMember` whose MINT
+ * landed and whose follow-up write did not (ADR-0045 decision 3).
+ *
+ * The message's job is to make the residue actionable rather than merely
+ * admitted: it names the member that exists, the goal it is missing from, and
+ * the one hand-fix that closes the gap. Rolling the mint back was never an
+ * option — this facet has no delete verb, and inventing one to paper over a
+ * failed second write would be a far larger decision than the failure warrants.
+ */
+function joinFailed(
+  stage: 'membership' | 'blocked-by',
+  goalId: string,
+  memberId: string,
+  reason: unknown,
+  kind: 'issue' | 'project',
+): GoalMemberJoinError {
+  const what =
+    stage === 'membership'
+      ? `joining it to the goal failed`
+      : `drawing its declared blocked-by edge(s) failed`;
+  const fix =
+    stage === 'membership'
+      ? `assignToGoal("${goalId}", "${memberId}")`
+      : `redraw the dependency in the tracker, or re-run with the same blockers`;
+  return new GoalMemberJoinError(
+    stage,
+    goalId,
+    memberId,
+    reason,
+    `createGoalMember: the ${kind} "${memberId}" WAS created, but ${what} — ` +
+      `${(reason as Error)?.message ?? String(reason)}. It is NOT rolled back ` +
+      `(ADR-0045: residue is reported, never silently deleted), so "${memberId}" ` +
+      `exists right now and is the thing to fix: ${fix}.`,
+  );
 }
 
 /**

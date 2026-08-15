@@ -14,7 +14,9 @@
 import type {
   LinearApi,
   LinearIssue,
+  LinearInitiative,
   LinearProject,
+  LinearProjectStatusType,
   LinearStateType,
   LinearCreateIssueInput,
   LinearPrAttachment,
@@ -333,7 +335,16 @@ export class InMemoryLinearApi implements LinearApi {
 
   async createProject(input: { name: string; description: string }): Promise<{ id: string }> {
     const id = `prj-${++this.projectCounter}`;
-    this.projects.set(id, { id, name: input.name, description: input.description });
+    // A Linear project is BORN bare (ADR-0045 decision 3): a name, prose, and
+    // the `backlog` category — no eligibility semantics of any kind, which is
+    // why minting one as a goal member carries no bare-invariant burden the way
+    // minting an issue does.
+    this.projects.set(id, {
+      id,
+      name: input.name,
+      description: input.description,
+      statusType: 'backlog',
+    });
     return { id };
   }
 
@@ -366,6 +377,94 @@ export class InMemoryLinearApi implements LinearApi {
     return [...this.issues.values()]
       .filter((i) => this.projectByIssue.get(i.identifier) === projectId)
       .map((i) => this.project(i));
+  }
+
+  // ── Goal facet substrate (ADR-0045) — initiatives, and project relations ───
+  //
+  // Initiatives are modelled WORKSPACE-wide, with no team field anywhere: that
+  // is the substrate half of ADR-0045 decision 5, and it is what makes
+  // `listInitiatives`'s divergence from the team-scoped `listProjects`
+  // assertable rather than narrated.
+  //
+  // Membership is a JOIN SET (initiative id → member project ids) rather than a
+  // pointer on the project, mirroring Linear's own `InitiativeToProject` join
+  // entity — which is exactly why the join needs an explicit idempotence guard
+  // where `setIssueProject` gets one for free.
+
+  private readonly initiatives = new Map<string, LinearInitiative>();
+  private initiativeCounter = 0;
+  /** initiative id → its DIRECT member project ids, in join order. */
+  private readonly projectsByInitiative = new Map<string, string[]>();
+  /** blocked project id → the project ids NATIVELY blocking it. */
+  private readonly projectBlockedBy = new Map<string, string[]>();
+
+  async createInitiative(input: { name: string; description: string }): Promise<{ id: string }> {
+    const id = `init-${++this.initiativeCounter}`;
+    this.initiatives.set(id, { id, name: input.name, description: input.description });
+    return { id };
+  }
+
+  async getInitiative(id: string): Promise<LinearInitiative> {
+    const init = this.initiatives.get(id);
+    if (!init) throw new Error(`Linear initiative not found: ${id}`);
+    return { ...init };
+  }
+
+  async listInitiatives(): Promise<LinearInitiative[]> {
+    // Every initiative in the substrate — no team predicate exists to apply.
+    return [...this.initiatives.values()].map((i) => ({ ...i }));
+  }
+
+  async listInitiativeProjects(initiativeId: string): Promise<LinearProject[]> {
+    if (!this.initiatives.has(initiativeId)) {
+      throw new Error(`Linear initiative not found: ${initiativeId}`);
+    }
+    // DIRECT members only. This fake has no sub-initiative nesting to flatten,
+    // so the honest thing it CAN model is that membership is exactly what was
+    // joined here — including an EMPTY member project, which is the case the
+    // frontier's `unready` reading turns on.
+    const ids = this.projectsByInitiative.get(initiativeId) ?? [];
+    const out: LinearProject[] = [];
+    for (const id of ids) {
+      const prj = this.projects.get(id);
+      if (prj) out.push({ ...prj });
+    }
+    return out;
+  }
+
+  async addProjectToInitiative(initiativeId: string, projectId: string): Promise<void> {
+    if (!this.initiatives.has(initiativeId)) {
+      throw new Error(`Linear initiative not found: ${initiativeId}`);
+    }
+    if (!this.projects.has(projectId)) {
+      throw new Error(`Linear project not found: ${projectId}`);
+    }
+    const ids = this.projectsByInitiative.get(initiativeId) ?? [];
+    if (ids.includes(projectId)) return; // idempotent — the join entity is found before it is created
+    this.projectsByInitiative.set(initiativeId, [...ids, projectId]);
+  }
+
+  async getProjectBlockedBy(projectId: string): Promise<string[]> {
+    if (!this.projects.has(projectId)) {
+      throw new Error(`Linear project not found: ${projectId}`);
+    }
+    return [...(this.projectBlockedBy.get(projectId) ?? [])];
+  }
+
+  async addProjectBlockedBy(
+    blockedProjectId: string,
+    blockerProjectId: string,
+  ): Promise<void> {
+    if (this.projectRelationWriteError) throw this.projectRelationWriteError;
+    if (!this.projects.has(blockedProjectId)) {
+      throw new Error(`Linear project not found: ${blockedProjectId}`);
+    }
+    if (!this.projects.has(blockerProjectId)) {
+      throw new Error(`Linear project not found: ${blockerProjectId}`);
+    }
+    const list = this.projectBlockedBy.get(blockedProjectId) ?? [];
+    if (list.includes(blockerProjectId)) return;
+    this.projectBlockedBy.set(blockedProjectId, [...list, blockerProjectId]);
   }
 
   // ── test affordances (mirror InMemoryGitHubApi's setClosingPr shape) ────────
@@ -451,6 +550,69 @@ export class InMemoryLinearApi implements LinearApi {
     list.push(blocker);
     this.nativeBlockedBy.set(blocked, list);
   }
+
+  /**
+   * Test affordance (ADR-0045 decision 2): move a project into a status
+   * CATEGORY — the substrate the frontier's project-member `closed`/`claimed`
+   * facts are read from. NOT part of `LinearApi`: nothing in the facet writes a
+   * project status (the station reports, the Operator decides), so driving one
+   * is a test act exactly as `simulateMergedPrClose` is. Mirrors
+   * `setStateCatalog`'s stance.
+   */
+  setProjectStatus(projectId: string, statusType: LinearProjectStatusType): void {
+    const prj = this.projects.get(projectId);
+    if (!prj) throw new Error(`Linear project not found: ${projectId}`);
+    this.projects.set(projectId, { ...prj, statusType });
+  }
+
+  /**
+   * Seed a project with an EXPLICIT id (ADR-0045). The only way a
+   * REALISTICALLY-SHAPED Linear project id — a UUID — can enter this substrate
+   * at all, since {@link createProject} mints the fake's own short `prj-N`
+   * form. Without it the id-kind predicate is untestable against the shape it
+   * will actually meet in production, which is precisely where its one
+   * dangerous false positive lives. Mirrors `seedDocument`'s test-only stance.
+   */
+  seedProject(project: {
+    id: string;
+    name: string;
+    description?: string;
+    statusType?: LinearProjectStatusType;
+  }): void {
+    this.projects.set(project.id, {
+      id: project.id,
+      name: project.name,
+      description: project.description ?? '',
+      statusType: project.statusType ?? 'backlog',
+    });
+  }
+
+  /**
+   * Remove a project from the substrate WITHOUT touching the relations that
+   * point at it (ADR-0045). Models the one state the frontier's evidence
+   * discipline is about: a relation whose other side cannot be read at all — a
+   * deleted project, or one this workspace cannot reach. There is no facet verb
+   * that could produce it, which is exactly why the fake has to. Mirrors
+   * `failRelationWrites`'s test-only stance.
+   */
+  forgetProject(projectId: string): void {
+    this.projects.delete(projectId);
+  }
+
+  /**
+   * Test affordance (ADR-0045 decision 4): force the production
+   * {@link addProjectBlockedBy} write to REJECT with `error` (a rejected
+   * `projectRelationCreate`), or pass `null` to clear it. NOT part of
+   * `LinearApi` — the `createGoalMember` residue spec reaches it to prove that
+   * a failed edge after a landed mint is reported LOUDLY, naming the minted
+   * member, rather than swallowed the way the best-effort ISSUE mirror is.
+   */
+  failProjectRelationWrites(error: Error | null): void {
+    this.projectRelationWriteError = error ?? undefined;
+  }
+
+  /** When set, {@link addProjectBlockedBy} rejects with it (models a failed `projectRelationCreate`). */
+  private projectRelationWriteError: Error | undefined;
 
   /**
    * Test affordance (ADR-0020 write half): force the production

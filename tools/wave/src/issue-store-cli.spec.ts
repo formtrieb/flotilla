@@ -1109,6 +1109,101 @@ describe('issue-store-cli — goal ops', () => {
     expect((JSON.parse(outCaptured) as { memberIds: string[] }).memberIds).toEqual([issueId]);
   });
 
+  it('goal-create-member mints a BARE member, joins it, and prints its id as TEXT', async () => {
+    // The cut pass's one-call write path (ADR-0045 decision 3). Three claims in
+    // one run, because any two without the third would pass while the verb was
+    // still broken: the id is printed, the member IS in the goal, and the member
+    // is bare (`unready`) rather than something a wave could draw.
+    const store = tmpStore();
+    const goalPath = writeGoalInput({ title: 'Ship it', filingHint: 'ship-it' });
+    await runIssueStore(['goal-create', '--input', goalPath], store);
+    const goalId = outCaptured.trim();
+    outCaptured = '';
+
+    const memberPath = writeGoalInput({
+      title: 'a workstream that must exist',
+      filingHint: 'a-workstream',
+      bodySections: [{ heading: 'Gap', markdown: 'the shape is not known yet.' }],
+    });
+    expect(await runIssueStore(['goal-create-member', goalId, '--input', memberPath], store)).toBe(
+      0,
+    );
+    const memberId = outCaptured.trim();
+    expect(memberId.length).toBeGreaterThan(0);
+    expect(memberId).not.toContain('{'); // TEXT, not JSON — same as create/goal-create
+    outCaptured = '';
+
+    await runIssueStore(['goal-read', goalId], store);
+    expect((JSON.parse(outCaptured) as { memberIds: string[] }).memberIds).toEqual([memberId]);
+    outCaptured = '';
+
+    await runIssueStore(['goal-frontier', goalId], store);
+    const frontier = JSON.parse(outCaptured) as { readings: { id: string; state: string }[] };
+    expect(frontier.readings).toEqual([
+      { id: memberId, state: 'unready', unresolvedBlockers: [] },
+    ]);
+  });
+
+  it('goal-create-member rejects a malformed/incomplete input as a USAGE error, minting nothing', async () => {
+    const store = tmpStore();
+    const goalPath = writeGoalInput({ title: 'g', filingHint: 'g' });
+    await runIssueStore(['goal-create', '--input', goalPath], store);
+    const goalId = outCaptured.trim();
+    outCaptured = '';
+
+    const bad = join(mkdtempSync(join(tmpdir(), 'goal-member-bad-')), 'x.json');
+    writeFileSync(bad, '{ not json', 'utf-8');
+    expect(await runIssueStore(['goal-create-member', goalId, '--input', bad], store)).toBe(2);
+
+    errCaptured = '';
+    expect(
+      await runIssueStore(
+        ['goal-create-member', goalId, '--input', writeGoalInput({ filingHint: 'x' })],
+        store,
+      ),
+    ).toBe(2);
+    expect(errCaptured).toContain('title');
+
+    errCaptured = '';
+    expect(
+      await runIssueStore(
+        ['goal-create-member', goalId, '--input', writeGoalInput({ title: 'x' })],
+        store,
+      ),
+    ).toBe(2);
+    expect(errCaptured).toContain('filingHint');
+
+    // …and none of the three refusals filed anything.
+    outCaptured = '';
+    await runIssueStore(['goal-read', goalId], store);
+    expect((JSON.parse(outCaptured) as { memberIds: string[] }).memberIds).toEqual([]);
+  });
+
+  it('goal-create-member surfaces a store REFUSAL as a domain failure (exit 1), not a usage error', async () => {
+    // A bodyless member is `classifyCreateInput`'s rule, not the CLI's — the
+    // runner deliberately does not restate it, so the refusal arrives from the
+    // store. Exit 1 is the honest code: the store threw.
+    const store = tmpStore();
+    const goalPath = writeGoalInput({ title: 'g', filingHint: 'g' });
+    await runIssueStore(['goal-create', '--input', goalPath], store);
+    const goalId = outCaptured.trim();
+    outCaptured = '';
+    errCaptured = '';
+
+    expect(
+      await runIssueStore(
+        [
+          'goal-create-member',
+          goalId,
+          '--input',
+          writeGoalInput({ title: 'x', filingHint: 'x', bodySections: [] }),
+        ],
+        store,
+      ),
+    ).toBe(1);
+    expect(outCaptured).toBe('');
+  });
+
   it('goal-frontier prints the full reading — states, counts, the open remainder, and `complete`', async () => {
     const store = tmpStore();
     await runIssueStore(['create', '--input', writeInput()], store);
@@ -1160,7 +1255,11 @@ describe('issue-store-cli — goal ops', () => {
     for (const [args, marker] of [
       [['goal-create'], 'goal-create --input'],
       [['goal-read'], 'goal-read <goalId>'],
-      [['goal-assign'], 'goal-assign <goalId> <issueId>'],
+      // `<memberId>`, not `<issueId>`: the member kind follows the binding
+      // (ADR-0045), and the usage line is where a caller finds that out.
+      [['goal-assign'], 'goal-assign <goalId> <memberId>'],
+      [['goal-create-member'], 'goal-create-member <goalId> --input'],
+      [['goal-create-member', 'g1'], 'goal-create-member <goalId> --input'],
       [['goal-frontier'], 'goal-frontier <goalId>'],
     ] as [string[], string][]) {
       errCaptured = '';

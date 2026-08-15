@@ -36,10 +36,16 @@
 import type {
   LinearApi,
   LinearIssue,
+  LinearInitiative,
   LinearProject,
+  LinearProjectStatusType,
   LinearStateType,
   LinearCreateIssueInput,
   LinearPrAttachment,
+} from './linear-api';
+import {
+  PROJECT_BLOCKS_RELATION_TYPE,
+  PROJECT_RELATION_ANCHOR_TYPE,
 } from './linear-api';
 import { defaultLinearHttp, type LinearHttp } from './linear-http';
 
@@ -190,10 +196,17 @@ const CREATE_ISSUE_MUTATION = `mutation CreateIssue($input: IssueCreateInput!) {
 // use for it either way — whether the CONTAINER is open says nothing about
 // whether its members are done, and the facet ships no `closeGoal`.
 
+// `status { type }` joins every project selection below (ADR-0045 decision 2):
+// `Project.status: ProjectStatus!` and `ProjectStatus.type: ProjectStatusType!`
+// (`backlog | planned | started | paused | completed | canceled`), read from the
+// published schema 2026-08-15, this dispatch. The status NAME is
+// consumer-customizable and so unreadable as a rule; the fixed CATEGORY is what
+// the frontier maps. This is also why `Project.state` stays unselected — the
+// schema marks it `@deprecated(reason: "Use project.status instead")`.
 const CREATE_PROJECT_MUTATION = `mutation CreateProject($input: ProjectCreateInput!) {
   projectCreate(input: $input) {
     success
-    project { id name description }
+    project { id name description status { type } }
   }
 }`;
 
@@ -202,6 +215,7 @@ const GET_PROJECT_QUERY = `query GetProject($id: String!) {
     id
     name
     description
+    status { type }
   }
 }`;
 
@@ -212,9 +226,115 @@ const LIST_TEAM_PROJECTS_QUERY = `query ListTeamProjects($teamId: String!, $firs
         id
         name
         description
+        status { type }
       }
       pageInfo { hasNextPage endCursor }
     }
+  }
+}`;
+
+// ── Goal facet (ADR-0045): initiatives, and native project dependencies ──────
+//
+// Read verbatim from Linear's published GraphQL schema (`linear/linear` →
+// `packages/sdk/src/schema.graphql`, read 2026-08-15, THIS dispatch — ADR-0030's
+// declared-unexecutable-path comparison; no live Linear credential is available
+// to this row, so none of it is live-proven and the first `goal` station run on
+// an initiative-bound consumer is the gate):
+//
+//   - `initiativeCreate(input: InitiativeCreateInput!): InitiativePayload!`,
+//     payload `{ initiative, lastSyncId, success }`. `InitiativeCreateInput`
+//     requires only `name: String!`; `description: String` is optional and there
+//     is NO team field — initiatives live above teams.
+//   - `initiative(id: String!): Initiative!` for the single read.
+//   - the ROOT `initiatives(first, after, …): InitiativeConnection!` for the
+//     list — workspace-wide by construction, which is the documented divergence
+//     from the team-scoped `Team.projects` connection (ADR-0045 decision 5).
+//   - `Initiative.projects(first, after, includeSubInitiatives, …):
+//     ProjectConnection!` for membership. `includeSubInitiatives` is documented
+//     "Defaults to true", so it is passed EXPLICITLY false below — the default
+//     would flatten a sub-initiative's projects into this goal's members.
+//   - `initiativeToProjectCreate(input: InitiativeToProjectCreateInput!):
+//     InitiativeToProjectPayload!` for the join; its input requires
+//     `initiativeId: String!` and `projectId: String!`.
+//   - `projectRelationCreate` / `Project.inverseRelations` for the dependency
+//     arm — the value-level read-stamp for `type`/`anchorType` lives on
+//     `PROJECT_BLOCKS_RELATION_TYPE` in linear-api.ts, including what it does
+//     and does NOT evidence.
+
+const CREATE_INITIATIVE_MUTATION = `mutation CreateInitiative($input: InitiativeCreateInput!) {
+  initiativeCreate(input: $input) {
+    success
+    initiative { id name description }
+  }
+}`;
+
+const GET_INITIATIVE_QUERY = `query GetInitiative($id: String!) {
+  initiative(id: $id) {
+    id
+    name
+    description
+  }
+}`;
+
+const LIST_INITIATIVES_QUERY = `query ListInitiatives($first: Int!, $after: String) {
+  initiatives(first: $first, after: $after) {
+    nodes {
+      id
+      name
+      description
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+/**
+ * An initiative's DIRECT member projects. `includeSubInitiatives: false` is the
+ * whole of ADR-0045 decision 1 at the wire: Linear defaults that argument to
+ * TRUE, so omitting it would quietly report a sub-initiative's projects as this
+ * goal's own members — a flattening arriving through a vendor default rather
+ * than through a query anyone wrote.
+ */
+const LIST_INITIATIVE_PROJECTS_QUERY = `query ListInitiativeProjects($id: String!, $first: Int!, $after: String) {
+  initiative(id: $id) {
+    projects(first: $first, after: $after, includeSubInitiatives: false) {
+      nodes {
+        id
+        name
+        description
+        status { type }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
+const CREATE_INITIATIVE_TO_PROJECT_MUTATION = `mutation CreateInitiativeToProject($input: InitiativeToProjectCreateInput!) {
+  initiativeToProjectCreate(input: $input) {
+    success
+  }
+}`;
+
+/**
+ * A project's blocked-by side. `inverseRelations` — never `relations` — for the
+ * same directional reason the issue arm reads the inverse side: a relation "A
+ * blocks B" is stored on A and surfaces on B as an inverse.
+ */
+const LIST_PROJECT_INVERSE_RELATIONS_QUERY = `query ListProjectInverseRelations($id: String!, $first: Int!, $after: String) {
+  project(id: $id) {
+    inverseRelations(first: $first, after: $after) {
+      nodes {
+        type
+        project { id }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
+const CREATE_PROJECT_RELATION_MUTATION = `mutation CreateProjectRelation($input: ProjectRelationCreateInput!) {
+  projectRelationCreate(input: $input) {
+    success
+    projectRelation { id }
   }
 }`;
 
@@ -846,6 +966,184 @@ export class RealLinearApi implements LinearApi {
     return out;
   }
 
+  // ── Goal facet (ADR-0045): initiatives, and native project dependencies ────
+
+  async createInitiative(input: { name: string; description: string }): Promise<{ id: string }> {
+    // NO `ensureCatalog()` here, and the omission is the decision:
+    // `InitiativeCreateInput` carries no team field at all, because initiatives
+    // live above teams. `createProject` calls it precisely because
+    // `ProjectCreateInput.teamIds` is required — the asymmetry is the schema's.
+    const { data } = await this.gql('CreateInitiative', CREATE_INITIATIVE_MUTATION, {
+      input: { name: input.name, description: input.description },
+    });
+    const payload = data.initiativeCreate as Record<string, unknown> | undefined;
+    if (payload?.success !== true) {
+      throw new LinearApiError('CreateInitiative', 200, 'initiativeCreate did not report success');
+    }
+    const initiative = payload.initiative as Record<string, unknown> | undefined;
+    const id = initiative?.id;
+    if (typeof id !== 'string') {
+      throw new LinearApiError('CreateInitiative', 200, 'initiativeCreate did not return an initiative id');
+    }
+    return { id };
+  }
+
+  async getInitiative(id: string): Promise<LinearInitiative> {
+    const { data } = await this.gql('GetInitiative', GET_INITIATIVE_QUERY, { id });
+    const node = data.initiative as Record<string, unknown> | null | undefined;
+    if (!node) {
+      // A domain 404 (HTTP 200, null node), mirroring `getProject`.
+      throw new Error(`Linear initiative not found: ${id}`);
+    }
+    return toLinearInitiative(node);
+  }
+
+  async listInitiatives(): Promise<LinearInitiative[]> {
+    // Workspace-wide, deliberately — the ROOT connection rather than any team
+    // one, because initiatives span teams (ADR-0045 decision 5). No
+    // `ensureCatalog()`: there is no team id to resolve for this read.
+    const out: LinearInitiative[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const { data } = await this.gql('ListInitiatives', LIST_INITIATIVES_QUERY, {
+        // ACCEPTED DIVERGENCE — page size 100 where the vendor documents 50
+        // ("The first 50 results are returned by default without query arguments",
+        // linear.app/developers/pagination, re-read 2026-08-15; no maximum stated).
+        // Deliberate, and the same call this adapter's four other paged reads make:
+        // the loop drains the cursor to exhaustion, so the page size changes only
+        // the round-trip count of a full read, never its result set.
+        first: 100,
+        after,
+      });
+      const connection = (data.initiatives ?? {}) as Record<string, unknown>;
+      const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
+      for (const raw of nodes) out.push(toLinearInitiative(raw));
+      const pageInfo = (connection.pageInfo ?? {}) as Record<string, unknown>;
+      if (pageInfo.hasNextPage !== true) break;
+      after = typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : undefined;
+      if (!after) break; // defensive: hasNextPage=true but no cursor
+    }
+    return out;
+  }
+
+  async listInitiativeProjects(initiativeId: string): Promise<LinearProject[]> {
+    // Resolve the initiative FIRST so an unknown id fails as "no such goal"
+    // rather than reading back as "a goal with no members" — the same line
+    // `listProjectIssues` draws one container down.
+    await this.getInitiative(initiativeId);
+    const out: LinearProject[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const { data } = await this.gql('ListInitiativeProjects', LIST_INITIATIVE_PROJECTS_QUERY, {
+        id: initiativeId,
+        // ACCEPTED DIVERGENCE — page size 100 where the vendor documents 50; see
+        // `listInitiatives` above for the full reasoning.
+        first: 100,
+        after,
+      });
+      const initiative = (data.initiative ?? {}) as Record<string, unknown>;
+      const connection = (initiative.projects ?? {}) as Record<string, unknown>;
+      const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
+      // NO status filter: an EMPTY or a COMPLETED member project is still a
+      // member, and dropping either would report a goal complete over work that
+      // was never built (the falsification ADR-0045 rests on).
+      for (const raw of nodes) out.push(toLinearProject(raw));
+      const pageInfo = (connection.pageInfo ?? {}) as Record<string, unknown>;
+      if (pageInfo.hasNextPage !== true) break;
+      after = typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : undefined;
+      if (!after) break; // defensive: hasNextPage=true but no cursor
+    }
+    return out;
+  }
+
+  async addProjectToInitiative(initiativeId: string, projectId: string): Promise<void> {
+    // Find-before-create, because this membership is a JOIN ENTITY rather than a
+    // pointer: `initiativeToProjectCreate` called twice would mint two rows,
+    // where `setIssueProject` called twice writes the same field. The facet
+    // documents `assignToGoal` as idempotent, so the idempotence has to be
+    // bought here rather than inherited.
+    const existing = await this.listInitiativeProjects(initiativeId); // throws on an unknown initiative
+    if (existing.some((p) => p.id === projectId)) return;
+    await this.getProject(projectId); // throws on an unknown project
+    const { data } = await this.gql(
+      'CreateInitiativeToProject',
+      CREATE_INITIATIVE_TO_PROJECT_MUTATION,
+      { input: { initiativeId, projectId } },
+    );
+    const payload = data.initiativeToProjectCreate as Record<string, unknown> | undefined;
+    if (payload?.success !== true) {
+      throw new LinearApiError(
+        'CreateInitiativeToProject',
+        200,
+        'initiativeToProjectCreate did not report success',
+      );
+    }
+  }
+
+  async getProjectBlockedBy(projectId: string): Promise<string[]> {
+    await this.getProject(projectId); // throws on an unknown project
+    const out: string[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const { data } = await this.gql(
+        'ListProjectInverseRelations',
+        LIST_PROJECT_INVERSE_RELATIONS_QUERY,
+        { id: projectId, first: 100, after },
+      );
+      const project = (data.project ?? {}) as Record<string, unknown>;
+      const connection = (project.inverseRelations ?? {}) as Record<string, unknown>;
+      const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
+      for (const raw of nodes) {
+        // Keep ONLY blocking relations: `related` and any other free-form type
+        // are not dependencies, and a frontier that read them as blockers would
+        // report `blocked` over a merely-adjacent project. Same filter the issue
+        // arm's `toBlockedByIdentifiers` applies, on the same constant.
+        if (raw.type !== PROJECT_BLOCKS_RELATION_TYPE) continue;
+        const source = (raw.project ?? {}) as Record<string, unknown>;
+        if (typeof source.id === 'string') out.push(source.id);
+      }
+      const pageInfo = (connection.pageInfo ?? {}) as Record<string, unknown>;
+      if (pageInfo.hasNextPage !== true) break;
+      after = typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : undefined;
+      if (!after) break; // defensive: hasNextPage=true but no cursor
+    }
+    return out;
+  }
+
+  async addProjectBlockedBy(
+    blockedProjectId: string,
+    blockerProjectId: string,
+  ): Promise<void> {
+    // Both sides resolved first, so an unknown project fails as a domain 404
+    // rather than as a GraphQL rejection nobody can read.
+    await this.getProject(blockedProjectId);
+    await this.getProject(blockerProjectId);
+    const { data } = await this.gql('CreateProjectRelation', CREATE_PROJECT_RELATION_MUTATION, {
+      // `projectId` = the BLOCKER (the source that "blocks"), `relatedProjectId`
+      // = the BLOCKED project — the exact inverse `getProjectBlockedBy` reads
+      // back, which is why that read goes through `inverseRelations`. Same
+      // direction the issue arm's `addBlockedBy` writes.
+      //
+      // The two milestone ids are deliberately never sent: the facet anchors at
+      // whole-project granularity, which is what the two anchor types declare.
+      input: {
+        projectId: blockerProjectId,
+        relatedProjectId: blockedProjectId,
+        type: PROJECT_BLOCKS_RELATION_TYPE,
+        anchorType: PROJECT_RELATION_ANCHOR_TYPE,
+        relatedAnchorType: PROJECT_RELATION_ANCHOR_TYPE,
+      },
+    });
+    const payload = data.projectRelationCreate as Record<string, unknown> | undefined;
+    if (payload?.success !== true) {
+      throw new LinearApiError(
+        'CreateProjectRelation',
+        200,
+        'projectRelationCreate did not report success',
+      );
+    }
+  }
+
   // ── internals ─────────────────────────────────────────────────────────────
 
   /** One GraphQL round-trip; centralizes both failure modes (brief: non-2xx OR `errors[]` → typed error). */
@@ -1089,6 +1387,47 @@ function toLinearIssue(node: ResolvedIssueNode): LinearIssue {
  * `"undefined"` a bare cast would produce.
  */
 function toLinearProject(raw: Record<string, unknown>): LinearProject {
+  const status = (raw.status ?? {}) as Record<string, unknown>;
+  return {
+    id: String(raw.id),
+    name: typeof raw.name === 'string' ? raw.name : '',
+    description: typeof raw.description === 'string' ? raw.description : '',
+    statusType: toProjectStatusType(status.type),
+  };
+}
+
+/**
+ * The six `ProjectStatusType` categories, as data — the membership test
+ * {@link toProjectStatusType} applies (published schema, read 2026-08-15).
+ */
+const PROJECT_STATUS_TYPES: readonly LinearProjectStatusType[] = [
+  'backlog',
+  'planned',
+  'started',
+  'paused',
+  'completed',
+  'canceled',
+];
+
+/**
+ * Narrow a raw `ProjectStatus.type` to the fixed category union.
+ *
+ * An unrecognized value falls back to `backlog` — the same defensive stance
+ * {@link toStateType} takes for issues, and the safe direction here: `backlog`
+ * is neither closed nor claimed nor eligible, so a category this adapter cannot
+ * read makes the member read `unready` rather than counterfeiting the positive
+ * claim `actionable` or the terminal claim `done`. Absent evidence must never
+ * clear a member (the `closed-unknown` discipline, on the frontier side).
+ */
+function toProjectStatusType(raw: unknown): LinearProjectStatusType {
+  return typeof raw === 'string' &&
+    (PROJECT_STATUS_TYPES as readonly string[]).includes(raw)
+    ? (raw as LinearProjectStatusType)
+    : 'backlog';
+}
+
+/** Narrow one raw Initiative node (ADR-0045) — same defensive narrowing as {@link toLinearProject}. */
+function toLinearInitiative(raw: Record<string, unknown>): LinearInitiative {
   return {
     id: String(raw.id),
     name: typeof raw.name === 'string' ? raw.name : '',

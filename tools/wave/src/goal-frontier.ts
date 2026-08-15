@@ -15,6 +15,18 @@
  * reading per member. That split is what lets three genuinely different native
  * containers share one classification rule instead of three lookalikes.
  *
+ * **ADR-0045 amendment — one vocabulary at every member GRANULARITY.** A Goal's
+ * members are the bound container's direct native members, so a member is an
+ * issue under three of the four bindings and a PROJECT under a Linear
+ * Initiative. The five readings, the ladder below, and
+ * {@link computeGoalFrontier} are untouched by that: the adapter maps its own
+ * per-kind facts onto the same four booleans-plus-blockers. A project reads
+ * `closed` from its own `completed`/`canceled` status exactly as an issue reads
+ * it from a terminal state, `claimed` from `started`/`paused` or a wave-claimed
+ * open issue inside, and `eligible` from an open issue inside carrying the
+ * marker. The engine never grew a second, lookalike ladder — which is precisely
+ * what the classification rule being ONE seam is worth.
+ *
  * **Completion is literally "the frontier is empty."** {@link GoalFrontier.complete}
  * reports it; nothing here closes anything. Closing the container is the
  * Operator's act in the tracker and is deliberately NOT a facet verb — the
@@ -23,6 +35,28 @@
  */
 
 import type { IssueRef } from './contract';
+
+/**
+ * How a reading NAMES one unresolved blocker.
+ *
+ * Two spellings, because a Goal's members are the bound container's DIRECT
+ * native members (ADR-0045 decision 1) and the two member kinds have two id
+ * shapes:
+ *
+ *  - an `IssueRef` for an ISSUE member — the `{slug?, issue}` shape the body
+ *    codec, the DoR gate and the conflict map already speak, unchanged from
+ *    ADR-0044;
+ *  - a bare opaque MEMBER ID for a member kind that has no `IssueRef` spelling
+ *    at all: a Linear project id is a UUID, not `<slug>#<n>`, and there is no
+ *    honest `IssueRef` to squeeze it into.
+ *
+ * Deliberately a union rather than a widened `IssueRef` with optional halves: a
+ * ref that could be *either* shape would make every existing consumer's
+ * `ref.issue` read possibly-undefined, and the two shapes are genuinely
+ * different id spaces rather than two renderings of one. A caller narrows with
+ * `typeof b === 'string'`.
+ */
+export type GoalBlocker = IssueRef | string;
 
 /**
  * The five readings a goal member can have — one terminal bookend and four open
@@ -101,8 +135,12 @@ export interface GoalMemberFacts {
    * positive claim that NOTHING blocks this member. An edge the store cannot
    * see is not evidence that the edge is clear, so it must never be able to
    * counterfeit one.
+   *
+   * Under a PROJECT-member binding these are the member's native project
+   * relations whose other side is not closed, named as bare member ids — see
+   * {@link GoalBlocker}.
    */
-  unresolvedBlockers: readonly IssueRef[];
+  unresolvedBlockers: readonly GoalBlocker[];
 }
 
 /** One member's reading — its state plus the evidence the state rests on. */
@@ -114,7 +152,7 @@ export interface GoalMemberReading {
    * `blocked` reading names WHAT it waits on rather than merely asserting it
    * waits. Empty for every other state.
    */
-  unresolvedBlockers: readonly IssueRef[];
+  unresolvedBlockers: readonly GoalBlocker[];
 }
 
 /** The Goal's derived open remainder — the whole answer of the frontier query. */
