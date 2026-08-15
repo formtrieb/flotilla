@@ -158,7 +158,7 @@ If no trigger fired, **omit the field**. An executable core path pays nothing.
 | `reviewerFocusItems` | yes | `[]` when none; sibling/advisory/needs-human items here |
 | `lintTestSummary` | no | the re-run result (or `"no verify profile"` when absent) |
 | `gitStateSane` | no | conjunction of the Check-2 sub-checks |
-| `documentedFormComparison` | no *in the schema*, **yes by contract when a Check-6 trigger fired** | `{ trigger, sources[], divergences[{ description, deliberate }] }`. Flat + optional because a schema-root conditional means a top-level `anyOf`/`if`, which the agent boundary rejects (W5-F1) — same brief-enforced-not-schema-enforced split as the driver copy's `prUrl` invariant. |
+| `documentedFormComparison` | no *in the schema*, **yes by contract when a Check-6 trigger fired** | `{ trigger, sources[], divergences[{ description, deliberate }] }`. Flat + optional — **not** because the boundary refuses a schema-root conditional (measured with controls: a root `anyOf`/`oneOf`/`allOf` is rejected, W5-F1; a root `if`/`then` is accepted and genuinely enforced) but because the antecedent `trigger` is a field you author yourself, so a root conditional would buy shape and never truth ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md) Amendment 2026-08-14 splits that onto its own enforcement rung). Same brief-enforced-not-schema-enforced split as the driver copy's `prUrl` invariant — a placement decision, never a cue to re-encode it as a root `if`. |
 
 `briefProfile` is **gone** (the reviewer is uniform). The schema's `additionalProperties: false` rejects it — never emit it. The `agent({ schema })` boundary validates this object before `wave-start`'s `route-verdict` reads `verdict` + `riskClass`.
 

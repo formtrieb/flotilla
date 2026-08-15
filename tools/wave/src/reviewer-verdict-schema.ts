@@ -183,14 +183,21 @@ export interface ReviewerVerdict {
    * into `acVerification[]` (ADR-0030).
    *
    * **Flat and optional, deliberately.** The requirement is conditional ("when
-   * a trigger fired"), but encoding that condition in the schema would mean a
-   * top-level `anyOf`/`if` — exactly the shape the agent tool's `input_schema`
-   * validation rejects outright at the `agent({ schema })` boundary (live:
-   * W5-F1, which failed every Worker dispatch of a wave instantly, 0 tokens).
-   * So the schema keeps the field flat-optional and the **contract prose**
-   * (`.claude/agents/wave-reviewer.md` Check 6) carries the requirement — the
-   * same brief-enforced-not-schema-enforced division the driver copy's `prUrl`
-   * invariant already uses.
+   * a trigger fired"), and the schema root is the wrong home for it — not
+   * because the boundary refuses the shape. Measured with positive and
+   * negative controls: a top-level `anyOf`/`oneOf`/`allOf` IS rejected
+   * outright at the `agent({ schema })` boundary (live: W5-F1, which failed
+   * every Worker dispatch of a wave instantly, 0 tokens), while a top-level
+   * `if`/`then` is accepted and genuinely enforced. It stays out because the
+   * antecedent is `trigger`, a field the Reviewer itself authors: cornered on
+   * a consequent it cannot satisfy, an author changes the antecedent rather
+   * than failing, so a root conditional would buy shape and never truth
+   * (ADR-0034 Amendment 2026-08-14 — engine refusal and schema boundary are
+   * separate rungs). So the schema keeps the field flat-optional and the
+   * **contract prose** (`.claude/agents/wave-reviewer.md` Check 6) carries the
+   * requirement — the same brief-enforced-not-schema-enforced division the
+   * driver copy's `prUrl` invariant already uses. A placement decision, never
+   * a cue to re-encode the condition as a root `if`/`then`.
    *
    * Absent on the common case: a row whose core path is executable fires no
    * trigger and pays nothing.
