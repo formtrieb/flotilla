@@ -72,13 +72,14 @@ const WAVE_SHARED_REL = '.claude/skills/wave-shared/SKILL.md';
 const WAVE_PLAN_REL = '.claude/skills/wave-plan/SKILL.md';
 
 /**
- * The population floor. Thirteen skills ship today; a guard that silently
- * stopped finding bodies would be green for the wrong reason, and "13" is also
- * the number the convention itself states, so it is pinned exactly rather than
- * as a floor. A fourteenth skill is a deliberate edit here AND a planted clause
- * in the same diff — which is the point.
+ * The population floor. Fourteen skills ship today; a guard that silently
+ * stopped finding bodies would be green for the wrong reason, so the number is
+ * pinned exactly rather than as a floor. A fifteenth skill is a deliberate edit
+ * here AND a planted clause in the same diff — which is the point. The `goal`
+ * station is the first to have gone through that ritual: it landed with this
+ * const bumped from 13 and its own planted copy of the clause.
  */
-const SHIPPED_SKILL_COUNT = 13;
+const SHIPPED_SKILL_COUNT = 14;
 
 /**
  * THE SOURCE CONSTANT. Every SKILL.md body carries this string verbatim.
@@ -88,8 +89,8 @@ const SHIPPED_SKILL_COUNT = 13;
  * register rule, the direct address, the installed/source form switch, and the
  * sibling-path read pointer at the long form.
  *
- * Edit protocol: change it HERE, then re-plant all thirteen copies in the same
- * diff. A copy edited alone fails this spec by design.
+ * Edit protocol: change it HERE, then re-plant every copy in the same diff. A
+ * copy edited alone fails this spec by design.
  */
 const OPERATOR_REGISTER_CLAUSE = `## Operator register (Convention 16)
 
@@ -141,13 +142,14 @@ function extractPlantedClause(md: string): string | null {
   return end < 0 ? rest : rest.slice(0, end + 1);
 }
 
-describe('skill-clause-drift — the Convention 16 clause is byte-identical in all 13 SKILL.md bodies', () => {
+describe('skill-clause-drift — the Convention 16 clause is byte-identical in every SKILL.md body', () => {
   it('finds the whole population (a guard that matches nothing is green for the wrong reason)', () => {
     expect(SKILL_BODIES).toHaveLength(SHIPPED_SKILL_COUNT);
     // Both halves of the pipeline are in scope: the front half never loads
     // wave-shared, which is precisely why the clause is planted rather than
     // loaded, and a population that quietly covered only the back half would
     // leave the audience the convention was written for unguarded.
+    expect(SKILL_BODIES).toContain('.claude/skills/goal/SKILL.md');
     expect(SKILL_BODIES).toContain('.claude/skills/triage/SKILL.md');
     expect(SKILL_BODIES).toContain('.claude/skills/to-prd/SKILL.md');
     expect(SKILL_BODIES).toContain('.claude/skills/to-issues/SKILL.md');
@@ -168,10 +170,10 @@ describe('skill-clause-drift — the Convention 16 clause is byte-identical in a
     ).not.toBeNull();
     expect(
       planted,
-      `${rel}'s operator-register clause has DRIFTED from the source constant. Thirteen ` +
-        `hand-maintained copies rot one at a time; re-plant this body from ` +
+      `${rel}'s operator-register clause has DRIFTED from the source constant. Hand-maintained ` +
+        `copies rot one at a time; re-plant this body from ` +
         `OPERATOR_REGISTER_CLAUSE rather than editing the copy, and if the WORDING is what ` +
-        `should change, change the constant and re-plant all thirteen in the same diff.`,
+        `should change, change the constant and re-plant every copy in the same diff.`,
     ).toEqual(OPERATOR_REGISTER_CLAUSE);
   });
 

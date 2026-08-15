@@ -9,13 +9,14 @@ Answer "which eligible issues could form the next wave, and can they run alongsi
 
 Your job is the **judgment** — reading the report, flagging what needs attention, and helping the human pick the right set of ids. The CLI plumbing (the four commands, the exact sequence, the worked `CrossWaveResult` sample) lives in [reference/plan-mechanics.md](reference/plan-mechanics.md) — reach for it once you need to drive the engine. You never touch a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`), which selects the configured store.
 
-**M1 scope: candidate draw + cross-wave report + PRD panel + the dispatch-cost estimate. No batch-sizing heuristics** — sizing by worker-mix, risk-mix, or wallclock estimates is a soft CHARTER idea, not an M1 requirement. Do not invent heuristics. The dispatch-cost estimate (step 3c) is **not** an exception to that rule: it is arithmetic over the set in front of you, reported so the human can see the bill. It scores nothing, ranks nothing, filters nothing, and recommends no size.
+**M1 scope: candidate draw + cross-wave report + PRD panel + the read-only goal panel + the dispatch-cost estimate. No batch-sizing heuristics** — sizing by worker-mix, risk-mix, or wallclock estimates is a soft CHARTER idea, not an M1 requirement. Do not invent heuristics. The dispatch-cost estimate (step 3c) is **not** an exception to that rule: it is arithmetic over the set in front of you, reported so the human can see the bill. It scores nothing, ranks nothing, filters nothing, and recommends no size.
 
 ## When to Use
 
 - Planning the next wave from the backlog: you need to know which issues are eligible and whether running them beside current claims is safe.
 - Running a cross-wave check before handing ids to `wave-create`.
 - Reviewing the PRD panel to find un-sliced planning documents.
+- Reading the goal panel to see which named finish line each candidate serves — display only, never a reason to include a row.
 
 Do **not** use this to slice work into issues (`to-issues`), to triage an issue (`triage`), or to materialize a wave into a spine and worktrees (`wave-create`). wave-plan is the advisory pass; wave-create is the authoritative materialization.
 
@@ -99,6 +100,23 @@ Returns `DocumentView[]` (`{ id, title, body }`). List every PRD and **flag the 
 
 **Report the flag as what it derives: `○` means "no open slices", never "never sliced".** The two are indistinguishable from the candidate set alone, because a closed slice leaves that set carrying its `parent` backlink with it — so a fully-shipped PRD renders exactly like one that was never sliced, and the false-positive rate **grows with the repo's history** instead of staying constant. So the action a `○` row prescribes is a **check, not a slice**: look for slices carrying that PRD as `parent` among **closed** issues too (a tracker search for the PRD id, or its cross-reference list). Found → sliced and shipped, leave it alone. None anywhere → genuinely never sliced, and only then does `to-issues` apply. Legend: `✓` has open slices · `○` no open slices — shipped or never sliced, check which. Derivation, the rejected engine-side alternative, and the live occurrence: [reference/plan-mechanics.md](reference/plan-mechanics.md).
 
+### 4b. Goal panel — membership is display, never candidacy
+
+A **Goal** is a named finish line whose members live in one container on the tracker; the `goal` station cuts and curates it. This panel *reads* that membership and nothing else.
+
+Run it wherever a goal container resolves: the github and markdown stores carry a default, and a linear consumer must declare `store.goal.container` in `wave.config.json` for one to exist at all. Where nothing resolves, the op refuses by design and names that config key — there is simply no panel, so skip the step and say so. Never work around the refusal by reaching for a tracker CLI, and never treat an empty panel as a finding: a consumer that keeps no goals is the ordinary case.
+
+```bash
+{{wave-cli}} issue-store goal-list
+```
+
+Returns `GoalView[]` (`{ id, title, description, container, memberIds }`). Use it for exactly two read-only things, both derived skill-side from the already-loaded `listOpen` results — no second engine call, nothing persisted:
+
+- **A column.** Beside each candidate, name the goal whose `memberIds` contains its id (exact string match, the same discipline the PRD panel's `parent` match uses). The human choosing a set can then see which finish line each row moves.
+- **A filter.** "Show me only the candidates in that goal" narrows what is *displayed*. It never narrows, widens, or reorders what is eligible.
+
+**Membership authorizes nothing** (the goal station's own boundary — ADR-0044). A goal member is a candidate because it is eligible and passes DoR, and for no other reason; a non-member that is eligible is not demoted. So do not rank, score, sort, or pre-select by membership, and **never add a row to the candidate set that `listOpen` did not return** — a goal member missing from the pool is the readiness gate working, and the answer is to sharpen it (`triage`, then `to-issues`), never to reach past the gate here. Goals are also never cross-wave inputs: `cross-wave` takes candidates and claims, and a container id is neither.
+
 ### 5. Present the report; pick ids
 
 Present the full picture:
@@ -109,6 +127,7 @@ Present the full picture:
 - Public-API-change pairing advisory: any two-or-more `public-API-change` candidates flagged as a pairing — expect reconciled-merge landing rework even with disjoint `Files`; the human decides whether to serialize or split them across waves.
 - **Dispatch-cost estimate for the set** (step 3c): full-pipeline rows × ~4 agents, `foreground` rows named beside it at their reduced cost (Reviewer + verdict Scribe; zero Worker-side, because the session implements them itself), the heavy-row count, and any `HITL-required` rows named as excluded. If the human is weighing two candidate sets, give the line for each — one per set, so the comparison is visible without re-deriving it.
 - PRD panel: has open slices (✓) and no open slices (○ — shipped or never sliced; say which the check found, or that it is still unchecked).
+- Goal panel, where a finish line is bound: which one each candidate serves. It is a column you can filter on — it never makes a row a candidate, never orders the set, and never adds a row the eligible pool did not already contain.
 
 **Persist nothing.** The human picks the ids they want in the wave and hands them to `wave-create`.
 
@@ -118,6 +137,7 @@ Present the full picture:
 - **Taking `.length` of `blockedBy`.** It is a union — `'none' | IssueRef[]` — and `'none'.length === 4`, so the row with **no** blockers reports more than one with three, and beside a real count the table looks internally consistent. TypeScript does not catch it: `.length` is valid on both members, so it infers `number` with no narrowing prompt (`.map` *is* caught — the loud failure is the lucky one). And the skill layer reads this as JSON from the CLI, not as TypeScript at all. Narrow with `Array.isArray` / a `type` test first. Live: a consumer published exactly that table to its operator.
 - **Reading the PRD panel's `○` as "never sliced".** It derives "no **open** slices". A closed slice takes its `parent` backlink out of the candidate set with it, so a fully-shipped PRD is indistinguishable from a never-sliced one — and the error rate grows with the repo's history rather than staying constant. Check for closed slices before reaching for `to-issues`; live, six of seven flagged rows were fully shipped and slicing them again was the prescribed action.
 - **Treating a PRD as a candidate.** A PRD is never in `listOpen`; it only appears in the PRD panel via `listDocuments`. Do not include it in the candidate set or cross-wave inputs.
+- **Reading goal membership as candidacy.** A goal is a planning artifact and grants no execution rights: the eligibility set plus DoR stays the only gate into a wave. Render membership as a column or a filter — never as a reason to include, rank, order, or pre-select a row, and never as a source of ids the eligible pool did not return (sight, never permission — ADR-0044).
 - **Persisting state from wave-plan.** wave-plan is advisory — it writes nothing. The `queued` claim and the spine creation happen in `wave-create`.
 - **Inventing heuristics.** Do not score, rank, or filter candidates by wallclock, worker-mix, or risk-mix. Present the eligible set; the Operator decides. The step-3c cost line is not a heuristic — it is arithmetic over the set, reported and then left alone.
 - **Omitting the dispatch-cost line because the set "looks small".** Row count is exactly the intuition the line exists to correct: ~4 agent dispatches per row means six rows is roughly two dozen agents. Report it for every set you present.

@@ -19,7 +19,7 @@ flowchart LR
     setup["wave-setup<br>one-time bootstrap"]
     subgraph planning["Planning"]
         direction LR
-        t["triage"] --> p["to-prd"] --> i["to-issues"]
+        g["goal<br>the finish line"] --> t["triage"] --> p["to-prd"] --> i["to-issues"]
     end
     subgraph lifecycle["Wave lifecycle"]
         direction LR
@@ -32,6 +32,7 @@ flowchart LR
 | Skill | Phase | What it does |
 | --- | --- | --- |
 | `wave-setup` | Bootstrap, once per repo | Interviews you on tracker, eligibility labels, and verify commands; installs the engine and writes `wave.config.json` — the one `engine.cli` binding every other skill reads. |
+| `goal` | Planning | Manages a named finish line as a container on your tracker: cuts its opening frontier as bare placeholder tickets, curates who belongs, and reports what is still open. Read-only status pass; it never stamps readiness, never dispatches, and never declares the goal reached. |
 | `triage` | Planning | Works an incoming issue into shape: categorize, reproduce, gather what's missing, mark it ready for an agent or a human. |
 | `to-prd` | Planning | Captures a design conversation as a PRD, published as a tracker issue ready for slicing. |
 | `to-issues` | Planning | Slices a plan or PRD into independently-grabbable, wave-eligible issues — each with a declared file scope, risk/worker classification, and acceptance criteria. |
@@ -54,7 +55,7 @@ flotilla is two layers: a pure engine that is already harness-agnostic, and adap
 ```mermaid
 flowchart TB
     subgraph skills["Claude Code skills — the dispatch driver"]
-        S["wave-* · triage · to-prd · to-issues · report"]
+        S["wave-* · goal · triage · to-prd · to-issues · report"]
     end
     subgraph engine["Engine (tools/wave) — pure TypeScript, imports only node:* + fast-glob + micromatch"]
         CM["computeConflictMap<br>glob-set math"]
@@ -76,7 +77,7 @@ flowchart TB
 | Seam | What it is |
 | --- | --- |
 | **`IssueView`** | The canonical contract. Every adapter's whole job is `read(id) → IssueView` (id, risk, worker, declared files, blocked-by, acceptance criteria, coarse status) — the engine never knows which tracker an issue came from. |
-| **`IssueStore`** | `create · read · transition · close · listOpen`, plus facets for triage state, needs-attention flagging, closing-probe reads, and minimal authored-content amends. |
+| **`IssueStore`** | `create · read · transition · close · listOpen`, plus facets for triage state, needs-attention flagging, closing-probe reads, minimal authored-content amends, and the Goal container whose frontier is derived rather than written. |
 | **`SpineStore`** | The per-wave orchestration spine as durable local markdown — the write-ahead log a killed Coordinator resumes from. |
 | **Two-scope state** | Fine-grained states live only in the spine. The tracker sees a coarse projection — `available → queued → in-flight → in-review → done`, plus an orthogonal `needs-attention` flag — so humans and concurrent waves can see what is claimed. |
 | **Conflict map** | `computeConflictMap` is wave-agnostic pure glob-set math: feed it `(candidate wave) ∪ (everything queued or in-flight)` and it answers directly whether two waves can run side by side. |

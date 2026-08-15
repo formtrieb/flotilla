@@ -253,7 +253,7 @@ const CITATION_PLACEMENT_LEGACY: ReadonlyArray<{ file: string; seeded: number; w
 const MIN_SKILL_DOCS = 40; // 48 markdown files at landing
 const MIN_ANCHORED_LINKS = 60; // 77 anchored markdown links at landing
 const MIN_BARE_CITATIONS = 70; // 88 bare path citations at landing
-const EXPECTED_RESOLUTION_BLOCKS = 10; // the canonical `{{wave-cli}}` definition sites
+const EXPECTED_RESOLUTION_BLOCKS = 11; // the canonical `{{wave-cli}}` definition sites
 const MIN_SKILL_BODIES = 10; // 12 SKILL.md bodies at landing
 const MIN_BODY_CITATIONS = 130; // 146 ADR/retro/finding citations in those bodies at landing
 
@@ -1190,6 +1190,7 @@ describe('skill-reference-guard — class (c): every {{wave-cli}} resolution blo
       '.claude/skills/triage/reference/triage-mechanics.md',
       '.claude/skills/to-issues/reference/filing-mechanics.md',
       '.claude/skills/to-prd/reference/filing-mechanics.md',
+      '.claude/skills/goal/reference/goal-mechanics.md',
     ]) {
       expect(files, `no {{wave-cli}} resolution block found in ${f}`).toContain(f);
     }
