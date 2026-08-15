@@ -846,10 +846,22 @@ export {
   type LinearCreateIssueInput,
   type LinearPrAttachment,
   type LinearStateType,
-  // The Goal facet's Linear substrate (ADR-0044) — the PROJECT realization, the
-  // only one v1 ships. Initiative is a named follow-up, refused by name rather
-  // than silently capped.
+  // The Goal facet's Linear substrate — the PROJECT realization (ADR-0044) plus
+  // the INITIATIVE one (ADR-0045), which is where a project stops being only a
+  // container and becomes a goal MEMBER too. `LinearProjectStatusType` is the
+  // fixed category the frontier reads a project member's `closed`/`claimed`
+  // facts from, exactly as `LinearStateType` is for an issue.
   type LinearProject,
+  type LinearProjectStatusType,
+  type LinearInitiative,
+  // The two pinned project-relation strings (ADR-0045 decision 4). Exported
+  // BECAUSE they are the least-proven values in this adapter: Linear types
+  // `ProjectRelation.type`/`anchorType` as free `String`, so a consumer whose
+  // workspace answers differently needs to be able to name exactly which two
+  // constants to report. The read-stamp on `PROJECT_BLOCKS_RELATION_TYPE`
+  // states in full what the published schema does and does NOT evidence.
+  PROJECT_BLOCKS_RELATION_TYPE,
+  PROJECT_RELATION_ANCHOR_TYPE,
 } from './adapters/linear/linear-api';
 
 export {
@@ -1009,15 +1021,35 @@ export {
 // exactly as `normalizeEngineCli` is the one implementation of the `engine.cli`
 // rule. A fourth adapter re-deriving it would be a second rule that can drift —
 // the outcome ADR-0044 decision 4 exists to prevent.
+//
+// ADR-0045 widens this block along ONE axis — the MEMBER KIND. A Goal's members
+// are the bound container's direct native members, so the same third-party
+// adapter author must now also be able to name what kind of member their
+// binding holds (`GoalMemberKind`/`GOAL_MEMBER_KIND_BY_CONTAINER`/
+// `goalMemberKind`), apply the one shared id-kind refusal rather than
+// re-deriving it (`requireGoalMemberKind`, exported for exactly the reason
+// `requireGoalContainer` is), and mint a member through the one-act verb
+// (`CreateGoalMemberInput`). The two new typed failures ride along for the
+// `instanceof`-across-the-barrel reason every error in this file does: a
+// root-only consumer can RECEIVE `GoalMemberKindError` from `assignToGoal` and
+// `GoalMemberJoinError` from `createGoalMember`, and the second one carries the
+// only record that a minted member is sitting there unattached.
 export {
   type GoalContainer,
   GOAL_CONTAINERS,
+  type GoalMemberKind,
+  GOAL_MEMBER_KIND_BY_CONTAINER,
+  goalMemberKind,
   type CreateGoalInput,
+  type CreateGoalMemberInput,
   type GoalView,
   GoalBindingError,
   type GoalBindingFailure,
+  GoalMemberKindError,
+  GoalMemberJoinError,
   parseGoalContainer,
   requireGoalContainer,
+  requireGoalMemberKind,
 } from './adapters/issue-store';
 
 // The FRONTIER (ADR-0044 decision 5) — a Goal's derived open remainder.
@@ -1033,9 +1065,16 @@ export {
 // on every read, so there is no durable release marker for an agent to author
 // (the measured Wayfinder failure mode) and no verb here that could close a
 // goal — that is the Operator's act in the tracker.
+//
+// `GoalBlocker` joins the block with ADR-0045 and is the one shape change: a
+// reading's `unresolvedBlockers` are `IssueRef | string`, because a PROJECT
+// member's blocker is another project and a Linear project id is a UUID with no
+// honest `IssueRef` spelling. The five readings, the ladder, and
+// `computeGoalFrontier` itself are untouched.
 export {
   type GoalMemberState,
   GOAL_MEMBER_STATES,
+  type GoalBlocker,
   type GoalMemberFacts,
   type GoalMemberReading,
   type GoalFrontier,

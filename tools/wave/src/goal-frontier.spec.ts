@@ -263,4 +263,64 @@ describe('the frontier vocabulary is the ADR-0044 five, and nothing else', () =>
     );
     expect(GOAL_MEMBER_STATES).toHaveLength(5);
   });
+
+  it('…and it stays five at PROJECT member granularity too (ADR-0045 decision 2)', () => {
+    // The claim the amendment turns on: the engine never grew a second,
+    // lookalike ladder for the second member kind. Same facts in, same five
+    // readings out — the only thing that changed is who states the facts.
+    const projectMembers: GoalMemberFacts[] = [
+      // completed/canceled project → done
+      facts({ id: 'prj-done', closed: true }),
+      // started/paused, or a wave-claimed issue inside → in-motion
+      facts({ id: 'prj-moving', claimed: true }),
+      // an unresolved native project relation → blocked
+      facts({ id: 'prj-waiting', eligible: true, unresolvedBlockers: ['prj-blocker'] }),
+      // ≥1 eligible open issue inside, unclaimed, no relation → actionable
+      facts({ id: 'prj-drawable', eligible: true }),
+      // EMPTY, or all-unmarked issues inside → unready
+      facts({ id: 'prj-empty' }),
+    ];
+    const frontier = computeGoalFrontier('init-1', projectMembers);
+    expect(frontier.readings.map((r) => r.state)).toEqual([
+      'done',
+      'in-motion',
+      'blocked',
+      'actionable',
+      'unready',
+    ]);
+    expect(frontier.complete).toBe(false);
+  });
+});
+
+describe('a blocker is named in whichever id space its member kind has (ADR-0045)', () => {
+  it('a bare MEMBER-ID blocker survives the reading verbatim, beside the IssueRef form', () => {
+    // A Linear project id is a UUID with no honest `IssueRef` spelling, so the
+    // reading carries it as a plain string. Both spellings are asserted in one
+    // frontier: the union is real, not a replacement.
+    const frontier = computeGoalFrontier('goal-1', [
+      facts({ id: 'issue-member', unresolvedBlockers: [{ slug: 'other', issue: 7 }] }),
+      facts({
+        id: 'project-member',
+        unresolvedBlockers: ['550e8400-e29b-41d4-a716-446655440000'],
+      }),
+    ]);
+    expect(frontier.readings[0].state).toBe('blocked');
+    expect(frontier.readings[0].unresolvedBlockers).toEqual([{ slug: 'other', issue: 7 }]);
+    expect(frontier.readings[1].state).toBe('blocked');
+    expect(frontier.readings[1].unresolvedBlockers).toEqual([
+      '550e8400-e29b-41d4-a716-446655440000',
+    ]);
+  });
+
+  it('a non-`blocked` reading still carries NO blockers, whichever spelling they were', () => {
+    // The rung above `blocked` already decided the reading, so reporting the
+    // edge would claim it is load-bearing when it is not — unchanged by the
+    // widening.
+    const frontier = computeGoalFrontier('goal-1', [
+      facts({ id: 'moving', claimed: true, unresolvedBlockers: ['prj-x'] }),
+      facts({ id: 'finished', closed: true, unresolvedBlockers: ['prj-y'] }),
+    ]);
+    expect(frontier.readings[0].unresolvedBlockers).toEqual([]);
+    expect(frontier.readings[1].unresolvedBlockers).toEqual([]);
+  });
 });

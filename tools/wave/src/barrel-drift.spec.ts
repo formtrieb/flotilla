@@ -67,6 +67,21 @@ import {
   LinearTransitionVerifyError,
   createGitHubApiFromEnv,
   renderConflictMap,
+  // The ADR-0045 member-kind family, imported FROM THE ROOT for the same reason
+  // every name above is: if any of these regressed off the barrel this file
+  // would fail to load before a single `it` runs. Two of the four kinds this
+  // spec's allowlist reasoning cares about are represented — a shared RULE
+  // (`goalMemberKind`, `requireGoalMemberKind`), a typed ERROR class
+  // (`GoalMemberKindError`, `GoalMemberJoinError`), a data MAPPING
+  // (`GOAL_MEMBER_KIND_BY_CONTAINER`), and a pinned adapter CONSTANT
+  // (`PROJECT_BLOCKS_RELATION_TYPE`).
+  goalMemberKind,
+  requireGoalMemberKind,
+  GOAL_MEMBER_KIND_BY_CONTAINER,
+  GoalMemberKindError,
+  GoalMemberJoinError,
+  PROJECT_BLOCKS_RELATION_TYPE,
+  PROJECT_RELATION_ANCHOR_TYPE,
 } from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
@@ -600,6 +615,34 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     expect(typeof LinearTransitionVerifyError).toBe('function'); // class extends Error
     expect(typeof renderConflictMap).toBe('function'); // wave-md-rw's writer family
     expect(DEFAULT_ELIGIBILITY).toBeDefined();
+  });
+
+  it('the ADR-0045 member-kind family resolves by name — rules, errors, mapping and pinned constants alike', () => {
+    // The 578.2 lesson, applied in the same diff that adds the exports: a slice
+    // can stay perfectly inside its Files globs and still leave every new symbol
+    // unreachable from the package root, because the barrel is a SEPARATE
+    // surface and every in-repo import resolves fine without it.
+    expect(typeof goalMemberKind).toBe('function');
+    expect(typeof requireGoalMemberKind).toBe('function');
+    expect(typeof GoalMemberKindError).toBe('function'); // class extends Error
+    expect(typeof GoalMemberJoinError).toBe('function');
+    expect(GOAL_MEMBER_KIND_BY_CONTAINER).toBeDefined();
+    expect(typeof PROJECT_BLOCKS_RELATION_TYPE).toBe('string');
+    expect(typeof PROJECT_RELATION_ANCHOR_TYPE).toBe('string');
+
+    // …and they BEHAVE like the modules' own bindings rather than merely
+    // importing cleanly — the same standard the aliased pair below is held to.
+    expect(goalMemberKind('initiative')).toBe('project');
+    expect(goalMemberKind('milestone')).toBe('issue');
+    expect(GOAL_MEMBER_KIND_BY_CONTAINER.initiative).toBe('project');
+    expect(() =>
+      requireGoalMemberKind({
+        storeKind: 'linear',
+        container: 'initiative',
+        memberId: 'EX-1',
+        isIssueShaped: () => true,
+      }),
+    ).toThrow(GoalMemberKindError);
   });
 
   it('the aliased extractIssueId pair resolves to two DIFFERENT, genuinely importable bindings — not one shadowing the other', () => {

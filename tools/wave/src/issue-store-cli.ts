@@ -64,15 +64,25 @@
  *   flag     <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...]  → raises needs-attention (ADR-0006); nothing on stdout
  *   clear-flag <id>                                → clears needs-attention; nothing on stdout
  *
- * Goal facet ops (ADR-0044). Each addresses the native container bound by
- * `store.goal.container` in wave.config.json — GitHub defaults to `milestone`
- * and the markdown store to its goal file, while LINEAR HAS NO DEFAULT, so a
- * goal op against a linear store with no binding declared fails (exit 1) naming
- * the missing key rather than silently picking a container:
+ * Goal facet ops (ADR-0044 / ADR-0045). Each addresses the native container
+ * bound by `store.goal.container` in wave.config.json — GitHub defaults to
+ * `milestone` and the markdown store to its goal file, while LINEAR HAS NO
+ * DEFAULT, so a goal op against a linear store with no binding declared fails
+ * (exit 1) naming the missing key rather than silently picking a container.
+ *
+ * **The MEMBER-id ops below take a member id whose KIND follows that binding**
+ * (ADR-0045 decision 1): an issue id under `milestone`/`project`/`goal-file`, a
+ * PROJECT id under `initiative`. An issue-shaped id passed under an initiative
+ * binding is refused (exit 1) before any write:
  *   goal-create --input <CreateGoalInput.json>     → prints the opaque goal id (text, not JSON)
  *   goal-read <goalId>                             → prints the GoalView (JSON)
  *   goal-list                                      → prints GoalView[] (JSON)
- *   goal-assign <goalId> <issueId>                 → joins a member by curation; nothing on stdout
+ *   goal-assign <goalId> <memberId>                → joins a member by curation; nothing on stdout
+ *   goal-create-member <goalId> --input <CreateGoalMemberInput.json>
+ *                                                  → mints a BARE direct member and joins it in
+ *              one act; prints the opaque new member id (text, not JSON). The
+ *              member is bare on purpose — no eligibility marker — so nothing it
+ *              files can be drawn by a wave until a person sharpens it.
  *   goal-frontier <goalId>                         → prints the GoalFrontier (JSON): per member
  *              done | in-motion | actionable | blocked | unready, plus counts,
  *              the open remainder, and `complete`. READ-ONLY — it reports that
@@ -105,6 +115,7 @@ import type {
   NeedsAttentionPayload,
   PublishDocumentInput,
   CreateGoalInput,
+  CreateGoalMemberInput,
 } from './adapters/issue-store';
 import type { ApplyTriageInput } from './contract';
 import { flag, printJson } from './cli-utils';
@@ -151,10 +162,11 @@ type Op =
   | 'goal-read'
   | 'goal-list'
   | 'goal-assign'
+  | 'goal-create-member'
   | 'goal-frontier';
 
 const FULL_OP_LIST =
-  'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-frontier> [...args] [--config <path>]';
+  'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-create-member|goal-frontier> [...args] [--config <path>]';
 
 /**
  * Every op's own contract section (issue #505) — printed INSTEAD OF the full
@@ -268,8 +280,19 @@ const OP_CONTRACT: Record<Op, readonly string[]> = {
     'output: GoalView[], as JSON',
   ],
   'goal-assign': [
-    'usage: issue-store goal-assign <goalId> <issueId> [--config <path>]',
+    'usage: issue-store goal-assign <goalId> <memberId> [--config <path>]',
+    "  <memberId>'s KIND follows the binding (ADR-0045): an issue id under",
+    '    "milestone" | "project" | "goal-file"; a PROJECT id under "initiative"',
     'output: nothing on success (exit 0, empty stdout)',
+  ],
+  'goal-create-member': [
+    'usage: issue-store goal-create-member <goalId> --input <CreateGoalMemberInput.json> [--config <path>]',
+    '  input shape: { "title": "...", "filingHint": "...",',
+    '    "bodySections": [{ "heading": "...", "markdown": "..." }],',
+    '    "blockedBy": ["<memberId>", ...] }        ← optional; MEMBER ids, not refs',
+    '  mints a BARE direct member (no eligibility marker) and joins it in one act;',
+    '    the member KIND follows the binding — an issue, or a project under "initiative"',
+    'output: the opaque new member id, as plain text (not JSON)',
   ],
   'goal-frontier': [
     'usage: issue-store goal-frontier <goalId> [--config <path>]',
@@ -639,12 +662,60 @@ export async function runIssueStore(
 
       case 'goal-assign': {
         const goalId = args[1];
-        const issueId = args[2];
+        const memberId = args[2];
         if (goalId === undefined) return usage('goal-assign requires a <goalId>', 'goal-assign');
-        if (issueId === undefined) {
-          return usage('goal-assign requires an <issueId>', 'goal-assign');
+        if (memberId === undefined) {
+          return usage('goal-assign requires a <memberId>', 'goal-assign');
         }
-        await store.assignToGoal(goalId, issueId, resolveGoalContainer(args, injected));
+        await store.assignToGoal(goalId, memberId, resolveGoalContainer(args, injected));
+        return 0;
+      }
+
+      case 'goal-create-member': {
+        const goalId = args[1];
+        if (goalId === undefined) {
+          return usage('goal-create-member requires a <goalId>', 'goal-create-member');
+        }
+        const inputPath = flag(args, '--input');
+        if (inputPath === undefined) {
+          return usage('goal-create-member requires --input <path>', 'goal-create-member');
+        }
+        let memberInput: CreateGoalMemberInput;
+        try {
+          memberInput = JSON.parse(readFileSync(inputPath, 'utf-8')) as CreateGoalMemberInput;
+        } catch (err) {
+          return usage(
+            `cannot read --input ${inputPath}: ${(err as Error).message}`,
+            'goal-create-member',
+          );
+        }
+        // The same shallow shape guards `goal-create` applies, and for the same
+        // reason: a missing title/filingHint is a CALLER bug (exit 2), not a
+        // store failure. The BODY rule is deliberately not restated here — it is
+        // `classifyCreateInput`'s (`bare-without-body`), which every adapter runs
+        // as its first act, so a bodyless input is refused once by the owner of
+        // that rule rather than twice by two predicates that could drift.
+        if (typeof memberInput?.title !== 'string' || memberInput.title.trim() === '') {
+          return usage(
+            'goal-create-member requires a non-empty "title"',
+            'goal-create-member',
+          );
+        }
+        if (
+          typeof memberInput.filingHint !== 'string' ||
+          memberInput.filingHint.trim() === ''
+        ) {
+          return usage(
+            'goal-create-member requires a non-empty "filingHint"',
+            'goal-create-member',
+          );
+        }
+        const memberId = await store.createGoalMember(
+          goalId,
+          memberInput,
+          resolveGoalContainer(args, injected),
+        );
+        process.stdout.write(memberId + '\n');
         return 0;
       }
 

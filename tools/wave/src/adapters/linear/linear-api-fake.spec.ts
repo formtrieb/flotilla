@@ -163,7 +163,15 @@ describe('InMemoryLinearApi projects (the Goal container substrate, ADR-0044)', 
   it('createProject → getProject round-trips', async () => {
     const api = new InMemoryLinearApi();
     const { id } = await api.createProject({ name: '1.0.0', description: 'the freeze' });
-    expect(await api.getProject(id)).toEqual({ id, name: '1.0.0', description: 'the freeze' });
+    expect(await api.getProject(id)).toEqual({
+      id,
+      name: '1.0.0',
+      description: 'the freeze',
+      // A Linear project is BORN bare (ADR-0045 decision 3): the `backlog`
+      // category carries no eligibility semantics, which is exactly why minting
+      // one as a goal member costs no bare invariant.
+      statusType: 'backlog',
+    });
   });
 
   it('project ids are their own space — never a `<TEAM>-<n>` issue identifier', async () => {
@@ -234,5 +242,136 @@ describe('InMemoryLinearApi projects (the Goal container substrate, ADR-0044)', 
     await api.setIssueProject(identifier, id);
     const after = (await api.getIssue(identifier)).updatedAt;
     expect(Date.parse(after as string)).toBeGreaterThan(Date.parse(before as string));
+  });
+});
+
+describe('InMemoryLinearApi initiatives (the second Goal container substrate, ADR-0045)', () => {
+  it('createInitiative → getInitiative round-trips, and the id is its OWN space', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createInitiative({ name: 'Epic', description: 'the span' });
+    expect(await api.getInitiative(id)).toEqual({ id, name: 'Epic', description: 'the span' });
+    // Not a project id and not an issue identifier — three id spaces, three
+    // shapes, so a mixed-up id fails loudly instead of resolving to the wrong
+    // object.
+    const { id: projectId } = await api.createProject({ name: 'p', description: '' });
+    const { identifier } = await api.createIssue({ title: 'i', description: '', labels: [] });
+    expect(id).not.toBe(projectId);
+    expect(id).not.toBe(identifier);
+  });
+
+  it('getInitiative / listInitiativeProjects / addProjectToInitiative throw on an unknown initiative', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createProject({ name: 'p', description: '' });
+    await expect(api.getInitiative('nope')).rejects.toThrow(/initiative not found/i);
+    await expect(api.listInitiativeProjects('nope')).rejects.toThrow(/initiative not found/i);
+    await expect(api.addProjectToInitiative('nope', id)).rejects.toThrow(/initiative not found/i);
+  });
+
+  it('addProjectToInitiative throws on an unknown PROJECT too — a member must exist to be joined', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createInitiative({ name: 'Epic', description: '' });
+    await expect(api.addProjectToInitiative(id, 'nope')).rejects.toThrow(/project not found/i);
+  });
+
+  it('membership is a JOIN SET — the join is idempotent, and a project can sit in two initiatives', async () => {
+    // The shape difference from `setIssueProject` that the store has to buy
+    // idempotence around: an issue's project is a POINTER (re-pointing moves
+    // it), while an initiative's membership is a join entity, so the same
+    // project can legitimately belong to two initiatives at once.
+    const api = new InMemoryLinearApi();
+    const a = (await api.createInitiative({ name: 'A', description: '' })).id;
+    const b = (await api.createInitiative({ name: 'B', description: '' })).id;
+    const p = (await api.createProject({ name: 'p', description: '' })).id;
+
+    await api.addProjectToInitiative(a, p);
+    await api.addProjectToInitiative(a, p); // idempotent
+    await api.addProjectToInitiative(b, p);
+
+    expect((await api.listInitiativeProjects(a)).map((x) => x.id)).toEqual([p]);
+    expect((await api.listInitiativeProjects(b)).map((x) => x.id)).toEqual([p]);
+  });
+
+  it('listInitiatives is WORKSPACE-wide: no team predicate exists to apply', async () => {
+    // The substrate half of ADR-0045 decision 5. Two apis on DIFFERENT teams,
+    // and the team key changes nothing about what an initiative listing can be
+    // scoped by — because an initiative carries no team at all.
+    const api = new InMemoryLinearApi('EX');
+    const a = (await api.createInitiative({ name: 'Design epic', description: '' })).id;
+    const b = (await api.createInitiative({ name: 'Dev epic', description: '' })).id;
+    expect((await api.listInitiatives()).map((i) => i.id).sort()).toEqual([a, b].sort());
+  });
+
+  it('a member project keeps its own status CATEGORY — the frontier fact substrate', async () => {
+    const api = new InMemoryLinearApi();
+    const init = (await api.createInitiative({ name: 'Epic', description: '' })).id;
+    const p = (await api.createProject({ name: 'story', description: '' })).id;
+    await api.addProjectToInitiative(init, p);
+    expect((await api.listInitiativeProjects(init))[0].statusType).toBe('backlog');
+
+    api.setProjectStatus(p, 'started');
+    expect((await api.listInitiativeProjects(init))[0].statusType).toBe('started');
+    expect((await api.getProject(p)).statusType).toBe('started');
+  });
+
+  it('project relations: the write is additive and idempotent, and the read is the BLOCKED side', async () => {
+    const api = new InMemoryLinearApi();
+    const blocked = (await api.createProject({ name: 'B', description: '' })).id;
+    const blocker = (await api.createProject({ name: 'A', description: '' })).id;
+
+    expect(await api.getProjectBlockedBy(blocked)).toEqual([]);
+    await api.addProjectBlockedBy(blocked, blocker);
+    await api.addProjectBlockedBy(blocked, blocker); // additive-only, no duplicate
+
+    expect(await api.getProjectBlockedBy(blocked)).toEqual([blocker]);
+    // …and the edge is DIRECTED: the blocker is not itself blocked.
+    expect(await api.getProjectBlockedBy(blocker)).toEqual([]);
+  });
+
+  it('project relations throw on either unknown side', async () => {
+    const api = new InMemoryLinearApi();
+    const p = (await api.createProject({ name: 'p', description: '' })).id;
+    await expect(api.addProjectBlockedBy('nope', p)).rejects.toThrow(/project not found/i);
+    await expect(api.addProjectBlockedBy(p, 'nope')).rejects.toThrow(/project not found/i);
+    await expect(api.getProjectBlockedBy('nope')).rejects.toThrow(/project not found/i);
+  });
+
+  it('failProjectRelationWrites drives the residue case, and clears again', async () => {
+    const api = new InMemoryLinearApi();
+    const blocked = (await api.createProject({ name: 'B', description: '' })).id;
+    const blocker = (await api.createProject({ name: 'A', description: '' })).id;
+
+    api.failProjectRelationWrites(new Error('projectRelationCreate rejected'));
+    await expect(api.addProjectBlockedBy(blocked, blocker)).rejects.toThrow(/rejected/);
+
+    api.failProjectRelationWrites(null);
+    await api.addProjectBlockedBy(blocked, blocker);
+    expect(await api.getProjectBlockedBy(blocked)).toEqual([blocker]);
+  });
+
+  it('forgetProject leaves the relation behind — the unreadable-blocker state the frontier is about', async () => {
+    const api = new InMemoryLinearApi();
+    const story = (await api.createProject({ name: 'story', description: '' })).id;
+    const ghost = (await api.createProject({ name: 'ghost', description: '' })).id;
+    await api.addProjectBlockedBy(story, ghost);
+
+    api.forgetProject(ghost);
+
+    // The edge survives its target — which is exactly the state a deleted or
+    // unreachable blocker leaves behind, and the one `actionable` must never be
+    // able to claim its way out of.
+    expect(await api.getProjectBlockedBy(story)).toEqual([ghost]);
+    await expect(api.getProject(ghost)).rejects.toThrow(/project not found/i);
+  });
+
+  it('seedProject puts a REALISTICALLY-shaped (UUID) project id into the substrate', async () => {
+    // `createProject` mints the fake's short `prj-N` form, which cannot exercise
+    // the id shape the id-kind predicate will actually meet in production.
+    const api = new InMemoryLinearApi();
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
+    api.seedProject({ id: uuid, name: 'real-shaped', statusType: 'started' });
+    const prj = await api.getProject(uuid);
+    expect(prj.id).toBe(uuid);
+    expect(prj.statusType).toBe('started');
+    expect(prj.description).toBe('');
   });
 });

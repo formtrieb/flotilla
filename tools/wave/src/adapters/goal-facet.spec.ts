@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MarkdownFsStore } from './markdown-fs-store';
@@ -35,12 +35,20 @@ import { InMemoryGitHubApi } from './github/github-api-fake';
 import { LinearIssuesStore } from './linear/linear-issues-store';
 import { InMemoryLinearApi } from './linear/linear-api-fake';
 import {
+  CreateInputError,
   GoalBindingError,
+  GoalMemberKindError,
+  GoalMemberJoinError,
   GOAL_CONTAINERS,
+  GOAL_MEMBER_KIND_BY_CONTAINER,
+  goalMemberKind,
   parseGoalContainer,
   requireGoalContainer,
+  requireGoalMemberKind,
+  type CreateGoalMemberInput,
   type CreateInput,
   type GoalContainer,
+  type GoalMemberKind,
   type IssueStore,
 } from './issue-store';
 import { GOAL_MEMBER_STATES, type GoalMemberState } from '../goal-frontier';
@@ -652,11 +660,399 @@ runGoalFacetConformance('LinearIssuesStore', (): GoalHarness => ({
   // Project=User Story while ADR-0017 once sketched "Wave ≈ Linear Project", so
   // any built-in choice would silently overwrite somebody's meaning.
   defaultsWithoutBinding: null,
-  // The NAMED follow-up, refused by name rather than silently capped.
-  unrealizedBinding: 'initiative',
+  // `initiative` is no longer the unrealized role on THIS store (ADR-0045
+  // realized it here); `milestone` is a GitHub container Linear cannot be.
+  unrealizedBinding: 'milestone',
   baseInput,
   bareInput,
 }));
+
+// ── `initiative` is realized on Linear ONLY (ADR-0045 / AC5) ─────────────────
+
+describe('the initiative binding is realized on linear and refused elsewhere', () => {
+  const initiativeRoots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(
+      initiativeRoots.splice(0).map((r) => rm(r, { recursive: true, force: true })),
+    );
+  });
+
+  it('a LINEAR store mints, reads and lists an initiative-bound goal', async () => {
+    const store = new LinearIssuesStore({ api: new InMemoryLinearApi() });
+    const id = await store.createGoal(
+      { title: 'Unternehmen verwalten', filingHint: 'uv', description: 'the epic' },
+      'initiative',
+    );
+    const goal = await store.readGoal(id, 'initiative');
+    expect(goal.container).toBe('initiative');
+    expect(goal.title).toBe('Unternehmen verwalten');
+    expect(goal.description).toBe('the epic');
+    expect(goal.memberIds).toEqual([]);
+    expect((await store.listGoals('initiative')).map((g) => g.id)).toEqual([id]);
+  });
+
+  it('GITHUB still refuses an initiative binding — `unrealized-container`, before any write', async () => {
+    const store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
+    const err = assertGoalBindingError(
+      await thrownBy(() => store.createGoal({ title: 'x', filingHint: 'x' }, 'initiative')),
+    );
+    expect(err.failure).toBe('unrealized-container');
+    expect(err.configured).toBe('initiative');
+    expect((await store.listGoals('milestone')).length).toBe(0);
+  });
+
+  it('MARKDOWN-FS still refuses an initiative binding — `unrealized-container`, before any write', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'goal-init-refuse-'));
+    initiativeRoots.push(root);
+    const store = new MarkdownFsStore({ repoRoot: root, slug: 'goal-feature' });
+    const err = assertGoalBindingError(
+      await thrownBy(() => store.createGoal({ title: 'x', filingHint: 'x' }, 'initiative')),
+    );
+    expect(err.failure).toBe('unrealized-container');
+    expect(err.configured).toBe('initiative');
+    expect((await store.listGoals('goal-file')).length).toBe(0);
+  });
+
+  it('EVERY goal verb refuses the unrealized initiative binding, not just the one that mints', async () => {
+    // The same completeness the binding suite demands of `unbound`: a refusal
+    // that fired only on `createGoal` would leave five verbs able to address a
+    // container this store does not have.
+    const store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
+    const verbs: [string, () => Promise<unknown>][] = [
+      ['createGoal', () => store.createGoal({ title: 'x', filingHint: 'x' }, 'initiative')],
+      ['readGoal', () => store.readGoal('1', 'initiative')],
+      ['listGoals', () => store.listGoals('initiative')],
+      ['assignToGoal', () => store.assignToGoal('1', '2', 'initiative')],
+      [
+        'createGoalMember',
+        () => store.createGoalMember('1', memberInput(), 'initiative'),
+      ],
+      ['readGoalFrontier', () => store.readGoalFrontier('1', 'initiative')],
+    ];
+    for (const [name, call] of verbs) {
+      const err = assertGoalBindingError(await thrownBy(call));
+      expect(err.failure, `${name} did not refuse the initiative binding`).toBe(
+        'unrealized-container',
+      );
+    }
+  });
+});
+
+// ── the MEMBER verbs, driven across all FOUR bindings (ADR-0045) ─────────────
+//
+// A second conformance suite rather than more cases in the first one, and the
+// split is the point: the suite above mints its members with `store.create` and
+// so is issue-shaped by construction, which is exactly right for pinning that
+// the three issue-direct bindings ship UNCHANGED. This one is member-kind-
+// GENERIC — every member it touches comes from `createGoalMember` or from the
+// harness's own minter — so the same clauses run against `initiative`, where a
+// member is a project, without a single `if` about which store is under test.
+
+/** A minimal valid {@link CreateGoalMemberInput}; cases override per clause. */
+function memberInput(overrides: Partial<CreateGoalMemberInput> = {}): CreateGoalMemberInput {
+  return {
+    title: 'A workstream that must exist',
+    filingHint: 'a-workstream',
+    bodySections: [
+      { heading: 'Gap', markdown: 'the workstream exists; its shape does not yet.' },
+      { heading: 'Provenance', markdown: 'filed at the goal cut.' },
+    ],
+    ...overrides,
+  };
+}
+
+interface GoalMemberHarness {
+  makeStore(): Promise<IssueStore>;
+  /** The binding every call in this suite passes explicitly. */
+  binding: GoalContainer;
+  /**
+   * Mint a member of THIS binding's kind that is joined to NO goal — the driver
+   * `assignToGoal` needs, and the only place in this suite where a store's own
+   * mechanism is allowed to show (the `simulateNativeClose` precedent).
+   */
+  mintLooseMember(store: IssueStore, title: string): Promise<string>;
+  /**
+   * How many members this store has minted in total — the no-partial-mint probe.
+   * Declared per store because "did anything get filed?" is unanswerable from
+   * the facet contract alone: a minted-but-unjoined member is in no goal, so
+   * `listGoals` cannot see it, which is precisely the state the probe is for.
+   */
+  mintedMemberCount(store: IssueStore): Promise<number>;
+  /**
+   * An id shaped like the OTHER member kind, or `null` when this store's two id
+   * spaces are INDISTINGUISHABLE by shape. GitHub is the `null` case and it is a
+   * real property, not a gap: milestone `'1'` and issue `'1'` are the same three
+   * bytes, so no shape rule could tell them apart there.
+   */
+  wrongKindMemberId: string | null;
+  /**
+   * Can this store realize `createGoalMember`'s `blockedBy` arm natively?
+   * `false` is MarkdownFs's honest answer — its only blocker representation is
+   * the Header-Block line a bare member must not carry.
+   */
+  blockedByRealizable: boolean;
+}
+
+function runGoalMemberVerbConformance(
+  label: string,
+  makeHarness: () => Promise<GoalMemberHarness> | GoalMemberHarness,
+): void {
+  describe(`Goal member verbs — ${label}`, () => {
+    async function fresh() {
+      const h = await makeHarness();
+      const store = await h.makeStore();
+      const goal = await store.createGoal(
+        { title: 'Ship it', filingHint: 'ship-it' },
+        h.binding,
+      );
+      return { h, store, goal };
+    }
+
+    // ── createGoalMember: ONE act ──────────────────────────────────────────
+    it('mints a direct member AND joins it — one act, not two', async () => {
+      const { h, store, goal } = await fresh();
+      const id = await store.createGoalMember(goal, memberInput(), h.binding);
+
+      expect(typeof id).toBe('string');
+      expect(id.length).toBeGreaterThan(0);
+      expect((await store.readGoal(goal, h.binding)).memberIds).toEqual([id]);
+    });
+
+    it('the minted member is BARE — it reads `unready`, so no wave can draw it', async () => {
+      // The invariant that makes this verb safe for the cut pass: existence
+      // first, readiness later. Stated through the FRONTIER rather than through
+      // a label or a status, so it means the same thing at both member
+      // granularities — an unmarked issue and an empty project both read
+      // `unready`, and neither is drawable.
+      const { h, store, goal } = await fresh();
+      const id = await store.createGoalMember(goal, memberInput(), h.binding);
+
+      const frontier = await store.readGoalFrontier(goal, h.binding);
+      expect(frontier.readings.map((r) => r.id)).toEqual([id]);
+      expect(frontier.readings[0].state).toBe('unready');
+      // …and it is nowhere near the wave candidate set.
+      expect((await store.listOpen('wave-ready')).map((v) => v.id)).not.toContain(id);
+    });
+
+    it('two members join the same goal, each with its own id', async () => {
+      const { h, store, goal } = await fresh();
+      const a = await store.createGoalMember(goal, memberInput({ title: 'A' }), h.binding);
+      const b = await store.createGoalMember(goal, memberInput({ title: 'B' }), h.binding);
+      expect(a).not.toBe(b);
+      expect((await store.readGoal(goal, h.binding)).memberIds.sort()).toEqual([a, b].sort());
+    });
+
+    it('an UNKNOWN goal id refuses BEFORE the mint — nothing is filed', async () => {
+      // Pre-validation is the whole no-partial-application property here: a
+      // typo'd goal must not leave a real member behind for someone to find
+      // later with no idea where it came from.
+      const { h, store } = await fresh();
+      const before = await h.mintedMemberCount(store);
+
+      await expect(
+        store.createGoalMember('definitely-not-a-goal', memberInput(), h.binding),
+      ).rejects.toThrow();
+
+      expect(await h.mintedMemberCount(store)).toBe(before);
+    });
+
+    it('an unrealizable BINDING refuses before the mint too', async () => {
+      const { h, store } = await fresh();
+      const unrealized: GoalContainer = h.binding === 'milestone' ? 'project' : 'milestone';
+      const before = await h.mintedMemberCount(store);
+
+      const err = assertGoalBindingError(
+        await thrownBy(() => store.createGoalMember('anything', memberInput(), unrealized)),
+      );
+      expect(err.failure).toBe('unrealized-container');
+      expect(await h.mintedMemberCount(store)).toBe(before);
+    });
+
+    // ── assignToGoal, member-kind-generically ──────────────────────────────
+    it('assignToGoal joins a loose member of this binding\'s own kind', async () => {
+      const { h, store, goal } = await fresh();
+      const loose = await h.mintLooseMember(store, 'joined by hand');
+      expect((await store.readGoal(goal, h.binding)).memberIds).toEqual([]);
+
+      await store.assignToGoal(goal, loose, h.binding);
+
+      expect((await store.readGoal(goal, h.binding)).memberIds).toEqual([loose]);
+    });
+
+    it('assignToGoal stays idempotent at every member kind', async () => {
+      const { h, store, goal } = await fresh();
+      const loose = await h.mintLooseMember(store, 'twice');
+      await store.assignToGoal(goal, loose, h.binding);
+      await store.assignToGoal(goal, loose, h.binding);
+      expect((await store.readGoal(goal, h.binding)).memberIds).toEqual([loose]);
+    });
+
+    // ── the id-KIND refusal (ADR-0045 decision 3) ──────────────────────────
+    it('refuses a WRONG-KIND member id, typed, before any write', async () => {
+      const { h, store, goal } = await fresh();
+      if (h.wrongKindMemberId === null) {
+        // GitHub: the two id spaces collide by value, so there is no shape rule
+        // to apply — and the honest thing is to say so rather than assert a
+        // refusal that could not exist. The clause still runs: it pins that this
+        // store's member kind is `issue`, which is WHY no refusal is owed.
+        expect(goalMemberKind(h.binding)).toBe('issue');
+        return;
+      }
+      const before = (await store.readGoal(goal, h.binding)).memberIds;
+
+      const err = await thrownBy(() =>
+        store.assignToGoal(goal, h.wrongKindMemberId as string, h.binding),
+      );
+      expect(err).toBeInstanceOf(GoalMemberKindError);
+      expect((err as GoalMemberKindError).expected).toBe(goalMemberKind(h.binding));
+      expect((err as GoalMemberKindError).memberId).toBe(h.wrongKindMemberId);
+      // …and the refusal wrote NOTHING.
+      expect((await store.readGoal(goal, h.binding)).memberIds).toEqual(before);
+    });
+
+    // ── the blockedBy arm (ADR-0045 decision 4) ────────────────────────────
+    it('blockedBy draws a native edge the frontier reads back — or refuses typed', async () => {
+      const { h, store, goal } = await fresh();
+      const blocker = await store.createGoalMember(
+        goal,
+        memberInput({ title: 'workstream A', filingHint: 'a' }),
+        h.binding,
+      );
+
+      if (!h.blockedByRealizable) {
+        // MarkdownFs's honest refusal: report what the storage cannot
+        // represent, never fake it. Typed, and before any write.
+        const before = await h.mintedMemberCount(store);
+        const err = await thrownBy(() =>
+          store.createGoalMember(
+            goal,
+            memberInput({ title: 'workstream B', filingHint: 'b', blockedBy: [blocker] }),
+            h.binding,
+          ),
+        );
+        expect(err).toBeInstanceOf(CreateInputError);
+        expect((err as CreateInputError).failure).toBe('bare-blocked-by-unrepresentable');
+        expect(await h.mintedMemberCount(store)).toBe(before);
+        return;
+      }
+
+      const blocked = await store.createGoalMember(
+        goal,
+        memberInput({ title: 'workstream B', filingHint: 'b', blockedBy: [blocker] }),
+        h.binding,
+      );
+
+      const frontier = await store.readGoalFrontier(goal, h.binding);
+      const reading = frontier.readings.find((r) => r.id === blocked);
+      // The edge was drawn NATIVELY at the cut — between two BARE members, with
+      // no header line anywhere — which is the whole reason this arm exists.
+      expect(reading?.state).toBe('blocked');
+      // …and the reading NAMES what it waits on rather than merely asserting it.
+      expect(reading?.unresolvedBlockers.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+}
+
+const memberVerbRoots: string[] = [];
+runGoalMemberVerbConformance('MarkdownFsStore', async (): Promise<GoalMemberHarness> => {
+  const root = await mkdtemp(join(tmpdir(), 'goal-member-mdfs-'));
+  memberVerbRoots.push(root);
+  return {
+    async makeStore() {
+      return new MarkdownFsStore({ repoRoot: root, slug: 'goal-feature' });
+    },
+    binding: 'goal-file',
+    async mintLooseMember(store, title) {
+      return store.create(bareInput({ title, filingHint: title.replace(/\W+/g, '-') }));
+    },
+    async mintedMemberCount() {
+      // Mechanism, and legitimately so — the harness is where a store's own
+      // storage is allowed to show. Counting FILES is the only way to see a
+      // member that was minted and never joined. Open issues sit directly in
+      // `issues/` (`done/` is a subdirectory), hence the `.md` filter.
+      const dir = join(root, '.scratch', 'goal-feature', 'issues');
+      try {
+        return (await readdir(dir)).filter((n) => n.endsWith('.md')).length;
+      } catch {
+        return 0; // the directory is not made until the first mint
+      }
+    },
+    // A goal id here is `<slug>#goal-NN` and an issue id `<slug>#NN`, so the two
+    // ARE distinguishable — but this binding's members are issues, so there is
+    // no wrong-kind refusal owed. Declared `null` for the same reason GitHub is.
+    wrongKindMemberId: null,
+    // Its ONLY blocker representation is the Header-Block line a bare member
+    // must not carry (ADR-0044's recorded refusal).
+    blockedByRealizable: false,
+  };
+});
+afterEach(async () => {
+  await Promise.all(
+    memberVerbRoots.splice(0).map((r) => rm(r, { recursive: true, force: true })),
+  );
+});
+
+runGoalMemberVerbConformance('GitHubIssuesStore', (): GoalMemberHarness => {
+  const api = new InMemoryGitHubApi();
+  return {
+    async makeStore() {
+      return new GitHubIssuesStore({ api });
+    },
+    binding: 'milestone',
+    async mintLooseMember(store, title) {
+      return store.create(bareInput({ title, filingHint: title.replace(/\W+/g, '-') }));
+    },
+    async mintedMemberCount() {
+      return (await api.listOpenIssues()).length;
+    },
+    // The id-space COLLISION this codebase records: milestone `'1'` and issue
+    // `'1'` are the same three bytes, so no shape rule could tell them apart.
+    wrongKindMemberId: null,
+    blockedByRealizable: true,
+  };
+});
+
+runGoalMemberVerbConformance('LinearIssuesStore (project binding)', (): GoalMemberHarness => {
+  const api = new InMemoryLinearApi();
+  return {
+    async makeStore() {
+      return new LinearIssuesStore({ api });
+    },
+    binding: 'project',
+    async mintLooseMember(store, title) {
+      return store.create(bareInput({ title, filingHint: title.replace(/\W+/g, '-') }));
+    },
+    async mintedMemberCount() {
+      return (await api.listOpenIssues()).length;
+    },
+    wrongKindMemberId: null,
+    blockedByRealizable: true,
+  };
+});
+
+runGoalMemberVerbConformance('LinearIssuesStore (INITIATIVE binding)', (): GoalMemberHarness => {
+  const api = new InMemoryLinearApi();
+  return {
+    async makeStore() {
+      return new LinearIssuesStore({ api });
+    },
+    binding: 'initiative',
+    async mintLooseMember(_store, title) {
+      // A PROJECT, minted straight on the substrate: there is no facet verb for
+      // a free-floating member, deliberately (creation is goal-anchored), so the
+      // harness reaches the api exactly as the conformance hooks do.
+      const { id } = await api.createProject({ name: title, description: '' });
+      return id;
+    },
+    async mintedMemberCount() {
+      return (await api.listProjects()).length;
+    },
+    // The predictable confusion this refusal exists for: reaching for the ISSUE
+    // somebody is looking at instead of the project it lives in.
+    wrongKindMemberId: 'EX-16',
+    blockedByRealizable: true,
+  };
+});
 
 // ── the binding vocabulary and its resolvers (store-independent) ─────────────
 
@@ -746,23 +1142,106 @@ describe('the goal-container binding vocabulary (ADR-0044 decision 4)', () => {
     expect(err.message).toContain('project');
   });
 
-  it('requireGoalContainer refuses `initiative` with its deferral reason attached', () => {
+  it('requireGoalContainer refuses `initiative` by NAME on a store that does not realize it', () => {
+    // ADR-0045 realized `initiative` on Linear and ONLY there, so this refusal
+    // is now about the store rather than about a deferral: the message must say
+    // where the role DOES live, or it teaches nothing the author can act on.
     let thrown: unknown;
     try {
       requireGoalContainer({
-        storeKind: 'linear',
+        storeKind: 'github',
         configured: 'initiative',
-        fallback: undefined,
-        realizable: ['project'],
+        fallback: 'milestone',
+        realizable: ['milestone'],
       });
     } catch (err) {
       thrown = err;
     }
     const err = assertGoalBindingError(thrown);
     expect(err.failure).toBe('unrealized-container');
-    // "not a silent cap": the refusal says WHY initiatives are deferred.
     expect(err.message).toMatch(/initiative/i);
-    expect(err.message).toMatch(/transitive|hold projects/i);
+    expect(err.message).toMatch(/linear/i);
+    // …and the roles actually on offer, so the fix is spelled out.
+    expect(err.message).toMatch(/milestone/);
+  });
+});
+
+// ── the member KIND, and the two write verbs that follow it (ADR-0045) ───────
+
+describe('a Goal member\'s KIND follows the binding (ADR-0045 decision 1)', () => {
+  it('the mapping covers EVERY declared container — no role can be reached without an answer', () => {
+    // A container added to the vocabulary without a member kind would leave
+    // `goalMemberKind` returning undefined and every branch below it silently
+    // taking the issue arm. Enumerating the vocabulary rather than the mapping
+    // is what makes this catch that.
+    for (const role of GOAL_CONTAINERS) {
+      expect(['issue', 'project'], role).toContain(goalMemberKind(role));
+    }
+    expect(Object.keys(GOAL_MEMBER_KIND_BY_CONTAINER).sort()).toEqual(
+      [...GOAL_CONTAINERS].sort(),
+    );
+  });
+
+  it('the three issue-direct roles hold ISSUES; `initiative` alone holds PROJECTS', () => {
+    expect(goalMemberKind('milestone')).toBe('issue');
+    expect(goalMemberKind('project')).toBe('issue');
+    expect(goalMemberKind('goal-file')).toBe('issue');
+    expect(goalMemberKind('initiative')).toBe('project');
+  });
+
+  it('requireGoalMemberKind refuses an issue-shaped id under a PROJECT-member binding, typed', () => {
+    let thrown: unknown;
+    try {
+      requireGoalMemberKind({
+        storeKind: 'linear',
+        container: 'initiative',
+        memberId: 'EX-16',
+        isIssueShaped: () => true,
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(GoalMemberKindError);
+    const err = thrown as GoalMemberKindError;
+    expect(err.name).toBe('GoalMemberKindError');
+    expect(err.code).toBe('goal-member-kind-invalid');
+    expect(err.expected).toBe('project');
+    expect(err.container).toBe('initiative');
+    expect(err.memberId).toBe('EX-16');
+    // The message must name the fix, not just the fault — either pass the
+    // project, or rebind the container.
+    expect(err.message).toMatch(/project/i);
+    expect(err.message).toMatch(/store\.goal\.container/);
+  });
+
+  it('…and stays silent on EVERY issue-direct binding — the three ship unchanged', () => {
+    // The negative control for the clause above: if this rule fired under an
+    // issue binding it would newly reject ids the shipped stores accept. Driven
+    // with `isIssueShaped` BOTH ways, so the silence is about the binding and
+    // not about the id happening to look right.
+    for (const role of ['milestone', 'project', 'goal-file'] as const) {
+      for (const shaped of [true, false]) {
+        expect(() =>
+          requireGoalMemberKind({
+            storeKind: 'test',
+            container: role,
+            memberId: 'whatever',
+            isIssueShaped: () => shaped,
+          }),
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it('a PROJECT-shaped id under a project-member binding passes — the rule is one-directional', () => {
+    expect(() =>
+      requireGoalMemberKind({
+        storeKind: 'linear',
+        container: 'initiative',
+        memberId: 'prj-uuid-1',
+        isIssueShaped: () => false,
+      }),
+    ).not.toThrow();
   });
 });
 

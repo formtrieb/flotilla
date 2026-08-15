@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { LinearIssuesStore, DEFAULT_LINEAR_STATES, LinearTransitionVerifyError } from './linear-issues-store';
 import { InMemoryLinearApi, linearConformanceHooks } from './linear-api-fake';
 import type { LinearStateType } from './linear-api';
+import { GoalMemberJoinError, GoalMemberKindError } from '../issue-store';
 import type { CreateInput } from '../issue-store';
 import { parseBody } from '../body-codec';
 import { DEFAULT_TRIAGE_SCHEMA } from '../../contract';
@@ -862,19 +863,16 @@ describe('LinearIssuesStore — the Goal is a project (ADR-0044)', () => {
     await expect(store.readGoalFrontier('x')).rejects.toMatchObject({ failure: 'unbound' });
   });
 
-  it('`initiative` is refused BY NAME as a deferred realization, not as an unknown role', async () => {
-    // A named follow-up, never a silent cap: initiatives hold projects rather
-    // than issues, so their membership is transitive and may not even be
-    // assignToGoal-shaped.
-    await expect(
-      store.createGoal({ title: 'g', filingHint: 'g' }, 'initiative'),
-    ).rejects.toMatchObject({
-      name: 'GoalBindingError',
-      failure: 'unrealized-container',
-      configured: 'initiative',
-    });
-    // …and nothing was minted by the refusal.
+  it('`initiative` is REALIZED here now (ADR-0045) — and it mints an initiative, not a project', async () => {
+    // The ADR-0044 deferral is gone: what used to be an `unrealized-container`
+    // refusal on this store is a real container. The assertion is deliberately
+    // about the SUBSTRATE and not just the absence of a throw — a realization
+    // that quietly minted a project under an initiative binding would satisfy
+    // "does not refuse" and be exactly wrong.
+    const goal = await store.createGoal({ title: 'Epic', filingHint: 'epic' }, 'initiative');
+    expect((await api.listInitiatives()).map((i) => i.id)).toEqual([goal]);
     expect(await api.listProjects()).toEqual([]);
+    expect((await store.readGoal(goal, 'initiative')).container).toBe('initiative');
   });
 
   it('the frontier reads blockers through the read-union — a NATIVE relation alone blocks', async () => {
@@ -927,5 +925,397 @@ describe('LinearIssuesStore — the Goal is a project (ADR-0044)', () => {
 
     await store.unclaim(issue);
     expect((await store.readGoalFrontier(goal, 'project')).readings[0].state).toBe('actionable');
+  });
+});
+
+// ── the INITIATIVE realization (ADR-0045) ───────────────────────────────────
+//
+// Everything below is what the tracker-agnostic suite structurally cannot see:
+// that membership is DIRECT projects, that `listGoals` widens to the workspace,
+// and — the largest block — that each of ADR-0045 decision 2's fact mappings
+// lands on the reading it claims. Each mapping gets its own case, with the
+// SIBLING readings asserted alongside wherever a mis-mapping would otherwise hide
+// (a rule that returned `unready` for everything would satisfy half of them).
+describe('LinearIssuesStore — the Goal is an INITIATIVE whose members are projects (ADR-0045)', () => {
+  let api: InMemoryLinearApi;
+  let store: LinearIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryLinearApi();
+    store = new LinearIssuesStore({ api });
+  });
+
+  /** Mint an initiative-bound goal. */
+  async function makeGoal(title = 'Unternehmen verwalten'): Promise<string> {
+    return store.createGoal({ title, filingHint: 'uv' }, 'initiative');
+  }
+
+  /** Mint a member project on the goal and return its id. */
+  async function member(goal: string, title: string): Promise<string> {
+    return store.createGoalMember(
+      goal,
+      {
+        title,
+        filingHint: title.replace(/\W+/g, '-'),
+        bodySections: [{ heading: 'Gap', markdown: 'the story exists; its shape does not yet.' }],
+      },
+      'initiative',
+    );
+  }
+
+  /** The single reading for `memberId` in the goal's frontier. */
+  async function reading(goal: string, memberId: string) {
+    const frontier = await store.readGoalFrontier(goal, 'initiative');
+    const found = frontier.readings.find((r) => r.id === memberId);
+    if (!found) throw new Error(`no reading for ${memberId}`);
+    return found;
+  }
+
+  // ── membership: DIRECT projects, never a flattening query ────────────────
+  it('readGoal returns the DIRECT member PROJECT ids — never the issues inside them', async () => {
+    const goal = await makeGoal();
+    const story = await member(goal, 'Firmenadmin');
+    // An issue living INSIDE the member project. A transitive read would report
+    // this identifier as a goal member; a direct read must not.
+    const inside = await store.create(baseInput({ title: 'an execution ticket' }));
+    await api.setIssueProject(inside, story);
+
+    const view = await store.readGoal(goal, 'initiative');
+    expect(view.container).toBe('initiative');
+    expect(view.memberIds).toEqual([story]);
+    expect(view.memberIds).not.toContain(inside);
+  });
+
+  it('an EMPTY member project is a MEMBER — the falsification ADR-0045 rests on', async () => {
+    // 13 of 19 initiative-member projects at the live consumer are empty. A
+    // flattening frontier would report this goal COMPLETE, over a story nobody
+    // has built. Both halves are asserted: the member is listed, and the goal is
+    // not complete.
+    const goal = await makeGoal();
+    const empty = await member(goal, 'Firmenadmin');
+    expect(await api.listProjectIssues(empty)).toEqual([]);
+
+    const frontier = await store.readGoalFrontier(goal, 'initiative');
+    expect(frontier.readings.map((r) => r.id)).toEqual([empty]);
+    expect(frontier.complete).toBe(false);
+  });
+
+  it('an initiative with ONE closed issue in ONE of six empty stories is NOT complete', async () => {
+    // The live shape, reproduced end to end: the transitive read would see a
+    // single closed issue and report the whole epic finished.
+    const goal = await makeGoal();
+    const built = await member(goal, 'the built story');
+    const done = await store.create(baseInput({ title: 'the one ticket' }));
+    await api.setIssueProject(done, built);
+    api.simulateMergedPrClose(done, 'https://github.com/o/r/pull/1');
+    for (const n of [1, 2, 3, 4, 5, 6]) await member(goal, `unbuilt story ${n}`);
+
+    const frontier = await store.readGoalFrontier(goal, 'initiative');
+    expect(frontier.readings).toHaveLength(7);
+    expect(frontier.complete).toBe(false);
+    expect(frontier.counts.unready).toBe(7); // the built story's project is still open
+  });
+
+  it('listGoals is WORKSPACE-wide under initiative — the documented divergence from the project scope', async () => {
+    // `listProjects` is team-scoped by construction (a project is minted under
+    // this api's team); initiatives have no team at all, so hiding one behind a
+    // team filter would hide a cross-team finish line. Driven through the fake's
+    // own substrate so the claim is about SCOPE and not about what happens to
+    // have been created here.
+    const a = await makeGoal('Design epic');
+    const b = await store.createGoal({ title: 'Dev epic', filingHint: 'dev' }, 'initiative');
+    const otherTeamStore = new LinearIssuesStore({ api: new InMemoryLinearApi('OTHER') });
+
+    const goals = await store.listGoals('initiative');
+    expect(goals.map((g) => g.id).sort()).toEqual([a, b].sort());
+    for (const g of goals) expect(g.container).toBe('initiative');
+    // …and a store bound to a DIFFERENT team, on its own substrate, sees none of
+    // them — proving the width above is the initiative connection's and not an
+    // artefact of one shared map.
+    expect(await otherTeamStore.listGoals('initiative')).toEqual([]);
+  });
+
+  // ── ADR-0045 decision 2: every fact mapping, one case each ───────────────
+  it('EMPTY project → `unready` (it carries no drawable work at all)', async () => {
+    const goal = await makeGoal();
+    const empty = await member(goal, 'empty');
+    expect((await reading(goal, empty)).state).toBe('unready');
+  });
+
+  it('project whose open issues ALL lack the eligibility marker → `unready`', async () => {
+    // Sharpen first, then drawable. The project is populated and open, so only
+    // the eligibility fact separates this from `actionable`.
+    const goal = await makeGoal();
+    const story = await member(goal, 'all untriaged');
+    for (const t of ['bare one', 'bare two']) {
+      const bare = await store.create({
+        title: t,
+        filingHint: t.replace(/\W+/g, '-'),
+        bodySections: [{ heading: 'Gap', markdown: 'unsharpened.' }],
+      });
+      await api.setIssueProject(bare, story);
+    }
+    expect((await reading(goal, story)).state).toBe('unready');
+  });
+
+  it('≥1 eligible open issue, unclaimed, no relation → `actionable`', async () => {
+    // The positive control for the two `unready` cases above: the ONLY change is
+    // that one issue inside carries the marker.
+    const goal = await makeGoal();
+    const story = await member(goal, 'drawable');
+    const ready = await store.create(baseInput({ title: 'a sharpened slice' }));
+    await api.setIssueProject(ready, story);
+    expect((await reading(goal, story)).state).toBe('actionable');
+  });
+
+  it('project status `started` → `in-motion`', async () => {
+    const goal = await makeGoal();
+    const story = await member(goal, 'moving');
+    api.setProjectStatus(story, 'started');
+    expect((await reading(goal, story)).state).toBe('in-motion');
+  });
+
+  it('project status `paused` → `in-motion`, NOT `blocked`', async () => {
+    // `blocked` asserts a NAMED unresolved dependency, which paused lacks — so
+    // reporting it as blocked would be a claim the store cannot back. The
+    // reading carries no blockers, which is the assertion that says so.
+    const goal = await makeGoal();
+    const story = await member(goal, 'paused');
+    api.setProjectStatus(story, 'paused');
+    const r = await reading(goal, story);
+    expect(r.state).toBe('in-motion');
+    expect(r.unresolvedBlockers).toEqual([]);
+  });
+
+  it('≥1 WAVE-CLAIMED open issue inside → `in-motion`, even while the project sits in backlog', async () => {
+    // The second claimed source, and the one a status-only rule would miss: the
+    // project was never moved, but a wave has a row out of it.
+    const goal = await makeGoal();
+    const story = await member(goal, 'a wave is inside');
+    const claimed = await store.create(baseInput({ title: 'drawn' }));
+    await api.setIssueProject(claimed, story);
+    expect((await reading(goal, story)).state).toBe('actionable'); // control: before the claim
+
+    await store.transition(claimed, 'in-flight');
+    expect((await api.getProject(story)).statusType).toBe('backlog'); // the project never moved
+    expect((await reading(goal, story)).state).toBe('in-motion');
+  });
+
+  it('a needs-attention issue inside is a claim too — never back in the pool', async () => {
+    const goal = await makeGoal();
+    const story = await member(goal, 'flagged inside');
+    const flagged = await store.create(baseInput({ title: 'stuck' }));
+    await api.setIssueProject(flagged, story);
+    await store.transition(flagged, 'in-flight');
+    await store.flag(flagged, {
+      kind: 'recoverable-stop',
+      question: 'which branch?',
+      options: ['main'],
+    });
+    expect((await reading(goal, story)).state).toBe('in-motion');
+  });
+
+  it('project status `completed` → `done`, and `canceled` → `done`', async () => {
+    for (const status of ['completed', 'canceled'] as const) {
+      const goal = await makeGoal(`goal ${status}`);
+      const story = await member(goal, `finished ${status}`);
+      api.setProjectStatus(story, status);
+      const frontier = await store.readGoalFrontier(goal, 'initiative');
+      expect(frontier.readings[0].state, status).toBe('done');
+      // a closed member stays a MEMBER — dropping it would make a finished goal
+      // indistinguishable from an empty one.
+      expect(frontier.readings, status).toHaveLength(1);
+      expect(frontier.open, status).toEqual([]);
+      expect(frontier.complete, status).toBe(true);
+    }
+  });
+
+  it('a closed member is `done` whatever is inside it — no issue or relation read at all', async () => {
+    // The ladder's first rung, at project granularity: an eligible issue inside a
+    // completed project must not drag it back to `actionable`.
+    const goal = await makeGoal();
+    const story = await member(goal, 'finished with leftovers');
+    const leftover = await store.create(baseInput({ title: 'never landed' }));
+    await api.setIssueProject(leftover, story);
+    api.setProjectStatus(story, 'completed');
+    expect((await reading(goal, story)).state).toBe('done');
+  });
+
+  it('an unresolved native project relation → `blocked`, NAMING the blocking member', async () => {
+    const goal = await makeGoal();
+    const blocker = await member(goal, 'workstream A');
+    const blocked = await store.createGoalMember(
+      goal,
+      {
+        title: 'workstream B',
+        filingHint: 'b',
+        bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+        blockedBy: [blocker],
+      },
+      'initiative',
+    );
+    // The edge is NATIVE — Linear's own project dependency, which is what makes
+    // it visible on the timeline view that motivated this realization.
+    expect(await api.getProjectBlockedBy(blocked)).toEqual([blocker]);
+
+    const r = await reading(goal, blocked);
+    expect(r.state).toBe('blocked');
+    expect(r.unresolvedBlockers).toEqual([blocker]);
+  });
+
+  it('…and it clears to the eligibility question once the blocker actually closes', async () => {
+    // The blocked reading must rest on the blocker's LIVE status, not on the
+    // mere existence of an edge — otherwise a goal would never progress past its
+    // first dependency.
+    const goal = await makeGoal();
+    const blocker = await member(goal, 'workstream A');
+    const blocked = await store.createGoalMember(
+      goal,
+      {
+        title: 'workstream B',
+        filingHint: 'b',
+        bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+        blockedBy: [blocker],
+      },
+      'initiative',
+    );
+    expect((await reading(goal, blocked)).state).toBe('blocked');
+
+    api.setProjectStatus(blocker, 'completed');
+
+    const r = await reading(goal, blocked);
+    expect(r.state).toBe('unready'); // empty, so not yet drawable — but no longer blocked
+    expect(r.unresolvedBlockers).toEqual([]);
+  });
+
+  it('`blocked` outranks the eligibility question — a drawable-looking member still waits', async () => {
+    // Rung order at project granularity: without this the blocked member would
+    // read `actionable` and invite a wave straight into a dependency.
+    const goal = await makeGoal();
+    const blocker = await member(goal, 'workstream A');
+    const blocked = await store.createGoalMember(
+      goal,
+      {
+        title: 'workstream B',
+        filingHint: 'b',
+        bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+        blockedBy: [blocker],
+      },
+      'initiative',
+    );
+    const ready = await store.create(baseInput({ title: 'sharpened, but waiting' }));
+    await api.setIssueProject(ready, blocked);
+
+    expect((await reading(goal, blocked)).state).toBe('blocked');
+  });
+
+  it('a blocker this store cannot READ stays unresolved — no-evidence never counterfeits `actionable`', async () => {
+    // The `closed-unknown` discipline at project granularity: an edge the store
+    // cannot resolve is not evidence the edge is clear.
+    const goal = await makeGoal();
+    const story = await member(goal, 'waits on a ghost');
+    const ghost = await store.createGoalMember(
+      goal,
+      { title: 'ghost', filingHint: 'ghost', bodySections: [{ heading: 'Gap', markdown: 'g' }] },
+      'initiative',
+    );
+    await api.addProjectBlockedBy(story, ghost);
+    // Make the blocker unreadable the only way the fake can: hand the frontier a
+    // relation whose other side is not in the project map.
+    api.forgetProject(ghost);
+
+    const r = await reading(goal, story);
+    expect(r.state).toBe('blocked');
+    expect(r.unresolvedBlockers).toEqual([ghost]);
+  });
+
+  // ── createGoalMember: one act, pre-validated, residue reported ───────────
+  it('createGoalMember mints a PROJECT under the api team and joins it natively', async () => {
+    const goal = await makeGoal();
+    const id = await member(goal, 'Firmenadmin');
+    // A project, not an issue — the member kind follows the binding.
+    expect((await api.listProjects()).map((p) => p.id)).toEqual([id]);
+    expect(await api.listOpenIssues()).toEqual([]);
+    // …and the join is the native initiative membership.
+    expect((await api.listInitiativeProjects(goal)).map((p) => p.id)).toEqual([id]);
+  });
+
+  it('an UNKNOWN blocker refuses BEFORE the mint — no orphan project is left behind', async () => {
+    const goal = await makeGoal();
+    await expect(
+      store.createGoalMember(
+        goal,
+        {
+          title: 'B',
+          filingHint: 'b',
+          bodySections: [{ heading: 'Gap', markdown: 'b' }],
+          blockedBy: ['prj-does-not-exist'],
+        },
+        'initiative',
+      ),
+    ).rejects.toThrow(/not found/i);
+    expect(await api.listProjects()).toEqual([]);
+  });
+
+  it('a post-mint EDGE failure is a typed error NAMING the minted member — never a silent rollback', async () => {
+    // The honest failure mode of a two-write act. Rolling the mint back would be
+    // a deletion this facet has no verb for; swallowing it would drop the edge
+    // that is the whole feature. So the residue is reported, by id.
+    const goal = await makeGoal();
+    const blocker = await member(goal, 'workstream A');
+    api.failProjectRelationWrites(new Error('projectRelationCreate rejected'));
+
+    let thrown: unknown;
+    try {
+      await store.createGoalMember(
+        goal,
+        {
+          title: 'workstream B',
+          filingHint: 'b',
+          bodySections: [{ heading: 'Gap', markdown: 'b' }],
+          blockedBy: [blocker],
+        },
+        'initiative',
+      );
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(GoalMemberJoinError);
+    const err = thrown as GoalMemberJoinError;
+    expect(err.stage).toBe('blocked-by');
+    expect(err.goalId).toBe(goal);
+    expect(err.message).toContain(err.memberId);
+    // …and the residue is REAL: the minted project exists and is in the goal.
+    expect((await api.listInitiativeProjects(goal)).map((p) => p.id)).toContain(err.memberId);
+  });
+
+  it('assignToGoal refuses an ISSUE-shaped id under this binding, before any write', async () => {
+    const goal = await makeGoal();
+    const issue = await store.create(baseInput());
+    await expect(store.assignToGoal(goal, issue, 'initiative')).rejects.toBeInstanceOf(
+      GoalMemberKindError,
+    );
+    expect(await api.listInitiativeProjects(goal)).toEqual([]);
+  });
+
+  it('…and a real PROJECT id joins fine — the refusal is about the id KIND, not about strictness', async () => {
+    // The positive control. Without it the clause above is equally satisfied by
+    // an `assignToGoal` that refuses everything.
+    const goal = await makeGoal();
+    const { id } = await api.createProject({ name: 'a loose story', description: '' });
+    await store.assignToGoal(goal, id, 'initiative');
+    expect((await store.readGoal(goal, 'initiative')).memberIds).toEqual([id]);
+  });
+
+  it('a project id whose last group is ALL DIGITS is NOT mistaken for an issue id', async () => {
+    // The live UUID hazard the shape predicate was tightened for: a greedy
+    // `<anything>-<digits>` rule reads `550e8400-e29b-41d4-a716-446655440000` as
+    // an issue identifier and refuses a perfectly valid join — at random,
+    // depending on the last twelve characters a server handed out.
+    const goal = await makeGoal();
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
+    api.seedProject({ id: uuid, name: 'a UUID-shaped project' });
+    await store.assignToGoal(goal, uuid, 'initiative');
+    expect((await store.readGoal(goal, 'initiative')).memberIds).toEqual([uuid]);
   });
 });

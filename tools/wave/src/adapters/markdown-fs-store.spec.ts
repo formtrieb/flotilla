@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { MarkdownFsStore, markdownConformanceHooks } from './markdown-fs-store';
 import { validateIssue } from '../dor-gate';
 import type { CreateInput } from './issue-store';
+import { CreateInputError } from './issue-store';
 import {
   runIssueStoreConformance,
   type ConformanceHarness,
@@ -521,6 +522,68 @@ describe('MarkdownFsStore — the goal file (ADR-0044)', () => {
     expect((await store.readGoal(goal)).memberIds).toEqual([issue]);
     // …and the prose survived the curation write untouched.
     expect(await goalSource(goal)).toContain('- not a member');
+  });
+
+  it('createGoalMember writes BOTH sides — a real bare issue file, and its Members line', async () => {
+    // The one-act verb, seen at the storage layer that the contract suite
+    // deliberately cannot look at: one new file under issues/open, and one new
+    // bullet in the goal file. Either half alone would look like success from
+    // the facet's own vantage point for one call and be wrong on the next read.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const id = await store.createGoalMember(goal, {
+      title: 'a workstream that must exist',
+      filingHint: 'a-workstream',
+      bodySections: [{ heading: 'Gap', markdown: 'the shape is not known yet.' }],
+    });
+
+    const names = (await readdir(issuesDir())).filter((n) => n.endsWith('.md'));
+    expect(names).toHaveLength(1);
+    expect(await goalSource(goal)).toContain(`- ${id}`);
+
+    // …and the member is BARE, byte-for-byte what `create()`'s bare arm writes:
+    // no eligibility stamp, no Header-Block, no invented AC section.
+    const src = await readFile(join(issuesDir(), names[0]), 'utf-8');
+    expect(src).toContain('the shape is not known yet.');
+    expect(src).not.toMatch(/^\*\*Status:\*\*/m);
+    expect(src).not.toMatch(/^\*\*Risk:\*\*/m);
+    expect(src).not.toMatch(/^##\s+Acceptance criteria\s*$/im);
+  });
+
+  it('createGoalMember on an UNKNOWN goal files NOTHING — the goal is located before the mint', async () => {
+    await expect(
+      store.createGoalMember(`${SLUG}#goal-99`, {
+        title: 'x',
+        filingHint: 'x',
+        bodySections: [{ heading: 'Gap', markdown: 'g' }],
+      }),
+    ).rejects.toThrow(/Goal not found/);
+    // Not even an empty issues/ directory: a refused mint leaves no trace.
+    await expect(readdir(issuesDir())).rejects.toThrow();
+  });
+
+  it('createGoalMember inherits this store\'s HONEST blockedBy refusal — before any write', async () => {
+    // A markdown issue's only blocker representation is the `**Blocked by:**`
+    // Header-Block line a bare issue must not carry, so the edge cannot be drawn
+    // here at all. Report what the storage cannot represent; never fake it.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const blocker = await store.create(baseInput({ title: 'the blocker' }));
+
+    let thrown: unknown;
+    try {
+      await store.createGoalMember(goal, {
+        title: 'B',
+        filingHint: 'b',
+        bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+        blockedBy: [blocker],
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(CreateInputError);
+    expect((thrown as CreateInputError).failure).toBe('bare-blocked-by-unrepresentable');
+    // …and nothing was filed and nothing was curated in.
+    expect((await readdir(issuesDir())).filter((n) => n.endsWith('.md'))).toHaveLength(1); // the blocker only
+    expect((await store.readGoal(goal)).memberIds).toEqual([]);
   });
 
   it('assignToGoal refuses an issue this store cannot resolve — no ghost members', async () => {
