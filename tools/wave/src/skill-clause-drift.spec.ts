@@ -40,6 +40,21 @@
  *    person), and wave-plan's report prescription no longer instructs printing
  *    finding ids or decision-record numbers into operator-directed output.
  *
+ * ## Two populations, on purpose
+ *
+ * The clause-plant duty (predicate 1) runs over **SKILL.md bodies only** — a
+ * reference file is not a skill body, carries no planted clause, and must never
+ * be asked for one. The **address** predicate (predicate 4) runs over **both
+ * tiers**: SKILL.md *and* every `reference/*.md` beneath it.
+ *
+ * The reason the two differ is the reason the reference tier was ungoverned for
+ * a rollout: those files are loaded by the same agents, in the same dispatches,
+ * and one of them writes text that lands verbatim in a human-read tracker field.
+ * A register rule enforced one level up and unenforced one level down is not a
+ * register rule — it is a coincidence of where the guard happened to look. Every
+ * operator-register site the rollout removed from a SKILL.md had a twin under
+ * `reference/`, and the guard could not see a single one of them.
+ *
  * Every predicate has a negative control beside it (wave-shared Convention 11):
  * a seeded divergence must be seen to go red, or a green run proves only that
  * the check cannot fail.
@@ -51,7 +66,7 @@
  * the spec file's own dir; the ../../../ count is correct only for __dirname.)
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -80,6 +95,21 @@ const WAVE_PLAN_REL = '.claude/skills/wave-plan/SKILL.md';
  * const bumped from 13 and its own planted copy of the clause.
  */
 const SHIPPED_SKILL_COUNT = 14;
+
+/**
+ * The reference-tier population FLOOR — a floor, deliberately, where the skill
+ * count above is an exact pin.
+ *
+ * The pin upstairs buys something: a fifteenth skill has to be a deliberate edit
+ * here AND a planted clause in the same diff. Downstairs there is no clause to
+ * plant, so an exact pin would buy only friction — every added reference file, a
+ * routine docs act, would have to come back and edit this spec. What the floor
+ * still buys is the thing that matters: a listing that silently stopped finding
+ * bodies (a moved directory, a renamed `reference/`, a glob that stopped
+ * matching) goes red instead of green-for-the-wrong-reason. Thirty-eight files
+ * ship across twelve reference directories today.
+ */
+const REFERENCE_TIER_FLOOR = 38;
 
 /**
  * THE SOURCE CONSTANT. Every SKILL.md body carries this string verbatim.
@@ -113,9 +143,42 @@ function listSkillBodies(): string[] {
     .sort();
 }
 
+/**
+ * Every shipped skill's reference-tier markdown, repo-relative, sorted — the
+ * second half of the ADDRESS predicate's population, and no part of the
+ * clause-plant duty's.
+ *
+ * Structural, not glob-driven: one level of `.md` beneath each skill's own
+ * `reference/`, which is exactly the tier the skill loader reads whole. A skill
+ * with no `reference/` contributes nothing and is not an error — half the front
+ * half ships that way.
+ */
+function listReferenceBodies(): string[] {
+  return readdirSync(SKILLS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((skill) => {
+      const refDir = join(SKILLS_DIR, skill.name, 'reference');
+      if (!existsSync(refDir)) return [];
+      return readdirSync(refDir, { withFileTypes: true })
+        .filter((f) => f.isFile() && f.name.endsWith('.md'))
+        .map((f) => `.claude/skills/${skill.name}/reference/${f.name}`);
+    })
+    .sort();
+}
+
 const SKILL_BODIES = listSkillBodies();
+const REFERENCE_BODIES = listReferenceBodies();
+
+/**
+ * The ADDRESS predicate's population: both tiers, and the only population in
+ * this file that is not SKILL.md-only. Order is skill bodies first, then
+ * reference bodies, each block already sorted — it is a test-name ordering, not
+ * a contract.
+ */
+const ADDRESS_BODIES = [...SKILL_BODIES, ...REFERENCE_BODIES];
+
 const SOURCES = new Map(
-  SKILL_BODIES.map((rel) => [rel, readFileSync(join(REPO_ROOT, rel), 'utf-8')] as const),
+  ADDRESS_BODIES.map((rel) => [rel, readFileSync(join(REPO_ROOT, rel), 'utf-8')] as const),
 );
 
 /**
@@ -405,6 +468,30 @@ function coordinatorAddresses(md: string): string[] {
 }
 
 /**
+ * THE CITATION CLASS — exempt guard-side, and nowhere else (ADR-0043).
+ *
+ * The long form is the one file in the corpus whose SUBJECT is this rule, so it
+ * has to quote the forbidden shape in order to teach it: clause 3 reads `a skill
+ * that writes "the Coordinator must decide" is naming the wrong party for a
+ * decision only a human can make`. That is a citation, not an address — the
+ * sentence exists to forbid the thing it contains.
+ *
+ * Per ADR-0043 the exemption lives HERE, in the guard's own file, never as a
+ * marker inside the text under test: an author under a failing constraint
+ * escapes through whatever field it still controls, so the long form must not be
+ * able to reword its way out of its own rule. Pinned at exactly one entry, and
+ * SELF-POLICING in both directions (asserted below): the exempt file must still
+ * be in the population, and it must still fire without the exemption. An entry
+ * that has stopped covering anything is a hole, not a class, and gets deleted —
+ * the mirror of the bare-path allowlist's "an entry that starts resolving must
+ * be deleted".
+ */
+const ADDRESS_CITATION_EXEMPT: ReadonlyArray<string> = [LONG_FORM_REL];
+
+/** The bodies the address predicate actually asserts over. */
+const ADDRESS_SUBJECTS = ADDRESS_BODIES.filter((rel) => !ADDRESS_CITATION_EXEMPT.includes(rel));
+
+/**
  * The internal-reference shapes clause 1 forbids in operator-directed text:
  * a decision-record number, a retro finding id, or a path into the evidence
  * tree. Same shapes Convention 14 governs the PLACEMENT of inside skill prose
@@ -435,7 +522,45 @@ function planReportPrescription(md: string): string {
 }
 
 describe('skill-clause-drift — the rollout corrections (the human is not "the Coordinator")', () => {
-  it.each(listSkillBodies())('%s does not address the human as the Coordinator', (rel) => {
+  it('finds BOTH tiers (the reference tier was ungoverned for a whole rollout)', () => {
+    // Upstairs: unchanged, and the clause-plant duty above still owns it alone.
+    expect(SKILL_BODIES).toHaveLength(SHIPPED_SKILL_COUNT);
+    // Downstairs: a floor, plus the five directories the register sites live in.
+    // A listing that quietly found nothing would let every reference file go
+    // green without being read — the exact state this widening ends.
+    expect(REFERENCE_BODIES.length).toBeGreaterThanOrEqual(REFERENCE_TIER_FLOOR);
+    expect(REFERENCE_BODIES).toContain('.claude/skills/wave-start/reference/start-mechanics.md');
+    expect(REFERENCE_BODIES).toContain('.claude/skills/wave-start/reference/workflow-driver.md');
+    expect(REFERENCE_BODIES).toContain('.claude/skills/wave-plan/reference/plan-mechanics.md');
+    expect(REFERENCE_BODIES).toContain('.claude/skills/wave-close/reference/phase-6-archive.md');
+    expect(REFERENCE_BODIES).toContain(LONG_FORM_REL);
+    // The goal station's tier landed after this guard's first rollout and is in
+    // the population by construction, not by a second edit here.
+    expect(REFERENCE_BODIES).toContain('.claude/skills/goal/reference/goal-mechanics.md');
+    // Every entry is a reference-tier path — nothing upstairs leaked downstairs.
+    expect(REFERENCE_BODIES.every((rel) => /^\.claude\/skills\/[^/]+\/reference\/[^/]+\.md$/.test(rel))).toBe(true);
+    // …and the predicate runs over the union, not over either half.
+    expect(ADDRESS_BODIES).toHaveLength(SKILL_BODIES.length + REFERENCE_BODIES.length);
+  });
+
+  it('the citation exemption is pinned at one entry and still load-bearing', () => {
+    // ADR-0043's discipline, asserted rather than asserted-about: the class is
+    // one entry, that entry is really in the population, and it really would
+    // fire. If the long form ever stops quoting the forbidden shape, this goes
+    // red and the exemption is deleted rather than left as a silent hole.
+    expect(ADDRESS_CITATION_EXEMPT).toEqual([LONG_FORM_REL]);
+    expect(ADDRESS_BODIES).toContain(LONG_FORM_REL);
+    expect(ADDRESS_SUBJECTS).not.toContain(LONG_FORM_REL);
+    const longForm = SOURCES.get(LONG_FORM_REL) as string;
+    expect(longForm).toContain('"the Coordinator must decide"');
+    expect(
+      coordinatorAddresses(longForm).length,
+      'the long form no longer quotes the shape this exemption exists to tolerate. ' +
+        'A guard-side exemption that covers nothing is a hole — delete the entry.',
+    ).toBeGreaterThan(0);
+  });
+
+  it.each(ADDRESS_SUBJECTS)('%s does not address the human as the Coordinator', (rel) => {
     const offenders = coordinatorAddresses(SOURCES.get(rel) as string);
     expect(
       offenders,
@@ -512,6 +637,32 @@ describe('skill-clause-drift — the rollout corrections (the human is not "the 
     expect(regressed).not.toEqual(plan); // both replacements actually matched
     const tokens = [...planReportPrescription(regressed).matchAll(INTERNAL_REFERENCE)].map((m) => m[0]);
     expect(tokens).toEqual(['KW-F4', 'ADR-0033']);
+  });
+
+  it('negative control — a seeded reference-tier address goes red, and the OLD population missed it', () => {
+    // The widening's own falsification. Three things have to be true together,
+    // and asserting only the last of them is what let the tier sit ungoverned:
+    // the file is reachable now, it was NOT reachable before, and the predicate
+    // fires on it.
+    const rel = '.claude/skills/wave-start/reference/start-mechanics.md';
+    expect(SKILL_BODIES).not.toContain(rel); // the pre-widening population stopped at SKILL.md
+    expect(ADDRESS_SUBJECTS).toContain(rel); // …and this one reaches one level down
+
+    const shipped = SOURCES.get(rel) as string;
+    const seeded = `${shipped}\nIf the row is still stalled after the second pass, ping the Coordinator.\n`;
+    expect(coordinatorAddresses(seeded)).toHaveLength(1);
+    // …and the shipped file is genuinely clean, so the assertion above is a
+    // seeded failure rather than a pre-existing one being re-observed.
+    expect(coordinatorAddresses(shipped)).toEqual([]);
+
+    // The flag-question placeholder this sweep rewrote is the site that proves
+    // the vocabulary tradeoff is real rather than theoretical: `<Coordinator
+    // decision needed>` carries no article, so the attributive pattern — scoped
+    // to `the Coordinator('s) decision` on purpose — never reached it. It was
+    // rewritten by hand and stays outside what this predicate can hold.
+    expect(coordinatorAddresses('  --question "<Coordinator decision needed>" \\')).toEqual([]);
+    expect(coordinatorAddresses('  --question "<the Coordinator decision needed>" \\')).toHaveLength(1);
+    expect(shipped).not.toContain('<Coordinator decision needed>');
   });
 
   it('negative control — the region slicer fails loud instead of scanning nothing', () => {

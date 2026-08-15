@@ -115,8 +115,8 @@ Live occurrence: the first external 1.0.0 consumer published a blocker table to 
 **How to read it:**
 
 - `parallelSafe: false` — there is at least one candidate that overlaps a currently-claimed issue in another wave. This is the launch-gate signal for `wave-create`: when `parallelSafe === false`, running this proposed wave in parallel with the currently-claimed set would cause background workers to race the overlapping files.
-- `crossWaveConflicts` — each cell pairs a candidate with an already-claimed issue from another wave that overlap at the listed `files`. The two ids `a`/`b` are bare id strings in canonical lexicographic order (either side may be the candidate; `cell.files` is the overlap). These are the cross-wave races; the coordinator must decide whether to serialize (wait for the other wave to finish) or accept an explicit mitigation. There is no silent override: `wave-create` will re-check and default to abort when `parallelSafe === false`.
-- `intraWaveConflicts` — each cell is two candidates within the proposed wave that overlap. They are not a launch-gate concern but they must be sequenced: the coordinator should plan which of the two ships first. Record them in the wave's conflict-map (rendered into the spine by `wave-create`).
+- `crossWaveConflicts` — each cell pairs a candidate with an already-claimed issue from another wave that overlap at the listed `files`. The two ids `a`/`b` are bare id strings in canonical lexicographic order (either side may be the candidate; `cell.files` is the overlap). These are the cross-wave races; the Operator decides whether to serialize (wait for the other wave to finish) or accept an explicit mitigation. There is no silent override: `wave-create` will re-check and default to abort when `parallelSafe === false`.
+- `intraWaveConflicts` — each cell is two candidates within the proposed wave that overlap. They are not a launch-gate concern but they must be sequenced: the Operator plans which of the two ships first. Record them in the wave's conflict-map (rendered into the spine by `wave-create`).
 - `warnings` (present only when non-empty, FOR-38) — one entry per glob `Files` pattern that could not be expanded because `--repo-root` was missing, naming the issue id and the exact pattern text. This should never happen when you pass `--repo-root` per the sequence above; if you see it, the report is incomplete — do not treat a clean `parallelSafe: true` alongside a non-empty `warnings` as a real all-clear.
 
 When `parallelSafe: true` (no `crossWaveConflicts`) **and no `warnings`**, the proposed candidates can run alongside currently-claimed work without file races. `parallelSafe: true` with a non-empty `warnings` means "no conflict found among what could be checked" — not "no conflicts exist".
@@ -146,7 +146,7 @@ apiChangers = candidates.filter(c => c.risk === 'public-API-change')
 // two or more → surface the whole set as ONE advisory pairing
 ```
 
-When `apiChangers` has **two or more** members, surface them as an advisory pairing — the same human-decided, never-auto-excluded treatment `intraWaveBlockedByPairs` get downstream (wave-create). The advisory: each row changes a global contract, so expect reconciled-merge landing rework even though the `Files` are disjoint; plan the wave-close reconciled-merge verify, and consider serializing the pair or splitting it across waves. The coordinator decides; wave-plan only raises it.
+When `apiChangers` has **two or more** members, surface them as an advisory pairing — the same human-decided, never-auto-excluded treatment `intraWaveBlockedByPairs` get downstream (wave-create). The advisory: each row changes a global contract, so expect reconciled-merge landing rework even though the `Files` are disjoint; plan the wave-close reconciled-merge verify, and consider serializing the pair or splitting it across waves. The Operator decides; wave-plan only raises it.
 
 ## Dispatch-cost estimate derivation (SKILL step 3c)
 
