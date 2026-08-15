@@ -8,7 +8,7 @@ The single dispatch mechanism (ADR-0016: no dual prose-vs-driver selector, no ex
 
 `wave-shared`'s canonical `WORKER_REPORT_SCHEMA` literal carries a top-level `anyOf` (the `outcome: done`/`done-with-concerns` ⇒ `prUrl`-required invariant). The agent tool's `input_schema` validation **rejects a top-level `anyOf`/`oneOf`/`allOf` outright** — `input_schema does not support oneOf, allOf, or anyOf at the top level` — so the copy pasted into `agent({ schema })` below **omits it, deliberately**. This is not a drift from the canonical literal; it is the one shape difference the agent boundary forces (live-confirmed regression: **W5-F1**, `docs/retros/2026-07-19-hardening-w5.md` — the first Workflow dispatch of that wave failed instantly this way, 0 tokens, all 4 Workers, before a single agent ran, because the canonical `anyOf`-bearing literal had been pasted here verbatim).
 
-**The `prUrl`-on-`done`/`done-with-concerns` invariant still holds on this path — it is enforced by the Worker brief, not the schema.** `workerBrief()`'s Termination step 4 ("Confirm the PR by asking the HOST") and its Report section both state the requirement in prose; there is no structural rejection at the `agent({ schema })` boundary here for a `done` report that omits `prUrl` (unlike a hypothetical boundary-portable form of the canonical `anyOf`, which would reject it structurally). `tools/wave/src/skill-schema-drift.spec.ts` asserts this literal stays free of any top-level combinator, with a negative control proving that assertion actually fires — so the W5-F1 regression cannot silently ship again.
+**The `prUrl`-on-`done`/`done-with-concerns` invariant still holds on this path — it is enforced by the Worker brief, not the schema.** `workerBrief()`'s Termination step 4 ("Confirm the PR by asking the HOST") and its Report section both state the requirement in prose; there is no structural rejection at the `agent({ schema })` boundary here for a `done` report that omits `prUrl`. **And that is now a placement decision, not only a shape the boundary forces:** a boundary-portable form of the same invariant is no longer hypothetical — measured with positive and negative controls, a top-level `if`/`then` is **accepted at this boundary and genuinely enforced**, including its conditional half. It is still the wrong rung for this rule, because the antecedent is `outcome` — a field the Worker itself authors. The same probes watched an agent told to report a finishing outcome for which it had no URL: it neither invented a URL nor failed, it reported a *non-finishing* outcome instead. A root conditional here would convert "the field is missing" into "the field is present and the outcome is wrong" — a loud failure traded for a quiet one ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md) Amendment 2026-08-14). `tools/wave/src/skill-schema-drift.spec.ts` asserts this literal stays free of any top-level combinator, with a negative control proving that assertion actually fires — so the W5-F1 regression cannot silently ship again.
 
 ## Harness constraint that shapes the decomposition (read first)
 
@@ -224,13 +224,21 @@ const REVIEWER_VERDICT_SCHEMA = {
     reviewerFocusItems: { type: 'array', items: { type: 'string' } },
     lintTestSummary: { type: 'string' }, gitStateSane: { type: 'boolean' },
     // Documented-Form Comparison (ADR-0030) — FLAT + OPTIONAL. The duty is
-    // conditional ("required when a trigger fired"), but a conditional at the
-    // schema ROOT means a top-level anyOf/if, which this boundary rejects
-    // outright (W5-F1) — so the condition lives in the Reviewer contract prose
-    // (.claude/agents/wave-reviewer.md, Check 6), exactly as the prUrl
-    // invariant above is brief-enforced rather than schema-enforced on this
-    // copy. `sources` minItems:1 is the STRUCTURAL half of the no-restatement
-    // rule: a comparison must cite a document the Reviewer read itself.
+    // conditional ("required when a trigger fired"), and the schema ROOT is the
+    // wrong home for it — NOT because this boundary refuses the shape. Measured
+    // with positive and negative controls: a root anyOf/oneOf/allOf IS rejected
+    // outright (W5-F1), a root if/then is ACCEPTED and genuinely enforced. It
+    // stays out because the antecedent is `trigger`, a field the Reviewer itself
+    // authors: cornered on a consequent it cannot satisfy, an author changes the
+    // antecedent rather than failing, so a root conditional buys shape and never
+    // truth (ADR-0034 Amendment 2026-08-14 — engine refusal and schema boundary
+    // are separate rungs, and engine refusal outranks the boundary for exactly
+    // this case). So the condition lives in the Reviewer contract prose
+    // (.claude/agents/wave-reviewer.md, Check 6), exactly as the prUrl invariant
+    // above is brief-enforced rather than schema-enforced on this copy — a
+    // placement decision, never a cue to "fix" it into a root if/then.
+    // `sources` minItems:1 is the STRUCTURAL half of the no-restatement rule:
+    // a comparison must cite a document the Reviewer read itself.
     documentedFormComparison: {
       type: 'object', additionalProperties: false,
       required: ['trigger','sources','divergences'],

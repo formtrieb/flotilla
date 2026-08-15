@@ -433,9 +433,14 @@ describe('skill-schema-drift — documentedFormComparison rides BOTH verdict cop
   });
 
   it('the driver verdict copy is boundary-safe — no top-level anyOf/oneOf/allOf', () => {
-    // The whole reason `documentedFormComparison` is flat-optional rather than
-    // conditionally required: a schema-root conditional means a top-level
-    // combinator, which this boundary rejects outright (W5-F1).
+    // This asserts the COMBINATOR half only, which is the half the boundary
+    // actually refuses (W5-F1). It is not, on its own, the reason
+    // `documentedFormComparison` is flat-optional: a schema-root `if`/`then`
+    // is accepted at this boundary and genuinely enforced, so the field's
+    // flatness rests on the enforcement-rung split — its antecedent `trigger`
+    // is authored by the constrained Reviewer itself — rather than on any
+    // refusal here (ADR-0034 Amendment 2026-08-14; the rationale pin lives in
+    // "the Documented-Form duty is briefed" block below).
     expect(() =>
       assertBoundarySafe(
         driverVerdictSchema(driverMd),
@@ -560,12 +565,48 @@ describe('skill-schema-drift — the Documented-Form duty is briefed, not only s
     expect(driverMd).toMatch(/only source is the Worker's report is\s+invalid/);
   });
 
-  it('the driver states the flat-optional rationale (the schema cannot carry the condition)', () => {
-    // The condition lives in contract prose because a schema-root conditional
-    // is exactly the shape the agent boundary rejects (W5-F1) — if that
-    // rationale is deleted, the next author "fixes" it back into an anyOf.
-    expect(driverMd).toMatch(/FLAT \+ OPTIONAL/);
-    expect(driverMd).toContain('W5-F1');
+  /**
+   * The Documented-Form Comparison's own rationale comment inside the driver's
+   * REVIEWER_VERDICT_SCHEMA literal, sliced to itself. A whole-file `toContain`
+   * would be satisfied by any of the driver's several other W5-F1 mentions —
+   * this region has to state the reason where the field is declared, which is
+   * the only place the next author edits it.
+   */
+  function flatOptionalRationale(md: string): string {
+    return contractRegion(
+      md,
+      'workflow-driver.md documentedFormComparison rationale',
+      '// Documented-Form Comparison (ADR-0030) — FLAT + OPTIONAL.',
+      'documentedFormComparison: {',
+    );
+  }
+
+  it('the driver states the flat-optional rationale — the enforcement RUNG, not a boundary refusal (ADR-0034)', () => {
+    const region = flatOptionalRationale(driverMd);
+
+    // Half one — the corrected fact. The boundary refuses a root COMBINATOR
+    // (W5-F1) and accepts a root `if`/`then`; a copy still teaching "a root
+    // conditional is impossible here" states something measurement falsified,
+    // with controls, at the live boundary.
+    expect(region).toContain('W5-F1');
+    expect(region).toMatch(/if\/then is ACCEPTED/);
+
+    // Half two — the load-bearing one, and the reason the fact fix could not
+    // ship alone. Without the rung reason the corrected fact reads as a recipe
+    // and the next author moves the condition INTO the schema root, which this
+    // boundary would now happily take: the constrained Reviewer authors the
+    // antecedent, so it would escape by dropping the trigger rather than by
+    // supplying the comparison.
+    expect(region).toContain('ADR-0034');
+    expect(region).toMatch(/antecedent/i);
+  });
+
+  it('NEGATIVE CONTROL — the rationale region fails loud when its anchor is gone', () => {
+    // A restructure that moves or renames the FLAT + OPTIONAL comment must
+    // break this pin rather than quietly reduce it to scanning nothing.
+    expect(() => flatOptionalRationale('# no rationale here\n')).toThrow(
+      /contract region start anchor missing in workflow-driver\.md documentedFormComparison rationale/,
+    );
   });
 });
 
@@ -1987,8 +2028,12 @@ const ANCHOR_INTERPOLATION = /(?<!\\)\$\{issue\.anchorSha\}/;
  *
  * Two deliberate departures from `regionBetween` above, both about failure
  * legibility rather than taste. (1) Its throw message is worded for the threshold
- * pins ("threshold-region start anchor missing"); a Check-5 anchor failing under
- * that wording sends the next reader to the wrong constant entirely. (2) It slices
+ * pins ("threshold-region start anchor missing"); a contract anchor failing under
+ * that wording sends the next reader to the wrong constant entirely. This one
+ * says "contract region" and leans on `label` to name WHICH contract — it slices
+ * more than one of them (Check 5's sibling coverage, the FETCH_HEAD clause, the
+ * Documented-Form rationale), so naming any single contract in the message would
+ * mis-send the reader exactly the way the threshold wording does. (2) It slices
  * from `from`, INCLUDING its own start anchor — correct there, where a threshold
  * literal can sit in the heading line itself, but it makes an emptiness check
  * unreachable: the region always contains at least the anchor. Excluding the
@@ -1998,16 +2043,16 @@ const ANCHOR_INTERPOLATION = /(?<!\\)\$\{issue\.anchorSha\}/;
 function contractRegion(md: string, label: string, start: string, end: string): string {
   const from = md.indexOf(start);
   if (from < 0) {
-    throw new Error(`sibling-coverage region start anchor missing in ${label}: ${start}`);
+    throw new Error(`contract region start anchor missing in ${label}: ${start}`);
   }
   const contentFrom = from + start.length;
   const to = md.indexOf(end, contentFrom);
   if (to < 0) {
-    throw new Error(`sibling-coverage region end anchor missing in ${label}: ${end}`);
+    throw new Error(`contract region end anchor missing in ${label}: ${end}`);
   }
   const region = md.slice(contentFrom, to);
   if (region.trim().length === 0) {
-    throw new Error(`sibling-coverage region is EMPTY in ${label} — the pin would pass vacuously`);
+    throw new Error(`contract region is EMPTY in ${label} — the pin would pass vacuously`);
   }
   return region;
 }
