@@ -266,6 +266,77 @@ describe('skill-schema-drift — the driver-facing schema literal is boundary-sa
     ) as Record<string, unknown>;
   }
 
+  /**
+   * Strips exactly the top-level `anyOf` key from a plain (JSON-shaped)
+   * schema object, leaving every other key/value untouched. This is the ONE
+   * shape difference the agent boundary forces onto the driver's
+   * WORKER_REPORT_SCHEMA copy (W5-F1, above): the canonical const's
+   * top-level `anyOf` (the outcome-conditional prUrl requirement) cannot
+   * survive the trip into `agent({ schema })`, so the driver copy omits it
+   * deliberately. Every OTHER key must still match byte-for-byte — that is
+   * what the deep-equal pin below checks, and the only reason a bespoke
+   * comparator exists here instead of a bare `toEqual`.
+   */
+  function withoutTopLevelAnyOf(
+    schema: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const { anyOf: _anyOf, ...rest } = schema;
+    return rest;
+  }
+
+  const CANONICAL_WORKER_REPORT_MODULO_ANYOF = withoutTopLevelAnyOf(
+    plain(WORKER_REPORT_JSON_SCHEMA) as Record<string, unknown>,
+  );
+
+  it("the driver's WORKER_REPORT_SCHEMA copy deep-equals the engine const modulo exactly the top-level anyOf (previously pinned by nothing but boundary-safety)", () => {
+    // Regression pin for the prUrl-minLength drift this row closes: before
+    // the fix, the driver copy's prUrl carried `{ type: 'string' }` with no
+    // `minLength` — a real content divergence from the canonical const that
+    // nothing deep-equaled until this test existed (this describe block's
+    // neighboring tests only ever checked the copy's *shape* — no top-level
+    // combinator — never its *content*). Observed RED against the shipped
+    // divergence, then GREEN once the copy's `prUrl` regained `minLength: 1`
+    // — see the PR description for that order of evidence.
+    const driverSchema = extractDriverWorkerReportSchema(driverMd);
+    expect(driverSchema).toEqual(CANONICAL_WORKER_REPORT_MODULO_ANYOF);
+  });
+
+  it.each<[string, string, string]>([
+    [
+      'issue loses its minLength (a scalar string constraint)',
+      "issue: { type: 'string', minLength: 1 }, branch: { type: 'string', minLength: 1 },",
+      "issue: { type: 'string' }, branch: { type: 'string', minLength: 1 },",
+    ],
+    [
+      'outcome loses an enum value',
+      "enum: ['done','done-with-concerns','needs-context','blocked'] },",
+      "enum: ['done','done-with-concerns','needs-context'] },",
+    ],
+    [
+      "filesChanged.new loses its minimum (a nested property's constraint)",
+      "properties: { new: { type: 'integer', minimum: 0 }, modified: { type: 'integer', minimum: 0 }, renamed: { type: 'integer', minimum: 0 } } },",
+      "properties: { new: { type: 'integer' }, modified: { type: 'integer', minimum: 0 }, renamed: { type: 'integer', minimum: 0 } } },",
+    ],
+    [
+      'the top-level required array drops an entry',
+      "required: ['outcome','issue','branch','commitShas','filesChanged','tests','lint','judgmentCalls','reviewerFocusItems'],",
+      "required: ['outcome','issue','branch','commitShas','filesChanged','tests','judgmentCalls','reviewerFocusItems'],",
+    ],
+  ])(
+    'negative control — a seeded content divergence (%s) on the driver copy fails the pin',
+    (_label, from, to) => {
+      const regressed = driverMd.replace(from, to);
+      expect(regressed).not.toEqual(driverMd); // the replace actually matched
+      const schema = extractDriverWorkerReportSchema(regressed);
+      expect(schema).not.toEqual(CANONICAL_WORKER_REPORT_MODULO_ANYOF);
+    },
+  );
+
+  it('the canonical const itself still carries the top-level anyOf this pin strips — this row pins the copy to the canon, it never edits the canon', () => {
+    expect(WORKER_REPORT_JSON_SCHEMA).toHaveProperty('anyOf');
+    expect(Array.isArray(WORKER_REPORT_JSON_SCHEMA.anyOf)).toBe(true);
+  });
+
   it('the driver-facing WORKER_REPORT_SCHEMA literal (workflow-driver.md) carries no top-level anyOf/oneOf/allOf', () => {
     const driverSchema = extractDriverWorkerReportSchema(driverMd);
     expect(() =>

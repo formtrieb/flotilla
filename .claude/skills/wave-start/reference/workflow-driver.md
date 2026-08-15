@@ -114,7 +114,7 @@ A copy that is neither freshly extracted nor currency-checked is not eligible to
 - **The workspace-setup `pwd` step states cwd as a RESET CONSTANT, never a persisted one.** The correct premise: cwd is reset to the dispatch root before every Bash call, so one `pwd` characterizes every later call and a `cd` never reaches a later step. A copy whose Scribe brief (or Worker workspace-setup) still opens with a `cd` to `REPO_ROOT` "so a later call resolves against it" is carrying the falsified premise §The Scribe's cwd exists to retire (Occurrence 1 below).
 - **`reviewerBrief()`'s SECRET-SAFE clause states the Reviewer's OWN measured isolation posture** — no `isolation` key on the Reviewer's `agent()` call (Stage 3) — never the Worker's (`isolation: 'worktree'`, Stage 1). A copy that states the Worker's posture for the Reviewer is carrying the falsified claim `#356` corrected (Occurrence 2 below).
 - **Termination step 4 is the `host-pr status --branch` re-query recipe**, never a `PR_URL=$(...)` capture-then-guard shape. A copy still prescribing a capture-plus-guard predates the Convention-12/13 fix and will teach the Worker a shape the worktree-isolation guard refuses outright.
-- **The two inlined `*_SCHEMA` literals deep-equal the exported engine consts**, `anyOf`-free. `skill-schema-drift.spec.ts` is the automated form of this one for what ships on `main`; the checklist item is for a HAND diff when comparing two composed copies that may not both be on `main` yet.
+- **The two inlined `*_SCHEMA` literals deep-equal the exported engine consts** — the `REVIEWER_VERDICT_SCHEMA` copy directly (the engine const carries no top-level combinator to begin with), and the `WORKER_REPORT_SCHEMA` copy **modulo exactly the top-level `anyOf`**, the one shape difference the agent boundary forces off (W5-F1, above). `skill-schema-drift.spec.ts` is the automated form of this one for what ships on `main` — it pins both copies, the report copy by stripping `anyOf` from the canonical const before comparing, never by editing the canonical const itself; the checklist item is for a HAND diff when comparing two composed copies that may not both be on `main` yet.
 - **`REQUIRED_ROW_FIELDS` names every scalar field the copy's OWN `workerBrief`/`reviewerBrief` actually interpolate.** A field added to a brief but not to that array is exactly how the narrow `anchorSha`-only predecessor of this assertion missed `branch` one wave-generation later (Authoring constraint #7 below).
 - **Both `workerBrief()` and `reviewerBrief()` render a `## Granted scope extension` section.** A copy missing either heading predates ADR-0041's structured-grant field — see "The recompose-refetch rule" below. Without it a granted, in-scope file reads to the Reviewer as an unverified overrun again, the exact live gap ADR-0041 closes.
 
@@ -187,7 +187,10 @@ export const meta = {
 // ── inlined from wave-shared (copy of WORKER_REPORT_SCHEMA) ──
 // anyOf-free by design (agent tool's input_schema rejects a top-level anyOf/oneOf/allOf,
 // W5-F1) — the prUrl-on-done/done-with-concerns invariant is BRIEF-enforced below, not
-// schema-enforced. See "Why this copy drops anyOf" above; skill-schema-drift.spec.ts pins it.
+// schema-enforced. See "Why this copy drops anyOf" above; skill-schema-drift.spec.ts pins
+// both halves — no top-level combinator, AND every other property deep-equals the engine
+// const modulo exactly that stripped anyOf, so a content drift here (e.g. a lost minLength)
+// fails loud too.
 const WORKER_REPORT_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['outcome','issue','branch','commitShas','filesChanged','tests','lint','judgmentCalls','reviewerFocusItems'],
@@ -196,7 +199,7 @@ const WORKER_REPORT_SCHEMA = {
     issue: { type: 'string', minLength: 1 }, branch: { type: 'string', minLength: 1 },
     worktree: { type: 'string' },
     commitShas: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
-    prUrl: { type: 'string' },
+    prUrl: { type: 'string', minLength: 1 },
     filesChanged: { type: 'object', additionalProperties: false, required: ['new','modified','renamed'],
       properties: { new: { type: 'integer', minimum: 0 }, modified: { type: 'integer', minimum: 0 }, renamed: { type: 'integer', minimum: 0 } } },
     tests: { type: 'string', minLength: 1 }, regressionSweep: { type: 'string' },
