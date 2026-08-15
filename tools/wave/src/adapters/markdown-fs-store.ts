@@ -41,6 +41,7 @@ import {
   HEADER_BLOCK_FIELDS,
   classifyCreateInput,
   CreateInputError,
+  requireGoalContainer,
   validateAmendPatch,
   type IssueStore,
   type IssueStoreConformanceHooks,
@@ -53,8 +54,16 @@ import {
   type PublishDocumentInput,
   type DocumentView,
   type ClosingState,
+  type CreateGoalInput,
+  type GoalContainer,
+  type GoalView,
   withTriageDisclaimer,
 } from './issue-store';
+import {
+  computeGoalFrontier,
+  type GoalFrontier,
+  type GoalMemberFacts,
+} from '../goal-frontier';
 import { serializeBareBody, upsertSection } from './body-codec';
 
 const STATUS_FIELD = 'Status';
@@ -69,6 +78,17 @@ const TRIAGE_COMMENT_MARKER = '<!-- triage-comment -->';
 /** needs-attention flag (ADR-0006): orthogonal to the Wave-Status claim rung. */
 const NEEDS_ATTENTION_FIELD = 'Needs-Attention';
 const NEEDS_ATTENTION_HEADING = 'Needs-Attention';
+/**
+ * Goal facet (ADR-0044): this store has NO native container at all, so the facet
+ * IS its realization — a **goal file** under `.scratch/<slug>/goals/`, with the
+ * curated membership as a `## Members` list of opaque issue ids.
+ *
+ * That absence is precisely why the facet had to exist rather than being left to
+ * skill prose over a host CLI: there is nothing here for a skill to shell into.
+ */
+const GOAL_MEMBERS_HEADING = 'Members';
+const GOAL_CONTAINERS_REALIZED: readonly GoalContainer[] = ['goal-file'];
+const DEFAULT_GOAL_CONTAINER: GoalContainer = 'goal-file';
 
 export interface MarkdownFsStoreOptions {
   /** Repo root that contains the `.scratch/` tree. */
@@ -111,6 +131,10 @@ export class MarkdownFsStore implements IssueStore {
   /** The PRD document lives beside `issues/`, never inside it (ADR-0011). */
   private get prdPath(): string {
     return join(this.repoRoot, '.scratch', this.slug, 'prd.md');
+  }
+  /** Goal files live beside `issues/` too — a goal is not an issue (ADR-0044). */
+  private get goalsDir(): string {
+    return join(this.repoRoot, '.scratch', this.slug, 'goals');
   }
   private idFor(nn: string): string {
     return `${this.slug}#${nn}`;
@@ -570,6 +594,223 @@ export class MarkdownFsStore implements IssueStore {
     return [{ id: `${this.slug}#prd`, title, body }];
   }
 
+  // ── Goal facet (ADR-0044): a Goal is a GOAL FILE under .scratch/<slug>/goals/ ──
+  //
+  // This store has no native container, so the facet IS the realization: a
+  // markdown file whose H1 is the finish line's name, whose prose is its
+  // description, and whose `## Members` list holds the curated membership as
+  // opaque issue ids. Deliberately beside `issues/`, never inside it — a goal is
+  // not an issue and must never be scanned as one by `listOpen`/`listClaimed`.
+
+  /**
+   * Resolve the container role this call addresses, or refuse loudly. Runs as
+   * the FIRST statement of every goal verb, before any directory is made and
+   * before anything is written — so a refused binding files nothing, the same
+   * property `classifyCreateInput` gives `create()`.
+   */
+  private goalRole(container: GoalContainer | undefined): GoalContainer {
+    return requireGoalContainer({
+      storeKind: 'markdown',
+      configured: container,
+      fallback: DEFAULT_GOAL_CONTAINER,
+      realizable: GOAL_CONTAINERS_REALIZED,
+    });
+  }
+
+  async createGoal(input: CreateGoalInput, container?: GoalContainer): Promise<string> {
+    this.goalRole(container);
+    await mkdir(this.goalsDir, { recursive: true });
+    const nn = await this.nextGoalNN();
+    const content =
+      [
+        `# ${input.title}`,
+        '',
+        ...(input.description !== undefined && input.description.trim() !== ''
+          ? [input.description.trimEnd(), '']
+          : []),
+        `## ${GOAL_MEMBERS_HEADING}`,
+        '',
+      ].join('\n') + '\n';
+    await writeFile(join(this.goalsDir, `${nn}-${input.filingHint}.md`), content, 'utf-8');
+    return this.goalIdFor(nn);
+  }
+
+  async readGoal(id: string, container?: GoalContainer): Promise<GoalView> {
+    const role = this.goalRole(container);
+    const located = await this.locateGoal(id);
+    if (!located) throw new Error(`Goal not found: ${id}`);
+    const source = await readFile(located, 'utf-8');
+    const { title, body } = splitTitleBody(source);
+    return {
+      id,
+      title,
+      description: goalDescription(body),
+      container: role,
+      memberIds: parseGoalMembers(source),
+    };
+  }
+
+  async listGoals(container?: GoalContainer): Promise<GoalView[]> {
+    const role = this.goalRole(container);
+    const names = (await safeReaddir(this.goalsDir))
+      .filter((n) => /^\d+-.*\.md$/.test(n))
+      .sort();
+    const out: GoalView[] = [];
+    for (const name of names) {
+      const source = await readFile(join(this.goalsDir, name), 'utf-8');
+      const { title, body } = splitTitleBody(source);
+      out.push({
+        id: this.goalIdFor(name.slice(0, name.indexOf('-'))),
+        title,
+        description: goalDescription(body),
+        container: role,
+        memberIds: parseGoalMembers(source),
+      });
+    }
+    return out;
+  }
+
+  async assignToGoal(
+    goalId: string,
+    issueId: string,
+    container?: GoalContainer,
+  ): Promise<void> {
+    this.goalRole(container);
+    const located = await this.locateGoal(goalId);
+    if (!located) throw new Error(`Goal not found: ${goalId}`);
+    // The issue must exist before it is curated in — a membership list naming an
+    // id this store cannot resolve would read back as a permanently `unready`
+    // ghost member in every frontier.
+    if (!(await this.locate(issueId))) throw new Error(`Issue not found: ${issueId}`);
+    const source = await readFile(located, 'utf-8');
+    const members = parseGoalMembers(source);
+    if (members.includes(issueId)) return; // idempotent — already curated in
+    await writeFile(
+      located,
+      upsertSection(
+        source,
+        GOAL_MEMBERS_HEADING,
+        [...members, issueId].map((m) => `- ${m}`).join('\n'),
+      ),
+      'utf-8',
+    );
+  }
+
+  async readGoalFrontier(
+    goalId: string,
+    container?: GoalContainer,
+  ): Promise<GoalFrontier> {
+    this.goalRole(container);
+    const located = await this.locateGoal(goalId);
+    if (!located) throw new Error(`Goal not found: ${goalId}`);
+    const source = await readFile(located, 'utf-8');
+    const facts: GoalMemberFacts[] = [];
+    for (const memberId of parseGoalMembers(source)) {
+      facts.push(await this.goalMemberFacts(memberId));
+    }
+    return computeGoalFrontier(goalId, facts);
+  }
+
+  /**
+   * What this store can SEE about one goal member.
+   *
+   * Read off the raw file rather than through `read()`, for the reason the two
+   * tracker stores record: `read()` throws on a BARE member (its header parser
+   * lists Risk/Worker/Files/Blocked-by as REQUIRED), and a bare member is
+   * exactly what the `goal` station files at a cut — so `read()` would make a
+   * fresh goal unreadable, while reading the source makes `unready` observable.
+   *
+   * A member id this store cannot locate at all reads `unready` with no
+   * blockers: it is not closed, not claimed, and carries no eligibility marker
+   * this store can see. That is the honest reading for a curated id pointing at
+   * nothing — never `actionable`, which would invite a wave to draw it.
+   */
+  private async goalMemberFacts(memberId: string): Promise<GoalMemberFacts> {
+    const located = await this.locate(memberId);
+    if (!located) {
+      return {
+        id: memberId,
+        closed: false,
+        claimed: false,
+        eligible: false,
+        unresolvedBlockers: [],
+      };
+    }
+    if (located.inDone) {
+      // Closed ⇒ `done` whatever else is true of it; no blocker read at all.
+      return {
+        id: memberId,
+        closed: true,
+        claimed: false,
+        eligible: false,
+        unresolvedBlockers: [],
+      };
+    }
+    const source = await readFile(located.path, 'utf-8');
+    // The Header-Block is the ONLY blocker representation on this store, and a
+    // bare member has none — the parse failing IS the bare case (the same
+    // asymmetry ADR-0044's bare `blockedBy` arm is refused over here), so it
+    // degrades to "no blockers" rather than failing the frontier read.
+    const parsed = createHeaderParser(this.schema).parse(source);
+    const blockedBy = parsed.ok ? parsed.header.blockedBy : 'none';
+    return {
+      id: memberId,
+      closed: false,
+      claimed:
+        this.readRung(source) !== null ||
+        readField(source, NEEDS_ATTENTION_FIELD) !== undefined,
+      eligible: this.isEligible(source),
+      unresolvedBlockers: await this.unresolvedBlockers(blockedBy),
+    };
+  }
+
+  /**
+   * Which of a member's blockers are still in the way. A blocker counts as
+   * UNRESOLVED unless this store positively found it in `done/`: a cross-SLUG
+   * ref names another slug's tree this instance cannot see, and a ref that
+   * locates nowhere is equally no evidence. `actionable` is a positive claim
+   * that nothing blocks the member, so no-evidence must never counterfeit it.
+   */
+  private async unresolvedBlockers(
+    blockedBy: 'none' | IssueRef[],
+  ): Promise<IssueRef[]> {
+    if (blockedBy === 'none') return [];
+    const out: IssueRef[] = [];
+    for (const ref of blockedBy) {
+      if (ref.slug !== undefined && ref.slug !== this.slug) {
+        out.push(ref); // another slug's tree — unreachable here, never provably clear
+        continue;
+      }
+      const located = await this.locate(this.idFor(String(ref.issue)));
+      if (!located || !located.inDone) out.push(ref);
+    }
+    return out;
+  }
+
+  /** `<slug>#goal-NN` — a goal id, deliberately NOT `parseRef`-invertible (a goal is not a blocker). */
+  private goalIdFor(nn: string): string {
+    return `${this.slug}#goal-${nn}`;
+  }
+
+  /** The goal file a `<slug>#goal-NN` id names, or `null`. */
+  private async locateGoal(id: string): Promise<string | null> {
+    const m = /#goal-(\d+)$/.exec(id);
+    if (!m) return null;
+    const names = await safeReaddir(this.goalsDir);
+    const match = names.find((n) => new RegExp(`^0*${Number(m[1])}-.*\\.md$`).test(n));
+    return match ? join(this.goalsDir, match) : null;
+  }
+
+  /** The next free goal number — its own sequence, independent of the issue NNs. */
+  private async nextGoalNN(): Promise<string> {
+    let max = 0;
+    for (const name of await safeReaddir(this.goalsDir)) {
+      const m = /^(\d+)-/.exec(name);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    return String(max + 1).padStart(2, '0');
+  }
+
   // ── internals ─────────────────────────────────────────────────────────────
   private readRung(source: string): ClaimRung | null {
     const v = readField(source, WAVE_STATUS_FIELD);
@@ -1027,6 +1268,43 @@ function eligibilityToken(statusValue: string): string {
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The curated member ids in a goal file's `## Members` list (ADR-0044). Reads
+ * ONLY that section, so free prose elsewhere in the file — and any `- ` bullet
+ * inside it — can never be mistaken for membership.
+ *
+ * Blank/absent section ⇒ `[]`, which is a real reading: a freshly-cut goal has
+ * no members yet, and its frontier is `complete` because an empty remainder is
+ * empty. That is exactly why the station only ever REPORTS completion and never
+ * acts on it (ADR-0044 decision 5).
+ */
+function parseGoalMembers(source: string): string[] {
+  const lines = source.split('\n');
+  const start = lines.findIndex((l) =>
+    new RegExp(`^##\\s+${escapeRe(GOAL_MEMBERS_HEADING)}\\s*$`, 'i').test(l),
+  );
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s+/.test(lines[i])) break; // the next section ends the list
+    const m = /^-\s+(.*\S)\s*$/.exec(lines[i]);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * A goal file's free prose — everything above the `## Members` section, trimmed.
+ * The empty string when the goal carries none, matching
+ * {@link GoalView.description}'s "empty, never absent" contract on the two
+ * tracker stores.
+ */
+function goalDescription(body: string): string {
+  const lines = body.split('\n');
+  const end = lines.findIndex((l) => /^##\s+/.test(l));
+  return (end < 0 ? lines : lines.slice(0, end)).join('\n').trim();
 }
 
 async function safeReaddir(dir: string): Promise<string[]> {

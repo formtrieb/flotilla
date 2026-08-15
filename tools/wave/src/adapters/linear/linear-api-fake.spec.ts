@@ -158,3 +158,81 @@ describe('InMemoryLinearApi store-preflight substrate (FOR-12)', () => {
     expect(names).toContain('In Progress');
   });
 });
+
+describe('InMemoryLinearApi projects (the Goal container substrate, ADR-0044)', () => {
+  it('createProject → getProject round-trips', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createProject({ name: '1.0.0', description: 'the freeze' });
+    expect(await api.getProject(id)).toEqual({ id, name: '1.0.0', description: 'the freeze' });
+  });
+
+  it('project ids are their own space — never a `<TEAM>-<n>` issue identifier', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createProject({ name: 'p', description: '' });
+    const { identifier } = await api.createIssue({ title: 'i', description: '', labels: [] });
+    expect(id).not.toBe(identifier);
+    expect(identifier).toMatch(/^EX-\d+$/);
+  });
+
+  it('getProject / listProjectIssues / setIssueProject throw on an unknown project', async () => {
+    const api = new InMemoryLinearApi();
+    const { identifier } = await api.createIssue({ title: 'i', description: '', labels: [] });
+    await expect(api.getProject('nope')).rejects.toThrow(/project not found/i);
+    await expect(api.listProjectIssues('nope')).rejects.toThrow(/project not found/i);
+    await expect(api.setIssueProject(identifier, 'nope')).rejects.toThrow(/project not found/i);
+  });
+
+  it('setIssueProject throws on an unknown issue', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createProject({ name: 'p', description: '' });
+    await expect(api.setIssueProject('EX-404', id)).rejects.toThrow(/issue not found/i);
+  });
+
+  it('membership is a per-ISSUE pointer, so re-assigning is idempotent and re-pointing MOVES', async () => {
+    const api = new InMemoryLinearApi();
+    const a = await api.createProject({ name: 'a', description: '' });
+    const b = await api.createProject({ name: 'b', description: '' });
+    const { identifier } = await api.createIssue({ title: 'i', description: '', labels: [] });
+
+    await api.setIssueProject(identifier, a.id);
+    await api.setIssueProject(identifier, a.id); // idempotent
+    expect((await api.listProjectIssues(a.id)).map((i) => i.identifier)).toEqual([identifier]);
+
+    await api.setIssueProject(identifier, b.id);
+    expect(await api.listProjectIssues(a.id)).toEqual([]);
+    expect((await api.listProjectIssues(b.id)).map((i) => i.identifier)).toEqual([identifier]);
+  });
+
+  it('listProjectIssues returns members OPEN AND CLOSED — `done` is a frontier reading', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createProject({ name: 'p', description: '' });
+    const open = await api.createIssue({ title: 'open', description: '', labels: [] });
+    const closed = await api.createIssue({ title: 'closed', description: '', labels: [] });
+    await api.setIssueProject(open.identifier, id);
+    await api.setIssueProject(closed.identifier, id);
+    await api.setState(closed.identifier, 'Done');
+
+    expect((await api.listProjectIssues(id)).map((i) => i.identifier).sort()).toEqual(
+      [open.identifier, closed.identifier].sort(),
+    );
+    // …and listOpenIssues still filters, so the two reads are genuinely different.
+    expect((await api.listOpenIssues()).map((i) => i.identifier)).toEqual([open.identifier]);
+  });
+
+  it('listProjects returns every project this api minted', async () => {
+    const api = new InMemoryLinearApi();
+    await api.createProject({ name: 'a', description: '' });
+    await api.createProject({ name: 'b', description: '' });
+    expect((await api.listProjects()).map((p) => p.name).sort()).toEqual(['a', 'b']);
+  });
+
+  it('the curation write moves the issue\'s updatedAt — a write is observably a write', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createProject({ name: 'p', description: '' });
+    const { identifier } = await api.createIssue({ title: 'i', description: '', labels: [] });
+    const before = (await api.getIssue(identifier)).updatedAt;
+    await api.setIssueProject(identifier, id);
+    const after = (await api.getIssue(identifier)).updatedAt;
+    expect(Date.parse(after as string)).toBeGreaterThan(Date.parse(before as string));
+  });
+});

@@ -52,6 +52,9 @@ const {
   compareEngineVersion,
   engineVersionExitCode,
   engineVersionPreflightCheck,
+  // ADR-0044 — the Goal-container binding's config edge.
+  readGoalContainer,
+  resolveGoalContainer,
 } = await import('./cli-store');
 // The router, imported the same way (it pulls in cli-store, so it must see the
 // same mocked factories). Used only to pin the `store-preflight` subcommand's
@@ -964,5 +967,97 @@ describe('preflightStore — the lockstep check rides the injected reading', () 
 
     expect(report.ok).toBe(true);
     expect(report.checks.find((c) => c.name === 'engine-version')?.status).toBe('advisory');
+  });
+});
+
+// ── the Goal-container binding, read from wave.config.json (ADR-0044) ────────
+//
+// The binding is a SETUP-TIME config fact, and this module is the one place it
+// is read — which is what keeps it off every store's construction state and
+// leaves `buildStore`'s contract untouched by the facet existing.
+describe('readGoalContainer — store.goal.container', () => {
+  it('reads a declared role verbatim', () => {
+    for (const role of ['milestone', 'project', 'initiative', 'goal-file'] as const) {
+      expect(readGoalContainer({ store: { kind: 'github', goal: { container: role } } } as never)).toBe(
+        role,
+      );
+    }
+  });
+
+  it('an ABSENT binding is absent, not a failure — each store answers it for itself', () => {
+    // GitHub falls back to milestone, MarkdownFs to its goal file, Linear
+    // refuses. Deciding that HERE would be exactly the silent container pick
+    // ADR-0044 decision 4 forbids.
+    expect(readGoalContainer({ store: { kind: 'github' } } as never)).toBeUndefined();
+    expect(readGoalContainer({ store: { kind: 'linear', team: 'EX' } } as never)).toBeUndefined();
+    expect(
+      readGoalContainer({ store: { kind: 'github', goal: { container: undefined } } } as never),
+    ).toBeUndefined();
+    expect(readGoalContainer({ store: { kind: 'github', goal: null } } as never)).toBeUndefined();
+  });
+
+  it('a present-but-WRONG role fails loud, naming the key — configured means authoritative', () => {
+    // A malformed declaration read as "unbound" would silently fall back to a
+    // container the author did not ask for — on github, to milestone.
+    let thrown: unknown;
+    try {
+      readGoalContainer({ store: { kind: 'github', goal: { container: 'epic' } } } as never);
+    } catch (err) {
+      thrown = err;
+    }
+    expect((thrown as { name?: string })?.name).toBe('GoalBindingError');
+    expect((thrown as { failure?: string })?.failure).toBe('unknown-container');
+    expect((thrown as { field?: string })?.field).toBe('store.goal.container');
+  });
+
+  it('a non-object `store.goal` is refused rather than ignored', () => {
+    expect(() =>
+      readGoalContainer({ store: { kind: 'github', goal: 'milestone' } } as never),
+    ).toThrow(/store\.goal/);
+    expect(() =>
+      readGoalContainer({ store: { kind: 'github', goal: ['milestone'] } } as never),
+    ).toThrow(/store\.goal/);
+  });
+
+  it('reads the binding out of a config LOADED from disk — the key survives loadWaveConfig', () => {
+    // The shape note in `readGoalContainer`'s own doc, measured: `store.goal` is
+    // not yet declared on the `StoreConfig` interfaces, so this asserts the key
+    // genuinely survives the JSON load rather than being dropped by it.
+    const dir = mkdtempSync(join(tmpdir(), 'cli-store-goal-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-goal-'));
+    mkdirSync(join(repoRoot, '.scratch'), { recursive: true });
+    const path = writeConfig(dir, {
+      store: {
+        kind: 'markdown',
+        repoRoot,
+        slug: '2026-08-15-goal',
+        goal: { container: 'goal-file' },
+      },
+    });
+    expect(resolveGoalContainer(['--config', path])).toBe('goal-file');
+  });
+});
+
+describe('resolveGoalContainer — the argv-facing spelling', () => {
+  it('short-circuits on an injected store, exactly as resolveStore does', async () => {
+    // With a store injected there is no config path to read at all, so the
+    // binding is undefined and the injected store applies its OWN rule. Keeping
+    // the two resolutions in lockstep is what prevents a config-derived binding
+    // ever being pointed at a store built from somewhere else.
+    const injected = new MarkdownFsStore({ repoRoot: '/tmp/x', slug: 's' });
+    expect(resolveGoalContainer(['--config', '/nonexistent/wave.config.json'], injected)).toBeUndefined();
+    // …and the same args WITHOUT the injected store really would have tried to
+    // load that config — so the short-circuit above is doing the work.
+    expect(() => resolveGoalContainer(['--config', '/nonexistent/wave.config.json'])).toThrow();
+  });
+
+  it('a config declaring no goal block resolves to undefined (not an error)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-store-goal2-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-goal2-'));
+    mkdirSync(join(repoRoot, '.scratch'), { recursive: true });
+    const path = writeConfig(dir, {
+      store: { kind: 'markdown', repoRoot, slug: '2026-08-15-nogoal' },
+    });
+    expect(resolveGoalContainer(['--config', path])).toBeUndefined();
   });
 });

@@ -533,3 +533,96 @@ describe('GitHubIssuesStore — Triage facet (ADR-0015)', () => {
     await expect(store.readTriage('999')).rejects.toThrow();
   });
 });
+
+// ── the Goal facet's GitHub mapping (ADR-0044) ──────────────────────────────
+//
+// The tracker-agnostic contract cases live in `adapters/goal-facet.spec.ts`.
+// This block pins what that suite deliberately cannot see: that a Goal is a
+// MILESTONE here, and that the frontier reads a member's blockers through the
+// #381 read-union rather than the body codec alone.
+describe('GitHubIssuesStore — the Goal is a milestone (ADR-0044)', () => {
+  let api: InMemoryGitHubApi;
+  let store: GitHubIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryGitHubApi();
+    store = new GitHubIssuesStore({ api });
+  });
+
+  it('createGoal mints a real milestone; the id is the opaque milestone number', async () => {
+    const id = await store.createGoal({
+      title: '1.0.0',
+      filingHint: 'ignored-entirely',
+      description: 'the freeze',
+    });
+    const milestone = await api.getMilestone(Number(id));
+    expect(milestone.title).toBe('1.0.0');
+    expect(milestone.description).toBe('the freeze');
+    // filingHint is ignored, exactly as `create()` ignores it (ADR-0001).
+    expect(id).toBe('1');
+  });
+
+  it('assignToGoal writes the NATIVE milestone membership, not a body line', async () => {
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const issue = await store.create(baseInput());
+    const bodyBefore = (await api.getIssue(Number(issue))).body;
+
+    await store.assignToGoal(goal, issue);
+
+    expect((await api.listMilestoneIssues(Number(goal))).map((i) => String(i.number))).toEqual([
+      issue,
+    ]);
+    // the issue's own text is untouched — membership is tracker-native.
+    expect((await api.getIssue(Number(issue))).body).toBe(bodyBefore);
+    expect((await api.getIssue(Number(issue))).labels).toEqual([
+      'ready-for-agent',
+      'risk/mechanical',
+      'worker/background',
+    ]);
+  });
+
+  it('the frontier reads blockers through the #381 read-union — a NATIVE dependency alone blocks', async () => {
+    // The load-bearing case for ADR-0044 decision 1: a bare member's dependency
+    // exists ONLY natively (no `## Blocked by` section is ever written for it),
+    // so a frontier that consulted the body codec alone would report it
+    // `unready` — silently losing the edge the bare arm exists to record.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const blocker = await store.create({
+      title: 'workstream A',
+      filingHint: 'a',
+      bodySections: [{ heading: 'Gap', markdown: 'A must exist first.' }],
+    });
+    const blocked = await store.create({
+      title: 'workstream B',
+      filingHint: 'b',
+      bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+      blockedBy: [store.parseRef(blocker)],
+    });
+    await store.assignToGoal(goal, blocked);
+
+    // no body-codec Blocked-by section exists at all…
+    expect((await api.getIssue(Number(blocked))).body).not.toMatch(/^##\s+Blocked by\s*$/im);
+    // …and the frontier still sees the edge.
+    const reading = (await store.readGoalFrontier(goal)).readings[0];
+    expect(reading.state).toBe('blocked');
+    expect(reading.unresolvedBlockers).toEqual([{ issue: Number(blocker) }]);
+  });
+
+  it('a CROSS-REPO blocker is UNRESOLVED — this repo-scoped API can never prove it clear', async () => {
+    // Resolving `other#5` against THIS repo's #5 would be the silently-wrong
+    // answer `refToIssueNumber` already refuses to give on the write side. So it
+    // stays unresolved: no evidence must never counterfeit `actionable`.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' });
+    const member = await store.create(
+      baseInput({ title: 'waits on another repo', blockedBy: [{ slug: 'other', issue: 5 }] }),
+    );
+    await store.assignToGoal(goal, member);
+    const reading = (await store.readGoalFrontier(goal)).readings[0];
+    expect(reading.state).toBe('blocked');
+    expect(reading.unresolvedBlockers).toEqual([{ slug: 'other', issue: 5 }]);
+  });
+
+  it('a goal id that is not an integer is refused as malformed, never read as an empty goal', async () => {
+    await expect(store.readGoal('not-a-number')).rejects.toThrow(/milestone id/i);
+    await expect(store.readGoalFrontier('not-a-number')).rejects.toThrow(/milestone id/i);
+  });
+});

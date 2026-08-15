@@ -807,3 +807,125 @@ describe('LinearIssuesStore — close() upserts the closing PR as a native attac
     expect(closing.prUrl).toBe(PR);
   });
 });
+
+// ── the Goal facet's Linear mapping (ADR-0044) ──────────────────────────────
+//
+// The tracker-agnostic contract cases live in `adapters/goal-facet.spec.ts`.
+// This block pins what that suite cannot see: that a Goal is a PROJECT here,
+// that the binding is mandatory on this store and on no other, and that the
+// frontier reads a member's blockers through the ADR-0020 read-union.
+describe('LinearIssuesStore — the Goal is a project (ADR-0044)', () => {
+  let api: InMemoryLinearApi;
+  let store: LinearIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryLinearApi();
+    store = new LinearIssuesStore({ api });
+  });
+
+  it('createGoal mints a real project; the id is the opaque project id', async () => {
+    const id = await store.createGoal(
+      { title: '1.0.0', filingHint: 'ignored-entirely', description: 'the freeze' },
+      'project',
+    );
+    const project = await api.getProject(id);
+    expect(project.name).toBe('1.0.0');
+    expect(project.description).toBe('the freeze');
+    // NOT a `<TEAM>-<n>` identifier: a project has no human identifier, so its
+    // UUID is the opaque goal id (ADR-0001).
+    expect(id).not.toMatch(/^EX-\d+$/);
+  });
+
+  it('assignToGoal writes the NATIVE project membership, not a description line', async () => {
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' }, 'project');
+    const issue = await store.create(baseInput());
+    const before = (await api.getIssue(issue)).description;
+
+    await store.assignToGoal(goal, issue, 'project');
+
+    expect((await api.listProjectIssues(goal)).map((i) => i.identifier)).toEqual([issue]);
+    expect((await api.getIssue(issue)).description).toBe(before);
+  });
+
+  it('EVERY goal verb refuses without a binding — Linear has no default, by decision', async () => {
+    // The asymmetry ADR-0044 decision 4 exists for: one shipped consumer runs
+    // Initiative=Epic / Project=User Story while ADR-0017 once sketched
+    // "Wave ≈ Linear Project". Both are live, so any built-in pick would
+    // overwrite somebody's meaning.
+    await expect(store.createGoal({ title: 'g', filingHint: 'g' })).rejects.toMatchObject({
+      name: 'GoalBindingError',
+      failure: 'unbound',
+      field: 'store.goal.container',
+    });
+    await expect(store.listGoals()).rejects.toMatchObject({ failure: 'unbound' });
+    await expect(store.readGoal('x')).rejects.toMatchObject({ failure: 'unbound' });
+    await expect(store.assignToGoal('x', 'y')).rejects.toMatchObject({ failure: 'unbound' });
+    await expect(store.readGoalFrontier('x')).rejects.toMatchObject({ failure: 'unbound' });
+  });
+
+  it('`initiative` is refused BY NAME as a deferred realization, not as an unknown role', async () => {
+    // A named follow-up, never a silent cap: initiatives hold projects rather
+    // than issues, so their membership is transitive and may not even be
+    // assignToGoal-shaped.
+    await expect(
+      store.createGoal({ title: 'g', filingHint: 'g' }, 'initiative'),
+    ).rejects.toMatchObject({
+      name: 'GoalBindingError',
+      failure: 'unrealized-container',
+      configured: 'initiative',
+    });
+    // …and nothing was minted by the refusal.
+    expect(await api.listProjects()).toEqual([]);
+  });
+
+  it('the frontier reads blockers through the read-union — a NATIVE relation alone blocks', async () => {
+    // The bare-arm case: the dependency exists only as a native relation, with
+    // no `## Blocked by` section anywhere, so a codec-only frontier would report
+    // the member `unready` and lose the edge entirely.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' }, 'project');
+    const blocker = await store.create({
+      title: 'workstream A',
+      filingHint: 'a',
+      bodySections: [{ heading: 'Gap', markdown: 'A must exist first.' }],
+    });
+    const blocked = await store.create({
+      title: 'workstream B',
+      filingHint: 'b',
+      bodySections: [{ heading: 'Gap', markdown: 'B waits on A.' }],
+      blockedBy: [store.parseRef(blocker)],
+    });
+    await store.assignToGoal(goal, blocked, 'project');
+
+    expect((await api.getIssue(blocked)).description).not.toMatch(/^##\s+Blocked by\s*$/im);
+    const reading = (await store.readGoalFrontier(goal, 'project')).readings[0];
+    expect(reading.state).toBe('blocked');
+    expect(reading.unresolvedBlockers).toEqual([store.parseRef(blocker)]);
+  });
+
+  it('a blocker this workspace cannot resolve stays UNRESOLVED, never silently cleared', async () => {
+    // Unlike GitHub there is no up-front cross-team refusal (a Linear identifier
+    // carries its own team slug), so the reach question is settled by the READ —
+    // and a read that cannot resolve the blocker is no evidence of clearance.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' }, 'project');
+    const member = await store.create(
+      baseInput({ title: 'waits on another team', blockedBy: [{ slug: 'OTHER', issue: 7 }] }),
+    );
+    await store.assignToGoal(goal, member, 'project');
+    const reading = (await store.readGoalFrontier(goal, 'project')).readings[0];
+    expect(reading.state).toBe('blocked');
+    expect(reading.unresolvedBlockers).toEqual([{ slug: 'OTHER', issue: 7 }]);
+  });
+
+  it('a member parked in the unclaim target reads `actionable`, not `in-motion`', async () => {
+    // The Linear-specific half of the claim reading: the ledger is the workflow
+    // STATE here, so "claimed" means one of the three MAPPED rung states — the
+    // backlog/unclaim target is not one of them.
+    const goal = await store.createGoal({ title: 'g', filingHint: 'g' }, 'project');
+    const issue = await store.create(baseInput());
+    await store.assignToGoal(goal, issue, 'project');
+    await store.transition(issue, 'in-flight');
+    expect((await store.readGoalFrontier(goal, 'project')).readings[0].state).toBe('in-motion');
+
+    await store.unclaim(issue);
+    expect((await store.readGoalFrontier(goal, 'project')).readings[0].state).toBe('actionable');
+  });
+});

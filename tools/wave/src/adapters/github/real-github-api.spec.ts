@@ -1035,3 +1035,146 @@ describe('RealGitHubApi', () => {
     });
   });
 });
+
+// ── the Goal facet's milestone substrate (ADR-0044) ─────────────────────────
+//
+// UNEXECUTABLE CORE PATH (ADR-0030): these five endpoints cannot be driven live
+// from this dispatch — the writes need a credential this row does not have, and
+// no live probe was run against the reads either. So the specs below pin the
+// REQUEST SHAPING against the documented form, read in this dispatch:
+//
+//   docs.github.com/en/rest/issues/milestones (2026-08-15) — create 201; get
+//     200; list 200 with `state` DEFAULTING TO `open` and `per_page` max 100.
+//   docs.github.com/en/rest/issues/issues (2026-08-15) — "List repository
+//     issues"' `milestone` query parameter ("If an integer is passed, it should
+//     refer to a milestone by its `number` field") and "Update an issue"'s
+//     `milestone` body field ("The number of the milestone to associate this
+//     issue with"), success 200.
+//
+// The two `state=all` assertions are the load-bearing ones: both endpoints
+// default to OPEN, and either default left in place would make a shipped goal —
+// or a finished member — silently vanish from the frontier.
+describe('RealGitHubApi — milestones (the Goal container, ADR-0044)', () => {
+  it('createMilestone POSTs title+description to /milestones and returns the number (201)', async () => {
+    const { api, http } = makeApi((req) => {
+      expect(req.method).toBe('POST');
+      expect(req.url).toBe('https://api.github.com/repos/example-org/example-repo/milestones');
+      expect(req.token).toBe('tok-abc');
+      expect(JSON.parse(req.body!)).toEqual({ title: '1.0.0', description: 'the freeze' });
+      return { status: 201, json: { number: 3 } };
+    });
+    expect(await api.createMilestone({ title: '1.0.0', description: 'the freeze' })).toEqual({
+      number: 3,
+    });
+    expect(http.requests).toHaveLength(1);
+  });
+
+  it('createMilestone throws on a non-201 (the documented success code, not 200)', async () => {
+    const { api } = makeApi(() => ({ status: 200, json: { number: 3 } }));
+    await expect(api.createMilestone({ title: 'x', description: '' })).rejects.toBeInstanceOf(
+      GitHubApiError,
+    );
+  });
+
+  it('getMilestone maps the resource onto GhMilestone, with a null description as EMPTY prose', async () => {
+    const { api } = makeApi((req) => {
+      expect(req.method).toBe('GET');
+      expect(req.url).toBe(
+        'https://api.github.com/repos/example-org/example-repo/milestones/3',
+      );
+      return { status: 200, json: { number: 3, title: '1.0.0', description: null, state: 'open' } };
+    });
+    // `description` is documented "string or null"; the null must land as `''`,
+    // never as the string "null" a bare cast would produce.
+    expect(await api.getMilestone(3)).toEqual({
+      number: 3,
+      title: '1.0.0',
+      description: '',
+      state: 'open',
+    });
+  });
+
+  it('getMilestone throws on a non-200', async () => {
+    const { api } = makeApi(() => ({ status: 404, json: {} }));
+    await expect(api.getMilestone(3)).rejects.toBeInstanceOf(GitHubApiError);
+  });
+
+  it('listMilestones asks for state=all and pages to exhaustion', async () => {
+    // The `state=all` is the whole point: the endpoint DEFAULTS to `open`, so a
+    // closed finish line would silently disappear from a goal panel.
+    const page1 = Array.from({ length: 100 }, (_, i) => ({
+      number: i + 1,
+      title: `m${i}`,
+      description: '',
+      state: 'open',
+    }));
+    const page2 = [{ number: 200, title: 'shipped', description: 'd', state: 'closed' }];
+    const { api, http } = makeApi((req) => {
+      const url = new URL(req.url);
+      expect(url.searchParams.get('state')).toBe('all');
+      expect(url.searchParams.get('per_page')).toBe('100');
+      return { status: 200, json: url.searchParams.get('page') === '1' ? page1 : page2 };
+    });
+    const milestones = await api.listMilestones();
+    expect(http.requests).toHaveLength(2); // exhausted via the count heuristic
+    expect(milestones).toHaveLength(101);
+    // …and the CLOSED one really did come back.
+    expect(milestones.some((m) => m.state === 'closed')).toBe(true);
+  });
+
+  it('setIssueMilestone PATCHes the ISSUE with the milestone NUMBER (200)', async () => {
+    const { api, http } = makeApi((req) => {
+      expect(req.method).toBe('PATCH');
+      expect(req.url).toBe('https://api.github.com/repos/example-org/example-repo/issues/42');
+      expect(JSON.parse(req.body!)).toEqual({ milestone: 3 });
+      return { status: 200, json: {} };
+    });
+    await api.setIssueMilestone(42, 3);
+    expect(http.requests).toHaveLength(1);
+  });
+
+  it('setIssueMilestone throws on a non-200', async () => {
+    const { api } = makeApi(() => ({ status: 422, json: { message: 'nope' } }));
+    await expect(api.setIssueMilestone(42, 3)).rejects.toBeInstanceOf(GitHubApiError);
+  });
+
+  it('listMilestoneIssues resolves the milestone FIRST, then lists state=all and drops PRs', async () => {
+    const members = [
+      { number: 10, title: 'a', body: '', labels: [], state: 'open', state_reason: null },
+      { number: 11, title: 'b', body: '', labels: [], state: 'closed', state_reason: 'completed' },
+      { number: 12, title: 'a pr', body: '', labels: [], state: 'open', state_reason: null, pull_request: { url: 'x' } },
+    ];
+    const { api, http } = makeApi((req) => {
+      const url = new URL(req.url);
+      if (url.pathname.endsWith('/milestones/3')) {
+        return { status: 200, json: { number: 3, title: 'm', description: '', state: 'open' } };
+      }
+      expect(url.pathname).toMatch(/\/issues$/);
+      expect(url.searchParams.get('milestone')).toBe('3');
+      // Same reason as listMilestones, one level down: `done` is a frontier
+      // reading, so closed MEMBERS must come back too.
+      expect(url.searchParams.get('state')).toBe('all');
+      return { status: 200, json: members };
+    });
+
+    const issues = await api.listMilestoneIssues(3);
+    // the milestone resolve happened, and it happened first.
+    expect(http.requests[0].url).toContain('/milestones/3');
+    expect(issues.map((i) => i.number)).toEqual([10, 11]); // the PR is dropped
+    expect(issues.some((i) => i.state === 'closed')).toBe(true);
+  });
+
+  it('listMilestoneIssues FAILS on an unknown milestone rather than reading back as an empty goal', async () => {
+    // "no members" and "no such goal" are different claims — the same
+    // absent-vs-broken line the create classifier draws. Without the up-front
+    // resolve, a 200 + `[]` from the issues endpoint would launder the second
+    // into the first, and the frontier would report `complete`.
+    const { api, http } = makeApi((req) =>
+      req.url.includes('/milestones/9')
+        ? { status: 404, json: { message: 'Not Found' } }
+        : { status: 200, json: [] },
+    );
+    await expect(api.listMilestoneIssues(9)).rejects.toBeInstanceOf(GitHubApiError);
+    expect(http.requests).toHaveLength(1); // it never got as far as listing
+  });
+});

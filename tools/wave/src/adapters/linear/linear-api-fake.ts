@@ -14,6 +14,7 @@
 import type {
   LinearApi,
   LinearIssue,
+  LinearProject,
   LinearStateType,
   LinearCreateIssueInput,
   LinearPrAttachment,
@@ -314,6 +315,57 @@ export class InMemoryLinearApi implements LinearApi {
           : d.teamKey === this.teamKey,
       )
       .map(projectDocument);
+  }
+
+  // ── Goal facet substrate (ADR-0044) — projects ─────────────────────────────
+  //
+  // Modelled the same way the GitHub fake models milestones: projects in their
+  // own id space, membership as a per-ISSUE pointer (so the curation write is
+  // naturally idempotent and the member list is a scan, never a second
+  // collection to keep in sync). Every project minted here belongs to this
+  // api's TEAM, mirroring `ProjectCreateInput.teamIds`' required arity — which
+  // is what makes {@link listProjects} team-scoped rather than workspace-wide.
+
+  private readonly projects = new Map<string, LinearProject>();
+  private projectCounter = 0;
+  /** issue identifier → the project id it belongs to (absent = no project). */
+  private readonly projectByIssue = new Map<string, string>();
+
+  async createProject(input: { name: string; description: string }): Promise<{ id: string }> {
+    const id = `prj-${++this.projectCounter}`;
+    this.projects.set(id, { id, name: input.name, description: input.description });
+    return { id };
+  }
+
+  async getProject(id: string): Promise<LinearProject> {
+    const prj = this.projects.get(id);
+    if (!prj) throw new Error(`Linear project not found: ${id}`);
+    return { ...prj };
+  }
+
+  async listProjects(): Promise<LinearProject[]> {
+    return [...this.projects.values()].map((p) => ({ ...p }));
+  }
+
+  async setIssueProject(identifier: string, projectId: string): Promise<void> {
+    this.mustGet(identifier); // throws on an unknown issue
+    if (!this.projects.has(projectId)) {
+      throw new Error(`Linear project not found: ${projectId}`);
+    }
+    this.projectByIssue.set(identifier, projectId);
+    // The real `issueUpdate` moves `updatedAt`; model the same rule so a
+    // curation write is observably a write.
+    this.touch(this.mustGet(identifier));
+  }
+
+  async listProjectIssues(projectId: string): Promise<LinearIssue[]> {
+    if (!this.projects.has(projectId)) {
+      throw new Error(`Linear project not found: ${projectId}`);
+    }
+    // OPEN AND CLOSED, unlike listOpenIssues: `done` is a frontier reading.
+    return [...this.issues.values()]
+      .filter((i) => this.projectByIssue.get(i.identifier) === projectId)
+      .map((i) => this.project(i));
   }
 
   // ── test affordances (mirror InMemoryGitHubApi's setClosingPr shape) ────────

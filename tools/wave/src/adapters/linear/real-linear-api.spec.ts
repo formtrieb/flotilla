@@ -846,4 +846,267 @@ describe('RealLinearApi', () => {
       expect(Object.keys(byName)).toEqual(expect.arrayContaining(['Backlog', 'Canceled']));
     });
   });
+
+  // ── the Goal facet's project substrate (ADR-0044) ─────────────────────────
+  //
+  // UNEXECUTABLE CORE PATH (ADR-0030): no live Linear credential is available to
+  // this row, so none of the five operations below has been run against a real
+  // workspace. Every shape is pinned against Linear's PUBLISHED GraphQL schema
+  // (`linear/linear` → `packages/sdk/src/schema.graphql`), read in THIS dispatch
+  // (2026-08-15):
+  //
+  //   projectCreate(input: ProjectCreateInput!): ProjectPayload!
+  //   ProjectPayload { lastSyncId: Float!, project: Project, success: Boolean! }
+  //   ProjectCreateInput { name: String!, teamIds: [String!]!, description: String, … }
+  //   project(id: String!): Project!
+  //   Team.projects(first, after, …): ProjectConnection!
+  //   Project.issues(first, after, …): IssueConnection!
+  //   IssueUpdateInput { …, projectId: String, … }
+  //
+  // The first live `goal` station run on a linear-store consumer is the gate —
+  // the same stance `addBlockedBy` records for its own mirror.
+  describe('projects (the Goal container, ADR-0044)', () => {
+    it('createProject sends name+description AND the REQUIRED teamIds, returning the project id', async () => {
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        CreateProject: (req) => {
+          // `ProjectCreateInput.teamIds` is `[String!]!` — required, non-null. A
+          // create that omitted it would be rejected by the schema, which is why
+          // the catalog resolve has to precede the mutation.
+          expect((req.variables as { input: Record<string, unknown> }).input).toEqual({
+            name: '1.0.0',
+            description: 'the freeze',
+            teamIds: ['team-uuid-1'],
+          });
+          return {
+            status: 200,
+            json: {
+              data: {
+                projectCreate: {
+                  success: true,
+                  project: { id: 'prj-uuid-1', name: '1.0.0', description: 'the freeze' },
+                },
+              },
+            },
+          };
+        },
+      });
+
+      expect(await api.createProject({ name: '1.0.0', description: 'the freeze' })).toEqual({
+        id: 'prj-uuid-1',
+      });
+      // catalog resolve, then the mutation — never the other way round.
+      expect(http.requests).toHaveLength(2);
+    });
+
+    it('createProject throws when the payload does not report success', async () => {
+      const { api } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        CreateProject: () => ({
+          status: 200,
+          json: { data: { projectCreate: { success: false, project: null } } },
+        }),
+      });
+      await expect(api.createProject({ name: 'x', description: '' })).rejects.toBeInstanceOf(
+        LinearApiError,
+      );
+    });
+
+    it('createProject throws when success is reported without a project id', async () => {
+      const { api } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        CreateProject: () => ({
+          status: 200,
+          json: { data: { projectCreate: { success: true, project: null } } },
+        }),
+      });
+      await expect(api.createProject({ name: 'x', description: '' })).rejects.toBeInstanceOf(
+        LinearApiError,
+      );
+    });
+
+    it('getProject maps the node onto LinearProject', async () => {
+      const { api } = makeApi({
+        GetProject: (req) => {
+          expect(req.variables).toEqual({ id: 'prj-uuid-1' });
+          return {
+            status: 200,
+            json: { data: { project: { id: 'prj-uuid-1', name: '1.0.0', description: 'd' } } },
+          };
+        },
+      });
+      expect(await api.getProject('prj-uuid-1')).toEqual({
+        id: 'prj-uuid-1',
+        name: '1.0.0',
+        description: 'd',
+      });
+    });
+
+    it('getProject reports a NULL node as a domain 404, not a wire failure', async () => {
+      // HTTP 200 with a null node is Linear's shape for "no such thing" — the
+      // same reading `resolveIssue` gives an identifier that does not resolve.
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: null } } }),
+      });
+      await expect(api.getProject('nope')).rejects.toThrow(/not found/i);
+    });
+
+    it('listProjects is TEAM-scoped and pages to exhaustion', async () => {
+      const page1 = Array.from({ length: 100 }, (_, i) => ({
+        id: `prj-${i}`,
+        name: `p${i}`,
+        description: '',
+      }));
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        ListTeamProjects: (req) => {
+          const vars = req.variables as { teamId: string; after?: string };
+          // Scoped through the TEAM connection rather than a root filter, so the
+          // scoping is structural and cannot be omitted by accident: a goal panel
+          // showing every team's finish lines is not this consumer's panel.
+          expect(vars.teamId).toBe('team-uuid-1');
+          return vars.after === undefined
+            ? {
+                status: 200,
+                json: {
+                  data: {
+                    team: {
+                      projects: {
+                        nodes: page1,
+                        pageInfo: { hasNextPage: true, endCursor: 'cursor-1' },
+                      },
+                    },
+                  },
+                },
+              }
+            : {
+                status: 200,
+                json: {
+                  data: {
+                    team: {
+                      projects: {
+                        nodes: [{ id: 'prj-last', name: 'last', description: '' }],
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+                    },
+                  },
+                },
+              };
+        },
+      });
+
+      const projects = await api.listProjects();
+      expect(projects).toHaveLength(101);
+      expect(projects[projects.length - 1].id).toBe('prj-last');
+      expect(http.requests.filter((r) => r.query.includes('ListTeamProjects'))).toHaveLength(2);
+    });
+
+    it('listProjects stops rather than looping when hasNextPage is true but no cursor comes back', async () => {
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        ListTeamProjects: () => ({
+          status: 200,
+          json: {
+            data: {
+              team: {
+                projects: {
+                  nodes: [{ id: 'p', name: 'p', description: '' }],
+                  pageInfo: { hasNextPage: true, endCursor: null },
+                },
+              },
+            },
+          },
+        }),
+      });
+      expect(await api.listProjects()).toHaveLength(1);
+      expect(http.requests.filter((r) => r.query.includes('ListTeamProjects'))).toHaveLength(1);
+    });
+
+    it('setIssueProject resolves the identifier, then updates the ISSUE with projectId', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: () => ({
+          status: 200,
+          json: {
+            data: {
+              issues: {
+                nodes: [
+                  {
+                    id: 'issue-uuid-1',
+                    identifier: 'EX-16',
+                    title: 't',
+                    description: 'd',
+                    labels: { nodes: [] },
+                    state: { id: 'state-todo', name: 'Todo', type: 'unstarted' },
+                  },
+                ],
+              },
+            },
+          },
+        }),
+        UpdateIssue: (req) => {
+          expect(req.variables).toEqual({
+            id: 'issue-uuid-1',
+            input: { projectId: 'prj-uuid-1' },
+          });
+          return { status: 200, json: { data: { issueUpdate: { success: true } } } };
+        },
+      });
+      await api.setIssueProject('EX-16', 'prj-uuid-1');
+    });
+
+    it('listProjectIssues resolves the project first, then pages members OPEN AND CLOSED', async () => {
+      const node = (identifier: string, state: { name: string; type: string }) => ({
+        id: `uuid-${identifier}`,
+        identifier,
+        title: identifier,
+        description: '',
+        labels: { nodes: [] },
+        state: { id: `state-${state.type}`, ...state },
+      });
+      const { api, http } = makeApi({
+        GetProject: () => ({
+          status: 200,
+          json: { data: { project: { id: 'prj-uuid-1', name: 'g', description: '' } } },
+        }),
+        ListProjectIssues: (req) => {
+          expect((req.variables as { id: string }).id).toBe('prj-uuid-1');
+          return {
+            status: 200,
+            json: {
+              data: {
+                project: {
+                  issues: {
+                    nodes: [
+                      node('EX-1', { name: 'Todo', type: 'unstarted' }),
+                      // A COMPLETED member must come back: `done` is one of the
+                      // five frontier readings, unlike listOpenIssues where a
+                      // completed issue is correctly filtered away.
+                      node('EX-2', { name: 'Done', type: 'completed' }),
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            },
+          };
+        },
+      });
+
+      const members = await api.listProjectIssues('prj-uuid-1');
+      expect(http.requests[0].query).toContain('GetProject'); // resolve came first
+      expect(members.map((m) => m.identifier)).toEqual(['EX-1', 'EX-2']);
+      expect(members.some((m) => m.stateType === 'completed')).toBe(true);
+    });
+
+    it('listProjectIssues FAILS on an unknown project rather than reading back as an empty goal', async () => {
+      // "no members" and "no such goal" are different claims: without the
+      // up-front resolve, a project id that does not exist would yield an empty
+      // member list and the frontier would report `complete`.
+      const { api, http } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: null } } }),
+      });
+      await expect(api.listProjectIssues('nope')).rejects.toThrow(/not found/i);
+      expect(http.requests).toHaveLength(1); // it never got as far as listing
+    });
+  });
 });

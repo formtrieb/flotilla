@@ -35,6 +35,7 @@ import {
   DEFAULT_ELIGIBILITY,
   RUNG_PRECEDENCE,
   classifyCreateInput,
+  requireGoalContainer,
   validateAmendPatch,
   type IssueStore,
   type CreateInput,
@@ -46,8 +47,16 @@ import {
   type PublishDocumentInput,
   type DocumentView,
   type ClosingState,
+  type CreateGoalInput,
+  type GoalContainer,
+  type GoalView,
   withTriageDisclaimer,
 } from '../issue-store';
+import {
+  computeGoalFrontier,
+  type GoalFrontier,
+  type GoalMemberFacts,
+} from '../../goal-frontier';
 import type { LinearApi, LinearIssue } from './linear-api';
 import {
   serializeBody,
@@ -67,6 +76,27 @@ const CLOSED_BY = 'Closed-by';
 const NEEDS_ATTENTION_LABEL = 'wave/needs-attention';
 /** State categories that project to the terminal `done` bookend (ADR-0020, lossy per ADR-0002 — a duplicate-close is a close). */
 const CLOSED_TYPES = new Set(['completed', 'canceled', 'duplicate']);
+/**
+ * The Goal containers this store realizes (ADR-0044 decision 4) — `project`, and
+ * only `project`, in v1.
+ *
+ * There is deliberately NO default beside this list. GitHub can default to
+ * Milestone because it is the only native container with direct issue
+ * membership, so no consumer convention can collide with it; Linear cannot,
+ * because live conventions already disagree about what a project MEANS — one
+ * shipped consumer runs Initiative=Epic / Project=User Story (chasing Linear's
+ * timeline and health views, which live at project/initiative level rather than
+ * on issues), while ADR-0017 once sketched "Wave ≈ Linear Project". Picking
+ * either silently would overwrite somebody's meaning, so the binding is explicit
+ * and a goal verb without one refuses loudly, naming the config key.
+ *
+ * `initiative` is absent here on purpose and is refused BY NAME (see
+ * {@link requireGoalContainer}): initiatives hold projects, not issues, so their
+ * membership is transitive and may not even be `assignToGoal`-shaped. That is a
+ * contract-shape question worth its own design — a named follow-up, never a
+ * silent cap.
+ */
+const GOAL_CONTAINERS_REALIZED: readonly GoalContainer[] = ['project'];
 
 /**
  * Thrown by {@link LinearIssuesStore.transition} when a `setState` call
@@ -755,6 +785,162 @@ export class LinearIssuesStore implements IssueStore {
       }
     }
     await this.api.addLabel(id, target);
+  }
+
+  // ── Goal facet (ADR-0044): a Goal is a native Linear PROJECT ──────────────
+
+  /**
+   * Resolve the container role this call addresses, or refuse loudly. Runs as
+   * the FIRST statement of every goal verb — before any id resolves and before
+   * any write — so a refused binding does nothing.
+   *
+   * `fallback: undefined` is the whole Linear decision in one argument: this
+   * store has NO default, so an unbound goal verb throws
+   * {@link GoalBindingError} naming `store.goal.container`.
+   */
+  private goalRole(container: GoalContainer | undefined): GoalContainer {
+    return requireGoalContainer({
+      storeKind: 'linear',
+      configured: container,
+      fallback: undefined,
+      realizable: GOAL_CONTAINERS_REALIZED,
+    });
+  }
+
+  async createGoal(input: CreateGoalInput, container?: GoalContainer): Promise<string> {
+    this.goalRole(container);
+    const { id } = await this.api.createProject({
+      name: input.title,
+      description: input.description ?? '',
+    });
+    return id; // filingHint ignored — the id is the opaque project id (ADR-0001)
+  }
+
+  async readGoal(id: string, container?: GoalContainer): Promise<GoalView> {
+    const role = this.goalRole(container);
+    const project = await this.api.getProject(id); // throws on unknown id
+    const members = await this.api.listProjectIssues(id);
+    return {
+      id,
+      title: project.name,
+      description: project.description,
+      container: role,
+      memberIds: members.map((m) => m.identifier),
+    };
+  }
+
+  /**
+   * Every project in this api's TEAM scope, each with its curated membership.
+   * One member-list read per project — the same deliberate acceptance the GitHub
+   * arm records: an empty `memberIds` would mean "not fetched", and absent-vs-
+   * empty is a distinction this codebase refuses to blur.
+   */
+  async listGoals(container?: GoalContainer): Promise<GoalView[]> {
+    const role = this.goalRole(container);
+    const projects = await this.api.listProjects();
+    const out: GoalView[] = [];
+    for (const project of projects) {
+      const members = await this.api.listProjectIssues(project.id);
+      out.push({
+        id: project.id,
+        title: project.name,
+        description: project.description,
+        container: role,
+        memberIds: members.map((m) => m.identifier),
+      });
+    }
+    return out;
+  }
+
+  async assignToGoal(
+    goalId: string,
+    issueId: string,
+    container?: GoalContainer,
+  ): Promise<void> {
+    this.goalRole(container);
+    // Idempotent by nature: the membership is a single pointer on the issue, so
+    // re-joining writes the same value. Additive only — no un-assign path.
+    await this.api.setIssueProject(issueId, goalId);
+  }
+
+  async readGoalFrontier(
+    goalId: string,
+    container?: GoalContainer,
+  ): Promise<GoalFrontier> {
+    this.goalRole(container);
+    const members = await this.api.listProjectIssues(goalId); // throws on unknown goal id
+    const facts: GoalMemberFacts[] = [];
+    for (const issue of members) facts.push(await this.goalMemberFacts(issue));
+    return computeGoalFrontier(goalId, facts);
+  }
+
+  /**
+   * What this store can SEE about one goal member.
+   *
+   * Read off the raw `LinearIssue` rather than through `read()`, for the reason
+   * the GitHub arm records: `read()` projects an `IssueView` and THROWS on a
+   * bare member (no `## Files` section), and a bare member is exactly what the
+   * `goal` station files at a cut — so going through `read()` would make a fresh
+   * goal unreadable, while going around it makes `unready` observable.
+   */
+  private async goalMemberFacts(issue: LinearIssue): Promise<GoalMemberFacts> {
+    const closed = CLOSED_TYPES.has(issue.stateType);
+    const id = issue.identifier;
+    // A closed member is `done` whatever else is true of it — no blocker read.
+    if (closed) {
+      return { id, closed: true, claimed: false, eligible: false, unresolvedBlockers: [] };
+    }
+    // The codec sees blockers only on a DECORATED member; a bare one has no
+    // `## Blocked by` section and `parseBody` throws. That throw IS the bare
+    // case, so it degrades to "no codec refs" while the native side below still
+    // carries the ADR-0044 bare arm's relations.
+    let codec: BlockedBy = 'none';
+    try {
+      codec = parseBody(issue.description).blockedBy;
+    } catch {
+      codec = 'none';
+    }
+    const union = await this.unionBlockedBy(id, codec);
+    return {
+      id,
+      closed: false,
+      claimed:
+        this.rungOf(issue.stateName) !== null ||
+        issue.labels.includes(NEEDS_ATTENTION_LABEL),
+      eligible: this.isEligible(issue.labels),
+      unresolvedBlockers: await this.unresolvedBlockers(id, union),
+    };
+  }
+
+  /**
+   * Which of a member's read-union blockers are still in the way.
+   *
+   * A blocker counts as UNRESOLVED unless this store positively read it into a
+   * closed state category. A ref whose read THROWS (deleted, a cross-team
+   * identifier this workspace cannot reach, a transport refusal) lands there
+   * too: `actionable` is a positive claim that nothing blocks the member, so an
+   * unreadable edge must never be able to counterfeit one — the `closed-unknown`
+   * evidence discipline (W2-F1c), applied to the frontier.
+   *
+   * Unlike the GitHub arm there is no up-front cross-repo refusal, and the
+   * asymmetry is the same one the bare `blockedBy` mirror already carries: a
+   * Linear identifier names its own team, so `refToIdentifier` resolves a
+   * cross-TEAM ref as readily as a same-team one and the reach question is
+   * settled by the read, not by the ref's shape.
+   */
+  private async unresolvedBlockers(id: string, blockedBy: BlockedBy): Promise<IssueRef[]> {
+    if (blockedBy === 'none') return [];
+    const ownSlug = this.parseRef(id).slug;
+    const out: IssueRef[] = [];
+    for (const ref of blockedBy) {
+      try {
+        const blocker = await this.api.getIssue(refToIdentifier(ref, ownSlug));
+        if (!CLOSED_TYPES.has(blocker.stateType)) out.push(ref);
+      } catch {
+        out.push(ref); // unreadable ⇒ unresolved, never silently cleared
+      }
+    }
+    return out;
   }
 }
 

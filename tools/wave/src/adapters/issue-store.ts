@@ -19,6 +19,7 @@ import type {
   TriageView,
   ApplyTriageInput,
 } from '../contract';
+import type { GoalFrontier } from '../goal-frontier';
 
 export type { ClaimRung };
 
@@ -612,6 +613,230 @@ export function validateAmendPatch(patch: AmendPatch): void {
   }
 }
 
+// ── Goal facet (ADR-0044) — the finish line, bound to a native container ─────
+//
+// A **Goal** is a named finish line whose members are issues in ONE native
+// container, joined by curation. It earns a facet here rather than living as
+// skill prose over a host CLI, and the reversal is recorded: the 2026-07-31 note
+// "milestones are a product artifact, deliberately outside the seam" was true
+// for a maintainer's hand-driven cut on one tracker (ambient `gh` auth, a human
+// deciding every step) and flips for a shipped skill. Three facts flip it —
+// Linear writes must flow through the Credential-Resolver (Convention 8,
+// ADR-0029), so a skill cannot raw-call Linear at all; the raw-`gh`-in-skill
+// defect class was already paid for once and structurally retired by the Triage
+// facet (ADR-0015); and MarkdownFs has no native container, so the facet IS its
+// realization.
+//
+// The verb set is minimal and READ-HEAVY: mint/read the container, join a member
+// by curation, and derive the frontier. Two absences are decisions, not gaps,
+// and both are pinned by the facet's own conformance suite rather than left to
+// be noticed:
+//
+//  - **No dispatch verb, ever.** Goal membership informs planning and authorizes
+//    nothing — sight, never permission. A planning artifact that granted
+//    execution rights is precisely the measured Wayfinder hole (a prose
+//    planning/execution boundary that seven PRs walked straight through); the
+//    Eligibility OR-set plus the DoR gate stay the only gate.
+//  - **No `closeGoal`.** Completion is `frontier.open` being empty, which
+//    {@link IssueStore.readGoalFrontier} REPORTS; closing the container is the
+//    Operator's act in the tracker. The station owes accounting, never the
+//    declaration (ADR-0042's sentence, one station over).
+
+/**
+ * The native container roles a Goal can be realized as (ADR-0044 decision 4).
+ * A closed union, not a free string, for the same reason {@link ListScope} is
+ * one: a consumer must not be able to smuggle a container assumption into the
+ * engine.
+ *
+ * `initiative` is DECLARED here and realized by nothing — deliberately. Linear
+ * initiatives hold projects, not issues, so their membership is transitive and
+ * may not even be `assignToGoal`-shaped; that is a contract-shape question worth
+ * its own design, and no bound consumer exists until it lands. Naming it in the
+ * vocabulary is what makes the deferral a NAMED follow-up rather than a silent
+ * cap: a consumer that binds `initiative` gets
+ * {@link GoalBindingError} with `failure: 'unrealized-container'` telling it so,
+ * instead of the "not a container at all" answer an omitted member would give.
+ */
+export type GoalContainer = 'milestone' | 'project' | 'initiative' | 'goal-file';
+
+/** The container vocabulary as data — the membership test {@link parseGoalContainer} applies. */
+export const GOAL_CONTAINERS: readonly GoalContainer[] = [
+  'milestone',
+  'project',
+  'initiative',
+  'goal-file',
+];
+
+/**
+ * Why a goal-container binding was refused (ADR-0044 decision 4, applying the
+ * ADR-0032 `engine.cli` fail-loud discipline). A closed union so a caller routes
+ * on the discriminant rather than on message text — the same stance
+ * {@link CreateInputFailure} and `EngineCliBindingFailure` take.
+ *
+ * - `unbound` — no container is bound and this store has no default. Linear's
+ *   case, and the whole point of decision 4: one shipped consumer runs
+ *   Initiative=Epic / Project=User Story while ADR-0017 once sketched
+ *   "Wave ≈ Linear Project", so any built-in Linear assumption collides with a
+ *   live convention. GitHub has no such collision (Milestone is the only native
+ *   container with direct issue membership) and MarkdownFs has no choice to
+ *   make, so those two carry defaults and this failure is unreachable for them.
+ * - `unknown-container` — the configured value is not in {@link GOAL_CONTAINERS}
+ *   at all (a typo, an invented role).
+ * - `unrealized-container` — a real role this store does not ship. `initiative`
+ *   on Linear is the recorded case; so is asking GitHub for `project`.
+ */
+export type GoalBindingFailure =
+  | 'unbound'
+  | 'unknown-container'
+  | 'unrealized-container';
+
+/**
+ * The typed goal-binding refusal. Structured on purpose: `failure` names WHICH
+ * way the binding is unusable and `field` names the dotted config key to fix, so
+ * a caller renders an actionable message without string-matching prose. The
+ * configured value is echoed because — exactly like `engine.cli` — it is a
+ * declaration from TRACKED config, a role name and never a secret, so showing
+ * the author their own bytes is the whole point of the message.
+ *
+ * **PUBLIC API**, for the reason {@link CreateInputError} is: a root-only
+ * consumer holding a store from `buildStore` can RECEIVE this from any goal
+ * verb, so it must be able to NAME it — `instanceof` across the barrel, then
+ * route on `failure`. Same stance as `CredentialResolutionError` (ADR-0029) and
+ * `EngineCliBindingError` (ADR-0032).
+ */
+export class GoalBindingError extends Error {
+  readonly name = 'GoalBindingError';
+  readonly code = 'goal-binding-invalid';
+  /** The config field this refusal is about — always the dotted path. */
+  readonly field = 'store.goal.container';
+  constructor(
+    /** Which way the binding is unusable. */
+    readonly failure: GoalBindingFailure,
+    /** The configured role AS AUTHORED, when one was supplied at all. */
+    readonly configured: string | undefined,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Narrow a configured value to a {@link GoalContainer}. `undefined`/`null` mean
+ * "nothing declared" and return `undefined` — an absent binding is not itself a
+ * failure here, because whether absence is fatal is the STORE's question (GitHub
+ * and MarkdownFs default; Linear refuses). Anything else present-but-wrong
+ * throws `unknown-container`, on the "configured means authoritative" principle:
+ * a malformed declaration must fail loud rather than be read as unbound.
+ */
+export function parseGoalContainer(
+  value: unknown,
+  label = 'wave config "store.goal.container"',
+): GoalContainer | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || !(GOAL_CONTAINERS as readonly string[]).includes(value)) {
+    throw new GoalBindingError(
+      'unknown-container',
+      typeof value === 'string' ? value : undefined,
+      `${label} must be one of: ${GOAL_CONTAINERS.join(' | ')} — got ` +
+        `${typeof value === 'string' ? JSON.stringify(value) : `a ${value === null ? 'null' : typeof value}`}. ` +
+        `A configured binding is authoritative, so a malformed one fails here ` +
+        `rather than being read as unbound.`,
+    );
+  }
+  return value as GoalContainer;
+}
+
+/**
+ * Resolve the container role a goal verb will address, or refuse loudly
+ * (ADR-0044 decision 4). Shared by all three adapters so the rule cannot drift
+ * into three lookalikes — the same one-owner discipline
+ * {@link classifyCreateInput} applies to the create shape.
+ *
+ * @param opts.storeKind    how to name this store in the refusal message.
+ * @param opts.configured   the binding the consumer declared, if any.
+ * @param opts.fallback     this store's OWN default, or `undefined` for a store
+ *                          that deliberately has none (Linear).
+ * @param opts.realizable   the roles this store actually ships.
+ */
+export function requireGoalContainer(opts: {
+  storeKind: string;
+  configured: GoalContainer | undefined;
+  fallback: GoalContainer | undefined;
+  realizable: readonly GoalContainer[];
+}): GoalContainer {
+  const role = opts.configured ?? opts.fallback;
+  if (role === undefined) {
+    throw new GoalBindingError(
+      'unbound',
+      undefined,
+      `goal: the ${opts.storeKind} store binds no goal container by default, so a ` +
+        `goal verb needs one declared explicitly — set "store.goal.container" in ` +
+        `wave.config.json to one of: ${opts.realizable.join(' | ')}. There is no ` +
+        `built-in choice here on purpose (ADR-0044): consumer conventions for what ` +
+        `a project/initiative MEANS collide, so the facet never silently picks a ` +
+        `container.`,
+    );
+  }
+  if (!opts.realizable.includes(role)) {
+    throw new GoalBindingError(
+      'unrealized-container',
+      role,
+      `goal: the ${opts.storeKind} store does not realize the "${role}" container — ` +
+        `it ships ${opts.realizable.map((r) => `"${r}"`).join(' | ')}. ` +
+        (role === 'initiative'
+          ? `The initiative realization is a NAMED follow-up, not a silent cap ` +
+            `(ADR-0044): initiatives hold projects rather than issues, so their ` +
+            `membership is transitive and may not be assignToGoal-shaped. `
+          : '') +
+        `Change "store.goal.container" in wave.config.json.`,
+    );
+  }
+  return role;
+}
+
+/**
+ * What the `goal` station hands the store to mint a Goal container. Deliberately
+ * NOT a {@link CreateInput}: a goal is not an issue, carries no wave fields, and
+ * never enters {@link IssueStore.listOpen}.
+ */
+export interface CreateGoalInput {
+  /** The finish line's human-facing name. */
+  title: string;
+  /**
+   * Store-internal filing hint — the SAME opacity contract as
+   * {@link CreateInput.filingHint}: MarkdownFs may weave it into the goal file's
+   * path-id, GitHub and Linear ignore it entirely. Callers MUST treat
+   * {@link IssueStore.createGoal}'s return as fully opaque (ADR-0001).
+   */
+  filingHint: string;
+  /** Free prose describing the finish line. Absent is written as an empty description. */
+  description?: string;
+}
+
+/**
+ * A Goal container read back. A tracker artifact, NOT an `IssueView` — it has no
+ * wave fields, no coarse status, and no completion state of its own: completion
+ * is a QUERY over its members ({@link IssueStore.readGoalFrontier}), never a
+ * value written here.
+ */
+export interface GoalView {
+  /** The container's opaque id (ADR-0001) — never parsed by the engine. */
+  id: string;
+  title: string;
+  /** Free prose; empty string when the container carries none. */
+  description: string;
+  /** Which native container role this goal is realized as. */
+  container: GoalContainer;
+  /**
+   * The member issue ids, by CURATION — every issue joined to the container,
+   * open and closed alike. Closed members are kept deliberately: the frontier
+   * derives `done` from them, and a membership list that silently dropped
+   * finished work would make a completed goal indistinguishable from an empty
+   * one.
+   */
+  memberIds: string[];
+}
+
 /**
  * What `to-prd` hands the store to publish a **PRD** (ADR-0011) — a planning
  * document, deliberately NOT a wave issue: no Risk/Worker/Files, no Header-Block,
@@ -895,6 +1120,88 @@ export interface IssueStore {
    * state. Throws on an unknown id.
    */
   closeUnplanned(id: string, comment: string): Promise<void>;
+
+  // ── Goal facet (ADR-0044) — a finish line in a config-bound container ───────
+  //
+  // Every verb takes the container role as its LAST parameter, optional, rather
+  // than reading it off construction state. Two reasons, both load-bearing:
+  //
+  //  - the binding is a SETUP-TIME config fact (`store.goal.container`), and the
+  //    CLI edge that already turns config into runtime wiring is where it is
+  //    read — so `buildStore`'s construction contract is untouched by this
+  //    facet existing, and a goal-less consumer's config keeps validating
+  //    byte-for-byte as before;
+  //  - "the facet must never silently pick a container" becomes structural: the
+  //    role is visible at every call site, and an absent one is resolved by
+  //    {@link requireGoalContainer} — this store's own default where it HAS one
+  //    (GitHub `milestone`, MarkdownFs `goal-file`), a loud
+  //    {@link GoalBindingError} naming `store.goal.container` where it
+  //    deliberately does not (Linear).
+
+  /**
+   * Mint a Goal container and return its opaque id (ADR-0001, same contract as
+   * {@link create}). Carries NO eligibility marker and no Header-Block — a goal
+   * is not an issue and never appears in {@link listOpen}.
+   *
+   * Refuses before any write when the container role cannot be resolved
+   * ({@link GoalBindingError}) — the same no-partial-application discipline
+   * {@link applyTriage} and {@link create} apply.
+   */
+  createGoal(input: CreateGoalInput, container?: GoalContainer): Promise<string>;
+
+  /**
+   * Read a Goal back: its name, its prose, the role it is realized as, and its
+   * curated membership. NOT an `IssueView` — a goal has no wave fields and no
+   * status of its own. Throws on an unknown id.
+   */
+  readGoal(id: string, container?: GoalContainer): Promise<GoalView>;
+
+  /**
+   * Every Goal this store can see in the bound container role. Consumed by a
+   * planning panel; never the wave candidate set (`listOpen` stays the only
+   * source of dispatchable work — sight, never permission).
+   */
+  listGoals(container?: GoalContainer): Promise<GoalView[]>;
+
+  /**
+   * Join an issue to a Goal **by curation** — the deliberate human act that
+   * makes the frontier editable (a bare member that outgrows its placeholder
+   * becomes a PRD whose slices join here while the placeholder closes). Never an
+   * automatism, and never derived from a PRD backlink: a PRD belongs to a Goal
+   * only derivedly, through member slices (ADR-0044 decision 2).
+   *
+   * Idempotent — re-joining an issue already in the container is a no-op.
+   * Touches ONLY container membership: never the claim ledger, never the triage
+   * dimension, never the eligibility marker, never the open/closed state.
+   * Throws on an unknown goal id or issue id.
+   */
+  assignToGoal(
+    goalId: string,
+    issueId: string,
+    container?: GoalContainer,
+  ): Promise<void>;
+
+  /**
+   * The **frontier query** (ADR-0044 decision 5): read every member of a Goal
+   * and classify each into exactly one of `done` / `in-motion` / `actionable` /
+   * `blocked` / `unready` — see {@link GoalFrontier}. Read-only and free: no
+   * write, no state, no durable marker.
+   *
+   * `blocked` is derived through the #381 read-union (body-codec ∪ native
+   * relations), so a bare member depending on another bare member is visible
+   * with no Header-Block anywhere; `unready` is derived from an ABSENT
+   * eligibility marker. A blocker this store cannot resolve counts as
+   * UNRESOLVED, never as clear — `actionable` is a positive claim that nothing
+   * blocks the member, and an unreadable edge must not be able to counterfeit
+   * one (the `ClosingState` evidence discipline, on the frontier side).
+   *
+   * Reports completion (`complete`) and closes nothing: there is deliberately no
+   * `closeGoal` on this facet. Throws on an unknown goal id.
+   */
+  readGoalFrontier(
+    goalId: string,
+    container?: GoalContainer,
+  ): Promise<GoalFrontier>;
 }
 
 /**

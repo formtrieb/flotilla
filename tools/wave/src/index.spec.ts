@@ -862,6 +862,49 @@ const WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT = [
 ].sort();
 
 /**
+ * The GOAL FACET family (ADR-0044) — the finish line, its config-bound native
+ * container, and its derived frontier. Nine VALUE names across three modules,
+ * recorded as ONE family because they are one decision: an `IssueStore` facet
+ * whose verbs need a container vocabulary, a typed refusal when the binding is
+ * absent, and a pure classifier for the reading they return.
+ *
+ *  - `./adapters/issue-store` — the container vocabulary (`GOAL_CONTAINERS`),
+ *    the typed binding refusal (`GoalBindingError`), and its two resolvers
+ *    (`parseGoalContainer` for a consumer validating its own config,
+ *    `requireGoalContainer` for the one rule all three adapters apply).
+ *  - `./goal-frontier` — the state vocabulary (`GOAL_MEMBER_STATES`) and the
+ *    pure classification (`classifyGoalMember`, `computeGoalFrontier`).
+ *  - `./cli-store` — the config edge (`readGoalContainer`) and its argv-facing
+ *    spelling (`resolveGoalContainer`).
+ *
+ * The TYPE half — `GoalContainer`, `GoalBindingFailure`, `CreateGoalInput`,
+ * `GoalView`, `GoalMemberState`, `GoalMemberFacts`, `GoalMemberReading`,
+ * `GoalFrontier`, plus the two adapters' `GhMilestone`/`CreateMilestoneInput`/
+ * `LinearProject` — is erased at runtime and so is invisible to this
+ * enumeration; it is pinned instead by `tsc --noEmit` and by
+ * barrel-drift.spec.ts's identity comparison, exactly as every other family
+ * here.
+ *
+ * What is NOT in this list is the claim worth reading twice: no `closeGoal`, and
+ * no dispatch verb of any spelling. Neither exists on the facet — a goal is
+ * sight, never permission, and closing the container is the Operator's act in
+ * the tracker (ADR-0044 decisions 5 and 6). The facet-surface conformance test
+ * in `adapters/goal-facet.spec.ts` pins that absence directly; this list would
+ * grow if either ever appeared. Sorted, as the probe sorts.
+ */
+const GOAL_FACET_FAMILY_ADDED_AT_ROOT = [
+  'GOAL_CONTAINERS',
+  'GOAL_MEMBER_STATES',
+  'GoalBindingError',
+  'classifyGoalMember',
+  'computeGoalFrontier',
+  'parseGoalContainer',
+  'readGoalContainer',
+  'requireGoalContainer',
+  'resolveGoalContainer',
+].sort();
+
+/**
  * The whole-root total as of the newest recorded slice. Deliberately written as
  * ARITHMETIC over the per-slice families rather than as a fresh absolute number:
  * `135` stays anchored to the commit it was measured at, and each later slice
@@ -878,7 +921,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT.length +
   WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT.length +
   BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length +
-  WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length;
+  WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length +
+  GOAL_FACET_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1417,7 +1461,38 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
     expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(GOAL_FACET_FAMILY_ADDED_AT_ROOT),
+    );
+    // …and the family before it stays present: the arrayContaining above moves
+    // to whatever the newest slice is, so without this line each family's own
+    // by-name assertion would live exactly one slice and then be replaced.
+    expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT),
     );
+  });
+
+  // ADR-0044 decisions 5 and 6, asserted at the SURFACE the whole world sees.
+  // The facet-level pin lives in adapters/goal-facet.spec.ts (it inspects a
+  // live store); this one is the root's own copy, and it is not redundant with
+  // it: a `closeGoal` or a dispatch verb could be added to the BARREL as a
+  // free function — `closeGoal(store, id)` — without ever touching the
+  // `IssueStore` surface that spec measures. Both doors, both watched.
+  it('exposes NO goal-close and NO goal-dispatch symbol anywhere on the root (ADR-0044)', () => {
+    const forbidden = /^(close|dispatch|start|run|claim|queue|execute)Goal|^goal(Close|Dispatch|Start|Run)/i;
+    const offenders = Object.keys(rootExports).filter((name) => forbidden.test(name));
+    expect(
+      offenders,
+      `the goal facet grants sight, never permission, and never declares completion — ` +
+        `these root symbols say otherwise: ${offenders.join(', ')}`,
+    ).toEqual([]);
+    // Non-vacuity: the pattern really does catch what it exists to catch. If
+    // this line ever failed, the assertion above would be green for the wrong
+    // reason — a regex matching nothing.
+    expect(forbidden.test('closeGoal')).toBe(true);
+    expect(forbidden.test('dispatchGoal')).toBe(true);
+    expect(forbidden.test('goalDispatch')).toBe(true);
+    // …and it does not over-match the verbs the facet DOES ship.
+    expect(forbidden.test('computeGoalFrontier')).toBe(false);
+    expect(forbidden.test('classifyGoalMember')).toBe(false);
   });
 });

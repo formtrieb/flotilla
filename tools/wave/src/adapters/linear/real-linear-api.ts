@@ -36,6 +36,7 @@
 import type {
   LinearApi,
   LinearIssue,
+  LinearProject,
   LinearStateType,
   LinearCreateIssueInput,
   LinearPrAttachment,
@@ -158,6 +159,86 @@ const CREATE_ISSUE_MUTATION = `mutation CreateIssue($input: IssueCreateInput!) {
   issueCreate(input: $input) {
     success
     issue { identifier }
+  }
+}`;
+
+// ── Goal facet (ADR-0044): a Goal is a native Linear PROJECT ────────────────
+//
+// Every shape below is read verbatim from Linear's published GraphQL schema
+// (`linear/linear` → `packages/sdk/src/schema.graphql`, read 2026-08-15, THIS
+// dispatch — ADR-0030's declared-unexecutable-path comparison; no live Linear
+// credential is available to this row, so none of it is live-proven and the
+// first `goal` station run on a linear-store consumer is the gate):
+//
+//   - `projectCreate(input: ProjectCreateInput!): ProjectPayload!`, and
+//     `ProjectPayload { lastSyncId, project: Project, success: Boolean! }` — so
+//     the success check below matches every other mutation in this file.
+//   - `ProjectCreateInput` requires exactly two fields: `name: String!` and
+//     `teamIds: [String!]!`; `description: String` is optional. The required
+//     `teamIds` arity is why {@link RealLinearApi.createProject} calls
+//     `ensureCatalog()` first — a project is never minted parentless, the same
+//     property `createDocument` has.
+//   - `project(id: String!): Project!` for the single read.
+//   - `Team.projects(first, after, …): ProjectConnection!` for the scoped list —
+//     the TEAM connection rather than the root `projects(filter:)`, so the
+//     scoping is structural instead of a filter that could be omitted.
+//   - `Project.issues(first, after, …): IssueConnection!` for membership, and
+//     `IssueUpdateInput.projectId: String` for the curation write.
+//
+// `Project.state` is deliberately NOT selected anywhere here: the schema marks
+// it `@deprecated(reason: "Use project.status instead")`, and the facet has no
+// use for it either way — whether the CONTAINER is open says nothing about
+// whether its members are done, and the facet ships no `closeGoal`.
+
+const CREATE_PROJECT_MUTATION = `mutation CreateProject($input: ProjectCreateInput!) {
+  projectCreate(input: $input) {
+    success
+    project { id name description }
+  }
+}`;
+
+const GET_PROJECT_QUERY = `query GetProject($id: String!) {
+  project(id: $id) {
+    id
+    name
+    description
+  }
+}`;
+
+const LIST_TEAM_PROJECTS_QUERY = `query ListTeamProjects($teamId: String!, $first: Int!, $after: String) {
+  team(id: $teamId) {
+    projects(first: $first, after: $after) {
+      nodes {
+        id
+        name
+        description
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
+/**
+ * A project's membership — OPEN AND CLOSED, deliberately unfiltered, unlike
+ * {@link LIST_OPEN_ISSUES_QUERY}: `done` is one of the five frontier readings,
+ * so dropping closed members would report a finished goal as an empty one. The
+ * node selection matches `ListOpenIssues` exactly so both feed the same
+ * {@link toResolvedIssueNode} projection.
+ */
+const LIST_PROJECT_ISSUES_QUERY = `query ListProjectIssues($id: String!, $first: Int!, $after: String) {
+  project(id: $id) {
+    issues(first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        updatedAt
+        labels(first: 250) { nodes { id name } }
+        state { id name type }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
   }
 }`;
 
@@ -650,6 +731,96 @@ export class RealLinearApi implements LinearApi {
     return out;
   }
 
+  // ── Goal facet (ADR-0044): projects ───────────────────────────────────────
+
+  async createProject(input: { name: string; description: string }): Promise<{ id: string }> {
+    // `ProjectCreateInput.teamIds` is REQUIRED (`[String!]!`), so the team must
+    // resolve before the mutation — a project is never minted parentless.
+    await this.ensureCatalog();
+    const { data } = await this.gql('CreateProject', CREATE_PROJECT_MUTATION, {
+      input: {
+        name: input.name,
+        description: input.description,
+        teamIds: [this.teamId],
+      },
+    });
+    const payload = data.projectCreate as Record<string, unknown> | undefined;
+    if (payload?.success !== true) {
+      throw new LinearApiError('CreateProject', 200, 'projectCreate did not report success');
+    }
+    const project = payload.project as Record<string, unknown> | undefined;
+    const id = project?.id;
+    if (typeof id !== 'string') {
+      throw new LinearApiError('CreateProject', 200, 'projectCreate did not return a project id');
+    }
+    return { id };
+  }
+
+  async getProject(id: string): Promise<LinearProject> {
+    const { data } = await this.gql('GetProject', GET_PROJECT_QUERY, { id });
+    const node = data.project as Record<string, unknown> | null | undefined;
+    if (!node) {
+      // A domain 404 (HTTP 200, null node) — not a wire failure, the same shape
+      // `resolveIssue` reports for an identifier that does not resolve.
+      throw new Error(`Linear project not found: ${id}`);
+    }
+    return toLinearProject(node);
+  }
+
+  async listProjects(): Promise<LinearProject[]> {
+    await this.ensureCatalog();
+    const out: LinearProject[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const { data } = await this.gql('ListTeamProjects', LIST_TEAM_PROJECTS_QUERY, {
+        teamId: this.teamId,
+        first: 100,
+        after,
+      });
+      const team = (data.team ?? {}) as Record<string, unknown>;
+      const connection = (team.projects ?? {}) as Record<string, unknown>;
+      const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
+      for (const raw of nodes) out.push(toLinearProject(raw));
+      const pageInfo = (connection.pageInfo ?? {}) as Record<string, unknown>;
+      if (pageInfo.hasNextPage !== true) break;
+      after = typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : undefined;
+      if (!after) break; // defensive: hasNextPage=true but no cursor — stop rather than loop forever
+    }
+    return out;
+  }
+
+  async setIssueProject(identifier: string, projectId: string): Promise<void> {
+    const node = await this.resolveIssue(identifier); // throws on an unknown issue
+    await this.updateIssue(node.uuid, { projectId });
+  }
+
+  async listProjectIssues(projectId: string): Promise<LinearIssue[]> {
+    // Resolve the project FIRST so an unknown id fails as "no such goal" rather
+    // than reading back as "a goal with no members" — absent and empty are
+    // different claims, the same line the create classifier draws.
+    await this.getProject(projectId);
+    const out: LinearIssue[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const { data } = await this.gql('ListProjectIssues', LIST_PROJECT_ISSUES_QUERY, {
+        id: projectId,
+        first: 100,
+        after,
+      });
+      const project = (data.project ?? {}) as Record<string, unknown>;
+      const connection = (project.issues ?? {}) as Record<string, unknown>;
+      const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
+      // NO state filter here, unlike listOpenIssues — closed members are the
+      // frontier's `done` readings.
+      for (const raw of nodes) out.push(toLinearIssue(toResolvedIssueNode(raw)));
+      const pageInfo = (connection.pageInfo ?? {}) as Record<string, unknown>;
+      if (pageInfo.hasNextPage !== true) break;
+      after = typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : undefined;
+      if (!after) break; // defensive: hasNextPage=true but no cursor
+    }
+    return out;
+  }
+
   // ── internals ─────────────────────────────────────────────────────────────
 
   /** One GraphQL round-trip; centralizes both failure modes (brief: non-2xx OR `errors[]` → typed error). */
@@ -882,6 +1053,21 @@ function toLinearIssue(node: ResolvedIssueNode): LinearIssue {
     stateName: node.stateName,
     stateType: node.stateType,
     ...(node.updatedAt !== undefined ? { updatedAt: node.updatedAt } : {}),
+  };
+}
+
+/**
+ * Narrow one raw Project node (ADR-0044). `Project.description` is `String!` in
+ * the published schema — non-null — but it is narrowed defensively anyway, the
+ * same way every other projection in this file narrows: a partial/aliased
+ * selection or a schema move must degrade to empty prose, never to the literal
+ * `"undefined"` a bare cast would produce.
+ */
+function toLinearProject(raw: Record<string, unknown>): LinearProject {
+  return {
+    id: String(raw.id),
+    name: typeof raw.name === 'string' ? raw.name : '',
+    description: typeof raw.description === 'string' ? raw.description : '',
   };
 }
 
