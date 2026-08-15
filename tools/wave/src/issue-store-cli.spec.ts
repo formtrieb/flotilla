@@ -349,6 +349,55 @@ describe('issue-store-cli', () => {
     expect(triage.body).not.toMatch(/^\*\*Risk:\*\*/m);
   });
 
+  // ── the BARE `blockedBy` arm through the CLI (ADR-0044) ───────────────────
+  it('create accepts a BARE input carrying blockedBy and lands it as a NATIVE dependency (no Header-Block written)', async () => {
+    const api = new InMemoryGitHubApi();
+    const store = new GitHubIssuesStore({ api });
+
+    await runIssueStore(['create', '--input', writeJson('is-arm-a-', BARE_INPUT)], store);
+    const blocker = captured.trim();
+
+    captured = '';
+    const code = await runIssueStore(
+      [
+        'create',
+        '--input',
+        writeJson('is-arm-b-', {
+          ...BARE_INPUT,
+          filingHint: 'workstream-b',
+          blockedBy: [{ issue: Number(blocker) }],
+        }),
+      ],
+      store,
+    );
+    expect(code).toBe(0);
+    const blocked = captured.trim();
+
+    // the edge is native…
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(blocker)]);
+    // …and the filed issue is still bare: no labels, no managed body sections.
+    const gh = await api.getIssue(Number(blocked));
+    expect(gh.labels).toEqual([]);
+    expect(gh.body).not.toMatch(/^##\s+Blocked by\s*$/im);
+  });
+
+  it('a BARE blockedBy the store cannot realize is a DOMAIN failure (exit 1) that files nothing', async () => {
+    // The markdown store's only blocker representation IS the Header-Block line
+    // a bare issue must not have, so it refuses. Exit 1, not 2: this layer's
+    // store-agnostic pre-check cannot know a store's capability, so the refusal
+    // arrives as "the store threw" — the documented meaning of exit 1.
+    const store = tmpStore();
+    const p = writeJson('is-arm-md-', {
+      ...BARE_INPUT,
+      blockedBy: [{ issue: 1 }],
+    });
+    expect(await runIssueStore(['create', '--input', p], store)).toBe(1);
+
+    captured = '';
+    await runIssueStore(['listOpen'], store);
+    expect(JSON.parse(captured) as IssueView[]).toHaveLength(0);
+  });
+
   it('read on a bare issue is a domain failure (exit 1) — never a fabricated empty view', async () => {
     const store = tmpStore();
     await runIssueStore(['create', '--input', writeJson('is-bare2-', BARE_INPUT)], store);
@@ -601,6 +650,23 @@ describe('issue-store-cli — usage errors teach the op\'s own contract (issue #
     expect(stderr).toContain('"title"');
     expect(stderr).toContain('"filingHint"');
     expect(stderr).toContain('"bodySections"');
+  });
+
+  it("create's contract documents the WIDENED bare shape — the optional blockedBy arm and how it is realized", async () => {
+    // AC5 of the ADR-0044 arm: the shape a caller has to compose is the one this
+    // op teaches. Before the arm, `blockedBy` appeared only on the decorated
+    // line, so a caller reading this contract would have concluded a bare issue
+    // cannot carry a dependency at all — which was true, and is not any more.
+    const code = await runIssueStore(['create'], tmpStore());
+
+    expect(code).toBe(2);
+    const bareArm = stderr
+      .split('\n')
+      .find((l) => l.includes('bare MAY also add'));
+    expect(bareArm).toBeDefined();
+    expect(bareArm).toContain('"blockedBy"');
+    expect(bareArm).toMatch(/natively/);
+    expect(bareArm).toMatch(/no Header-Block written/);
   });
 
   it('annotate without --patch shows the AnnotatePatch shape inline', async () => {

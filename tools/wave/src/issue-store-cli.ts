@@ -20,9 +20,18 @@
  *   create   --input <CreateInput.json>            → prints the opaque id (text, not JSON)
  *              DECORATED (the to-issues path): the full Header-Block — risk, worker,
  *              files, blockedBy, acceptanceCriteria — plus title/filingHint.
- *              BARE (ADR-0027 `filed:`): title + filingHint + bodySections ONLY —
- *              files an undecorated issue with no eligibility marker and no
- *              Header-Block; wave-readiness comes later via `annotate` (decorate).
+ *              BARE (ADR-0027 `filed:`): title + filingHint + bodySections, plus
+ *              an OPTIONAL blockedBy (ADR-0044) — files an undecorated issue
+ *              with no eligibility marker and no Header-Block; wave-readiness
+ *              comes later via `annotate` (decorate). A bare `blockedBy` is
+ *              realized NATIVELY (GitHub issue dependency, Linear issue
+ *              relation) and writes no header line, so the bare shape is
+ *              unchanged; `"none"`/`[]` declare nothing and file exactly the
+ *              blockedBy-less bare issue. A store that cannot represent the
+ *              edge natively — the markdown store, whose only blocker
+ *              representation IS the Header-Block line — REFUSES it (exit 1,
+ *              the store threw) naming both sanctioned routes, rather than
+ *              writing a partial header or dropping the dependency.
  *              A half-written Header-Block is a usage error (exit 2), never a
  *              silently-completed one. A BARE input whose `bodySections` is
  *              absent/empty/all-blank is ALSO a usage error (exit 2, #278):
@@ -138,6 +147,7 @@ const OP_CONTRACT: Record<Op, readonly string[]> = {
     'usage: issue-store create --input <CreateInput.json> [--config <path>]',
     '  bare shape (ADR-0027):      { "title": "...", "filingHint": "...",',
     '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
+    '  bare MAY also add (ADR-0044): "blockedBy": [{ "issue": 41 }] — realized natively (no Header-Block written)',
     '  decorated ALSO adds:        "risk", "worker", "files": [...], "blockedBy": "none", "acceptanceCriteria": [...]',
     'output: the opaque new id, as plain text (not JSON)',
   ],

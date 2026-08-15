@@ -30,6 +30,7 @@ import {
   DEFAULT_ELIGIBILITY,
   RUNG_PRECEDENCE,
   classifyCreateInput,
+  CreateInputError,
   validateAmendPatch,
   type IssueStore,
   type CreateInput,
@@ -92,6 +93,30 @@ export class GitHubIssuesStore implements IssueStore {
     const shape = classifyCreateInput(input);
 
     if (shape.kind === 'bare') {
+      // ADR-0044's bare `blockedBy` arm is realized ONLY natively here, so a ref
+      // this repo-scoped API cannot address has nowhere else to live — unlike
+      // the decorated path, where `refToIssueNumber`'s throw is a harmless
+      // per-ref skip because the body codec already recorded the ref
+      // authoritatively. A bare issue has no such codec line, so the same skip
+      // would silently drop the whole edge. Refused BEFORE `createIssue`, so
+      // nothing is filed (the classifier's own no-partial-write property).
+      const foreign = (shape.blockedBy ?? []).filter((r) => r.slug !== undefined);
+      if (foreign.length > 0) {
+        throw new CreateInputError(
+          'bare-blocked-by-unrepresentable',
+          ['blockedBy'],
+          `create: a BARE issue's \`blockedBy\` is realized only as a NATIVE ` +
+            `GitHub issue dependency, and those endpoints are repo-scoped — the ` +
+            `cross-repo ref(s) ` +
+            `${foreign.map((r) => `"${r.slug}#${r.issue}"`).join(', ')} cannot be ` +
+            `represented on this issue (mirroring them here would draw a ` +
+            `dependency on THIS repo's same-numbered issue, which is worse than ` +
+            `no mirror). Two sanctioned routes: (1) file this issue DECORATED ` +
+            `now — the body-codec \`## Blocked by\` section records a cross-repo ` +
+            `ref authoritatively; or (2) file it bare with same-repo refs only ` +
+            `and add the cross-repo dependency at decoration time.`,
+        );
+      }
       // ADR-0027 bare filing: the free prose (gap description, provenance line)
       // and NOTHING else — no `## Files`/`## Blocked by`/`## Acceptance criteria`
       // sections, and NO labels at all: no eligibility token (so `listOpen`
@@ -103,6 +128,21 @@ export class GitHubIssuesStore implements IssueStore {
         body: serializeBareBody(input.bodySections),
         labels: [],
       });
+      // …and the ADR-0044 arm: the declared dependency, realized natively and
+      // ONLY natively — no `## Blocked by` section is written, so the bare
+      // invariant above still holds byte-for-byte. The #381 read-union is what
+      // surfaces the edge again (`read()` returns codec ∪ native), so a later
+      // decorate makes it visible to conflict/blocked reasoning without the
+      // bare filing ever having authored a header line.
+      //
+      // Best-effort per ref, exactly as the decorated mirror is: the DETERMINISTIC
+      // unrepresentable case is already refused above, so what remains here is
+      // transport-level refusal (rate limit, a blocker number that does not
+      // resolve), the same class create()/annotate() have always absorbed rather
+      // than failed a landed issue write over.
+      if (shape.blockedBy !== undefined) {
+        await this.mirrorBlockedBy(number, shape.blockedBy);
+      }
       return String(number);
     }
 

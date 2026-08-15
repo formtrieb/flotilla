@@ -502,9 +502,15 @@ describe('the typed create rejection is reachable from the PACKAGE ROOT (issue #
   });
 
   it('re-exports the failure union WHOLE, so it can be switched on exhaustively', () => {
-    // Compile-time assertion, same shape as the check-name union above: a fourth
+    // Compile-time assertion, same shape as the check-name union above: a FIFTH
     // `CreateInputFailure` member — or a barrel re-export that narrowed the
     // union — fails `tsc` at the `never` arm.
+    //
+    // The fourth arrived with ADR-0044's bare `blockedBy` arm and is recorded
+    // here exactly as this guard intends: `'bare-blocked-by-unrepresentable'` is
+    // the one member an ADAPTER raises rather than the classifier — the store's
+    // storage cannot realize the requested native dependency — and a root
+    // consumer routing on the discriminant must be able to name it.
     const label = (failure: CreateInputFailureFromRoot): string => {
       switch (failure) {
         case 'header-block-half-written':
@@ -513,6 +519,8 @@ describe('the typed create rejection is reachable from the PACKAGE ROOT (issue #
           return 'decoration-only stowaway on a bare input';
         case 'bare-without-body':
           return 'bare input with no authored body';
+        case 'bare-blocked-by-unrepresentable':
+          return 'bare blockedBy this store cannot realize natively';
         default: {
           const exhaustive: never = failure;
           return exhaustive;
@@ -521,6 +529,9 @@ describe('the typed create rejection is reachable from the PACKAGE ROOT (issue #
     };
     expect(label('bare-without-body')).toBe('bare input with no authored body');
     expect(label('header-block-half-written')).toBe('half-written Header-Block');
+    expect(label('bare-blocked-by-unrepresentable')).toBe(
+      'bare blockedBy this store cannot realize natively',
+    );
   });
 
   it('the rejection is INHERITED: a root-built store rejects before it writes anything', async () => {

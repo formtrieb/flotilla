@@ -287,6 +287,43 @@ describe('GitHubIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
     expect(await api.getBlockedBy(Number(id))).toEqual([]);
   });
 
+  // ── the BARE arm's share of this write half (ADR-0044) ────────────────────
+  //
+  // A bare create reaches the SAME mirror, so the additive/dedup/best-effort
+  // properties above hold for it — with one consequence that does NOT carry
+  // over and is measured here rather than assumed: a bare issue has no body
+  // codec, so a refused native write leaves NO record of the edge anywhere.
+  // The deterministic unrepresentable case (a cross-repo ref) is refused before
+  // the issue is filed; what remains is transport-level refusal, and this is
+  // what it degrades to.
+  it('a REJECTED dependency write on a BARE create is non-fatal — the issue is filed, and (no codec to fall back on) the edge is absent', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failDependencyWrites(new Error('POST dependencies/blocked_by rejected'));
+
+    const bare = await store.create({
+      title: 'workstream B',
+      filingHint: 'workstream-b',
+      bodySections: [{ heading: 'Gap', markdown: 'not specifiable yet.' }],
+      blockedBy: [store.parseRef(blocker)],
+    });
+
+    // create RESOLVED — a failed mirror never fails the issue write…
+    expect(bare.length).toBeGreaterThan(0);
+    expect((await api.getIssue(Number(bare))).body).toContain('## Gap');
+    // …and the honest measurement: unlike the decorated path, nothing recorded
+    // the ref, because a bare issue carries no `## Blocked by` section by design.
+    expect(await api.getBlockedBy(Number(bare))).toEqual([]);
+    expect((await api.getIssue(Number(bare))).body).not.toMatch(/^##\s+Blocked by\s*$/im);
+
+    // and it self-heals the same way the decorated path does: any later
+    // create/annotate reconcile re-attempts nothing here (there is no codec ref
+    // to reconcile FROM), so the recovery is to re-declare the edge at
+    // decoration — pinned so the asymmetry is visible, not discovered live.
+    api.failDependencyWrites(null);
+    await store.annotate(bare, { files: ['src/x.ts'] });
+    expect(await api.getBlockedBy(Number(bare))).toEqual([]);
+  });
+
   it('the body codec stays the CANONICAL home — the blockedBy wire form is written unchanged alongside the native mirror', async () => {
     const blocker = await store.create(baseInput({ title: 'blocker' }));
     const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));

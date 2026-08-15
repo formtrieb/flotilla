@@ -114,6 +114,18 @@ export const RUNG_PRECEDENCE: readonly ClaimRung[] = [
  * is a half-written Header-Block, and {@link classifyCreateInput} rejects it
  * before any adapter write. Absent and broken are different claims; only the
  * first is a bare issue.
+ *
+ * **The one sanctioned exception: `blockedBy` (ADR-0044 decision 1).** A bare
+ * input MAY carry `blockedBy` alone, and that is not a half-written header —
+ * because on a bare issue `blockedBy` is not realized as a header LINE at all.
+ * It is realized NATIVELY per adapter (a GitHub issue dependency, a Linear
+ * issue relation), so the bare invariant is untouched: still no Header-Block,
+ * still no eligibility marker. The goal station needs exactly this: at a goal's
+ * cut you know *that* workstream B waits on workstream A before either is
+ * specifiable, and until now no write path existed for a dependency between two
+ * bare issues. A store whose storage CANNOT represent that natively refuses
+ * loudly (`'bare-blocked-by-unrepresentable'`) rather than faking it — the
+ * `closed-unknown` precedent, applied to the write side.
  */
 export interface CreateInput {
   /** Human-facing H1 title text (free prose). */
@@ -135,8 +147,14 @@ export interface CreateInput {
   /**
    * Refs already resolved to real tracker ids. ADR-0001's two-pass create
    * (resolve intra-batch blockers first) is the **caller's** job — the store
-   * validates ref *format*, never ref *existence*. Omit for a BARE create;
-   * `'none'` is the explicit "no blockers" DECORATED value, not an omission.
+   * validates ref *format*, never ref *existence*. `'none'` is the explicit
+   * "no blockers" DECORATED value, not an omission.
+   *
+   * **The one Header-Block field a BARE create may also carry** (ADR-0044): on
+   * a bare input it is realized NATIVELY (GitHub issue dependency / Linear
+   * relation), never as a `**Blocked by:**` header line, so it does not make the
+   * issue half-decorated. `'none'` and `[]` on a bare input declare nothing to
+   * realize and are equivalent to omitting the field.
    */
   blockedBy?: 'none' | IssueRef[];
   unblocks?: IssueRef[];
@@ -188,6 +206,14 @@ export const HEADER_BLOCK_FIELDS = [
 const DECORATION_ONLY_FIELDS = ['unblocks', 'parent', 'estimatedWallclock'] as const;
 
 /**
+ * The Header-Block fields that must ALL be absent for an input to be bare —
+ * {@link HEADER_BLOCK_FIELDS} minus `blockedBy`, ADR-0044's one sanctioned bare
+ * arm. Derived from `HEADER_BLOCK_FIELDS` rather than re-spelled, so a sixth
+ * Header-Block field added tomorrow joins the must-be-absent set automatically.
+ */
+const BARE_MUST_BE_ABSENT = HEADER_BLOCK_FIELDS.filter((f) => f !== 'blockedBy');
+
+/**
  * Which whole-input invariant a {@link CreateInputError} is about. A closed
  * union so a caller routes on the discriminant rather than on message text
  * (the {@link EngineCliBindingError} stance, ADR-0032/ADR-0029 fail-loud).
@@ -204,14 +230,29 @@ const DECORATION_ONLY_FIELDS = ['unblocks', 'parent', 'estimatedWallclock'] as c
  *   discriminant; {@link CreateInputError.fields} still tells them apart —
  *   `['bodySections']` for the no-content case, the dotted per-entry path
  *   (e.g. `['bodySections[0].heading']`) for a malformed entry.
+ * - `bare-blocked-by-unrepresentable` — the ONE member NOT raised by
+ *   {@link classifyCreateInput}. The classifier is store-agnostic and so
+ *   accepts ADR-0044's bare `blockedBy` arm unconditionally; whether the
+ *   requested dependency can be realized NATIVELY is a per-store question, so
+ *   the ADAPTER raises this — before it writes anything — when its storage
+ *   cannot represent the edge (`MarkdownFsStore`: any bare `blockedBy`, since
+ *   its only blocker representation IS the Header-Block line a bare issue must
+ *   not have; `GitHubIssuesStore`: a cross-REPO ref, since the dependency
+ *   endpoints are repo-scoped). It is a genuinely different routing answer from
+ *   the three above — "fix the input" vs "this store cannot do it" — which is
+ *   why it earns its own discriminant instead of being folded into
+ *   `bare-carries-decoration-only-fields`. `fields` is always `['blockedBy']`.
  */
 export type CreateInputFailure =
   | 'header-block-half-written'
   | 'bare-carries-decoration-only-fields'
-  | 'bare-without-body';
+  | 'bare-without-body'
+  | 'bare-blocked-by-unrepresentable';
 
 /**
- * The typed rejection {@link classifyCreateInput} throws. Structured on
+ * The typed rejection {@link classifyCreateInput} throws — and, for the one
+ * store-capability member (`'bare-blocked-by-unrepresentable'`, ADR-0044), that
+ * an ADAPTER throws from `create()` before it writes anything. Structured on
  * purpose: `failure` names WHICH invariant broke and `fields` names the
  * {@link CreateInput} fields it is about, so a caller (the issue-store CLI, a
  * skill driver, any future one) can classify the rejection — usage-error vs
@@ -354,9 +395,16 @@ export type DecoratedCreateInput = CreateInput &
  * The classified shape of a {@link CreateInput}. Discriminated so the adapter's
  * decorated branch keeps working over a fully-typed input with no field-by-field
  * casts — the narrowing lives in {@link classifyCreateInput} alone.
+ *
+ * The bare arm carries ADR-0044's optional `blockedBy` **already normalized**:
+ * present only when there is genuinely an edge to realize. `'none'` and `[]`
+ * both collapse to an ABSENT key, so an adapter's bare branch asks one question
+ * (`shape.blockedBy !== undefined`) rather than re-deriving "is there anything
+ * here?" three ways — the same collapse `mirrorBlockedBy` already performs on
+ * the decorated side.
  */
 export type CreateShape =
-  | { kind: 'bare' }
+  | { kind: 'bare'; blockedBy?: IssueRef[] }
   | { kind: 'decorated'; input: DecoratedCreateInput };
 
 /**
@@ -366,8 +414,16 @@ export type CreateShape =
  * minted and before any write, so a rejected input files nothing (the
  * {@link IssueStore.applyTriage} no-partial-application discipline).
  *
+ * **Store-agnostic, deliberately.** ADR-0044's bare `blockedBy` arm is accepted
+ * here unconditionally and returned normalized on {@link CreateShape}; whether
+ * the requested edge can actually be realized NATIVELY is a per-store question
+ * this function has no standing to answer, so the adapter raises
+ * `'bare-blocked-by-unrepresentable'` for its own storage — still before any
+ * write, so that rejection files nothing either.
+ *
  * **Throws** a typed {@link CreateInputError} on a PARTIAL Header-Block (some of
- * {@link HEADER_BLOCK_FIELDS} supplied, some not), on a bare input carrying a
+ * {@link HEADER_BLOCK_FIELDS} supplied, some not — `blockedBy` alone is NOT
+ * partial, see above), on a bare input carrying a
  * {@link DECORATION_ONLY_FIELDS} stowaway, on a bare input with no authored
  * body content, and on a bare input whose `bodySections` carries a malformed
  * entry — a missing/blank `heading` or a missing `markdown` (#530). All four
@@ -405,7 +461,14 @@ export function classifyCreateInput(input: CreateInput): CreateShape {
     return { kind: 'decorated', input: input as DecoratedCreateInput };
   }
 
-  if (missing.length === HEADER_BLOCK_FIELDS.length) {
+  // BARE — every Header-Block field absent EXCEPT the one ADR-0044 sanctions:
+  // `blockedBy` may ride alone, because a bare issue realizes it natively (a
+  // GitHub issue dependency, a Linear relation) rather than as the
+  // `**Blocked by:**` header line it would be on a decorated issue. So the
+  // membership test is over BARE_MUST_BE_ABSENT (the other four), not over all
+  // five: an input carrying `blockedBy` and nothing else is a bare issue with a
+  // dependency, NOT a header missing four fields.
+  if (missing.filter((f) => f !== 'blockedBy').length === BARE_MUST_BE_ABSENT.length) {
     const stowaways = DECORATION_ONLY_FIELDS.filter((f) => input[f] !== undefined);
     if (stowaways.length > 0) {
       throw new CreateInputError(
@@ -445,6 +508,14 @@ export function classifyCreateInput(input: CreateInput): CreateShape {
           'least one `bodySections` entry with non-blank `markdown` (e.g. Gap ' +
           '+ Provenance), or supply the full Header-Block for a decorated issue.',
       );
+    }
+    // ADR-0044's bare `blockedBy` arm, normalized on the way out: `'none'` and
+    // `[]` declare nothing to realize, so they collapse to an absent key and the
+    // bare create is byte-for-byte the one that shipped before this arm existed.
+    // Only a non-empty ref list reaches an adapter's native-dependency write.
+    const blockedBy = input.blockedBy;
+    if (blockedBy !== undefined && blockedBy !== 'none' && blockedBy.length > 0) {
+      return { kind: 'bare', blockedBy };
     }
     return { kind: 'bare' };
   }
@@ -583,12 +654,20 @@ export interface IssueStore {
    * `IssueView`: {@link read} throws on it until `annotate` decorates it, which
    * is the honest outcome — the wave fields are genuinely absent, not empty.
    *
+   * A bare input MAY additionally carry `blockedBy` (ADR-0044): the store
+   * realizes it NATIVELY — GitHub as an issue dependency, Linear as an issue
+   * relation — and writes no header line for it, so the bare invariant is
+   * untouched. A store whose storage cannot represent that edge REFUSES, before
+   * any write, with `'bare-blocked-by-unrepresentable'`; it never writes a
+   * partial `**Blocked by:**` line and never drops the edge silently.
+   *
    * Validates the WHOLE input via {@link classifyCreateInput} BEFORE minting an
    * id or writing anything: a half-written Header-Block, a bare input with a
-   * decoration-only stowaway, and a bare input with no authored body content all
-   * throw a typed {@link CreateInputError} and file nothing. Those rejections are
-   * part of THIS contract, not of any one entrypoint — a direct caller of a store
-   * inherits them exactly as the issue-store CLI does.
+   * decoration-only stowaway, a bare input with no authored body content, and a
+   * bare `blockedBy` this store cannot realize all throw a typed
+   * {@link CreateInputError} and file nothing. Those rejections are part of THIS
+   * contract, not of any one entrypoint — a direct caller of a store inherits
+   * them exactly as the issue-store CLI does.
    */
   create(input: CreateInput): Promise<string>;
 

@@ -68,6 +68,21 @@ describe('MarkdownFsStore — markdown parity specifics', () => {
     expect(src).toMatch(/^\*\*Risk:\*\* mechanical$/m);
   });
 
+  // The negative control for ADR-0044's bare-`blockedBy` refusal (whose own
+  // cases live in bare-create-facet.spec.ts): the refusal is scoped to the BARE
+  // shape, so the DECORATED path still writes the `**Blocked by:**` header line
+  // for exactly the same refs — the only representation this store has, and the
+  // reason the bare shape is refused rather than half-served.
+  it('a DECORATED create still writes the **Blocked by:** line — the refusal is scoped to the bare shape', async () => {
+    const id = await store.create(
+      baseInput({ filingHint: 'blocked-thing', blockedBy: [{ issue: 7 }] }),
+    );
+    const nn = id.slice(id.lastIndexOf('#') + 1);
+    const src = await readFile(issuePath(`${nn}-blocked-thing.md`), 'utf-8');
+    expect(src).toMatch(/^\*\*Blocked by:\*\* #7$/m);
+    expect((await store.read(id)).blockedBy).toEqual([{ issue: 7 }]);
+  });
+
   it('NN auto-increments across both issues/ and issues/done/', async () => {
     await store.create(baseInput({ filingHint: 'one' }));
     const second = await store.create(baseInput({ filingHint: 'two' }));
