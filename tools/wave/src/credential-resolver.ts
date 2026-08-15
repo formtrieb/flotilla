@@ -34,6 +34,19 @@
  * per-environment escape hatch a CI job uses (`GITHUB_TOKEN_CMD=""`) when it
  * injects a per-job token into a minutes-lived environment with no keychain.
  *
+ * A command that exits 0 with a NON-empty stdout is also refused, once: when
+ * that stdout is the measured macOS `security(1)` trailing-newline mangling
+ * (found 2026-08-15 on a live `flotilla-linear-key` item) — an even-length,
+ * purely hex-encoded value whose bytes decode to printable text ending in
+ * whitespace. `security find-generic-password -w` prints a stored password
+ * this way when the item was added with a trailing newline in its value
+ * (`echo "$KEY" | security add-generic-password …` rather than `printf '%s'`),
+ * and handing that hex string on as the credential turns into a bare,
+ * unexplained 401 at every downstream call. Refused, never silently decoded:
+ * decoding here would hand on a value the configuring author never declared —
+ * the same reason a failing lookup never falls back to the ambient variable.
+ * See {@link CredentialFailure}'s `'lookup-hex-mangled'` member.
+ *
  * ## Why nothing here can leak the secret
  *
  * Three structural properties, not three promises:
@@ -82,7 +95,14 @@ export type CredentialFailure =
   /** The configured command exited 0 but printed nothing usable on stdout. */
   | 'lookup-empty'
   /** The configured command could not be spawned at all (no shell, EACCES, …). */
-  | 'lookup-spawn-error';
+  | 'lookup-spawn-error'
+  /**
+   * The configured command exited 0 and printed the measured `security(1)`
+   * trailing-newline mangling shape: an even-length, purely hex-encoded
+   * value whose bytes decode to printable text ending in whitespace. Refused
+   * rather than silently decoded — see the module doc comment above.
+   */
+  | 'lookup-hex-mangled';
 
 /**
  * The typed credential failure (ADR-0029). It names the CONFIGURED COMMAND (a
@@ -236,6 +256,48 @@ function resolveOnce(variable: string, opts: ResolveCredentialOptions): string {
 }
 
 /**
+ * A trailing run of ASCII whitespace (space, tab, CR, LF) at the end of a
+ * string — the shape a `security(1)`-mangled decode's trailing newline takes
+ * once decoded back to text.
+ */
+const TRAILING_ASCII_WHITESPACE = /[\t\n\r ]+$/;
+
+/** Printable ASCII only (0x20–0x7E) — no control bytes, so a decode that
+ * happens to contain a stray control character (a real binary secret,
+ * hex-spelled on purpose) is never mistaken for mangled text. */
+const PRINTABLE_ASCII_ONLY = /^[\x20-\x7E]+$/;
+
+/**
+ * Detect the measured macOS `security(1)` trailing-newline mangling shape at
+ * the resolver's own lookup-command seam: NOT exported (module-local by
+ * design — see `credential-resolver.spec.ts` / this issue's AC4, and the
+ * public export surface stays exactly what `barrel-drift.spec.ts` already
+ * reconciles). Never returns or logs the decoded text — only whether the
+ * shape matched — for the same reason nothing else in this module surfaces
+ * `stdout` (see the module doc comment's "why nothing here can leak the
+ * secret" section): the decoded text IS the secret, one hex step removed.
+ *
+ * Conservative by construction (false negatives acceptable, false positives
+ * never — this issue's AC2): every check below can only turn a match into a
+ * non-match, so a real credential is refused only if it is simultaneously (1)
+ * even-length, (2) composed ENTIRELY of hex digits, (3) decodes to bytes that
+ * are ALL printable ASCII except a trailing whitespace run, and (4) has a
+ * non-empty body ahead of that whitespace. An ordinary credential fails (2)
+ * outright (most secrets are not pure hex); a hex-*looking* one — a hash, a
+ * hex-formatted API key — almost always fails (3), because its decoded bytes
+ * are not printable text.
+ */
+function isSecurityHexManglingShape(secret: string): boolean {
+  if (secret.length === 0 || secret.length % 2 !== 0) return false;
+  if (!/^[0-9a-fA-F]+$/.test(secret)) return false;
+  const decoded = Buffer.from(secret, 'hex').toString('latin1');
+  const trailingWhitespace = decoded.match(TRAILING_ASCII_WHITESPACE);
+  if (!trailingWhitespace) return false;
+  const body = decoded.slice(0, decoded.length - trailingWhitespace[0].length);
+  return body.length > 0 && PRINTABLE_ASCII_ONLY.test(body);
+}
+
+/**
  * Run a configured lookup and turn it into a secret or a typed loud failure.
  * Every failure path names the command and NONE of them reaches for the ambient
  * variable: the fallback that would be convenient here is exactly the one
@@ -293,5 +355,30 @@ function runLookup(
         `An empty secret is a failure, never a silent fallback. ${neverFallsBack}`,
     );
   }
+
+  // The measured security(1) trailing-newline mangling (issue #597): refuse
+  // rather than silently decode. Checked on the SAME `secret` the ambient/
+  // caller path would otherwise receive — never the raw `result.stdout` — so
+  // this narrows exactly the value that would have been handed on.
+  if (isSecurityHexManglingShape(secret)) {
+    throw new CredentialResolutionError(
+      variable,
+      'lookup-hex-mangled',
+      command,
+      `${commandVariable} (\`${command}\`) returned a value that decodes as the macOS security(1) ` +
+        `trailing-newline mangling: an even-length, purely hex-encoded string whose bytes decode to ` +
+        `printable text ending in whitespace. This happens when the keychain item behind this lookup was ` +
+        `added with a trailing newline in its value — e.g. \`echo "$SECRET" | security add-generic-password ` +
+        `-a <account> -s <service> -w\` instead of \`printf '%s'\` — and \`security find-generic-password -w\` ` +
+        `then prints the stored bytes HEX-ENCODED instead of as text; every downstream call would silently ` +
+        `receive that hex string as the credential and fail with a bare 401 that points nowhere near this cause. ` +
+        `Refused rather than silently decoded: configured means authoritative, and decoding here would hand on ` +
+        `a value the configuring author never declared. Fix: re-add the keychain item WITHOUT the trailing ` +
+        `newline — \`printf '%s' "$SECRET" | security add-generic-password -U -a <account> -s <service> -w -\` ` +
+        `(matching your item's own -a/-s) — then re-run this lookup. The decoded value is deliberately not ` +
+        `reported, for the same reason the raw output never is: it would be the secret.`,
+    );
+  }
+
   return secret;
 }
