@@ -1,6 +1,6 @@
 ---
 name: to-issues
-description: Use when breaking a plan, spec, or product requirements document into issues small enough that an agent can pick each one up on its own — or when adding the planning header an already-filed issue is missing: how risky it is, who should do it, which files it touches, and what it has to wait for. Triggers on "turn this into issues", "create implementation tickets", "make these wave-ready".
+description: 'Use when breaking a plan, spec, or product requirements document into issues small enough that an agent can pick each one up on its own — or when adding the planning header an already-filed issue is missing: how risky it is, who should do it, which files it touches, and what it has to wait for. Triggers on "turn this into issues", "create implementation tickets", "make these wave-ready".'
 ---
 
 # to-issues

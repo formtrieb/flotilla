@@ -83,6 +83,43 @@
  * reach, which is exactly why it owes a real failing-side control rather than
  * an assertion about `String.prototype.padEnd`.
  *
+ * ## Tier 5 — the document is valid YAML, and both readers agree on it
+ *
+ * Every tier above reads the description through a hand-rolled line extractor.
+ * That extractor is *lenient in exactly the way the runtime is*, which is why
+ * this whole corpus could be green for a hundred waves while five descriptions
+ * were not valid YAML at all: an unquoted plain scalar containing `: `
+ * (colon-space) is a mapping ambiguity, and a strict parser rejects the
+ * document outright. `claude plugin validate --strict` said so once, on CLI
+ * 2.1.232; nothing in this repository could, because the engine's dependency
+ * doctrine (`node:*` plus `fast-glob` plus `micromatch`) meant no YAML parser
+ * existed anywhere in `tools/wave` to disagree with the hand reader.
+ *
+ * "Said so once" is deliberate. Re-measured on CLI 2.1.233 with paired
+ * controls — a no-description control skill still WARNS, so enumeration is
+ * working; a control skill whose description is an unquoted colon-space plain
+ * scalar passes clean — the validator no longer reports this class at all.
+ * Borrowed strictness is not a check: it changed under this corpus inside a
+ * single patch version, in the lenient direction, and the corpus would have
+ * learned nothing. That is the whole argument for owning the class here.
+ *
+ * So tier 5 brings a real YAML parser in — as a **devDependency imported only
+ * from this spec**, which is the one seam where that is free: the engine's
+ * RUNTIME dependency list is untouched, exactly as `vitest` itself is a
+ * devDependency. And it asserts two things, not one:
+ *
+ *   1. **The frontmatter parses.** A document a strict parser rejects is a
+ *      document whose fields a strict consumer drops — today the runtime
+ *      harness is lenient enough to read them anyway, but that leniency is
+ *      unspecified, and a parser tightening in any harness release would take
+ *      the descriptions with it.
+ *   2. **The two readers agree.** The parsed `description` must equal the hand
+ *      extraction, for every member of the population. This is the half that
+ *      earns its keep: a document can parse *cleanly* and still not mean what
+ *      the hand reader thinks it says, and then every tier above is measuring a
+ *      string the model never sees. That is not hypothetical — see
+ *      {@link KNOWN_UNGUARDED}.
+ *
  * ## What this guard cannot do
  *
  * It cannot tell whether a description is *good*. "Does this sentence help a
@@ -111,6 +148,8 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import fastGlob from 'fast-glob';
+import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = join(__dirname, '../../..');
@@ -132,7 +171,118 @@ const DESCRIBED_SURFACE_COUNT = 15;
 // ─── reading the surface ─────────────────────────────────────────────────────
 
 /**
- * The `description:` value out of a file's YAML frontmatter.
+ * The YAML frontmatter block of a described surface, fences excluded.
+ *
+ * Shared by the hand extractor below and by tier 5's strict parse, so both
+ * readers are demonstrably looking at the SAME bytes — an agreement assertion
+ * over two differently-delimited slices would prove nothing.
+ */
+export function frontmatterBlockOf(md: string, label: string): string {
+  if (!md.startsWith('---\n')) {
+    throw new Error(`${label} does not open with YAML frontmatter — nothing to scan.`);
+  }
+  const close = md.indexOf('\n---', 3);
+  if (close < 0) {
+    throw new Error(`${label} has an unterminated YAML frontmatter block.`);
+  }
+  return md.slice(4, close + 1);
+}
+
+/**
+ * Decode a single-line YAML scalar exactly as it is written after
+ * `description:` — plain, single-quoted, or double-quoted.
+ *
+ * The corpus was entirely plain scalars until five of them turned out not to be
+ * valid YAML (tier 5's header). Quoting is the fix that leaves the decoded text
+ * byte-identical, so the hand reader has to learn quoting or it would start
+ * scanning a value with stray quote characters welded to both ends — and tier 3
+ * would go red on a corpus that had not changed a word.
+ *
+ * Deliberately narrow, and loud where it is narrow: single-quoted style has
+ * exactly one escape (`''` → `'`) and no backslash semantics at all, which is
+ * why the five quoted descriptions use it. Double-quoted style is decoded for
+ * the escapes YAML's own examples use and THROWS on anything else, rather than
+ * quietly returning a string the real parser would not have produced. A silent
+ * divergence here is the precise failure tier 5 exists to detect, so the hand
+ * reader must never manufacture one.
+ */
+function decodeSingleLineScalar(raw: string, label: string): string {
+  if (raw.startsWith("'")) {
+    if (raw.length < 2 || !raw.endsWith("'")) {
+      throw new Error(
+        `${label}'s description opens a single-quoted YAML scalar that does not close on the ` +
+          `same line. Keep the description on one line, or teach the extractor the new shape.`,
+      );
+    }
+    const inner = raw.slice(1, -1);
+    let out = '';
+    for (let i = 0; i < inner.length; i += 1) {
+      if (inner[i] !== "'") {
+        out += inner[i];
+        continue;
+      }
+      if (inner[i + 1] === "'") {
+        out += "'";
+        i += 1;
+        continue;
+      }
+      throw new Error(
+        `${label}'s description carries a lone apostrophe inside a single-quoted YAML scalar. ` +
+          `Inside single quotes an apostrophe is written twice ('') — a lone one ends the ` +
+          `scalar early and silently truncates the listing line.`,
+      );
+    }
+    return out;
+  }
+
+  if (raw.startsWith('"')) {
+    if (raw.length < 2 || !raw.endsWith('"')) {
+      throw new Error(
+        `${label}'s description opens a double-quoted YAML scalar that does not close on the ` +
+          `same line. Keep the description on one line, or teach the extractor the new shape.`,
+      );
+    }
+    const inner = raw.slice(1, -1);
+    const ESCAPES: Readonly<Record<string, string>> = {
+      '\\': '\\',
+      '"': '"',
+      '/': '/',
+      n: '\n',
+      t: '\t',
+    };
+    let out = '';
+    for (let i = 0; i < inner.length; i += 1) {
+      const ch = inner[i];
+      if (ch === '"') {
+        throw new Error(
+          `${label}'s description carries an unescaped double quote inside a double-quoted YAML ` +
+            `scalar. Write it as \\" — or use single-quoted style, which the rest of the corpus ` +
+            `uses precisely because these descriptions are full of quoted trigger phrases.`,
+        );
+      }
+      if (ch !== '\\') {
+        out += ch;
+        continue;
+      }
+      const decoded = ESCAPES[inner[i + 1] ?? ''];
+      if (decoded === undefined) {
+        throw new Error(
+          `${label}'s description uses the backslash escape \\${inner[i + 1] ?? '<end of line>'} ` +
+            `inside a double-quoted YAML scalar, which this extractor does not decode. Teach it ` +
+            `the escape rather than letting the two readers drift apart.`,
+        );
+      }
+      out += decoded;
+      i += 1;
+    }
+    return out;
+  }
+
+  return raw;
+}
+
+/**
+ * The `description:` value out of a file's YAML frontmatter, decoded.
  *
  * Throws rather than returning `null` on every unexpected shape — no
  * frontmatter, no `description:` key, an empty value, or a multi-line YAML
@@ -141,14 +291,7 @@ const DESCRIBED_SURFACE_COUNT = 15;
  * failure mode this whole file exists to make impossible.
  */
 export function readFrontmatterDescription(md: string, label: string): string {
-  if (!md.startsWith('---\n')) {
-    throw new Error(`${label} does not open with YAML frontmatter — nothing to scan.`);
-  }
-  const close = md.indexOf('\n---', 3);
-  if (close < 0) {
-    throw new Error(`${label} has an unterminated YAML frontmatter block.`);
-  }
-  const block = md.slice(4, close + 1);
+  const block = frontmatterBlockOf(md, label);
   const lines = block.split('\n');
   const at = lines.findIndex((line) => line.startsWith('description:'));
   if (at < 0) {
@@ -172,7 +315,37 @@ export function readFrontmatterDescription(md: string, label: string): string {
         `its first line. Keep the description on one line, or teach the extractor the new shape.`,
     );
   }
-  return value;
+  return decodeSingleLineScalar(value, label);
+}
+
+/**
+ * What a strict YAML parser makes of a surface's frontmatter.
+ *
+ * Returned as a result rather than thrown so the assertion can name the file
+ * AND quote the parser's own complaint — "one of fifteen frontmatters is
+ * invalid" sends a reader hunting; the path plus `Nested mappings are not
+ * allowed in compact mappings` sends them to the line.
+ */
+export type StrictFrontmatterRead =
+  | { readonly ok: true; readonly description: string }
+  | { readonly ok: false; readonly error: string };
+
+/** Parse a surface's frontmatter with a real YAML parser and read `description`. */
+export function strictParseDescription(md: string, label: string): StrictFrontmatterRead {
+  let doc: unknown;
+  try {
+    doc = parseYaml(frontmatterBlockOf(md, label), { strict: true, prettyErrors: false });
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+  if (typeof doc !== 'object' || doc === null) {
+    return { ok: false, error: 'frontmatter did not parse to a mapping' };
+  }
+  const value = (doc as Record<string, unknown>).description;
+  if (typeof value !== 'string') {
+    return { ok: false, error: `description parsed to ${typeof value}, not a string` };
+  }
+  return { ok: true, description: value };
 }
 
 /** Every described surface, repo-relative, sorted: the 13 skills plus the agent. */
@@ -424,6 +597,50 @@ export function exceedsDescriptionLimit(description: string): boolean {
   return description.length > DESCRIPTION_CHARACTER_LIMIT;
 }
 
+// ─── tier 5: strict YAML validity, and reader agreement ──────────────────────
+
+/**
+ * Surfaces that are IN the population, KNOWN to fail tier 5 today, and that the
+ * diff introducing tier 5 could not touch: both lie outside its declared file
+ * globs, and a wave row reaching past its declared globs is precisely what the
+ * cross-wave file-conflict map cannot reason about. They are pinned here with
+ * the half of tier 5 each one fails, so the carve-out is a named, one-line-to-
+ * delete entry rather than a silently narrowed population.
+ *
+ * The entries are **self-retiring**: the cell below asserts each listed surface
+ * STILL fails the named half. Fix one and this file goes red, demanding the
+ * entry be deleted in the same diff — an exemption cannot outlive its defect.
+ *
+ *   - `.claude/agents/wave-reviewer.md` — the SIXTH colon-space plain scalar
+ *     (`answers with exactly one verdict: approve, …`). The finding that
+ *     prompted tier 5 counted five, because `claude plugin validate`
+ *     enumerates *skills* and never visited the agent; a strict parse over this
+ *     guard's own population finds six. Formal invalidity, no measured runtime
+ *     loss.
+ *
+ *   - `.claude/skills/triage/SKILL.md` — the reader disagreement, and the more
+ *     serious of the two. Its plain scalar contains ` #` (inside the trigger
+ *     phrase `"is #42 ready for an agent?"`), which YAML reads as a comment
+ *     introducer: the document parses CLEANLY and the description simply ends
+ *     55 characters early, dropping two trigger phrases. That is not a
+ *     hypothetical about some future parser tightening — the live harness skill
+ *     listing injected into the session that added this tier ends triage's
+ *     description at `…, "is`, byte-for-byte where the parser ends it. Tiers
+ *     1–4 are green on that surface only because the hand reader keeps a tail
+ *     the model never receives.
+ */
+const KNOWN_UNGUARDED: Readonly<Record<string, 'strict-parse' | 'reader-agreement'>> = {
+  [REVIEWER_AGENT_REL]: 'strict-parse',
+  '.claude/skills/triage/SKILL.md': 'reader-agreement',
+};
+
+/** The population tier 5 holds today: everything except the pinned exemptions. */
+function tierFiveSurfaces(): string[] {
+  return listDescribedSurfaces().filter(
+    (rel) => !Object.prototype.hasOwnProperty.call(KNOWN_UNGUARDED, rel),
+  );
+}
+
 // ─── the descriptions exactly as they shipped, kept as fixtures ──────────────
 
 /**
@@ -611,6 +828,112 @@ describe('skill-descriptions-guard — the listing a consumer reads first carrie
     // The whole inventory, so a placeholder appearing or vanishing is a
     // deliberate edit here rather than a silent corpus change.
     expect(inventory).toEqual({ '<goal>': 1, '<slug>': 8, '<branch>': 1 });
+  });
+
+  it.each(tierFiveSurfaces())(
+    '%s frontmatter is valid YAML, and the strict parser and the hand reader agree on it',
+    (rel) => {
+      const md = readFileSync(join(REPO_ROOT, rel), 'utf-8');
+      const strict = strictParseDescription(md, rel);
+      expect(
+        strict.ok ? '' : strict.error,
+        `${rel}'s YAML frontmatter does not parse under a strict parser. Every reader that has ` +
+          `ever looked at this corpus — the runtime harness, and this file's own hand extractor ` +
+          `— happens to be lenient enough to read it anyway, and none of that leniency is ` +
+          `specified anywhere. The commonest cause is an UNQUOTED description containing ": " ` +
+          `(colon-space), which YAML reads as a nested mapping. Wrap the value in single quotes ` +
+          `(doubling any apostrophe): the decoded text is unchanged.`,
+      ).toBe('');
+
+      // The half that catches a document which parses cleanly and still does
+      // not say what the hand reader thinks. Without this, every tier above
+      // could be green against a string the model never receives.
+      const parsed = (strict as { description: string }).description;
+      const extracted = DESCRIPTIONS.get(rel) as string;
+      expect(
+        parsed,
+        `${rel}'s two readers disagree about its description. The hand extractor scans one ` +
+          `string and the YAML parser produces another, so tiers 1-4 are measuring text the ` +
+          `model may never see. Most often an unquoted value carries a YAML metacharacter — ` +
+          `" #" starts a comment and silently truncates the rest of the line.\n\n` +
+          `  hand reader (${extracted.length} chars): ${extracted}\n` +
+          `  YAML parser (${parsed?.length} chars): ${parsed}`,
+      ).toBe(extracted);
+    },
+  );
+
+  it('the tier-5 exemptions are exactly the two known defects, and each still fails', () => {
+    // Self-retiring: the moment either surface is fixed, this cell goes red and
+    // the entry must be deleted, which puts the surface back in the guarded
+    // population above. An exemption cannot quietly outlive its defect.
+    expect(Object.keys(KNOWN_UNGUARDED).sort()).toEqual(
+      ['.claude/agents/wave-reviewer.md', '.claude/skills/triage/SKILL.md'].sort(),
+    );
+    for (const rel of Object.keys(KNOWN_UNGUARDED)) {
+      expect(SURFACES, `${rel} is exempted from tier 5 but is not in the population`).toContain(rel);
+    }
+
+    // The agent: invalid YAML outright.
+    const agent = readFileSync(join(REPO_ROOT, REVIEWER_AGENT_REL), 'utf-8');
+    const agentRead = strictParseDescription(agent, REVIEWER_AGENT_REL);
+    expect(
+      agentRead.ok,
+      `${REVIEWER_AGENT_REL} now parses under a strict YAML parser. Delete its KNOWN_UNGUARDED ` +
+        `entry in this same diff so tier 5 starts holding it.`,
+    ).toBe(false);
+
+    // triage: parses cleanly, means something else.
+    const triageRel = '.claude/skills/triage/SKILL.md';
+    const triage = readFileSync(join(REPO_ROOT, triageRel), 'utf-8');
+    const triageRead = strictParseDescription(triage, triageRel);
+    expect(triageRead.ok, `${triageRel} no longer parses at all — that is a different defect`).toBe(
+      true,
+    );
+    const triageParsed = (triageRead as { description: string }).description;
+    const triageExtracted = DESCRIPTIONS.get(triageRel) as string;
+    expect(
+      triageParsed,
+      `${triageRel}'s two readers now agree. Delete its KNOWN_UNGUARDED entry in this same diff ` +
+        `so tier 5 starts holding it.`,
+    ).not.toBe(triageExtracted);
+    // …and the concrete consequence, pinned so the follow-up has its evidence:
+    // two trigger phrases tier 3 believes are present never reach the model.
+    expect(triageExtracted).toContain('"prepare this for an agent"');
+    expect(triageParsed).not.toContain('"prepare this for an agent"');
+    expect(triageParsed).not.toContain('"is #42 ready for an agent?"');
+    expect(triageParsed.length).toBeLessThan(triageExtracted.length);
+  });
+
+  it('the YAML parser stays a spec-only devDependency — the runtime graph never imports it', () => {
+    // The dependency doctrine this tier had to negotiate: `tools/wave` ships
+    // raw TS with `fast-glob` + `micromatch` + `tsx` and nothing else, so a
+    // parser reachable from the published import graph would be a contract
+    // change, not a test tool. Pinned here rather than stated once in a report,
+    // because a stated check decays the first time someone reaches for a
+    // convenient import.
+    const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(Object.keys(pkg.dependencies).sort()).toEqual(['fast-glob', 'micromatch', 'tsx']);
+    expect(Object.keys(pkg.devDependencies)).toContain('yaml');
+
+    const runtimeModules = fastGlob
+      .sync(['**/*.ts'], { cwd: __dirname, ignore: ['**/*.spec.ts', '__fixtures__/**'] })
+      .sort();
+    // A population floor, so a discovery that silently found nothing cannot
+    // pass this by scanning an empty list.
+    expect(runtimeModules.length).toBeGreaterThan(30);
+
+    const importers = runtimeModules.filter((rel) =>
+      /(?:from|require\()\s*['"]yaml['"]/.test(readFileSync(join(__dirname, rel), 'utf-8')),
+    );
+    expect(
+      importers,
+      `these runtime modules import the YAML parser, which ships only as a devDependency: the ` +
+        `published package would fail to resolve it. Keep the parser inside spec files:\n  ` +
+        `${importers.join('\n  ')}`,
+    ).toEqual([]);
   });
 
   it('every surface in the population has a trigger-phrase entry (no silent opt-out)', () => {
@@ -870,6 +1193,97 @@ describe('skill-descriptions-guard — negative controls: the guard is red on th
     );
     expect(regressed).not.toEqual(live); // the replace actually matched
     expect(secondPersonAddressIn(regressed)).toEqual(['you']);
+  });
+
+  it('the description as it shipped INVALID is caught, and quoting it changes no text', () => {
+    // wave-plan's description exactly as it stood at the wave anchor: an
+    // unquoted plain scalar carrying `nothing: a person`. Historical evidence,
+    // like the fixtures above — do not "tidy" it.
+    //
+    // One fixture, two claims. It goes red under tier 5's strict half, proving
+    // the tier would have caught the corpus it was written for; and the SAME
+    // text, single-quoted, parses and decodes back to itself byte-for-byte,
+    // proving the fix is a pure encoding change. Nothing about the shipped
+    // wording is pinned here beyond this historical string, so a future rewrite
+    // of the live description is free.
+    const asShipped =
+      'Use when planning the next wave — one batch of issues that can safely run side by side. ' +
+      'Lists which issues are ready to be picked up, then checks them for overlapping files, ' +
+      'both against each other and against the issues another batch has already taken. Changes ' +
+      'nothing: a person picks which ones to run and hands them to wave-create. Triggers on ' +
+      '"plan a wave", "what can run next", "cross-wave check".';
+
+    const invalid = `---\nname: wave-plan\ndescription: ${asShipped}\n---\nbody\n`;
+    const before = strictParseDescription(invalid, 'wave-plan (as shipped)');
+    expect(before.ok).toBe(false);
+    expect((before as { error: string }).error).toMatch(/mapping/i);
+
+    // …while the lenient hand reader was, and still is, perfectly happy — which
+    // is exactly why nothing in this repository could see the defect.
+    expect(readFrontmatterDescription(invalid, 'wave-plan (as shipped)')).toBe(asShipped);
+
+    // The fix, computed rather than re-typed: wrap in single quotes, double any
+    // apostrophe. Both readers then agree, on the original text.
+    const quoted = `'${asShipped.replace(/'/g, "''")}'`;
+    const fixed = `---\nname: wave-plan\ndescription: ${quoted}\n---\nbody\n`;
+    const after = strictParseDescription(fixed, 'wave-plan (quoted)');
+    expect(after.ok).toBe(true);
+    expect((after as { description: string }).description).toBe(asShipped);
+    expect(readFrontmatterDescription(fixed, 'wave-plan (quoted)')).toBe(asShipped);
+
+    // …and the apostrophe case is exercised too, since wave-plan's own text has
+    // none: the three quoted descriptions that DO carry one ride on this rule.
+    const withApostrophe = "checks one issue's finished work: read-only.";
+    const q2 = `---\ndescription: '${withApostrophe.replace(/'/g, "''")}'\n---\n`;
+    expect(strictParseDescription(q2, 'x')).toEqual({ ok: true, description: withApostrophe });
+    expect(readFrontmatterDescription(q2, 'x')).toBe(withApostrophe);
+  });
+
+  it('the reader-agreement half fails independently, on a document that parses cleanly', () => {
+    // The strict half and the agreement half must be able to go red on their
+    // own, or a green pair proves only that one of them works. This fixture
+    // parses without a complaint — and still means something different to each
+    // reader, because ` #` opens a YAML comment.
+    const md = '---\nname: x\ndescription: plain value # the hand reader keeps this tail\n---\n';
+
+    const strict = strictParseDescription(md, 'x');
+    expect(strict.ok, 'the fixture must PARSE — otherwise it exercises the other half').toBe(true);
+
+    const parsed = (strict as { description: string }).description;
+    const extracted = readFrontmatterDescription(md, 'x');
+    expect(parsed).toBe('plain value');
+    expect(extracted).toBe('plain value # the hand reader keeps this tail');
+    // The comparison the guard cell makes, shown failing.
+    expect(parsed).not.toBe(extracted);
+  });
+
+  it('the scalar decoder fails loud rather than inventing a value the parser would not produce', () => {
+    // Every throw here is a shape that, decoded generously, would make the hand
+    // reader and the YAML parser disagree silently — the one outcome tier 5
+    // exists to prevent, and the one it could not detect if the extractor
+    // itself were the thing diverging.
+    expect(() => readFrontmatterDescription("---\ndescription: 'no closing quote\n---\n", 'x')).
+      toThrow(/single-quoted YAML scalar that does not close/);
+    expect(() => readFrontmatterDescription("---\ndescription: 'it's ambiguous'\n---\n", 'x')).
+      toThrow(/lone apostrophe/);
+    expect(() => readFrontmatterDescription('---\ndescription: "no closing quote\n---\n', 'x')).
+      toThrow(/double-quoted YAML scalar that does not close/);
+    expect(() => readFrontmatterDescription('---\ndescription: "a \\u00e9 escape"\n---\n', 'x')).
+      toThrow(/does not decode/);
+
+    // …and the shapes it DOES decode round-trip against the real parser.
+    for (const line of [
+      `description: 'quoted, with "phrases" inside'`,
+      `description: 'an apostrophe: it''s here'`,
+      'description: "double quoted with a \\"phrase\\" inside"',
+      'description: "a tab\\there and a slash\\/there"',
+      'description: plain, unquoted, still fine',
+    ]) {
+      const md = `---\n${line}\n---\n`;
+      const strict = strictParseDescription(md, line);
+      expect(strict.ok, `fixture did not parse: ${line}`).toBe(true);
+      expect(readFrontmatterDescription(md, line)).toBe((strict as { description: string }).description);
+    }
   });
 
   it('the extractor fails loud instead of scanning nothing', () => {

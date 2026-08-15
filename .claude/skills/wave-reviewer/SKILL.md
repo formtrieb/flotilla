@@ -1,6 +1,6 @@
 ---
 name: wave-reviewer
-description: Use to understand or operate the wave reviewer — the second agent that checks one issue's finished work before a pull request is opened, and that only ever reads. It runs on every issue in the batch, however small the change, re-runs the project's own tests against the commit the batch started from, and answers with one of three verdicts: looks good, needs changes, or a question that has to be answered first. Triggers on "review this wave row", "what does the wave-reviewer check", "run the reviewer on <branch>".
+description: 'Use to understand or operate the wave reviewer — the second agent that checks one issue''s finished work before a pull request is opened, and that only ever reads. It runs on every issue in the batch, however small the change, re-runs the project''s own tests against the commit the batch started from, and answers with one of three verdicts: looks good, needs changes, or a question that has to be answered first. Triggers on "review this wave row", "what does the wave-reviewer check", "run the reviewer on <branch>".'
 ---
 
 # wave-reviewer
