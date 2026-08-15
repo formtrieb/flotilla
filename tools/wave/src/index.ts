@@ -987,6 +987,18 @@ export {
 // routes on (usage-error vs domain-failure, which field to re-author), for the
 // same reason `EngineCliBindingFailure` does.
 //
+// WIDENED (ADR-0044, the bare `blockedBy` arm): `CreateInputFailure` gained a
+// FOURTH member, `'bare-blocked-by-unrepresentable'`. It is additive — no
+// existing member renamed or removed, no existing input newly rejected — but it
+// is the first member NOT raised by the classifier: the ADAPTER raises it, from
+// `create()`, before any write, when its storage cannot realize a bare
+// dependency natively. Recorded here because a root consumer switching
+// exhaustively over the union sees it: the type is deliberately the same one,
+// because "this store cannot represent your input" routes exactly like the
+// other three (catch the class, read `failure`, re-author `fields`), and a
+// second error class for it would have bought that consumer a second thing to
+// catch for no new decision.
+//
 // Deliberately NOT re-exported: the classifier itself. Every adapter already
 // runs it first, so a consumer calling it by hand would be asking a question
 // `create()` answers on its behalf — and a hand-run pre-check that can drift

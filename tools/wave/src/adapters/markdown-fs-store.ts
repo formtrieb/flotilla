@@ -38,7 +38,9 @@ import type {
 import { DEFAULT_TRIAGE_SCHEMA } from '../contract';
 import {
   DEFAULT_ELIGIBILITY,
+  HEADER_BLOCK_FIELDS,
   classifyCreateInput,
+  CreateInputError,
   validateAmendPatch,
   type IssueStore,
   type IssueStoreConformanceHooks,
@@ -135,6 +137,44 @@ export class MarkdownFsStore implements IssueStore {
     // throws before any directory is made, any NN is drawn, or anything is
     // written — a rejected create files nothing.
     const shape = classifyCreateInput(input);
+
+    // ADR-0044's bare `blockedBy` arm, refused HONESTLY on this store — the
+    // `closed-unknown` precedent applied to the write side: report what the
+    // storage cannot represent, never fake it.
+    //
+    // A markdown issue has exactly ONE representation for a blocker: the
+    // `**Blocked by:**` Header-Block line. A bare issue by definition carries no
+    // Header-Block, so there is no native dependency to fall back on the way
+    // GitHub and Linear have one. The two dishonest options are both refused
+    // here: writing that lone line would mint the half-written Header-Block
+    // `classifyCreateInput` exists to reject (and, worse, one the store itself
+    // authored), and dropping the edge silently would return an id for an issue
+    // that does not carry the dependency the caller just declared.
+    //
+    // Raised BEFORE `mkdir`, so a refused create leaves not even an empty
+    // `issues/` directory — the same "files nothing" property the half-written
+    // and bodyless rejections already have.
+    if (shape.kind === 'bare' && shape.blockedBy !== undefined) {
+      throw new CreateInputError(
+        'bare-blocked-by-unrepresentable',
+        ['blockedBy'],
+        "create: this markdown store cannot represent a BARE issue's " +
+          '`blockedBy`. Its ONLY blocker representation is the ' +
+          '`**Blocked by:**` Header-Block line, and a bare issue carries no ' +
+          'Header-Block (ADR-0027) — writing that line alone would be exactly ' +
+          'the half-written Header-Block the create contract rejects, and ' +
+          'dropping the dependency would be a silent loss (ADR-0044: report ' +
+          'what the store cannot represent, never fake it). Two sanctioned ' +
+          'routes: (1) file this issue DECORATED now — supply the whole ' +
+          `Header-Block (${HEADER_BLOCK_FIELDS.join(', ')}), where the blocker ` +
+          'is recorded on the `**Blocked by:**` line; or (2) file it bare ' +
+          'WITHOUT `blockedBy` and add the dependency at decoration time — on ' +
+          'THIS store that decoration must supply `**Blocked by:**` itself, ' +
+          "since `annotate`'s patch deliberately carries no `blockedBy` " +
+          '(ADR-0010). A tracker-backed store (GitHub/Linear) realizes the ' +
+          'bare arm natively and needs neither route.',
+      );
+    }
 
     await mkdir(this.openDir, { recursive: true });
     const nn = await this.nextNN();

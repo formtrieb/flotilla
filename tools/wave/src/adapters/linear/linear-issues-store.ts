@@ -182,13 +182,27 @@ export class LinearIssuesStore implements IssueStore {
       // ADR-0027 bare filing: the free prose (gap description, provenance line)
       // and NOTHING else — no `## Files`/`## Blocked by`/`## Acceptance criteria`
       // sections, and NO labels at all: no eligibility token (so `listOpen`
-      // never surfaces it) and no `risk/*`/`worker/*` stamp. No native
-      // blocked-by mirror either: a bare issue declares no dependencies.
+      // never surfaces it) and no `risk/*`/`worker/*` stamp.
       const { identifier } = await this.api.createIssue({
         title: input.title,
         description: serializeBareBody(input.bodySections),
         labels: [],
       });
+      // ADR-0044's bare `blockedBy` arm: the declared dependency becomes a
+      // NATIVE Linear issue relation and nothing else — no `## Blocked by`
+      // section is written, so the bare invariant above still holds. Nothing to
+      // refuse up front the way the GitHub adapter must: a Linear identifier
+      // carries its team slug, so `refToIdentifier` resolves a cross-TEAM ref as
+      // readily as a same-team one, and there is no repo-scoping to trip over.
+      // The ADR-0020 read-union then reports the edge back (codec ∪ native).
+      //
+      // Best-effort per ref, as the decorated mirror is — what remains after a
+      // resolvable ref is transport-level refusal (a rejected
+      // `issueRelationCreate`), the class create()/annotate() have always
+      // absorbed rather than failed a landed issue write over.
+      if (shape.blockedBy !== undefined) {
+        await this.mirrorBlockedBy(identifier, shape.blockedBy);
+      }
       return identifier;
     }
 

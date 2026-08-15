@@ -25,8 +25,10 @@ import { join } from 'node:path';
 import { MarkdownFsStore } from './markdown-fs-store';
 import { GitHubIssuesStore } from './github/github-issues-store';
 import { InMemoryGitHubApi } from './github/github-api-fake';
+import { LinearIssuesStore } from './linear/linear-issues-store';
+import { InMemoryLinearApi } from './linear/linear-api-fake';
 import { runDorById } from '../cli';
-import type { CreateInput } from './issue-store';
+import { CreateInputError, type CreateInput } from './issue-store';
 
 const SLUG = 'bare-create';
 
@@ -148,6 +150,295 @@ describe('bare create — GitHub storage shape (ADR-0027)', () => {
       'risk/mechanical',
       'worker/background',
     ]);
+  });
+});
+
+// ── the BARE `blockedBy` arm (ADR-0044 decision 1) ───────────────────────────
+//
+// "Tickets that cannot be fully defined yet but already depend on each other"
+// is the goal station's core mechanism: at a goal's cut you know THAT
+// workstream B waits on workstream A before either is specifiable. Before this
+// arm there was no write path for a dependency between two bare issues — the
+// ADR-0020 write-mirror derives native dependencies from the Header-Block
+// `Blocked by`, at decoration, and a bare issue has no Header-Block.
+//
+// The arm's whole claim, and what these cases pin: `blockedBy` on a bare input
+// is realized NATIVELY per adapter and NEVER as a header line, so the bare
+// invariant is byte-for-byte what it was. A store that cannot realize it
+// natively refuses loudly rather than faking it (the `closed-unknown`
+// precedent, applied to the write side).
+
+/** The BARE fixture plus the ADR-0044 arm — used across all three stores below. */
+function bareBlockedBy(refs: CreateInput['blockedBy']): CreateInput {
+  return { ...BARE, blockedBy: refs };
+}
+
+/** Assert a thrown value is the typed create rejection, and hand back its fields. */
+function createRejection(err: unknown): CreateInputError {
+  expect(err).toBeInstanceOf(CreateInputError);
+  return err as CreateInputError;
+}
+
+describe('bare create + blockedBy — GitHub realizes it as a NATIVE issue dependency', () => {
+  let api: InMemoryGitHubApi;
+  let store: GitHubIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryGitHubApi();
+    store = new GitHubIssuesStore({ api });
+  });
+
+  it('lands the dependency natively while the bare shape stays EXACTLY bare', async () => {
+    const blocker = await store.create({ ...BARE, title: 'workstream A' });
+    const blocked = await store.create(
+      bareBlockedBy([store.parseRef(blocker)]),
+    );
+
+    // the edge is REAL on the tracker, not a body line…
+    expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(blocker)]);
+
+    // …and the bare invariant is untouched: no labels at all (no eligibility
+    // token, no risk/*, no worker/*) and no managed body sections — least of
+    // all a `## Blocked by` one, which is the header line this arm exists to
+    // avoid writing.
+    const gh = await api.getIssue(Number(blocked));
+    expect(gh.labels).toEqual([]);
+    expect(gh.body).toContain('## Gap');
+    expect(gh.body).not.toMatch(/^##\s+Blocked by\s*$/im);
+    expect(gh.body).not.toMatch(/^##\s+Files\s*$/im);
+    expect(gh.body).not.toMatch(/^##\s+Acceptance criteria\s*$/im);
+    // still outside the wave-ready pool — existence, not readiness.
+    expect((await store.listOpen('wave-ready')).map((v) => v.id)).not.toContain(blocked);
+  });
+
+  it("the read-union reports the edge with NO `blockedBy` decoration — the native side is its only source", async () => {
+    // A bare issue has no projectable IssueView at all (`read()` throws until it
+    // is decorated — pinned above), so the union is measured at the first moment
+    // the issue IS readable. `AnnotatePatch` deliberately carries no
+    // `blockedBy`, and no `## Blocked by` section was ever written, so the codec
+    // half of the union is `'none'`: every ref below came from the native
+    // dependency the BARE create wrote.
+    const blocker = await store.create({ ...BARE, title: 'workstream A' });
+    const blocked = await store.create(bareBlockedBy([store.parseRef(blocker)]));
+    await expect(store.read(blocked)).rejects.toThrow(); // bare: nothing to project yet
+
+    await store.annotate(blocked, {
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/x.ts'],
+      acceptanceCriteria: [{ text: 'the gap is closed', checked: false }],
+    });
+
+    const view = await store.read(blocked);
+    expect(view.blockedBy).toEqual([{ issue: Number(blocker) }]);
+    // and the body still carries no Blocked-by section — the edge is native-only.
+    expect((await api.getIssue(Number(blocked))).body).not.toMatch(
+      /^##\s+Blocked by\s*$/im,
+    );
+  });
+
+  it('mirrors EVERY ref (multi-ref), and "none"/[] file exactly the blockedBy-less bare issue', async () => {
+    const a = await store.create({ ...BARE, title: 'A' });
+    const b = await store.create({ ...BARE, title: 'B' });
+    const both = await store.create(
+      bareBlockedBy([store.parseRef(a), store.parseRef(b)]),
+    );
+    expect((await api.getBlockedBy(Number(both))).sort()).toEqual(
+      [Number(a), Number(b)].sort(),
+    );
+
+    const none = await store.create(bareBlockedBy('none'));
+    const empty = await store.create(bareBlockedBy([]));
+    expect(await api.getBlockedBy(Number(none))).toEqual([]);
+    expect(await api.getBlockedBy(Number(empty))).toEqual([]);
+    for (const id of [none, empty]) {
+      expect((await api.getIssue(Number(id))).labels).toEqual([]);
+      expect((await api.getIssue(Number(id))).body).not.toMatch(/^##\s+Blocked by\s*$/im);
+    }
+  });
+
+  it('a CROSS-REPO ref is refused before anything is filed — never a silently-dropped edge', async () => {
+    // The decorated path can afford to skip an unmirrorable ref: the body codec
+    // recorded it authoritatively first. A bare issue has no codec line, so the
+    // same skip would lose the edge entirely — so this is refused up front, and
+    // no issue is created.
+    const before = (await api.listOpenIssues()).length;
+    let thrown: unknown;
+    try {
+      await store.create(bareBlockedBy([{ slug: 'other-repo', issue: 5 }]));
+    } catch (err) {
+      thrown = err;
+    }
+    const rejection = createRejection(thrown);
+    expect(rejection.failure).toBe('bare-blocked-by-unrepresentable');
+    expect(rejection.fields).toEqual(['blockedBy']);
+    expect(rejection.message).toContain('other-repo#5');
+    expect((await api.listOpenIssues()).length).toBe(before); // filed NOTHING
+  });
+});
+
+describe('bare create + blockedBy — Linear realizes it as a NATIVE issue relation', () => {
+  let api: InMemoryLinearApi;
+  let store: LinearIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryLinearApi();
+    store = new LinearIssuesStore({ api });
+  });
+
+  it('lands the relation natively while the bare shape stays EXACTLY bare', async () => {
+    const blocker = await store.create({ ...BARE, title: 'workstream A' });
+    const blocked = await store.create(bareBlockedBy([store.parseRef(blocker)]));
+
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
+
+    const issue = await api.getIssue(blocked);
+    expect(issue.labels).toEqual([]);
+    expect(issue.description).toContain('## Gap');
+    expect(issue.description).not.toMatch(/^##\s+Blocked by\s*$/im);
+    expect(issue.description).not.toMatch(/^##\s+Files\s*$/im);
+    expect((await store.listOpen('wave-ready')).map((v) => v.id)).not.toContain(blocked);
+  });
+
+  it('the read-union reports the edge once the issue is readable — native side only', async () => {
+    const blocker = await store.create({ ...BARE, title: 'workstream A' });
+    const blocked = await store.create(bareBlockedBy([store.parseRef(blocker)]));
+    await expect(store.read(blocked)).rejects.toThrow(); // bare: nothing to project yet
+
+    await store.annotate(blocked, {
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/x.ts'],
+      acceptanceCriteria: [{ text: 'the gap is closed', checked: false }],
+    });
+
+    const view = await store.read(blocked);
+    expect(view.blockedBy).toEqual([store.parseRef(blocker)]);
+    expect((await api.getIssue(blocked)).description).not.toMatch(
+      /^##\s+Blocked by\s*$/im,
+    );
+  });
+
+  it('a CROSS-TEAM ref needs no refusal — a Linear identifier carries its own team slug', async () => {
+    // The deliberate divergence from the GitHub adapter, pinned so the asymmetry
+    // reads as a decision: `refToIdentifier` resolves `OTHER#7` to `OTHER-7`, so
+    // there is nothing this store cannot represent.
+    const foreignApi = new InMemoryLinearApi('OTHER');
+    const foreignStore = new LinearIssuesStore({ api: foreignApi });
+    const foreign = await foreignStore.create({ ...BARE, title: 'other-team blocker' });
+
+    const blocked = await store.create(
+      bareBlockedBy([foreignStore.parseRef(foreign)]),
+    );
+    // the create RESOLVED (no refusal) and filed the bare issue…
+    expect((await api.getIssue(blocked)).labels).toEqual([]);
+    // …and the mirror was attempted against the cross-team identifier. This
+    // fake resolves only its OWN issues, so the write is a non-fatal skip here —
+    // the point pinned is the ABSENCE of an up-front refusal, not the fake's
+    // single-workspace reach.
+    expect(await api.getBlockedBy(blocked)).toEqual([]);
+  });
+});
+
+describe('bare create + blockedBy — MarkdownFs degrades HONESTLY (never a partial header)', () => {
+  let root: string;
+  let store: MarkdownFsStore;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'bare-md-dep-'));
+    store = new MarkdownFsStore({ repoRoot: root, slug: SLUG });
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const issuesDir = () => join(root, '.scratch', SLUG, 'issues');
+
+  it('refuses with the typed rejection, names BOTH sanctioned routes, and writes no file at all', async () => {
+    let thrown: unknown;
+    try {
+      await store.create(bareBlockedBy([{ slug: SLUG, issue: 1 }]));
+    } catch (err) {
+      thrown = err;
+    }
+    const rejection = createRejection(thrown);
+    expect(rejection.failure).toBe('bare-blocked-by-unrepresentable');
+    expect(rejection.fields).toEqual(['blockedBy']);
+    // route 1 — file it decorated now (the whole Header-Block);
+    expect(rejection.message).toMatch(/DECORATED/);
+    expect(rejection.message).toContain('risk, worker, files, blockedBy, acceptanceCriteria');
+    // route 2 — file it bare and add the dependency at decoration time.
+    expect(rejection.message).toMatch(/decoration time/);
+    // and the honesty claim itself: no half-written header line was written…
+    expect(rejection.message).toContain('**Blocked by:**');
+    // …because nothing was written. The refusal precedes even the mkdir, the
+    // same "files nothing" property the half-written and bodyless rejections have.
+    await expect(readdir(issuesDir())).rejects.toThrow();
+  });
+
+  it('"none" and [] are NOT refused — they declare no edge, so they file the ordinary bare issue', async () => {
+    // The negative control for the refusal above: it fires on an edge this store
+    // cannot represent, not on the mere presence of the key.
+    const none = await store.create(bareBlockedBy('none'));
+    const empty = await store.create({ ...bareBlockedBy([]), filingHint: 'empty-arm' });
+    const names = await readdir(issuesDir());
+    expect(names).toHaveLength(2);
+    for (const id of [none, empty]) {
+      const nn = id.slice(id.lastIndexOf('#') + 1);
+      const name = names.find((n) => n.startsWith(`${nn}-`));
+      const src = await readFile(join(issuesDir(), name as string), 'utf-8');
+      expect(src).toContain('## Gap');
+      expect(src).not.toMatch(/^\*\*Blocked by:\*\*/m);
+      expect(src).not.toMatch(/^\*\*Status:\*\*/m);
+    }
+  });
+});
+
+describe('the BARE invariant and both fail-loud rejections survive the new arm', () => {
+  let store: GitHubIssuesStore;
+  beforeEach(() => {
+    store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
+  });
+
+  it('a HALF-WRITTEN Header-Block is still half-written when `blockedBy` is one of the fields present', async () => {
+    // The arm sanctions `blockedBy` ALONE. Paired with any other Header-Block
+    // field it is an ordinary partial set, and the rejection still names the
+    // four that are missing — never "this is a bare issue with extras".
+    let thrown: unknown;
+    try {
+      await store.create({ ...BARE, blockedBy: 'none', risk: 'mechanical' });
+    } catch (err) {
+      thrown = err;
+    }
+    const rejection = createRejection(thrown);
+    expect(rejection.failure).toBe('header-block-half-written');
+    expect(rejection.fields).toEqual(['worker', 'files', 'acceptanceCriteria']);
+  });
+
+  it('a DECORATION-ONLY stowaway is still refused on a bare input carrying `blockedBy`', async () => {
+    let thrown: unknown;
+    try {
+      await store.create({ ...bareBlockedBy([{ issue: 1 }]), unblocks: [{ issue: 2 }] });
+    } catch (err) {
+      thrown = err;
+    }
+    const rejection = createRejection(thrown);
+    expect(rejection.failure).toBe('bare-carries-decoration-only-fields');
+    expect(rejection.fields).toEqual(['unblocks']);
+  });
+
+  it('a bodyless bare input carrying `blockedBy` is still refused for its BODY, not waved through', async () => {
+    let thrown: unknown;
+    try {
+      await store.create({
+        title: 'Bodyless',
+        filingHint: 'bodyless',
+        blockedBy: [{ issue: 1 }],
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    const rejection = createRejection(thrown);
+    expect(rejection.failure).toBe('bare-without-body');
+    expect(rejection.fields).toEqual(['bodySections']);
   });
 });
 

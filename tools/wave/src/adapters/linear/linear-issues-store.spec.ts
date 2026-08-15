@@ -331,6 +331,34 @@ describe('LinearIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
     expect(await api.getBlockedBy(id)).toEqual([]);
   });
 
+  // ── the BARE arm's share of this write half (ADR-0044) ────────────────────
+  //
+  // A bare create reaches the SAME mirror, so every property above holds for it
+  // — with one consequence that does NOT carry over, measured here rather than
+  // assumed: a bare issue has no body codec, so a refused `issueRelationCreate`
+  // leaves NO record of the edge anywhere, and no later annotate can reconcile
+  // it back (there is no codec ref to reconcile FROM).
+  it('a REJECTED relation write on a BARE create is non-fatal — the issue is filed, and (no codec to fall back on) the edge is absent', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    api.failRelationWrites(new Error('issueRelationCreate rejected'));
+
+    const bare = await store.create({
+      title: 'workstream B',
+      filingHint: 'workstream-b',
+      bodySections: [{ heading: 'Gap', markdown: 'not specifiable yet.' }],
+      blockedBy: [store.parseRef(blocker)],
+    });
+
+    expect(bare.length).toBeGreaterThan(0);
+    expect((await api.getIssue(bare)).description).toContain('## Gap');
+    expect(await api.getBlockedBy(bare)).toEqual([]);
+    expect((await api.getIssue(bare)).description).not.toMatch(/^##\s+Blocked by\s*$/im);
+
+    api.failRelationWrites(null);
+    await store.annotate(bare, { files: ['src/x.ts'] });
+    expect(await api.getBlockedBy(bare)).toEqual([]);
+  });
+
   it('the body codec stays the CANONICAL home — the blockedBy wire form is written unchanged alongside the native mirror', async () => {
     const blocker = await store.create(baseInput({ title: 'blocker' }));
     const blocked = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
