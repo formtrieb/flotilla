@@ -13,8 +13,10 @@
 import { describe, expect, it } from 'vitest';
 import { WAVE_EVENTS, type WaveEvent } from './stop-condition-state-machine';
 import {
+  FINISHING_OUTCOMES,
   WORKER_OUTCOME_VALUES,
   WORKER_REPORT_JSON_SCHEMA,
+  finishingReportLacksUsablePrUrl,
   outcomeToEvent,
   validateWorkerReport,
   type WorkerOutcome,
@@ -296,6 +298,115 @@ describe('WORKER_REPORT_JSON_SCHEMA — prUrl conditional (W3-F2)', () => {
 
   it('rejects an empty-string prUrl on a finishing outcome', () => {
     expect(WORKER_REPORT_JSON_SCHEMA.properties.prUrl.minLength).toBe(1);
+  });
+});
+
+// ─── the engine-side prUrl gate (issue #556) ────────────────────────────────
+//
+// The canonical literal's `anyOf` never reaches the shipped dispatch (the
+// driver copy must drop every top-level combinator), so the same invariant
+// gets a second home the boundary cannot strip: a predicate the sidecar-write
+// verb consults the moment the report becomes durable. These tests pin the
+// PREDICATE; route-cli.spec.ts pins the notice it produces and the fact the
+// sidecar still lands.
+
+describe('finishingReportLacksUsablePrUrl — the sidecar-write gate predicate', () => {
+  it('is keyed on FINISHING_OUTCOMES, which is exactly the set the schema conditional requires prUrl for', () => {
+    // The AC's "referenced from the canonical const rather than re-enumerated"
+    // half, asserted where it can actually be checked: the exported set and the
+    // `anyOf` branch that demands `prUrl` must be one set, not two lists that
+    // happen to agree today.
+    const requiring = (plainSchema().anyOf ?? []).filter((b) =>
+      (b.required ?? []).includes('prUrl'),
+    );
+    expect(requiring).toHaveLength(1);
+    expect(requiring[0]!.properties?.outcome?.enum).toEqual([
+      ...FINISHING_OUTCOMES,
+    ]);
+  });
+
+  it('FINISHING_OUTCOMES is a strict subset of WORKER_OUTCOME_VALUES', () => {
+    for (const outcome of FINISHING_OUTCOMES) {
+      expect(WORKER_OUTCOME_VALUES).toContain(outcome);
+    }
+    expect(FINISHING_OUTCOMES.length).toBeLessThan(WORKER_OUTCOME_VALUES.length);
+  });
+
+  // ── fires: finished, no usable URL ──
+  for (const outcome of FINISHING_OUTCOMES) {
+    it(`fires on ${outcome} with prUrl ABSENT (the recurring live failure)`, () => {
+      expect(
+        finishingReportLacksUsablePrUrl(without(validReport({ outcome }), 'prUrl')),
+      ).toBe(true);
+    });
+
+    it(`fires on ${outcome} with an EMPTY-STRING prUrl — usable means non-empty (issue #303)`, () => {
+      // A presence-only check would walk straight past this shape, which is the
+      // one that actually shipped: two rows returned `done` with `prUrl: ""`
+      // while their PRs demonstrably existed.
+      expect(finishingReportLacksUsablePrUrl(validReport({ outcome, prUrl: '' }))).toBe(
+        true,
+      );
+    });
+
+    it(`fires on ${outcome} with a WHITESPACE-ONLY prUrl (unusable by the same standard)`, () => {
+      expect(
+        finishingReportLacksUsablePrUrl(validReport({ outcome, prUrl: '   ' })),
+      ).toBe(true);
+    });
+  }
+
+  it('fires on a non-string prUrl — the structural validator does not type this field, so one can arrive', () => {
+    expect(
+      finishingReportLacksUsablePrUrl({ ...validReport(), prUrl: 42 }),
+    ).toBe(true);
+    expect(
+      finishingReportLacksUsablePrUrl({ ...validReport(), prUrl: null }),
+    ).toBe(true);
+  });
+
+  // ── silent: nothing to report ──
+  for (const outcome of FINISHING_OUTCOMES) {
+    it(`is SILENT on ${outcome} carrying a real URL`, () => {
+      expect(finishingReportLacksUsablePrUrl(validReport({ outcome }))).toBe(false);
+    });
+  }
+
+  for (const outcome of ['needs-context', 'blocked'] as const) {
+    it(`is SILENT on ${outcome} without prUrl — a row that did not finish has no PR to name`, () => {
+      expect(
+        finishingReportLacksUsablePrUrl(without(validReport({ outcome }), 'prUrl')),
+      ).toBe(false);
+    });
+
+    it(`is SILENT on ${outcome} with an empty prUrl — the gate asks about FINISHED work only`, () => {
+      expect(
+        finishingReportLacksUsablePrUrl(validReport({ outcome, prUrl: '' })),
+      ).toBe(false);
+    });
+  }
+
+  it('is SILENT on a non-object and on an out-of-enum outcome (this gate is not a validator)', () => {
+    // validateWorkerReport owns "is this a report at all"; a malformed payload
+    // is refused there and never reaches the write, so answering `true` here
+    // would only add a second, redundant complaint about the same bytes.
+    expect(finishingReportLacksUsablePrUrl(null)).toBe(false);
+    expect(finishingReportLacksUsablePrUrl('done')).toBe(false);
+    expect(finishingReportLacksUsablePrUrl([])).toBe(false);
+    expect(
+      finishingReportLacksUsablePrUrl({ outcome: 'shipped', prUrl: '' }),
+    ).toBe(false);
+  });
+
+  it('validateWorkerReport stays silent about prUrl — the gate is a notice, not a validity rule', () => {
+    // Load-bearing: if the validator ever rejected this shape, `write-report`
+    // would refuse the write and a finished row would lose its durable record.
+    for (const outcome of FINISHING_OUTCOMES) {
+      expect(validateWorkerReport(without(validReport({ outcome }), 'prUrl')).valid).toBe(
+        true,
+      );
+      expect(validateWorkerReport(validReport({ outcome, prUrl: '' })).valid).toBe(true);
+    }
   });
 });
 

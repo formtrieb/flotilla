@@ -64,8 +64,16 @@ export type WorkerOutcome = (typeof WORKER_OUTCOME_VALUES)[number];
  * The outcomes that assert the row's work is finished. A Worker reporting one
  * of these has, by protocol, opened its PR — so `prUrl` is a fact the whole
  * downstream chain reads, and {@link WORKER_REPORT_JSON_SCHEMA} requires it.
+ *
+ * **Exported because it is the canonical set, and a second enforcement site now
+ * reads it.** {@link finishingReportLacksUsablePrUrl} — the engine's
+ * sidecar-write gate, consumed by `route-cli.ts`'s `write-report` — keys on
+ * this const rather than re-listing the two strings, so a fifth outcome joining
+ * the finishing side cannot leave that gate silently behind on the one path
+ * where the schema's own conditional does not run (the driver copy drops the
+ * top-level `anyOf`; see the docblock below).
  */
-const FINISHING_OUTCOMES = ['done', 'done-with-concerns'] as const;
+export const FINISHING_OUTCOMES = ['done', 'done-with-concerns'] as const;
 
 /**
  * The outcomes that stop short of a PR. `prUrl` has no value to report here —
@@ -336,4 +344,59 @@ export function validateWorkerReport(value: unknown): SchemaValidation {
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+// ─── the finishing-outcome prUrl gate (issue #556, ADR-0034) ─────────────────
+
+/**
+ * True when a report claims the row's work is **finished** and carries no
+ * **usable** `prUrl`. This is the engine-side half of the invariant
+ * {@link WORKER_REPORT_JSON_SCHEMA} encodes as a top-level `anyOf` — the half
+ * that runs on the path where that conditional does not.
+ *
+ * ## Why a separate predicate exists at all
+ *
+ * The canonical literal's `anyOf` never reaches the shipped dispatch: the copy
+ * pasted into `agent({ schema })` must drop every top-level combinator (the
+ * boundary rejects them outright — W5-F1), so on that path the invariant is
+ * brief-enforced by construction. Prose alone did not converge: three live
+ * occurrences across waves, with the brief strengthened between them, each a
+ * Worker that ran the host re-query correctly and then wrote a finishing report
+ * without the URL it had just read back. This moves the rule to a rung prose
+ * cannot reach — the moment the report becomes durable (ADR-0034: a rule earns
+ * its enforcement tier).
+ *
+ * ## It is a FINDING, never a rejection
+ *
+ * {@link validateWorkerReport} stays deliberately silent about `prUrl`, and
+ * `write-report` still persists the sidecar when this returns `true`. The
+ * report is valid data about work that genuinely happened; the missing URL is
+ * a finding *about* that report. Refusing the write would cost a finished row
+ * its durable record — the exact damage ADR-0024's Scribe stage exists to
+ * prevent — to punish an omission a re-query already recovers.
+ *
+ * ## "Usable" means non-empty, not merely present
+ *
+ * The empty string is the observed neighbouring failure class (issue #303: two
+ * rows in one wave returned `outcome: done` with an empty `prUrl` while their
+ * PRs demonstrably existed), so a presence-only check would walk straight past
+ * the shape that actually shipped. A whitespace-only value is treated the same
+ * way: it is a strict superset of "non-empty" that can only ever fire on input
+ * no consumer could dereference, and because this drives a notice rather than a
+ * refusal, the extra strictness costs an honest row nothing. A non-string value
+ * is unusable for the same reason (the structural validator does not type this
+ * field, so one can arrive).
+ *
+ * Keyed on {@link FINISHING_OUTCOMES}, never on a re-listed `'done'` /
+ * `'done-with-concerns'` pair — the set has one owner.
+ */
+export function finishingReportLacksUsablePrUrl(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (
+    !(FINISHING_OUTCOMES as readonly string[]).includes(value.outcome as string)
+  ) {
+    return false;
+  }
+  const prUrl = value.prUrl;
+  return typeof prUrl !== 'string' || prUrl.trim().length === 0;
 }

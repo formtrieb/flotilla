@@ -32,7 +32,9 @@
  *
  * write-report / write-verdict exit codes (mirror validate-*):
  *   0 — written (absolute path of the written file on stdout). A `notice:` line
- *       on stderr means a decorated `report.issue` was NORMALIZED on the way in;
+ *       on stderr means a decorated `report.issue` was NORMALIZED on the way in,
+ *       or that a FINISHING report reached the write with no usable `prUrl`
+ *       (issue #556 — a finding about the report, never a refusal of it);
  *       a `warning:` line means MISNAMED litter was found in the target dir.
  *   1 — invalid payload / `report.issue` names a different row than --id (NOTHING written)
  *   2 — usage / unreadable-or-unparseable <json-file> / a --id that is not a bare id
@@ -61,7 +63,12 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { flag, printJson } from './cli-utils';
 import { verdictToEvent, type Verdict } from './verdict-to-event';
-import { outcomeToEvent, validateWorkerReport, type WorkerOutcome } from './worker-report-schema';
+import {
+  finishingReportLacksUsablePrUrl,
+  outcomeToEvent,
+  validateWorkerReport,
+  type WorkerOutcome,
+} from './worker-report-schema';
 import { validateReviewerVerdict } from './reviewer-verdict-schema';
 import {
   bareIssueIdViolation,
@@ -192,6 +199,19 @@ interface WriteSidecarSpec {
    * checks none either).
    */
   reconcile?: (payload: unknown, id: string) => Reconciled;
+  /**
+   * An exit-0 FINDING about an otherwise-valid payload, evaluated only AFTER
+   * the sidecar has landed on disk. Returns the notice text, or `undefined`
+   * when there is nothing to say.
+   *
+   * Placement is the point: `reconcile` runs BEFORE the write because it can
+   * still refuse one, whereas this hook exists precisely for findings that must
+   * NOT stop a write. Emitting it after `writeFileSync` means the `notice:` line
+   * can only ever appear on a run that genuinely persisted the record — the
+   * Scribe's contract is "on an EXIT-0 run only", and this shape makes that
+   * true by construction rather than by the reader's good manners.
+   */
+  postWriteNotice?: (payload: unknown) => string | undefined;
 }
 
 /**
@@ -204,7 +224,15 @@ interface WriteSidecarSpec {
  * last-writer-wins (idempotent re-entries + the w2 bad-anchor corrected-verdict
  * round). A malformed payload is never written (exit 1).
  *
- * After a successful write the target dir is swept for MISNAMED sidecars (see
+ * After a successful write two exit-0 findings are reported on stderr, in the
+ * order a reader wants them: first anything wrong with THIS payload
+ * (`postWriteNotice` — the finishing-outcome `prUrl` gate, issue #556), then
+ * anything wrong with the DIRECTORY around it (the misnamed sweep below).
+ * Neither can fail the write, by construction: both run after the bytes are on
+ * disk, so `notice:`/`warning:` on this verb always means "the record exists,
+ * and here is what else you should know."
+ *
+ * The target dir is swept for MISNAMED sidecars (see
  * the header note): they are reported loudly on stderr and never touched. This
  * is what makes the Coordinator's routing-time recovery catch the misnamed case
  * — that recovery IS this verb, and its `[ -f … ]` trigger fires for a misnamed
@@ -284,6 +312,10 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     return 2;
   }
   process.stdout.write(target + '\n');
+  const finding = spec.postWriteNotice?.(payload);
+  if (finding) {
+    process.stderr.write(`notice: ${spec.label}: ${finding}\n`);
+  }
   warnAboutMisnamedSidecars(dir, spec);
   return 0;
 }
@@ -347,6 +379,45 @@ function reconcileReportIssue(payload: unknown, id: string): Reconciled {
   };
 }
 
+/**
+ * The finishing-outcome `prUrl` gate (issue #556, ADR-0034 Amendment
+ * 2026-08-14): a report that says the work is finished but carries no usable
+ * PR URL is reported here, at the moment the record becomes durable.
+ *
+ * **Notice, never refusal — and that is the whole placement argument.** The
+ * report is valid data about work that genuinely happened; the missing URL is
+ * a finding *about* the report. Refusing the write would cost a finished row
+ * its durable record to punish an omission the Coordinator's terminator
+ * already recovers by re-querying the host — the wrong trade, and the wrong
+ * rung. The schema root was measured available for this rule and deliberately
+ * rejected for a different reason: a root conditional's antecedent is
+ * `outcome`, a field the Worker itself authors, so an agent cornered on the
+ * consequent reports a NON-finishing outcome instead — a loud failure traded
+ * for an expensive silent one. This gate constrains nobody's composition; it
+ * observes what was already written and says so.
+ *
+ * Why it had to move below prose at all: the invariant is the most heavily
+ * reinforced clause in the Worker brief and still failed three times across
+ * waves, each time strengthened in between. Prose was not converging.
+ */
+function noticeMissingPrUrl(payload: unknown): string | undefined {
+  if (!finishingReportLacksUsablePrUrl(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  const seen =
+    record.prUrl === undefined
+      ? 'ABSENT'
+      : `${JSON.stringify(record.prUrl)} — present but not a usable URL`;
+  return (
+    `outcome ${JSON.stringify(record.outcome)} asserts the work is FINISHED, but prUrl is ${seen}. ` +
+    'The sidecar was written anyway — this is a finding ABOUT the report, not a refusal of it. ' +
+    'Two consumers read the field as fact and both fail SILENTLY on absence: the Reviewer skips ' +
+    'its PR-body check (reporting the PR as not yet opened, so the store-kind close phrase goes ' +
+    'unverified), and the terminator reads it as no PR existing and attempts a duplicate. ' +
+    "The only legitimate value is the url the Worker's own `host-pr status --branch` re-query " +
+    'answered, verbatim. Recover it by re-querying the host for this branch; do not hand-type one'
+  );
+}
+
 /** `write-report <json-file> --dir <reportsDir> --id <id> --iter <n>`. */
 export function runWriteReport(args: string[]): number {
   return runWriteSidecar(args, {
@@ -355,6 +426,7 @@ export function runWriteReport(args: string[]): number {
     kind: 'report',
     validate: validateWorkerReport,
     reconcile: reconcileReportIssue,
+    postWriteNotice: noticeMissingPrUrl,
   });
 }
 

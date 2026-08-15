@@ -610,6 +610,142 @@ describe('skill-schema-drift — the Documented-Form duty is briefed, not only s
   });
 });
 
+// ─── the prUrl passage stays RESIDUAL, and points at the engine gate ────────
+//
+// Issue #556 promoted the `prUrl`-on-a-finishing-outcome invariant from prose
+// to the engine's sidecar-write gate (an exit-0 `notice:` on `write-report`),
+// and the enforcement-ladder amendment's diff-twin duty made the prose
+// walk-back the mandatory other half of that promotion: the brief's two prUrl
+// passages shrank to a residual rule + why + pointer.
+//
+// Both halves of that trade need pinning, and for opposite failure modes. The
+// POINTER can be deleted by a later edit, which would leave a Worker told the
+// rule with no idea anything enforces it. And the PASSAGE can silently
+// re-inflate — the next occurrence of this class is exactly the moment someone
+// reaches for more emphatic prose, which is the move three waves of evidence
+// say does not work. A word budget is the only assertion that catches the
+// second one, because re-inflated prose still contains every keyword.
+
+describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL and names its enforcing gate (issue #556)', () => {
+  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+
+  /**
+   * The Report section's prUrl passage, sliced to itself. A whole-file scan
+   * would be satisfied by the driver's several OTHER prUrl mentions (the
+   * header rationale, Termination steps 3–4, the terminator's own note) —
+   * this pin is about the one passage the Worker reads while filling in the
+   * field, which is the only place a re-inflation would land.
+   */
+  function reportPrUrlPassage(md: string): string {
+    return contractRegion(
+      md,
+      "workflow-driver.md workerBrief Report-section prUrl passage",
+      '**On \\`done\\`/\\`done-with-concerns\\`, \\`prUrl\\` MUST be',
+      '## Reviewer-handoff hints',
+    );
+  }
+
+  /** Whitespace-delimited word count — the residual-form measure the PR records. */
+  function wordCount(text: string): number {
+    return text.trim().split(/\s+/).filter(Boolean).length;
+  }
+
+  /**
+   * The pre-walk-back passage measured 132 words and said the rule four ways.
+   * The budget sits well above the residual form (56 words at the time of
+   * writing, of which 51 fall inside this region — the slice excludes its own
+   * start anchor) and well below the form it replaced, so an ordinary
+   * clarification passes and a re-escalation does not.
+   */
+  const RESIDUAL_WORD_BUDGET = 75;
+
+  it('states the rule and sources the value from the step-4 re-query', () => {
+    const region = reportPrUrlPassage(driverMd);
+    expect(region).toMatch(/Termination step 4/);
+    expect(region).toMatch(/verbatim/);
+  });
+
+  it('points at the ENGINE gate — the rule is enforced somewhere the Worker can be told about', () => {
+    // Without this pointer the residual form is strictly weaker than the prose
+    // it replaced: a one-line rule with no named enforcer reads as advice.
+    const region = reportPrUrlPassage(driverMd);
+    expect(region).toContain('write-report');
+    expect(region).toContain('notice:');
+  });
+
+  it('describes that gate as a NOTICE, never a refusal (the settled rung)', () => {
+    // A brief that threatens rejection would misdescribe the shipped gate AND
+    // invite the wrong fix: refusing the write costs a finished row its durable
+    // record, which is the damage ADR-0024's Scribe stage exists to prevent.
+    const region = reportPrUrlPassage(driverMd);
+    expect(region).not.toMatch(/reject|refus|invalid/i);
+  });
+
+  it('stays RESIDUAL — the walk-back cannot silently re-inflate', () => {
+    expect(wordCount(reportPrUrlPassage(driverMd))).toBeLessThanOrEqual(
+      RESIDUAL_WORD_BUDGET,
+    );
+  });
+
+  it('NEGATIVE CONTROL — re-inflating the passage breaks the word budget', () => {
+    // The exact shape this guards: the pre-promotion prose appended back onto
+    // the residual form. Every keyword above still matches; only the measure
+    // notices.
+    const reInflated = driverMd.replace(
+      '## Reviewer-handoff hints',
+      "There is no other legitimate source for this field and no legitimate reason for it " +
+        "to be absent on these two outcomes. Live occurrence (the W3-F2 recurrence class): " +
+        "two Workers in consecutive waves ran the fresh re-query correctly, read a url back, " +
+        "and then wrote a done report with prUrl absent anyway — step 4 told them how to " +
+        "CONFIRM the PR, not, explicitly enough, how to CARRY that value into THIS field of " +
+        "THIS report. State it here, as the one place it counts.\n\n## Reviewer-handoff hints",
+    );
+    expect(reInflated).not.toEqual(driverMd); // the replace actually matched
+    expect(wordCount(reportPrUrlPassage(reInflated))).toBeGreaterThan(
+      RESIDUAL_WORD_BUDGET,
+    );
+  });
+
+  it('NEGATIVE CONTROL — the passage region fails loud when its anchor is gone', () => {
+    expect(() => reportPrUrlPassage('# no report section here\n')).toThrow(
+      /contract region start anchor missing in workflow-driver\.md workerBrief Report-section prUrl passage/,
+    );
+  });
+
+  /**
+   * The step-4 re-query RECIPE — the runnable line inside the fence, matched
+   * on its own line so it cannot be satisfied by step 4's redirect-to-file
+   * FALLBACK (`… host-pr status --branch ${issue.branch} > pr-status.json`,
+   * written inline in a paragraph). That distinction is not hypothetical: the
+   * first draft of this pin used a whole-file `toContain`, and deleting the
+   * recipe line outright left it GREEN because the fallback mention absorbed
+   * it. The `$` anchor is what makes the assertion mean what it says.
+   */
+  const STEP_4_REQUERY_RECIPE =
+    /^\s*\$\{WAVE_CLI\} host-pr status --branch \$\{issue\.branch\}$/m;
+
+  it("the Coordinator's host re-query BACKSTOP survives the promotion — the gate is loud, not a replacement", () => {
+    // The settled direction keeps both: the engine gate makes the omission loud
+    // where it happens, and the terminator still recovers the URL from the host.
+    // Deleting the re-query because "the engine catches it now" would trade a
+    // recovery for a log line.
+    expect(driverMd).toMatch(STEP_4_REQUERY_RECIPE);
+    expect(driverMd).toMatch(/The confirmation is a re-query, not a guard on a capture/);
+  });
+
+  it('NEGATIVE CONTROL — the backstop pin fires when the recipe line is removed, and is NOT satisfied by the fallback mention', () => {
+    // Seed the exact regression: the fenced recipe deleted, the redirect-to-file
+    // fallback left in place. A weaker pin passes this; this one must not.
+    const withoutRecipe = driverMd.replace(
+      '   ${WAVE_CLI} host-pr status --branch ${issue.branch}\n',
+      '',
+    );
+    expect(withoutRecipe).not.toEqual(driverMd); // the replace actually matched
+    expect(withoutRecipe).toContain('host-pr status --branch ${issue.branch} > pr-status.json');
+    expect(withoutRecipe).not.toMatch(STEP_4_REQUERY_RECIPE);
+  });
+});
+
 /**
  * WAVE_CLI is filled from the configured `engine.cli` binding (ADR-0032).
  *

@@ -238,11 +238,18 @@ const fsReader: SidecarReader = {
 const silenceStderr = () =>
   vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
+/**
+ * A well-formed FINISHING report. It carries `prUrl` deliberately: `outcome:
+ * done` without one is the shape the issue-#556 gate reports on, so a fixture
+ * missing it would make every unrelated test in this file emit that notice and
+ * quietly turn the gate's own assertions into background noise.
+ */
 const writtenReport = {
   outcome: 'done',
   issue: 'FOR-6',
   branch: 'wave/FOR-6-scribe',
   commitShas: ['abc1234'],
+  prUrl: 'https://github.com/example/repo/pull/6',
   filesChanged: { new: 1, modified: 0, renamed: 0 },
   tests: '20/20 green',
   lint: 'clean',
@@ -604,6 +611,204 @@ describe('write verbs — the routing-time recovery now catches a MISNAMED sidec
     err.mockRestore();
     expect(code).toBe(2);
     expect(fsReader.list(verdictsDir)).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ─── the finishing-outcome prUrl gate (issue #556) ───────────────────────────
+//
+// The invariant "a finishing outcome implies a usable prUrl" lives in the
+// canonical schema as a top-level `anyOf` that the agent boundary strips off
+// the shipped copy, so on the live path it was brief-enforced only — and prose
+// did not converge (three occurrences across waves, strengthened in between).
+// It now ALSO sits here, at the moment the report becomes durable.
+//
+// What these tests hold, and the order matters: the sidecar IS WRITTEN, exit is
+// 0, and the notice rides stderr. A refusal would cost a finished row its
+// durable record — the exact damage the Scribe stage exists to prevent — so
+// "notice, never refusal" is asserted on every row below, not just claimed.
+
+describe('write-report — a finishing outcome with no usable prUrl is a NOTICE, never a refusal (issue #556)', () => {
+  /** Drive the real verb over one payload and report everything observable. */
+  function write(payload: Record<string, unknown>) {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify(payload));
+    const errChunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        errChunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const out = captureStdout();
+    const code = runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1']);
+    out.restore();
+    err.mockRestore();
+    const idx = readSidecars(reportsDir, join(dir, 'verdicts'), fsReader);
+    return {
+      code,
+      stdout: out.lines().trim(),
+      stderr: errChunks.join(''),
+      onDisk: fsReader.list(reportsDir).sort(),
+      resolved: idx.reportFor('FOR-6'),
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+      reportsDir,
+    };
+  }
+
+  const { prUrl: _dropped, ...reportWithoutPrUrl } = writtenReport;
+
+  it.each([
+    ['prUrl ABSENT', reportWithoutPrUrl],
+    ['prUrl EMPTY STRING (the #303 shape)', { ...writtenReport, prUrl: '' }],
+    ['prUrl WHITESPACE-ONLY', { ...writtenReport, prUrl: '  ' }],
+    ['outcome done-with-concerns, prUrl absent', { ...reportWithoutPrUrl, outcome: 'done-with-concerns' }],
+  ])('%s → exit 0, the sidecar LANDS and RESOLVES, and stderr carries the notice', (_label, payload) => {
+    const w = write(payload as Record<string, unknown>);
+    // ── half one: the record exists. This is the half a refusal would destroy.
+    expect(w.code).toBe(0);
+    expect(w.onDisk).toEqual(['FOR-6-1.md']);
+    expect(w.stdout).toBe(join(w.reportsDir, 'FOR-6-1.md'));
+    expect(w.resolved?.report.tests).toBe('20/20 green');
+    // ── half two: the omission is loud.
+    expect(w.stderr).toMatch(/^notice: write-report: /m);
+    expect(w.stderr).toMatch(/prUrl/);
+    w.cleanup();
+  });
+
+  it('the notice distinguishes ABSENT from present-but-unusable, so the reader knows which shape shipped', () => {
+    const absent = write(reportWithoutPrUrl as Record<string, unknown>);
+    expect(absent.stderr).toMatch(/prUrl is ABSENT/);
+    absent.cleanup();
+
+    const empty = write({ ...writtenReport, prUrl: '' });
+    expect(empty.stderr).toMatch(/prUrl is "" — present but not a usable URL/);
+    empty.cleanup();
+  });
+
+  it('the notice names the recovery — the host re-query, never a hand-typed URL', () => {
+    const w = write(reportWithoutPrUrl as Record<string, unknown>);
+    expect(w.stderr).toMatch(/host-pr status --branch/);
+    expect(w.stderr).toMatch(/do not hand-type one/);
+    w.cleanup();
+  });
+
+  it('the notice names the outcome that triggered it', () => {
+    const w = write({ ...reportWithoutPrUrl, outcome: 'done-with-concerns' } as Record<string, unknown>);
+    expect(w.stderr).toMatch(/"done-with-concerns"/);
+    w.cleanup();
+  });
+
+  it('SILENT when the finishing report carries a real URL (the check is quiet with nothing to say)', () => {
+    const w = write(writtenReport);
+    expect(w.code).toBe(0);
+    expect(w.stderr).not.toMatch(/prUrl/);
+    w.cleanup();
+  });
+
+  it.each(['needs-context', 'blocked'])(
+    'SILENT on a %s report with no prUrl — a row that did not finish has no PR to name',
+    (outcome) => {
+      const w = write({ ...reportWithoutPrUrl, outcome } as Record<string, unknown>);
+      expect(w.code).toBe(0);
+      expect(w.onDisk).toEqual(['FOR-6-1.md']);
+      expect(w.stderr).not.toMatch(/prUrl/);
+      w.cleanup();
+    },
+  );
+
+  it('the notice is emitted only on a run that ACTUALLY wrote — an unwritable dir exits 2 with no notice', () => {
+    // The Scribe reports `notice` on an exit-0 run only, so a notice printed
+    // beside a failed write would be reported through the wrong field. The hook
+    // runs after writeFileSync, which makes that impossible by construction
+    // rather than by the Scribe's good manners.
+    const dir = tmp();
+    const collide = join(dir, 'not-a-dir');
+    writeFileSync(collide, 'i am a file, not a directory');
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify(reportWithoutPrUrl));
+    const errChunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        errChunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const code = runWriteReport([f, '--dir', collide, '--id', 'FOR-6', '--iter', '1']);
+    err.mockRestore();
+    expect(code).toBe(2);
+    expect(errChunks.join('')).not.toMatch(/^notice: write-report: outcome/m);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('an INVALID payload is still refused outright — the gate did not soften validation', () => {
+    // The gate is about a valid report missing a field, never about accepting
+    // a malformed one. A malformed payload writes nothing, exit 1, as before.
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'bad.json');
+    writeFileSync(f, JSON.stringify({ ...reportWithoutPrUrl, outcome: 'shipped' }));
+    const err = silenceStderr();
+    const code = runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1']);
+    err.mockRestore();
+    expect(code).toBe(1);
+    expect(fsReader.list(reportsDir)).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('write-verdict is untouched — a verdict has no outcome field and no PR to name', () => {
+    const dir = tmp();
+    const verdictsDir = join(dir, 'verdicts');
+    const f = join(dir, 'v.json');
+    writeFileSync(f, JSON.stringify(writtenVerdict));
+    const errChunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        errChunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const out = captureStdout();
+    const code = runWriteVerdict([f, '--dir', verdictsDir, '--id', 'FOR-6', '--iter', '1']);
+    out.restore();
+    err.mockRestore();
+    expect(code).toBe(0);
+    expect(errChunks.join('')).not.toMatch(/prUrl/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('both exit-0 findings ride the same run: the prUrl notice AND the misnamed-litter warning', () => {
+    // The Scribe forwards every `notice:`/`warning:` line verbatim, so the two
+    // must not shadow each other — a payload finding must not suppress the
+    // directory sweep that runs after it.
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    mkdirSync(reportsDir, { recursive: true });
+    writeFileSync(
+      join(reportsDir, '#FOR-6-1.md'),
+      '# WorkerReport #FOR-6 iter 1\n\n```json\n' +
+        JSON.stringify({ ...writtenReport, issue: '#FOR-6' }, null, 2) +
+        '\n```\n',
+      'utf-8',
+    );
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify(reportWithoutPrUrl));
+    const errChunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        errChunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const out = captureStdout();
+    expect(runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1'])).toBe(0);
+    out.restore();
+    err.mockRestore();
+    const msg = errChunks.join('');
+    expect(msg).toMatch(/notice: write-report: outcome "done"/);
+    expect(msg).toMatch(/MISNAMED SIDECAR/);
     rmSync(dir, { recursive: true, force: true });
   });
 });
