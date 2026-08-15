@@ -126,6 +126,16 @@
  *                    starting population. ADVISORY, never a refusal — it never
  *                    affects the exit code.
  *
+ *                    unaccounted (issue #557) rides beside it on BOTH shapes,
+ *                    under the same no-flag rule: { entries, level, notice },
+ *                    naming every REGISTERED worktree that is neither the
+ *                    primary checkout nor in any population this run enumerated
+ *                    (GC, orphans, scratch, detached). It closes the state the
+ *                    count could only hint at — counted, named by no list — and
+ *                    an entry whose directory is already gone is marked
+ *                    `prunable`. ADVISORY TOO (ADR-0042 Decision 3): a non-empty
+ *                    `entries` NEVER contributes to the exit code.
+ *
  *                    Optional branch-scoped filter (issue #77 — parallel-wave safety):
  *                      --wave <spine-path>  Read the WAVE.md spine and derive the
  *                                           branch set from its Plan-Table / dispatch-log
@@ -1146,6 +1156,44 @@ function resolveBranchFilter(
  * it never contributes to the exit code (the threshold is a heuristic about a
  * harness-side limit the engine cannot measure — see the engine constant).
  *
+ * `unaccounted` (issue #557, ADR-0042) is printed beside it on BOTH shapes and
+ * under the same unconditional no-flag rule: `{ entries, level, notice }`, with
+ * each entry naming `path`, `branch` and `prunable`. It answers the one question
+ * the pair above could not: `worktreeCount` counts EVERY registration, but a
+ * worktree outside every containment root is named by no sweep list at all —
+ * `detached.selected` and `detached.skipped` both empty while the count includes
+ * it — and the only remedy on offer was a documented hand-diff of the count
+ * against the union of every array in this JSON. Measured live at a wave close
+ * (a Reviewer's probe checkout in a per-session harness scratchpad, which
+ * `cleanup.extraRoots` structurally cannot name because the path changes every
+ * session). The reconciliation is computed by the engine, off the SAME
+ * `git worktree list` read that produced `count`, from the population paths this
+ * function hands it — so the count and the accounting cannot answer about two
+ * different moments.
+ *
+ * WHICH paths are declared accounted, and why the GC LISTING rather than the GC
+ * plan: `plan.selected`/`plan.skipped` drop every worktree outside an active
+ * `--wave`/`--branches` filter, so accounting against them would report a
+ * SIBLING wave's live worktree as unaccounted — it is in the GC population, just
+ * out of this run's scope. The listing (`worktrees`) is the population; the plan
+ * is this run's slice of it. Orphan directories and Scribe scratch payloads
+ * cannot intersect the registered set by construction (an orphan is precisely a
+ * directory git has forgotten; a payload is a file), but both are declared
+ * anyway so the accounting states the whole union rather than relying on that
+ * disjointness holding forever.
+ *
+ * A population this run did NOT enumerate (no `--detached`, no `--orphans`)
+ * accounts for nothing, and its members therefore land in `unaccounted` — which
+ * is the honest answer, not a defect: "this run named nothing here" is exactly
+ * what the field reports, and the notice names `--detached` + `cleanup.extraRoots`
+ * as the remedy where one applies.
+ *
+ * ADVISORY, NEVER A FAILURE (ADR-0042 Decision 3): `unaccounted` contributes no
+ * term to `anyFailure` below. The set has a legitimate PERMANENT inhabitant — a
+ * human's own long-lived second worktree — so a red close would push exactly the
+ * wrong fix. Per ADR-0035 this is an additive report key on a shipped exit
+ * contract, and the exit contract itself does not move.
+ *
  * `commandLine` (issue #266) rides beside it on both shapes, under the same
  * unconditional rule: `{ bytes, argvBytes, envBytes, argCount, envCount,
  * threshold, maxEntryBytes, maxEntryThreshold, level, advisory }` from
@@ -1347,7 +1395,27 @@ function runWorktreeCleanup(args: string[]): number {
     // BEFORE any removal, so the number a `--dry-run` previews is the same
     // population the real run reports having started from (a post-sweep count
     // would silently answer a different question in each branch).
-    const countAdvisory = checkWorktreeCountAdvisory({ repoRoot });
+    //
+    // `accountedPaths` (issue #557) turns the same call into the count-vs-lists
+    // reconciliation as well — see this function's doc comment for why the GC
+    // LISTING (`worktrees`) is declared rather than `plan.selected`/`skipped`,
+    // and why a population this run did not enumerate legitimately accounts for
+    // nothing. Every population computed above is folded in here, in one place,
+    // so a future population that forgets to join this union shows up as a
+    // WRONGLY-unaccounted entry (loud) rather than as a silently-missing one.
+    const accountedPaths = [
+      ...worktrees.map((wt) => wt.path),
+      ...(orphanPlan !== null
+        ? [...orphanPlan.selected, ...orphanPlan.skipped].map((o) => o.path)
+        : []),
+      ...(scratchPlan !== null
+        ? [...scratchPlan.selected, ...scratchPlan.skipped].map((e) => e.path)
+        : []),
+      ...(detachedPlan !== null
+        ? [...detachedPlan.selected, ...detachedPlan.skipped].map((wt) => wt.path)
+        : []),
+    ];
+    const countAdvisory = checkWorktreeCountAdvisory({ repoRoot, accountedPaths });
     // `advisory` carries `WorktreeCountAdvisory.message` VERBATIM — the engine
     // owns that wording (the E2BIG shape, the subagent scope, the
     // cleanup-plus-RESTART recovery), and this boundary never paraphrases it.
@@ -1358,6 +1426,22 @@ function runWorktreeCleanup(args: string[]): number {
       threshold: countAdvisory.threshold,
       level: countAdvisory.level,
       advisory: countAdvisory.message,
+    };
+
+    // The count-vs-lists reconciliation (issue #557), printed as `worktreeCount`'s
+    // sibling under the same no-flag-to-remember rule and with `notice` carrying
+    // the engine's TEXT verbatim — the same engine-owns-the-wording boundary
+    // `worktreeCount.advisory` observes. `entries` is the machine-readable half
+    // (`path`, `branch`, `prunable` per entry) so a reader never re-derives the
+    // finding from the prose, and `level` is the verdict `notice` is non-null for.
+    //
+    // The `?? ` fallbacks are unreachable in this verb — `accountedPaths` is
+    // always passed above, so the engine always reconciles — and exist only so
+    // the shape is total for the type checker rather than asserted non-null.
+    const unaccounted = {
+      entries: countAdvisory.unaccounted?.entries ?? [],
+      level: countAdvisory.unaccounted?.level ?? 'ok',
+      notice: countAdvisory.unaccounted?.notice ?? null,
     };
 
     // The SECOND E2BIG term (issue #266), printed as `worktreeCount`'s sibling
@@ -1468,6 +1552,11 @@ function runWorktreeCleanup(args: string[]): number {
                 }
               : {}),
             worktreeCount,
+            // Printed on the PREVIEW too, and identical to the real run's own
+            // (issue #557): the reconciliation is read BEFORE any removal, from
+            // the same plans both branches share, so a `--dry-run` never hides a
+            // population the run would then report.
+            unaccounted,
             commandLine,
           },
           null,
@@ -1587,6 +1676,11 @@ function runWorktreeCleanup(args: string[]): number {
           // read as a GC skip would be actively misleading.
           ...(detachedResult !== null ? { detached: detachedResult } : {}),
           worktreeCount,
+          // Issue #557 — the same object the `--dry-run` branch above printed,
+          // computed once from the pre-removal plans. It is what a reader
+          // reconciles `worktreeCount.count` against instead of hand-diffing the
+          // count against the union of every array in this JSON.
+          unaccounted,
           commandLine,
         },
         null,
@@ -1617,6 +1711,17 @@ function runWorktreeCleanup(args: string[]): number {
     // exits with, and left this to its own row precisely because it IS a
     // behaviour change to the exit contract. `--dry-run` stays unaffected: it
     // returns above, and a ScratchSweepPlan has no `errors` field at all.
+    //
+    // `unaccounted` is deliberately NOT a term here (issue #557, ADR-0042
+    // Decision 3), and its absence is a decision rather than an oversight. Every
+    // class in this expression is something this run TRIED and did not finish;
+    // an unaccounted worktree is something no sweep ever owned. The set also has
+    // a legitimate PERMANENT inhabitant — a human's own long-lived second
+    // worktree — so a red close over it would push exactly the wrong fix
+    // (putting a human workspace under containment to silence the alarm). Per
+    // ADR-0035 an additive report key is one thing and a new failure condition
+    // on a shipped exit contract is another. Same standing as `worktreeCount`
+    // and `commandLine`: reported loudly, never fatal.
     const anyFailure =
       result.errors.length > 0 ||
       result.deregisteredNotDeleted.length > 0 ||

@@ -5568,6 +5568,12 @@ describe('checkWorktreeCountAdvisory — the E2BIG dispatch preflight (issue #23
       threshold: WORKTREE_COUNT_ADVISORY_THRESHOLD,
       level: 'ok',
       message: null,
+      // issue #557: the reconciliation is OPT-IN. A caller that declared no
+      // `accountedPaths` — the dispatch preflight, which sweeps nothing — gets
+      // `null` here, never a list naming every worktree in the repo. Asserted in
+      // the exhaustive `toEqual` deliberately: this is where the additive
+      // guarantee is pinned, so a future field cannot arrive unannounced either.
+      unaccounted: null,
     });
 
     // Boundary: exactly AT the threshold is still ok — the advisory fires above it.
@@ -5700,6 +5706,328 @@ describe('checkWorktreeCountAdvisory — counts real `git worktree list` output 
 
     // Same population, a threshold above it → ok.
     expect(checkWorktreeCountAdvisory({ repoRoot: mainRoot, threshold: 4 }).level).toBe('ok');
+  });
+});
+
+// ─── 30b. The sweep owes ACCOUNTING for what it cannot see (issue #557) ───────
+//
+// Section 29/30's count sees EVERY registration. Every sweep in this file sees
+// only what its containment root and its name allowlist admit. The gap between
+// those two facts is a worktree that is counted and named by no list at all —
+// measured live at a 2026-08-14 wave close as a Reviewer's probe checkout in a
+// per-session harness scratchpad, with `detached.selected` and `detached.skipped`
+// BOTH empty while `worktreeCount` included it.
+//
+// ADR-0042 Decision 1 settles the remedy as ACCOUNTING, never removal, and
+// Decision 3 makes it ADVISORY: the set has a legitimate permanent inhabitant (a
+// human's own long-lived second worktree), so it must never join a failure exit.
+// Both halves are under test here; the exit-code half is pinned at the CLI seam
+// (cli.spec.ts), which is where the exit contract actually lives.
+describe('checkWorktreeCountAdvisory — the count-vs-lists reconciliation (issue #557)', () => {
+  const REPO = '/repo-557';
+
+  /** A minimal registered entry, as `git worktree list --porcelain` would yield it. */
+  function entry(path: string, branch: string | null = null): WorktreeEntry {
+    return { path, branch, head: 'a'.repeat(40), dirty: false, locked: false };
+  }
+
+  /** The primary checkout git always reports, plus whatever the case needs. */
+  function listing(...rest: WorktreeEntry[]): () => readonly WorktreeEntry[] {
+    return () => [entry(REPO, 'main'), ...rest];
+  }
+
+  it('declares NO reconciliation when the caller declared no populations — the preflight shape', () => {
+    // The dispatch preflight sweeps nothing, so "every worktree is unaccounted"
+    // would be noise, not a finding. Opt-in is the whole additive guarantee.
+    const preflight = checkWorktreeCountAdvisory({ countWorktrees: () => 3 });
+    expect(preflight.unaccounted).toBeNull();
+  });
+
+  it('names a registered worktree no population accounted for — path AND branch', () => {
+    const probe = '/somewhere/session-scratch/review-549';
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      listRegistered: listing(entry('/repo-557/.claude/worktrees/wf_1', 'wave/1-x'), entry(probe)),
+      accountedPaths: ['/repo-557/.claude/worktrees/wf_1'],
+      pathExists: () => true,
+    });
+
+    expect(advisory.unaccounted?.entries).toEqual([
+      { path: probe, branch: null, prunable: false },
+    ]);
+    // The live shape: a DETACHED head (the probe-checkout signature) outside
+    // every containment root. `branch: null` is what makes that legible without
+    // going back to git.
+    expect(advisory.unaccounted?.level).toBe('advisory');
+  });
+
+  it('never names the PRIMARY checkout, though the listing always includes it', () => {
+    // Excluded by repoRoot identity, not by list position — an ordering
+    // assumption would silently drop the first entry of any other listing.
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      listRegistered: listing(),
+      accountedPaths: [],
+      pathExists: () => true,
+    });
+    expect(advisory.unaccounted).toEqual({ entries: [], level: 'ok', notice: null });
+  });
+
+  it('an ACCOUNTED worktree is not named — the whole union, not just the GC listing', () => {
+    // One entry per population, all declared: nothing is left over. This is the
+    // negative control for the test above — without it, an empty `entries`
+    // could just as well mean the diff never ran.
+    const gc = '/repo-557/.claude/worktrees/wf_gc';
+    const orphan = '/repo-557/.claude/worktrees/wf_orphan';
+    const scratch = '/repo-557/.flotilla/tmp/report-1-1.json';
+    const detached = '/repo-557/.claude/worktrees/review-557';
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      listRegistered: listing(entry(gc, 'wave/1-x'), entry(orphan), entry(detached)),
+      accountedPaths: [gc, orphan, scratch, detached],
+      pathExists: () => true,
+    });
+    expect(advisory.unaccounted).toEqual({ entries: [], level: 'ok', notice: null });
+  });
+
+  it('the notice NAMES every unaccounted path and states that it is advisory, never a failure', () => {
+    const a = '/elsewhere/probe-a';
+    const b = '/elsewhere/probe-b';
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      listRegistered: listing(entry(a), entry(b, 'someones/branch')),
+      accountedPaths: [],
+      pathExists: () => true,
+    });
+
+    const notice = advisory.unaccounted?.notice;
+    // Naming the paths is the whole point: a notice that said "2 worktrees are
+    // unaccounted for" would leave the operator back at the hand-diff this
+    // field exists to retire.
+    expect(notice).toContain(a);
+    expect(notice).toContain(b);
+    expect(notice).toContain('someones/branch');
+    expect(notice).toContain('ADVISORY, NEVER A FAILURE');
+    // The remedy for a stable root, and the ADR's ownership rule.
+    expect(notice).toContain('cleanup.extraRoots');
+    expect(notice).toContain('--detached');
+    expect(notice).toContain('removal authority stays with the Operator');
+  });
+
+  it('`notice` is non-null EXACTLY when `level` is `advisory` — the WorktreeCountAdvisory contract', () => {
+    for (const rest of [[], [entry('/elsewhere/probe')]]) {
+      const observed = checkWorktreeCountAdvisory({
+        repoRoot: REPO,
+        listRegistered: listing(...rest),
+        accountedPaths: [],
+        pathExists: () => true,
+      }).unaccounted;
+      expect(observed).not.toBeNull();
+      expect(observed!.notice === null).toBe(observed!.level === 'ok');
+    }
+  });
+
+  it('a STALE registration — a registered path whose directory is gone — is marked prunable, and the notice names `git worktree prune`', () => {
+    const gone = '/elsewhere/already-deleted';
+    const live = '/elsewhere/still-here';
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      listRegistered: listing(entry(gone), entry(live)),
+      accountedPaths: [],
+      pathExists: (p) => p !== gone,
+    });
+
+    expect(advisory.unaccounted?.entries).toEqual([
+      { path: gone, branch: null, prunable: true },
+      { path: live, branch: null, prunable: false },
+    ]);
+    expect(advisory.unaccounted?.notice).toContain('git worktree prune');
+    expect(advisory.unaccounted?.notice).toContain('STALE REGISTRATION');
+  });
+
+  it('...and with NO stale registration present the prune remedy is NOT prescribed (negative control)', () => {
+    // Without this, the test above could pass on a notice that always mentions
+    // prune — which would teach the operator to run it for a live workspace.
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      listRegistered: listing(entry('/elsewhere/still-here')),
+      accountedPaths: [],
+      pathExists: () => true,
+    });
+    expect(advisory.unaccounted?.level).toBe('advisory');
+    expect(advisory.unaccounted?.notice).not.toContain('git worktree prune');
+    expect(advisory.unaccounted?.notice).not.toContain('STALE REGISTRATION');
+  });
+
+  it('the COUNT and the accounting come from ONE listing, so they can never disagree', () => {
+    // The reason this reconciliation lives on the count advisory at all: two
+    // separate `git worktree list` reads could answer about two different
+    // moments, which is the exact class of quiet discrepancy being closed. With
+    // no `countWorktrees` override, the count IS the listing's own length.
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      threshold: 1,
+      listRegistered: listing(entry('/elsewhere/a'), entry('/elsewhere/b')),
+      accountedPaths: [],
+      pathExists: () => true,
+    });
+    expect(advisory.count).toBe(3); // primary + two
+    expect(advisory.level).toBe('advisory'); // 3 > 1 — the count half still works
+    // Every registration the count saw, minus the primary, is named.
+    expect(advisory.unaccounted?.entries).toHaveLength(advisory.count - 1);
+  });
+
+  it('an explicit countWorktrees override still wins the COUNT, and never silences the accounting', () => {
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: REPO,
+      countWorktrees: () => 99,
+      threshold: 100,
+      listRegistered: listing(entry('/elsewhere/a')),
+      accountedPaths: [],
+      pathExists: () => true,
+    });
+    expect(advisory.count).toBe(99);
+    expect(advisory.level).toBe('ok');
+    expect(advisory.unaccounted?.entries.map((e) => e.path)).toEqual(['/elsewhere/a']);
+  });
+
+  it('the reconciliation is reachable and nameable from the PACKAGE ROOT', () => {
+    // The additive field crosses the barrel as part of the already-exported
+    // result type — no new root symbol, and a root-only consumer can still
+    // annotate what it reads (ADR-0035: the package root is a semver contract).
+    const fromRoot: WorktreeCountAdvisoryFromRoot = checkWorktreeCountAdvisoryFromRoot({
+      repoRoot: REPO,
+      listRegistered: listing(entry('/elsewhere/probe')),
+      accountedPaths: [],
+      pathExists: () => true,
+    });
+    type RootEntry = NonNullable<WorktreeCountAdvisoryFromRoot['unaccounted']>['entries'][number];
+    const named: RootEntry[] = fromRoot.unaccounted?.entries ?? [];
+    expect(named.map((e) => e.path)).toEqual(['/elsewhere/probe']);
+  });
+});
+
+// ─── 30c. `unaccounted` against REAL git registrations (issue #557) ───────────
+describe('checkWorktreeCountAdvisory — reconciles real `git worktree list` output (issue #557)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  function makeRepo(label: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cleanup-557-${label}-`)));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    return mainRoot;
+  }
+
+  it('an out-of-root detached checkout the detached sweep never considered is named, while the primary checkout is not', () => {
+    // The live shape, rebuilt against real git: the sweep's own candidate list
+    // is EMPTY for this checkout (it sits outside every containment root), so
+    // the accounted set the CLI would declare is empty too — and the count
+    // includes it either way.
+    const mainRoot = makeRepo('out-of-root');
+    realGit(['worktree', 'add', '-q', '--detach', join('scratchpad', 'review-557'), 'HEAD'], mainRoot);
+    const probe = join(mainRoot, 'scratchpad', 'review-557');
+
+    // Exactly what the sweep sees with no `extraRoots` declared: nothing.
+    expect(listDetachedScratchpadWorktrees({ repoRoot: mainRoot })).toEqual([]);
+
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: mainRoot,
+      threshold: 99,
+      accountedPaths: [],
+    });
+    expect(advisory.count).toBe(2); // primary + probe
+    expect(advisory.unaccounted?.entries).toEqual([
+      { path: probe, branch: null, prunable: false },
+    ]);
+  });
+
+  it('declaring the checkout\'s root brings it into the sweep, and it leaves `unaccounted` — both directions, one fixture', () => {
+    // The other direction of the same fixture: once the sweep OWNS the
+    // checkout, the accounted set the caller declares contains it, and the
+    // reconciliation has nothing left to report. This is what makes the test
+    // above a finding rather than an artefact of an empty accounted set.
+    const mainRoot = makeRepo('declared-root');
+    realGit(['worktree', 'add', '-q', '--detach', join('scratchpad', 'review-557'), 'HEAD'], mainRoot);
+    const probe = join(mainRoot, 'scratchpad', 'review-557');
+
+    const candidates = listDetachedScratchpadWorktrees({
+      repoRoot: mainRoot,
+      extraRoots: ['scratchpad'],
+    });
+    expect(candidates.map((wt) => wt.path)).toEqual([probe]);
+    const plan = planDetachedScratchpadSweep(candidates);
+
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: mainRoot,
+      threshold: 99,
+      accountedPaths: [...plan.selected, ...plan.skipped].map((wt) => wt.path),
+    });
+    expect(advisory.count).toBe(2); // unchanged — nothing was removed
+    expect(advisory.unaccounted).toEqual({ entries: [], level: 'ok', notice: null });
+  });
+
+  it('a registered worktree whose directory was deleted without a prune reads `prunable: true`', () => {
+    // The stale-registration shape, produced the way it actually happens: the
+    // directory goes away (a hand `rm -rf`, a harness teardown) and git's
+    // administrative entry survives it.
+    const mainRoot = makeRepo('stale');
+    realGit(['worktree', 'add', '-q', '--detach', join('scratchpad', 'review-557'), 'HEAD'], mainRoot);
+    const probe = join(mainRoot, 'scratchpad', 'review-557');
+    rmSync(probe, { recursive: true, force: true });
+    expect(existsSync(probe)).toBe(false);
+
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: mainRoot,
+      threshold: 99,
+      accountedPaths: [],
+    });
+    // Still REGISTERED — that is the whole point; git has not pruned it.
+    expect(advisory.count).toBe(2);
+    expect(advisory.unaccounted?.entries).toEqual([
+      { path: probe, branch: null, prunable: true },
+    ]);
+    expect(advisory.unaccounted?.notice).toContain('git worktree prune');
   });
 });
 
@@ -6986,7 +7314,7 @@ describe('the two-run classification flip against a REAL git worktree (issue #52
 // the real harness the denial itself surfaces AS an `ENOTEMPTY` (the denied
 // children make their enclosing directory look "not empty" to the failing
 // call), so `!attempt.enotempty` alone reads it as the transient race the
-// bounded retry exists to clear. `isSurvivorSetExclusivelyDenied` answers
+// bounded retry exists to clear. `walkSurvivorSet` answers
 // from evidence instead — what physically SURVIVED the attempt — and
 // `RemovalAttempt.deniedResidue` carries that third signal into
 // `executeCleanup`'s EXHAUSTED reading.
@@ -7067,7 +7395,7 @@ describe('executeCleanup — the errno alone cannot carry the denial (issue #542
     writeFileSync(join(root, '.claude', 'skills', 'foo.txt'), 'skill content\n');
     // A genuinely real leftover sits alongside the denied content — nothing
     // here entitles the classifier to call this exhausted; this is the
-    // negative control that pins `isSurvivorSetExclusivelyDenied` itself,
+    // negative control that pins `walkSurvivorSet`'s own verdict,
     // not just the pre-existing errno-based signal.
     writeFileSync(join(root, 'real-uncommitted-work.txt'), 'not junk\n');
 
@@ -7121,7 +7449,7 @@ describe('executeCleanup — the errno alone cannot carry the denial (issue #542
 
   it('an unreadable/nonexistent worktree path (the same shape every fake-path unit fixture in this file already exercises) never reads EXHAUSTED via the residue signal alone', () => {
     // AGENT_PATH_A is never a real directory — readdirSync on it always
-    // throws, and isSurvivorSetExclusivelyDenied must read that as `false`
+    // throws, and walkSurvivorSet must read that as `false`
     // (inconclusive), the OPPOSITE of its sibling isDirExclusivelyJunk's
     // vacuous `true` for an ORPHAN directory. Pins the existing "PLAIN clean
     // worktree ... keeps TRANSIENT" test's own precondition explicitly

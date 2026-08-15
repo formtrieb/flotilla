@@ -3537,6 +3537,242 @@ describe('worktree-cleanup --detached — --config cleanup.extraRoots reaches th
   });
 });
 
+// ─── Form 8k: worktree-cleanup — `unaccounted`, the count-vs-lists
+//             reconciliation (issue #557, ADR-0042) ──────────────────────────
+//
+// Form 8j directly above ends at the conservative default: an out-of-root
+// detached checkout with no declaration is "left strictly alone", and its
+// negative control asserts the exact reading reported from the field — the
+// count includes it, both `detached` arrays are empty. That reading is quiet by
+// construction, and the only remedy the docs could offer was a HAND-DIFF of
+// `worktreeCount.count` against the union of every array in this JSON.
+//
+// The live occurrence that made it a ticket (2026-08-14 wave close): the
+// leftover was a Reviewer's probe checkout in the agent session's own
+// SCRATCHPAD, whose path carries a per-session identifier — so
+// `cleanup.extraRoots` (static strings) structurally cannot name it, and the
+// documented remedy does not apply at all. ADR-0042 Decision 1: for residue the
+// sweep cannot see, its duty is to NAME it; removal authority stays with the
+// Operator.
+//
+// Same discipline as Form 8j: a REAL git repository, a REAL `--config` on disk,
+// the REAL router — the WIRING and the REPORT SURFACE are what is under test,
+// never the engine's own reconciliation logic (worktree-cleanup.spec.ts §30b/c).
+describe('worktree-cleanup — `unaccounted` names what no sweep list accounts for (issue #557)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  function makeRepo(label: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cli-557-${label}-`)));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    writeFileSync(join(mainRoot, 'README.md'), '# fixture\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    return mainRoot;
+  }
+
+  /** Plant a DETACHED scratch checkout at a repo-root-relative path. */
+  function plantDetachedAt(mainRoot: string, relDir: string): string {
+    realGit(['worktree', 'add', '-q', '--detach', relDir, 'HEAD'], mainRoot);
+    return join(mainRoot, relDir);
+  }
+
+  function writeCleanupConfig(cleanup: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wave-cli-557-cfg-'));
+    const cfgPath = join(dir, 'wave.config.json');
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({ store: { kind: 'markdown', repoRoot: '.', slug: 'x' }, cleanup }),
+      'utf-8',
+    );
+    return cfgPath;
+  }
+
+  type UnaccountedJson = {
+    dryRun: boolean;
+    errors?: unknown[];
+    deregisteredNotDeleted?: unknown[];
+    erroredStillListed?: unknown[];
+    detached?: {
+      selected?: Array<{ path: string }>;
+      removed?: Array<{ path: string }>;
+      skipped: Array<{ path: string }>;
+      errors?: unknown[];
+    };
+    worktreeCount: { count: number; level: string };
+    unaccounted: {
+      entries: Array<{ path: string; branch: string | null; prunable: boolean }>;
+      level: 'ok' | 'advisory';
+      notice: string | null;
+    };
+  };
+
+  function parse(): UnaccountedJson {
+    expect(stdoutBuf, `stderr was: ${stderrBuf}`).not.toBe('');
+    return JSON.parse(stdoutBuf) as UnaccountedJson;
+  }
+
+  it('a checkout outside every containment root is NAMED, on both shapes, while both `detached` arrays stay empty', () => {
+    // The reported reading, now with the discrepancy said out loud rather than
+    // left to a hand-diff: the sweep still (correctly) never considered it, and
+    // the count still includes it — but a LIST now names it.
+    const mainRoot = makeRepo('out-of-root');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-557'));
+
+    for (const args of [
+      ['worktree-cleanup', '--dry-run', '--detached', '--orphans', mainRoot],
+      ['worktree-cleanup', '--detached', '--orphans', mainRoot],
+    ]) {
+      stdoutBuf = '';
+      expect(main(args)).toBe(0);
+      const parsed = parse();
+
+      expect(parsed.worktreeCount.count).toBe(2); // primary checkout + the probe
+      expect(parsed.detached?.selected ?? []).toEqual([]);
+      expect(parsed.detached?.removed ?? []).toEqual([]);
+      expect(parsed.detached?.skipped ?? []).toEqual([]);
+
+      expect(parsed.unaccounted.entries).toEqual([
+        { path: outside, branch: null, prunable: false },
+      ]);
+      expect(parsed.unaccounted.level).toBe('advisory');
+      // AC4 — a notice line rides the non-empty list, on the same pattern
+      // `worktreeCount.advisory` established, and it NAMES the path.
+      expect(parsed.unaccounted.notice).toContain(outside);
+      expect(parsed.unaccounted.notice).toContain('ADVISORY, NEVER A FAILURE');
+      // Nothing was removed by either shape — this is accounting, not a sweep.
+      expect(existsSync(outside)).toBe(true);
+    }
+  });
+
+  it('declaring the root in `cleanup.extraRoots` moves it OUT of `unaccounted` and INTO the detached sweep', () => {
+    // The other direction of the same fixture. Without it, the test above could
+    // pass for a reason unrelated to containment — e.g. a field that names every
+    // worktree it sees regardless of whether a population owns it.
+    const mainRoot = makeRepo('declared');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-557'));
+    const configPath = writeCleanupConfig({ extraRoots: ['scratchpad'] });
+
+    expect(
+      main(['worktree-cleanup', '--dry-run', '--detached', mainRoot, '--config', configPath]),
+    ).toBe(0);
+    const preview = parse();
+    expect((preview.detached?.selected ?? []).map((w) => w.path)).toEqual([outside]);
+    expect(preview.unaccounted.entries).toEqual([]);
+    expect(preview.unaccounted.level).toBe('ok');
+    expect(preview.unaccounted.notice).toBeNull();
+
+    // ...and on the real run, which removes it: still nothing left over.
+    stdoutBuf = '';
+    expect(
+      main(['worktree-cleanup', '--detached', mainRoot, '--config', configPath]),
+    ).toBe(0);
+    const run = parse();
+    expect((run.detached?.removed ?? []).map((w) => w.path)).toEqual([outside]);
+    expect(run.unaccounted.entries).toEqual([]);
+  });
+
+  it('ADVISORY, NEVER A FAILURE: a non-empty `unaccounted` with everything else clean still exits 0', () => {
+    // ADR-0042 Decision 3, asserted at the seam where the exit contract lives.
+    // The set has a legitimate permanent inhabitant (a human's own long-lived
+    // second worktree), so a red close would push exactly the wrong fix.
+    const mainRoot = makeRepo('advisory-exit');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-557'));
+    // A human's own second worktree, ON A BRANCH, outside the worktrees root —
+    // the inhabitant the decision protects, in the same run.
+    realGit(['worktree', 'add', '-q', '-b', 'feature/human', join('..', 'human-wt')], mainRoot);
+
+    const code = main(['worktree-cleanup', '--detached', '--orphans', mainRoot]);
+
+    const parsed = parse();
+    expect(parsed.unaccounted.entries.map((e) => e.path).sort()).toEqual(
+      [outside, realpathSync(join(mainRoot, '..', 'human-wt'))].sort(),
+    );
+    expect(parsed.unaccounted.entries.some((e) => e.branch === 'feature/human')).toBe(true);
+    // Every failure class the verb DOES exit 1 for is empty...
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.deregisteredNotDeleted).toEqual([]);
+    expect(parsed.erroredStillListed).toEqual([]);
+    expect(parsed.detached?.errors ?? []).toEqual([]);
+    // ...so the exit code is unchanged by the non-empty advisory list.
+    expect(code).toBe(0);
+  });
+
+  it('a STALE registration — the directory already gone — is reported `prunable`, with `git worktree prune` named', () => {
+    const mainRoot = makeRepo('stale');
+    const outside = plantDetachedAt(mainRoot, join('scratchpad', 'probe-557'));
+    rmSync(outside, { recursive: true, force: true });
+
+    expect(main(['worktree-cleanup', '--detached', '--orphans', mainRoot])).toBe(0);
+    const parsed = parse();
+
+    expect(parsed.unaccounted.entries).toEqual([
+      { path: outside, branch: null, prunable: true },
+    ]);
+    expect(parsed.unaccounted.notice).toContain('git worktree prune');
+  });
+
+  it('a repo whose every registration IS accounted for reports an EMPTY, `ok` reconciliation (negative control)', () => {
+    // The field must be able to say "nothing left over" — otherwise every close
+    // would carry a standing advisory and the signal would be worthless. An
+    // ordinary wave worktree (name-prefixed, on a branch) belongs to the
+    // registered-GC LISTING even when a `--wave` filter excludes it from the
+    // plan, which is why the accounting is declared off the listing.
+    const mainRoot = makeRepo('all-accounted');
+    realGit(
+      ['worktree', 'add', '-q', join('.claude', 'worktrees', 'wf_557'), '-b', 'wave/557-x'],
+      mainRoot,
+    );
+
+    expect(
+      main(['worktree-cleanup', '--dry-run', '--detached', '--orphans', mainRoot]),
+    ).toBe(0);
+    const parsed = parse();
+    expect(parsed.worktreeCount.count).toBe(2);
+    expect(parsed.unaccounted).toEqual({ entries: [], level: 'ok', notice: null });
+  });
+});
+
 // ─── Form 8i: worktree-cleanup --detached — a SEEDED removal failure proves
 //             the sweep's OWN nonzero-exit-code contribution directly (issue
 //             #265) ──────────────────────────────────────────────────────────

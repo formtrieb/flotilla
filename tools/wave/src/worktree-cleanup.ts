@@ -1054,6 +1054,66 @@
  * heading. It rides the existing `--orphans` pass ({@link executeOrphanSweep})
  * so it is reached on every close path the ceremony already runs, and reports
  * whole under {@link OrphanSweepResult.scratch}.
+ *
+ * ── the sweep owes ACCOUNTING for what it cannot see (issue #557, ADR-0042) ───
+ *
+ * Every population above is something a sweep enumerates. This section is about
+ * the residue no sweep enumerates at all, and it exists because that state was
+ * indistinguishable — from the report alone — from "there is none".
+ *
+ * Measured live at a wave close (2026-08-14): after five agent worktrees were
+ * removed, `git worktree list` still carried a detached-HEAD checkout a Reviewer
+ * had made for its own probe, in the agent session's SCRATCHPAD. The full
+ * `--wave --orphans --detached` call named it nowhere — `detached.selected` and
+ * `detached.skipped` were BOTH empty — while `worktreeCount` counted it. That
+ * combination is the documented tell for a checkout sitting outside every
+ * containment root: the sweep did not refuse it, it never considered it.
+ *
+ * The documented remedy ({@link DetachedSweepOptions.extraRoots}) does not fit
+ * that shape. It works when the root is a stable, nameable location; a per-agent
+ * session scratchpad carries a per-session identifier, so a declaration written
+ * today names a directory that will not exist tomorrow, and declaring its PARENT
+ * would widen the sweep across every session's scratch space at once. Nor is the
+ * Reviewer misbehaving: it is the one dispatched role with no worktree isolation,
+ * its contract licenses a probe checkout, and an in-repo checkout aborts wherever
+ * a tracked file sits on the harness write-deny list — which is every skill-tier
+ * wave, by design. So the probe goes somewhere writable.
+ *
+ * ADR-0042's Decision 1 settles who owns that residue: **the sweep owes
+ * accounting, never removal.** For residue it cannot see (this section) or
+ * cannot remove (the survivor section above), the duty is to NAME it — precisely,
+ * machine-readably, on the FIRST run that observes it. Removal authority stays
+ * with the Operator. Two rejected alternatives are worth naming so they are not
+ * re-litigated: a sweep that followed the git REGISTER instead of containment
+ * roots would invert the safety model (every "may I touch this?" today is
+ * inherited from containment; a register-driven sweep would have to re-derive
+ * each refusal individually, and each miss is a deleted workspace), and a probe
+ * that cleans up after itself fails precisely when residue is likeliest — a
+ * review that errors out or is killed never reaches its own cleanup step.
+ *
+ * The instrument is {@link checkWorktreeCountAdvisory}'s
+ * {@link WorktreeCountAdvisory.unaccounted}: given the paths this run's
+ * populations account for ({@link WorktreeCountAdvisoryOptions.accountedPaths}),
+ * it names every REGISTERED worktree that is neither the primary checkout nor in
+ * any of them, plus a notice line on the same pattern the count advisory already
+ * uses. It lives on the count advisory rather than on an entry point of its own
+ * for a reason that is the ticket's own subject matter: the count is the number
+ * the missing worktree was ALREADY visible in, and reconciling it here lets ONE
+ * `git worktree list` read feed both the count and the accounting — two reads
+ * could disagree, which is the exact class of quiet discrepancy being closed.
+ * A caller that declares no accounted set (the dispatch preflight, which sweeps
+ * nothing) gets `unaccounted: null` and behaviour byte-identical to before.
+ *
+ * ADVISORY, NEVER A FAILURE (ADR-0042 Decision 3). A non-empty list never joins
+ * any failure exit, because the set has a legitimate PERMANENT inhabitant — a
+ * human's own long-lived second worktree — and a red close would push exactly
+ * the wrong fix: putting a human workspace under containment to silence an
+ * alarm. Per ADR-0035 that is the additive-field/no-new-failure-condition line.
+ *
+ * A STALE registration — a registered path whose directory is already gone — is
+ * marked `prunable` rather than left looking like a live workspace an operator
+ * must make a decision about. Its remedy is one command (`git worktree prune`),
+ * so it is the one member of this set that never has to appear twice.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -1991,7 +2051,7 @@ export function executeCleanup(
         // the transient race by errno alone — `deniedResidue` answers the
         // question from evidence instead, inspecting what physically
         // SURVIVED the attempt rather than which error was thrown (see
-        // {@link isSurvivorSetExclusivelyDenied}). Any one signal alone is
+        // {@link walkSurvivorSet}). Any one signal alone is
         // sufficient for EXHAUSTED; `exhaustedManualRecovery` is told only
         // whether `forceEligible` fired (both other signals share its
         // "plainly clean" wording) so it never claims a plainly-clean
@@ -3193,6 +3253,59 @@ export function sweepDetachedScratchpadWorktrees(
 export const WORKTREE_COUNT_ADVISORY_THRESHOLD = 12;
 
 /**
+ * One REGISTERED worktree that no population of this run accounts for (issue
+ * #557 — see the file-level "the sweep owes ACCOUNTING for what it cannot see"
+ * section). Deliberately minimal: the two facts an operator needs to decide what
+ * this is, plus the one classification that decides which remedy applies.
+ *
+ * Not exported: it is reached from the root as
+ * `NonNullable<WorktreeCountAdvisory['unaccounted']>['entries'][number]`, which
+ * keeps the barrel surface (and therefore the package's semver contract, per
+ * ADR-0035) unchanged by a field addition — the same additive discipline
+ * `WorktreeEntry.survivors` follows one section up.
+ */
+interface UnaccountedWorktree {
+  /** Absolute path exactly as `git worktree list --porcelain` reported it. */
+  path: string;
+  /** The branch ref name, or `null` when HEAD is detached (the probe-checkout shape). */
+  branch: string | null;
+  /**
+   * `true` when the registered path no longer exists on disk — a STALE
+   * REGISTRATION, not a live workspace. Its remedy is one command
+   * (`git worktree prune`), which is why it is marked rather than left looking
+   * like something an operator must make a judgement about; see the file-level
+   * section's closing paragraph.
+   */
+  prunable: boolean;
+}
+
+/**
+ * The count-vs-lists reconciliation (issue #557, ADR-0042 Decision 3).
+ *
+ * Shaped as the deliberate sibling of {@link WorktreeCountAdvisory} itself:
+ * `level` is the machine-readable verdict and `notice` is the human-facing text,
+ * non-null EXACTLY when `level === 'advisory'` — so a caller prints `notice`
+ * unconditionally on the advisory branch and can never print a warning on the
+ * `ok` branch.
+ *
+ * ADVISORY, NEVER A FAILURE: a non-empty `entries` must not join any caller's
+ * failure exit. See the file-level section for the legitimate permanent
+ * inhabitant (a human's long-lived second worktree) that decision protects.
+ */
+interface UnaccountedWorktreeReport {
+  /**
+   * Every registered worktree that is neither the primary checkout nor named by
+   * any population the caller declared. Ordered as `git worktree list` reported
+   * them.
+   */
+  entries: UnaccountedWorktree[];
+  /** `'advisory'` iff `entries` is non-empty; `'ok'` otherwise. */
+  level: 'ok' | 'advisory';
+  /** The notice text (naming every unaccounted path + its remedy), or `null` when `level` is `'ok'`. */
+  notice: string | null;
+}
+
+/**
  * The advisory {@link checkWorktreeCountAdvisory} returns (issue #238).
  *
  * `level` is the machine-readable verdict; `message` is the human-facing text
@@ -3209,6 +3322,20 @@ export interface WorktreeCountAdvisory {
   level: 'ok' | 'advisory';
   /** The advisory text (naming the E2BIG shape + the recovery), or `null` when `level` is `'ok'`. */
   message: string | null;
+  /**
+   * The count-vs-lists reconciliation (issue #557), or `null` when the caller
+   * declared no {@link WorktreeCountAdvisoryOptions.accountedPaths} — a dispatch
+   * preflight sweeps nothing, so "everything is unaccounted" would be noise
+   * rather than a finding. ADDITIVE (ADR-0035): every field above keeps its
+   * name, type and meaning, and a caller that never passes `accountedPaths`
+   * observes behaviour byte-identical to before this field existed.
+   *
+   * It is computed HERE rather than by an entry point of its own because the
+   * count is the number the unseen worktree was already visible in: one
+   * `git worktree list` read feeds both, so the count and the accounting can
+   * never disagree. See the file-level section for the live occurrence.
+   */
+  unaccounted: UnaccountedWorktreeReport | null;
 }
 
 export interface WorktreeCountAdvisoryOptions {
@@ -3224,6 +3351,37 @@ export interface WorktreeCountAdvisoryOptions {
    * threshold logic is exercised without registering twelve real worktrees.
    */
   countWorktrees?: () => number;
+  /**
+   * Every worktree path THIS run's populations account for (issue #557) — the
+   * registered-GC listing, the orphan-directory sweep, the Scribe scratch sweep
+   * and the detached sweep, unioned. Passing it turns on the reconciliation and
+   * populates {@link WorktreeCountAdvisory.unaccounted}; omitting it leaves that
+   * field `null` and this function byte-identical to its pre-#557 self.
+   *
+   * Deliberately the caller's declaration rather than something derived here:
+   * WHICH populations ran is the caller's own decision (`--orphans`/`--detached`
+   * are flags), and a population the caller did not enumerate genuinely did not
+   * account for anything — which is precisely the state the report must be able
+   * to say out loud.
+   *
+   * Paths are compared realpath-normalized on both sides, so a symlinked root
+   * (macOS `/tmp` → `/private/tmp`) never makes an accounted worktree read as
+   * unaccounted.
+   */
+  accountedPaths?: Iterable<string>;
+  /**
+   * Injectable listing seam for the reconciliation — the entries (path + branch)
+   * the accounted set is diffed against. Defaults to `git worktree list
+   * --porcelain` parsed with the empty marker, i.e. EVERY registered worktree,
+   * the primary checkout included. Only ever consulted when
+   * {@link accountedPaths} was given.
+   */
+  listRegistered?: () => readonly WorktreeEntry[];
+  /**
+   * Injectable existence probe for the `prunable` classification — same seam
+   * shape as {@link CleanupOptions.pathExists}. Defaults to `existsSync`.
+   */
+  pathExists?: (path: string) => boolean;
 }
 
 /**
@@ -3273,6 +3431,104 @@ function worktreeCountAdvisoryMessage(count: number, threshold: number): string 
 }
 
 /**
+ * Every registered worktree as `git worktree list --porcelain` reports it — the
+ * primary checkout included, no name-prefix allowlist applied (issue #557).
+ *
+ * Pure text parsing over ONE porcelain read: deliberately NOT
+ * {@link listAllWorktrees}, which additionally runs the toplevel-guarded
+ * dirty/orphan probe per entry. The reconciliation needs a path and a branch and
+ * nothing else, and a per-entry `git status` against a path that may already be
+ * GONE (the `prunable` case this exists to classify) is exactly the call
+ * {@link probeWorktreeGitState} documents as answering about an ANCESTOR
+ * repository instead.
+ */
+function listRegisteredWorktreeEntries(repoRoot: string): WorktreeEntry[] {
+  return parseWorktreeList(shellGit(['worktree', 'list', '--porcelain'], repoRoot), ['']);
+}
+
+/**
+ * Build the notice text for a non-empty `unaccounted` set (issue #557). Kept as
+ * its own function for the same reason {@link worktreeCountAdvisoryMessage} is:
+ * the engine owns this wording, the operating docs point at the FIELD rather
+ * than paraphrasing the reading, and the spec pins the load-bearing substrings.
+ *
+ * Every unaccounted path is NAMED. The set is bounded by git's own registration
+ * count (and a population large enough to be unwieldy trips the count advisory
+ * beside it), so there is nothing here to sample — and a notice that said "3
+ * worktrees are unaccounted for" without saying WHICH would leave the operator
+ * back at the hand-diff this field exists to retire.
+ */
+function unaccountedNoticeMessage(entries: readonly UnaccountedWorktree[]): string {
+  const lines = entries.map((e) => {
+    const head = e.branch === null ? 'detached HEAD' : `branch ${e.branch}`;
+    const state = e.prunable
+      ? 'STALE REGISTRATION — the directory is already gone'
+      : 'directory present';
+    return `  - ${e.path} (${head}; ${state})`;
+  });
+  const anyPrunable = entries.some((e) => e.prunable);
+  return (
+    `${entries.length} registered git worktree(s) are accounted for by NO sweep list in this run — ` +
+    'neither the primary checkout nor in the registered GC, the orphan-directory sweep, ' +
+    'the Scribe scratch sweep or the detached sweep. They are counted (each costs its ' +
+    'sandbox filesystem-deny entry like every other registration) and selected by nothing:\n' +
+    lines.join('\n') +
+    '\nADVISORY, NEVER A FAILURE: this never changes the exit code. The set has a legitimate ' +
+    'permanent inhabitant — a human\'s own long-lived second worktree — and failing a close over ' +
+    'it would push exactly the wrong fix (putting a human workspace under containment to silence ' +
+    'an alarm). ' +
+    (anyPrunable
+      ? 'A STALE REGISTRATION clears with `git worktree prune`. '
+      : '') +
+    'For a checkout that IS present: if it is an agent scratch checkout under a STABLE root, ' +
+    'declare that root in the wave config\'s `cleanup.extraRoots` and re-run with `--detached`, ' +
+    'which brings it into the sweep; if its location is per-session (a harness scratchpad), no ' +
+    'static declaration can name it — remove it by hand. The sweep NAMES this residue, it never ' +
+    'removes what it does not contain: removal authority stays with the Operator (ADR-0042).'
+  );
+}
+
+/**
+ * Diff every REGISTERED worktree against the paths this run's populations
+ * accounted for, and report what is left over (issue #557, ADR-0042 Decision 3).
+ *
+ * The primary checkout is excluded by `repoRoot` IDENTITY — the same guard
+ * {@link listDetachedScratchpadWorktrees} uses, and deliberately not "whatever
+ * git listed first": an identity test states the rule it is enforcing, while an
+ * ordering assumption silently drops the first entry of any injected listing
+ * that happens not to start with the main worktree.
+ *
+ * `prunable` is decided by a plain existence probe, because that is the whole
+ * distinction: a registered path whose directory is gone has a one-command
+ * remedy, and one whose directory is present is an operator decision.
+ */
+function reconcileWorktreeAccounting(
+  repoRoot: string,
+  registered: readonly WorktreeEntry[],
+  accountedPaths: Iterable<string>,
+  pathExists: (path: string) => boolean,
+): UnaccountedWorktreeReport {
+  const accounted = new Set<string>();
+  for (const p of accountedPaths) accounted.add(realpathForCompare(p));
+  const primary = realpathForCompare(repoRoot);
+
+  const entries: UnaccountedWorktree[] = [];
+  for (const wt of registered) {
+    const key = realpathForCompare(wt.path);
+    if (key === primary) continue;
+    if (accounted.has(key)) continue;
+    entries.push({
+      path: wt.path,
+      branch: wt.branch,
+      prunable: !pathExists(nodePath.resolve(wt.path)),
+    });
+  }
+
+  if (entries.length === 0) return { entries, level: 'ok', notice: null };
+  return { entries, level: 'advisory', notice: unaccountedNoticeMessage(entries) };
+}
+
+/**
  * Count the registered worktrees and return a {@link WorktreeCountAdvisory}
  * (issue #238) — the measurement half of the E2BIG hardening, intended for a
  * DISPATCH preflight (wave-start), where a bloated session would otherwise burn
@@ -3290,6 +3546,17 @@ function worktreeCountAdvisoryMessage(count: number, threshold: number): string 
  * a count that quietly disagreed with the obvious shell equivalent would be
  * worse than one that is simply documented as inclusive.
  *
+ * ALSO reconciles the count against the caller's own populations when
+ * {@link WorktreeCountAdvisoryOptions.accountedPaths} is given (issue #557),
+ * returning {@link WorktreeCountAdvisory.unaccounted}. That reconciliation lives
+ * here rather than in an entry point of its own precisely because the count is
+ * the number the unseen worktree was already visible in: with `accountedPaths`
+ * present, ONE `git worktree list` read produces both the count and the
+ * accounting, so the two can never answer slightly different questions about
+ * slightly different moments. Without it, nothing about this function's
+ * behaviour changes — `unaccounted` is `null` and the count is read exactly as
+ * before.
+ *
  * @throws when an explicit `threshold` is not a non-negative integer — a
  *   garbled override must fail loud rather than silently disable the advisory
  *   (a `NaN` comparison is always false, i.e. it would read as a permanent
@@ -3305,8 +3572,30 @@ export function checkWorktreeCountAdvisory(
     );
   }
   const repoRoot = opts.repoRoot ?? process.cwd();
+  // Read ONCE when a reconciliation was asked for, and derive the count from
+  // that same listing (issue #557) — a second porcelain read for the count would
+  // reintroduce, inside this one function, exactly the count-disagrees-with-the-
+  // lists gap the reconciliation exists to close. With no `accountedPaths` the
+  // listing is never taken and the count path below is byte-identical to its
+  // pre-#557 self.
+  const registered =
+    opts.accountedPaths === undefined
+      ? null
+      : (opts.listRegistered?.() ?? listRegisteredWorktreeEntries(repoRoot));
   const count =
-    opts.countWorktrees?.() ?? registeredWorktreePaths(repoRoot).size;
+    opts.countWorktrees?.() ??
+    registered?.length ??
+    registeredWorktreePaths(repoRoot).size;
+
+  const unaccounted =
+    registered === null || opts.accountedPaths === undefined
+      ? null
+      : reconcileWorktreeAccounting(
+          repoRoot,
+          registered,
+          opts.accountedPaths,
+          opts.pathExists ?? existsSync,
+        );
 
   if (count > threshold) {
     return {
@@ -3314,9 +3603,10 @@ export function checkWorktreeCountAdvisory(
       threshold,
       level: 'advisory',
       message: worktreeCountAdvisoryMessage(count, threshold),
+      unaccounted,
     };
   }
-  return { count, threshold, level: 'ok', message: null };
+  return { count, threshold, level: 'ok', message: null, unaccounted };
 }
 
 // ─── The command-line term of the SAME E2BIG budget (issue #266) ──────────────
