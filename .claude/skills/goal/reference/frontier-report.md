@@ -15,7 +15,10 @@ How to turn one `goal-frontier` answer into the status pass's report. The skill 
     { "id": "433", "state": "unready", "unresolvedBlockers": [] }
   ],
   "counts": { "done": 1, "in-motion": 0, "blocked": 1, "actionable": 0, "unready": 1 },
-  "open": [ "…every reading that is not done…" ],
+  "open": [
+    { "id": "431", "state": "blocked", "unresolvedBlockers": [{ "issue": 412 }] },
+    { "id": "433", "state": "unready", "unresolvedBlockers": [] }
+  ],
   "complete": false
 }
 ```
