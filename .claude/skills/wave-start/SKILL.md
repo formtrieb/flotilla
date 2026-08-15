@@ -1,6 +1,6 @@
 ---
 name: wave-start
-description: Use when running a wave that has already been planned — re-checks the batch is still safe to run side by side, leaves alone anything parked for a human to decide, then puts one background agent on each issue in its own copy of the repo, has a second agent re-run the tests and review the result, and either opens a pull request or sends the work back for exactly one more attempt. Anything that goes wrong is flagged on the tracker for you. It stops with every pull request open and waiting — it never merges. Triggers on "start the wave <slug>", "dispatch wave <slug>", "run wave-start".
+description: Use when running a wave that has already been planned — re-checks the batch is still safe to run side by side, leaves alone anything parked for a human to decide, then puts one background agent on each issue in its own copy of the repo, has a second agent re-run the tests and review the result, and either opens a pull request or sends the work back for exactly one more attempt. Anything that goes wrong is flagged on the tracker for a person to follow up. It stops with every pull request open and waiting — it never merges. Triggers on "start the wave <slug>", "dispatch wave <slug>", "run wave-start".
 ---
 
 # wave-start

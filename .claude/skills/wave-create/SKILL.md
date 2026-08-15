@@ -1,6 +1,6 @@
 ---
 name: wave-create
-description: Use when turning a chosen set of issue ids into a wave you can actually run — re-checks that every issue has what an agent needs, shows you any overlapping files and any issue in the batch that has to wait for another one (stopping to ask before it goes ahead either way), writes the wave's own plan file, and marks the issues as taken so a second batch will not grab them. Triggers on "create the wave", "materialize wave <slug>", "build the spine for these issues".
+description: Use when turning a chosen set of issue ids into a wave that can actually be run — re-checks that every issue has what an agent needs, surfaces any overlapping files and any issue in the batch that has to wait for another one (stopping to ask before it goes ahead either way), writes the wave's own plan file, and marks the issues as taken so a second batch will not grab them. Triggers on "create the wave", "materialize wave <slug>", "build the spine for these issues".
 ---
 
 # wave-create
