@@ -29,6 +29,15 @@ import { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
 import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
 import type { IssueStore } from './adapters/issue-store';
+// TYPE-ONLY, through the PACKAGE ROOT. Erased at compile time, so it loads no
+// module and cannot disturb the `vi.mock` + `await import` ordering the rest of
+// this file depends on — while still proving the named `store.goal` shape
+// (ADR-0044 decision 4) is reachable from the root by name, which is a claim no
+// runtime assertion can make about a type.
+import type {
+  StoreGoalConfig as StoreGoalConfigFromRoot,
+  WaveConfig as WaveConfigFromRoot,
+} from './index';
 
 const createGitHubApiFromEnv = vi.fn();
 const createLinearApiFromEnv = vi.fn();
@@ -1017,6 +1026,34 @@ describe('readGoalContainer — store.goal.container', () => {
     expect(() =>
       readGoalContainer({ store: { kind: 'github', goal: ['milestone'] } } as never),
     ).toThrow(/store\.goal/);
+  });
+
+  it('reads a WELL-TYPED config by name — no `as never` needed once the block has one', () => {
+    // Every other case in this describe hands the reader an `as never` literal,
+    // because the shapes they exercise are deliberately ill-typed (a string
+    // `goal`, an unknown role, a null). This one is the opposite measurement:
+    // with `store.goal` declared as the named, root-exported StoreGoalConfig,
+    // a WELL-formed config now typechecks straight into the reader's parameter
+    // with no cast at all — the consumer-facing half of the promotion, and the
+    // half no runtime assertion can see. `tsc --noEmit` is the assertion.
+    const goal: StoreGoalConfigFromRoot = { container: 'project' };
+    const config: WaveConfigFromRoot = { store: { kind: 'linear', team: 'EX', goal } };
+    expect(readGoalContainer(config)).toBe('project');
+
+    // …and the ABSENT case, which is a complete value of the same type.
+    const unbound: WaveConfigFromRoot = { store: { kind: 'linear', team: 'EX', goal: {} } };
+    expect(readGoalContainer(unbound)).toBeUndefined();
+  });
+
+  it('still refuses an untrusted value the interface CLAIMS is well-typed', () => {
+    // Naming the interface in the reader says what the KEY is called; it says
+    // nothing about what the loaded JSON put under it. This is the config that
+    // satisfies the declaration and violates it at the same time — the exact
+    // reason the runtime narrow below `readGoalContainer`'s shape note survives
+    // the typing unchanged.
+    const lying = { store: { kind: 'github', goal: { container: 'epic' } } } as unknown as
+      WaveConfigFromRoot;
+    expect(() => readGoalContainer(lying)).toThrow(/store\.goal\.container|epic/);
   });
 
   it('reads the binding out of a config LOADED from disk — the key survives loadWaveConfig', () => {

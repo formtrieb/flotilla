@@ -3,9 +3,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+// The compiler API, for the DECLARATION-level half of the `store.goal` shape
+// check below — the same tool and the same reason barrel-drift.spec.ts reaches
+// for it rather than a regex: the question is about what a declaration IS, and
+// only a parse can answer that without guessing at formatting.
+import ts from 'typescript';
 import {
   EngineCliBindingError,
   loadWaveConfig,
@@ -13,6 +18,7 @@ import {
   type GitHubStoreConfig,
   type LinearStoreConfig,
   type MarkdownStoreConfig,
+  type StoreGoalConfig,
 } from './wave-config';
 // The container vocabulary as the FACET owns it — imported so the specs below
 // compare the typed config field against the adapter's own closed union and its
@@ -33,6 +39,12 @@ import {
   type EngineConfig as EngineConfigFromRoot,
   type EngineCliBindingFailure as EngineCliBindingFailureFromRoot,
   type WaveConfig as WaveConfigFromRoot,
+  // The NAMED `store.goal` shape (ADR-0044 decision 4), promoted off three
+  // hand-copied inline literals in this diff. A type cannot be probed at
+  // runtime, so this import being resolvable at all is one half of the proof —
+  // `tsc --noEmit` fails outright if it regresses off the barrel — and the
+  // identity assertions in the dedicated describe below are the other.
+  type StoreGoalConfig as StoreGoalConfigFromRoot,
 } from './index';
 
 function loadConfigFromString(json: string) {
@@ -546,6 +558,249 @@ describe('loadWaveConfig — store.goal.container: the ACCEPT path', () => {
     expect(narrowed).toBe('milestone');
     expect(linearBound.goal?.container).toBe('project');
     expect(linearDeferred.goal?.container).toBe('initiative');
+  });
+});
+
+// ── the `store.goal` block as ONE NAMED, root-exported interface ─────────────
+//
+// The field shipped as an inline `{ container?: GoalContainer }` object literal
+// written out three times, once per store variant — a placement constraint of
+// the row that introduced it (it owned neither index.ts nor the barrel-drift
+// guard's spec, and a new exported symbol fails that guard unless both move in
+// the same diff), never a decision that three copies were right.
+//
+// Three copies are the same drift class the imported `GoalContainer` union
+// closes one level up: a fourth variant, or a second key under `goal`, has three
+// places to stay in step with and nothing that says so. The assertions below pin
+// that all three variants now answer with the same type — by IDENTITY, the
+// strongest relation TypeScript exposes, rather than by the mutual assignability
+// the obvious `A extends B ? B extends A ? …` form would give.
+//
+// STATED PRECISELY, because the difference was measured rather than assumed
+// (see this row's report): identity is INVARIANT, so it catches an `any`
+// creeping in, `container?: GoalContainer` drifting to
+// `container: GoalContainer | undefined`, a `readonly`, or a member renamed or
+// re-typed — every one of which a mutual-assignability check can sleep through.
+// What it cannot see is a byte-for-byte structurally identical DUPLICATE
+// declaration, because in TypeScript's structural system that IS the same type.
+// The declaration-level guard for that shape is barrel-drift.spec.ts, which
+// compares by alias-resolved symbol identity through the compiler API.
+
+/** Strict type identity (the two-signature trick) — the SAME type, not merely mutually assignable. */
+type TypeIdentical<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
+/** Compile-time assertion: fails `tsc --noEmit` when its argument is not `true`. */
+type ExpectTrue<T extends true> = T;
+/** The negative-control counterpart — see the NEGATIVE CONTROL test below. */
+type ExpectFalse<T extends false> = T;
+
+type MarkdownGoalIsTheNamedInterface = ExpectTrue<
+  TypeIdentical<MarkdownStoreConfig['goal'], StoreGoalConfig | undefined>
+>;
+type GitHubGoalIsTheNamedInterface = ExpectTrue<
+  TypeIdentical<GitHubStoreConfig['goal'], StoreGoalConfig | undefined>
+>;
+type LinearGoalIsTheNamedInterface = ExpectTrue<
+  TypeIdentical<LinearStoreConfig['goal'], StoreGoalConfig | undefined>
+>;
+type RootStoreGoalIsTheModuleDeclaration = ExpectTrue<
+  TypeIdentical<StoreGoalConfigFromRoot, StoreGoalConfig>
+>;
+// NEGATIVE CONTROL (wave-shared Convention 11): a `TypeIdentical` hardwired to
+// `true` would pass every assertion above for the wrong reason.
+// `StoreGoalConfig` and `LinearStateMapConfig` are two genuinely different
+// config blocks and the predicate must say so.
+type PredicateIsNotVacuouslyTrue = ExpectFalse<
+  TypeIdentical<StoreGoalConfig, LinearStateMapConfigForControl>
+>;
+/** Local alias so the negative control names a second, unrelated config shape. */
+type LinearStateMapConfigForControl = NonNullable<LinearStoreConfig['states']>;
+// SECOND NEGATIVE CONTROL, one level finer: the control above is also satisfied
+// by a predicate that has silently degraded to mutual assignability, since those
+// two shapes are not assignable either way. This pair IS mutually assignable and
+// is NOT identical, so only an invariant predicate reports `false` — the exact
+// optional-versus-`| undefined` drift the block comment above claims to catch.
+type PredicateIsNotMereAssignability = ExpectFalse<
+  TypeIdentical<{ container?: GoalContainer }, { container: GoalContainer | undefined }>
+>;
+
+describe('store.goal: ONE named interface, root-exported, shared by all three variants', () => {
+  it('all three store variants carry the SAME named declaration — identity, not three lookalikes', () => {
+    // `tsc --noEmit` is the real assertion; binding each alias to `true` keeps
+    // them load-bearing at runtime so the promotion cannot rot into dead types.
+    const markdown: MarkdownGoalIsTheNamedInterface = true;
+    const github: GitHubGoalIsTheNamedInterface = true;
+    const linear: LinearGoalIsTheNamedInterface = true;
+    const root: RootStoreGoalIsTheModuleDeclaration = true;
+    expect([markdown, github, linear, root]).toEqual([true, true, true, true]);
+  });
+
+  it('NEGATIVE CONTROL: the identity predicate reports FALSE for two genuinely different config blocks', () => {
+    const different: PredicateIsNotVacuouslyTrue = false;
+    expect(different).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL: …and FALSE for a mutually-assignable pair, so it is identity and not assignability', () => {
+    const notIdentical: PredicateIsNotMereAssignability = false;
+    expect(notIdentical).toBe(false);
+  });
+
+  it('a root-only consumer can annotate `store.goal` by NAME and hand it to every variant', () => {
+    // The whole point of the promotion: one value, named once from the package
+    // root, assignable into all three variants without restating its shape.
+    const binding: StoreGoalConfigFromRoot = { container: 'project' };
+    const markdown: MarkdownStoreConfig = {
+      kind: 'markdown',
+      repoRoot: '.',
+      slug: '2026-08-16-x',
+      goal: binding,
+    };
+    const github: GitHubStoreConfig = { kind: 'github', goal: binding };
+    const linear: LinearStoreConfig = { kind: 'linear', team: 'ex', goal: binding };
+    // …and the OPTIONAL role really is optional: an empty block is a complete
+    // value of this type, which is what "absent means nothing declared" needs.
+    const unbound: StoreGoalConfigFromRoot = {};
+
+    expect(markdown.goal?.container).toBe('project');
+    expect(github.goal?.container).toBe('project');
+    expect(linear.goal?.container).toBe('project');
+    expect(unbound.container).toBeUndefined();
+  });
+
+  // ── the DECLARATION-level half, and why the type-level half needs it ──────
+  //
+  // Measured during this row, not assumed: reverting all three variants to the
+  // inline `{ container?: GoalContainer }` literal leaves `tsc --noEmit`
+  // COMPLETELY GREEN, every identity assertion above included. That is correct
+  // behaviour for a structural type system — an inline literal with the same
+  // members IS `StoreGoalConfig` to the checker — and it means the type-level
+  // assertions above pin DIVERGENCE (the harm: two variants answering
+  // differently) while saying nothing about whether the field still REFERENCES
+  // the one declaration. AC "referenced by all three store-config variants" is
+  // a claim about the declaration, so it needs a declaration-level check.
+  //
+  // Syntactic on purpose. The checker cannot answer this question at all — it
+  // has already erased the distinction by the time it has a type — so the
+  // parsed AST of the module's own source is the only place the answer exists.
+
+  const WAVE_CONFIG_SOURCE = join(__dirname, 'wave-config.ts');
+
+  /**
+   * The TYPE NODE of `<interfaceName>.goal` exactly as `wave-config.ts` spells
+   * it, or `undefined` when that interface declares no `goal` member.
+   * `setParentNodes: true` so `getText()` works on the node it returns.
+   */
+  function goalFieldTypeNode(interfaceName: string): ts.TypeNode | undefined {
+    const source = ts.createSourceFile(
+      WAVE_CONFIG_SOURCE,
+      readFileSync(WAVE_CONFIG_SOURCE, 'utf8'),
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+    let found: ts.TypeNode | undefined;
+    const visit = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node) && node.name.text === interfaceName) {
+        for (const member of node.members) {
+          if (
+            ts.isPropertySignature(member) &&
+            ts.isIdentifier(member.name) &&
+            member.name.text === 'goal'
+          ) {
+            found = member.type;
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return found;
+  }
+
+  /** How the field is spelled: the referenced type NAME, or `<inline …>`/`<missing>`. */
+  function goalFieldSpelling(interfaceName: string): string {
+    const node = goalFieldTypeNode(interfaceName);
+    if (!node) return '<missing>';
+    if (ts.isTypeReferenceNode(node)) return node.typeName.getText();
+    return `<inline ${ts.SyntaxKind[node.kind]}>`;
+  }
+
+  it.each(['MarkdownStoreConfig', 'GitHubStoreConfig', 'LinearStoreConfig'])(
+    '%s declares `goal` as a REFERENCE to the named interface, not a re-inlined literal',
+    (variant) => {
+      expect(goalFieldSpelling(variant)).toBe('StoreGoalConfig');
+    },
+  );
+
+  it('the extractor really reads the source — an interface with no `goal` member reports missing', () => {
+    // A guard that returns the same answer whatever it is asked is green for
+    // the wrong reason. `LinearStateMapConfig` lives in the same file and has
+    // no `goal` member; `StoreGoalConfig` itself has none either.
+    expect(goalFieldSpelling('LinearStateMapConfig')).toBe('<missing>');
+    expect(goalFieldSpelling('StoreGoalConfig')).toBe('<missing>');
+    expect(goalFieldSpelling('NoSuchInterfaceExists')).toBe('<missing>');
+  });
+
+  it('FALSIFICATION (Convention 11): the same reader reports an inline literal AS inline', () => {
+    // The failing state of the check directly above, reproduced on a synthetic
+    // source rather than by breaking the real module — the technique
+    // barrel-drift.spec.ts uses for the same reason (a real break would turn
+    // the suite red for everyone else running it). This IS the revert that
+    // typechecks clean, so this test is the only thing standing between it and
+    // a silent re-inlining.
+    const dir = mkdtempSync(join(tmpdir(), 'goal-shape-'));
+    const probe = join(dir, 'probe.ts');
+    writeFileSync(
+      probe,
+      'export interface StoreGoalConfig { container?: string }\n' +
+        'export interface ReferencingConfig { kind: "a"; goal?: StoreGoalConfig }\n' +
+        'export interface ReInlinedConfig { kind: "b"; goal?: { container?: string } }\n',
+      'utf8',
+    );
+    const source = ts.createSourceFile(
+      probe,
+      readFileSync(probe, 'utf8'),
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+    const spellingIn = (interfaceName: string): string => {
+      let found: ts.TypeNode | undefined;
+      const visit = (node: ts.Node): void => {
+        if (ts.isInterfaceDeclaration(node) && node.name.text === interfaceName) {
+          for (const member of node.members) {
+            if (
+              ts.isPropertySignature(member) &&
+              ts.isIdentifier(member.name) &&
+              member.name.text === 'goal'
+            ) {
+              found = member.type;
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      if (!found) return '<missing>';
+      return ts.isTypeReferenceNode(found) ? found.typeName.getText() : `<inline ${ts.SyntaxKind[found.kind]}>`;
+    };
+
+    expect(spellingIn('ReferencingConfig')).toBe('StoreGoalConfig');
+    expect(spellingIn('ReInlinedConfig')).toBe('<inline TypeLiteral>');
+    // …and the assertion the three real variants are held to genuinely FAILS
+    // against the re-inlined one — the check's own red, observed.
+    expect(() => expect(spellingIn('ReInlinedConfig')).toBe('StoreGoalConfig')).toThrow();
+  });
+
+  it('a config LOADED from disk reads back through the named type on every variant', () => {
+    // The type is a claim about the schema, so it is worth measuring against a
+    // real load rather than only against hand-built object literals.
+    for (const store of [
+      { kind: 'markdown', repoRoot: '.', slug: '2026-08-16-x', goal: { container: 'goal-file' } },
+      { kind: 'github', goal: { container: 'milestone' } },
+      { kind: 'linear', team: 'ex', goal: { container: 'initiative' } },
+    ]) {
+      const loaded: StoreGoalConfig | undefined = loadWithStore(store).store.goal;
+      expect(loaded?.container).toBe((store as { goal: { container: string } }).goal.container);
+    }
   });
 });
 

@@ -3258,13 +3258,23 @@ export const WORKTREE_COUNT_ADVISORY_THRESHOLD = 12;
  * section). Deliberately minimal: the two facts an operator needs to decide what
  * this is, plus the one classification that decides which remedy applies.
  *
- * Not exported: it is reached from the root as
- * `NonNullable<WorktreeCountAdvisory['unaccounted']>['entries'][number]`, which
- * keeps the barrel surface (and therefore the package's semver contract, per
- * ADR-0035) unchanged by a field addition — the same additive discipline
- * `WorktreeEntry.survivors` follows one section up.
+ * NAMED, and root-exported. It shipped module-local, reachable from the package
+ * root only as
+ * `NonNullable<WorktreeCountAdvisory['unaccounted']>['entries'][number]`, and
+ * that was a PLACEMENT constraint rather than a design one: the row that added
+ * it owned neither `index.ts` nor the barrel-drift guard's spec, and any new
+ * export here fails that guard unless both move in the same diff. Root-reachable
+ * it already was; NAMEABLE it was not, so a consumer writing the entry type into
+ * a signature of its own had to spell the indexed form by hand and re-derive it
+ * every time the advisory's field names moved.
+ *
+ * Promoting it is strictly ADDITIVE (a Minor, per ADR-0035): the indexed
+ * spelling keeps resolving to exactly this declaration — a type-level identity
+ * assertion in worktree-cleanup.spec.ts pins the two as the SAME type, so no
+ * consumer's existing annotation changes meaning — and nothing about the value
+ * side moves.
  */
-interface UnaccountedWorktree {
+export interface UnaccountedWorktree {
   /** Absolute path exactly as `git worktree list --porcelain` reported it. */
   path: string;
   /** The branch ref name, or `null` when HEAD is detached (the probe-checkout shape). */
@@ -3291,8 +3301,14 @@ interface UnaccountedWorktree {
  * ADVISORY, NEVER A FAILURE: a non-empty `entries` must not join any caller's
  * failure exit. See the file-level section for the legitimate permanent
  * inhabitant (a human's long-lived second worktree) that decision protects.
+ *
+ * Root-exported alongside {@link UnaccountedWorktree} and for the same reason —
+ * a consumer that names the entry type in a signature almost always wants the
+ * report type in the one directly above it, and promoting one without the other
+ * would leave `NonNullable<WorktreeCountAdvisory['unaccounted']>` as the only
+ * spelling for the container of a type that now has a name.
  */
-interface UnaccountedWorktreeReport {
+export interface UnaccountedWorktreeReport {
   /**
    * Every registered worktree that is neither the primary checkout nor named by
    * any population the caller declared. Ordered as `git worktree list` reported

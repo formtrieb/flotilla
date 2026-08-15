@@ -83,6 +83,20 @@ import {
   PROJECT_BLOCKS_RELATION_TYPE,
   PROJECT_RELATION_ANCHOR_TYPE,
 } from './index';
+// The three TYPE-ONLY promotions this guard's own placement constraint had
+// deferred (see the "types this guard deferred" block below). They are listed
+// separately from the value imports above because `typeof` cannot probe them:
+// a type is erased before a single `it` runs, so the compiler-API check in this
+// file — which reads type exports and value exports alike through
+// `checker.getExportsOfModule` — is their enforcement, and this import is a
+// second, load-time signal that fails `tsc --noEmit` if any of them regresses
+// off the barrel.
+import type {
+  UnaccountedWorktree,
+  UnaccountedWorktreeReport,
+  StoreGoalConfig,
+  WorktreeCountAdvisory,
+} from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
 
@@ -643,6 +657,56 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
         isIssueShaped: () => true,
       }),
     ).toThrow(GoalMemberKindError);
+  });
+
+  // ─── the types this guard's own constraint deferred, now promoted ─────────
+  //
+  // This guard has a second-order effect worth naming where it is enforced: it
+  // fails ANY new export in an engine module unless `index.ts` OR this file's
+  // allowlist moves in the same diff. Both are outside most rows' declared
+  // Files globs, so the in-glob move available to a row that adds a
+  // public-surface TYPE is to leave it unexported — reachable through an
+  // indexed spelling or an inline literal, nameable by nobody. Two rows landed
+  // that way and filed the residue:
+  //
+  //   · the unaccounted-worktree reconciliation (ADR-0042 Decision 3) left
+  //     `UnaccountedWorktree` / `UnaccountedWorktreeReport` module-local, root-
+  //     reachable only as
+  //     `NonNullable<WorktreeCountAdvisory['unaccounted']>['entries'][number]`;
+  //   · the goal-seam row (ADR-0044 decision 4) left `store.goal` as an inline
+  //     `{ container?: GoalContainer }` literal copied onto all three store-
+  //     config variants rather than one named interface.
+  //
+  // Both are promoted in the diff that added this block, which is the row that
+  // owns the barrel and this file at once. The assertions below are what a
+  // TYPE can be held to at runtime — that a real value flows through the named
+  // annotations — since `typeof` has nothing to look at once TS erases them;
+  // the identity proofs (the named types ARE the previously-required spellings,
+  // not lookalikes) live beside each type's own suite, in
+  // worktree-cleanup.spec.ts and wave-config.spec.ts.
+  it('the promoted TYPE-ONLY names annotate real values from the root — the surface a consumer signature needs', () => {
+    const entry: UnaccountedWorktree = { path: '/elsewhere/x', branch: null, prunable: true };
+    const report: UnaccountedWorktreeReport = {
+      entries: [entry],
+      level: 'advisory',
+      notice: 'names every unaccounted path',
+    };
+    const advisory: WorktreeCountAdvisory = {
+      count: 2,
+      threshold: 12,
+      level: 'ok',
+      message: null,
+      unaccounted: report,
+    };
+    const goal: StoreGoalConfig = { container: 'initiative' };
+
+    expect(advisory.unaccounted?.entries[0]?.path).toBe('/elsewhere/x');
+    expect(advisory.unaccounted?.level).toBe('advisory');
+    expect(goal.container).toBe('initiative');
+    // The optional role really is optional — "nothing declared" is a complete
+    // value of the named type, not an incomplete one.
+    const unbound: StoreGoalConfig = {};
+    expect(unbound.container).toBeUndefined();
   });
 
   it('the aliased extractIssueId pair resolves to two DIFFERENT, genuinely importable bindings — not one shadowing the other', () => {

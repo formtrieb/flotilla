@@ -547,6 +547,31 @@ export {
   type DetachedSweepOptions,
   type WorktreeCountAdvisory,
   type WorktreeCountAdvisoryOptions,
+  // The UNACCOUNTED-WORKTREE pair (issue #557's reconciliation) — root-REACHABLE
+  // since it shipped, root-NAMEABLE only now, and the gap between those two is
+  // the point. `WorktreeCountAdvisory.unaccounted` crossed the barrel as a field
+  // of an already-exported type, so a consumer could always READ the entries;
+  // what it could not do was write the entry type into a signature of its own
+  // without spelling
+  // `NonNullable<WorktreeCountAdvisory['unaccounted']>['entries'][number]` by
+  // hand and re-deriving it every time the advisory's field names moved.
+  //
+  // It shipped that way for a PLACEMENT reason, not a design one, and the reason
+  // is worth writing down because it is a recurring shape rather than an
+  // oversight: the row that added the reconciliation owned neither `index.ts`
+  // nor barrel-drift.spec.ts, and the drift guard fails ANY new export in a
+  // module unless the barrel (or its allowlist) moves in the same diff — so the
+  // only in-glob move available to that row was to leave the types unexported.
+  // Both the worker and the reviewer measured that constraint with independent
+  // probe exports against the guard before accepting it. This row owns the
+  // barrel, so the promotion happens here.
+  //
+  // Strictly ADDITIVE (Minor, ADR-0035): the indexed spelling still resolves to
+  // exactly these declarations — worktree-cleanup.spec.ts pins the two forms as
+  // the SAME type with a type-level identity assertion — so no existing consumer
+  // annotation changes meaning, and nothing on the value side moves at all.
+  type UnaccountedWorktree,
+  type UnaccountedWorktreeReport,
   type ExecArgumentMeasurement,
   type CommandLineSizeAdvisory,
   type CommandLineSizeAdvisoryOptions,
@@ -719,6 +744,19 @@ export {
   type GitHubStoreConfig,
   type LinearStoreConfig,
   type LinearStateMapConfig,
+  // The `store.goal` block every variant above carries (ADR-0044 decision 4) —
+  // promoted from three hand-copied inline object literals to ONE named
+  // interface, for the same placement reason the unaccounted-worktree pair above
+  // was promoted in this diff: the goal-seam row that introduced the key owned
+  // neither this file nor the drift guard's spec, so a named exported symbol was
+  // not an in-glob move for it and the shape shipped inlined. A root-only
+  // consumer that reads `config.store.goal` needs the type to annotate it, and
+  // the engine's own reader (`readGoalContainer`, cli-store.ts) now names it too
+  // instead of restating the shape in a structural cast — one declaration, so a
+  // fourth store variant or a second key under `goal` has one place to change.
+  // Additive (Minor, ADR-0035): structurally identical to the literal it
+  // replaces, so every config that parsed before parses now.
+  type StoreGoalConfig,
   // `WaveConfig`'s own cleanup-policy field shape (issue #376 barrel-drift
   // reconciliation) — a root-only consumer reading `config.cleanup` needs the
   // type to annotate it.

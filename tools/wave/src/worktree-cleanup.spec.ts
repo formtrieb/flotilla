@@ -155,9 +155,15 @@ import {
   realpathSync,
   readdirSync,
   chmodSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+// The compiler API, for the DECLARATION-level half of section 30b-i's shape
+// check — the same tool barrel-drift.spec.ts reaches for, and for the same
+// reason: the question is about what a declaration IS, which a parse answers
+// and a regex only guesses at.
+import ts from 'typescript';
 import { loadWaveConfig } from './wave-config';
 import {
   DEFAULT_AGENT_PATH_MARKERS,
@@ -205,6 +211,8 @@ import {
   type OrphanRemover,
   type OrphanBranchSweepOps,
   type OrphanBranchSweepPlan,
+  type UnaccountedWorktree,
+  type UnaccountedWorktreeReport,
 } from './worktree-cleanup';
 // The SAME five names, imported through the PACKAGE ROOT rather than the module
 // file directly — proves the barrel actually re-exports the detached-sweep trio,
@@ -221,6 +229,14 @@ import {
   type WorktreeCountAdvisory as WorktreeCountAdvisoryFromRoot,
   type WorktreeCountAdvisoryOptions as WorktreeCountAdvisoryOptionsFromRoot,
   type SkipReason as SkipReasonFromRoot,
+  // The promoted unaccounted-worktree pair. A TYPE cannot be probed at runtime
+  // the way section 30b probes `checkWorktreeCountAdvisoryFromRoot` — `typeof`
+  // has nothing to look at once TS erases it — so these two names being
+  // importable AT ALL is one half of the proof (this file would fail to compile
+  // under `tsc --noEmit` if either regressed off the barrel), and the identity
+  // assertion in section 30b-i below is the other.
+  type UnaccountedWorktree as UnaccountedWorktreeFromRoot,
+  type UnaccountedWorktreeReport as UnaccountedWorktreeReportFromRoot,
 } from './index';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -5904,6 +5920,212 @@ describe('checkWorktreeCountAdvisory — the count-vs-lists reconciliation (issu
     type RootEntry = NonNullable<WorktreeCountAdvisoryFromRoot['unaccounted']>['entries'][number];
     const named: RootEntry[] = fromRoot.unaccounted?.entries ?? [];
     expect(named.map((e) => e.path)).toEqual(['/elsewhere/probe']);
+  });
+});
+
+// ─── 30b-i. the unaccounted pair as NAMED root exports (the barrel promotion) ──
+//
+// Section 30b directly above pinned that the reconciliation is REACHABLE from
+// the package root. It is not the same claim as NAMEABLE, and the gap between
+// them is what this section closes: a consumer writing the entry type into a
+// signature of its own had to spell
+// `NonNullable<WorktreeCountAdvisory['unaccounted']>['entries'][number]` by hand
+// — root-reachable, but re-derived at every call site and re-broken every time
+// the advisory's field names move.
+//
+// The risk a promotion carries is that the NEW name quietly becomes a SECOND
+// type that DRIFTS from the one the indexed spelling still resolves to, so that
+// two consumers annotating "the same" thing get different answers. So the
+// assertions below are type IDENTITY, not assignability — the strongest relation
+// TypeScript exposes, and strictly stronger than the mutual-assignability check
+// the obvious `A extends B ? B extends A ? …` form would give.
+//
+// WHAT THAT DOES AND DOES NOT BUY — measured, not assumed (see the falsification
+// note in this row's report). Identity is INVARIANT, so it catches the drift a
+// mutual-assignability check sleeps through: an `any` creeping into a member,
+// `prunable: boolean` becoming `prunable?: boolean`, a `readonly` appearing, a
+// member renamed, added or re-typed. What it cannot see is a duplicate
+// declaration that is structurally IDENTICAL member-for-member — measured live
+// here, and it is a property of TypeScript's structural type system rather than
+// a hole in the predicate: such a duplicate IS the same type to the checker, and
+// no type-level assertion in this language can say otherwise. The guard against
+// that shape is a different one, and it already exists: barrel-drift.spec.ts
+// compares by alias-resolved SYMBOL identity through the compiler API, which is
+// declaration-level rather than structural.
+
+/**
+ * The strict type-identity predicate (the two-function-signature trick): `true`
+ * only when `X` and `Y` are the SAME type to the checker, not merely mutually
+ * assignable. See the block comment above for exactly which drift that catches
+ * and the one shape it provably cannot.
+ */
+type TypeIdentical<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
+/** Compile-time assertion: fails `tsc --noEmit` (constraint violation) when its argument is not `true`. */
+type ExpectTrue<T extends true> = T;
+/** The negative-control counterpart — see the NEGATIVE CONTROL test below. */
+type ExpectFalse<T extends false> = T;
+
+/** The spelling a consumer was REQUIRED to write before this promotion. */
+type UnaccountedEntryIndexedSpelling =
+  NonNullable<WorktreeCountAdvisoryFromRoot['unaccounted']>['entries'][number];
+/** …and its container's, for the report type promoted alongside it. */
+type UnaccountedReportIndexedSpelling = NonNullable<WorktreeCountAdvisoryFromRoot['unaccounted']>;
+
+type NamedEntryIsTheIndexedSpelling = ExpectTrue<
+  TypeIdentical<UnaccountedWorktreeFromRoot, UnaccountedEntryIndexedSpelling>
+>;
+type NamedReportIsTheIndexedSpelling = ExpectTrue<
+  TypeIdentical<UnaccountedWorktreeReportFromRoot, UnaccountedReportIndexedSpelling>
+>;
+type RootEntryIsTheModuleDeclaration = ExpectTrue<
+  TypeIdentical<UnaccountedWorktreeFromRoot, UnaccountedWorktree>
+>;
+type RootReportIsTheModuleDeclaration = ExpectTrue<
+  TypeIdentical<UnaccountedWorktreeReportFromRoot, UnaccountedWorktreeReport>
+>;
+// NEGATIVE CONTROL for the predicate itself (wave-shared Convention 11): a
+// `TypeIdentical` hardwired to `true` would pass all four assertions above for
+// the wrong reason. `UnaccountedWorktree` and `WorktreeEntry` are two genuinely
+// different worktree shapes, and the predicate must say so.
+type PredicateIsNotVacuouslyTrue = ExpectFalse<TypeIdentical<UnaccountedWorktree, WorktreeEntry>>;
+// SECOND NEGATIVE CONTROL, aimed one level finer: the control above would also
+// be satisfied by a predicate that had silently degraded to mutual
+// assignability, since those two shapes are not assignable either way. This
+// pair IS mutually assignable and is NOT identical — an optional member versus
+// the same member typed `| undefined` — so only an invariant predicate reports
+// `false` here. It is the exact drift shape the block comment above claims to
+// catch, pinned rather than asserted.
+type PredicateIsNotMereAssignability = ExpectFalse<
+  TypeIdentical<{ prunable?: boolean }, { prunable: boolean | undefined }>
+>;
+
+describe('the unaccounted-worktree pair is NAMED at the package root, identical to the indexed spelling', () => {
+  const REPO = '/repo-568';
+
+  /** A minimal registered entry, as `git worktree list --porcelain` would yield it. */
+  function registeredEntry(path: string, branch: string | null = null): WorktreeEntry {
+    return { path, branch, head: 'b'.repeat(40), dirty: false, locked: false };
+  }
+
+  /** The primary checkout git always reports, plus whatever the case needs. */
+  function registeredListing(...rest: WorktreeEntry[]): () => readonly WorktreeEntry[] {
+    return () => [registeredEntry(REPO, 'main'), ...rest];
+  }
+
+  it('the named entry and report types ARE the indexed spellings — identity, not lookalikes', () => {
+    // `tsc --noEmit` is the real assertion: each alias below is an
+    // `ExpectTrue<…>` whose constraint fails to compile if the identity does
+    // not hold. Binding them to `true` here is what makes them load-bearing at
+    // runtime too, so the promotion cannot rot into a dead type alias nothing
+    // reads.
+    const entryIsIndexed: NamedEntryIsTheIndexedSpelling = true;
+    const reportIsIndexed: NamedReportIsTheIndexedSpelling = true;
+    const entryIsModuleDecl: RootEntryIsTheModuleDeclaration = true;
+    const reportIsModuleDecl: RootReportIsTheModuleDeclaration = true;
+    expect([entryIsIndexed, reportIsIndexed, entryIsModuleDecl, reportIsModuleDecl]).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  it('NEGATIVE CONTROL: the identity predicate reports FALSE for two genuinely different types', () => {
+    const different: PredicateIsNotVacuouslyTrue = false;
+    expect(different).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL: …and FALSE for a mutually-assignable pair, so it is identity and not assignability', () => {
+    // `{ prunable?: boolean }` and `{ prunable: boolean | undefined }` accept
+    // each other's values, so an assignability-based check would call them the
+    // same. They are not the same type, and the predicate the assertions above
+    // rely on has to know the difference — otherwise the promoted names could
+    // drift into exactly that shape and still read green.
+    const notIdentical: PredicateIsNotMereAssignability = false;
+    expect(notIdentical).toBe(false);
+  });
+
+  // ── the DECLARATION-level half, and why the type-level half needs it ──────
+  //
+  // Measured during this row, not assumed: swapping a promoted name for a
+  // structurally IDENTICAL but separately declared interface leaves
+  // `tsc --noEmit` completely green, every identity assertion above included.
+  // That is correct behaviour for a structural type system, and it bounds what
+  // the assertions above prove: they pin DIVERGENCE (the harm — one spelling
+  // answering differently from the other), never that the indexed spelling
+  // still ROUTES THROUGH these two declarations. This does, by reading how the
+  // module actually spells the two links in that chain:
+  //
+  //   WorktreeCountAdvisory.unaccounted  →  UnaccountedWorktreeReport | null
+  //   UnaccountedWorktreeReport.entries  →  UnaccountedWorktree[]
+  //
+  // Break either link with a re-inlined literal and the indexed spelling starts
+  // resolving to something the named exports no longer describe — silently, on
+  // a green typecheck. This is what makes that loud.
+  const MODULE_SOURCE = join(__dirname, 'worktree-cleanup.ts');
+
+  /** How `<interfaceName>.<field>` is spelled in the module's own source. */
+  function fieldSpelling(interfaceName: string, field: string): string {
+    const source = ts.createSourceFile(
+      MODULE_SOURCE,
+      readFileSync(MODULE_SOURCE, 'utf8'),
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+    let found: ts.TypeNode | undefined;
+    const visit = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node) && node.name.text === interfaceName) {
+        for (const member of node.members) {
+          if (
+            ts.isPropertySignature(member) &&
+            ts.isIdentifier(member.name) &&
+            member.name.text === field
+          ) {
+            found = member.type;
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return found ? found.getText().replace(/\s+/g, ' ') : '<missing>';
+  }
+
+  it('the indexed spelling ROUTES THROUGH the two named declarations, link by link', () => {
+    expect(fieldSpelling('WorktreeCountAdvisory', 'unaccounted')).toBe(
+      'UnaccountedWorktreeReport | null',
+    );
+    expect(fieldSpelling('UnaccountedWorktreeReport', 'entries')).toBe('UnaccountedWorktree[]');
+  });
+
+  it('the extractor really reads the source — an absent field reports missing', () => {
+    // A reader that answers the same thing whatever it is asked would make the
+    // test above green for the wrong reason.
+    expect(fieldSpelling('WorktreeCountAdvisory', 'noSuchField')).toBe('<missing>');
+    expect(fieldSpelling('NoSuchInterface', 'unaccounted')).toBe('<missing>');
+    // …and it reads a DIFFERENT field of the same interface differently.
+    expect(fieldSpelling('WorktreeCountAdvisory', 'count')).toBe('number');
+  });
+
+  it('a consumer can annotate what the advisory actually returns with the NAMED types', () => {
+    // The whole point of the promotion, exercised end to end: the value the
+    // root-exported function hands back flows into root-exported NAMED
+    // annotations with no indexed spelling anywhere in this test.
+    const advisory: WorktreeCountAdvisoryFromRoot = checkWorktreeCountAdvisoryFromRoot({
+      repoRoot: REPO,
+      listRegistered: registeredListing(
+        registeredEntry('/elsewhere/named'),
+        registeredEntry('/elsewhere/gone'),
+      ),
+      accountedPaths: [],
+      pathExists: (p) => p !== '/elsewhere/gone',
+    });
+    const report: UnaccountedWorktreeReportFromRoot | null = advisory.unaccounted;
+    const entries: UnaccountedWorktreeFromRoot[] = report?.entries ?? [];
+    expect(report?.level).toBe('advisory');
+    expect(entries.map((e) => e.path)).toEqual(['/elsewhere/named', '/elsewhere/gone']);
+    expect(entries.map((e) => e.prunable)).toEqual([false, true]);
   });
 });
 
