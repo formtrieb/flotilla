@@ -147,7 +147,7 @@ Same discipline as the GitHub table above, and the same reason it matters: neith
 |---|---|
 | `read:repository:bitbucket` | reading the repo itself (the auth probe, default-branch resolve) and reading a commit's build-status rollup |
 | `write:repository:bitbucket` | deleting the landed branch after merge |
-| `read:pullrequest:bitbucket` | finding a pull request (BBQL search), reading a pull request, and reading a pull request's own build-status rollup — every pull-request *read* the engine's Bitbucket adapter issues |
+| `read:pullrequest:bitbucket` | finding a pull request (BBQL search) and reading a pull request — every pull-request *read* the engine's Bitbucket adapter issues |
 | `write:pullrequest:bitbucket` | creating, updating, and merging a pull request — every pull-request *write*, `host-pr create`/`arm`/`merge` included |
 
 **Predicted-vs-live status of the four-scope set.** The spec predicts the repository pair alone fails at the very first pull-request call — none of `status`/`preflight`/`arm`/`merge`/`create` can complete without `read:pullrequest:bitbucket`/`write:pullrequest:bitbucket`. The 2026-08-13 live verification pass (the same run the `read:pipeline:bitbucket` paragraph below cites) succeeded because the consumer had additionally granted pull-request-specific scopes on its own judgment, alongside the repository pair — that is *why* it passed, not evidence that the repository pair alone would have. A live round-trip on **exactly** these four scopes and nothing else remains the open item: stamp it once at the next Bitbucket pilot wave, the established one-time e2e-stamp pattern.
