@@ -952,7 +952,7 @@
  *      failed: a repo-wide status delta, when what actually matters is
  *      narrower — what THIS removal attempt could not clear.
  *   2. Probe the residue the failed attempt itself left behind, on the
- *      filesystem, directly. CHOSEN. {@link isSurvivorSetExclusivelyDenied} is
+ *      filesystem, directly. CHOSEN. {@link walkSurvivorSet} is
  *      the filesystem-scan counterpart of {@link isDisposableStatusPath},
  *      applied to what SURVIVED the attempt rather than to a status-line
  *      delta: it reuses the exact same {@link HARNESS_DENIED_DIRS} /
@@ -980,12 +980,61 @@
  *
  * The residue check's own SAFETY DIRECTION is deliberately the opposite of
  * its sibling {@link isDirExclusivelyJunk}: an unreadable or already-gone
- * directory returns `false` (NOT exclusively denied), never vacuous `true` —
- * see that function's own doc comment for why treating "cannot inspect it" as
- * confirming evidence would be unsound here specifically. A dedicated spec
- * proves the negative case explicitly: a real on-disk survivor set that MIXES
- * denied-path content with genuinely-real leftover content stays TRANSIENT,
- * not just the case where nothing survived to inspect at all.
+ * directory reads `false` (NOT exclusively denied), never vacuous `true` —
+ * see {@link walkSurvivorSet}'s own doc comment for why treating "cannot
+ * inspect it" as confirming evidence would be unsound here specifically. A
+ * dedicated spec proves the negative case explicitly: a real on-disk survivor
+ * set that MIXES denied-path content with genuinely-real leftover content
+ * stays TRANSIENT, not just the case where nothing survived to inspect at all.
+ *
+ * ── the walk's evidence stops being discarded (issue #560 — ADR-0042
+ *    Decision 2) ──────────────────────────────────────────────────────────────
+ *
+ * The #542 fix above was measured on its FIRST live read and came back
+ * negative: one hour after it merged, a close on a checkout carrying it
+ * reported the identical two-run flip — run 1 `dirty:false`, no
+ * `manualRecovery`, TRANSIENT; run 2 `dirty:true`, `dirtyAllJunk:true`,
+ * `manualRecovery` present, EXHAUSTED — against ONE worktree with nothing else
+ * run in between, while the fix's own new spec stayed green. Occurrence 7 of
+ * the class, and the first on the post-merge engine.
+ *
+ * The structural reading the ADR settled on: the `deniedResidue` predicate asks
+ * *"is every physical survivor harness-denied?"*, but a delete that aborted
+ * EARLY has not yet exhausted its permissions when that question is asked — on
+ * a full tree at first attempt the survivor set still contains ordinary
+ * deletable content, so the predicate can only ever fire on a tree a PREVIOUS
+ * run already stripped. The two-run flip is the one trajectory on which the
+ * signal can fire at all. The #542 spec passed because every fixture models the
+ * END state (nothing but denied content left), never the first-attempt state.
+ *
+ * ADR-0042 deliberately splits the remedy in two, and this is the FIRST half
+ * only. **Evidence ships now; the delete-path rebuild waits for a live read.**
+ * The rebuild that would let run 1 say EXHAUSTED — exhaust permissions in one
+ * best-effort pass, THEN judge the survivors — touches the delete core (the
+ * FOR-86 git-last ordering, the FOR-84 bounded retry, the #304 scoped force
+ * fallback) on evidence the session record itself still contradicts: whether
+ * the 62 measured paths were the DELETED set or the REFUSED set. Both prior
+ * fixes in this class (#528, #542) were falsified on their first live read;
+ * a third built on a guess would be the same move a third time. So:
+ *
+ *   • {@link walkSurvivorSet} replaces the verdict-only predecessor. It
+ *     computes the SAME verdict with the SAME traversal rules — this slice
+ *     changes no TRANSIENT/EXHAUSTED decision for any input — and additionally
+ *     returns the survivor set it judged: bounded paths
+ *     ({@link SURVIVOR_PATHS_LIMIT}), a total ({@link SURVIVOR_COUNT_LIMIT},
+ *     with `truncated` when the count is a floor).
+ *   • {@link WorktreeEntry.survivors} carries that on the
+ *     `erroredStillListed` entry — the paths, the total, AND the
+ *     exclusively-denied verdict, which until now the classifier consumed and
+ *     then dropped. Additive (ADR-0035); absent whenever the walk was
+ *     inconclusive.
+ *
+ * The field IS the instrument: the next live close is its first read, and the
+ * rebuild decision reopens with that reading in hand rather than against the
+ * ambiguity. The fixture gap that let the mistiming through is closed in the
+ * same slice — the spec now models the FIRST-ATTEMPT state (a full tree whose
+ * delete aborted early, ordinary deletable content still present) and asserts
+ * it reports its survivors while keeping today's TRANSIENT reading.
  *
  * ── a repo-internal location with no lifecycle at all (issue #355) ────────────
  *
@@ -1141,6 +1190,66 @@ export interface WorktreeEntry {
      */
     commands: string[];
   };
+  /**
+   * Present only on a `CleanupResult.erroredStillListed` entry whose survivor
+   * walk was CONCLUSIVE — the worktree directory could actually be read after
+   * the failed attempt (issue #560, ADR-0042 Decision 2). Names what the
+   * removal physically left behind, which no entry in this class carried
+   * before: the report claimed strictly less than the sweep already knew.
+   *
+   * ADDITIVE EVIDENCE ONLY — no TRANSIENT/EXHAUSTED decision reads this field,
+   * and none changed when it was introduced (ADR-0035: no existing key or
+   * exit-code meaning moves). {@link manualRecovery} is still computed from
+   * exactly the three signals its own doc comment names; `exclusivelyDenied`
+   * below is the SAME verdict route three already consumes, now carried on the
+   * entry instead of being discarded the moment the exhaustion decision is
+   * made.
+   *
+   * ABSENT means the walk was INCONCLUSIVE — the directory could not be read
+   * at all (already gone, or unreadable). That is the same inconclusive case
+   * the verdict reads as `false`, and it keeps every fake-path unit fixture's
+   * entry byte-identical to its pre-#560 shape.
+   */
+  survivors?: {
+    /**
+     * Surviving paths relative to the worktree root, `/`-separated and sorted
+     * — BOUNDED (at most a fixed limit, see `SURVIVOR_PATHS_LIMIT`), so a
+     * report can never grow with the size of a tree whose delete aborted on
+     * its very first entry. `paths.length < total` is the disclosure that the
+     * list is a sample of a larger set; `total` is the number to act on.
+     *
+     * A path is recorded where the walk TERMINATES: a file, a directory that
+     * is itself an allowlisted harness-denied unit (never recursed into, same
+     * as the verdict treats it), a directory that turned out to be empty, and
+     * a directory that could not be read. Interior directories the walk
+     * descended through are not themselves listed — their leaves are.
+     */
+    paths: string[];
+    /**
+     * How many survivors the walk counted. Exact unless `truncated` is set.
+     */
+    total: number;
+    /**
+     * Present (`true`) only when the walk stopped counting at its own scan
+     * budget: `total` is then a FLOOR, not a total. Absent means `total` is
+     * exact.
+     */
+    truncated?: boolean;
+    /**
+     * Whether EVERY survivor sits under a harness-denied path — the verdict
+     * behind the issue #542 `deniedResidue` signal, computed by this same
+     * walk. Carried here so an operator (and the next live close's record) can
+     * see the evidence the classification rests on, rather than re-deriving it
+     * from a classification outcome.
+     *
+     * Note the asymmetry with `manualRecovery`, and it is deliberate: this is
+     * the WALK's verdict, unconditionally. The classifier consumes it only for
+     * an ENOTEMPTY-shaped failure (a non-ENOTEMPTY throw already reads
+     * EXHAUSTED without it), so `exclusivelyDenied: true` on a non-ENOTEMPTY
+     * entry is evidence, not a signal that fired.
+     */
+    exclusivelyDenied: boolean;
+  };
 }
 
 /**
@@ -1224,6 +1333,14 @@ export interface CleanupResult {
    * fallback (issue #304) run against it: a re-run cannot succeed, and the
    * entry itself names the manual recovery. See the file-level "a loud,
    * per-entry report for the EXHAUSTED reading" doc section.
+   *
+   * Whichever of the two readings an entry carries, it ALSO names what the
+   * failed removal physically left behind when its survivor walk could read
+   * the directory ({@link WorktreeEntry.survivors} — issue #560): the bounded
+   * paths, their total, and the exclusively-denied verdict. That is evidence,
+   * never a re-grading — see the file-level "the walk's evidence stops being
+   * discarded" doc section for why the classification deliberately did NOT
+   * move in the same slice.
    */
   erroredStillListed: WorktreeEntry[];
   /**
@@ -1882,11 +1999,23 @@ export function executeCleanup(
         // Every signal false → the entry stays byte-identical to before (the
         // TRANSIENT reading, unchanged).
         const exhausted = forceEligible || !attempt.enotempty || attempt.deniedResidue;
-        erroredStillListed.push(
-          exhausted
-            ? { ...wt, manualRecovery: exhaustedManualRecovery(wt.path, forceEligible) }
-            : wt,
-        );
+        // issue #560 (ADR-0042 Decision 2): the same walk that produced
+        // `deniedResidue` also produced the survivor set it judged. Carry it —
+        // bounded paths, a total, and the verdict itself — instead of dropping
+        // it the moment the exhaustion decision above is made. Strictly
+        // ADDITIVE: `exhausted` is computed from the identical three signals it
+        // was before, and an INCONCLUSIVE walk (`survivors === null`, the shape
+        // every fake-path fixture produces) attaches nothing at all, so those
+        // entries stay byte-identical to their pre-#560 shape.
+        erroredStillListed.push({
+          ...wt,
+          ...(attempt.survivors !== null
+            ? { survivors: survivorEvidence(attempt.survivors) }
+            : {}),
+          ...(exhausted
+            ? { manualRecovery: exhaustedManualRecovery(wt.path, forceEligible) }
+            : {}),
+        });
         break;
       }
       case 'errored':
@@ -1933,10 +2062,21 @@ export function executeCleanup(
  *                                 make the directory look "not empty"), so
  *                                 `enotempty` alone cannot tell that shape apart
  *                                 from the genuine transient race. `deniedResidue`
- *                                 is computed only when `enotempty` is true, by
+ *                                 is read off {@link walkSurvivorSet} —
  *                                 inspecting what physically SURVIVED the attempt
- *                                 ({@link isSurvivorSetExclusivelyDenied}) rather
- *                                 than the thrown error's errno.
+ *                                 rather than the thrown error's errno — and is
+ *                                 gated on `enotempty` exactly as before (a
+ *                                 non-ENOTEMPTY throw already reads EXHAUSTED
+ *                                 via the #528 signal alone). Finally it carries
+ *                                 `survivors` (issue #560): that SAME walk's
+ *                                 bounded evidence, `null` when the directory
+ *                                 could not be read at all. The walk now runs on
+ *                                 every throw-still-listed attempt rather than
+ *                                 only the ENOTEMPTY ones, because the evidence
+ *                                 is worth having either way — the CLASSIFICATION
+ *                                 reads it through the unchanged `deniedResidue`
+ *                                 gate, so nothing about which entries read
+ *                                 EXHAUSTED moved.
  *   - `errored`                 — the remover threw and git no longer lists it
  *                                 (a genuine failure), carrying its message.
  *
@@ -1948,7 +2088,12 @@ export function executeCleanup(
 type RemovalAttempt =
   | { kind: 'removed' }
   | { kind: 'deregisteredNotDeleted' }
-  | { kind: 'erroredStillListed'; enotempty: boolean; deniedResidue: boolean }
+  | {
+      kind: 'erroredStillListed';
+      enotempty: boolean;
+      deniedResidue: boolean;
+      survivors: SurvivorScan | null;
+    }
   | { kind: 'errored'; message: string };
 
 function attemptWorktreeRemoval(
@@ -1984,16 +2129,25 @@ function attemptWorktreeRemoval(
       // flip" doc section for why `executeCleanup` needs this even for an
       // entry that was never pre-classified disposable.
       const enotempty = isEnotempty(err);
+      // ONE walk over the survivor set answers both questions this class now
+      // reports (issue #560): the issue #542 verdict the classifier consumes,
+      // and the bounded evidence that verdict rests on. `null` means the
+      // directory could not be read — INCONCLUSIVE, so the verdict falls back
+      // to `false` and no evidence is attached.
+      const survivors = walkSurvivorSet(nodePath.resolve(worktreePath));
       return {
         kind: 'erroredStillListed',
         enotempty,
         // issue #542: an ENOTEMPTY on the real harness can BE the denial
         // (the denied children make the directory look "not empty"), so
-        // `enotempty` alone is not decisive — only worth the filesystem scan
-        // when the error is ENOTEMPTY-shaped in the first place; a
-        // non-ENOTEMPTY throw already reads EXHAUSTED via `!attempt.enotempty`
-        // in `executeCleanup`, with no need for this second signal at all.
-        deniedResidue: enotempty && isSurvivorSetExclusivelyDenied(nodePath.resolve(worktreePath)),
+        // `enotempty` alone is not decisive. The GATE is unchanged by issue
+        // #560 — a non-ENOTEMPTY throw already reads EXHAUSTED via
+        // `!attempt.enotempty` in `executeCleanup`, and consuming the verdict
+        // for it too would be a re-grading, not evidence. Only the walk's
+        // trigger widened: it now also runs for a non-ENOTEMPTY throw, whose
+        // survivors are just as worth naming.
+        deniedResidue: enotempty && (survivors?.exclusivelyDenied ?? false),
+        survivors,
       };
     }
     return { kind: 'errored', message: describeError(err) };
@@ -4899,73 +5053,198 @@ function isStatusExclusivelyDisposable(porcelain: string): boolean {
 }
 
 /**
- * Whether every entry still physically on disk under `root` (recursively) sits
- * under a harness-denied path — {@link HARNESS_DENIED_DIRS} /
- * {@link HARNESS_DENIED_FILES}, the SAME allowlist {@link isDisposableStatusPath}
- * consults — the FILESYSTEM-scan counterpart of that `git status`-driven
- * predicate, applied to the SURVIVOR SET a failed removal attempt leaves
- * behind rather than to a status-line delta (issue #542 — see the file-level
- * "the errno alone cannot carry the denial" doc section for the live-measured
- * shape this answers: on the real harness a removal blocked purely by
- * harness-denied content surfaces as ENOTEMPTY, so `isEnotempty` alone reads
- * it as the transient race the bounded retry exists to clear, when it is in
- * fact the exact deterministic obstruction the EXHAUSTED reading exists to
- * name).
+ * How many surviving paths an incomplete-removal entry NAMES
+ * ({@link WorktreeEntry.survivors}`.paths`). A first-attempt failure can leave
+ * an entire worktree standing — `node_modules` included — so the named list is
+ * a bounded SAMPLE and `total` is the magnitude. Twenty is enough to see which
+ * shape survived (all-denied, mixed, ordinary) without a report growing with a
+ * tree.
+ */
+const SURVIVOR_PATHS_LIMIT = 20;
+
+/**
+ * How many survivors {@link walkSurvivorSet} COUNTS before it stops counting
+ * and sets `truncated`. This bounds the cost of the evidence half on a tree
+ * whose delete aborted on its very first entry; it deliberately does NOT bound
+ * the VERDICT half — see {@link walkSurvivorSet} for why the two halves stop
+ * on different conditions.
+ */
+const SURVIVOR_COUNT_LIMIT = 5000;
+
+/**
+ * What {@link walkSurvivorSet} learns from ONE pass over the survivor set:
+ * the bounded evidence ({@link WorktreeEntry.survivors}) and the
+ * exclusively-denied verdict (issue #542's `deniedResidue` signal) — one walk,
+ * because they are two readings of the same tree and a second walk could only
+ * ever disagree with the first.
+ */
+interface SurvivorScan {
+  paths: string[];
+  total: number;
+  truncated: boolean;
+  exclusivelyDenied: boolean;
+}
+
+/**
+ * Walk what is still physically on disk under `root` after a removal attempt
+ * failed — the SURVIVOR SET — and return both readings of it:
+ *
+ *   • `exclusivelyDenied` — whether every survivor sits under a harness-denied
+ *     path ({@link HARNESS_DENIED_DIRS} / {@link HARNESS_DENIED_FILES}, the
+ *     SAME allowlist {@link isDisposableStatusPath} consults). This is the
+ *     FILESYSTEM-scan counterpart of that `git status`-driven predicate,
+ *     applied to what SURVIVED rather than to a status-line delta (issue #542
+ *     — see the file-level "the errno alone cannot carry the denial" doc
+ *     section for the live-measured shape it answers: on the real harness a
+ *     removal blocked purely by harness-denied content surfaces as ENOTEMPTY,
+ *     so `isEnotempty` alone reads it as the transient race the bounded retry
+ *     exists to clear, when it is in fact the exact deterministic obstruction
+ *     the EXHAUSTED reading exists to name).
+ *   • `paths` / `total` / `truncated` — the EVIDENCE that verdict rests on
+ *     (issue #560, ADR-0042 Decision 2). Until this slice the walk computed
+ *     the verdict, the classifier consumed it, and the survivor set itself was
+ *     dropped on the floor: no report field ever named what actually survived,
+ *     which is exactly the ambiguity (deleted set or refused set?) the #560
+ *     record could not settle from its own transcript.
+ *
+ * Returns `null` when `root` itself cannot be read — already gone, or
+ * unreadable. That is INCONCLUSIVE, and every caller must treat it as such:
+ * the verdict falls back to `false` (DELIBERATELY the OPPOSITE convention from
+ * {@link isDirExclusivelyJunk}'s vacuous `true` for an ORPHAN directory —
+ * there, nothing real is left to lose; here, "cannot read it" carries no
+ * evidence either way about why THIS removal attempt failed), and no
+ * `survivors` evidence is attached at all. Reading an inconclusive scan as
+ * confirming exhaustion would misclassify every worktree this function cannot
+ * inspect — including every unit-level fixture that models a removal attempt
+ * against a path that was never a real directory to begin with.
+ *
+ * ── the traversal rules, unchanged from the verdict-only predecessor ──
  *
  * The worktree's OWN top-level `.git` is skipped rather than checked against
  * the allowlist: {@link physicallyDeleteGitLast} deletes every OTHER entry
  * before `.git` (FOR-86), so `.git` surviving a phase-1 failure is expected
- * scaffolding, not evidence either way — checking it against the allowlist
- * would make this function return `false` on every single occurrence of the
- * shape it exists to catch. Only the TOP-level `.git` gets this exemption; a
- * directory that is not itself the worktree's own gitfile is always checked
- * normally, so a genuinely-nested `.git`-named entry (there is no such thing
- * in a real worktree, but a malformed fixture could construct one) is not
- * silently waved through.
+ * scaffolding, not evidence either way — checking it would falsify the verdict
+ * on every single occurrence of the shape it exists to catch. Only the
+ * TOP-level `.git` gets this exemption; a nested `.git`-named entry (there is
+ * no such thing in a real worktree, but a malformed fixture could construct
+ * one) is checked normally. It is skipped for the EVIDENCE too, so the named
+ * paths are exactly the set the verdict was computed over — a list that
+ * disagreed with its own verdict would be worse than no list.
  *
- * A directory that is itself fully under an entry in {@link HARNESS_DENIED_DIRS}
- * is treated as ONE allowlisted unit and not recursed into further — mirrors
- * how {@link isDisposableStatusPath} treats the same set, and how
+ * A directory itself under an entry in {@link HARNESS_DENIED_DIRS} is ONE
+ * allowlisted unit, not recursed into — mirrors how
+ * {@link isDisposableStatusPath} treats the same set and how
  * {@link isDirExclusivelyJunk} treats {@link JUNK_DIR_NAMES} — so an empty
- * leftover denied directory (its own tracked content already deleted, only the
- * directory entry itself surviving) still reads as fully accounted for.
+ * leftover denied directory still reads as fully accounted for. An unreadable
+ * SUBdirectory falsifies the verdict (the predecessor's recursion returned
+ * `false` for it) and is itself recorded as a survivor.
  *
- * An unreadable or already-gone directory returns `false` — DELIBERATELY the
- * OPPOSITE convention from {@link isDirExclusivelyJunk}'s vacuous `true` for an
- * ORPHAN directory (there, nothing real is left to lose; here, "cannot read
- * it" carries no evidence either way about why THIS removal attempt failed).
- * Reading an inconclusive scan as confirming exhaustion would misclassify
- * every worktree this function cannot actually inspect — including, notably,
- * every existing unit-level fixture in this spec suite that models a removal
- * attempt against a path that was never a real directory to begin with.
- * `false` keeps the caller on the ordinary TRANSIENT reading, the same
- * "unrecognized is real, skip it" safety bias {@link isDisposableStatusPath}
- * already documents for its own unrecognized case.
+ * ── why the two halves stop on different conditions ──
+ *
+ * The verdict is computed with EXACTLY the predecessor's semantics: a
+ * conjunction over every entry, so `exclusivelyDenied` here is `true` on
+ * precisely the trees the short-circuiting predicate returned `true` on. It is
+ * therefore never cut short by a budget — a budget that could stop a
+ * still-true verdict early would have to report `false` to stay sound, and
+ * that WOULD be a classification change (this slice ships evidence, not a
+ * re-grading).
+ *
+ * The evidence half is what gets the budget, and the walk stops entirely only
+ * once BOTH halves have nothing left to learn: the verdict is already settled
+ * `false` AND the count has reached {@link SURVIVOR_COUNT_LIMIT}. So the
+ * expensive case — an aborted-early delete leaving a full tree, `node_modules`
+ * and all — is also the case where the first ordinary file settles the verdict
+ * immediately, and the walk stops a bounded number of entries later. A tree
+ * that keeps the verdict alive is, by construction, made only of allowlisted
+ * denied units (never recursed into) and is tiny.
  */
-function isSurvivorSetExclusivelyDenied(
-  root: string,
-  dir: string = root,
-  isWorktreeTopLevel = true,
-): boolean {
-  let entries: Dirent[];
+function walkSurvivorSet(root: string): SurvivorScan | null {
+  let rootEntries: Dirent[];
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
+    rootEntries = readdirSync(root, { withFileTypes: true });
   } catch {
-    return false;
+    return null;
   }
 
-  for (const entry of entries) {
-    if (isWorktreeTopLevel && entry.name === '.git') continue;
-    const entryPath = nodePath.join(dir, entry.name);
-    const relPath = nodePath.relative(root, entryPath).split(nodePath.sep).join('/');
-    if (entry.isDirectory()) {
-      if (HARNESS_DENIED_DIRS.some((d) => isUnderDir(relPath, d))) continue;
-      if (!isSurvivorSetExclusivelyDenied(root, entryPath, false)) return false;
-      continue;
+  const paths: string[] = [];
+  let total = 0;
+  let truncated = false;
+  let exclusivelyDenied = true;
+
+  /** Record one TERMINAL survivor — the leaf the walk stopped at. */
+  const record = (relPath: string): void => {
+    if (total >= SURVIVOR_COUNT_LIMIT) {
+      truncated = true;
+      return;
     }
-    if (!HARNESS_DENIED_FILES.has(relPath)) return false;
-  }
-  return true;
+    total += 1;
+    if (paths.length < SURVIVOR_PATHS_LIMIT) paths.push(relPath);
+  };
+
+  /** Both halves have learned everything they can — stop walking. */
+  const settled = (): boolean => !exclusivelyDenied && total >= SURVIVOR_COUNT_LIMIT;
+
+  const visit = (dir: string, entries: Dirent[], isWorktreeTopLevel: boolean): void => {
+    for (const entry of entries) {
+      if (settled()) return;
+      if (isWorktreeTopLevel && entry.name === '.git') continue;
+      const entryPath = nodePath.join(dir, entry.name);
+      const relPath = nodePath.relative(root, entryPath).split(nodePath.sep).join('/');
+
+      if (entry.isDirectory()) {
+        if (HARNESS_DENIED_DIRS.some((d) => isUnderDir(relPath, d))) {
+          record(relPath);
+          continue;
+        }
+        let children: Dirent[];
+        try {
+          children = readdirSync(entryPath, { withFileTypes: true });
+        } catch {
+          // The predecessor's recursion returned `false` for an unreadable
+          // subdirectory; the verdict falsifies here for the same reason, and
+          // the directory is a survivor we simply cannot see inside.
+          exclusivelyDenied = false;
+          record(relPath);
+          continue;
+        }
+        // An empty ordinary directory does NOT falsify (the predecessor's
+        // recursion over zero entries returned `true`), but it IS physically
+        // still there, so it is named.
+        if (children.length === 0) {
+          record(relPath);
+          continue;
+        }
+        visit(entryPath, children, false);
+        continue;
+      }
+
+      if (!HARNESS_DENIED_FILES.has(relPath)) exclusivelyDenied = false;
+      record(relPath);
+    }
+  };
+
+  visit(root, rootEntries, true);
+
+  // Sorted so a report is deterministic across filesystems: `readdirSync`
+  // order is not specified, and an operator diffing two runs' evidence must be
+  // reading a real change, not a re-ordering.
+  paths.sort();
+  return { paths, total, truncated, exclusivelyDenied };
+}
+
+/**
+ * Project one {@link SurvivorScan} onto the additive, operator-facing
+ * {@link WorktreeEntry.survivors} shape — `truncated` emitted only when it is
+ * actually true, the same "a marker appears only when it says something"
+ * discipline {@link WorktreeEntry.retried} already follows.
+ */
+function survivorEvidence(scan: SurvivorScan): NonNullable<WorktreeEntry['survivors']> {
+  return {
+    paths: scan.paths,
+    total: scan.total,
+    ...(scan.truncated ? { truncated: true } : {}),
+    exclusivelyDenied: scan.exclusivelyDenied,
+  };
 }
 
 /** True when `err` is a Node errno exception with `code === 'ENOTEMPTY'`. */

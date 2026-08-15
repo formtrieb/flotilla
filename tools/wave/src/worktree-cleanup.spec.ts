@@ -7093,7 +7093,30 @@ describe('executeCleanup — the errno alone cannot carry the denial (issue #542
 
     expect(result.erroredStillListed).toHaveLength(1);
     expect(result.erroredStillListed[0].manualRecovery).toBeUndefined();
-    expect(result.erroredStillListed[0]).toEqual(plainlyClean);
+    // The CLASSIFICATION is byte-identical to the pre-#560 reading — TRANSIENT,
+    // no `manualRecovery` — and the entry is byte-identical to the pre-#560
+    // shape apart from the additive `survivors` evidence (issue #560). Asserted
+    // as one exact object rather than field-by-field, so a future change that
+    // grew a THIRD key on this entry would fail here rather than pass quietly.
+    //
+    // The named survivor set is `real-uncommitted-work.txt` ALONE, and that is
+    // the load-bearing detail: the `.claude/skills` content this fixture also
+    // wrote is gone by the time the classified attempt runs, because
+    // `executeCleanup`'s own bounded-retry junk purge (`removeAllowlistedJunk`,
+    // for which `.claude` is a whole-subtree JUNK_DIR_NAME) cleared it in
+    // between. The evidence therefore reports what survived the ENGINE'S OWN
+    // best effort, not what was on disk when the run started — which is exactly
+    // the question an operator holding an unremovable worktree is asking. On
+    // the real harness the same purge is REFUSED on that content (best-effort,
+    // the throw swallowed), so there the denied paths do survive into this list.
+    expect(result.erroredStillListed[0]).toEqual({
+      ...plainlyClean,
+      survivors: {
+        paths: ['real-uncommitted-work.txt'],
+        total: 1,
+        exclusivelyDenied: false,
+      },
+    });
   });
 
   it('an unreadable/nonexistent worktree path (the same shape every fake-path unit fixture in this file already exercises) never reads EXHAUSTED via the residue signal alone', () => {
@@ -7323,5 +7346,281 @@ describe('the classification flip against a REAL git worktree, ENOTEMPTY-shaped 
 
     expect(existsSync(worktreePath)).toBe(true);
     expect(stillRegistered(mainRoot, worktreePath)).toBe(true);
+  });
+});
+
+// ─── 37. The incomplete-removal entry names its survivors (issue #560 —
+//     ADR-0042 Decision 2) ──────────────────────────────────────────────────
+//
+// Sections 34–36b close the flip for the shapes their own fixtures model, and
+// the #542 fix was then FALSIFIED on its first live read: the two-run flip came
+// back byte-for-byte on the post-merge engine while every one of those fixtures
+// stayed green. ADR-0042 names why, and it is a fixture gap, not a logic bug:
+// every existing fixture models the END state — a tree a PREVIOUS run already
+// stripped, nothing but denied content left — so `exclusivelyDenied` fires. The
+// FIRST-ATTEMPT state, a full tree whose delete aborted early with ordinary
+// deletable content still standing, is the class the live flip exposed and the
+// class no fixture had. On that tree the verdict CANNOT fire, by construction.
+//
+// This section closes the fixture gap and pins the evidence that ships with it.
+// The classification is deliberately NOT re-graded here (ADR-0042 Decision 2 —
+// the exhaust-then-classify rebuild waits for this field's first live read):
+// the first-attempt fixture below asserts TRANSIENT, today's reading, unchanged
+// — while asserting the entry now SAYS what survived, which is the whole point.
+describe('erroredStillListed names its survivors (issue #560)', () => {
+  const NOOP_PAUSE = () => {};
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort
+        }
+      }
+    }
+  });
+
+  function makeTempWorktreeDir(prefix: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    tempRoots.push(root);
+    return root;
+  }
+
+  /**
+   * `executeCleanup` against an always-ENOTEMPTY remover on a REAL directory,
+   * with the junk purge injected as a NO-OP.
+   *
+   * The no-op purge is the faithful model, not a convenience: on the real
+   * harness `removeAllowlistedJunk` is best-effort and its `rmSync` on
+   * harness-denied content is REFUSED (the throw swallowed), so the denied
+   * paths are still on disk when the classified attempt runs. A fixture that
+   * let the default purge run would delete `.claude/**` itself — the temp
+   * directory denies nothing — and would then be modelling a survivor set the
+   * live shape never has.
+   */
+  function classifyWithSurvivors(root: string, entry: WorktreeEntry) {
+    const removeSpy = vi.fn(() => {
+      throw makeEnotempty(root);
+    });
+    const result = executeCleanup(
+      { selected: [entry], skipped: [] },
+      {
+        remover: { remove: removeSpy },
+        stillListed: () => true,
+        retryPause: NOOP_PAUSE,
+        purgeJunk: () => {},
+        skipBranchHygiene: true,
+      },
+    );
+    expect(result.erroredStillListed).toHaveLength(1);
+    return result.erroredStillListed[0];
+  }
+
+  it('THE FIXTURE GAP: a FIRST-ATTEMPT state — a full tree whose delete aborted early, ordinary deletable content still present — reports its survivors while keeping today\'s TRANSIENT reading', () => {
+    const root = makeTempWorktreeDir('wt-cleanup-560-first-attempt-');
+    // A worktree as it stands when a delete aborts on its FIRST denied entry:
+    // the harness-denied paths are still there AND so is every ordinary file
+    // the delete never reached. This is the state the live occurrence was in
+    // on run 1, and the state no pre-#560 fixture modelled.
+    mkdirSync(join(root, '.claude', 'skills'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'skills', 'foo.md'), 'skill content\n');
+    writeFileSync(join(root, '.claude', 'settings.json'), '{}\n');
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'index.ts'), 'export {};\n');
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    writeFileSync(join(root, 'docs', 'notes.md'), '# notes\n');
+    writeFileSync(join(root, 'README.md'), '# readme\n');
+    // The worktree's OWN gitfile: deleted LAST by FOR-86, so it always survives
+    // a phase-1 abort. It is expected scaffolding, evidence of nothing, and is
+    // excluded from BOTH the verdict and the named set — see below.
+    writeFileSync(join(root, '.git'), 'gitdir: /somewhere/.git/worktrees/x\n');
+
+    const plainlyClean: WorktreeEntry = {
+      path: root,
+      branch: 'wave/560-first-attempt',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+    const entry = classifyWithSurvivors(root, plainlyClean);
+
+    // ── the classification is UNCHANGED (ADR-0042 Decision 2) ──────────────
+    // The verdict cannot fire on this tree — ordinary deletable content is
+    // still present — so this reads TRANSIENT exactly as it did before this
+    // slice. That is the structural finding recorded, not a regression: it is
+    // why the two-run flip is the ONLY trajectory on which the #542 signal can
+    // fire, and why the rebuild that would change it is deliberately deferred.
+    expect(entry.manualRecovery).toBeUndefined();
+
+    // ── the evidence is NEW: the entry now names what survived ─────────────
+    expect(entry.survivors).toBeDefined();
+    expect(entry.survivors?.exclusivelyDenied).toBe(false);
+    expect(entry.survivors?.total).toBe(5);
+    expect(entry.survivors?.truncated).toBeUndefined(); // an exact total, not a floor
+    expect(entry.survivors?.paths).toEqual([
+      '.claude/settings.json',
+      '.claude/skills',
+      'README.md',
+      'docs/notes.md',
+      'src/index.ts',
+    ]);
+    // Relative to the worktree, `/`-separated, and sorted — never absolute
+    // (an absolute path would leak the operator's checkout layout into every
+    // report for no added information) and never readdir-ordered.
+    expect(entry.survivors?.paths.some((p) => p.startsWith('/'))).toBe(false);
+    // The worktree's own top-level `.git` is NOT in the list, and that is the
+    // same exemption the verdict makes: the named set is exactly the set the
+    // verdict was computed over, so a reader can never be handed a list that
+    // disagrees with the verdict printed beside it.
+    expect(entry.survivors?.paths).not.toContain('.git');
+    // `.claude/skills` is named as ONE allowlisted unit, not walked into —
+    // mirroring how the verdict treats HARNESS_DENIED_DIRS.
+    expect(entry.survivors?.paths).not.toContain('.claude/skills/foo.md');
+  });
+
+  it('the END state every pre-#560 fixture modelled — nothing but harness-denied content left — names its survivors too, and carries the exclusively-denied verdict that used to be discarded', () => {
+    const root = makeTempWorktreeDir('wt-cleanup-560-end-state-');
+    mkdirSync(join(root, '.claude', 'skills'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'settings.json'), '{}\n');
+    writeFileSync(join(root, '.git'), 'gitdir: /somewhere/.git/worktrees/x\n');
+
+    const plainlyClean: WorktreeEntry = {
+      path: root,
+      branch: 'wave/560-end-state',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+    const entry = classifyWithSurvivors(root, plainlyClean);
+
+    // Classification unchanged from #542: this IS the shape the verdict fires
+    // on, so it reads EXHAUSTED — on the first run, as #542 already delivers.
+    expect(entry.manualRecovery).toBeDefined();
+
+    // The verdict is no longer consumed-and-dropped: it rides the entry, next
+    // to the very paths it was computed from.
+    expect(entry.survivors?.exclusivelyDenied).toBe(true);
+    expect(entry.survivors?.paths).toEqual(['.claude/settings.json', '.claude/skills']);
+    expect(entry.survivors?.total).toBe(2);
+  });
+
+  it('the named list is BOUNDED and the total is stated: a tree with far more survivors than the limit names a sample and reports how many there really are', () => {
+    const root = makeTempWorktreeDir('wt-cleanup-560-bounded-');
+    // 60 ordinary files — the shape a first-attempt abort on a real repo
+    // leaves (there, tens of thousands, `node_modules` included). The report
+    // must not grow with the tree.
+    for (let i = 0; i < 60; i++) {
+      writeFileSync(join(root, `file-${String(i).padStart(3, '0')}.txt`), 'x\n');
+    }
+
+    const plainlyClean: WorktreeEntry = {
+      path: root,
+      branch: 'wave/560-bounded',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+    const entry = classifyWithSurvivors(root, plainlyClean);
+
+    // The bound holds, and `paths.length < total` is the disclosure that the
+    // list is a sample rather than the whole set.
+    expect(entry.survivors?.paths).toHaveLength(20);
+    expect(entry.survivors?.total).toBe(60);
+    expect(entry.survivors?.paths.length).toBeLessThan(entry.survivors?.total ?? 0);
+    // Under the count budget, so the total is exact rather than a floor.
+    expect(entry.survivors?.truncated).toBeUndefined();
+    expect(entry.survivors?.exclusivelyDenied).toBe(false);
+  });
+
+  it('an INCONCLUSIVE walk — the worktree directory cannot be read at all — attaches no evidence, leaving the entry byte-identical to its pre-#560 shape', () => {
+    // AGENT_PATH_A is never a real directory: `readdirSync` throws, the walk
+    // returns `null`, and the entry must carry NOTHING rather than a
+    // fabricated empty survivor set. An empty `paths` with `total: 0` would
+    // read as "the removal left nothing behind", the exact opposite of what an
+    // unreadable directory actually tells us — and it would silently change
+    // every fake-path fixture's entry shape in this file.
+    const removeSpy = vi.fn(() => {
+      throw makeEnotempty(AGENT_PATH_A);
+    });
+    const clean: WorktreeEntry = {
+      path: AGENT_PATH_A,
+      branch: 'wave/560-inconclusive',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+
+    const result = executeCleanup(
+      { selected: [clean], skipped: [] },
+      {
+        remover: { remove: removeSpy },
+        stillListed: () => true,
+        retryPause: NOOP_PAUSE,
+        purgeJunk: () => {},
+        skipBranchHygiene: true,
+      },
+    );
+
+    expect(result.erroredStillListed).toHaveLength(1);
+    expect(result.erroredStillListed[0].survivors).toBeUndefined();
+    expect(result.erroredStillListed[0]).toEqual(clean);
+  });
+
+  it('the evidence is ADDITIVE ONLY: across the whole first-attempt/end-state pair the TRANSIENT/EXHAUSTED decision is exactly what it was, and no OTHER result class grew the field', () => {
+    // Same two trees as the two fixtures above, classified in one pass, with
+    // the readings asserted side by side — the acceptance criterion is that
+    // the DECISION column is unchanged while the EVIDENCE column is new, and
+    // a pair read together is what makes that visible.
+    const firstAttempt = makeTempWorktreeDir('wt-cleanup-560-additive-first-');
+    mkdirSync(join(firstAttempt, '.claude', 'skills'), { recursive: true });
+    writeFileSync(join(firstAttempt, 'README.md'), '# readme\n');
+    const endState = makeTempWorktreeDir('wt-cleanup-560-additive-end-');
+    mkdirSync(join(endState, '.claude', 'skills'), { recursive: true });
+
+    const readings = [firstAttempt, endState].map((root) => {
+      const e = classifyWithSurvivors(root, {
+        path: root,
+        branch: 'wave/560-additive',
+        head: 'a'.repeat(40),
+        dirty: false,
+      });
+      return {
+        exhausted: e.manualRecovery !== undefined,
+        exclusivelyDenied: e.survivors?.exclusivelyDenied,
+      };
+    });
+
+    // The DECISION column — byte-identical to the pre-#560 engine.
+    expect(readings.map((r) => r.exhausted)).toEqual([false, true]);
+    // The EVIDENCE column — new, and agreeing with the decision it explains.
+    expect(readings.map((r) => r.exclusivelyDenied)).toEqual([false, true]);
+
+    // Scoped strictly to `erroredStillListed`: a deregistered-but-not-deleted
+    // entry (the sibling incomplete class) never grows the field, exactly as
+    // `manualRecovery` never did.
+    const { remover } = fakeRemover(); // never throws
+    const deregistered = executeCleanup(
+      {
+        selected: [
+          {
+            path: firstAttempt,
+            branch: 'wave/560-deregistered',
+            head: 'a'.repeat(40),
+            dirty: false,
+          },
+        ],
+        skipped: [],
+      },
+      {
+        remover,
+        pathExists: () => true,
+        retryPause: NOOP_PAUSE,
+        purgeJunk: () => {},
+        skipBranchHygiene: true,
+      },
+    );
+    expect(deregistered.deregisteredNotDeleted).toHaveLength(1);
+    expect(deregistered.deregisteredNotDeleted[0].survivors).toBeUndefined();
+    expect(deregistered.erroredStillListed).toHaveLength(0);
   });
 });
