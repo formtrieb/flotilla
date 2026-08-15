@@ -71,12 +71,14 @@ const SKILLS_DIR = join(REPO_ROOT, '.claude/skills');
 const REVIEWER_AGENT_REL = '.claude/agents/wave-reviewer.md';
 
 /**
- * The population floor. Thirteen skills plus one agent ship today. Pinned
+ * The population floor. Fourteen skills plus one agent ship today. Pinned
  * exactly rather than as a floor: a guard that quietly stopped finding
- * frontmatter would be green for the wrong reason, and a fourteenth skill is a
- * deliberate edit here in the same diff that adds it.
+ * frontmatter would be green for the wrong reason, and a fifteenth skill is a
+ * deliberate edit here — plus a `REQUIRED_TRIGGER_PHRASES` entry below — in the
+ * same diff that adds it. The `goal` station is the first to have gone through
+ * that ritual, bumping this const from 14.
  */
-const DESCRIBED_SURFACE_COUNT = 14;
+const DESCRIBED_SURFACE_COUNT = 15;
 
 // ─── reading the surface ─────────────────────────────────────────────────────
 
@@ -241,6 +243,12 @@ export function internalTokensIn(description: string): string[] {
  * assertions below pins that as a deliberate absence rather than an oversight.
  */
 const REQUIRED_TRIGGER_PHRASES: Readonly<Record<string, readonly string[]>> = {
+  '.claude/skills/goal/SKILL.md': [
+    '"cut a goal"',
+    '"what is left before <goal>"',
+    '"add this to the goal"',
+    '"goal status"',
+  ],
   '.claude/skills/triage/SKILL.md': [
     '"triage this issue"',
     '"review incoming bugs"',
@@ -352,6 +360,7 @@ describe('skill-descriptions-guard — the listing a consumer reads first carrie
     // adopting flotilla reaches `triage` and `to-issues` long before any wave
     // skill runs, and a population that quietly covered only the back half
     // would leave the first impression unguarded.
+    expect(SURFACES).toContain('.claude/skills/goal/SKILL.md');
     expect(SURFACES).toContain('.claude/skills/triage/SKILL.md');
     expect(SURFACES).toContain('.claude/skills/to-prd/SKILL.md');
     expect(SURFACES).toContain('.claude/skills/to-issues/SKILL.md');
