@@ -699,10 +699,14 @@ fi
 #   and why a wave-resume `redispatch` hand-off is the identical case, not a
 #   separate one.
 
-# 8. stop → flag needs-attention
+# 8. stop → flag needs-attention. `--question` and each `--option` land VERBATIM
+#    in a tracker field a person reads, so they are operator-directed output
+#    (Convention 16): write the plain question they answer and the plain choices
+#    they pick between. No internal token, and never a placeholder naming the
+#    session — the Coordinator is not who reads that field.
 {{wave-cli}} issue-store flag "$ID" \
   --kind <recoverable-stop|terminal-failure> \
-  --question "<Coordinator decision needed>" \
+  --question "<the decision needed from the Operator>" \
   --option "<A>" --option "<B>"
 
 # 8a. OPTIONAL Coordinator disposition of a `terminal-failure` STOP — park instead
@@ -795,14 +799,14 @@ disclosures are open."
 
 | `stop.reason` | `--kind` | Why |
 |---|---|---|
-| `reviewer-questions-blocking` | `recoverable-stop` | needs a Coordinator decision; resumable |
+| `reviewer-questions-blocking` | `recoverable-stop` | needs an Operator decision; resumable |
 | `public-api-approval-required` | `recoverable-stop` | human confirm before PR; resumable |
-| `re-dispatch-cap-exhausted` | `recoverable-stop` | cap hit; Coordinator decides next |
+| `re-dispatch-cap-exhausted` | `recoverable-stop` | cap hit; the Operator decides next |
 | `worker-stalled` (warn) | `recoverable-stop` | inspect; may still be running |
 | `worker-failed` | `terminal-failure` | confirmed failure; re-plan |
 | `same-file-conflict` | `terminal-failure` | overlap; re-plan / serialize |
 
-A `terminal-failure` row's eventual disposition is not always `abandoned` — step 8a above (park instead of abandon, ADR-0022) is the scripted alternative when the Coordinator decides the work belongs in a future wave rather than staying flagged in this one.
+A `terminal-failure` row's eventual disposition is not always `abandoned` — step 8a above (park instead of abandon, ADR-0022) is the scripted alternative when the Operator decides the work belongs in a future wave rather than staying flagged in this one.
 
 ## Exit codes
 

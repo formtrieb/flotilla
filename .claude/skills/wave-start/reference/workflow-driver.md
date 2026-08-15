@@ -1104,7 +1104,7 @@ ${JSON.stringify(payload)}
    Every path in that command is absolute and shell-quoted; nothing in it depends on a
    previous call having moved you anywhere.
 4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same --dir, same --iter. If it fails again, report the failure; never vary an argument to buy a zero.
-Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure — and the step-1 cwd mismatch too, if there was one>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim, plus a \`cwd-mismatch:\` line if step 1 found one — a normalized decoration, a misnamed leftover in the sidecar dir, or a write made from the wrong cwd is a finding the Coordinator must see, and an exit-0 run is exactly where it would otherwise be dropped> }.`
+Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure — and the step-1 cwd mismatch too, if there was one>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim, plus a \`cwd-mismatch:\` line if step 1 found one — a normalized decoration, a misnamed leftover in the sidecar dir, or a write made from the wrong cwd is a finding the Coordinator's routing step must not lose, and an exit-0 run is exactly where it would otherwise be dropped> }.`
 }
 
 // The stage wrapper ALWAYS returns `passthrough` — a throw here would drop the

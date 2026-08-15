@@ -114,7 +114,7 @@ Run `issue-store transition <id> queued` per issue — in the same order as the 
 
 ### 7. Report
 
-Name every human-gated row you admitted in step 2a, and say what it is waiting on — the Coordinator running `wave-start` next must not have to rediscover it from the Plan-Table. Print the spine path. Note that Status is `draft` — left that way deliberately. There is no manual step: `wave-start` auto-flips `draft → ready` via `spine set-status` at dispatch (idempotent — a no-op if already `ready`), so the commit-to-scope decision is expressed by the act of running `wave-start`, never by manually editing the frontmatter. The next step is `wave-start` (P7.4).
+Name every human-gated row you admitted in step 2a, and say what it is waiting on — the Coordinator running `wave-start` next must not have to rediscover it from the Plan-Table. Print the spine path. Note that Status is `draft` — left that way deliberately. There is no manual step: `wave-start` auto-flips `draft → ready` via `spine set-status` at dispatch (idempotent — a no-op if already `ready`), so the commit-to-scope decision is expressed by the act of running `wave-start`, never by manually editing the frontmatter. The next step is `wave-start`.
 
 ## Common Mistakes
 

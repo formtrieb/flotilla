@@ -91,7 +91,7 @@ Exit `0` → `awaiting-human: 0 of N human-gated rows — archive gate CLEAR`, c
 
 **Fail-closed in both directions.** An awaiting-human row blocks the archive, and so does a spine that cannot be read or parsed — unknown is blocked. Same stance as `check-disclosures` (ADR-0036).
 
-**Two exits, and only these two.** The gate's own output prints both; neither is a default, and the Coordinator picks:
+**Two exits, and only these two.** The gate's own output prints both; neither is a default, and the Operator picks:
 
 1. **The human acts.** Do the gated work, then let `wave-start` dispatch the row on a later pass. It leaves `planned`, stops matching the gate, and the wave finishes normally. Choose this when the wave is still live and the human action is imminent.
 2. **Park + unclaim** (ADR-0022) — the row leaves this wave for re-planning:
