@@ -80,7 +80,7 @@ import {
   type GoalContainer,
 } from './adapters/issue-store';
 import { buildStore } from './store-factory';
-import { loadWaveConfig, type WaveConfig, type StoreConfig, type GitHubStoreConfig, type LinearStoreConfig } from './wave-config';
+import { loadWaveConfig, type WaveConfig, type StoreConfig, type GitHubStoreConfig, type LinearStoreConfig, type StoreGoalConfig } from './wave-config';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
 import { createLinearApiFromEnv } from './adapters/linear/linear-api-factory';
 import type { CheckStatus } from './host-pr';
@@ -144,14 +144,15 @@ export async function resolveStore(args: string[], injected?: IssueStore): Promi
  * malformed declaration must never be quietly read as unbound, which on GitHub
  * would silently fall back to a container the author did not ask for.
  *
- * SHAPE NOTE — why a TYPED field is still re-checked here. `store.goal` is now
- * declared on all three `StoreConfig` variants (`wave-config.ts`), so the read
- * below is by NAME rather than through a structural cast, and the schema — a
- * semver contract — finally names a key the engine acts on. What that does NOT
- * do is make the value trustworthy: `loadWaveConfig` hands back parsed JSON
- * under the interface, so the declaration describes what a config OUGHT to
- * carry and proves nothing about what THIS one does. Hence every runtime narrow
- * below survives the typing unchanged, and the refusal stays a
+ * SHAPE NOTE — why a TYPED field is still re-checked here. `store.goal` is
+ * declared on all three `StoreConfig` variants as the named
+ * {@link StoreGoalConfig} (`wave-config.ts`), so the read below is by NAME
+ * rather than through a shape restated inline here, and the schema — a semver
+ * contract — names a key the engine acts on. What that does NOT do is make the
+ * value trustworthy: `loadWaveConfig` hands back parsed JSON under the
+ * interface, so the declaration describes what a config OUGHT to carry and
+ * proves nothing about what THIS one does. Hence every runtime narrow below
+ * survives the typing unchanged, and the refusal stays a
  * {@link parseGoalContainer} call rather than being duplicated into the loader:
  * the container ladder has exactly one owner (ADR-0044), and a second copy at
  * config-load time could disagree with it.
@@ -165,7 +166,15 @@ export function readGoalContainer(config: WaveConfig): GoalContainer | undefined
   if (typeof goal !== 'object' || Array.isArray(goal)) {
     throw new Error('wave config "store.goal" must be an object');
   }
-  return parseGoalContainer((goal as { container?: unknown }).container);
+  // The KEY comes from {@link StoreGoalConfig} — `keyof` it, so renaming or
+  // dropping `container` upstream breaks HERE at compile time instead of
+  // silently reading `undefined` off a name nothing declares any more. The VALUE
+  // stays `unknown` on purpose: naming the interface says what the key is
+  // called, never that this file's JSON honoured it, and `parseGoalContainer` is
+  // the one place that grades it.
+  return parseGoalContainer(
+    (goal as Partial<Record<keyof StoreGoalConfig, unknown>>).container,
+  );
 }
 
 /**

@@ -54,6 +54,44 @@ import type { GoalContainer } from './adapters/issue-store';
 // compile-time half and a named place in the schema; the runtime half is
 // unchanged, and `readGoalContainer` still re-checks what it reads, because
 // JSON arrives untyped whatever the interface says.
+//
+// NAMED, not inlined. The field shipped as an inline `{ container?: GoalContainer }`
+// object literal repeated on all three variants — a PLACEMENT constraint, not a
+// design one: the row that added it owned neither `index.ts` nor the
+// barrel-drift guard's spec, and a new exported symbol here fails that guard
+// unless both move in the same diff. Three hand-copied literals are the same
+// drift class the imported `GoalContainer` union closes one level up: a fourth
+// store variant, or a second key under `goal`, has three places to stay in step
+// with and no check that says so. {@link StoreGoalConfig} gives the shape one
+// declaration, one name a consumer can write into its own signature, and one
+// place to extend. Additive (Minor, ADR-0035): the field's TYPE is unchanged —
+// `StoreGoalConfig` is structurally identical to the literal it replaces — so
+// every config that parsed before parses now, and every annotation a consumer
+// already wrote still holds.
+
+/**
+ * The `store.goal` block of a wave config — the Goal container binding
+ * (ADR-0044 decision 4), carried identically by every {@link StoreConfig}
+ * variant.
+ *
+ * OPTIONAL ROLE, deliberately. `container` being absent is a legitimate,
+ * common state, not an incomplete config: it means "this consumer declared
+ * nothing", which each store answers for itself (GitHub defaults to
+ * `milestone`, MarkdownFs to its goal file, Linear refuses loudly). Making it
+ * required here would force every consumer to state a binding its store already
+ * knows the answer to, and would turn Linear's deliberate refusal into a
+ * load-time error in the wrong module — the loader does not own that ladder
+ * (see the block above).
+ */
+export interface StoreGoalConfig {
+  /**
+   * The native container role a goal is realized as on this consumer's tracker
+   * — the ADAPTER-OWNED {@link GoalContainer} union, never a lookalike restated
+   * here. Absent means "nothing declared"; a present-but-unknown value is
+   * refused store-side by `parseGoalContainer`, not here.
+   */
+  container?: GoalContainer;
+}
 
 export interface MarkdownStoreConfig {
   kind: 'markdown';
@@ -65,7 +103,7 @@ export interface MarkdownStoreConfig {
    * above. MarkdownFs realizes `goal-file` and defaults to it, so an absent
    * binding is the ordinary case here rather than a refusal.
    */
-  goal?: { container?: GoalContainer };
+  goal?: StoreGoalConfig;
 }
 
 export interface GitHubStoreConfig {
@@ -77,7 +115,7 @@ export interface GitHubStoreConfig {
    * container with direct issue membership), so an absent binding is the
    * ordinary case; declaring anything else is refused as `unrealized-container`.
    */
-  goal?: { container?: GoalContainer };
+  goal?: StoreGoalConfig;
 }
 
 export interface LinearStateMapConfig {
@@ -113,7 +151,7 @@ export interface LinearStoreConfig {
    * absent binding is refused as `unbound` rather than guessed at, and this is
    * the key that answers it.
    */
-  goal?: { container?: GoalContainer };
+  goal?: StoreGoalConfig;
 }
 
 export type StoreConfig = MarkdownStoreConfig | GitHubStoreConfig | LinearStoreConfig;
