@@ -228,6 +228,106 @@ describe('resolveCredential — a configured command fails LOUD, never falls bac
   });
 });
 
+// ─── 2b. The security(1) hex-mangling refusal (issue #597) ───────────────────
+//
+// The measured shape (2026-08-15, on a live `flotilla-linear-key` item): a
+// keychain item added via `echo "$KEY" | security add-generic-password …`
+// carries a trailing newline in its stored value, and
+// `security find-generic-password -w` then prints that value HEX-ENCODED
+// instead of as text. The resolver refuses the shape at the lookup-command
+// seam rather than handing the hex string on. Both AC2 negative controls
+// (hex-looking-but-not-mangled, ordinary non-hex) live here alongside the
+// positive firing case, so a reader sees all three side by side.
+
+describe('resolveCredential — refuses the measured macOS security(1) trailing-newline hex mangling', () => {
+  const ENV_WITH_AMBIENT_FOR_HEX = { [VAR]: 'ambient-secret', [CMD_VAR]: 'security-lookup --field token' };
+
+  /** hex(`plain`) — the shape `security find-generic-password -w` prints when
+   * the stored item was added with a trailing newline. */
+  function hexEncode(plain: string): string {
+    return Buffer.from(plain, 'ascii').toString('hex');
+  }
+
+  it('FIRES on the measured shape: even-length pure hex decoding to printable text + trailing newline', () => {
+    const mangled = hexEncode('lin_api_deadbeef1234567890\n');
+    const { spawn } = fakeSpawn({ stdout: `${mangled}\n` }); // the lookup tool's own line ending
+    const err = caught(() => resolveCredential(VAR, { env: ENV_WITH_AMBIENT_FOR_HEX, spawn }));
+    expect(err).toBeInstanceOf(CredentialResolutionError);
+    const e = err as CredentialResolutionError;
+    expect(e.failure).toBe('lookup-hex-mangled');
+    expect(e.command).toBe('security-lookup --field token');
+    // Names the cause…
+    expect(e.message).toContain('security(1)');
+    expect(e.message).toContain('trailing newline');
+    // …and the EXACT re-add fix.
+    expect(e.message).toContain("printf '%s'");
+    expect(e.message).toContain('security add-generic-password');
+    // Never falls back to the ambient value, and never leaks either the
+    // decoded plaintext or the raw hex it was decoded from — the decoded
+    // text is the secret, one hex step removed.
+    expect(dumpError(err)).not.toContain('ambient-secret');
+    expect(dumpError(err)).not.toContain('lin_api_deadbeef1234567890');
+    expect(dumpError(err)).not.toContain(mangled);
+  });
+
+  it('NEGATIVE CONTROL 1: a hex-looking value that does NOT decode to the mangled shape passes through unchanged', () => {
+    // A realistic hex-spelled credential (a hash-shaped key) — even-length,
+    // pure hex, but its decoded bytes are NOT printable text, so the
+    // predicate must not fire and the raw value must reach the caller as-is.
+    const hashLike = 'a3f5c9d2e1b7486f9a0c3d5e7f1b2a4c6d8e0f1a2b3c4d5e6f7a8b9c0d1e2f3a';
+    const { spawn } = fakeSpawn({ stdout: hashLike });
+    const secret = resolveCredential(VAR, { env: { [CMD_VAR]: 'lookup' }, spawn });
+    expect(secret).toBe(hashLike);
+  });
+
+  it('NEGATIVE CONTROL 2: an ordinary non-hex credential is untouched', () => {
+    const ordinary = 'lin_api_not_hex_at_all_zzz';
+    const { spawn } = fakeSpawn({ stdout: ordinary });
+    const secret = resolveCredential(VAR, { env: { [CMD_VAR]: 'lookup' }, spawn });
+    expect(secret).toBe(ordinary);
+  });
+
+  it('a hex value with NO trailing whitespace in its decode passes through (mid-string whitespace is not the signature)', () => {
+    // decodes to "abc def" — printable, but nothing trailing to trigger on.
+    const noTrailingWs = hexEncode('abc def');
+    const { spawn } = fakeSpawn({ stdout: noTrailingWs });
+    expect(resolveCredential(VAR, { env: { [CMD_VAR]: 'lookup' }, spawn })).toBe(noTrailingWs);
+  });
+
+  it('an ODD-length hex-looking string can never be the mangling (hex is always even-length) and passes through', () => {
+    const odd = 'abcde'; // 5 hex chars, odd length
+    const { spawn } = fakeSpawn({ stdout: odd });
+    expect(resolveCredential(VAR, { env: { [CMD_VAR]: 'lookup' }, spawn })).toBe(odd);
+  });
+
+  it('the resolved credential is EITHER the raw configured value or a refusal — never a decoded form (AC3)', () => {
+    const mangled = hexEncode('other-secret-value\n');
+    const { spawn } = fakeSpawn({ stdout: mangled });
+    let observed: string | undefined;
+    try {
+      observed = resolveCredential(VAR, { env: { [CMD_VAR]: 'lookup' }, spawn });
+    } catch (err) {
+      expect(err).toBeInstanceOf(CredentialResolutionError);
+      expect((err as CredentialResolutionError).failure).toBe('lookup-hex-mangled');
+    }
+    // Either it threw (asserted above) or, had it not, the ONLY acceptable
+    // return value is the raw configured stdout — never the decoded text.
+    if (observed !== undefined) {
+      expect(observed).toBe(mangled);
+      expect(observed).not.toBe('other-secret-value');
+    }
+  });
+
+  it('the check is pinned to the LOOKUP-COMMAND seam: an ambient value that happens to look hex-mangled is never touched', () => {
+    // No `_CMD` configured at all, so this is the plain ambient-variable
+    // path — the mangling is a `security(1)` lookup-output artifact, and
+    // this issue pins detection there, never to the ambient variable itself.
+    const mangled = hexEncode('ambient-looking-mangled\n');
+    const secret = resolveCredential(VAR, { env: { [VAR]: mangled }, spawn: forbiddenSpawn });
+    expect(secret).toBe(mangled);
+  });
+});
+
 // ─── 3. Secret hygiene, through the REAL shell ───────────────────────────────
 //
 // The injected-seam tests above cannot prove the stdout/stderr containment,
