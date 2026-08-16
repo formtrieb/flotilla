@@ -461,24 +461,50 @@ export interface LinearApi {
  * (`linear/linear` → `packages/sdk/src/schema.graphql`, re-read live this
  * dispatch) treats its two relation arms completely differently:
  *
- *  - The **ISSUE** arm is enum-typed, right there in the schema:
- *    `enum IssueRelationType { blocks  duplicate  related  similar }`, and
- *    `IssueRelationCreateInput.type: IssueRelationType!` — so this adapter's
- *    `BLOCKS_RELATION_TYPE = 'blocks'` in `real-linear-api.ts` is genuinely
- *    schema-pinned, and stays correct.
+ *  - The **ISSUE** arm publishes a real enum — but it binds exactly ONE field
+ *    with it, and naming WHICH field is the whole of the precision here. The
+ *    schema declares `enum IssueRelationType { blocks  duplicate  related
+ *    similar }` and then references it in exactly one place:
+ *    `IssueRelationCreateInput.type: IssueRelationType!`. The object's own
+ *    `IssueRelation.type` is `String!`, and `IssueRelationUpdateInput.type` is
+ *    `String`. So `BLOCKS_RELATION_TYPE` in `real-linear-api.ts` is
+ *    schema-pinned on the CREATE it feeds and NOT on the read that shares its
+ *    spelling — `toBlockedByIdentifiers` filters a bare-`String` field. The
+ *    rule this section yields already bites one field over, INSIDE the very arm
+ *    being called "the explicit one".
  *  - The **PROJECT** arm declares NO enum anywhere. There is no
- *    `ProjectRelationType`, no anchor enum;
- *    `ProjectRelationCreateInput.type`, `.anchorType` and `.relatedAnchorType`
- *    are all bare `String!`, and the two `type` fields even carry near-identical
+ *    `ProjectRelationType`, and no anchor enum at all — the schema's six anchor
+ *    declarations (`anchorType`/`relatedAnchorType` on `ProjectRelation`,
+ *    `ProjectRelationCreateInput` and `ProjectRelationUpdateInput`) are every
+ *    one of them `String`. `ProjectRelationCreateInput.type` is bare `String!`
+ *    too, and the two CREATE inputs' `type` fields even carry near-identical
  *    doc strings ("The type of relation of the {issue|project} to the related
  *    {issue|project}").
  *
- * So the original inference met an arm that was silent, turned to the parallel
- * arm that was explicit, found `blocks` there among four named members, and
- * adopted it. Every step of that is reasonable; the conclusion was wrong,
+ * So the original inference met an arm whose TYPES were silent, turned to the
+ * parallel arm that was explicit, found `blocks` there among four named members,
+ * and adopted it. Every step of that is reasonable; the conclusion was wrong,
  * because the two arms are validated by different vocabularies and only one of
- * them publishes its own. The general rule, and the reason this paragraph is
- * worth its lines:
+ * them publishes its own.
+ *
+ * **But the project arm was never silent — only untyped, and that is the half
+ * an account of "why it was plausible" must not leave out.** The published
+ * schema DID carry the accepted value, in prose, in the same declaration: the
+ * type description opens "A **dependency** relation between two projects",
+ * `project` is "The source project in the **dependency** relation",
+ * `relatedProject` is "The target project in the **dependency** relation", and
+ * `type` itself reads "The type of **dependency** relationship from the project
+ * to the related project (e.g., blocks)". The accepted wire value and the
+ * refused one sit in the SAME SENTENCE — `dependency` is its noun, `blocks` is
+ * its example — and the reading skimmed that sentence for the enum-shaped thing,
+ * found the example, and took it. (The issue arm's prose really does enumerate,
+ * and even there imperfectly: `IssueRelation.type` reads "Possible values
+ * include blocks, duplicate, and related" — non-exhaustive, and it drops
+ * `similar`.) So the correction was recoverable from the published schema after
+ * all. It just was not recoverable from the schema's TYPES, which is where the
+ * eye goes.
+ *
+ * Two rules come out of that, and the second is the one that was missing:
  *
  *  > A sibling field's enum is NOT this field's enum. Where one arm of a vendor
  *  > API publishes an enum and the parallel arm types the same-named field as
@@ -487,11 +513,31 @@ export interface LinearApi {
  *  > that need not overlap the first. Carrying a member across is a guess
  *  > wearing an enum's clothes. Measure it.
  *
+ *  > And where a field is UNTYPED, its doc string is the only vocabulary the
+ *  > vendor hands you — so read it WHOLE, and weigh its NOUNS above its
+ *  > EXAMPLES. An example says what the field is like; the noun is often what
+ *  > the field IS. Measuring still beats both, but a doc string read whole
+ *  > would have made this measurement a confirmation instead of a surprise.
+ *
  * The anchor pair below is the same error's second head, and the read-side doc
- * string is where it came from: `ProjectRelation.anchorType` is documented as
- * "whether it is anchored to the project itself or a specific milestone", so
- * `'project'` was lifted out of English prose rather than out of any enum at
- * all — and the live enum turned out to be `start | end | milestone`.
+ * string is where it came from — quoted WHOLE here, because the clause that
+ * gets trimmed is the load-bearing one. `ProjectRelation.anchorType` reads, in
+ * full:
+ *
+ *  > "The type of anchor on the source project end of the relation, indicating
+ *  > whether it is anchored to the project itself or a specific milestone."
+ *
+ * `'project'` was lifted out of the TRAILING clause — out of English prose
+ * rather than out of any enum, since there is none to lift from. But the
+ * OPENING clause, the one a short citation drops, already says this field is
+ * the anchor on ONE END of a relation: per-side, not per-relation. Read whole,
+ * the measured vocabulary (`start | end | milestone`) stops looking like a
+ * betrayal — "anchored to the project itself" names the CHOICE (project-level
+ * versus milestone-level), while the words that EXPRESS it are the ends the
+ * opening clause already promised. One symmetric value was never spellable in
+ * a field the vendor documents per-end. Cited short, the doc string reads like
+ * a clean binary the API then refused; cited whole, it reads like a per-end
+ * anchor whose vocabulary was simply never published — which is what it is.
  *
  * ── What the SAME live probe CONFIRMED — do not re-measure this ──────────────
  *

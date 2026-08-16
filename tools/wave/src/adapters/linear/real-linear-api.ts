@@ -404,10 +404,19 @@ const CREATE_ISSUE_RELATION_MUTATION = `mutation CreateIssueRelation($input: Iss
  *
  * e2e-verify — STILL UNPROVEN (this wave has no live probe). Pinned from
  * Linear's documented `IssueRelationType` enum (`blocks | duplicate | related |
- * similar`). It is the SAME literal the READ half already filters on —
- * `toBlockedByIdentifiers` keeps `inverseRelations` nodes whose `type ===
- * 'blocks'` — so read and write are pinned to one constant string, not two
- * independent guesses. Flip to VERIFIED on the first live mirror.
+ * similar`), and the WRITE this constant feeds is genuinely governed by it:
+ * `IssueRelationCreateInput.type` is typed `IssueRelationType!`. Flip to
+ * VERIFIED on the first live mirror.
+ *
+ * **The READ half is a different story, and an earlier wording here overstated
+ * it.** `toBlockedByIdentifiers` does keep `inverseRelations` nodes whose
+ * `type === 'blocks'`, but that field is `IssueRelation.type: String!` — bare,
+ * as is `IssueRelationUpdateInput.type`. The enum governs one input field, not
+ * the arm. And the filter does not even reach this constant: it repeats
+ * `'blocks'` as an inline literal, so the two halves agree by coincidence of
+ * spelling rather than by construction. The PROJECT arm is the better shape on
+ * both counts — `PROJECT_BLOCKS_RELATION_TYPE` is imported by its read filter
+ * and its write alike.
  *
  * **This enum is real, and it is exactly the one that must NOT be carried
  * sideways.** The schema types `IssueRelationCreateInput.type` as
