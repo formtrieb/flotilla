@@ -9,6 +9,116 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.0.0] — 2026-08-16
+
+**A live measurement falsified two constants 1.5.0 had shipped as unproven, and repairing
+them removed a published export.** That removal is the whole reason for the major: one root
+export is gone by name, with no alias. Everything else in this release is a repair or a
+correction, and the practical blast radius is as close to zero as a breaking change gets —
+but the rule is written about the *shape* of the change, not about how many people it hurts,
+and this is a removal.
+
+If you do not use the Linear goal facet's initiative binding, upgrading is a rename in one
+import line, or nothing at all.
+
+### The migration, in full
+
+| 1.5.0 | 2.0.0 |
+|---|---|
+| `PROJECT_RELATION_ANCHOR_TYPE` (a `string`, `'project'`) | **`PROJECT_RELATION_ANCHOR_PAIR`** (a frozen object, `{ anchorType: 'end', relatedAnchorType: 'start' }`) |
+| — | `ProjectRelationAnchorPair` (new exported type) |
+| `PROJECT_BLOCKS_RELATION_TYPE === 'blocks'` | `PROJECT_BLOCKS_RELATION_TYPE === 'dependency'` (same name, new value) |
+
+Nothing else on the package root, the `wave.config.json` schema, or the CLI surface changed.
+
+### Removed
+
+- **`PROJECT_RELATION_ANCHOR_TYPE` — renamed, with no alias left behind.** It named a single
+  symmetric anchor value; the live API has no such thing, so the symbol had no correct value
+  to hold and keeping the name would have been keeping a lie. The replacement is a **frozen
+  wire-keyed pair** spread whole into the relation input, which makes the one dangerous
+  mistake unspellable rather than merely discouraged: a project dependency is finish-to-start
+  — the blocker's `end` anchored to the blocked project's `start` — and two loose scalars
+  could be swapped silently, because both values are valid enum members in both fields and
+  Linear would happily record a backwards dependency without complaint. The alias was
+  considered and deliberately not shipped: the retired constant's only value was one the API
+  refuses, so an alias would preserve a name whose meaning was never usable.
+
+### Fixed
+
+- **Both project-relation constants were wrong, and the initiative-bound `blockedBy` arm
+  could not succeed against any live workspace.** 1.5.0 listed these values under *Not yet
+  proven*; that was too kind. Every attempt to draw a native project dependency failed with
+  `Argument Validation Error`. `type` had to be `'dependency'` — not `'blocks'` — and the two
+  anchor fields had to be `'end'` and `'start'`, not `'project'`. The arm now works; before,
+  it never could.
+- **The `-heavy` failure underneath it is worth more than the fix, because it will recur on
+  the next vendor field.** The published schema types all three fields as free `String`, so a
+  schema read pins their *shape* and can say nothing about their *values* — and the API
+  validates them as enums anyway, one layer behind GraphQL, surfacing only in a rejection
+  payload. Worse, the vendor's own field documentation gives `blocks` as its example, which
+  is precisely the value the API refuses. The read-stamp on these constants now records that
+  in full, including the sharpest explanation for why the wrong guess was plausible: the
+  schema *does* define an enum for the **issue** relation arm and none at all for the
+  **project** arm, so a real enum member was carried across from the neighbouring arm. It
+  also records where that enum actually binds — the create input only; the relation's own
+  `type` field and the update input are bare `String`.
+
+### Added
+
+- **`ProjectRelationAnchorPair`**, the exported shape of the replacement constant. Its two
+  members are literal-typed (`'end'` / `'start'`), so a symmetric collapse fails at the type
+  gate before any test runs.
+
+### Changed
+
+- **The goal station's documentation gained the usage mode it was actually being used in.**
+  The cut pass was framed as greenfield placeholder-filing; the archetypal use — a release
+  cut — is a **collecting lens over a pool that already exists**, which the skill now names in
+  its own right. Two questions the docs previously left open are settled rather than
+  surveyed: whether one preview under one confirm may cover a combined cut-plus-curation pass,
+  and whether the ship-member-with-edges shape is taught or rejected.
+- **Two skill descriptions were repaired, one of which was silently truncating at runtime.**
+  A space-hash inside a trigger phrase read as a YAML comment introducer, so the document
+  parsed *cleanly* and the description ended 55 characters early — visible to nobody, since
+  nothing errored. The other was a colon-space that failed strict parsing outright, in the
+  reviewer agent file: a sixth carrier that falsified the original diagnosis's
+  SKILL.md-only correlation. The in-repo guard now reaches both, which matters more than
+  usual because the platform's own validator stopped reporting this class entirely between
+  two releases — this guard is now its only owner.
+
+### Not yet proven
+
+Everything below ships tested against fakes, falsification specs, and vendors' published
+schemas — and has never made the live round-trip. Unchanged from 1.5.0 except where noted.
+
+- **The Linear attachment upsert has never run live.** First Linear-store consumer close
+  after this release is the first live read.
+- **The `prUrl` notice's agent-mediated half has never completed end-to-end.** The engine side
+  is live-measured; no real Scribe has yet forwarded a real notice.
+- **The grant-in-brief mechanism's plugin half** — exercised for the first time during this
+  release's own work, but on the source form rather than an installed consumer.
+- **Bitbucket's write half** (unchanged since 1.3.0; the read half is live-verified).
+- **The uppercase-team-key assumption** in the issue-vs-project id check.
+- **Dropped from this list, because they were measured:** the project-relation constants
+  (measured, and falsified — see Fixed) and the four direction facts that came back correct
+  (values round-trip verbatim with `projectMilestone: null`; `projectId` is the blocker and
+  `relatedProjectId` the blocked project; the relation surfaces on the blocked project's
+  `inverseRelations` and never its `relations`; and Linear's own blocking/blocked-by filters
+  agree with that direction). Uniqueness is enforced per project-pair-and-type, not per
+  anchor pair.
+
+### Known issues
+
+- **The worktree sweep's classification still needs two runs on a sandboxed harness.** A
+  deterministically-denied clean worktree reads as *transient* on the first run and only
+  reads *exhausted* — carrying the manual recovery commands — on the second. Two separate
+  fixes have now been measured live against this, and both failed the same way; the current
+  hypothesis is that the distinguishing evidence only comes into existence *as a result of*
+  the first failed attempt, which no discriminator reading that attempt can see. The manual
+  sandbox-off force-removal remains the documented ordinary path.
+- **The mirror pass is designed but not built** (unchanged from 1.5.0).
+
 ## [1.5.0] — 2026-08-16
 
 The **goal station** release: flotilla gains a fourth planning station, and with it the
