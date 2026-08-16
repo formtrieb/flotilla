@@ -885,6 +885,19 @@ const WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT = [
  * barrel-drift.spec.ts's identity comparison, exactly as every other family
  * here.
  *
+ * That type half last grew by TWO names — `GoalMemberNativeState` and
+ * `GoalMemberHealth`, the live native facts a reading now carries beside its
+ * state — and the growth is invisible in the arithmetic below BY CONSTRUCTION,
+ * which is worth stating rather than leaving as a silent zero: they are types,
+ * so they add nothing to a runtime export count, and the two interfaces that
+ * gained them (`GoalMemberFacts`, `GoalMemberReading`) were already on the root.
+ * Their enforcement is entirely compile-time — `tsc --noEmit` plus
+ * barrel-drift.spec.ts, which fails any export of `./goal-frontier` the barrel
+ * does not carry, and which now annotates a real reading through both names.
+ * A widening like this one is exactly the shape that used to reach a consumer a
+ * release late; the count could never have caught it, and the pin that does is
+ * named here so the next reader knows where to look.
+ *
  * What is NOT in this list is the claim worth reading twice: no `closeGoal`, and
  * no dispatch verb of any spelling. Neither exists on the facet — a goal is
  * sight, never permission, and closing the container is the Operator's act in

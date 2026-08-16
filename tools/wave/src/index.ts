@@ -1120,10 +1120,29 @@ export {
 // member's blocker is another project and a Linear project id is a UUID with no
 // honest `IssueRef` spelling. The five readings, the ladder, and
 // `computeGoalFrontier` itself are untouched.
+//
+// `GoalMemberNativeState`/`GoalMemberHealth` are the second shape change, and
+// they are additive in the strict sense: two OPTIONAL fields on `GoalMemberFacts`
+// and `GoalMemberReading`, no existing field touched, no reading reclassified.
+// They cross the root because they are the frontier's answer to a question its
+// consumers were previously left to guess at — five readings over a six-value
+// native vocabulary is lossy, so a renderer either sees the native fact or
+// documents the ambiguity around a gap. Both are `string` on purpose (a vendor
+// vocabulary the store-blind engine must not enumerate) and both are TRANSPORT
+// ONLY: nothing in `computeGoalFrontier` can default, coalesce or infer either
+// one, and `health` in particular is a human's judgment on the tracker that this
+// layer carries and never authors.
+//
+// A root-only consumer needs the names for the reason it needs `GoalFrontier`
+// itself: it reads them off the verb and has to spell their type — and the
+// mirror pass's anchor block (ADR-0046 decision 3) renders exactly these two
+// per member.
 export {
   type GoalMemberState,
   GOAL_MEMBER_STATES,
   type GoalBlocker,
+  type GoalMemberNativeState,
+  type GoalMemberHealth,
   type GoalMemberFacts,
   type GoalMemberReading,
   type GoalFrontier,

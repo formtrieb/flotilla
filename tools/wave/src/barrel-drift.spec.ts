@@ -99,6 +99,16 @@ import type {
   StoreGoalConfig,
   WorktreeCountAdvisory,
   ProjectRelationAnchorPair,
+  // The frontier's two live-native-fact types, promoted in the diff that widened
+  // `GoalMemberFacts`/`GoalMemberReading` to carry them. They are named here for
+  // the same load-time reason every type above is — and the coupling is real
+  // rather than ceremonial: the compiler-API check below fails ANY export of
+  // `./goal-frontier` that the barrel does not re-export, so a future row that
+  // adds a native-fact type and forgets `index.ts` is caught here rather than by
+  // an installed-form consumer who cannot name the thing they receive.
+  GoalMemberNativeState,
+  GoalMemberHealth,
+  GoalMemberReading,
 } from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
@@ -750,6 +760,31 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     // value of the named type, not an incomplete one.
     const unbound: StoreGoalConfig = {};
     expect(unbound.container).toBeUndefined();
+  });
+
+  it('the frontier\'s native-fact types annotate a reading from the root — and an ABSENT fact stays an absent KEY', () => {
+    // The same standard the promoted types above are held to: a real value flows
+    // through the root-exported annotations, which is all a TYPE can be asked
+    // for once TS erases it.
+    const nativeState: GoalMemberNativeState = 'paused';
+    const health: GoalMemberHealth = 'atRisk';
+    const moving: GoalMemberReading = {
+      id: 'prj-1',
+      state: 'in-motion',
+      unresolvedBlockers: [],
+      nativeState,
+      health,
+    };
+    expect(moving.nativeState).toBe('paused');
+    expect(moving.health).toBe('atRisk');
+
+    // Both really are OPTIONAL — a reading from a binding with no native state
+    // and no recorded health is a COMPLETE value of the named type, not an
+    // incomplete one. This is the shape the three issue-direct bindings return,
+    // and the reason the fields are optional rather than defaulted.
+    const bare: GoalMemberReading = { id: '7', state: 'unready', unresolvedBlockers: [] };
+    expect('nativeState' in bare).toBe(false);
+    expect('health' in bare).toBe(false);
   });
 
   it('the aliased extractIssueId pair resolves to two DIFFERENT, genuinely importable bindings — not one shadowing the other', () => {

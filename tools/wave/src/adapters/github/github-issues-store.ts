@@ -823,6 +823,16 @@ export class GitHubIssuesStore implements IssueStore {
    * member (no `## Files` section to parse), and a bare member is exactly what
    * the `goal` station files at a cut. Going through `read()` would make a
    * fresh goal unreadable; going around it makes `unready` observable.
+   *
+   * `nativeState` and `health` are deliberately NOT stated. A milestone binding
+   * is issue-direct: a GitHub issue is `open` or `closed` and nothing else, which
+   * `closed` above already carries in full, and GitHub records no health of any
+   * kind. Absence is the honest answer, and it is reported as absence — never as
+   * `'open'`, never as an empty string, never as a placeholder — so a caller can
+   * tell "this binding has no such value" from "this member's value is blank".
+   * Only a binding whose members are themselves containers (a Linear project
+   * under an `initiative` binding) has a native state the five readings are
+   * lossy about; see `LinearIssuesStore.goalProjectMemberFacts`.
    */
   private async goalMemberFacts(gh: GhIssue): Promise<GoalMemberFacts> {
     const closed = gh.state === 'closed';

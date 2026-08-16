@@ -14,6 +14,24 @@
  *  2. **Every state is REACHABLE.** A ladder that could never emit `blocked`
  *     would satisfy "exactly one state" perfectly. So the enumeration also
  *     asserts the observed states are the WHOLE vocabulary, not a subset.
+ *
+ * The later blocks pin the widening that let a reading carry the LIVE NATIVE
+ * FACTS it was folded from (`nativeState`, `health`), and they are deliberately
+ * ADDITIONS: not one assertion above them moved, because a widening of what a
+ * reading CARRIES must not move what it MEANS, and the untouched classification
+ * cases are the proof of that rather than a claim about it. Three properties
+ * carry the weight, each stated over the whole 16-point fact space rather than
+ * over examples:
+ *
+ *  3. **No reclassification.** Attaching any native value to any combination
+ *     answers exactly as it did without one.
+ *  4. **Never authored.** No reading ever acquires a health the facts did not
+ *     state — no default, no coalesce, no `blocked → atRisk`. Health is a
+ *     human's judgment on the tracker; this layer transports it (ADR-0046
+ *     decision 4).
+ *  5. **Absent means absent.** An unstated fact leaves the KEY missing, so
+ *     `'health' in reading` answers "did anybody state one" and an issue-direct
+ *     store's rendered frontier is byte-identical to what it was before.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -322,5 +340,238 @@ describe('a blocker is named in whichever id space its member kind has (ADR-0045
     ]);
     expect(frontier.readings[0].unresolvedBlockers).toEqual([]);
     expect(frontier.readings[1].unresolvedBlockers).toEqual([]);
+  });
+});
+
+// ── the live native facts a reading carries beside its state ────────────────
+//
+// Five readings over a six-value native vocabulary is a lossy projection:
+// `started` and `paused` both read `in-motion`, `completed` and `canceled` both
+// read `done`. The reading now carries the fact it was folded FROM, so a caller
+// can name which one produced it. Everything below pins the two properties that
+// make that safe — the fold itself did not move, and health is transport only.
+
+/** One member per reading, so a claim can be made about all five at once. */
+function oneOfEachReading(
+  extras: Partial<GoalMemberFacts> = {},
+): GoalMemberFacts[] {
+  return [
+    facts({ id: 'r-done', closed: true, ...extras }),
+    facts({ id: 'r-moving', claimed: true, ...extras }),
+    facts({ id: 'r-waiting', unresolvedBlockers: [BLOCKER], ...extras }),
+    facts({ id: 'r-ready', eligible: true, ...extras }),
+    facts({ id: 'r-bare', ...extras }),
+  ];
+}
+
+const EVERY_READING: readonly GoalMemberState[] = [
+  'done',
+  'in-motion',
+  'blocked',
+  'actionable',
+  'unready',
+];
+
+describe('a reading CARRIES its native state — for every reading, ungated', () => {
+  it('travels verbatim from the facts to the reading', () => {
+    const frontier = computeGoalFrontier('init-1', [
+      facts({ id: 'prj-paused', claimed: true, nativeState: 'paused' }),
+      facts({ id: 'prj-started', claimed: true, nativeState: 'started' }),
+      facts({ id: 'prj-backlog', claimed: true, nativeState: 'backlog' }),
+    ]);
+    // The whole point of the field in one assertion: three members, ONE reading
+    // between them, three distinguishable native facts. Before this travelled,
+    // a renderer could only name what `in-motion` might have meant.
+    expect(frontier.readings.map((r) => r.state)).toEqual([
+      'in-motion',
+      'in-motion',
+      'in-motion',
+    ]);
+    expect(frontier.readings.map((r) => r.nativeState)).toEqual([
+      'paused',
+      'started',
+      'backlog',
+    ]);
+  });
+
+  it('is carried on ALL FIVE readings, `done` included — it is a fact about the member, not evidence for a rung', () => {
+    // Deliberately unlike `unresolvedBlockers`, which IS gated to the one
+    // reading it is evidence for. `done` is the case that matters most here:
+    // the reading cannot say whether a project was `completed` or `canceled`,
+    // so gating the native value the way blockers are gated would put the gap
+    // back exactly where it hurt.
+    const frontier = computeGoalFrontier('init-1', oneOfEachReading({ nativeState: 'x' }));
+    expect(frontier.readings.map((r) => r.state)).toEqual([...EVERY_READING]);
+    for (const r of frontier.readings) {
+      expect(r.nativeState, `${r.id} (${r.state}) dropped its native state`).toBe('x');
+    }
+  });
+
+  it('survives onto the OPEN remainder — the frontier a caller actually renders', () => {
+    const frontier = computeGoalFrontier('init-1', oneOfEachReading({ nativeState: 'started' }));
+    expect(frontier.open).toHaveLength(4); // everything but `done`
+    for (const r of frontier.open) expect(r.nativeState).toBe('started');
+  });
+
+  it('is NOT interpreted — an unknown vendor word travels byte-for-byte', () => {
+    // The engine is store-blind: it never enumerates this vocabulary, so a
+    // value it has never heard of is not a problem to normalize away. A tracker
+    // that adds a seventh category tomorrow needs no engine change.
+    const frontier = computeGoalFrontier('init-1', [
+      facts({ id: 'a', nativeState: 'someFutureCategory' }),
+      facts({ id: 'b', nativeState: 'Auf Eis' }),
+    ]);
+    expect(frontier.readings.map((r) => r.nativeState)).toEqual([
+      'someFutureCategory',
+      'Auf Eis',
+    ]);
+  });
+});
+
+describe('health is TRANSPORT ONLY — carried, never authored', () => {
+  it('travels verbatim, on every reading', () => {
+    const frontier = computeGoalFrontier('init-1', oneOfEachReading({ health: 'offTrack' }));
+    for (const r of frontier.readings) {
+      expect(r.health, `${r.id} (${r.state}) dropped its health`).toBe('offTrack');
+    }
+  });
+
+  it('is never DERIVED from the reading — a `blocked` member with no authored health reports none', () => {
+    // The single most tempting inference in this module, and the one the
+    // station exists to refuse: `blocked` does not mean `atRisk`. Health is a
+    // human's judgment recorded on the tracker (ADR-0046 decision 4 names the
+    // only two sanctioned sources, and neither is a formula over this
+    // classification). A `?? 'atRisk'`, a `blocked → atRisk` mapping, or any
+    // other helpfulness fails right here.
+    const frontier = computeGoalFrontier('init-1', [
+      facts({ id: 'waiting', unresolvedBlockers: [BLOCKER] }),
+      facts({ id: 'waiting-2', unresolvedBlockers: [BLOCKER, 'prj-x'] }),
+    ]);
+    expect(frontier.readings.map((r) => r.state)).toEqual(['blocked', 'blocked']);
+    for (const r of frontier.readings) {
+      expect(r.health, `${r.id} acquired a health nobody authored`).toBeUndefined();
+      expect('health' in r, `${r.id} materialized a health key`).toBe(false);
+    }
+  });
+
+  it('is never DEFAULTED — no reading in the WHOLE fact space acquires one the facts did not carry', () => {
+    // The property form of the claim above: not "blocked doesn't infer", but
+    // "nothing infers". Every one of the 16 combinations, none of which states
+    // a health, and none of which may end up with one.
+    for (const f of everyCombination()) {
+      const [reading] = computeGoalFrontier('init-1', [f]).readings;
+      expect(reading.health, `${f.id} acquired a health`).toBeUndefined();
+      expect(reading.nativeState, `${f.id} acquired a native state`).toBeUndefined();
+    }
+  });
+
+  it('is not COALESCED either — a value the store really stated survives, whatever it is', () => {
+    // The mirror of the rule above, and the reason it is worth its own case: a
+    // future `|| undefined` / `?.trim() || undefined` "cleanup" would be the
+    // engine deciding which of a store's answers count. It does not get to.
+    // Reporting honestly (state it, or leave it out) is the STORE's obligation,
+    // pinned in `IssueStore.readGoalFrontier`'s contract.
+    const frontier = computeGoalFrontier('init-1', [
+      facts({ id: 'empty-ish', health: '', nativeState: '' }),
+      facts({ id: 'spaces', health: '  ', nativeState: '  ' }),
+    ]);
+    expect(frontier.readings[0].health).toBe('');
+    expect(frontier.readings[0].nativeState).toBe('');
+    expect(frontier.readings[1].health).toBe('  ');
+    expect(frontier.readings[1].nativeState).toBe('  ');
+  });
+});
+
+describe('absent stays absent, all the way out', () => {
+  it('an unstated fact yields an absent KEY, not a key set to undefined', () => {
+    // The distinction a caller depends on: `'health' in reading` must answer
+    // "did anybody state one", and a rendered frontier must not sprout null
+    // columns for the three bindings that have nothing to report.
+    const frontier = computeGoalFrontier('goal-1', oneOfEachReading());
+    for (const r of frontier.readings) {
+      expect(Object.keys(r).sort(), `${r.id} (${r.state})`).toEqual(
+        ['id', 'state', 'unresolvedBlockers'].sort(),
+      );
+    }
+  });
+
+  it('the two fields are independent — stating one does not conjure the other', () => {
+    const frontier = computeGoalFrontier('init-1', [
+      facts({ id: 'state-only', nativeState: 'started' }),
+      facts({ id: 'health-only', health: 'onTrack' }),
+    ]);
+    expect(Object.keys(frontier.readings[0]).sort()).toEqual(
+      ['id', 'state', 'unresolvedBlockers', 'nativeState'].sort(),
+    );
+    expect(Object.keys(frontier.readings[1]).sort()).toEqual(
+      ['id', 'state', 'unresolvedBlockers', 'health'].sort(),
+    );
+  });
+
+  it('an issue-direct store\'s rendered frontier is byte-identical to what it was before the widening', () => {
+    // The compatibility claim, made the way a consumer would notice it break:
+    // three of the four bindings state neither field, so their serialized
+    // output must not have moved at all.
+    const frontier = computeGoalFrontier('goal-1', [
+      facts({ id: 'a', closed: true }),
+      facts({ id: 'b', eligible: true }),
+      facts({ id: 'c', unresolvedBlockers: [BLOCKER] }),
+    ]);
+    expect(JSON.parse(JSON.stringify(frontier.readings))).toEqual([
+      { id: 'a', state: 'done', unresolvedBlockers: [] },
+      { id: 'b', state: 'actionable', unresolvedBlockers: [] },
+      { id: 'c', state: 'blocked', unresolvedBlockers: [{ issue: 41 }] },
+    ]);
+  });
+});
+
+describe('the widening changed what a reading CARRIES, never what it MEANS', () => {
+  it('no combination in the whole fact space reclassifies when native facts are attached', () => {
+    // The byte-unchanged claim as a property over the entire space, not over
+    // the handful of examples anyone would think to write down. If a native
+    // state or a health could ever reach `classifyGoalMember`'s ladder, some
+    // combination here would answer differently with the facts attached than
+    // without.
+    for (const f of everyCombination()) {
+      const bare = classifyGoalMember(f);
+      expect(classifyGoalMember({ ...f, nativeState: 'started' }), f.id).toBe(bare);
+      expect(classifyGoalMember({ ...f, nativeState: 'completed' }), f.id).toBe(bare);
+      expect(classifyGoalMember({ ...f, health: 'offTrack' }), f.id).toBe(bare);
+      expect(
+        classifyGoalMember({ ...f, nativeState: 'canceled', health: 'atRisk' }),
+        f.id,
+      ).toBe(bare);
+    }
+  });
+
+  it('the tally and the completion reading are untouched by them too', () => {
+    // The two places a stray native value could still leak into MEANING even
+    // with the ladder intact: a `canceled` project must not count as `done`
+    // unless its `closed` fact says so, and an `offTrack` health must not keep
+    // a finished goal open.
+    const withFacts = computeGoalFrontier(
+      'init-1',
+      oneOfEachReading({ nativeState: 'canceled', health: 'offTrack' }),
+    );
+    const withoutFacts = computeGoalFrontier('init-1', oneOfEachReading());
+    expect(withFacts.counts).toEqual(withoutFacts.counts);
+    expect(withFacts.open.map((r) => r.id)).toEqual(withoutFacts.open.map((r) => r.id));
+
+    const allClosed = computeGoalFrontier('init-1', [
+      facts({ id: 'a', closed: true, nativeState: 'completed', health: 'offTrack' }),
+      facts({ id: 'b', closed: true, nativeState: 'canceled', health: 'atRisk' }),
+    ]);
+    expect(allClosed.complete).toBe(true);
+  });
+
+  it('the vocabulary is still the five, and the frontier still has no sixth key', () => {
+    const frontier = computeGoalFrontier(
+      'init-1',
+      oneOfEachReading({ nativeState: 'started', health: 'onTrack' }),
+    );
+    expect(new Set(frontier.readings.map((r) => r.state)).size).toBe(5);
+    expect(Object.keys(frontier).sort()).toEqual(
+      ['complete', 'counts', 'goalId', 'open', 'readings'].sort(),
+    );
   });
 });

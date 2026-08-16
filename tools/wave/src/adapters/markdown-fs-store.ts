@@ -774,6 +774,16 @@ export class MarkdownFsStore implements IssueStore {
    * blockers: it is not closed, not claimed, and carries no eligibility marker
    * this store can see. That is the honest reading for a curated id pointing at
    * nothing — never `actionable`, which would invite a wave to draw it.
+   *
+   * `nativeState` and `health` are deliberately NOT stated on any branch. A
+   * goal-file binding is issue-direct, and this store's whole native state IS
+   * the `done/` directory — a fact `closed` above already carries in full — while
+   * health is a human judgment no markdown field records. So absence is reported
+   * as absence, including for the located-nowhere branch, where a placeholder
+   * would be worst of all: it would dress a dangling curated id as a member with
+   * a knowable native state. Only a binding whose members are themselves
+   * containers has such a value; see
+   * `LinearIssuesStore.goalProjectMemberFacts`.
    */
   private async goalMemberFacts(memberId: string): Promise<GoalMemberFacts> {
     const located = await this.locate(memberId);
