@@ -9,6 +9,85 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.1.0] — 2026-08-17
+
+**The goal station learns to publish.** The mirror pass ships whole — a sixth store verb
+that publishes a goal's derived frontier accounting to the bound container's own native
+update surface, and the goal skill's fourth pass that drives it — on top of a frontier
+whose members now each carry their native state and their own health. Additive throughout:
+nothing removed, renamed, or re-typed. One widening earns the implementer heads-up below;
+it is the whole reason this is not a patch.
+
+### Added
+
+- **`publishGoalUpdate` — the sixth `IssueStore` verb** (CLI: `issue-store
+  goal-publish-update`). Publishes the goal's derived accounting — per-member state lines,
+  the distribution sentence, the unresolved-blocker rendering — to the container's native
+  update surface (a Linear project or initiative update). The anchor is **engine-owned and
+  unsupplyable**: the caller contributes a narrative, an optional health value, and an
+  optional operator note, and can neither supply, edit, nor omit the accounting itself.
+  The `GoalUpdateReceipt` reports **what the engine sent** — an empty-string health is
+  treated as absence at the gate, so the receipt always matches the wire. A goal with
+  **zero members** publishes only the "no members yet" sentence; the finish-line sentence
+  renders only for a goal that has members and has closed every one of them — empty
+  membership and completion are distinguishable on the published surface, mirroring the
+  status pass's own precedent. A container with no native update surface refuses loudly
+  with a new, typed member of the goal-binding refusal family.
+- **Every frontier member carries its native state and its own health.**
+  `GoalMemberNativeState` and `GoalMemberHealth` ride each reading — one derivation, two
+  consumers (the status report and the mirror anchor). Health is read the way the vendor
+  actually derives it: from the container's most recent update, with an explicit null when
+  none was ever reported — a roll-up, never a field a person sets on the node.
+- **Seven new root runtime exports** — `GOAL_MEMBER_STATE_PROSE`,
+  `GOAL_UPDATE_ANCHOR_HEADING`, `GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE`,
+  `GOAL_UPDATE_PROVENANCE_LINE`, `LINEAR_UPDATE_HEALTH_VALUES`,
+  `refuseGoalUpdateSurface`, `renderGoalUpdateBody` — and seven new exported types:
+  `PublishGoalUpdateInput`, `GoalUpdateReceipt`, `GoalUpdateMemberIdentity`,
+  `GoalMemberNativeState`, `GoalMemberHealth`, `LinearUpdateInput`, `LinearUpdateResult`.
+- **The goal skill teaches the mirror pass** (plugin side): a per-pass preview that shows
+  the full body verbatim with an explicit confirm that inherits nothing from any earlier
+  pass, a narrative drafted sentence by sentence in the consumer's own house form (flotilla
+  pins no template), and a health-proposal round with exactly two sanctioned sources and
+  one prohibition — transcribe an operator-supplied value, or propose a source-attributed
+  aggregation of the members' own healths, and never propose from the frontier itself. The
+  station's boundary is unchanged and restated where it matters most: it reports, it never
+  dispatches, and it never declares the finish line reached — not even from the pass that
+  writes.
+
+### Changed
+
+- **`LinearApi` widens by TWO required methods — the implementer heads-up.**
+  `createProjectUpdate` and `createInitiativeUpdate` are now required on the seam. Breaking
+  for any consumer that *implements* `LinearApi` itself — a custom transport, a recording
+  double — and invisible to any consumer merely *using* the engine: no runtime export count
+  moves, only the type gate sees it. Minor per the house rule, same shape as the widening
+  1.5.0 carried and ruled on.
+- The project-relation decision record now carries **one house lesson with a dated
+  nuance** (the vendor's prose misled — only a live measurement settles a vendor value —
+  with the recoverable-in-hindsight reading recorded as a dated amendment, and the record
+  and the code's read-stamp pointing at each other). Both vendor-schema citations are
+  pinned to the commit they were read at, and the issue arm's relation-type read filter now
+  matches through the same module-local constant its create half uses.
+
+### Unsettled by construction, and what is not yet proven
+
+- **A health-less mirror publish may still move the container's own health.** The vendor's
+  create input marks `health` optional while the created node declares it non-null, so the
+  server assigns a value when the key is omitted — a fixed default, or the previous
+  update's health carried forward, is a pure value question no schema read can answer. The
+  engine's response is the conservative one: it omits the key entirely, and the receipt
+  deliberately reports what was sent and claims nothing about what the container reads
+  afterwards. The first live mirror publish is the read that settles it.
+- **`LINEAR_UPDATE_HEALTH_VALUES` is schema-read, not live-proven** — but published as a
+  real GraphQL enum, unlike the free-`String` pair 2.0.0 corrected, so that specific
+  failure mode cannot repeat in that form. The engine authors no health value; the list is
+  documentation and a validation aid, and a workspace that ever disagrees fails loudly.
+- **Carried forward, still not live-proven:** the Linear attachment upsert; the `prUrl`
+  notice's agent-mediated half; the residue-probing worktree classification (now measured
+  negative twice, against two different implementations); the grant-in-brief plugin half;
+  Bitbucket's write half; and the uppercase-team-key assumption in the issue-vs-project id
+  check.
+
 ## [2.0.0] — 2026-08-16
 
 **A live measurement falsified two constants 1.5.0 had shipped as unproven, and repairing
