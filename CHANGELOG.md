@@ -9,6 +9,262 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [1.5.0] — 2026-08-16
+
+The **goal station** release: flotilla gains a fourth planning station, and with it the
+one thing the pipeline could not previously express — a *named finish line* on the
+tracker, its curated membership, and the derived remainder of work still open before it.
+The station is deliberately **sight, never permission** (ADR-0044): it files placeholders
+that carry no readiness marker, it has no dispatch verb, and it has no close verb, so
+nothing it creates can reach a background agent unsharpened and no agent can write itself
+a release authorization. Around it, the release carries the **consumer boundary** work
+(the operator register, the sibling-path skill read), a worktree sweep that **accounts**
+for everything it could not remove rather than staying silent about it, a credential
+resolver that names a previously-mute failure mode, and a skill-description surface that
+a guard now keeps honest.
+
+**Minor per ADR-0035.** Nothing was removed, renamed, or re-meant on any of the three
+frozen contracts: the package root only gains exports, the `wave.config.json` schema only
+gains an optional key, and the CLI only gains verbs. Two exported *interfaces* gain
+required members, which is a compile-time break for anyone **implementing** them — never
+for anyone **consuming** them — and both get their own loud heads-up under Changed below,
+the same treatment 1.4.0 gave the `Disclosure.iter` widening.
+
+### Added
+
+- **The Goal facet on `IssueStore` — a finish line bound to a native container
+  (ADR-0044, issue #570).** A Goal is one container on your tracker plus its derived
+  Frontier. Six verbs cross the barrel: `createGoal`, `readGoal`, `listGoals`,
+  `assignToGoal`, `createGoalMember`, `readGoalFrontier`, with `goal-create`,
+  `goal-read`, `goal-list`, `goal-assign`, `goal-create-member` and `goal-frontier` as
+  their CLI projection. Which native container realizes a Goal is a **config fact**, not
+  a call-time choice: GitHub defaults to its Milestone, the markdown store to its goal
+  file, and **Linear binds no default at all** — it refuses with a typed
+  `GoalBindingError` naming `store.goal.container`, because live consumer conventions
+  genuinely disagree about what a Linear project means. Members are filed **bare** —
+  authored prose, no planning header, no eligibility marker — so the cut records that a
+  workstream exists without implying anything about whether an agent may pick it up.
+- **A Goal's members are the container's direct native members (ADR-0045, issue #573).**
+  The member *kind* follows the binding rather than the caller's intent: an issue under
+  `milestone`/`project`/`goal-file`, a **project** under a Linear `initiative`, because
+  an initiative holds projects and not issues. `createGoalMember` is one act — mint the
+  bare member and join it — since under `initiative` there is no two-call route at all.
+  Passing an issue-shaped id where the binding wants a project is refused with
+  `GoalMemberKindError` **before any write**; a join that fails after a successful mint
+  reports the residue through `GoalMemberJoinError` naming the minted id and which half
+  failed, rather than inventing a rollback this facet has no right to perform.
+- **The Frontier — derived on every read, never stored (ADR-0044 decision 5).**
+  `computeGoalFrontier`/`classifyGoalMember` are pure and store-blind, turning what an
+  adapter can see about each member into exactly one of five readings: `done`,
+  `in-motion`, `actionable`, `blocked`, `unready`. Because it is derived, there is no
+  durable marker anywhere for an agent to author — the structural answer to the failure
+  mode this station was designed against.
+- **`store.goal.container` is a typed contract field (issue #578).** The binding joins
+  the `wave.config.json` schema with `config validate` coverage, three refusal shapes
+  (`unbound`, `unknown-container`, `unrealized-container`), and `readGoalContainer` /
+  `resolveGoalContainer` at the root for a consumer resolving it themselves. A malformed
+  declaration fails loudly instead of being quietly read as unbound and defaulted past.
+- **The BARE `create` form gains a `blockedBy` arm, realized as native dependencies
+  (issue #572).** A placeholder may depend on another placeholder before either is
+  specifiable — that is the whole reason the arm exists. Each edge becomes a real tracker
+  relation (a GitHub issue dependency, a Linear issue relation, or a Linear **project**
+  relation under an initiative binding) and writes **no header line**, so the member stays
+  bare. The local markdown store, whose only dependency representation *is* the header
+  line a bare issue does not have, **refuses** rather than faking it.
+- **The sweep owes accounting, never removal (ADR-0042, issues #557 and #560).** Two
+  additive report fields close the two ways the worktree sweep used to lose evidence: an
+  incomplete removal now **names its survivors** (the walk already computed them; they
+  were being discarded), and the report accounts for **registered worktrees the sweep
+  never enumerates** — a worktree git knows about that the sweep's own globs never reach
+  no longer vanishes from the accounting. Nothing new is removed; the sweep's removal
+  behaviour is byte-unchanged.
+- **The credential resolver detects `security(1)`'s trailing-newline hex mangling and
+  refuses with guidance (issue #597).** A keychain secret retrieved through the hex path
+  can come back with a mangled trailing byte — previously a mute, mystifying auth
+  failure downstream. It is now caught at the resolver seam and refused with a typed
+  `CredentialFailure` member and a message that says what to do about it.
+- **Every CLI usage error teaches the complete first lesson (issue #505).** A usage error
+  on a known op prints **that op's** contract section rather than the full op list, so a
+  wrong flag teaches one shape instead of two dozen. Exit codes and JSON shapes are
+  untouched.
+- **The Linear store's `close()` upserts the closing PR as a native attachment
+  (issue #511).** The closing pull request becomes a first-class Linear attachment on the
+  issue rather than prose nobody's tooling can read.
+- **User-visible engine and hook messages carry themselves (ADR-0039, issue #502).** The
+  operator register reaches the engine's own output: a message a person reads explains
+  itself without a decision-record number, a convention number, or an internal id in it.
+- **Convention 16 — the operator register (issue #499)**, its byte-identical clause in
+  every skill, and a drift guard that keeps the clause from decaying. Widened later in
+  the same release to the **reference tier** (issue #514), so the register reaches one
+  level down into the files skills read.
+- **The close report counts the Coordinator's own misfires (issue #506).** A wave close
+  now reports how often the Coordinator itself mis-stepped — the number nobody was
+  keeping, and the one that says whether the driver's prose is converging.
+- **A finishing report without a usable PR URL is a loud exit-0 notice at the sidecar
+  write (issue #556).** The sidecar is still written; a `notice:` line on stderr names
+  what is missing, so the recurring "the PR exists but the report does not know its URL"
+  class stops being silent.
+- **A granted scope extension travels in the brief (ADR-0041, issue #516).** A mid-wave
+  scope grant rides as data on the row and every re-compose re-fetches, so an agent's
+  authority is read from the row rather than remembered from a conversation.
+- **Bitbucket's merge-checks refusal names the scope it needs (issue #543).**
+- **The skill-description surface gets a guard that can actually fail (issues #500, #526,
+  #548, #555, #602).** Descriptions read consumer-first and in third person; a
+  cross-reference anchor is **verified** rather than stripped; a guard's subject path is
+  declared **guard-side** so the checked text can never carry its own exemption
+  (ADR-0043); and frontmatter is validated as **strict YAML** by two parsers that must
+  agree — a colon-space in an unquoted description silently truncated a live skill's
+  description at runtime, and the platform's own validator lost this whole class between
+  two CLI releases, which makes this guard its only remaining owner.
+
+### Changed
+
+- **`IssueStore` gains six required members — the heads-up (ADR-0044).** The Goal facet's
+  verbs are required, not optional, so a **third-party adapter implementing `IssueStore`
+  no longer typechecks** until it implements them. Every *consumer* of a store handle is
+  unaffected: nothing was removed, renamed, or re-typed, and all three shipped adapters
+  implement the facet. The whole vocabulary an implementer needs is root-exported for
+  exactly this reason — `GoalContainer`/`GOAL_CONTAINERS`, `GoalMemberKind`/
+  `GOAL_MEMBER_KIND_BY_CONTAINER`/`goalMemberKind`, `CreateGoalInput`/
+  `CreateGoalMemberInput`/`GoalView`, the typed failures, and the two shared rule
+  implementations `requireGoalContainer` and `requireGoalMemberKind`, so a fourth adapter
+  applies the same rule rather than re-deriving one that can drift.
+- **`LinearApi` gains thirteen required members — the heads-up (issue #511 and
+  ADR-0045).** `upsertAttachment` plus the project and initiative surface
+  (`createProject`, `getProject`, `listProjects`, `setIssueProject`, `listProjectIssues`,
+  `createInitiative`, `getInitiative`, `listInitiatives`, `listInitiativeProjects`,
+  `addProjectToInitiative`, `getProjectBlockedBy`, `addProjectBlockedBy`). Same shape as
+  above: external *implementers* of the interface break at compile time, external
+  *consumers* do not. This is the first post-1.0.0 release in which an exported interface
+  gains required members, and the ruling is recorded here: the three frozen contracts are
+  read as contracts with their **consumers**, so an implementer-only break is Minor plus
+  a loud heads-up — not a major bump.
+- **`CredentialFailure` gains the member `'lookup-hex-mangled'` (issue #597).** Additive
+  widening of an exported union: a consumer switching exhaustively over it gains a new
+  case and finds out at compile time.
+- **`CreateInputFailure` gains the member `'bare-blocked-by-unrepresentable'`
+  (issue #572)** — the markdown store's refusal of a bare dependency it cannot represent.
+  Same additive-union shape as above.
+- **`GoalFrontier`'s `unresolvedBlockers` are `IssueRef | string`.** A project member's
+  blocker is another project, and a Linear project id is a UUID with no honest `IssueRef`
+  spelling — so the blocker shape carries both. New type, no existing shape changed.
+- **Skills load `wave-shared` by sibling-path read, not by name (ADR-0040, issue #501).**
+  This closes the known issue 1.4.0 shipped with: `wave-shared` declares
+  `disable-model-invocation: true`, which removed it from what a model may load by name,
+  so the by-name instruction the execution skills carried was never executable and the
+  first fully-external consumer run needed a manual `/flotilla:wave-shared` invocation to
+  get past it. **No release after 1.4.0 needs that workaround.**
+- **The `report` skill files in English, whatever the session speaks (issue #497).** The
+  artifact that reaches flotilla's maintainers is English; the operator's own language
+  stays in the chat, which is where Convention 16 puts it.
+
+### Fixed
+
+- **The worktree sweep classifies a deterministic denial on evidence, not on an errno
+  (issues #528 and #542).** A clean worktree the harness deterministically refuses to
+  delete reads **exhausted on run 1** — carrying `manualRecovery` with the real
+  sandbox-off commands — instead of advising a retry against an obstruction that will
+  never clear. The first fix split on whether the removal error was ENOTEMPTY-family and
+  missed the live shape (the denied *children* make the directory undeletable, so the
+  errno is byte-indistinguishable from the transient race the retry exists for); the
+  shipped classification probes the **residue** instead, which is the signal errno cannot
+  carry.
+- **`manualRecovery` shell-quotes every printed path (issue #515).** A copy-pasteable
+  command stops being a lie for any path with a space in it — which is every path in a
+  worktree under a directory a human named.
+- **Bare `create` refuses a `bodySections` entry missing `heading` or `markdown`
+  (issue #530)** — a usage error naming the field, instead of a crash.
+- **A 404 on Bitbucket's post-merge branch delete reads as already-gone, not as a failed
+  deletion (issue #495).** Landing no longer reports a failure for work that succeeded.
+- **`store-preflight` stops asserting a code-host conclusion it cannot know
+  (issue #493).** The tracker-host integration check now answers only the question it can
+  actually answer.
+- **The reviewer phase picks its state from the verdict (issues #513 and #527)** — in the
+  routing itself and in the step-7 summary that reports it, which had drifted apart.
+- **`wave-close`'s phase-4a engine surface covers the Bitbucket adapter (issue #517)**,
+  and phase 4a now **predicts the half-applied sandboxed pull before it runs**
+  (issue #531) — the failure signature where a git command under sandbox reports success
+  having done only half its work.
+- **The driver's report-schema copy regains its `prUrl` floor (issue #562)**, pinned
+  modulo the boundary combinator so the copy cannot silently drift from the schema again.
+
+### Docs
+
+- **ONBOARDING teaches the goal station (issue #580)** — the fourth planning station
+  reaches a consumer's first read rather than existing only in the skill.
+- **`wave-setup` was re-measured against reality across five passes:** the Credentials
+  section goes host-aware (issue #492), the AFK scaffold verifies its own files are
+  **trackable** (issue #494), the keychain first-read prompt was **measured** and all
+  three documents reconciled against the measurement (issue #544), the credential set
+  gained a scan table with three corrected Bitbucket scope facts (issue #539), and the
+  Bitbucket minimal scope set was re-measured against the vendor spec — pull-request
+  operations move to their own scope pair (issue #559). Promoted prose pays its debt back:
+  the setup read shrinks to residual forms (issue #509).
+- **`wave-start`'s auth preflight checks the credential the engine actually uses
+  (issue #549)** — it was checking a different one.
+- **The Scribe briefs carry their payload's provenance and the filing-clerk framing
+  (issue #577)**, and the classifier refusal becomes a **named, counted** failure class
+  rather than an anecdote.
+- **Occurrence catalogues move to evidence sidecars (issue #510)**, keeping the skills
+  themselves teachable while the measurements stay addressable.
+- **Nine decision records** land or are amended: ADR-0039 (operator register), ADR-0040
+  (sibling-path read), ADR-0041 (granted scope extension), the ADR-0034 amendment
+  (promotion pays its prose back) and its **rung split** — a schema boundary constrains an
+  author, an engine check inspects an artefact, with the reason carried to all six
+  boundary-conditional sites (issue #563) — ADR-0042 (the sweep owes accounting),
+  ADR-0043 (the checked text never carries its own exemption), ADR-0044 (a goal binds a
+  native container and derives its frontier), ADR-0045 (a goal's members are the
+  container's direct native members), and ADR-0046 (the mirror pass — designed, **not
+  shipped in this release**; its engine and skill halves are tracked as open work).
+- **The Apache copyright holder is filled in** — Michael Helmbrecht, 2026.
+
+### Not yet proven
+
+Everything below ships tested against fakes, falsification specs, and the vendors' own
+published schemas — and has **never made the live round-trip**. Stated so a consumer
+knows which edge they are the first to walk.
+
+- **The Goal facet's two Linear arms have never run against a live workspace.** Both the
+  `project` and the `initiative` binding are hermetic-fake-backed and schema-compared. The
+  weakest point is named and **exported** so a disagreeing workspace can report exactly
+  which strings to change: `PROJECT_BLOCKS_RELATION_TYPE` (`"blocks"`) and
+  `PROJECT_RELATION_ANCHOR_TYPE` (`"project"`) are typed `String` by Linear, not enums —
+  the schema pins their *shape*, not their *values* — and `anchorType` in particular is an
+  inference from the field's own prose rather than a quoted example. The first
+  initiative-bound cut that draws a dependency is the confirmation; a rejected value
+  surfaces loudly as a typed failure naming the minted member, never a silent drop.
+- **The issue-vs-project id check assumes uppercase team keys.** `goal-assign`'s kind
+  check narrows an id with `/^[A-Z][A-Z0-9]*-\d+$/`. No document states every Linear
+  workspace's team keys are uppercase-only. The failure direction is benign — a
+  lowercase-keyed id still refuses, just via Linear's plainer "unknown project" error
+  instead of the typed `GoalMemberKindError` — so this is a confirm-on-first-contact note,
+  not a blocker.
+- **The Linear attachment upsert has never run live.** Fake-backed, falsification-tested,
+  and schema-compared — but the live round-trip, including the URL-uniqueness upsert
+  semantics on a real workspace, is unstamped. The first Linear-store consumer close after
+  this release is the first live read.
+- **The `prUrl` notice's agent-mediated half has never completed end-to-end.** The engine
+  side is live-measured across three payload shapes including a negative control, and the
+  Scribe carrier is verified by reading. What no run has exercised is a real Scribe
+  forwarding a real notice: the one natural occurrence so far was **voided** because the
+  session checkout still ran the pre-gate engine and the un-gated code answered.
+- **The evidence-based worktree classification has no live read on record.** Its
+  predecessor was measured live twice and failed both times, which is why it was replaced;
+  the replacement's own first live read has not been captured. The manual sandbox-off
+  force-removal remains the documented ordinary path on a sandboxed harness regardless.
+- **The grant-in-brief mechanism (plugin half) has never been exercised in a live wave.**
+  The first mid-wave `issue-store annotate` followed by a re-compose is the first live
+  read.
+- **Bitbucket's write half remains unproven** (unchanged since 1.3.0; the read half is
+  live-verified).
+
+### Known issues
+
+- **The mirror pass is designed but not built.** ADR-0046 settles how a goal's derived
+  accounting would be published to the container's native update surface — with the engine
+  deriving the frontier itself at write time so a caller cannot lie about it. Neither half
+  ships here; both are open work.
+
 ## [1.4.0] — 2026-08-11
 
 Same-day follow-through on ADR-0038: the Disclosure capture window now spans the whole
