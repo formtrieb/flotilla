@@ -922,6 +922,28 @@ export {
   PROJECT_BLOCKS_RELATION_TYPE,
   PROJECT_RELATION_ANCHOR_PAIR,
   type ProjectRelationAnchorPair,
+  // The mirror pass's vendor substrate (ADR-0046) — the two native UPDATE
+  // surfaces. `LinearApi` (already exported above) WIDENS here by two required
+  // methods, `createProjectUpdate` / `createInitiativeUpdate`: any consumer that
+  // implements this seam itself — a custom transport, a recording double — must
+  // add both. That is the widened-exported-shape heads-up this release owes; the
+  // two input/result shapes ride the root so such a consumer can annotate them
+  // rather than restate them.
+  //
+  // `LINEAR_UPDATE_HEALTH_VALUES` is the vendor's published health vocabulary,
+  // and it carries a READ-STAMP a consumer should read before trusting it. Two
+  // things it says, both deliberate: the enum IS published (unlike the
+  // project-relation values, which were free `String` in the schema and validated
+  // behind it — so the failure mode that falsified those cannot repeat in that
+  // form here), AND the one question that matters most is still UNSETTLED, because
+  // it is a VALUE question no schema read can answer. The create inputs make
+  // `health` optional while the created nodes declare it NON-NULL, so the server
+  // assigns something when the key is omitted — and since a container's health is
+  // derived from its most recent update, a health-less publish may still move it.
+  // The engine omits the key and claims nothing about the result.
+  type LinearUpdateInput,
+  type LinearUpdateResult,
+  LINEAR_UPDATE_HEALTH_VALUES,
 } from './adapters/linear/linear-api';
 
 export {
@@ -1112,6 +1134,41 @@ export {
   requireGoalMemberKind,
 } from './adapters/issue-store';
 
+// ADR-0046 widens the facet along a THIRD axis — the MIRROR PASS, one write verb
+// that publishes a goal's derived accounting to its container's native update
+// surface. Everything here exists to serve one property: the CALLER never
+// supplies the report.
+//
+// `PublishGoalUpdateInput` is root-exported for what it does NOT contain — a
+// consumer reading it can see there is no field for a body, a frontier or a
+// member list, which is how the "structurally cannot lie about the frontier"
+// guarantee is verified rather than believed. `GoalUpdateReceipt` and
+// `GoalUpdateMemberIdentity` are its return and its display-facts companion.
+//
+// `renderGoalUpdateBody` is the ONE renderer every store shares, exported for the
+// same reason `requireGoalContainer` is: a fourth adapter must apply the shared
+// rule rather than re-derive a lookalike, and the anchor's un-editability is a
+// property of there being exactly one implementation of it. The three constants
+// beside it (`GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE`, `GOAL_UPDATE_PROVENANCE_LINE`,
+// `GOAL_UPDATE_ANCHOR_HEADING`) and the `GOAL_MEMBER_STATE_PROSE` map are the
+// artifact's fixed wording — a skill previewing a publish must be able to show
+// the same words the write will emit, and a spec must be able to pin them.
+//
+// `refuseGoalUpdateSurface` keeps the refusal ONE family: a consumer catches
+// `GoalBindingError` (already above) and routes on the widened
+// `GoalBindingFailure`, whose new member is `unrealized-update-surface`.
+export {
+  type PublishGoalUpdateInput,
+  type GoalUpdateReceipt,
+  type GoalUpdateMemberIdentity,
+  GOAL_MEMBER_STATE_PROSE,
+  GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE,
+  GOAL_UPDATE_PROVENANCE_LINE,
+  GOAL_UPDATE_ANCHOR_HEADING,
+  renderGoalUpdateBody,
+  refuseGoalUpdateSurface,
+} from './adapters/issue-store';
+
 // The FRONTIER (ADR-0044 decision 5) — a Goal's derived open remainder.
 //
 // Pure engine, store-blind: `computeGoalFrontier`/`classifyGoalMember` turn the
@@ -1141,8 +1198,16 @@ export {
 // documents the ambiguity around a gap. Both are `string` on purpose (a vendor
 // vocabulary the store-blind engine must not enumerate) and both are TRANSPORT
 // ONLY: nothing in `computeGoalFrontier` can default, coalesce or infer either
-// one, and `health` in particular is a human's judgment on the tracker that this
-// layer carries and never authors.
+// one, and `health` in particular is a human's judgment this layer carries and
+// never authors.
+//
+// Where that judgment actually LIVES was corrected by ADR-0046's slice, and the
+// correction matters to anyone wiring a fourth adapter: on Linear a project's
+// health is DERIVED by the vendor from its most recent project update (null when
+// none was ever reported), not set on the project node. Still human-authored —
+// authored one node over. The absence is the load-bearing part: it must travel as
+// an absent KEY, never coalesced, because a coalesced health is a judgment nobody
+// made.
 //
 // A root-only consumer needs the names for the reason it needs `GoalFrontier`
 // itself: it reads them off the verb and has to spell their type — and the

@@ -420,3 +420,70 @@ describe('InMemoryLinearApi initiatives (the second Goal container substrate, AD
     expect(prj.description).toBe('');
   });
 });
+
+describe('InMemoryLinearApi update surfaces (the mirror-pass substrate, ADR-0046)', () => {
+  it('records a project update against the right container and returns an id', async () => {
+    const api = new InMemoryLinearApi();
+    const { id: projectId } = await api.createProject({ name: 'M3', description: '' });
+
+    const result = await api.createProjectUpdate({ projectId, body: 'the anchor' });
+
+    expect(typeof result.id).toBe('string');
+    const [rec] = api.publishedUpdates();
+    expect(rec.surface).toBe('project');
+    expect(rec.containerId).toBe(projectId);
+    expect(rec.body).toBe('the anchor');
+  });
+
+  it('records an initiative update on the OTHER surface — the branch is observable', async () => {
+    const api = new InMemoryLinearApi();
+    const { id: initiativeId } = await api.createInitiative({ name: 'M3', description: '' });
+
+    await api.createInitiativeUpdate({ initiativeId, body: 'the anchor' });
+
+    const [rec] = api.publishedUpdates();
+    expect(rec.surface).toBe('initiative');
+    expect(rec.containerId).toBe(initiativeId);
+  });
+
+  it('an omitted health is stored as an ABSENT KEY, so the prohibition is ASSERTABLE', async () => {
+    const api = new InMemoryLinearApi();
+    const { id: projectId } = await api.createProject({ name: 'M3', description: '' });
+
+    await api.createProjectUpdate({ projectId, body: 'a', health: 'onTrack' });
+    await api.createProjectUpdate({ projectId, body: 'b' });
+
+    const [withHealth, withoutHealth] = api.publishedUpdates();
+    expect(withHealth.health).toBe('onTrack');
+    // The distinction that matters: `health === undefined` would ALSO pass for a
+    // key set to `undefined`, and those are different wire acts. Only `in` can
+    // tell them apart, so only `in` can prove nothing defaulted a value in.
+    expect('health' in withoutHealth).toBe(false);
+  });
+
+  it('refuses to publish against a container that does not exist', async () => {
+    const api = new InMemoryLinearApi();
+    await expect(api.createProjectUpdate({ projectId: 'nope', body: 'x' })).rejects.toThrow(
+      /project not found/i,
+    );
+    await expect(
+      api.createInitiativeUpdate({ initiativeId: 'nope', body: 'x' }),
+    ).rejects.toThrow(/initiative not found/i);
+  });
+
+  it('setProjectHealth seeds and CLEARS a member health — absence is reachable, not just describable', async () => {
+    const api = new InMemoryLinearApi();
+    const { id } = await api.createProject({ name: 'M3', description: '' });
+
+    // A freshly minted project has never reported a health — the vendor's
+    // documented null, and the state the transport must not paper over.
+    expect('health' in (await api.getProject(id))).toBe(false);
+
+    api.setProjectHealth(id, 'offTrack');
+    expect((await api.getProject(id)).health).toBe('offTrack');
+
+    // …and back to genuinely absent, not to an empty string.
+    api.setProjectHealth(id, null);
+    expect('health' in (await api.getProject(id))).toBe(false);
+  });
+});

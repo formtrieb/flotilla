@@ -149,6 +149,62 @@ export interface LinearProject {
    * report is reconstructed as "the vendor's own word, or nothing."
    */
   unreadStatusType?: string | null;
+  /**
+   * The project's own health — `onTrack` / `atRisk` / `offTrack`, or ABSENT when
+   * the project has none.
+   *
+   * ── What this field actually IS, corrected against the published schema ─────
+   *
+   * It is tempting to describe this as "a judgment a human recorded ON the
+   * project", and that description is wrong in a way that matters to whoever
+   * wires it next. Linear's published schema documents `Project.health` as:
+   *
+   *  > "The overall health of the project, **derived from the most recent project
+   *  > update**. Possible values are onTrack, atRisk, or offTrack. **Null if no
+   *  > health has been reported.**"
+   *
+   * (`linear/linear` → `packages/sdk/src/schema.graphql`, read 2026-08-16, THIS
+   * dispatch.) So it is a ROLL-UP of the latest update's health, not a field
+   * anyone sets on the project node. The value is still human-AUTHORED — a person
+   * chose it when posting that update — which is why transporting it is honest;
+   * but it is authored one node over, and two concrete mistakes follow from
+   * getting that wrong:
+   *
+   *  1. **Selecting the wrong node.** The value lives on `Project.health` as a
+   *     derived convenience; a producer reaching for "the project's own health
+   *     field" and finding nothing might reach into `projectUpdates` and pick an
+   *     arbitrary update instead. The roll-up is the right node precisely because
+   *     Linear defines it as "the most recent".
+   *  2. **Mishandling the documented NULL.** "Null if no health has been
+   *     reported" is not a gap to paper over — it is the exact absence the
+   *     frontier's contract cares about, and it must arrive at
+   *     {@link GoalMemberHealth} as an absent KEY. A producer that coalesces it
+   *     to `'onTrack'`, `''`, or the project's status category would be inventing
+   *     a human judgment at the one seam built to prevent that.
+   *
+   * A `string` rather than the vendor's enum spelling, for the reason
+   * {@link statusType}'s neighbours are opaque: this value is TRANSPORT on the
+   * read side. Nothing in the engine branches on it, so nothing can rot when the
+   * vendor adds a fourth word.
+   *
+   * OPTIONAL on this seam so a hand-built `LinearProject` in a spec stays valid,
+   * the same stance {@link LinearIssue.updatedAt} takes. Absence means the store
+   * reports no health for this member, which is the honest answer both when the
+   * project genuinely has none and when a producer did not select the field.
+   */
+  health?: string;
+  /**
+   * The tracker's own URL for this project — the anchor's native link when this
+   * project is a goal MEMBER (ADR-0046 decision 3).
+   *
+   * `Project.url: String!` in the published schema (read 2026-08-16, this
+   * dispatch), and REPORTED rather than composed: the engine never builds a
+   * Linear URL out of a workspace slug and a UUID, because a composed link is a
+   * value the vendor never stated. Optional here for the same
+   * hand-built-spec reason {@link health} is; absence renders the member's plain
+   * name instead of a link.
+   */
+  url?: string;
 }
 
 /**
@@ -444,7 +500,185 @@ export interface LinearApi {
    * failure loudly rather than swallowing it.
    */
   addProjectBlockedBy(blockedProjectId: string, blockerProjectId: string): Promise<void>;
+
+  // ── Mirror-pass substrate (ADR-0046) — the native UPDATE surfaces ───────────
+  //
+  // Two writes, one per container role, and deliberately no read half: the facet
+  // publishes an update and never lists, edits or deletes one. A consumer's own
+  // timeline is not this station's to curate — the additive-only stance
+  // {@link addBlockedBy} and {@link addProjectBlockedBy} already take, one
+  // surface over.
+  //
+  // ── The build-time verification items, answered ─────────────────────────────
+  //
+  // ADR-0046 pinned three. Two are SHAPE questions and a careful read of the
+  // published schema settles them; the third is a VALUE question and a read
+  // cannot. All three are recorded on {@link LINEAR_UPDATE_HEALTH_VALUES}, with
+  // the shape answers below.
+  //
+  // Read from Linear's published GraphQL schema (`linear/linear` →
+  // `packages/sdk/src/schema.graphql`, read 2026-08-16, THIS dispatch):
+  //
+  //   - `projectUpdateCreate(input: ProjectUpdateCreateInput!): ProjectUpdatePayload!`
+  //     `ProjectUpdateCreateInput { body: String, bodyData: JSON,
+  //      health: ProjectUpdateHealthType, id: String, isDiffHidden: Boolean,
+  //      projectId: String! }`
+  //   - `initiativeUpdateCreate(input: InitiativeUpdateCreateInput!): InitiativeUpdatePayload!`
+  //     `InitiativeUpdateCreateInput { body: String, bodyData: JSON,
+  //      health: InitiativeUpdateHealthType, id: String, initiativeId: String!,
+  //      isDiffHidden: Boolean }`
+  //
+  // **Item (a) — does the initiative-side create surface exist, and what is its
+  // input shape? YES, and the shape is above.** It is the exact mirror of the
+  // project side: one required id field, an optional markdown `body`, an optional
+  // `health`. The only asymmetry is which id it takes.
+  //
+  // **Item (b) — is `health` OPTIONAL on BOTH create surfaces? YES, on both.**
+  // Neither is `!`. This is the item ADR-0046 said must be settled BEFORE the
+  // refusal arm is written, because it decides whether that arm exists at all:
+  // since neither surface forces a value, "no health available" publishes an
+  // update WITHOUT health, and the typed refusal is a contingency the vendor does
+  // not currently trigger rather than a live path. It is still implemented and
+  // still tested — see the store — because the ADR's rule is about what happens
+  // IF a surface forces one, and a vendor can add a constraint without asking.
+  //
+  // Both are genuine SHAPE questions (does a field exist; is it nullable), which
+  // is the class of question a schema read answers authoritatively. Item (c) is
+  // not, and it is answered — as far as it can be from here — on the constant
+  // below.
+
+  /**
+   * Publish ONE native project update. Real impl: `projectUpdateCreate`.
+   *
+   * `health` is passed through ONLY when the caller supplies one, and the KEY is
+   * omitted otherwise — never sent as `null`, never defaulted. That distinction
+   * is the wire-level form of the whole health prohibition: `{}` says "I record
+   * no judgment", while `{health: null}` is an assertion about the value and a
+   * default is a fabricated judgment. See {@link LINEAR_UPDATE_HEALTH_VALUES} for
+   * what the vendor may do with the omission, which is the part no schema read
+   * settles.
+   *
+   * Returns the update's own id and, when the API reports one, its URL —
+   * reported, never composed.
+   */
+  createProjectUpdate(input: LinearUpdateInput & { projectId: string }): Promise<LinearUpdateResult>;
+
+  /**
+   * Publish ONE native initiative update. Real impl: `initiativeUpdateCreate`.
+   * The initiative-side mirror of {@link createProjectUpdate}, with the same
+   * health-omission contract.
+   */
+  createInitiativeUpdate(
+    input: LinearUpdateInput & { initiativeId: string },
+  ): Promise<LinearUpdateResult>;
 }
+
+/** The body-and-health half of an update write, shared by both container roles. */
+export interface LinearUpdateInput {
+  /** The update's markdown body — the composed narrative + engine anchor. */
+  body: string;
+  /**
+   * The health to record, or ABSENT to record none. Absent must reach the wire as
+   * an omitted key; see {@link LinearApi.createProjectUpdate}.
+   */
+  health?: string;
+}
+
+/** What an update write reports back. */
+export interface LinearUpdateResult {
+  /** The created update's own id, as the API assigned it. */
+  id: string;
+  /** The API's own URL for the update, when it returned one. Never composed. */
+  url?: string;
+}
+
+/**
+ * The health vocabulary Linear's update surfaces accept.
+ *
+ * ── READ-STAMP: SCHEMA-READ 2026-08-16, NOT LIVE-PROVEN ─────────────────────
+ *
+ * Read this before trusting any value here. This repo has now been burned TWICE
+ * treating a published schema as evidence of a VALUE — see the read-stamp on
+ * {@link PROJECT_BLOCKS_RELATION_TYPE}, where the schema declared free `String`
+ * while the API validated an enum one layer behind GraphQL, and where the
+ * vendor's own documented example named a value the API refuses. That cost a
+ * major release. So the evidence class of every claim below is stated explicitly.
+ *
+ * **What IS schema-evidenced, and unusually strongly for this vendor.** Unlike
+ * the project-relation fields, these are declared as REAL GraphQL enums, in the
+ * published schema, by name (read 2026-08-16, this dispatch):
+ *
+ *     enum ProjectUpdateHealthType    { atRisk  offTrack  onTrack }
+ *     enum InitiativeUpdateHealthType { atRisk  offTrack  onTrack }
+ *
+ * That is a categorically better position than the falsified pair was in: there,
+ * the schema was *structurally incapable* of carrying the answer because the field
+ * was typed `String!`. Here the vocabulary is published, both surfaces agree on
+ * the same three members, and GraphQL's own type layer validates the value before
+ * any class-validator can — so the hidden-enum failure mode that burned the
+ * project-relation arm cannot repeat on THIS field in that form.
+ *
+ * **The loud-failure path, named as required.** The engine never authors a health
+ * (ADR-0046 decision 4), so it pins no value from this list as a default — the
+ * list is documentation and a validation aid, not a source of values. A health
+ * that reaches the wire is one a human chose. If that value is outside the enum,
+ * `projectUpdateCreate`/`initiativeUpdateCreate` fails at the GraphQL layer with a
+ * variable-coercion error naming the enum and the offending value, and
+ * {@link LinearApiError} surfaces it verbatim from the store's write — the pass
+ * fails LOUDLY at publish time, with nothing written, and never degrades to a
+ * silently-narrowed or defaulted health. That is the whole reason this seam types
+ * health as an opaque `string` rather than a TS union: a union would tempt an
+ * adapter into narrowing an unrecognized value locally, which is exactly how a
+ * fabricated judgment would get onto the wire.
+ *
+ * ── ADR-0046 build-time item (c): the LIVE question, and it is UNANSWERED ────
+ *
+ * Item (c) asked what a real, UI-created update reads back as. **It could not be
+ * measured from this dispatch: no live Linear write is reachable from a
+ * worktree-isolated wave row, which runs no credential probe at all by policy.**
+ * So it is reported UNSETTLED rather than closed on schema evidence, per the rule
+ * above. What the schema read DID surface is the specific reason the question
+ * still matters, and it is sharper than "we did not check":
+ *
+ *   **The create input and the read node disagree about whether health is
+ *   optional.** `ProjectUpdateCreateInput.health` is nullable (item (b) above),
+ *   but the node it creates declares `ProjectUpdate.health:
+ *   ProjectUpdateHealthType!` — NON-NULL. Both initiative-side types say the same.
+ *   An update created without a health therefore still reads back WITH one, which
+ *   means the SERVER assigns a value when the caller omits the key.
+ *
+ *   **What that assigned value is, is a pure VALUE question, and no schema read
+ *   can answer it.** It may be a fixed default, or the previous update's health
+ *   carried forward. And it has a real consequence, because `Project.health` is
+ *   documented as derived from the most recent update: publishing a
+ *   health-less mirror may still MOVE the container's health to whatever the
+ *   server picked.
+ *
+ * **What the engine does about it, and what it must not claim.** It omits the key
+ * — the most conservative act available, and the only one that is literally "I
+ * record no judgment". It does NOT send `health: null` (spellable, but an
+ * assertion about the value, and whether null clears or defaults is the same
+ * unmeasured question), and it does not default. And it deliberately does not
+ * claim that a health-less publish leaves the container's health untouched:
+ * {@link GoalUpdateReceipt.health} reports what the ENGINE SENT and says nothing
+ * about what the container reads afterwards, precisely so this unproven point
+ * cannot be silently asserted through a return value.
+ *
+ * **To settle item (c)**, a consumer with a live workspace posts one update by
+ * hand in the UI, one through this seam with a health, and one through this seam
+ * WITHOUT, then reads all three back (`ProjectUpdate.health`, and `Project.health`
+ * before and after) and reports what the omission produced. Until then this
+ * constant is documentation of a published vocabulary and nothing more.
+ *
+ * Exported so a consumer proposing a health can validate it against the vendor's
+ * own list BEFORE a confirm round, rather than discovering the vocabulary from a
+ * rejection — and so this stamp has a home a reader will actually find.
+ */
+export const LINEAR_UPDATE_HEALTH_VALUES: readonly string[] = Object.freeze([
+  'onTrack',
+  'atRisk',
+  'offTrack',
+]);
 
 /**
  * The `ProjectRelation.type` value for a blocking project dependency.

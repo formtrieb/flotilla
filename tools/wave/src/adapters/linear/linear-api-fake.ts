@@ -20,6 +20,8 @@ import type {
   LinearStateType,
   LinearCreateIssueInput,
   LinearPrAttachment,
+  LinearUpdateInput,
+  LinearUpdateResult,
   ProjectRelationAnchorPair,
 } from './linear-api';
 import { PROJECT_BLOCKS_RELATION_TYPE, PROJECT_RELATION_ANCHOR_PAIR } from './linear-api';
@@ -43,6 +45,28 @@ interface FakeProjectRelationRecord extends ProjectRelationAnchorPair {
   readonly relatedProjectId: string;
   /** Always {@link PROJECT_BLOCKS_RELATION_TYPE}; kept as a field so the read half can filter on it as production does. */
   readonly type: typeof PROJECT_BLOCKS_RELATION_TYPE;
+}
+
+/**
+ * One published update as this fake stores it (ADR-0046) — module-local for the
+ * reason {@link FakeProjectRelationRecord} is.
+ *
+ * `health` is OPTIONAL here rather than `string | undefined`, and that is the
+ * whole point of the shape: an omitted health must be an absent KEY, so a spec
+ * can distinguish "no judgment was recorded" from "a key was set to undefined"
+ * with `'health' in record`. Those are different wire acts and the prohibition is
+ * about exactly that difference.
+ */
+interface FakeUpdateRecord {
+  readonly id: string;
+  /** Which native surface received it — the container-binding branch, observable. */
+  readonly surface: 'project' | 'initiative';
+  /** The container the update was published to. */
+  readonly containerId: string;
+  /** The body exactly as published — narrative + engine anchor. */
+  readonly body: string;
+  /** Present ONLY when a health accompanied the write. */
+  readonly health?: string;
 }
 
 /** State categories that make an issue closed (excluded from listOpenIssues). */
@@ -478,6 +502,64 @@ export class InMemoryLinearApi implements LinearApi {
     this.projectsByInitiative.set(initiativeId, [...ids, projectId]);
   }
 
+  // ── Mirror-pass substrate (ADR-0046) — the native UPDATE surfaces ──────────
+  //
+  // Updates are appended to one flat log keyed by container id, mirroring the two
+  // real mutations: one update per call, no fan-out, no edit path and no delete
+  // path (the seam declares none). The log is what lets a spec assert the
+  // published BODY and the health-key's presence — the two facts the whole pass
+  // is about — instead of asserting that a method was called.
+
+  /** Every update this substrate accepted, in write order. */
+  private readonly updates: FakeUpdateRecord[] = [];
+  private updateCounter = 0;
+
+  async createProjectUpdate(
+    input: LinearUpdateInput & { projectId: string },
+  ): Promise<LinearUpdateResult> {
+    if (!this.projects.has(input.projectId)) {
+      throw new Error(`Linear project not found: ${input.projectId}`);
+    }
+    return this.recordUpdate('project', input.projectId, input);
+  }
+
+  async createInitiativeUpdate(
+    input: LinearUpdateInput & { initiativeId: string },
+  ): Promise<LinearUpdateResult> {
+    if (!this.initiatives.has(input.initiativeId)) {
+      throw new Error(`Linear initiative not found: ${input.initiativeId}`);
+    }
+    return this.recordUpdate('initiative', input.initiativeId, input);
+  }
+
+  /**
+   * The shared append. Models the ONE wire property the health prohibition rests
+   * on: `health` is recorded as an absent KEY when the caller omitted it, so a
+   * spec can assert `'health' in record === false` and prove that nothing
+   * defaulted a value in on the way down. A fake that stored `health: undefined`
+   * would make that assertion unwritable and the guarantee untestable.
+   *
+   * Deliberately does NOT model the vendor's server-side assignment of a health
+   * when the key is omitted (the read-stamp's unsettled item (c)): that behaviour
+   * is unmeasured, and a fake that invented it would be pinning a guess as if it
+   * were evidence — the exact error the stamp exists to stop.
+   */
+  private recordUpdate(
+    surface: 'project' | 'initiative',
+    containerId: string,
+    input: LinearUpdateInput,
+  ): LinearUpdateResult {
+    const id = `upd-${++this.updateCounter}`;
+    this.updates.push({
+      id,
+      surface,
+      containerId,
+      body: input.body,
+      ...(input.health !== undefined ? { health: input.health } : {}),
+    });
+    return { id, url: `https://linear.test/updates/${id}` };
+  }
+
   async getProjectBlockedBy(projectId: string): Promise<string[]> {
     if (!this.projects.has(projectId)) {
       throw new Error(`Linear project not found: ${projectId}`);
@@ -635,13 +717,54 @@ export class InMemoryLinearApi implements LinearApi {
     name: string;
     description?: string;
     statusType?: LinearProjectStatusType;
+    health?: string;
+    url?: string;
   }): void {
     this.projects.set(project.id, {
       id: project.id,
       name: project.name,
       description: project.description ?? '',
       statusType: project.statusType ?? 'backlog',
+      // Conditional spreads, not `health: project.health`: an unseeded health
+      // must be an ABSENT KEY so the "absent stays absent all the way out"
+      // contract is assertable against this substrate rather than merely stated.
+      ...(project.health !== undefined ? { health: project.health } : {}),
+      ...(project.url !== undefined ? { url: project.url } : {}),
     });
+  }
+
+  /**
+   * Test affordance (ADR-0046): record a project's OWN health — the substrate the
+   * anchor block transports.
+   *
+   * NOT part of `LinearApi`, and the omission is the same one `setProjectStatus`
+   * makes for the same reason: nothing in the facet writes a MEMBER's health. A
+   * member health is authored by the consumer's own per-project flow (on Linear,
+   * by posting a project update), so driving one here is a test act rather than a
+   * verb the station is missing.
+   *
+   * Pass `null` to clear it back to ABSENT — which is the state that matters
+   * most, since "no health has ever been reported" is the vendor's documented
+   * null and the case the transport must not paper over.
+   */
+  setProjectHealth(projectId: string, health: string | null): void {
+    const prj = this.projects.get(projectId);
+    if (!prj) throw new Error(`Linear project not found: ${projectId}`);
+    const { health: _dropped, ...rest } = prj;
+    this.projects.set(projectId, health === null ? rest : { ...rest, health });
+  }
+
+  /**
+   * Test affordance (ADR-0046): every update this substrate accepted, in write
+   * order, as stored.
+   *
+   * Returned WITHOUT re-spreading each record's optional keys, so a caller can
+   * assert key ABSENCE (`'health' in rec`) rather than only value equality. That
+   * is the assertion the health prohibition actually needs: `health === undefined`
+   * passes for a key set to `undefined` too, and those are different wire acts.
+   */
+  publishedUpdates(): readonly FakeUpdateRecord[] {
+    return this.updates.map((u) => ({ ...u }));
   }
 
   /**

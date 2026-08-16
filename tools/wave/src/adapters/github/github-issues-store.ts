@@ -32,6 +32,7 @@ import {
   classifyCreateInput,
   CreateInputError,
   GoalMemberJoinError,
+  refuseGoalUpdateSurface,
   requireGoalContainer,
   validateAmendPatch,
   type IssueStore,
@@ -47,7 +48,9 @@ import {
   type CreateGoalInput,
   type CreateGoalMemberInput,
   type GoalContainer,
+  type GoalUpdateReceipt,
   type GoalView,
+  type PublishGoalUpdateInput,
   withTriageDisclaimer,
 } from '../issue-store';
 import {
@@ -806,6 +809,36 @@ export class GitHubIssuesStore implements IssueStore {
     const facts: GoalMemberFacts[] = [];
     for (const gh of members) facts.push(await this.goalMemberFacts(gh));
     return computeGoalFrontier(goalId, facts);
+  }
+
+  /**
+   * The mirror pass (ADR-0046) — REFUSED on this store, before any work.
+   *
+   * A GitHub Milestone holds members perfectly well and every other goal verb
+   * above works on it; what it does not have is a timeline artifact a report
+   * could be published to. There is no `milestoneUpdateCreate`, and the nearest
+   * lookalike — rewriting the milestone's DESCRIPTION to hold the report — was
+   * considered and rejected as a lossy state write onto a field that means
+   * something else. So the honest answer is a typed refusal rather than a
+   * substitute surface.
+   *
+   * Routed through the SHARED {@link refuseGoalUpdateSurface} rather than
+   * throwing a locally-built error, so this refusal and the markdown store's are
+   * the same refusal rather than two lookalikes that agree today. The binding is
+   * still resolved first, so a consumer who ALSO misconfigured the container hears
+   * about that (`unrealized-container`) rather than being told the surface is
+   * missing on a role this store never had.
+   */
+  async publishGoalUpdate(
+    goalId: string,
+    _input?: PublishGoalUpdateInput,
+    container?: GoalContainer,
+  ): Promise<GoalUpdateReceipt> {
+    // Resolve the binding FIRST — a bad container is a different, more
+    // fundamental complaint than a missing surface, and must win.
+    const role = this.goalRole(container);
+    void goalId;
+    return refuseGoalUpdateSurface('github', role);
   }
 
   /** A goal id → the milestone number it names; throws on a non-integer id. */

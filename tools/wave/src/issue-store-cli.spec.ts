@@ -16,13 +16,41 @@ import { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
 import { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
-import type { CreateInput, ClosingState } from './adapters/issue-store';
+import type {
+  CreateInput,
+  ClosingState,
+  GoalContainer,
+  GoalUpdateReceipt,
+  PublishGoalUpdateInput,
+} from './adapters/issue-store';
 import type { IssueView } from './contract';
 
 function tmpStore(): MarkdownFsStore {
   const repoRoot = mkdtempSync(join(tmpdir(), 'is-'));
   mkdirSync(join(repoRoot, '.scratch'), { recursive: true });
   return new MarkdownFsStore({ repoRoot, slug: '2026-06-06-x' });
+}
+
+/**
+ * A linear store that already knows its container binding — what a consumer's
+ * `wave.config.json` supplies through `store.goal.container`.
+ *
+ * Needed because an INJECTED store makes `resolveGoalContainer` return
+ * `undefined` on purpose (there is no config file to read in these tests), and
+ * the linear store deliberately has no default binding. The subject of the cases
+ * below is the OP — its output, its exit codes, its usage errors — not the
+ * binding resolution, which has its own case a few tests down. Nothing in
+ * production is overridden: the binding is passed exactly where the CLI would
+ * have passed a configured one.
+ */
+class ProjectBoundLinearStore extends LinearIssuesStore {
+  async publishGoalUpdate(
+    goalId: string,
+    input?: PublishGoalUpdateInput,
+    container?: GoalContainer,
+  ): Promise<GoalUpdateReceipt> {
+    return super.publishGoalUpdate(goalId, input, container ?? 'project');
+  }
 }
 
 const INPUT: CreateInput = {
@@ -1229,6 +1257,85 @@ describe('issue-store-cli — goal ops', () => {
     expect(frontier.counts.actionable).toBe(1);
     expect(frontier.open.map((r) => r.id)).toEqual([issueId]);
     expect(frontier.complete).toBe(false);
+  });
+
+  // ── goal-publish-update: the mirror pass at the CLI (ADR-0046) ─────────────
+
+  it('goal-publish-update REFUSES on a store whose container has no update surface', async () => {
+    // The markdown store's goal file has no timeline. A domain failure (exit 1)
+    // naming the config key — the caller's INPUT is fine, the binding cannot
+    // carry this pass.
+    const store = tmpStore();
+    await runIssueStore(
+      ['goal-create', '--input', writeGoalInput({ title: 'g', filingHint: 'g' })],
+      store,
+    );
+    const goalId = outCaptured.trim();
+    outCaptured = '';
+
+    expect(await runIssueStore(['goal-publish-update', goalId], store)).toBe(1);
+    expect(errCaptured).toContain('store.goal.container');
+    expect(outCaptured).toBe(''); // nothing published, nothing printed
+  });
+
+  it('goal-publish-update prints the receipt, with an anchor no flag could have supplied', async () => {
+    const store = new ProjectBoundLinearStore({ api: new InMemoryLinearApi() });
+    const goalId = await store.createGoal({ title: 'Ship it', filingHint: 'ship' }, 'project');
+    outCaptured = '';
+
+    // No `--input` at all: an anchor-only update is a complete artifact, so the
+    // flag is how a caller ADDS prose rather than how it satisfies the op.
+    expect(await runIssueStore(['goal-publish-update', goalId], store)).toBe(0);
+    const receipt = JSON.parse(outCaptured) as {
+      goalId: string;
+      container: string;
+      updateId: string;
+      body: string;
+      frontier: { goalId: string };
+    };
+    expect(receipt.goalId).toBe(goalId);
+    expect(receipt.container).toBe('project');
+    expect(receipt.updateId).toBeTruthy();
+    // The engine-owned half is present although the caller supplied nothing —
+    // and there is no flag on this op that could have supplied, edited or
+    // omitted it.
+    expect(receipt.body).toContain('## Frontier');
+    expect(receipt.frontier.goalId).toBe(goalId);
+  });
+
+  it('goal-publish-update carries a narrative and a transcribed health from --input', async () => {
+    const store = new ProjectBoundLinearStore({ api: new InMemoryLinearApi() });
+    const goalId = await store.createGoal({ title: 'Ship it', filingHint: 'ship' }, 'project');
+    const p = join(mkdtempSync(join(tmpdir(), 'goal-upd-')), 'input.json');
+    writeFileSync(
+      p,
+      JSON.stringify({ narrative: 'Cut the branch on Tuesday.', health: 'onTrack' }),
+      'utf-8',
+    );
+    outCaptured = '';
+
+    expect(
+      await runIssueStore(['goal-publish-update', goalId, '--input', p], store),
+    ).toBe(0);
+    const receipt = JSON.parse(outCaptured) as { body: string; health?: string };
+    expect(receipt.health).toBe('onTrack');
+    // Prose ABOVE the anchor, in that order.
+    expect(receipt.body.indexOf('Cut the branch on Tuesday.')).toBeLessThan(
+      receipt.body.indexOf('## Frontier'),
+    );
+  });
+
+  it('goal-publish-update rejects a malformed --input as a USAGE error, publishing nothing', async () => {
+    const store = new ProjectBoundLinearStore({ api: new InMemoryLinearApi() });
+    const goalId = await store.createGoal({ title: 'Ship it', filingHint: 'ship' }, 'project');
+    const bad = join(mkdtempSync(join(tmpdir(), 'goal-upd-bad-')), 'x.json');
+    writeFileSync(bad, '{ not json', 'utf-8');
+    outCaptured = '';
+
+    expect(
+      await runIssueStore(['goal-publish-update', goalId, '--input', bad], store),
+    ).toBe(2);
+    expect(outCaptured).toBe('');
   });
 
   it('a store that cannot resolve a binding fails as a DOMAIN failure naming the config key', async () => {

@@ -83,6 +83,13 @@
  *              one act; prints the opaque new member id (text, not JSON). The
  *              member is bare on purpose — no eligibility marker — so nothing it
  *              files can be drawn by a wave until a person sharpens it.
+ *   goal-publish-update <goalId> [--input <PublishGoalUpdateInput.json>]
+ *                                                  → the MIRROR PASS (ADR-0046): publishes the
+ *                                                    goal's derived accounting to its container's
+ *                                                    native update surface; prints the receipt (JSON).
+ *                                                    The engine derives the frontier fresh at write
+ *                                                    time and renders the anchor — no flag supplies,
+ *                                                    edits or omits it. github/markdown refuse typed.
  *   goal-frontier <goalId>                         → prints the GoalFrontier (JSON): per member
  *              done | in-motion | actionable | blocked | unready, plus counts,
  *              the open remainder, and `complete`. READ-ONLY — it reports that
@@ -116,6 +123,7 @@ import type {
   PublishDocumentInput,
   CreateGoalInput,
   CreateGoalMemberInput,
+  PublishGoalUpdateInput,
 } from './adapters/issue-store';
 import type { ApplyTriageInput } from './contract';
 import { flag, printJson } from './cli-utils';
@@ -163,10 +171,11 @@ type Op =
   | 'goal-list'
   | 'goal-assign'
   | 'goal-create-member'
-  | 'goal-frontier';
+  | 'goal-frontier'
+  | 'goal-publish-update';
 
 const FULL_OP_LIST =
-  'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-create-member|goal-frontier> [...args] [--config <path>]';
+  'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-create-member|goal-frontier|goal-publish-update> [...args] [--config <path>]';
 
 /**
  * Every op's own contract section (issue #505) — printed INSTEAD OF the full
@@ -299,6 +308,18 @@ const OP_CONTRACT: Record<Op, readonly string[]> = {
     'output: the GoalFrontier, as JSON — one reading per member',
     '  (done | in-motion | actionable | blocked | unready), plus counts,',
     '  the open remainder, and `complete`. Read-only: it never closes the goal.',
+  ],
+  'goal-publish-update': [
+    'usage: issue-store goal-publish-update <goalId> [--input <PublishGoalUpdateInput.json>] [--config <path>]',
+    '  --input is OPTIONAL: {"narrative"?, "health"?, "operatorNote"?}',
+    '  the ENGINE derives the frontier fresh and renders the accounting anchor;',
+    '    there is no way to supply, edit or omit it — that is the whole guarantee',
+    '  health is transcribed, never derived: pass an Operator-confirmed value or',
+    '    none at all. Omitted means the update publishes without one.',
+    '  needs a container with a native update surface (linear project/initiative);',
+    '    github and markdown refuse with GoalBindingError "unrealized-update-surface"',
+    'output: the GoalUpdateReceipt, as JSON — the update id and url, the exact',
+    '  body published, and the frontier the anchor was derived from',
   ],
 };
 
@@ -725,6 +746,48 @@ export async function runIssueStore(
           return usage('goal-frontier requires a <goalId>', 'goal-frontier');
         }
         printJson(await store.readGoalFrontier(goalId, resolveGoalContainer(args, injected)));
+        return 0;
+      }
+
+      // The mirror pass (ADR-0046). The ONLY goal op that writes to the
+      // container itself, and the only one whose input file is optional — an
+      // anchor-only update is a complete artifact, so `--input` is how a caller
+      // ADDS prose rather than how it satisfies the op.
+      //
+      // Note what this op cannot express, which is the point: there is no
+      // `--body`, no `--anchor` and no `--frontier` flag. The accounting is
+      // derived inside the store at write time, so not even the CLI — the one
+      // surface a human types at directly — offers a way to hand one in.
+      case 'goal-publish-update': {
+        const goalId = args[1];
+        if (goalId === undefined) {
+          return usage('goal-publish-update requires a <goalId>', 'goal-publish-update');
+        }
+        let updateInput: PublishGoalUpdateInput = {};
+        const inputPath = flag(args, '--input');
+        if (inputPath !== undefined) {
+          try {
+            updateInput = JSON.parse(readFileSync(inputPath, 'utf-8')) as PublishGoalUpdateInput;
+          } catch (err) {
+            return usage(
+              `cannot read --input ${inputPath}: ${(err as Error).message}`,
+              'goal-publish-update',
+            );
+          }
+          if (updateInput === null || typeof updateInput !== 'object') {
+            return usage(
+              'goal-publish-update --input must contain a JSON object',
+              'goal-publish-update',
+            );
+          }
+        }
+        printJson(
+          await store.publishGoalUpdate(
+            goalId,
+            updateInput,
+            resolveGoalContainer(args, injected),
+          ),
+        );
         return 0;
       }
 
