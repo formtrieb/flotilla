@@ -1,6 +1,6 @@
 # goal — station mechanics
 
-The engine-CLI plumbing behind the three passes. The skill body owns the **judgment** (what the finish line is, what its frontier contains, what the report means); this file owns the **invocation**. Reach for it once a pass is confirmed.
+The engine-CLI plumbing behind the four passes. The skill body owns the **judgment** (what the finish line is, what its frontier contains, what the report means); this file owns the **invocation**. Reach for it once a pass is confirmed.
 
 > **The CLI is the source of truth for shapes.** Every op validates its input on each call and prints its own contract section on a usage error. The JSON below are *worked examples to scaffold you*, not the schema — if one ever disagrees with the CLI, the CLI wins. Don't re-derive validation the engine already does; read its error and fix the input.
 
@@ -14,12 +14,14 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 
 A Goal is realized as one native container role, and the role is read from the consumer's own config at the CLI edge. Four roles are declared, and **the role decides not only where the goal lives but what KIND its direct members are** (ADR-0045 decision 1) — issues for three of the four roles, projects for the fourth:
 
-| Role | Realized by | Member kind | Notes |
-|---|---|---|---|
-| `milestone` | github | issue | the store's **default** — the only native GitHub container with direct issue membership |
-| `goal-file` | markdown | issue | the store's **default**; the facet *is* the realization there |
-| `project` | linear | issue | must be declared explicitly |
-| `initiative` | linear | **project** | must be declared explicitly — the only role whose direct members are not issues. An initiative holds projects, so every member id under this binding is a project id, minted under `store.team`, and `goal-assign`/`goal-create-member` refuse an issue-shaped id here before any write (ADR-0045 decision 3) |
+| Role | Realized by | Member kind | Update surface (mirror) | Notes |
+|---|---|---|---|---|
+| `milestone` | github | issue | none | the store's **default** — the only native GitHub container with direct issue membership |
+| `goal-file` | markdown | issue | none | the store's **default**; the facet *is* the realization there |
+| `project` | linear | issue | native Project Update | must be declared explicitly |
+| `initiative` | linear | **project** | native Initiative Update | must be declared explicitly — the only role whose direct members are not issues. An initiative holds projects, so every member id under this binding is a project id, minted under `store.team`, and `goal-assign`/`goal-create-member` refuse an issue-shaped id here before any write (ADR-0045 decision 3) |
+
+**The update surface is a Linear shape only** (ADR-0046 decision 5) — the mirror pass (Pass 4, below) publishes to it and refuses typed on the two roles that have none, naming the same `store.goal.container` key every other refusal here does. Every OTHER goal verb works identically on all four roles; only the mirror pass cares about this column.
 
 **Linear binds no default even though it now realizes both its roles.** One shipped consumer runs Initiative-as-Epic / Project-as-User-Story while an older decision record once sketched "wave ≈ Linear project", so any built-in assumption collides with a live convention — declaring `project` vs. `initiative` is a real choice with a real consequence (what kind of thing a member is), not a formality. A goal op against a linear store with nothing declared fails with a typed refusal naming `store.goal.container` — that is the design, not a bug to route around.
 
@@ -32,17 +34,18 @@ A Goal is realized as one native container role, and the role is read from the c
 }
 ```
 
-Three refusal shapes, each naming the same config key (exit 1, the store threw):
+Four refusal shapes, each naming the same config key (exit 1, the store threw):
 
 | Refusal | Cause | Fix |
 |---|---|---|
 | `unbound` | nothing declared, and this store has no default | declare `store.goal.container` |
 | `unknown-container` | the declared value is not a role at all (a typo, an invented name) | spell one of the four roles |
 | `unrealized-container` | a real role this store does not ship — `initiative` on the github or markdown store (only linear realizes it); `project` on github; `milestone`/`goal-file` on linear | pick a role the store realizes |
+| `unrealized-update-surface` | the role IS realized and every other goal verb works on it — but its container has no native UPDATE surface to mirror onto (`milestone` on github, `goal-file` on markdown; ADR-0046 decision 5). **Mirror-only**: `goal-publish-update` is the only op this refusal applies to | mirror only from a linear store bound to `project` or `initiative`; every other goal verb here is unaffected and keeps working |
 
-A configured binding is authoritative: a malformed declaration fails here rather than being quietly read as unbound and defaulted past.
+A configured binding is authoritative: a malformed declaration fails here rather than being quietly read as unbound and defaulted past. There is deliberately no substitute for the fourth row — a milestone-description rewrite to hold a report was considered and rejected as a lossy write onto a field that means something else; see [Pass 4 — mirror](#pass-4--mirror) below.
 
-There is a fourth, narrower refusal at the MEMBER level rather than the container level: `GoalMemberKindError` (exit 1), thrown by `goal-assign` when the passed member id is issue-shaped but the binding wants a project (`initiative`). It names `expected`, `container`, and the offending id — see [Pass 2 — curation](#pass-2--curation) below.
+There is a fifth, narrower refusal at the MEMBER level rather than the container level: `GoalMemberKindError` (exit 1), thrown by `goal-assign` when the passed member id is issue-shaped but the binding wants a project (`initiative`). It names `expected`, `container`, and the offending id — see [Pass 2 — curation](#pass-2--curation) below.
 
 ## Commands
 
@@ -54,11 +57,12 @@ There is a fourth, narrower refusal at the MEMBER level rather than the containe
 | `issue-store goal-create-member <goalId> --input <f.json>` | mint a **bare direct member** and join it, in ONE act → prints the opaque new member id (text, not JSON) — the cut pass's whole write surface |
 | `issue-store goal-assign <goalId> <memberId>` | join one **existing** member by curation; nothing on stdout |
 | `issue-store goal-frontier <goalId>` | the derived frontier (JSON) — see [frontier-report.md](frontier-report.md) |
+| `issue-store goal-publish-update <goalId> [--input <f.json>]` | the **mirror pass** (Pass 4): publish the frontier as derived accounting to the container's native update surface → prints the `GoalUpdateReceipt` (JSON) — see [Pass 4 — mirror](#pass-4--mirror) below |
 | `issue-store create --input <f.json>` | file one **bare issue**, goal-less — `to-issues`' own path, not this station's cut (see note below) |
 | `issue-store parse-ref <id>` | invert an opaque ISSUE id into the `{slug?, issue}` reference shape (JSON) — issue-space only, never a project id |
 | any command, no args | usage |
 
-`goal-create-member`'s member KIND follows the binding (ADR-0045 decision 3): a bare **issue** under `milestone`/`project`/`goal-file`, a bare **project** under `initiative`. Plain `create` still exists and is still what `to-issues` uses to file a goal-less issue — but for THIS station's cut pass, `goal-create-member` replaced the older two-call "`create` then `goal-assign`" sequence, because under `initiative` there is no two-call route at all (`create` mints issues; an initiative holds projects). There is deliberately **no** goal-close op and **no** goal-dispatch op. The facet exposes neither, so neither has a runner — sight, never permission. There is no leave/unassign op either: a member leaves by being removed from the container in the tracker.
+`goal-create-member`'s member KIND follows the binding (ADR-0045 decision 3): a bare **issue** under `milestone`/`project`/`goal-file`, a bare **project** under `initiative`. Plain `create` still exists and is still what `to-issues` uses to file a goal-less issue — but for THIS station's cut pass, `goal-create-member` replaced the older two-call "`create` then `goal-assign`" sequence, because under `initiative` there is no two-call route at all (`create` mints issues; an initiative holds projects). There is deliberately **no** goal-close op and **no** goal-dispatch op. The facet exposes neither, so neither has a runner — sight, never permission. There is no leave/unassign op either: a member leaves by being removed from the container in the tracker. `goal-publish-update` is the one op on this facet that DOES write to the container itself (ADR-0046) — it is neither of the two verbs the paragraph above says do not exist: see [Pass 4 — mirror](#pass-4--mirror) for the guarantee that keeps it from becoming either one.
 
 ## Pass 1 — cut
 
@@ -163,16 +167,97 @@ To find a goal id you do not have in hand, list them:
 {{wave-cli}} issue-store goal-list
 ```
 
+## Pass 4 — mirror
+
+`goal-publish-update` is the mirror pass's whole write surface (ADR-0046) — one call, driving the engine's `publishGoalUpdate`. `--input` is **optional**: an anchor-only update (no narrative, no health, no note) is a complete, honest artifact, not a degraded one.
+
+### Input — `PublishGoalUpdateInput`
+
+Every field optional; nothing else is accepted:
+
+```json
+{
+  "narrative": "Two of the three placeholders from the 08-15 cut have shipped; the third is now the only thing standing between this goal and done.",
+  "health": "atRisk",
+  "operatorNote": "read at 14:00, before the Berlin standup"
+}
+```
+
+```bash
+{{wave-cli}} issue-store goal-publish-update <goalId> [--input <update.json>]   # prints the GoalUpdateReceipt
+```
+
+**There is no `--body`, no `--anchor`, and no `--frontier` flag, and that absence is the point** — not even the CLI, the one surface a person types at directly, offers a way to hand the accounting in. The engine re-derives the frontier fresh inside the call and renders the anchor from ONE shared function every store calls; `narrative` and `operatorNote` are published verbatim above/inside it, and `health` is transcribed onto the write exactly as given — never defaulted, never inferred.
+
+### Composing an exact-wording preview
+
+The CLI has no dry-run flag for this op — there is no way to ask the engine "what would you publish" without publishing. Compose the preview yourself, from a **fresh** `goal-frontier` read plus the engine's own fixed shape, so the words match what the write will emit even though the call itself has not run yet:
+
+1. **(if a narrative was drafted and confirmed)** the narrative text, trimmed, then a blank line.
+2. `## Frontier`, then a blank line.
+3. `Goal: **<goal name>** — <n> member(s).`, then a blank line.
+4. **One line per member** (the whole block is skipped when the frontier has none): `- <label> — <state>[; tracker state: <nativeState>][; health: <health>][; waiting on <blockers>]`
+   - `<label>` renders as a markdown link — `<name>` linking to `<url>` — when the store reported a native link, else as `**<name>**` in bold; `<name>` falls back to the raw member id when no display identity is known.
+   - `<state>` is exactly one of these five words — the engine's OWN fixed vocabulary (`GOAL_MEMBER_STATE_PROSE`), **not** the operator translations [frontier-report.md](frontier-report.md) uses for the status pass; never mix the two tables:
+
+     | reading | anchor word |
+     |---|---|
+     | `done` | `done` |
+     | `in-motion` | `in motion` |
+     | `actionable` | `ready to pick up` |
+     | `blocked` | `blocked` |
+     | `unready` | `awaiting sharpening` |
+   - `tracker state: <nativeState>` appears only when the store reported one (an initiative-bound project's own status category); `health: <health>` only when the member has one — both ABSENT rather than a placeholder when the store has nothing to say.
+   - `waiting on <blockers>` lists every unresolved edge, rendered the same way [frontier-report.md](frontier-report.md#the-five-readings-and-what-each-one-costs-the-reader) renders them for the status pass.
+   - Then a blank line, once, after the whole member list.
+5. **The distribution sentence**, then a blank line: `<done> of <total> member(s) [is/are] done.`, plus `Still open: <n> <anchor-word>, …` naming every non-zero open state in the same five-state order — or, when there are zero members at all, exactly `This goal has no members yet, so there is nothing to report against it.`
+6. **Whenever `frontier.complete` is true**, the empty-frontier sentence, verbatim, then a blank line:
+
+   > Every member of this goal is closed. The remaining step — closing the container itself — is the Operator’s act in the tracker: this pass reports the finish line has been reached and does not declare it reached.
+
+7. **(if an operator's note was supplied)** `Operator’s note: <note>`, then a blank line.
+8. The provenance line, verbatim — no trailing blank line after it:
+
+   > Derived and published by the flotilla goal station’s mirror pass. The accounting in this section is read from the tracker at publish time and is not author-editable; any prose above it is the Operator’s own.
+
+**Quote steps 6 and 8 exactly** in the preview — they are the engine's own fixed sentences, exported as `GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE` and `GOAL_UPDATE_PROVENANCE_LINE` precisely so a preview can show the identical words the write will emit. The freshness caveat still applies: this preview is built from a READ (`goal-frontier`, taken as close to the confirm as possible), while the write derives its own frontier a second time, fresh, at the moment it runs — if the tracker moved in between, the published bytes can differ from what you just showed, in the member list and the counts, never in the two quoted sentences' own wording.
+
+> **A genuinely empty goal (zero members) ALSO triggers step 6 — verified against the shipped renderer, not assumed.** `frontier.complete` is `open.length === 0` ([goal-frontier.ts](../../../../tools/wave/src/goal-frontier.ts)), which is true for BOTH "every member is done" and "there are no members at all" — [frontier-report.md](frontier-report.md#empty-membership-vs-completion) draws that distinction sharply for the status pass, but step 6 above carries **no matching member-count guard**: a mirror run on a freshly-cut, still-empty goal renders step 5's `This goal has no members yet, so there is nothing to report against it.` immediately followed by step 6's `Every member of this goal is closed…`, both true to their own narrow claims and jarring side by side. This is the engine's actual behaviour, confirmed by calling `renderGoalUpdateBody` directly against a zero-reading `GoalFrontier` — not a hypothetical. **The skill's own judgment is the only guard here** (see "Pass 4 — mirror" in [SKILL.md](../SKILL.md#pass-4--mirror)): when `goal-frontier` shows zero members, say so plainly in the preview and flag that the published anchor will read as though the goal were finished, before asking for the confirm.
+
+### Output — `GoalUpdateReceipt`
+
+```json
+{
+  "goalId": "7",
+  "container": "project",
+  "updateId": "a1b2c3",
+  "url": "https://linear.app/…/project-update/a1b2c3",
+  "body": "Two of the three placeholders…\n\n## Frontier\n\nGoal: **1.0.0 — the contract freeze** — 3 members.\n\n- [The credential seam survives a second code host](https://linear.app/…) — blocked; waiting on #412\n…",
+  "health": "atRisk",
+  "frontier": { "goalId": "7", "readings": [ "…" ], "counts": { "…": "…" }, "open": [ "…" ], "complete": false }
+}
+```
+
+`body` is the **exact** text that was published — read it back for the report rather than trusting the preview matched; `frontier` is the `GoalFrontier` this run actually derived, in the same shape `goal-frontier` prints on its own. `health` is present only when the call carried one — it reports what THIS call sent, never a claim about what the container's own health now reads as (on Linear, health is itself derived from the most recent update, so the write can move it without this field ever saying so). `url` is present only when the tracker returned one.
+
+### The refusal
+
+A container with no native update surface refuses before writing anything (`GoalBindingError`, `failure: 'unrealized-update-surface'`, exit 1 — the fourth row in the refusal table above), naming `store.goal.container` and the bound role. Every other goal verb keeps working on that same binding; only this one pass has nothing to publish to, and there is no substitute — a milestone-description rewrite to hold a report was considered and rejected as a lossy write onto a field that means something else.
+
+### The retired name
+
+The design session's working name for this pass, "health write-mirror," is retired (ADR-0046). What the pass carries is the **Frontier**; health only ever travels through it as `input.health` — a transcribed or source-attributed value, never derived — so naming the pass after health alone would misdescribe what it actually does.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | success — the op's documented output on stdout |
-| 1 | domain failure: the store threw (an unknown id, a refused container binding, a bare dependency the store cannot represent) |
+| 1 | domain failure: the store threw (an unknown id, a refused container binding, a refused update surface — mirror only — or a bare dependency the store cannot represent) |
 | 2 | usage error, or an unreadable/malformed `--input` file — the message names the offending field and prints that op's own contract |
 
 A usage error on a known op prints **that op's** contract section rather than the full op list, so a wrong flag teaches one shape instead of two dozen. The op list and every contract section live in `tools/wave/src/issue-store-cli.ts`.
 
 ## Where the design lives
 
-The decisions this file implements — bare frontier tickets, the goal as an issue-set boundary orthogonal to PRDs, the facet on the store, the config-bound container role, the derived-never-written frontier, and *sight, never permission* — are recorded in [ADR-0044](../../../../docs/adr/0044-a-goal-binds-a-native-container-and-derives-its-frontier.md). The initiative realization — direct project members, the member-kind-generic write verbs, `createGoalMember`'s one-act mint-and-join, and the native `blockedBy` arm at project granularity — is [ADR-0045](../../../../docs/adr/0045-a-goals-members-are-the-containers-direct-native-members.md). The frontier's own classification ladder is engine code, in `tools/wave/src/goal-frontier.ts`.
+The decisions this file implements — bare frontier tickets, the goal as an issue-set boundary orthogonal to PRDs, the facet on the store, the config-bound container role, the derived-never-written frontier, and *sight, never permission* — are recorded in [ADR-0044](../../../../docs/adr/0044-a-goal-binds-a-native-container-and-derives-its-frontier.md). The initiative realization — direct project members, the member-kind-generic write verbs, `createGoalMember`'s one-act mint-and-join, and the native `blockedBy` arm at project granularity — is [ADR-0045](../../../../docs/adr/0045-a-goals-members-are-the-containers-direct-native-members.md). The mirror pass — the fourth pass, the engine-derives-fresh guarantee, the two-layer body, and the two sanctioned health sources — is [ADR-0046](../../../../docs/adr/0046-the-mirror-pass-publishes-derived-accounting-to-the-containers-native-update-surface.md). The frontier's own classification ladder is engine code, in `tools/wave/src/goal-frontier.ts`; the mirror's renderer and its fixed wording (`renderGoalUpdateBody` and the constants beside it) are engine code too, in `tools/wave/src/adapters/issue-store.ts`, root-exported specifically so a preview can show the words the write will emit.
