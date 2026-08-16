@@ -257,9 +257,13 @@ const LIST_TEAM_PROJECTS_QUERY = `query ListTeamProjects($teamId: String!, $firs
 //     InitiativeToProjectPayload!` for the join; its input requires
 //     `initiativeId: String!` and `projectId: String!`.
 //   - `projectRelationCreate` / `Project.inverseRelations` for the dependency
-//     arm — the value-level read-stamp for `type`/`anchorType` lives on
-//     `PROJECT_BLOCKS_RELATION_TYPE` in linear-api.ts, including what it does
-//     and does NOT evidence.
+//     arm. Its three VALUE-level strings are the one part of this block that is
+//     no longer schema-read at all: they were MEASURED against a live workspace
+//     on 2026-08-16, which falsified both originally-pinned values. Read the
+//     read-stamp on `PROJECT_BLOCKS_RELATION_TYPE` in linear-api.ts before
+//     trusting any `String!` in the list above as an unconstrained field —
+//     Linear validates several of them as enums one layer behind GraphQL, where
+//     no schema read can see it.
 
 const CREATE_INITIATIVE_MUTATION = `mutation CreateInitiative($input: InitiativeCreateInput!) {
   initiativeCreate(input: $input) {
@@ -1125,13 +1129,19 @@ export class RealLinearApi implements LinearApi {
       // direction the issue arm's `addBlockedBy` writes.
       //
       // The two milestone ids are deliberately never sent: the facet anchors at
-      // whole-project granularity, which is what the two anchor types declare.
+      // whole-project granularity, which the anchor pair below declares — and
+      // which the live read-back confirmed as `projectMilestone: null`.
       input: {
         projectId: blockerProjectId,
         relatedProjectId: blockedProjectId,
         type: PROJECT_BLOCKS_RELATION_TYPE,
-        anchorType: PROJECT_RELATION_ANCHOR_TYPE,
-        relatedAnchorType: PROJECT_RELATION_ANCHOR_TYPE,
+        // SPREAD WHOLESALE, never field-by-field. The anchor is asymmetric —
+        // finish-to-start, the blocker's `end` onto the blocked project's
+        // `start` — and the fragment's own keys are the wire field names, so
+        // there is no step here at which the two ends could be swapped. A
+        // swapped pair would be SILENT: both are valid enum members in valid
+        // fields, so Linear would happily record a backwards dependency.
+        ...PROJECT_RELATION_ANCHOR_TYPE,
       },
     });
     const payload = data.projectRelationCreate as Record<string, unknown> | undefined;

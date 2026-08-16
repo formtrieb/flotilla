@@ -20,9 +20,30 @@ import type {
   LinearStateType,
   LinearCreateIssueInput,
   LinearPrAttachment,
+  ProjectRelationAnchorPair,
 } from './linear-api';
+import { PROJECT_BLOCKS_RELATION_TYPE, PROJECT_RELATION_ANCHOR_TYPE } from './linear-api';
 import type { LinearIssuesStore } from './linear-issues-store';
 import type { IssueStoreConformanceHooks, IssueStore } from '../issue-store';
+
+/**
+ * One `projectRelationCreate` input as this fake stores it — the five REQUIRED
+ * wire fields, and nothing digested.
+ *
+ * Module-local by design: it is the fake's storage shape, not a consumer
+ * surface, and `InMemoryLinearApi` itself is already allowlisted module-local
+ * in `barrel-drift.spec.ts` for the same reason. The three value fields carry
+ * the anchor pair's literal types through {@link ProjectRelationAnchorPair}, so
+ * a fake holding an anchor value the wire does not send fails `tsc` here.
+ */
+interface FakeProjectRelationRecord extends ProjectRelationAnchorPair {
+  /** The BLOCKER — the source that "blocks", mirroring the real input exactly. */
+  readonly projectId: string;
+  /** The BLOCKED project — the target. */
+  readonly relatedProjectId: string;
+  /** Always {@link PROJECT_BLOCKS_RELATION_TYPE}; kept as a field so the read half can filter on it as production does. */
+  readonly type: typeof PROJECT_BLOCKS_RELATION_TYPE;
+}
 
 /** State categories that make an issue closed (excluded from listOpenIssues). */
 const CLOSED_TYPES = new Set<LinearStateType>(['completed', 'canceled']);
@@ -395,8 +416,21 @@ export class InMemoryLinearApi implements LinearApi {
   private initiativeCounter = 0;
   /** initiative id → its DIRECT member project ids, in join order. */
   private readonly projectsByInitiative = new Map<string, string[]>();
-  /** blocked project id → the project ids NATIVELY blocking it. */
-  private readonly projectBlockedBy = new Map<string, string[]>();
+  /**
+   * The `projectRelationCreate` inputs this substrate has accepted, in write
+   * order — the WIRE records, not a pre-digested blocked-by index.
+   *
+   * Storing the wire shape is the point. The fake's whole job is to stand in
+   * for the real adapter, and the strings this fake used to skip storing are
+   * precisely the ones the 2026-08-16 live probe caught wrong (see
+   * {@link PROJECT_BLOCKS_RELATION_TYPE}'s read-stamp). A fake that models
+   * "A blocks B" as an abstract edge cannot drift-detect a wrong `type` or a
+   * swapped anchor pair, because it never held them — so it stayed green for
+   * the entire life of the two disproven constants. It holds them now, minted
+   * from the SAME two bindings the real adapter sends, and reads back through
+   * the SAME `type` filter.
+   */
+  private readonly projectRelations: FakeProjectRelationRecord[] = [];
 
   async createInitiative(input: { name: string; description: string }): Promise<{ id: string }> {
     const id = `init-${++this.initiativeCounter}`;
@@ -448,7 +482,14 @@ export class InMemoryLinearApi implements LinearApi {
     if (!this.projects.has(projectId)) {
       throw new Error(`Linear project not found: ${projectId}`);
     }
-    return [...(this.projectBlockedBy.get(projectId) ?? [])];
+    // The INVERSE side, read exactly as the real adapter reads it: keep records
+    // whose `type` is the blocking one, where THIS project is the target
+    // (`relatedProjectId`), and report the source (`projectId`) — the blocker.
+    // Same constant, same filter, so a drift in that one string breaks the
+    // fake-backed path and the real one together instead of only in production.
+    return this.projectRelations
+      .filter((r) => r.type === PROJECT_BLOCKS_RELATION_TYPE && r.relatedProjectId === projectId)
+      .map((r) => r.projectId);
   }
 
   async addProjectBlockedBy(
@@ -462,9 +503,25 @@ export class InMemoryLinearApi implements LinearApi {
     if (!this.projects.has(blockerProjectId)) {
       throw new Error(`Linear project not found: ${blockerProjectId}`);
     }
-    const list = this.projectBlockedBy.get(blockedProjectId) ?? [];
-    if (list.includes(blockerProjectId)) return;
-    this.projectBlockedBy.set(blockedProjectId, [...list, blockerProjectId]);
+    // Uniqueness per (project pair, type) — NOT per anchor pair. That is the
+    // live rule the 2026-08-16 probe measured ("A dependency of the same type
+    // already exists between the two projects", refused regardless of anchors),
+    // and it is the granularity the facet's find-before-create relies on.
+    const already = this.projectRelations.some(
+      (r) =>
+        r.type === PROJECT_BLOCKS_RELATION_TYPE &&
+        r.projectId === blockerProjectId &&
+        r.relatedProjectId === blockedProjectId,
+    );
+    if (already) return;
+    // Minted from the SAME bindings the real adapter sends, spread the same way
+    // — so the fake cannot hold a value the wire does not.
+    this.projectRelations.push({
+      projectId: blockerProjectId,
+      relatedProjectId: blockedProjectId,
+      type: PROJECT_BLOCKS_RELATION_TYPE,
+      ...PROJECT_RELATION_ANCHOR_TYPE,
+    });
   }
 
   // ── test affordances (mirror InMemoryGitHubApi's setClosingPr shape) ────────
@@ -613,6 +670,22 @@ export class InMemoryLinearApi implements LinearApi {
 
   /** When set, {@link addProjectBlockedBy} rejects with it (models a failed `projectRelationCreate`). */
   private projectRelationWriteError: Error | undefined;
+
+  /**
+   * Test affordance: the raw `projectRelationCreate` inputs this substrate
+   * accepted, in write order.
+   *
+   * It exists so the fake's own spec can assert the WIRE STRINGS — not just the
+   * blocked-by edge they encode — against the same literals
+   * `real-linear-api.spec.ts` pins on the outgoing mutation. That pairing is
+   * the drift guard the 2026-08-16 falsification asked for: with both specs
+   * pinning the measured values, a change to either constant fails on the
+   * fake-backed path and the real path at once. NOT part of `LinearApi` —
+   * mirrors `failProjectRelationWrites`'s test-only stance.
+   */
+  projectRelationInputs(): readonly FakeProjectRelationRecord[] {
+    return this.projectRelations.map((r) => ({ ...r }));
+  }
 
   /**
    * Test affordance (ADR-0020 write half): force the production

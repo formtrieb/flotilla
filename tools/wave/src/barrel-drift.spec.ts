@@ -73,8 +73,8 @@ import {
   // spec's allowlist reasoning cares about are represented — a shared RULE
   // (`goalMemberKind`, `requireGoalMemberKind`), a typed ERROR class
   // (`GoalMemberKindError`, `GoalMemberJoinError`), a data MAPPING
-  // (`GOAL_MEMBER_KIND_BY_CONTAINER`), and a pinned adapter CONSTANT
-  // (`PROJECT_BLOCKS_RELATION_TYPE`).
+  // (`GOAL_MEMBER_KIND_BY_CONTAINER`), and the MEASURED adapter wire values
+  // (`PROJECT_BLOCKS_RELATION_TYPE`, `PROJECT_RELATION_ANCHOR_TYPE`).
   goalMemberKind,
   requireGoalMemberKind,
   GOAL_MEMBER_KIND_BY_CONTAINER,
@@ -84,18 +84,21 @@ import {
   PROJECT_RELATION_ANCHOR_TYPE,
 } from './index';
 // The three TYPE-ONLY promotions this guard's own placement constraint had
-// deferred (see the "types this guard deferred" block below). They are listed
-// separately from the value imports above because `typeof` cannot probe them:
-// a type is erased before a single `it` runs, so the compiler-API check in this
-// file — which reads type exports and value exports alike through
-// `checker.getExportsOfModule` — is their enforcement, and this import is a
-// second, load-time signal that fails `tsc --noEmit` if any of them regresses
-// off the barrel.
+// deferred (see the "types this guard deferred" block below), plus the
+// project-relation anchor pair's shape — the fourth, added by the row that
+// corrected the two falsified relation constants (ADR-0045 Amendment
+// 2026-08-16). They are listed separately from the value imports above because
+// `typeof` cannot probe them: a type is erased before a single `it` runs, so
+// the compiler-API check in this file — which reads type exports and value
+// exports alike through `checker.getExportsOfModule` — is their enforcement,
+// and this import is a second, load-time signal that fails `tsc --noEmit` if
+// any of them regresses off the barrel.
 import type {
   UnaccountedWorktree,
   UnaccountedWorktreeReport,
   StoreGoalConfig,
   WorktreeCountAdvisory,
+  ProjectRelationAnchorPair,
 } from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
@@ -642,13 +645,37 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     expect(typeof GoalMemberJoinError).toBe('function');
     expect(GOAL_MEMBER_KIND_BY_CONTAINER).toBeDefined();
     expect(typeof PROJECT_BLOCKS_RELATION_TYPE).toBe('string');
-    expect(typeof PROJECT_RELATION_ANCHOR_TYPE).toBe('string');
+    // NOT a string any more, and the shape change is the assertion. The anchor
+    // shipped as ONE symmetric string used for both ends; a live write on
+    // 2026-08-16 refused it and named the enum the schema never showed
+    // (`start | end | milestone`). There is no symmetric value to correct it
+    // to, so the export became a frozen fragment keyed by its own wire field
+    // names — see the read-stamp in `adapters/linear/linear-api.ts`. A future
+    // edit collapsing it back to a scalar fails here at the ROOT surface, which
+    // is where a consumer would meet the regression.
+    expect(typeof PROJECT_RELATION_ANCHOR_TYPE).toBe('object');
+    expect(Object.isFrozen(PROJECT_RELATION_ANCHOR_TYPE)).toBe(true);
 
     // …and they BEHAVE like the modules' own bindings rather than merely
     // importing cleanly — the same standard the aliased pair below is held to.
     expect(goalMemberKind('initiative')).toBe('project');
     expect(goalMemberKind('milestone')).toBe('issue');
     expect(GOAL_MEMBER_KIND_BY_CONTAINER.initiative).toBe('project');
+    // The MEASURED values, spelled as literals here rather than compared to the
+    // constants: a root-surface assertion that quotes the constant back to
+    // itself cannot fail, and this family already shipped two values that were
+    // green against exactly that kind of check for their whole wrong life.
+    expect(PROJECT_BLOCKS_RELATION_TYPE).toBe('dependency');
+    expect(PROJECT_RELATION_ANCHOR_TYPE).toEqual({
+      anchorType: 'end', // the BLOCKER's end …
+      relatedAnchorType: 'start', // … onto the BLOCKED project's start
+    });
+    // The asymmetry itself, asserted as a property rather than as two values —
+    // this is the line a "rename the single constant and reuse it for both
+    // ends" repair would fail.
+    expect(PROJECT_RELATION_ANCHOR_TYPE.anchorType).not.toBe(
+      PROJECT_RELATION_ANCHOR_TYPE.relatedAnchorType,
+    );
     expect(() =>
       requireGoalMemberKind({
         storeKind: 'linear',
@@ -657,6 +684,19 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
         isIssueShaped: () => true,
       }),
     ).toThrow(GoalMemberKindError);
+  });
+
+  it('the anchor pair annotates as its own root-exported TYPE, keeping the literals rather than widening to string', () => {
+    // The compile-time half of the same promotion, in the shape this file's
+    // "types this guard deferred" block below uses: the annotation resolves
+    // only while `ProjectRelationAnchorPair` really crosses the barrel, and
+    // `tsc --noEmit` is the assertion. The literal member types are load-
+    // bearing — a consumer that could annotate this fragment as
+    // `{ anchorType: string; relatedAnchorType: string }` would be back to a
+    // shape in which the two ends are interchangeable.
+    const pair: ProjectRelationAnchorPair = PROJECT_RELATION_ANCHOR_TYPE;
+    expect(pair.anchorType).toBe('end');
+    expect(pair.relatedAnchorType).toBe('start');
   });
 
   // ─── the types this guard's own constraint deferred, now promoted ─────────

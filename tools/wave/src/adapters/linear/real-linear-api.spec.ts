@@ -1379,7 +1379,13 @@ describe('RealLinearApi', () => {
                 project: {
                   inverseRelations: {
                     nodes: [
-                      { type: PROJECT_BLOCKS_RELATION_TYPE, project: { id: 'prj-a' } },
+                      // The LITERAL the live probe read back on 2026-08-16, not
+                      // the constant: this fixture stands in for what Linear
+                      // actually returns, so writing the constant here would
+                      // make the fixture follow any future drift instead of
+                      // catching it. `node.project.id` is the BLOCKER — the
+                      // confirmed direction fact.
+                      { type: 'dependency', project: { id: 'prj-a' } },
                       { type: 'related', project: { id: 'prj-neighbour' } },
                     ],
                     pageInfo: { hasNextPage: false, endCursor: null },
@@ -1393,16 +1399,22 @@ describe('RealLinearApi', () => {
       expect(await api.getProjectBlockedBy('prj-b')).toEqual(['prj-a']);
     });
 
-    it('addProjectBlockedBy sends the five REQUIRED input fields, blocker-as-source', async () => {
+    it('addProjectBlockedBy sends the five REQUIRED input fields, blocker-as-source, with the values MEASURED live', async () => {
       // `ProjectRelationCreateInput` requires anchorType / projectId /
       // relatedAnchorType / relatedProjectId / type (published schema, read
-      // 2026-08-15). The two milestone ids are deliberately absent: the facet
-      // anchors at whole-project granularity.
+      // 2026-08-15 and re-read 2026-08-16). The two milestone ids are
+      // deliberately absent: the facet anchors at whole-project granularity,
+      // and the live read-back confirmed `projectMilestone: null`.
       //
-      // The VALUES of `type` and the two anchor types are the row's declared
-      // unproven pieces — Linear types all three as free `String` — so pinning
-      // them here at least makes a silent drift impossible: a change to either
-      // constant fails this assertion.
+      // The three VALUES are spelled as LITERALS here, deliberately, and this
+      // is the correction the falsification bought. The version of this
+      // assertion that shipped wrote `type: PROJECT_BLOCKS_RELATION_TYPE` —
+      // quoting the constant back to itself — so it stayed green for the whole
+      // life of two values a live workspace refuses outright. A spec that
+      // cannot disagree with the code it checks is not a pin. These literals
+      // are the 2026-08-16 measurement: `dependency` is the only permitted
+      // `type`, and the anchor is finish-to-start (`end` → `start`), not one
+      // symmetric value.
       const project = (id: string) => ({
         status: 200 as const,
         json: {
@@ -1418,9 +1430,9 @@ describe('RealLinearApi', () => {
             input: {
               projectId: 'prj-a', // the BLOCKER is the source that "blocks"
               relatedProjectId: 'prj-b', // …and the BLOCKED project is the target
-              type: PROJECT_BLOCKS_RELATION_TYPE,
-              anchorType: PROJECT_RELATION_ANCHOR_TYPE,
-              relatedAnchorType: PROJECT_RELATION_ANCHOR_TYPE,
+              type: 'dependency', // the ONLY value the live enum permits
+              anchorType: 'end', // the blocker's END …
+              relatedAnchorType: 'start', // … onto the blocked project's START
             },
           });
           return {
@@ -1432,6 +1444,30 @@ describe('RealLinearApi', () => {
         },
       });
       await expect(api.addProjectBlockedBy('prj-b', 'prj-a')).resolves.toBeUndefined();
+    });
+
+    it('the EXPORTED constants are the same measured values — the wire literals above and the public surface cannot part company', () => {
+      // The bridge between the two halves of the repair. The assertion above
+      // pins what goes ON THE WIRE as literals (so it can disagree with the
+      // code); this one pins that the values a CONSUMER imports are those same
+      // literals. Split deliberately: if they were one assertion, changing the
+      // constant would move the expectation with it, which is exactly how the
+      // disproven pair stayed green.
+      expect(PROJECT_BLOCKS_RELATION_TYPE).toBe('dependency');
+      expect(PROJECT_RELATION_ANCHOR_TYPE).toEqual({
+        anchorType: 'end',
+        relatedAnchorType: 'start',
+      });
+      // Not one value used twice. The old export was a SINGLE symmetric string
+      // put on both ends, which is the shape the live API refuses — and a
+      // swapped-but-valid pair it would silently accept as a backwards
+      // dependency. This is the line a rename-in-place repair would fail.
+      expect(PROJECT_RELATION_ANCHOR_TYPE.anchorType).not.toBe(
+        PROJECT_RELATION_ANCHOR_TYPE.relatedAnchorType,
+      );
+      // Frozen: the fragment is spread into every relation input, so a mutation
+      // here would rewrite every subsequent write in the process.
+      expect(Object.isFrozen(PROJECT_RELATION_ANCHOR_TYPE)).toBe(true);
     });
 
     it('addProjectBlockedBy resolves BOTH sides first, so an unknown project is a domain 404', async () => {
