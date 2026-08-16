@@ -48,6 +48,10 @@ _Avoid_: milestone (names one native realization, and collides with Linear's own
 A **Goal**'s derived open remainder — the members not yet natively closed, each read as one of `in-motion · actionable · blocked · unready` (claimed · could-start-now · unresolved dependency · bare, awaiting sharpening). One vocabulary at every member granularity: a member that is an issue and a member that is a project classify into the same five readings, from facts the store maps honestly per member kind — an empty project is `unready` for exactly the reason a bare ticket is. Derived, never written — the coarse-bookend discipline; completion is literally *the frontier is empty*, and even then the `goal` station only reports it: closing the container is the Operator's act in the tracker, not a verb — the station owes accounting, never the declaration.
 _Avoid_: backlog (unscoped — a frontier belongs to one Goal and is derived), checklist (prose — the frontier is a query), remaining work (vague).
 
+**Mirror pass**:
+The goal station's fourth pass: publishes the **Frontier** as derived accounting to the bound container's native update surface (a Linear Project/Initiative Update — the surface follows the binding), one update per **Goal**, never per member (ADR-0046). Two layers: a consumer-styled narrative the **Operator** approved sentence-by-sentence at the per-pass confirm, above an engine-owned anchor rendered fresh at write time — per member: native state, the member's own health, blockers, native link — which the caller can neither supply nor edit. Health is never derived from the Frontier: the station transcribes an Operator-confirmed value, or proposes a source-attributed aggregation of the members' own human-authored healths, else the update carries none.
+_Avoid_: health write-mirror (the retired working name — the mirror carries the frontier; health only travels as a transcribed or attributed human judgment), status push (a previewed, confirmed Operator act — never automatic, never scheduled), goal update as release marker (the anchor's empty-frontier sentence names closing the container as the Operator's own act).
+
 ### Orchestration
 
 **Wave**:
