@@ -21,6 +21,13 @@ _context/*
 .remember
 .claude/worktrees/
 
+# local MCP server bindings — a .mcp.json names a specific consumer workspace
+# and a host-specific credential lookup (ADR-0029 keeps the secret itself in the
+# keychain, but the binding is still client-identifying). flotilla is the public
+# toolkit, not a consumer: it ships no .mcp.json and must never carry one — while
+# dogfooding against a real tracker from this checkout stays possible.
+.mcp.json
+
 # wave runtime artifacts — flotilla is the toolkit, not a consumer; a stray
 # in-repo spine / dogfood must never land in the toolkit repo. (In a CONSUMER
 # repo .flotilla/ is NOT ignored — the spine is branch-local committed for resume.)
