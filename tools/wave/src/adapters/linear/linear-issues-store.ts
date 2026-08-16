@@ -1096,11 +1096,13 @@ export class LinearIssuesStore implements IssueStore {
    * opaque id when one is missing, so a store that could not name a member
    * publishes a less readable anchor rather than an incomplete one.
    *
-   * Health is `input.health` or nothing. There is no branch below that can put a
-   * value there, and deliberately no read of the container's own health to fall
-   * back on: that value is the vendor's roll-up of the most recent update, which
-   * is what this pass is about to write, so falling back to it would publish this
-   * station's previous output as if it were a fresh human judgment.
+   * Health is `input.health` or nothing — where "nothing" includes the empty
+   * string, which is the transport's own rule read back up to this gate so the
+   * receipt cannot claim a health the wire dropped. There is no branch below that
+   * can put a value there, and deliberately no read of the container's own health
+   * to fall back on: that value is the vendor's roll-up of the most recent update,
+   * which is what this pass is about to write, so falling back to it would publish
+   * this station's previous output as if it were a fresh human judgment.
    */
   async publishGoalUpdate(
     goalId: string,
@@ -1121,8 +1123,19 @@ export class LinearIssuesStore implements IssueStore {
       ...(input.narrative !== undefined ? { narrative: input.narrative } : {}),
       ...(input.operatorNote !== undefined ? { operatorNote: input.operatorNote } : {}),
     });
-    // The caller's health or NONE — an absent key all the way to the wire.
-    const health = input.health !== undefined ? { health: input.health } : {};
+    // The caller's health or NONE — an absent key all the way to the wire, and
+    // the SAME key in the receipt, because the receipt's contract is that it
+    // reports what this engine SENT.
+    //
+    // The empty string is absence, and that term is load-bearing rather than
+    // defensive. `''` is not a member of the vendor's health enum, so the real
+    // transport's `healthIfSupplied` (real-linear-api.ts) already drops it at the
+    // wire — a gate on `!== undefined` alone therefore spread `''` into a receipt
+    // claiming a health that was never sent. One rule, applied at all three sites
+    // the value passes through: this gate, the transport, and the in-memory fake
+    // that stands in for it.
+    const health =
+      typeof input.health === 'string' && input.health !== '' ? { health: input.health } : {};
     const result =
       role === 'initiative'
         ? await this.api.createInitiativeUpdate({ initiativeId: goalId, body, ...health })

@@ -65,7 +65,11 @@ interface FakeUpdateRecord {
   readonly containerId: string;
   /** The body exactly as published — narrative + engine anchor. */
   readonly body: string;
-  /** Present ONLY when a health accompanied the write. */
+  /**
+   * Present ONLY when a health accompanied the write — and an empty string does
+   * not count as one, because the real transport does not send it either. See
+   * {@link InMemoryLinearApi.recordUpdate}.
+   */
   readonly health?: string;
 }
 
@@ -539,6 +543,16 @@ export class InMemoryLinearApi implements LinearApi {
    * defaulted a value in on the way down. A fake that stored `health: undefined`
    * would make that assertion unwritable and the guarantee untestable.
    *
+   * **An EMPTY STRING is one of the omissions, because it is one at the wire.**
+   * The real transport's `healthIfSupplied` (real-linear-api.ts) drops `''` —
+   * it is not a member of the vendor's enum, so sending it would be a wire
+   * rejection reading like a flotilla bug. A fake that stored `''` where the
+   * transport sends no key at all is a fake that CANNOT SEE the divergence: a
+   * spec asserting against this substrate would pass while production sent
+   * something else. The rule is the transport's; this restates it so the two
+   * agree, and the store gate above them applies the same term for the same
+   * reason.
+   *
    * Deliberately does NOT model the vendor's server-side assignment of a health
    * when the key is omitted (the read-stamp's unsettled item (c)): that behaviour
    * is unmeasured, and a fake that invented it would be pinning a guess as if it
@@ -555,7 +569,9 @@ export class InMemoryLinearApi implements LinearApi {
       surface,
       containerId,
       body: input.body,
-      ...(input.health !== undefined ? { health: input.health } : {}),
+      ...(typeof input.health === 'string' && input.health !== ''
+        ? { health: input.health }
+        : {}),
     });
     return { id, url: `https://linear.test/updates/${id}` };
   }
