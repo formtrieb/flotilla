@@ -600,41 +600,33 @@ export function exceedsDescriptionLimit(description: string): boolean {
 // ─── tier 5: strict YAML validity, and reader agreement ──────────────────────
 
 /**
- * Surfaces that are IN the population, KNOWN to fail tier 5 today, and that the
- * diff introducing tier 5 could not touch: both lie outside its declared file
- * globs, and a wave row reaching past its declared globs is precisely what the
- * cross-wave file-conflict map cannot reason about. They are pinned here with
- * the half of tier 5 each one fails, so the carve-out is a named, one-line-to-
- * delete entry rather than a silently narrowed population.
+ * Surfaces that are IN the population and KNOWN to fail tier 5 today. Empty
+ * now — the two defects this exemption existed to name are both fixed:
  *
- * The entries are **self-retiring**: the cell below asserts each listed surface
- * STILL fails the named half. Fix one and this file goes red, demanding the
- * entry be deleted in the same diff — an exemption cannot outlive its defect.
+ *   - `.claude/agents/wave-reviewer.md` carried the SIXTH colon-space plain
+ *     scalar (`answers with exactly one verdict: approve, …`); its
+ *     description is now single-quoted and parses under a strict YAML parser.
  *
- *   - `.claude/agents/wave-reviewer.md` — the SIXTH colon-space plain scalar
- *     (`answers with exactly one verdict: approve, …`). The finding that
- *     prompted tier 5 counted five, because `claude plugin validate`
- *     enumerates *skills* and never visited the agent; a strict parse over this
- *     guard's own population finds six. Formal invalidity, no measured runtime
- *     loss.
+ *   - `.claude/skills/triage/SKILL.md` carried the reader disagreement: its
+ *     plain scalar contained ` #` (inside the trigger phrase
+ *     `"is #42 ready for an agent?"`), which YAML reads as a comment
+ *     introducer, silently truncating the description 55 characters early at
+ *     runtime. Its description is now single-quoted too, and the strict
+ *     parser and the hand reader agree on it byte-for-byte — see the cell
+ *     below for the restored length and the two trigger phrases it brings
+ *     back.
  *
- *   - `.claude/skills/triage/SKILL.md` — the reader disagreement, and the more
- *     serious of the two. Its plain scalar contains ` #` (inside the trigger
- *     phrase `"is #42 ready for an agent?"`), which YAML reads as a comment
- *     introducer: the document parses CLEANLY and the description simply ends
- *     55 characters early, dropping two trigger phrases. That is not a
- *     hypothetical about some future parser tightening — the live harness skill
- *     listing injected into the session that added this tier ends triage's
- *     description at `…, "is`, byte-for-byte where the parser ends it. Tiers
- *     1–4 are green on that surface only because the hand reader keeps a tail
- *     the model never receives.
+ * The entries were **self-retiring** by construction: fixing either
+ * description without deleting its entry here would have turned this file's
+ * own exemption test red (it asserted each named surface STILL failed), so
+ * the deletion could not be skipped. Kept as a named, typed, empty map rather
+ * than removed outright — a future defect outside a fixing row's declared
+ * Files globs has exactly this shape again, and the mechanism should not have
+ * to be re-invented.
  */
-const KNOWN_UNGUARDED: Readonly<Record<string, 'strict-parse' | 'reader-agreement'>> = {
-  [REVIEWER_AGENT_REL]: 'strict-parse',
-  '.claude/skills/triage/SKILL.md': 'reader-agreement',
-};
+const KNOWN_UNGUARDED: Readonly<Record<string, 'strict-parse' | 'reader-agreement'>> = {};
 
-/** The population tier 5 holds today: everything except the pinned exemptions. */
+/** The population tier 5 holds today: everything — no exemption remains. */
 function tierFiveSurfaces(): string[] {
   return listDescribedSurfaces().filter(
     (rel) => !Object.prototype.hasOwnProperty.call(KNOWN_UNGUARDED, rel),
@@ -862,46 +854,41 @@ describe('skill-descriptions-guard — the listing a consumer reads first carrie
     },
   );
 
-  it('the tier-5 exemptions are exactly the two known defects, and each still fails', () => {
-    // Self-retiring: the moment either surface is fixed, this cell goes red and
-    // the entry must be deleted, which puts the surface back in the guarded
-    // population above. An exemption cannot quietly outlive its defect.
-    expect(Object.keys(KNOWN_UNGUARDED).sort()).toEqual(
-      ['.claude/agents/wave-reviewer.md', '.claude/skills/triage/SKILL.md'].sort(),
-    );
-    for (const rel of Object.keys(KNOWN_UNGUARDED)) {
-      expect(SURFACES, `${rel} is exempted from tier 5 but is not in the population`).toContain(rel);
-    }
+  it('the tier-5 exemption is retired: both former defects are fixed, so no entry survives', () => {
+    // KNOWN_UNGUARDED held exactly these two entries; both are gone in this
+    // diff, which is the deletion the self-retiring comment above demanded
+    // the moment each description was quoted. tierFiveSurfaces() therefore
+    // filters nothing away — the population it holds is the whole corpus.
+    expect(KNOWN_UNGUARDED).toEqual({});
+    expect(tierFiveSurfaces()).toEqual(listDescribedSurfaces());
+    expect(tierFiveSurfaces()).toContain(REVIEWER_AGENT_REL);
+    expect(tierFiveSurfaces()).toContain('.claude/skills/triage/SKILL.md');
 
-    // The agent: invalid YAML outright.
+    // The agent: single-quoted now, and the strict parser accepts it — a
+    // colon-space plain scalar outside the skill corpus can no longer hide
+    // from this guard.
     const agent = readFileSync(join(REPO_ROOT, REVIEWER_AGENT_REL), 'utf-8');
     const agentRead = strictParseDescription(agent, REVIEWER_AGENT_REL);
-    expect(
-      agentRead.ok,
-      `${REVIEWER_AGENT_REL} now parses under a strict YAML parser. Delete its KNOWN_UNGUARDED ` +
-        `entry in this same diff so tier 5 starts holding it.`,
-    ).toBe(false);
+    expect(agentRead.ok, `${REVIEWER_AGENT_REL} should parse under a strict YAML parser`).toBe(true);
+    expect((agentRead as { description: string }).description).toBe(
+      DESCRIPTIONS.get(REVIEWER_AGENT_REL),
+    );
 
-    // triage: parses cleanly, means something else.
+    // triage: the space-hash no longer opens a YAML comment, so the strict
+    // parser and the hand reader agree byte-for-byte — the acceptance bar is
+    // this agreement, not merely a clean parse. Both trigger phrases that
+    // used to be truncated away are back, and the restored length matches the
+    // hand extraction exactly rather than falling 55 characters short.
     const triageRel = '.claude/skills/triage/SKILL.md';
     const triage = readFileSync(join(REPO_ROOT, triageRel), 'utf-8');
     const triageRead = strictParseDescription(triage, triageRel);
-    expect(triageRead.ok, `${triageRel} no longer parses at all — that is a different defect`).toBe(
-      true,
-    );
+    expect(triageRead.ok, `${triageRel} should parse cleanly`).toBe(true);
     const triageParsed = (triageRead as { description: string }).description;
     const triageExtracted = DESCRIPTIONS.get(triageRel) as string;
-    expect(
-      triageParsed,
-      `${triageRel}'s two readers now agree. Delete its KNOWN_UNGUARDED entry in this same diff ` +
-        `so tier 5 starts holding it.`,
-    ).not.toBe(triageExtracted);
-    // …and the concrete consequence, pinned so the follow-up has its evidence:
-    // two trigger phrases tier 3 believes are present never reach the model.
-    expect(triageExtracted).toContain('"prepare this for an agent"');
-    expect(triageParsed).not.toContain('"prepare this for an agent"');
-    expect(triageParsed).not.toContain('"is #42 ready for an agent?"');
-    expect(triageParsed.length).toBeLessThan(triageExtracted.length);
+    expect(triageParsed).toBe(triageExtracted);
+    expect(triageParsed).toContain('"prepare this for an agent"');
+    expect(triageParsed).toContain('"is #42 ready for an agent?"');
+    expect(triageParsed.length).toBe(triageExtracted.length);
   });
 
   it('the YAML parser stays a spec-only devDependency — the runtime graph never imports it', () => {

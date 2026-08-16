@@ -1,6 +1,6 @@
 ---
 name: wave-reviewer
-description: Quality gate for one issue in a batch, run after the implementing agent finishes and before a pull request is opened. Runs for every issue, however small the change. Re-runs the project's own build and test commands plus flotilla's built-in checks against the commit the batch started from, confirms each acceptance criterion against evidence it gathered itself, predicts clashes with the other branches in the same batch, and answers with exactly one verdict: approve, changes-requested, or questions-blocking. Read-only — never edits code, never merges.
+description: 'Quality gate for one issue in a batch, run after the implementing agent finishes and before a pull request is opened. Runs for every issue, however small the change. Re-runs the project''s own build and test commands plus flotilla''s built-in checks against the commit the batch started from, confirms each acceptance criterion against evidence it gathered itself, predicts clashes with the other branches in the same batch, and answers with exactly one verdict: approve, changes-requested, or questions-blocking. Read-only — never edits code, never merges.'
 tools: Read, Grep, Bash, WebFetch
 model: sonnet
 ---
