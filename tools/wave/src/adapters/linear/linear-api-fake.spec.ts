@@ -327,6 +327,51 @@ describe('InMemoryLinearApi initiatives (the second Goal container substrate, AD
     expect(await api.getProjectBlockedBy(blocker)).toEqual([]);
   });
 
+  it('the fake stores the same WIRE VALUES the real adapter sends — measured live 2026-08-16', async () => {
+    // The half this fake did not have, and the reason it stayed green for the
+    // whole life of two values a real workspace refuses: it modelled "A blocks
+    // B" as an abstract edge and never held `type`/`anchorType` at all, so
+    // there was nothing here for a wrong string to disagree with. It holds the
+    // wire record now, minted from the same two bindings production sends —
+    // and these expectations are LITERALS, matching real-linear-api.spec.ts
+    // exactly, so the fake-backed path and the real path fail together.
+    const api = new InMemoryLinearApi();
+    const blocked = (await api.createProject({ name: 'B', description: '' })).id;
+    const blocker = (await api.createProject({ name: 'A', description: '' })).id;
+    await api.addProjectBlockedBy(blocked, blocker);
+
+    expect(api.projectRelationInputs()).toEqual([
+      {
+        projectId: blocker, // the BLOCKER is the source …
+        relatedProjectId: blocked, // … the BLOCKED project is the target
+        type: 'dependency', // the ONLY value the live enum permits
+        anchorType: 'end', // finish-to-start: the blocker's END …
+        relatedAnchorType: 'start', // … onto the blocked project's START
+      },
+    ]);
+  });
+
+  it('project-relation uniqueness is per (project pair, TYPE) — not per anchor pair', async () => {
+    // The live rule the same probe measured: a second relation between the same
+    // two projects is refused with "A dependency of the same type already
+    // exists between the two projects", regardless of anchors. That is the
+    // granularity the facet's find-before-create idempotence relies on, so the
+    // fake models it at that granularity rather than at the edge's.
+    const api = new InMemoryLinearApi();
+    const blocked = (await api.createProject({ name: 'B', description: '' })).id;
+    const blocker = (await api.createProject({ name: 'A', description: '' })).id;
+
+    await api.addProjectBlockedBy(blocked, blocker);
+    await api.addProjectBlockedBy(blocked, blocker);
+    expect(api.projectRelationInputs()).toHaveLength(1);
+
+    // The REVERSE pair is a different (ordered) relation and is recorded — the
+    // uniqueness rule is not "these two projects may only ever touch once".
+    await api.addProjectBlockedBy(blocker, blocked);
+    expect(api.projectRelationInputs()).toHaveLength(2);
+    expect(await api.getProjectBlockedBy(blocker)).toEqual([blocked]);
+  });
+
   it('project relations throw on either unknown side', async () => {
     const api = new InMemoryLinearApi();
     const p = (await api.createProject({ name: 'p', description: '' })).id;

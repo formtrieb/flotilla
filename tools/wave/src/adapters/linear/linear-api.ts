@@ -413,63 +413,145 @@ export interface LinearApi {
 }
 
 /**
- * The `ProjectRelation.type` value for a blocking project dependency, and the
- * `anchorType`/`relatedAnchorType` values that anchor it to the projects
- * themselves rather than to a milestone inside them.
+ * The `ProjectRelation.type` value for a blocking project dependency.
  *
- * ── READ-STAMP (ADR-0030 declared-unexecutable-path comparison) ──────────────
+ * ── READ-STAMP: MEASURED LIVE 2026-08-16, and it FALSIFIED the read ──────────
  *
- * **What IS evidenced**, read verbatim in this dispatch from Linear's published
- * GraphQL schema (`linear/linear` → `packages/sdk/src/schema.graphql`, read
- * 2026-08-15) — the same source and the same standard as `projectCreate`'s
- * pinning one facet over:
+ * This constant shipped as `'blocks'`, pinned from Linear's published schema
+ * and its own field prose. A live write against a real Linear workspace on
+ * 2026-08-16 disproved it. `'dependency'` is the **only** value the API accepts;
+ * every `projectRelationCreate` carrying `'blocks'` comes back as
+ * `Argument Validation Error`. Verbatim from the rejection's
+ * `extensions.validationErrors`:
  *
- *  - `projectRelationCreate(input: ProjectRelationCreateInput!):
- *    ProjectRelationPayload!`, payload `{ lastSyncId, projectRelation, success }`
- *    — so the success check matches every other mutation in this adapter.
- *  - `ProjectRelationCreateInput` requires FIVE fields: `anchorType: String!`,
- *    `projectId: String!`, `relatedAnchorType: String!`,
- *    `relatedProjectId: String!`, `type: String!`. The two milestone ids are
- *    optional and are deliberately never sent — the facet anchors at project
- *    granularity.
- *  - `ProjectRelation.type` is documented as "The type of dependency
- *    relationship from the project to the related project (**e.g., blocks**)" —
- *    the vendor's own example, and the same literal the ISSUE arm already pins
- *    as `IssueRelationType.blocks`.
- *  - Corroboration that `blocks` is the CURRENT spelling rather than a legacy
- *    one: `ProjectFilter.hasBlockedByRelations` ("projects which are blocked")
- *    and `hasBlockingRelations` ("projects which are blocking") carry no
- *    deprecation, while the `hasDependsOnRelations`/`hasDependedOnByRelations`
- *    pair is marked `[Deprecated]`.
- *  - `anchorType` is documented as "The type of anchor on the source project
- *    end of the relation, indicating whether it is anchored to the project
- *    itself or a specific milestone", with `ProjectRelation.projectMilestone`
- *    "Null if the relation applies to the project as a whole".
+ *     property: "type"
+ *     constraints: { isEnum: "type must be one of the following values: dependency" }
  *
- * **What is NOT evidenced, and this is the honest gap.** All three of these are
- * typed as free `String` in the schema, not as enums, so the schema pins their
- * SHAPE and not their VALUES. ADR-0045 decision 4 asks for the values to be
- * confirmed by creating one dependency by hand in the Linear UI and reading it
- * back through `Project.relations`/`inverseRelations`. That read-back is a
- * HUMAN act in the tracker plus a live Linear credential, and this row is a
- * worktree-isolated engine slice with neither — so the values below are pinned
- * from the documentation above and are STILL UNPROVEN LIVE, exactly as
- * `BLOCKS_RELATION_TYPE` and `CREATE_ISSUE_RELATION_MUTATION` were when the
- * issue arm shipped. `anchorType`'s value is the weakest of the three: it is an
- * inference from the field's own prose ("anchored to the project itself"), not
- * a quoted example.
+ * **The structural finding — why a schema read could NEVER have produced this,
+ * and the reason this stamp is worth more than a corrected string.** Linear
+ * validates these fields as ENUMS ONE LAYER BEHIND GraphQL: a class-validator
+ * `isEnum` constraint that surfaces only in a rejection's
+ * `extensions.validationErrors` and appears NOWHERE in the schema. Live
+ * introspection against the running API (read this dispatch) confirms the
+ * schema still declares `ProjectRelationCreateInput.type: String!`,
+ * `anchorType: String!`, `relatedAnchorType: String!`, and `ProjectRelation`
+ * returning `String` on the read side — so the schema is not merely ambiguous
+ * here, it is **structurally incapable of carrying the answer**. The general
+ * rule for this vendor, and the one to carry to the next pinned value:
  *
- * The read-back is therefore the FIRST live `goal` run on an initiative-bound
- * consumer, and the failure mode is loud rather than silent: a rejected `type`
- * or `anchorType` comes back as a GraphQL error from
- * {@link LinearApi.addProjectBlockedBy}, which `createGoalMember` surfaces as a
- * typed failure naming the minted member. Flip these to VERIFIED there.
+ *  > A `String`-typed field in Linear's schema is NOT evidence of an
+ *  > unconstrained field. Only a live write answers. The rejection payload is
+ *  > generous when it comes — it names every offending property at once.
  *
- * Exported so a consumer whose workspace answers differently can see exactly
- * which three strings to report — and so the spec suite pins all three in one
- * place instead of three inline literals.
+ * **And the vendor's own prose actively misled.** `ProjectRelation.type` is
+ * documented as "The type of dependency relationship from the project to the
+ * related project (e.g., blocks)" — that example names the one value the API
+ * refuses. It describes the relationship's SEMANTICS, not its wire value. The
+ * corroboration the original stamp leaned on (`ProjectFilter.hasBlockingRelations`
+ * / `hasBlockedByRelations` undeprecated while `hasDependsOnRelations` is
+ * `[Deprecated]`) was real and is still true — it simply never spoke to the wire
+ * value at all.
+ *
+ * ── What the SAME live probe CONFIRMED — do not re-measure this ──────────────
+ *
+ * With the corrected values a relation was created, read back and swept. Every
+ * direction fact this adapter documents holds, so nothing below the strings
+ * changed:
+ *
+ *  - The values round-trip VERBATIM, with no server-side normalization:
+ *    `{"type":"dependency","anchorType":"end","relatedAnchorType":"start"}`,
+ *    and `projectMilestone: null` — the whole-project anchor the facet wants.
+ *  - `projectId` = the BLOCKER, `relatedProjectId` = the BLOCKED project is the
+ *    correct assignment (what {@link LinearApi.addProjectBlockedBy} sends).
+ *  - The relation surfaces on the BLOCKED project's `inverseRelations` and
+ *    NEVER on its `relations`; the node's `project.id` is the BLOCKER — exactly
+ *    what {@link LinearApi.getProjectBlockedBy}'s docblock promises.
+ *  - Linear's own semantics agree: after the write, `hasBlockingRelations`
+ *    returned the blocker and `hasBlockedByRelations` returned the blocked
+ *    project. Both filter fields exist and work.
+ *  - Uniqueness is enforced per (project pair, type), NOT per anchor pair — a
+ *    second relation between the same two projects is refused with "A dependency
+ *    of the same type already exists between the two projects" regardless of
+ *    anchors. The facet's find-before-create idempotence therefore has exactly
+ *    the right granularity.
+ *
+ * Still exported, and now for a sharper reason than "least-proven value": it is
+ * the wire literal BOTH halves of the arm depend on — the write's `type` and
+ * `getProjectBlockedBy`'s filter — so the two cannot drift apart, and a
+ * consumer whose workspace ever answers differently can name exactly what to
+ * report. ADR-0045's Amendment 2026-08-16 carries the falsification.
  */
-export const PROJECT_BLOCKS_RELATION_TYPE = 'blocks';
+export const PROJECT_BLOCKS_RELATION_TYPE = 'dependency';
 
-/** The `anchorType`/`relatedAnchorType` value for a whole-project anchor — see {@link PROJECT_BLOCKS_RELATION_TYPE}'s read-stamp. */
-export const PROJECT_RELATION_ANCHOR_TYPE = 'project';
+/**
+ * The two anchor-type fields of a WHOLE-PROJECT blocking relation, as an
+ * inseparable pair keyed by their own wire names.
+ *
+ * ── The measurement ─────────────────────────────────────────────────────────
+ *
+ * This shipped as a SINGLE symmetric string, `'project'`, used for both ends on
+ * the reading that "anchored to the project itself" was one value. The same
+ * live write on 2026-08-16 falsified that too, and the rejection named both
+ * properties at once:
+ *
+ *     property: "anchorType"         constraints: { isEnum: "anchorType must be one of the following values: start, end, milestone" }
+ *     property: "relatedAnchorType"  constraints: { isEnum: "relatedAnchorType must be one of the following values: start, end, milestone" }
+ *
+ * `'project'` is not among them. The real model is a **finish-to-start
+ * dependency**: the BLOCKER's `end` anchors to the BLOCKED project's `start`.
+ * There is no symmetric value to correct the old constant to — a whole-project
+ * anchor is asymmetric by construction, and `milestone` is the third value,
+ * which this facet deliberately never uses (it sends no milestone ids, and the
+ * confirmed read-back carries `projectMilestone: null`).
+ *
+ * ── Why THIS shape, stated where the shape is chosen ────────────────────────
+ *
+ * A frozen fragment KEYED BY THE WIRE FIELD NAMES, meant to be spread wholesale
+ * into `ProjectRelationCreateInput` — never destructured, never read one field
+ * at a time. The alternatives were weighed and rejected for the same reason:
+ *
+ *  - **A renamed single string** (e.g. `PROJECT_RELATION_BLOCKING_ANCHOR`) would
+ *    satisfy the letter of the correction and REPRODUCE THE DEFECT — one value
+ *    reachable for both ends is exactly what put `'project'` on both ends.
+ *  - **Two separate constants** (`…_BLOCKING_ANCHOR` / `…_BLOCKED_ANCHOR`) are
+ *    correct but still leave a caller holding two interchangeable strings and a
+ *    hand-written mapping onto two similarly-named wire fields — the swap stays
+ *    expressible, and a swapped pair is a SILENT defect: it is a valid enum
+ *    value in a valid field, so the API accepts a backwards dependency.
+ *  - **This fragment** removes the mapping step entirely. There is no scalar to
+ *    put on the wrong end because there is no scalar at all, and the object's
+ *    own keys ARE `anchorType`/`relatedAnchorType`, so `...` places each value
+ *    on the end the measurement assigned it. Misuse is not discouraged, it is
+ *    unspellable.
+ *
+ * The NAME is retained deliberately-with-residue: the root barrel's export
+ * inventory pins this symbol by name (`index.spec.ts`'s recorded per-slice
+ * family and its export-count arithmetic), and that file is outside this row's
+ * declared Files globs — so a rename could not land in the same diff as the
+ * shape change, and shipping the shape correction beat holding it for a
+ * cosmetic name. The name is now the weakest thing about this binding; its
+ * VALUE can no longer be used symmetrically.
+ *
+ * @see PROJECT_BLOCKS_RELATION_TYPE for the full read-stamp, the structural
+ * finding behind it, and what the same probe confirmed.
+ */
+export const PROJECT_RELATION_ANCHOR_TYPE: ProjectRelationAnchorPair = Object.freeze({
+  anchorType: 'end',
+  relatedAnchorType: 'start',
+});
+
+/**
+ * The shape of {@link PROJECT_RELATION_ANCHOR_TYPE} — the two anchor fields of
+ * a whole-project blocking relation, pinned to the literals measured live on
+ * 2026-08-16 rather than widened to `string`.
+ *
+ * The literal types are the point: a value drifting to any other member of the
+ * live enum (`start` | `end` | `milestone`) — or the two ends being swapped —
+ * fails `tsc` at the binding above, before a single spec runs.
+ */
+export interface ProjectRelationAnchorPair {
+  /** The BLOCKING (source, `projectId`) end. Finish-to-start: the blocker's END. */
+  readonly anchorType: 'end';
+  /** The BLOCKED (target, `relatedProjectId`) end. Finish-to-start: the blocked project's START. */
+  readonly relatedAnchorType: 'start';
+}

@@ -25,3 +25,33 @@ ADR-0044 shipped the Goal facet with the Linear **Project** realization only and
 - CONTEXT.md **Goal** and **Frontier** amended: members are the container's direct native members; one vocabulary at every member granularity (this PR).
 - #573 sharpens to the engine realization (contract generalization `issueId`→`memberId`, `createGoalMember` with the `blockedBy` arm, the Linear initiative realization, fake substrate, conformance — barrel and guard extensions ride the same diff). The goal-*skill*'s passes under initiative binding and the health write-mirror file as separate bare issues; `initiative` leaves `GoalBindingError: 'unrealized-container'` on Linear only when that engine issue lands.
 - This ADR lands Coordinator-direct (ADR-0033: it closes no issue).
+
+## Amendment 2026-08-16 — Decision 4's two pinned relation values were both wrong; a `String!` in this vendor's schema is not evidence of an unconstrained field
+
+Decision 4 above says the project-relation `type` string "is typed free-form there, so its value is pinned at build time by one UI-created edge read back." The pinning happened; the read-back did not, and the values shipped inferred. A live write against a real Linear workspace on **2026-08-16** falsified **both** of them, so `LinearApi.addProjectBlockedBy` — and therefore `createGoalMember`'s `blockedBy` arm under an `initiative` binding — could not have succeeded against **any** workspace. Every attempt returned `Argument Validation Error`.
+
+| Constant | Shipped as | Live API requires |
+|---|---|---|
+| `PROJECT_BLOCKS_RELATION_TYPE` | `'blocks'` | `'dependency'` — the only permitted value |
+| `PROJECT_RELATION_ANCHOR_TYPE` | `'project'`, one value on both ends | `'start' \| 'end' \| 'milestone'` — `'project'` is not among them |
+
+Verbatim from the rejection's `extensions.validationErrors`:
+
+```
+property: "type"               constraints: { isEnum: "type must be one of the following values: dependency" }
+property: "anchorType"         constraints: { isEnum: "anchorType must be one of the following values: start, end, milestone" }
+property: "relatedAnchorType"  constraints: { isEnum: "relatedAnchorType must be one of the following values: start, end, milestone" }
+```
+
+**Why the original read could not have caught it — this, not the corrected strings, is what the amendment is for.** Linear validates these fields as **enums one layer behind GraphQL**: a class-validator `isEnum` constraint that surfaces only inside a rejection's `extensions.validationErrors` and appears nowhere in the schema. Live introspection against the running API confirms `ProjectRelationCreateInput` still declares `type: String!`, `anchorType: String!`, `relatedAnchorType: String!`, with `ProjectRelation` returning `String` on the read side. The original read-stamp was therefore *honest and still wrong*: it correctly reported "typed as free `String`, so the schema pins their SHAPE and not their VALUES" and then treated the vendor's prose as the next-best evidence. But the schema here is not ambiguous, it is **structurally incapable of carrying the answer**, and the prose actively misled — `ProjectRelation.type` is documented "(e.g., blocks)", naming the one value the API refuses, because that example describes the relationship's semantics rather than its wire value. The generalisable rule, and the one worth more than the fix: **for this vendor a `String`-typed field is not evidence of an unconstrained field; only a live write answers, and the rejection payload names every offending property at once.**
+
+**The anchor is asymmetric, so the correction is a shape change, not a string swap.** `PROJECT_RELATION_ANCHOR_TYPE` was a *single* exported constant used for both ends, because "anchored to the project itself" read as one symmetric value. The real model is a finish-to-start dependency: the blocker's `end` anchors to the blocked project's `start`. There is no correct value for a symmetric constant, so the export became a **frozen fragment keyed by its own wire field names** (`{ anchorType: 'end', relatedAnchorType: 'start' }`), spread wholesale into `ProjectRelationCreateInput`. Two named constants were considered and rejected: they are correct but leave a caller holding two interchangeable strings and a hand-written mapping onto two similarly-named fields, and a swapped pair is a *silent* defect — both are valid enum members in valid fields, so Linear records a backwards dependency without complaint. A rename in place was rejected outright: one value reachable for both ends is precisely what produced the original error. The fragment's literal-typed shape ships beside it as `ProjectRelationAnchorPair`, and both cross the root barrel.
+
+**What the same probe CONFIRMED, recorded here so it is not re-measured.** Nothing below the strings changed, and decision 4's direction logic is untouched: the values round-trip verbatim with `projectMilestone: null`; `projectId` = blocker / `relatedProjectId` = blocked is the correct assignment; the relation surfaces on the BLOCKED project's `inverseRelations` and never its `relations`, carrying the blocker as `node.project.id`; Linear's own `hasBlockingRelations`/`hasBlockedByRelations` filters agree with that direction; and uniqueness is enforced per (project pair, type), **not** per anchor pair — so the facet's find-before-create idempotence already has the right granularity.
+
+**Consequences.**
+
+- Decision 4's parenthetical "the relation `type` string is typed free-form there, so its value is pinned at build time by one UI-created edge read back" is **superseded by this amendment**: the values are measured, and the mechanism it proposed (read the schema, infer, confirm later) is the mechanism that failed.
+- Blast radius was narrow and stayed narrow: only the `initiative`-bound `createGoalMember` `blockedBy` arm was affected. `assignToGoal`, `createGoalMember` without a dependency, the frontier, and every issue-direct binding were untouched, and no consumer had an initiative-bound goal yet.
+- The spec pins moved from constants to **literals** on both the real and the fake path. The version that shipped wrote `type: PROJECT_BLOCKS_RELATION_TYPE` in its expectation — quoting the constant back to itself — and the in-memory fake stored an abstract edge holding no wire strings at all, so neither could disagree with the code. Both now spell the measured values, and the fake records the same `projectRelationCreate` input the real adapter sends.
+- The goal station's own reference prose (`.claude/skills/goal/reference/goal-mechanics.md`) still carries the pre-falsification "pending first live run" stamp; correcting it belongs to the goal-station row, not the engine row that landed this amendment.

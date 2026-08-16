@@ -892,14 +892,23 @@ export {
   type LinearProject,
   type LinearProjectStatusType,
   type LinearInitiative,
-  // The two pinned project-relation strings (ADR-0045 decision 4). Exported
-  // BECAUSE they are the least-proven values in this adapter: Linear types
-  // `ProjectRelation.type`/`anchorType` as free `String`, so a consumer whose
-  // workspace answers differently needs to be able to name exactly which two
-  // constants to report. The read-stamp on `PROJECT_BLOCKS_RELATION_TYPE`
-  // states in full what the published schema does and does NOT evidence.
+  // The project-relation wire values (ADR-0045 decision 4, corrected by its
+  // Amendment 2026-08-16). Both shipped WRONG and were falsified by a live
+  // write: `type` is `dependency`, never the vendor's own documented example
+  // `blocks`, and the anchor is not one symmetric value at all but an
+  // asymmetric finish-to-start pair (blocker `end` → blocked `start`). Linear
+  // validates all three as enums ONE LAYER BEHIND GraphQL, invisibly to schema
+  // introspection — so these ride the root not as "least-proven values" but as
+  // MEASURED ones a consumer can name verbatim if a workspace ever disagrees.
+  //
+  // `PROJECT_RELATION_ANCHOR_TYPE` is a frozen fragment keyed by its own wire
+  // field names, meant to be spread wholesale: that shape, not its name, is
+  // what makes putting one end's anchor on the other end unspellable. Its
+  // literal-typed shape rides with it so a root-only consumer can annotate the
+  // fragment rather than re-widening it to `string`.
   PROJECT_BLOCKS_RELATION_TYPE,
   PROJECT_RELATION_ANCHOR_TYPE,
+  type ProjectRelationAnchorPair,
 } from './adapters/linear/linear-api';
 
 export {
