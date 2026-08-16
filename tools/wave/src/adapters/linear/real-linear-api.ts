@@ -45,7 +45,7 @@ import type {
 } from './linear-api';
 import {
   PROJECT_BLOCKS_RELATION_TYPE,
-  PROJECT_RELATION_ANCHOR_TYPE,
+  PROJECT_RELATION_ANCHOR_PAIR,
 } from './linear-api';
 import { defaultLinearHttp, type LinearHttp } from './linear-http';
 
@@ -408,6 +408,14 @@ const CREATE_ISSUE_RELATION_MUTATION = `mutation CreateIssueRelation($input: Iss
  * `toBlockedByIdentifiers` keeps `inverseRelations` nodes whose `type ===
  * 'blocks'` — so read and write are pinned to one constant string, not two
  * independent guesses. Flip to VERIFIED on the first live mirror.
+ *
+ * **This enum is real, and it is exactly the one that must NOT be carried
+ * sideways.** The schema types `IssueRelationCreateInput.type` as
+ * `IssueRelationType!`; the parallel PROJECT arm publishes no enum at all and
+ * types its `type` as bare `String!`. `PROJECT_BLOCKS_RELATION_TYPE` in
+ * `linear-api.ts` originally borrowed `'blocks'` from HERE and was refused live
+ * — that constant's read-stamp carries the full account and the rule. Do not
+ * read this pin as evidence about any project-side value.
  */
 const BLOCKS_RELATION_TYPE = 'blocks';
 
@@ -1141,7 +1149,7 @@ export class RealLinearApi implements LinearApi {
         // there is no step here at which the two ends could be swapped. A
         // swapped pair would be SILENT: both are valid enum members in valid
         // fields, so Linear would happily record a backwards dependency.
-        ...PROJECT_RELATION_ANCHOR_TYPE,
+        ...PROJECT_RELATION_ANCHOR_PAIR,
       },
     });
     const payload = data.projectRelationCreate as Record<string, unknown> | undefined;

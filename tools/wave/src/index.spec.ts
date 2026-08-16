@@ -917,11 +917,25 @@ const GOAL_FACET_FAMILY_ADDED_AT_ROOT = [
  *    refusal every adapter applies rather than re-derives
  *    (`requireGoalMemberKind`) and its typed rejection (`GoalMemberKindError`),
  *    plus the typed post-mint residue report (`GoalMemberJoinError`).
- *  - `./adapters/linear/linear-api` — the two pinned project-relation strings
- *    (`PROJECT_BLOCKS_RELATION_TYPE`, `PROJECT_RELATION_ANCHOR_TYPE`). They ride
- *    the root precisely BECAUSE they are the least-proven values in that
- *    adapter: Linear types both as free `String`, so a consumer whose workspace
- *    answers differently must be able to name which two constants to report.
+ *  - `./adapters/linear/linear-api` — the two MEASURED project-relation wire
+ *    values (`PROJECT_BLOCKS_RELATION_TYPE`, `PROJECT_RELATION_ANCHOR_PAIR`).
+ *    Only the first is a string: the second is a frozen two-field fragment
+ *    (`{ anchorType: 'end', relatedAnchorType: 'start' }`), because a
+ *    whole-project anchor is asymmetric and no single value is correct for both
+ *    ends. And they are no longer "the least-proven values" pinned by inference
+ *    off a `String`-typed schema — a live write on 2026-08-16 refused both
+ *    original guesses and named the enums Linear validates one layer behind
+ *    GraphQL, so what rides the root now is what the wire actually answered.
+ *    They stay exported for the sharper reason: a consumer whose workspace ever
+ *    disagrees must be able to name exactly which two bindings to report.
+ *
+ * `PROJECT_RELATION_ANCHOR_PAIR` is where the list last moved, and the move was
+ * a RENAME, not an addition: it shipped one cycle as `…_ANCHOR_TYPE`, singular,
+ * because the row that reshaped it from scalar to pair could not reach this
+ * file. A rename is net-zero on the arithmetic below by construction — one name
+ * out, one name in, the family's `.length` unchanged — so the count could not
+ * have caught a half-done rename, and the by-name entry in the list is the pin
+ * that does.
  *
  * The TYPE half — `GoalMemberKind`, `CreateGoalMemberInput`, `GoalBlocker`,
  * `LinearInitiative`, `LinearProjectStatusType` — is erased at runtime and so is
@@ -938,7 +952,7 @@ const GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT = [
   'GoalMemberJoinError',
   'GoalMemberKindError',
   'PROJECT_BLOCKS_RELATION_TYPE',
-  'PROJECT_RELATION_ANCHOR_TYPE',
+  'PROJECT_RELATION_ANCHOR_PAIR',
   'goalMemberKind',
   'requireGoalMemberKind',
 ].sort();
@@ -951,6 +965,15 @@ const GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT = [
  * each addition belongs to. Re-typing an absolute total would erase exactly
  * that, and the next reader would have no way to tell an intended growth from a
  * stowaway that had already been absorbed into the number.
+ *
+ * The `.length` spelling has a second consequence, first exercised by the
+ * `PROJECT_RELATION_ANCHOR_PAIR` rename: a slice that RENAMES a root export
+ * edits its family's entry in place, and this expression follows with no edit of
+ * its own — the total is unchanged because the surface did not grow. That is
+ * correct arithmetic, not a stale pin, and it is precisely why the by-name
+ * `arrayContaining` assertions are not redundant with the count: a rename that
+ * moved the declaration but not the family entry would keep this total green and
+ * fail there, which is the half-done shape a rename is prone to.
  */
 const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   ROOT_RUNTIME_EXPORT_COUNT_BEFORE +

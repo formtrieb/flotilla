@@ -452,6 +452,47 @@ export interface LinearApi {
  * `[Deprecated]`) was real and is still true — it simply never spoke to the wire
  * value at all.
  *
+ * ── WHY `'blocks'` WAS PLAUSIBLE: THE ARM ASYMMETRY, AND THE RULE IT YIELDS ───
+ *
+ * The correction above records THAT the value was measured. This records WHY the
+ * wrong one looked safe, which is the half that stops the mistake recurring on
+ * some other vendor field. `'blocks'` was not invented — it was CARRIED ACROSS
+ * FROM A REAL ENUM IN THE NEIGHBOURING ARM. Linear's published schema
+ * (`linear/linear` → `packages/sdk/src/schema.graphql`, re-read live this
+ * dispatch) treats its two relation arms completely differently:
+ *
+ *  - The **ISSUE** arm is enum-typed, right there in the schema:
+ *    `enum IssueRelationType { blocks  duplicate  related  similar }`, and
+ *    `IssueRelationCreateInput.type: IssueRelationType!` — so this adapter's
+ *    `BLOCKS_RELATION_TYPE = 'blocks'` in `real-linear-api.ts` is genuinely
+ *    schema-pinned, and stays correct.
+ *  - The **PROJECT** arm declares NO enum anywhere. There is no
+ *    `ProjectRelationType`, no anchor enum;
+ *    `ProjectRelationCreateInput.type`, `.anchorType` and `.relatedAnchorType`
+ *    are all bare `String!`, and the two `type` fields even carry near-identical
+ *    doc strings ("The type of relation of the {issue|project} to the related
+ *    {issue|project}").
+ *
+ * So the original inference met an arm that was silent, turned to the parallel
+ * arm that was explicit, found `blocks` there among four named members, and
+ * adopted it. Every step of that is reasonable; the conclusion was wrong,
+ * because the two arms are validated by different vocabularies and only one of
+ * them publishes its own. The general rule, and the reason this paragraph is
+ * worth its lines:
+ *
+ *  > A sibling field's enum is NOT this field's enum. Where one arm of a vendor
+ *  > API publishes an enum and the parallel arm types the same-named field as
+ *  > free `String`, that asymmetry is the SIGNAL — it usually means the second
+ *  > arm is validated somewhere the schema cannot show you, with a vocabulary
+ *  > that need not overlap the first. Carrying a member across is a guess
+ *  > wearing an enum's clothes. Measure it.
+ *
+ * The anchor pair below is the same error's second head, and the read-side doc
+ * string is where it came from: `ProjectRelation.anchorType` is documented as
+ * "whether it is anchored to the project itself or a specific milestone", so
+ * `'project'` was lifted out of English prose rather than out of any enum at
+ * all — and the live enum turned out to be `start | end | milestone`.
+ *
  * ── What the SAME live probe CONFIRMED — do not re-measure this ──────────────
  *
  * With the corrected values a relation was created, read back and swept. Every
@@ -524,24 +565,27 @@ export const PROJECT_BLOCKS_RELATION_TYPE = 'dependency';
  *    on the end the measurement assigned it. Misuse is not discouraged, it is
  *    unspellable.
  *
- * The NAME is retained deliberately-with-residue: the root barrel's export
- * inventory pins this symbol by name (`index.spec.ts`'s recorded per-slice
- * family and its export-count arithmetic), and that file is outside this row's
- * declared Files globs — so a rename could not land in the same diff as the
- * shape change, and shipping the shape correction beat holding it for a
- * cosmetic name. The name is now the weakest thing about this binding; its
- * VALUE can no longer be used symmetrically.
+ * The NAME says PAIR, and that is load-bearing rather than cosmetic. For one
+ * cycle it did not: the reshape shipped under the old singular `…_ANCHOR_TYPE`
+ * spelling, a name for a scalar, because the shape correction's row could not
+ * reach `index.spec.ts` — where the root surface is pinned BY NAME and BY EXPORT
+ * COUNT — so the declaration and its pins could not move in one diff. The rename
+ * landed the moment a single row owned both, and BEFORE the reshape was
+ * published, so the exported symbol breaks once rather than twice for what was
+ * one repair. A name still promising a scalar was the last thing inviting a
+ * caller to reach for one end of an asymmetric value.
  *
  * @see PROJECT_BLOCKS_RELATION_TYPE for the full read-stamp, the structural
- * finding behind it, and what the same probe confirmed.
+ * finding behind it, the arm-asymmetry that made the original values plausible,
+ * and what the same probe confirmed.
  */
-export const PROJECT_RELATION_ANCHOR_TYPE: ProjectRelationAnchorPair = Object.freeze({
+export const PROJECT_RELATION_ANCHOR_PAIR: ProjectRelationAnchorPair = Object.freeze({
   anchorType: 'end',
   relatedAnchorType: 'start',
 });
 
 /**
- * The shape of {@link PROJECT_RELATION_ANCHOR_TYPE} — the two anchor fields of
+ * The shape of {@link PROJECT_RELATION_ANCHOR_PAIR} — the two anchor fields of
  * a whole-project blocking relation, pinned to the literals measured live on
  * 2026-08-16 rather than widened to `string`.
  *
