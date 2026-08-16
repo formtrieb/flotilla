@@ -889,6 +889,17 @@ export {
   // container and becomes a goal MEMBER too. `LinearProjectStatusType` is the
   // fixed category the frontier reads a project member's `closed`/`claimed`
   // facts from, exactly as `LinearStateType` is for an issue.
+  //
+  // A status category is read TWO ways, and a consumer at the root has to know
+  // they come from two fields. `statusType` is the CLASSIFICATION substrate and
+  // is allowed to be a SUBSTITUTE — an adapter meeting a category outside the
+  // six narrows it to `backlog`, so an unreadable category reads `unready`
+  // rather than counterfeiting `done` or `actionable`. `unreadStatusType` is the
+  // disclosure that this happened, carrying what the vendor actually said (or
+  // `null` when it said nothing). Anything REPORTING a native fact — a goal
+  // member's `nativeState`, the mirror pass's anchor block — reads the second,
+  // because reporting a substitute would hand a consumer a category the vendor
+  // never stated.
   type LinearProject,
   type LinearProjectStatusType,
   type LinearInitiative,

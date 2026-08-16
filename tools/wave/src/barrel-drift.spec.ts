@@ -109,6 +109,11 @@ import type {
   GoalMemberNativeState,
   GoalMemberHealth,
   GoalMemberReading,
+  // The substrate the one binding with a native state reads it FROM — named
+  // here because the same diff widened it, and a widening of an
+  // already-exported interface is precisely the shape a count-based check
+  // cannot see.
+  LinearProject,
 } from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
@@ -785,6 +790,37 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     const bare: GoalMemberReading = { id: '7', state: 'unready', unresolvedBlockers: [] };
     expect('nativeState' in bare).toBe(false);
     expect('health' in bare).toBe(false);
+  });
+
+  it('the Linear project substrate carries its status category BOTH ways from the root — classified, and as stated', () => {
+    // The widening a count could never catch: `LinearProject` was already on the
+    // root, so nothing about the barrel's arithmetic moved when it grew the
+    // field that makes a substituted category detectable. A consumer must be
+    // able to spell both halves from the root alone, because reading only the
+    // first is exactly the mistake the field exists to prevent — `statusType`
+    // may be a stand-in, and only `unreadStatusType` says so.
+    const stated: LinearProject = {
+      id: 'prj-1',
+      name: '1.0.0',
+      description: '',
+      statusType: 'started',
+    };
+    expect('unreadStatusType' in stated).toBe(false);
+
+    const substituted: LinearProject = {
+      id: 'prj-2',
+      name: '1.1.0',
+      description: '',
+      statusType: 'backlog',
+      unreadStatusType: 'archived_v2',
+    };
+    expect(substituted.unreadStatusType).toBe('archived_v2');
+
+    // …and `null` is a REAL inhabitant of the field, not a slip: it is how a
+    // producer says "I substituted, and the vendor stated no category at all",
+    // which is a different fact from either of the two above.
+    const unstated: LinearProject = { ...substituted, unreadStatusType: null };
+    expect(unstated.unreadStatusType).toBeNull();
   });
 
   it('the aliased extractIssueId pair resolves to two DIFFERENT, genuinely importable bindings — not one shadowing the other', () => {

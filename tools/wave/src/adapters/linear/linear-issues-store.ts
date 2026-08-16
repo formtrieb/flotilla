@@ -1109,6 +1109,20 @@ export class LinearIssuesStore implements IssueStore {
    * already on the node this method was handed) and retires the static mapping a
    * caller previously had to render in its place.
    *
+   * **Reported from the vendor's own word, NOT from the classification
+   * substrate** — the one place those two pull apart. `statusType` is allowed to
+   * be a substitute: an adapter that meets a category outside the six narrows it
+   * to `backlog`, which is right for classification (an unreadable category must
+   * read `unready`, never `done` and never `actionable`) and wrong the moment it
+   * is REPORTED, because a seventh vendor category would then reach a consumer
+   * as `backlog` — a native fact the vendor never stated, surfaced through the
+   * very field added to make native facts honest. So the two readings are taken
+   * from two places: the booleans above keep reading `statusType`, while
+   * `nativeState` reads {@link LinearProject.unreadStatusType} first and states
+   * either the vendor's actual word or NOTHING. Absence here is honest in the
+   * same way the issue arm's absence is: no category was stated, so none is
+   * reported — a substituted one would be an invention.
+   *
    * The member's own HEALTH is the other half of ADR-0046's anchor block, and
    * this store reports its ABSENCE today rather than a placeholder: Linear
    * records a project health, but {@link LinearProject} does not carry one —
@@ -1126,7 +1140,23 @@ export class LinearIssuesStore implements IssueStore {
    */
   private async goalProjectMemberFacts(project: LinearProject): Promise<GoalMemberFacts> {
     const id = project.id;
-    const nativeState = project.statusType;
+    // `undefined` — the ordinary case — means the narrowing never substituted,
+    // so `statusType` IS what the vendor said and can be reported as-is.
+    // Anything else means it is a SUBSTITUTE, and the honest native state is
+    // what the vendor actually said (a category this adapter does not know,
+    // carried verbatim: `GoalMemberNativeState` is opaque by design and compares
+    // it against nothing) — or, for `null`, no native state at all, because the
+    // response stated no category and there is nothing honest to report.
+    //
+    // A conditional spread rather than `nativeState: x`, for the reason the
+    // frontier uses one: an absent fact must be an absent KEY, so "the vendor
+    // stated nothing" is written the same way the three issue-direct bindings
+    // write it, and never as a placeholder.
+    const nativeState =
+      project.unreadStatusType === undefined
+        ? project.statusType
+        : (project.unreadStatusType ?? undefined);
+    const stated = nativeState !== undefined ? { nativeState } : {};
     if (CLOSED_PROJECT_STATUS.has(project.statusType)) {
       return {
         id,
@@ -1134,7 +1164,7 @@ export class LinearIssuesStore implements IssueStore {
         claimed: false,
         eligible: false,
         unresolvedBlockers: [],
-        nativeState,
+        ...stated,
       };
     }
     const issues = await this.api.listProjectIssues(id);
@@ -1148,7 +1178,7 @@ export class LinearIssuesStore implements IssueStore {
       claimed: CLAIMED_PROJECT_STATUS.has(project.statusType) || claimedInside,
       eligible: open.some((i) => this.isEligible(i.labels)),
       unresolvedBlockers: await this.unresolvedProjectBlockers(id),
-      nativeState,
+      ...stated,
     };
   }
 
