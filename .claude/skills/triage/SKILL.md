@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Use when an incoming issue needs sorting out — deciding whether it is a bug or an enhancement, trying to reproduce it, asking for the details it is missing, and marking it ready for a background agent or for a person to pick up. Triggers on "triage this issue", "review incoming bugs", "is #42 ready for an agent?", "prepare this for an agent".
+description: 'Use when an incoming issue needs sorting out — deciding whether it is a bug or an enhancement, trying to reproduce it, asking for the details it is missing, and marking it ready for a background agent or for a person to pick up. Triggers on "triage this issue", "review incoming bugs", "is #42 ready for an agent?", "prepare this for an agent".'
 ---
 
 # triage
