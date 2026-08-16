@@ -783,9 +783,17 @@ describe('documentedFormComparison — the field is optional and flat (ADR-0030)
   it('is present in properties as a plain object — flat, no top-level combinator anywhere', () => {
     const schema = REVIEWER_VERDICT_JSON_SCHEMA as unknown as Record<string, unknown>;
     // The W5-F1 lesson: the agent tool's input_schema validation rejects a
-    // top-level anyOf/oneOf/allOf outright. Encoding "required WHEN a trigger
-    // fired" in the schema would need exactly that, so the condition lives in
-    // the Reviewer contract prose instead and the schema root stays clean.
+    // top-level anyOf/oneOf/allOf outright — this test's own positive control
+    // below. A top-level if/then, by contrast, IS accepted and genuinely
+    // enforced at that boundary, so the field's flatness is not boundary-
+    // forced. It stays flat because `trigger` — the antecedent a root
+    // if/then would need — is a field the Reviewer itself authors: cornered
+    // on a consequent it cannot satisfy, an author changes the antecedent
+    // rather than failing, so a root conditional would buy shape and never
+    // truth (ADR-0034 Amendment — engine refusal and schema boundary are
+    // separate rungs). "required WHEN a trigger fired" lives in the Reviewer
+    // contract prose instead — a placement decision, not a boundary-forced
+    // one.
     for (const key of ['anyOf', 'oneOf', 'allOf']) {
       expect(schema).not.toHaveProperty(key);
     }
