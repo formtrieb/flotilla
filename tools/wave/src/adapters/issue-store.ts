@@ -1193,6 +1193,13 @@ export interface PublishGoalUpdateInput {
    * classification (`blocked > 0 → atRisk`) is the station authoring a human's
    * judgment, which is the single thing this seam exists to prevent.
    *
+   * **An EMPTY STRING is absent, at every site the value passes.** `''` names no
+   * judgment and is a member of no tracker's health vocabulary, so it is dropped
+   * rather than sent — and the receipt reports the drop, because
+   * {@link GoalUpdateReceipt.health} states what went out rather than what came
+   * in. This is the one narrowing sanctioned here, and it narrows toward silence:
+   * it can only ever cause LESS to be claimed, never a value to be invented.
+   *
    * A `string` rather than a union, for the reason {@link GoalMemberHealth} is
    * one: the vocabulary is a VENDOR's, the engine is tracker-agnostic, and a
    * value outside what the tracker accepts must fail LOUDLY at the write rather
@@ -1266,11 +1273,17 @@ export interface GoalUpdateReceipt {
   /** The exact body published: the narrative, then the engine-owned anchor. */
   body: string;
   /**
-   * The health that accompanied the write, present ONLY when the caller supplied
-   * one. Absent means no health was sent — and it is a faithful report of what
+   * The health that accompanied the write, present ONLY when one was actually
+   * SENT. Absent means no health went out — and it is a faithful report of what
    * this engine did, NOT a claim about what the container's health now reads as.
    * See {@link IssueStore.publishGoalUpdate} for why those are different
    * sentences.
+   *
+   * "Sent", not "supplied", and the distinction is load-bearing rather than
+   * pedantic: a caller's EMPTY STRING is dropped at the wire (it is not a member
+   * of the tracker's health vocabulary), so it must be absent here too. A receipt
+   * that echoed the input rather than the write would claim a judgment the
+   * tracker never received — which is the one thing this shape exists not to do.
    */
   health?: string;
   /**
@@ -1304,8 +1317,8 @@ export const GOAL_MEMBER_STATE_PROSE: Readonly<Record<GoalMemberState, string>> 
   });
 
 /**
- * The empty-frontier accounting sentence, published VERBATIM (ADR-0046 decision
- * 3).
+ * The all-members-closed accounting sentence, published VERBATIM (ADR-0046
+ * decision 3).
  *
  * A constant rather than an inline string because the sentence is the station's
  * most load-bearing piece of prose: it is what the mirror says at the exact
@@ -1313,6 +1326,14 @@ export const GOAL_MEMBER_STATE_PROSE: Readonly<Record<GoalMemberState, string>> 
  * that every member is closed and then explicitly hands the remaining act back to
  * the Operator — the station owes accounting, never the declaration (ADR-0042's
  * sentence, one station over; ADR-0044 decision 5).
+ *
+ * **It renders only when the goal HAS members** — see the render site in
+ * {@link renderGoalUpdateBody}. `GoalFrontier.complete` is true for a goal with
+ * zero members too (an empty remainder is empty, and that derivation is
+ * deliberate: it is what stops the station from ever UNDER-reporting), but a
+ * container nobody has populated yet has not reached anything, and publishing
+ * this sentence beside "no members yet" put two contradicting readings on the one
+ * surface an outsider reads.
  *
  * Exported so the skill side can show the same words in its preview, and so a
  * spec can pin them rather than paraphrase.
@@ -1417,7 +1438,27 @@ export function renderGoalUpdateBody(input: {
 
   // The verbatim sentence, exactly where a reader might otherwise infer a
   // release authorization from an empty list.
-  if (frontier.complete) out.push(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE, '');
+  //
+  // Gated on there BEING members, and the second term is the whole of the fix
+  // (Operator ruling 2026-08-16). `frontier.complete` is `open.length === 0`, so
+  // it is true of a goal with zero members as well — and that derivation stays
+  // exactly as it is, because "an empty remainder is empty" is what stops this
+  // station from ever under-reporting. What could not stand was the RENDERING:
+  // an unpopulated container published "this goal has no members yet" and "every
+  // member is closed, the finish line has been reached" in the same artifact, on
+  // the one surface a stakeholder reads.
+  //
+  // Which sentence wins follows the station's own status pass rather than a fresh
+  // decision — `goal/SKILL.md` already rules that an empty membership is reported
+  // DISTINCTLY from completion ("'this goal has no members yet' is not 'every
+  // member of this goal is finished'; only in the second case is the remaining
+  // step yours to take"). The mirror now says the same thing in the same order:
+  // the distribution line above already stated the empty case, so this sentence —
+  // the one that names the Operator's remaining act — belongs only to the goal
+  // that actually reached its finish line.
+  if (frontier.complete && frontier.readings.length > 0) {
+    out.push(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE, '');
+  }
 
   // The Operator's aside, ATTRIBUTED — inside the anchor, but never presented as
   // part of the derivation.
@@ -1451,9 +1492,21 @@ function renderGoalUpdateDistribution(frontier: GoalFrontier): string {
 }
 
 /**
- * One unresolved blocker, in the anchor's own line. Mirrors
- * {@link GoalBlocker}'s two spellings: an `IssueRef` renders as the ref a reader
- * of this tracker already recognizes, a bare member id renders as itself.
+ * One unresolved blocker, in the anchor's own line.
+ *
+ * {@link GoalBlocker} has TWO spellings — an `IssueRef` and a bare opaque member
+ * id — and this renders **three** forms, because the `IssueRef` arm splits on
+ * whether the ref carries a slug:
+ *
+ *  1. `IssueRef` WITH a slug → `flotilla#628`, the cross-repo form a reader of
+ *     this tracker already recognizes;
+ *  2. `IssueRef` WITHOUT one → `#628`, the same-repo form, and deliberately not a
+ *     fabricated slug — the store reports the ref it read;
+ *  3. a bare member id → itself, verbatim (a Linear project UUID has no `#n`
+ *     spelling to squeeze it into, ADR-0045 decision 1).
+ *
+ * All three are pinned by spec against the rendered update body; each was
+ * demonstrated failing before it was committed.
  */
 function renderBlocker(blocker: GoalBlocker): string {
   if (typeof blocker === 'string') return blocker;

@@ -4,8 +4,13 @@ import {
   withTriageDisclaimer,
   classifyCreateInput,
   CreateInputError,
+  GOAL_UPDATE_ANCHOR_HEADING,
+  GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE,
+  GOAL_UPDATE_PROVENANCE_LINE,
+  renderGoalUpdateBody,
 } from './issue-store';
 import type { CreateInput } from './issue-store';
+import { computeGoalFrontier, type GoalMemberFacts } from '../goal-frontier';
 
 describe('withTriageDisclaimer (ADR-0015)', () => {
   it('prepends the verbatim AI-provenance disclaimer, blank-line separated', () => {
@@ -351,5 +356,153 @@ describe('classifyCreateInput — a malformed bodySections entry on a BARE input
       bodySections: [{ heading: 'What to build', markdown: '   ' }],
     };
     expect(classifyCreateInput(DECORATED).kind).toBe('decorated');
+  });
+});
+
+// ── renderGoalUpdateBody — the mirror pass's ONE shared renderer (ADR-0046) ───
+//
+// LAYER specs, in the sense the classifier block above is: the renderer is called
+// directly, with no store and no tracker in the picture, because that is where
+// the claims live. `renderGoalUpdateBody` is pure — same facts, same bytes — so a
+// published artifact's wording is a property of THIS function, and every adapter
+// inherits it rather than re-deciding it.
+//
+// The frontier under test is built with the real `computeGoalFrontier` rather
+// than hand-written, deliberately: the empty-membership case below is only
+// interesting BECAUSE the derivation says `complete: true` there, and a
+// hand-built literal could quietly assert against a rule the engine does not
+// actually apply.
+describe('renderGoalUpdateBody — an EMPTY goal publishes ONE reading, not two (#628)', () => {
+  function member(overrides: Partial<GoalMemberFacts> & { id: string }): GoalMemberFacts {
+    return {
+      closed: false,
+      claimed: false,
+      eligible: true,
+      unresolvedBlockers: [],
+      ...overrides,
+    };
+  }
+
+  it('a goal with ZERO members says "no members yet" and does NOT say the finish line was reached', () => {
+    const frontier = computeGoalFrontier('goal-1', []);
+    // The derivation is UNCHANGED and must stay so — an empty remainder is
+    // empty, which is what stops the station from ever under-reporting. The fix
+    // is a rendering decision on top of it, never an inversion of it.
+    expect(frontier.complete).toBe(true);
+
+    const body = renderGoalUpdateBody({ goalName: 'Milestone 3', frontier });
+
+    expect(body).toContain(
+      'This goal has no members yet, so there is nothing to report against it.',
+    );
+    // The contradiction this row exists to remove: the finish-line sentence, in
+    // the same artifact as "no members yet", on the surface a stakeholder reads.
+    expect(body).not.toContain(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE);
+    // …and not by paraphrase either — no fragment of it survives.
+    expect(body).not.toContain('the finish line has been reached');
+    expect(body).not.toContain('Every member of this goal is closed');
+    // The anchor itself is still whole: this gates ONE sentence, not the pass.
+    expect(body).toContain(GOAL_UPDATE_ANCHOR_HEADING);
+    expect(body.trimEnd().endsWith(GOAL_UPDATE_PROVENANCE_LINE)).toBe(true);
+  });
+
+  it('a goal WITH members, every one of them closed, publishes the sentence VERBATIM — and still hands the act back', () => {
+    const frontier = computeGoalFrontier('goal-1', [
+      member({ id: 'm-1', closed: true }),
+      member({ id: 'm-2', closed: true }),
+    ]);
+    expect(frontier.complete).toBe(true);
+
+    const body = renderGoalUpdateBody({ goalName: 'Milestone 3', frontier });
+
+    // VERBATIM — the constant, not a paraphrase of it.
+    expect(body).toContain(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE);
+    // The half that makes it accounting rather than permission: closing the
+    // container is named as the OPERATOR's act, in the published bytes.
+    expect(body).toContain('is the Operator’s act in the tracker');
+    expect(body).toContain('does not declare it reached');
+    // …and this reading is NOT the empty-membership one.
+    expect(body).not.toContain('no members yet');
+    expect(body).toContain('2 of 2 members are done.');
+  });
+
+  it('a goal with members still OPEN says neither — the two sentences are mutually exclusive, not merely ordered', () => {
+    const frontier = computeGoalFrontier('goal-1', [
+      member({ id: 'm-1', closed: true }),
+      member({ id: 'm-2' }),
+    ]);
+    expect(frontier.complete).toBe(false);
+
+    const body = renderGoalUpdateBody({ goalName: 'Milestone 3', frontier });
+
+    expect(body).not.toContain('no members yet');
+    expect(body).not.toContain(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE);
+    expect(body).toContain('1 of 2 members are done. Still open: 1 ready to pick up.');
+  });
+});
+
+// ── the blocker rendering — all THREE forms, pinned (#628) ───────────────────
+//
+// `GoalBlocker` has two SPELLINGS (an `IssueRef`, a bare member id) and three
+// renderings, because the `IssueRef` arm splits on whether the ref carries a
+// slug. The helper is module-private, so it is exercised where it actually
+// matters: through the rendered update body a reader receives.
+describe('renderGoalUpdateBody — every blocker spelling reaches the anchor (#628)', () => {
+  /** One `blocked` member carrying exactly the blockers under test. */
+  function blockedOn(unresolvedBlockers: GoalMemberFacts['unresolvedBlockers']) {
+    return computeGoalFrontier('goal-1', [
+      { id: 'm-1', closed: false, claimed: false, eligible: true, unresolvedBlockers },
+    ]);
+  }
+
+  it('an IssueRef WITH a slug renders as `slug#issue`', () => {
+    const body = renderGoalUpdateBody({
+      goalName: 'Milestone 3',
+      frontier: blockedOn([{ slug: 'flotilla', issue: 596 }]),
+      identities: [{ id: 'm-1', name: 'The blocked one' }],
+    });
+    expect(body).toContain('waiting on flotilla#596');
+  });
+
+  it('an IssueRef WITHOUT a slug renders as `#issue` — never a fabricated slug', () => {
+    const body = renderGoalUpdateBody({
+      goalName: 'Milestone 3',
+      frontier: blockedOn([{ issue: 596 }]),
+      identities: [{ id: 'm-1', name: 'The blocked one' }],
+    });
+    expect(body).toContain('waiting on #596');
+    // The negative half: nothing invented a slug to put in front of it.
+    expect(body).not.toMatch(/waiting on \S+#596/);
+  });
+
+  it('a BARE member id renders as itself — a project UUID has no `#n` spelling', () => {
+    const body = renderGoalUpdateBody({
+      goalName: 'Milestone 3',
+      frontier: blockedOn(['3f8a1c7e-0000-4a2b-9c11-abcdef012345']),
+      identities: [{ id: 'm-1', name: 'The blocked one' }],
+    });
+    expect(body).toContain('waiting on 3f8a1c7e-0000-4a2b-9c11-abcdef012345');
+    // Verbatim, not decorated: no `#` was bolted onto an opaque id.
+    expect(body).not.toContain('#3f8a1c7e');
+  });
+
+  it('the three spellings coexist on ONE member, comma-joined in order', () => {
+    const body = renderGoalUpdateBody({
+      goalName: 'Milestone 3',
+      frontier: blockedOn([{ slug: 'flotilla', issue: 596 }, { issue: 627 }, 'prj-7']),
+      identities: [{ id: 'm-1', name: 'The blocked one' }],
+    });
+    expect(body).toContain('waiting on flotilla#596, #627, prj-7');
+  });
+
+  it('a member that is NOT blocked renders no waiting clause at all — the non-vacuity control', () => {
+    const body = renderGoalUpdateBody({
+      goalName: 'Milestone 3',
+      frontier: computeGoalFrontier('goal-1', [
+        { id: 'm-1', closed: false, claimed: false, eligible: true, unresolvedBlockers: [] },
+      ]),
+      identities: [{ id: 'm-1', name: 'The unblocked one' }],
+    });
+    expect(body).not.toContain('waiting on');
   });
 });

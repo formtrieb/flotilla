@@ -461,6 +461,27 @@ describe('InMemoryLinearApi update surfaces (the mirror-pass substrate, ADR-0046
     expect('health' in withoutHealth).toBe(false);
   });
 
+  it('an EMPTY-STRING health is stored as an ABSENT KEY too — the fake models what the wire does (#628)', async () => {
+    const api = new InMemoryLinearApi();
+    const { id: projectId } = await api.createProject({ name: 'M3', description: '' });
+    const { id: initiativeId } = await api.createInitiative({ name: 'M3', description: '' });
+
+    // `''` is not a member of the vendor's health enum, so the real transport
+    // (`healthIfSupplied`, real-linear-api.ts) sends no key at all. A fake that
+    // stored `''` could not SEE that divergence: every spec written against this
+    // substrate would pass while production sent something else.
+    await api.createProjectUpdate({ projectId, body: 'a', health: '' });
+    await api.createInitiativeUpdate({ initiativeId, body: 'b', health: '' });
+    // The non-vacuity control: a REAL value is still stored, on both surfaces —
+    // this is a gate, not a blanket drop.
+    await api.createProjectUpdate({ projectId, body: 'c', health: 'onTrack' });
+
+    const [emptyProject, emptyInitiative, real] = api.publishedUpdates();
+    expect('health' in emptyProject).toBe(false);
+    expect('health' in emptyInitiative).toBe(false);
+    expect(real.health).toBe('onTrack');
+  });
+
   it('refuses to publish against a container that does not exist', async () => {
     const api = new InMemoryLinearApi();
     await expect(api.createProjectUpdate({ projectId: 'nope', body: 'x' })).rejects.toThrow(

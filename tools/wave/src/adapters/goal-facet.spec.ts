@@ -742,6 +742,25 @@ function runGoalFacetConformance(
       expect(withHealth.health).toBe('atRisk');
     });
 
+    it('an EMPTY-STRING health is absence: the receipt reports what was SENT, never a value the wire dropped (#628)', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      // `''` is not a member of the vendor's health enum, so the transport does
+      // not send it — the store gate has to agree, or the receipt claims a
+      // judgment the tracker never received. The receipt's own docblock promises
+      // it reports what this engine SENT.
+      const receipt = await store.publishGoalUpdate(goalId, { health: '' }, h.binding);
+      // ABSENT KEY, not `''` and not `undefined` — the same three-way distinction
+      // the omitted case above rests on.
+      expect('health' in receipt).toBe(false);
+
+      // The gate is a gate, not a blanket drop: a real value still travels.
+      const real = await store.publishGoalUpdate(goalId, { health: 'onTrack' }, h.binding);
+      expect(real.health).toBe('onTrack');
+    });
+
     it('the narrative rides ABOVE the anchor, and the operator note is attributed inside it', async () => {
       const { h, store } = await fresh();
       if (!h.hasUpdateSurface) return;
@@ -775,6 +794,31 @@ function runGoalFacetConformance(
       expect(receipt.body).toContain(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE);
       // …and the sentence hands the remaining act back rather than taking it.
       expect(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE).toContain('Operator');
+      // The reading it is NOT: a goal that HAS members and finished them is not
+      // a goal nobody has populated. The sibling case below is the other half.
+      expect(receipt.body).not.toContain('no members yet');
+    });
+
+    it('a goal with ZERO members publishes ONE reading — never both sentences (#628)', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      // Freshly cut, nothing joined — the state every goal passes through, and
+      // the one an outsider is most likely to be shown first.
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      const receipt = await store.publishGoalUpdate(goalId, {}, h.binding);
+
+      // The DERIVATION is untouched: an empty remainder is still complete, which
+      // is what keeps this station from ever under-reporting. Only the rendering
+      // decides which sentence a reader gets (Operator ruling 2026-08-16).
+      expect(receipt.frontier.readings).toHaveLength(0);
+      expect(receipt.frontier.complete).toBe(true);
+
+      expect(receipt.body).toContain('no members yet');
+      // …and NOT the finish-line sentence beside it. The two contradicted each
+      // other in one artifact, on the surface the pass was built for.
+      expect(receipt.body).not.toContain(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE);
+      expect(receipt.body).not.toContain('the finish line has been reached');
     });
 
     it('publishes ONE update per goal — no per-member fan-out', async () => {
@@ -1061,6 +1105,21 @@ describe('the initiative binding is realized on linear and refused elsewhere', (
     // The distinction the whole prohibition rests on: an omitted health is an
     // ABSENT KEY on the wire, never a key set to `undefined` and never a default.
     expect('health' in withoutHealth).toBe(false);
+  });
+
+  it('an EMPTY-STRING health reaches the wire as NO KEY, and the receipt matches it (#628)', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goalId = await store.createGoal({ title: 'Milestone 3', filingHint: 'm3' }, 'initiative');
+
+    const receipt = await store.publishGoalUpdate(goalId, { health: '' }, 'initiative');
+
+    // Both halves, in the one place they can be compared: what the WIRE
+    // received, and what the RECEIPT claims. They disagreed before this row —
+    // the transport dropped `''`, the receipt kept it.
+    const [published] = api.publishedUpdates();
+    expect('health' in published).toBe(false);
+    expect('health' in receipt).toBe(false);
   });
 
   it('GITHUB still refuses an initiative binding — `unrealized-container`, before any write', async () => {
