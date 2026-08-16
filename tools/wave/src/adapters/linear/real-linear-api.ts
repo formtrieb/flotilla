@@ -368,10 +368,15 @@ const LIST_PROJECT_INVERSE_RELATIONS_QUERY = `query ListProjectInverseRelations(
 // optional while the created nodes declare it NON-NULL, so the server assigns
 // something when the key is omitted — a VALUE question no schema read answers.
 //
-// The variable is typed `$health: ProjectUpdateHealthType` (nullable) rather than
-// `String`, so GraphQL itself coerces and rejects an off-vocabulary value at the
-// wire with a message naming the enum. That is the loud-failure path the stamp
-// promises, and typing the variable is what arms it.
+// The loud-failure path, stated precisely rather than approximately: health is
+// NOT a top-level variable here — it rides inside `$input`, typed
+// `ProjectUpdateCreateInput!` / `InitiativeUpdateCreateInput!`. GraphQL coerces
+// input-object FIELDS against their declared types just as it does variables, and
+// the schema declares that field as the enum, so an off-vocabulary value is
+// rejected at the wire with a coercion error naming the enum — before any
+// resolver runs, and with nothing written. That is what makes an unrecognized
+// health fail loudly instead of being silently narrowed, and it is a property of
+// the schema's declaration rather than of anything this adapter checks.
 
 const CREATE_PROJECT_UPDATE_MUTATION = `mutation CreateProjectUpdate($input: ProjectUpdateCreateInput!) {
   projectUpdateCreate(input: $input) {
