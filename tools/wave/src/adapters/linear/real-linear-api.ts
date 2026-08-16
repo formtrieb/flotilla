@@ -460,20 +460,33 @@ const CREATE_ISSUE_RELATION_MUTATION = `mutation CreateIssueRelation($input: Iss
  * The `IssueRelationType` enum value for a blocking relation.
  *
  * e2e-verify — STILL UNPROVEN (this wave has no live probe). Pinned from
- * Linear's documented `IssueRelationType` enum (`blocks | duplicate | related |
- * similar`), and the WRITE this constant feeds is genuinely governed by it:
- * `IssueRelationCreateInput.type` is typed `IssueRelationType!`. Flip to
- * VERIFIED on the first live mirror.
+ * Linear's published GraphQL schema (`linear/linear` →
+ * `packages/sdk/src/schema.graphql` @ commit
+ * `91456bbd299d7db1fd39f60782fa2a59393e8b9b`, re-read live 2026-08-16, this
+ * dispatch — same pin as the read-stamp on `PROJECT_BLOCKS_RELATION_TYPE` in
+ * `linear-api.ts`, which this docblock previously cited only as "documented"
+ * with no repository path or commit at all): `enum IssueRelationType { blocks
+ * duplicate related similar }`, and the WRITE this constant feeds is genuinely
+ * governed by it: `IssueRelationCreateInput.type` is typed `IssueRelationType!`.
+ * Flip to VERIFIED on the first live mirror.
  *
  * **The READ half is a different story, and an earlier wording here overstated
- * it.** `toBlockedByIdentifiers` does keep `inverseRelations` nodes whose
- * `type === 'blocks'`, but that field is `IssueRelation.type: String!` — bare,
- * as is `IssueRelationUpdateInput.type`. The enum governs one input field, not
- * the arm. And the filter does not even reach this constant: it repeats
- * `'blocks'` as an inline literal, so the two halves agree by coincidence of
- * spelling rather than by construction. The PROJECT arm is the better shape on
- * both counts — `PROJECT_BLOCKS_RELATION_TYPE` is imported by its read filter
- * and its write alike.
+ * it.** `toBlockedByIdentifiers` keeps `inverseRelations` nodes whose
+ * `type === BLOCKS_RELATION_TYPE`, but that field is `IssueRelation.type:
+ * String!` — bare, as is `IssueRelationUpdateInput.type`. The enum governs one
+ * input field, not the arm.
+ *
+ * **Fixed 2026-08-16: the read filter now goes through this constant too, so
+ * the two halves agree by construction.** It used to repeat `'blocks'` as an
+ * inline literal in the filter, agreeing with this constant by coincidence of
+ * spelling rather than by construction — the asymmetry the PROJECT arm never
+ * had (`PROJECT_BLOCKS_RELATION_TYPE` is imported by its read filter and its
+ * write alike). That gap is closed: both the CREATE input below and
+ * `toBlockedByIdentifiers`'s filter now spell this one module-local constant,
+ * so a rename here can no longer silently desync read from write. The enum
+ * still governs only the CREATE input, not the bare-`String` read field — the
+ * shared constant is a shared SPELLING, not evidence the read side is itself
+ * enum-typed.
  *
  * **This enum is real, and it is exactly the one that must NOT be carried
  * sideways.** The schema types `IssueRelationCreateInput.type` as
@@ -1432,11 +1445,11 @@ function toPrAttachment(raw: Record<string, unknown>): LinearPrAttachment | null
   return { url, merged };
 }
 
-/** `issue.inverseRelations.nodes` filtered to `type === 'blocks'` (brief Task 6) — a relation "A blocks B" surfaces on B as an inverse relation. */
+/** `issue.inverseRelations.nodes` filtered to `type === BLOCKS_RELATION_TYPE` (brief Task 6) — a relation "A blocks B" surfaces on B as an inverse relation. See {@link BLOCKS_RELATION_TYPE}'s docblock: fixed 2026-08-16 to read through the same constant its CREATE half already uses, closing a coincidence-of-spelling gap. */
 function toBlockedByIdentifiers(nodes: Record<string, unknown>[]): string[] {
   const out: string[] = [];
   for (const n of nodes) {
-    if (n.type !== 'blocks') continue;
+    if (n.type !== BLOCKS_RELATION_TYPE) continue;
     const issue = n.issue as Record<string, unknown> | undefined;
     if (typeof issue?.identifier === 'string') out.push(issue.identifier);
   }
