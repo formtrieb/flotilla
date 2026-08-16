@@ -19,7 +19,8 @@ import type {
   TriageView,
   ApplyTriageInput,
 } from '../contract';
-import type { GoalFrontier } from '../goal-frontier';
+import type { GoalBlocker, GoalFrontier, GoalMemberState } from '../goal-frontier';
+import { GOAL_MEMBER_STATES } from '../goal-frontier';
 
 export type { ClaimRung };
 
@@ -862,11 +863,33 @@ export class GoalMemberJoinError extends Error {
  *   at all (a typo, an invented role).
  * - `unrealized-container` — a real role this store does not ship. `initiative`
  *   on Linear is the recorded case; so is asking GitHub for `project`.
+ * - `unrealized-update-surface` — the role IS realized, and every other goal verb
+ *   works on it, but the native container has no UPDATE surface to mirror onto
+ *   (ADR-0046 decision 5). A GitHub Milestone and a MarkdownFs goal file are the
+ *   two recorded cases: both hold members perfectly well and neither has a
+ *   timeline artifact a report could be published to.
+ *
+ *   **A fourth member of THIS union rather than a second error class, and that is
+ *   the whole of the "one refusal family" rule.** The two failures are the same
+ *   kind of fact — a config-declared container cannot do a thing the caller asked
+ *   for — they name the same field (`store.goal.container`), and a caller routes
+ *   on both with one `instanceof` and one `switch`. A parallel
+ *   `GoalUpdateSurfaceError` would have split that routing in two for no gain and
+ *   left a consumer catching two classes to handle one class of misconfiguration.
+ *
+ *   It is nonetheless a DISTINCT member rather than a reuse of
+ *   `unrealized-container`, because the two say genuinely different things and the
+ *   fix differs: `unrealized-container` means "this store cannot bind that role at
+ *   all" (rebind, and nothing works until you do), while this means "the role is
+ *   bound and working — this ONE pass has no surface here" (every other goal verb
+ *   keeps working; only the mirror is unavailable). Collapsing them would tell a
+ *   GitHub consumer their milestone binding was wrong when it is entirely correct.
  */
 export type GoalBindingFailure =
   | 'unbound'
   | 'unknown-container'
-  | 'unrealized-container';
+  | 'unrealized-container'
+  | 'unrealized-update-surface';
 
 /**
  * The typed goal-binding refusal. Structured on purpose: `failure` names WHICH
@@ -970,6 +993,43 @@ export function requireGoalContainer(opts: {
     );
   }
   return role;
+}
+
+/**
+ * Refuse {@link IssueStore.publishGoalUpdate} on a container that has no native
+ * update surface (ADR-0046 decision 5) — the ONE spelling of that refusal, shared
+ * by every store that owes it.
+ *
+ * Shared for the reason {@link requireGoalContainer} is shared: two adapters
+ * writing "this container has no update surface" in their own words is two
+ * refusal vocabularies for one class of misconfiguration, and the drift is
+ * invisible until a consumer string-matches one of them. Here the class, the
+ * `failure` discriminant, the `field`, and the shape of the message all come from
+ * one place, so a fourth adapter inherits the refusal it owes rather than
+ * inventing a lookalike.
+ *
+ * Note what is deliberately NOT offered: a fallback surface. A milestone
+ * DESCRIPTION edit was considered as a substitute and rejected — the mirror is a
+ * timeline report, and rewriting a container's description to hold one is a lossy
+ * state write onto a field that means something else. A store either has the
+ * surface or says so.
+ *
+ * @param storeKind how to name this store in the message.
+ * @param role      the container role that is bound and working, minus this pass.
+ */
+export function refuseGoalUpdateSurface(storeKind: string, role: GoalContainer): never {
+  throw new GoalBindingError(
+    'unrealized-update-surface',
+    role,
+    `goal: the ${storeKind} store's "${role}" container has no native UPDATE ` +
+      `surface, so the mirror pass has nothing to publish to (ADR-0046). The ` +
+      `binding itself is fine — every other goal verb works on it; only this ` +
+      `pass is unavailable. A native update surface is a Linear shape: bind ` +
+      `"store.goal.container" to "project" or "initiative" on a linear store to ` +
+      `mirror a frontier. Nothing was written, and no substitute surface was ` +
+      `used — editing the container's description to hold a report would be a ` +
+      `lossy state write onto a field that means something else.`,
+  );
 }
 
 /**
@@ -1080,6 +1140,324 @@ export interface CreateGoalMemberInput {
    * Absent and `[]` both declare nothing to realize.
    */
   blockedBy?: readonly string[];
+}
+
+// ── The MIRROR PASS (ADR-0046) — derived accounting on the native update surface
+//
+// One facet verb publishes a goal's frontier to its container's own timeline. The
+// safety property is stated once, here, because every type below exists to serve
+// it:
+//
+//   ☞ the CALLER never supplies the report. The engine derives the frontier fresh
+//     at write time and renders the anchor itself, so a mirror is structurally
+//     unable to publish accounting that does not match the tracker at the moment
+//     of writing.
+//
+// That is why {@link PublishGoalUpdateInput} has no field for a rendered body, no
+// field for a frontier, and no field for a member list — not "a field that is
+// validated", but no field at all. A doctored-report channel cannot be spelled.
+
+/**
+ * What a caller MAY contribute to a mirror publish — and, read as a whole, what
+ * it may not.
+ *
+ * Every field here is PROSE or a transcribed human judgment. There is deliberately
+ * no `anchor`, no `frontier`, no `members`, no `body`, and no `renderedReport`:
+ * the accounting half of the published artifact is derived by the engine at write
+ * time and is not addressable from this shape. A caller that wanted to publish a
+ * flattering frontier would have to change the tracker, which is the point.
+ */
+export interface PublishGoalUpdateInput {
+  /**
+   * The Operator-approved narrative — what happened and why it matters, in the
+   * consumer's own house style (ADR-0046 decision 3). Published ABOVE the anchor,
+   * verbatim: flotilla pins no form here and edits nothing.
+   *
+   * Absent means the update is anchor-only, which is a complete and honest
+   * artifact rather than a degraded one.
+   */
+  narrative?: string;
+  /**
+   * A health value to record with the update — **transcribed, never derived**
+   * (ADR-0046 decision 4).
+   *
+   * Two sanctioned sources produce what a caller may put here: a value the
+   * Operator supplied or confirmed, or a source-attributed aggregation of the
+   * members' OWN human-authored healths that the Operator then confirmed. Both
+   * are human judgments; the engine's whole obligation is to carry one through
+   * untouched or carry none.
+   *
+   * **Absent means absent, all the way to the wire.** Nothing downstream may
+   * default, coalesce, infer or map a value into this — in particular nothing may
+   * read a health off the frontier, because a formula over the station's own
+   * classification (`blocked > 0 → atRisk`) is the station authoring a human's
+   * judgment, which is the single thing this seam exists to prevent.
+   *
+   * A `string` rather than a union, for the reason {@link GoalMemberHealth} is
+   * one: the vocabulary is a VENDOR's, the engine is tracker-agnostic, and a
+   * value outside what the tracker accepts must fail LOUDLY at the write rather
+   * than be silently narrowed here. See the adapter's own read-stamp for what the
+   * tracker accepts and how a wrong value fails.
+   */
+  health?: string;
+  /**
+   * A short Operator aside published with the update — a note about the pass
+   * itself ("read at 14:00, before the Berlin standup"), distinct from the
+   * narrative's account of the work.
+   *
+   * Rendered inside the engine-owned anchor and ATTRIBUTED as the Operator's,
+   * never folded into the derived accounting: a reader must be able to tell the
+   * two apart, which is the same separation the two layers exist for.
+   */
+  operatorNote?: string;
+}
+
+/**
+ * How the anchor NAMES one member — the identity half the frontier deliberately
+ * does not carry.
+ *
+ * {@link GoalMemberReading} carries a member's opaque id and its readings, which
+ * is everything the CLASSIFICATION needs and nothing a human can read: `prj-7` or
+ * a bare UUID names nothing to the person the update is written for. So the store
+ * — which already holds the native nodes it derived the frontier from — states
+ * the display identity alongside, and the renderer joins the two by id.
+ *
+ * Kept OUT of `GoalMemberReading` on purpose: a name and a URL are presentation
+ * facts with no bearing on any reading, and widening the frontier with them would
+ * put display concerns into the pure classification module that every consumer
+ * reads.
+ */
+export interface GoalUpdateMemberIdentity {
+  /** The member's opaque tracker id — the join key against {@link GoalMemberReading.id}. */
+  id: string;
+  /** The member's human-facing name (an issue title; a project name). */
+  name: string;
+  /**
+   * The tracker's OWN link to this member, when the store has one.
+   *
+   * Optional, and absence renders as a plain name rather than a fabricated link:
+   * a URL this engine composed from an id and a guessed workspace slug would be a
+   * value the tracker never stated — the same prohibition `nativeState` lives
+   * under, one field over. A store reports the link the API gave it, or none.
+   */
+  url?: string;
+}
+
+/**
+ * What a mirror publish reports back — a RECEIPT, and deliberately not a handle.
+ *
+ * It carries the derivation the anchor was rendered from and the body that was
+ * actually published, so a caller can show the Operator exactly what went out
+ * without re-reading the tracker (and without any opportunity to have sent
+ * something else).
+ */
+export interface GoalUpdateReceipt {
+  /** The goal whose frontier was mirrored. */
+  goalId: string;
+  /** The container role the update was published to. */
+  container: GoalContainer;
+  /** The published update's own opaque id, as the tracker assigned it. */
+  updateId: string;
+  /**
+   * The tracker's own link to the published update, when it returned one.
+   * Reported, never composed — see {@link GoalUpdateMemberIdentity.url}.
+   */
+  url?: string;
+  /** The exact body published: the narrative, then the engine-owned anchor. */
+  body: string;
+  /**
+   * The health that accompanied the write, present ONLY when the caller supplied
+   * one. Absent means no health was sent — and it is a faithful report of what
+   * this engine did, NOT a claim about what the container's health now reads as.
+   * See {@link IssueStore.publishGoalUpdate} for why those are different
+   * sentences.
+   */
+  health?: string;
+  /**
+   * The frontier as derived AT WRITE TIME — the anchor's own source, returned so
+   * the caller can see what was published rather than trust that it matched.
+   */
+  frontier: GoalFrontier;
+}
+
+/**
+ * The plain reader-facing word for each frontier state (ADR-0046 decision 3's
+ * "the distribution in plain reader-facing language").
+ *
+ * The update is read by people who do not run waves — a stakeholder opening a
+ * Linear timeline — so the anchor spends the engine's vocabulary rather than
+ * making the reader learn it. `unready` in particular is meaningless outside this
+ * project and actively misleading inside a stakeholder's reading ("the work is
+ * not ready" rather than "nobody has written the ticket properly yet").
+ *
+ * A total map over {@link GoalMemberState}, so adding a sixth reading is a
+ * compile error here rather than a member that silently renders as its internal
+ * spelling.
+ */
+export const GOAL_MEMBER_STATE_PROSE: Readonly<Record<GoalMemberState, string>> =
+  Object.freeze({
+    done: 'done',
+    'in-motion': 'in motion',
+    actionable: 'ready to pick up',
+    blocked: 'blocked',
+    unready: 'awaiting sharpening',
+  });
+
+/**
+ * The empty-frontier accounting sentence, published VERBATIM (ADR-0046 decision
+ * 3).
+ *
+ * A constant rather than an inline string because the sentence is the station's
+ * most load-bearing piece of prose: it is what the mirror says at the exact
+ * moment a reader might mistake a report for a release authorization. It reports
+ * that every member is closed and then explicitly hands the remaining act back to
+ * the Operator — the station owes accounting, never the declaration (ADR-0042's
+ * sentence, one station over; ADR-0044 decision 5).
+ *
+ * Exported so the skill side can show the same words in its preview, and so a
+ * spec can pin them rather than paraphrase.
+ */
+export const GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE =
+  'Every member of this goal is closed. The remaining step — closing the ' +
+  'container itself — is the Operator’s act in the tracker: this pass reports ' +
+  'the finish line has been reached and does not declare it reached.';
+
+/**
+ * The anchor's provenance line, naming the pass that wrote it (ADR-0046 decision
+ * 3).
+ *
+ * It exists so a reader meeting this artifact cold can tell a derived report from
+ * a hand-written one — which is precisely the confusion the consumer's "nobody
+ * hand-writes initiative updates" convention would otherwise suffer the moment
+ * initiative updates start existing there. It also tells the reader which half of
+ * the artifact is which, since the layer above it is a human's prose.
+ */
+export const GOAL_UPDATE_PROVENANCE_LINE =
+  'Derived and published by the flotilla goal station’s mirror pass. The ' +
+  'accounting in this section is read from the tracker at publish time and is ' +
+  'not author-editable; any prose above it is the Operator’s own.';
+
+/** The heading that opens the engine-owned half of every published body. */
+export const GOAL_UPDATE_ANCHOR_HEADING = '## Frontier';
+
+/**
+ * Render the complete update body: the caller's narrative, then the engine-owned
+ * anchor (ADR-0046 decision 3).
+ *
+ * **One renderer for every store, and that is the guarantee rather than a
+ * convenience.** If each adapter composed its own anchor, "the anchor can be
+ * neither supplied nor edited nor omitted" would be a property of three
+ * implementations that happen to agree today, and a fourth adapter would inherit
+ * the sentence but not the behaviour. Here the store's only contribution is
+ * FACTS — the frontier it derived and the identities it read — and the artifact
+ * is assembled in one place a reviewer can read whole.
+ *
+ * The ordering is fixed and not a parameter: prose above, accounting below. A
+ * narrative that embellishes therefore stands directly above an anchor that
+ * counts, and the contradiction is visible inside the artifact itself — which is
+ * the realistic form of the audit property once free prose is admitted at all
+ * (ADR-0046's rejected "numbers-only render" option).
+ *
+ * Pure: no I/O, no clock, no store. Given the same facts it renders the same
+ * bytes, which is what lets a preview show the Operator exactly what will be
+ * published.
+ */
+export function renderGoalUpdateBody(input: {
+  /** The goal's human-facing name, for the anchor's opening line. */
+  goalName: string;
+  /** The frontier as derived at write time — the ONLY source of the accounting. */
+  frontier: GoalFrontier;
+  /** Display identities for the members, joined by id. Missing ones fall back to the id. */
+  identities?: readonly GoalUpdateMemberIdentity[];
+  /** The Operator's prose, published verbatim above the anchor. */
+  narrative?: string;
+  /** The Operator's aside, attributed inside the anchor. */
+  operatorNote?: string;
+}): string {
+  const { goalName, frontier, identities = [], narrative, operatorNote } = input;
+  const byId = new Map(identities.map((i) => [i.id, i]));
+  const out: string[] = [];
+
+  // ── Layer 1: the caller's prose, verbatim and untouched ────────────────────
+  // Trimmed only at the edges so the layer boundary renders predictably; the
+  // engine never rewrites, truncates or reflows an Operator's sentence.
+  const prose = narrative?.trim();
+  if (prose) out.push(prose, '');
+
+  // ── Layer 2: the engine's anchor. Appended UNCONDITIONALLY — there is no
+  // branch here that a caller's input can reach, which is what makes the anchor
+  // un-omittable rather than merely always-passed.
+  out.push(GOAL_UPDATE_ANCHOR_HEADING, '');
+  out.push(`Goal: **${goalName}** — ${frontier.readings.length} member${frontier.readings.length === 1 ? '' : 's'}.`, '');
+
+  if (frontier.readings.length > 0) {
+    for (const reading of frontier.readings) {
+      const identity = byId.get(reading.id);
+      const name = identity?.name ?? reading.id;
+      // A link ONLY when the tracker gave one; never composed from an id.
+      const label = identity?.url ? `[${name}](${identity.url})` : `**${name}**`;
+      const parts: string[] = [`${GOAL_MEMBER_STATE_PROSE[reading.state]}`];
+      // The member's LIVE native word, when the store reported one. Rendered
+      // beside the reading rather than instead of it, because the reading is the
+      // engine's vocabulary and this is the tracker's.
+      if (reading.nativeState !== undefined) parts.push(`tracker state: ${reading.nativeState}`);
+      // The member's OWN health — transported, never derived, and ABSENT when the
+      // store reported none. There is no `??` here and there must not be one.
+      if (reading.health !== undefined) parts.push(`health: ${reading.health}`);
+      if (reading.unresolvedBlockers.length > 0) {
+        parts.push(`waiting on ${reading.unresolvedBlockers.map(renderBlocker).join(', ')}`);
+      }
+      out.push(`- ${label} — ${parts.join('; ')}`);
+    }
+    out.push('');
+  }
+
+  // The distribution, in the reader's language rather than the engine's.
+  out.push(renderGoalUpdateDistribution(frontier), '');
+
+  // The verbatim sentence, exactly where a reader might otherwise infer a
+  // release authorization from an empty list.
+  if (frontier.complete) out.push(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE, '');
+
+  // The Operator's aside, ATTRIBUTED — inside the anchor, but never presented as
+  // part of the derivation.
+  const note = operatorNote?.trim();
+  if (note) out.push(`Operator’s note: ${note}`, '');
+
+  out.push(GOAL_UPDATE_PROVENANCE_LINE);
+  return out.join('\n');
+}
+
+/**
+ * The frontier's distribution as a sentence a stakeholder can read (ADR-0046
+ * decision 3).
+ *
+ * States with a zero count are omitted rather than listed as "0 blocked": a
+ * reader wants the shape of the remainder, and five clauses of which three say
+ * nothing is noise. The `done` count is always stated, including zero, because
+ * "how much is finished" is the question the artifact is opened for.
+ */
+function renderGoalUpdateDistribution(frontier: GoalFrontier): string {
+  const total = frontier.readings.length;
+  if (total === 0) {
+    return 'This goal has no members yet, so there is nothing to report against it.';
+  }
+  const open = GOAL_MEMBER_STATES.filter(
+    (s) => s !== 'done' && frontier.counts[s] > 0,
+  ).map((s) => `${frontier.counts[s]} ${GOAL_MEMBER_STATE_PROSE[s]}`);
+  const head = `${frontier.counts.done} of ${total} ${total === 1 ? 'member is' : 'members are'} done.`;
+  if (open.length === 0) return head;
+  return `${head} Still open: ${open.join(', ')}.`;
+}
+
+/**
+ * One unresolved blocker, in the anchor's own line. Mirrors
+ * {@link GoalBlocker}'s two spellings: an `IssueRef` renders as the ref a reader
+ * of this tracker already recognizes, a bare member id renders as itself.
+ */
+function renderBlocker(blocker: GoalBlocker): string {
+  if (typeof blocker === 'string') return blocker;
+  return blocker.slug ? `${blocker.slug}#${blocker.issue}` : `#${blocker.issue}`;
 }
 
 /**
@@ -1522,9 +1900,20 @@ export interface IssueStore {
    *    categories is lossy. The three ISSUE-direct bindings report ABSENCE: an
    *    issue's workflow state is already spent in full on the `closed`/`claimed`
    *    facts, so a value here would re-spell a boolean rather than add a fact.
-   *  - `health` — the member's OWN health, a human's judgment recorded on the
-   *    tracker. Answer it where the tracker records one and this store can see
-   *    it; report ABSENCE otherwise.
+   *  - `health` — the member's OWN health. Answer it where the tracker records
+   *    one and this store can see it; report ABSENCE otherwise.
+   *
+   *    **Corrected against the vendor (ADR-0046), because the obvious reading is
+   *    wrong and it misdirects the next producer.** This is NOT "a value a human
+   *    set on the member". Linear documents `Project.health` as *derived from the
+   *    most recent project update*, null when none was ever reported — a ROLL-UP
+   *    of the latest update's health rather than a field on the node. It remains
+   *    human-AUTHORED (a person chose it when posting that update), which is what
+   *    makes transporting it honest; it is simply authored one node over. Two
+   *    obligations follow for an adapter: select the roll-up rather than guessing
+   *    at some update, and let the documented NULL arrive as an absent KEY — that
+   *    absence is exactly what this contract cares about, and coalescing it is
+   *    how a health nobody authored would enter the system.
    *
    * **Absence means the field is missing, never a placeholder** — not `'open'`,
    * not `''`, not a re-spelling of a state the reading already carries. A caller
@@ -1545,6 +1934,83 @@ export interface IssueStore {
     goalId: string,
     container?: GoalContainer,
   ): Promise<GoalFrontier>;
+
+  /**
+   * The **mirror pass** (ADR-0046): publish this goal's derived accounting to its
+   * container's native update surface, as ONE update.
+   *
+   * ── The safety property, and how the signature enforces it ─────────────────
+   *
+   * **The engine derives the frontier FRESH here, at write time, and renders the
+   * anchor itself.** The caller contributes prose and, optionally, a transcribed
+   * health — {@link PublishGoalUpdateInput} has no field for a report, a
+   * frontier, or a member list, so a caller is structurally unable to publish
+   * accounting that does not match the tracker at the moment of writing. That is
+   * the whole reason this verb exists rather than a "post this text" verb: the
+   * mirror cannot lie about the frontier because it is never told what it is.
+   *
+   * An implementation therefore MUST call its own {@link readGoalFrontier} (or
+   * the identical derivation) inside this method. Accepting a frontier from
+   * anywhere else — a cached one, a parameter, a field — reintroduces exactly the
+   * doctored-report channel the shape above removes.
+   *
+   * ── Health: two sanctioned sources, and one prohibition ────────────────────
+   *
+   * The value published is `input.health` or nothing (ADR-0046 decision 4). An
+   * implementation must never derive one: not from the frontier, not from the
+   * counts, not from a member's health, not from a previous update. `blocked > 0`
+   * does not mean `atRisk` — that is the station authoring a human's judgment,
+   * and a defaulted health is a fabricated one.
+   *
+   * When no health is available the update publishes WITHOUT one. If a native
+   * create surface should ever REQUIRE a value, the implementation refuses typed
+   * rather than inventing a default. (On Linear it does not require one — the
+   * field is optional on both create inputs; see the adapter's read-stamp, which
+   * also records the one thing that read cannot settle.)
+   *
+   * ── What this verb reports about health, and what it deliberately does not ──
+   *
+   * {@link GoalUpdateReceipt.health} reports what THIS ENGINE SENT. It is not a
+   * claim about what the container's health subsequently reads as, and the
+   * difference is real rather than pedantic: on Linear a container's health is
+   * DERIVED from its most recent update, so publishing an update is itself an act
+   * that can move it. Reporting "the container's health is now X" would be this
+   * engine asserting a value it did not author and did not read back.
+   *
+   * **The feedback loop that follows from that, and why the anchor is not caught
+   * in it.** Because the mirror writes to the CONTAINER's timeline while the
+   * anchor reports the MEMBERS' healths, the write and the reading sit one
+   * container apart and cannot touch:
+   *
+   *  - `initiative`-bound — the pass writes an INITIATIVE update; the anchor
+   *    reports member PROJECTS' healths, each derived from that project's own
+   *    latest PROJECT update. An initiative update feeds initiative health only,
+   *    so no member health the anchor names can be altered by this write.
+   *  - `project`-bound — the pass writes a PROJECT update; the members are ISSUES,
+   *    which carry no health at all, so the anchor reports none.
+   *
+   * The container's OWN health is genuinely affected, and the anchor therefore
+   * never reports it. That is the decision, not an omission: a report cannot
+   * honestly state a value its own publication is about to change, so the mirror
+   * states the members (which it cannot move) and stays silent about the
+   * container (which it can). Any implementation that starts reporting the
+   * container's health in the anchor reopens the loop.
+   *
+   * ── Surface, and the refusal ───────────────────────────────────────────────
+   *
+   * The surface follows the binding, ONE update per goal, no per-member fan-out
+   * (ADR-0046 decision 5): `project` → a native project update, `initiative` → a
+   * native initiative update. A container with no native update surface refuses
+   * through {@link refuseGoalUpdateSurface} — same error class, same config key,
+   * one refusal family.
+   *
+   * Throws on an unknown goal id. Writes nothing when it refuses.
+   */
+  publishGoalUpdate(
+    goalId: string,
+    input?: PublishGoalUpdateInput,
+    container?: GoalContainer,
+  ): Promise<GoalUpdateReceipt>;
 }
 
 /**

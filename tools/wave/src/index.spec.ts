@@ -988,6 +988,50 @@ const GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT = [
  * moved the declaration but not the family entry would keep this total green and
  * fail there, which is the half-done shape a rename is prone to.
  */
+/**
+ * The MIRROR-PASS family (ADR-0046) — the Goal facet's third slice: one write
+ * verb that publishes a goal's derived accounting to its container's native
+ * update surface.
+ *
+ * Every name here follows from the one property the pass exists for — **the
+ * caller never supplies the report** — and the list divides cleanly by what each
+ * name is for:
+ *
+ *  - the ONE shared renderer (`renderGoalUpdateBody`). Root-exported for the
+ *    reason `requireGoalContainer` is: the anchor being un-suppliable and
+ *    un-editable is a property of there being exactly ONE implementation of it,
+ *    so a fourth adapter must reach for this rather than write a lookalike.
+ *  - the artifact's FIXED WORDING (`GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE`,
+ *    `GOAL_UPDATE_PROVENANCE_LINE`, `GOAL_UPDATE_ANCHOR_HEADING`,
+ *    `GOAL_MEMBER_STATE_PROSE`) — a skill previewing a publish must show the
+ *    same bytes the write will emit, which it cannot do by paraphrase.
+ *  - the shared REFUSAL (`refuseGoalUpdateSurface`), which is what keeps the two
+ *    surface-less stores speaking one vocabulary instead of two.
+ *  - the vendor substrate's widened values (`LINEAR_UPDATE_HEALTH_VALUES`) — the
+ *    published health enum, carrying its own read-stamp.
+ *
+ * The TYPE half — `PublishGoalUpdateInput`, `GoalUpdateReceipt`,
+ * `GoalUpdateMemberIdentity`, `LinearUpdateInput`, `LinearUpdateResult` — is
+ * erased at runtime and so adds nothing to the count below. `LinearApi` itself is
+ * unchanged AS A NAME while widening by two required methods, which is exactly
+ * the kind of growth a count cannot see and `tsc --noEmit` can.
+ *
+ * The ADR-0044 claim still holds and is worth re-reading against a WRITE verb:
+ * `publishGoalUpdate` writes to the tracker, and it is still not permission. It
+ * reports the frontier and, on an empty one, says in so many words that closing
+ * the container remains the Operator's act. Sight, never permission. Sorted, as
+ * the probe sorts.
+ */
+const GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT = [
+  'GOAL_MEMBER_STATE_PROSE',
+  'GOAL_UPDATE_ANCHOR_HEADING',
+  'GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE',
+  'GOAL_UPDATE_PROVENANCE_LINE',
+  'LINEAR_UPDATE_HEALTH_VALUES',
+  'refuseGoalUpdateSurface',
+  'renderGoalUpdateBody',
+].sort();
+
 const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   ROOT_RUNTIME_EXPORT_COUNT_BEFORE +
   COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length +
@@ -998,7 +1042,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length +
   WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length +
   GOAL_FACET_FAMILY_ADDED_AT_ROOT.length +
-  GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT.length;
+  GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT.length +
+  GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1537,11 +1582,14 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
     expect(Object.keys(rootExports)).toEqual(
-      expect.arrayContaining(GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT),
+      expect.arrayContaining(GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT),
     );
     // …and the families before it stay present: the arrayContaining above moves
     // to whatever the newest slice is, so without these lines each family's own
     // by-name assertion would live exactly one slice and then be replaced.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT),
+    );
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(GOAL_FACET_FAMILY_ADDED_AT_ROOT),
     );

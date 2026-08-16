@@ -869,6 +869,197 @@ describe('RealLinearApi', () => {
   //
   // The first live `goal` station run on a linear-store consumer is the gate —
   // the same stance `addBlockedBy` records for its own mirror.
+  // ── the mirror pass's two native UPDATE surfaces (ADR-0046) ────────────────
+  //
+  // Wire-shape tests. They pin what this adapter SENDS, which is the half a
+  // schema read can legitimately settle; they are not, and cannot be, evidence
+  // that a live Linear accepts it — see the read-stamp on
+  // `LINEAR_UPDATE_HEALTH_VALUES`.
+
+  describe('update surfaces (the mirror pass, ADR-0046)', () => {
+    const projectNode = {
+      id: 'prj-1',
+      name: 'M3',
+      description: '',
+      status: { type: 'started' },
+    };
+
+    it('createProjectUpdate resolves the project first, then sends projectId + body', async () => {
+      const { api, http } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: projectNode } } }),
+        CreateProjectUpdate: (req) => {
+          expect((req.variables as { input: Record<string, unknown> }).input).toEqual({
+            projectId: 'prj-1',
+            body: '## Frontier\n\nall clear',
+          });
+          return {
+            status: 200,
+            json: {
+              data: {
+                projectUpdateCreate: {
+                  success: true,
+                  projectUpdate: { id: 'upd-1', url: 'https://linear.app/u/upd-1' },
+                },
+              },
+            },
+          };
+        },
+      });
+
+      expect(
+        await api.createProjectUpdate({ projectId: 'prj-1', body: '## Frontier\n\nall clear' }),
+      ).toEqual({ id: 'upd-1', url: 'https://linear.app/u/upd-1' });
+      // resolve, then write — an unknown goal fails as a domain 404, never as a
+      // GraphQL rejection nobody can read.
+      expect(http.requests).toHaveLength(2);
+    });
+
+    it('an omitted health is an OMITTED KEY on the wire — never null, never a default', async () => {
+      let sent: Record<string, unknown> | undefined;
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: projectNode } } }),
+        CreateProjectUpdate: (req) => {
+          sent = (req.variables as { input: Record<string, unknown> }).input;
+          return {
+            status: 200,
+            json: {
+              data: { projectUpdateCreate: { success: true, projectUpdate: { id: 'upd-1' } } },
+            },
+          };
+        },
+      });
+
+      await api.createProjectUpdate({ projectId: 'prj-1', body: 'b' });
+      // The three spellings pulled apart: no key at all is "I record no
+      // judgment". `null` would be an assertion ABOUT the value and a default
+      // would be a fabricated human judgment — neither is spellable from here.
+      expect(sent && 'health' in sent).toBe(false);
+      expect(sent).toEqual({ projectId: 'prj-1', body: 'b' });
+    });
+
+    it('a supplied health travels VERBATIM — transported, never narrowed', async () => {
+      let sent: Record<string, unknown> | undefined;
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: projectNode } } }),
+        CreateProjectUpdate: (req) => {
+          sent = (req.variables as { input: Record<string, unknown> }).input;
+          return {
+            status: 200,
+            json: {
+              data: { projectUpdateCreate: { success: true, projectUpdate: { id: 'upd-1' } } },
+            },
+          };
+        },
+      });
+
+      await api.createProjectUpdate({ projectId: 'prj-1', body: 'b', health: 'atRisk' });
+      expect(sent?.health).toBe('atRisk');
+    });
+
+    it('createInitiativeUpdate sends initiativeId — the OTHER surface, not the project one', async () => {
+      const { api } = makeApi({
+        GetInitiative: () => ({
+          status: 200,
+          json: { data: { initiative: { id: 'ini-1', name: 'M3', description: '' } } },
+        }),
+        CreateInitiativeUpdate: (req) => {
+          expect((req.variables as { input: Record<string, unknown> }).input).toEqual({
+            initiativeId: 'ini-1',
+            body: 'b',
+            health: 'onTrack',
+          });
+          return {
+            status: 200,
+            json: {
+              data: {
+                initiativeUpdateCreate: {
+                  success: true,
+                  initiativeUpdate: { id: 'upd-9', url: 'https://linear.app/u/upd-9' },
+                },
+              },
+            },
+          };
+        },
+      });
+
+      expect(
+        await api.createInitiativeUpdate({ initiativeId: 'ini-1', body: 'b', health: 'onTrack' }),
+      ).toEqual({ id: 'upd-9', url: 'https://linear.app/u/upd-9' });
+    });
+
+    it('throws when the payload does not report success — a failed publish is never silent', async () => {
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: projectNode } } }),
+        CreateProjectUpdate: () => ({
+          status: 200,
+          json: { data: { projectUpdateCreate: { success: false, projectUpdate: null } } },
+        }),
+      });
+      await expect(
+        api.createProjectUpdate({ projectId: 'prj-1', body: 'b' }),
+      ).rejects.toBeInstanceOf(LinearApiError);
+    });
+
+    it('throws when success is reported without an update id', async () => {
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: projectNode } } }),
+        CreateProjectUpdate: () => ({
+          status: 200,
+          json: { data: { projectUpdateCreate: { success: true, projectUpdate: {} } } },
+        }),
+      });
+      await expect(
+        api.createProjectUpdate({ projectId: 'prj-1', body: 'b' }),
+      ).rejects.toBeInstanceOf(LinearApiError);
+    });
+
+    it('a response without a url yields an ABSENT url — never a composed one', async () => {
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: projectNode } } }),
+        CreateProjectUpdate: () => ({
+          status: 200,
+          json: {
+            data: { projectUpdateCreate: { success: true, projectUpdate: { id: 'upd-1' } } },
+          },
+        }),
+      });
+      const result = await api.createProjectUpdate({ projectId: 'prj-1', body: 'b' });
+      expect('url' in result).toBe(false);
+    });
+
+    it('a project READ carries health and url through, and reports absence as an absent KEY', async () => {
+      const { api } = makeApi({
+        GetProject: () => ({
+          status: 200,
+          json: {
+            data: {
+              project: {
+                ...projectNode,
+                health: 'atRisk',
+                url: 'https://linear.app/p/prj-1',
+              },
+            },
+          },
+        }),
+      });
+      const withBoth = await api.getProject('prj-1');
+      expect(withBoth.health).toBe('atRisk');
+      expect(withBoth.url).toBe('https://linear.app/p/prj-1');
+
+      // The vendor's documented "Null if no health has been reported" must
+      // arrive as an ABSENT KEY — not `null`, not `''`, not a coalesced word.
+      const { api: api2 } = makeApi({
+        GetProject: () => ({
+          status: 200,
+          json: { data: { project: { ...projectNode, health: null, url: null } } },
+        }),
+      });
+      const withNeither = await api2.getProject('prj-1');
+      expect('health' in withNeither).toBe(false);
+      expect('url' in withNeither).toBe(false);
+    });
+  });
+
   describe('projects (the Goal container, ADR-0044)', () => {
     it('createProject sends name+description AND the REQUIRED teamIds, returning the project id', async () => {
       const { api, http } = makeApi({

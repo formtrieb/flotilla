@@ -42,6 +42,8 @@ import type {
   LinearStateType,
   LinearCreateIssueInput,
   LinearPrAttachment,
+  LinearUpdateInput,
+  LinearUpdateResult,
 } from './linear-api';
 import {
   PROJECT_BLOCKS_RELATION_TYPE,
@@ -206,7 +208,7 @@ const CREATE_ISSUE_MUTATION = `mutation CreateIssue($input: IssueCreateInput!) {
 const CREATE_PROJECT_MUTATION = `mutation CreateProject($input: ProjectCreateInput!) {
   projectCreate(input: $input) {
     success
-    project { id name description status { type } }
+    project { id name description status { type } health url }
   }
 }`;
 
@@ -216,6 +218,8 @@ const GET_PROJECT_QUERY = `query GetProject($id: String!) {
     name
     description
     status { type }
+    health
+    url
   }
 }`;
 
@@ -227,6 +231,8 @@ const LIST_TEAM_PROJECTS_QUERY = `query ListTeamProjects($teamId: String!, $firs
         name
         description
         status { type }
+        health
+        url
       }
       pageInfo { hasNextPage endCursor }
     }
@@ -306,6 +312,8 @@ const LIST_INITIATIVE_PROJECTS_QUERY = `query ListInitiativeProjects($id: String
         name
         description
         status { type }
+        health
+        url
       }
       pageInfo { hasNextPage endCursor }
     }
@@ -332,6 +340,50 @@ const LIST_PROJECT_INVERSE_RELATIONS_QUERY = `query ListProjectInverseRelations(
       }
       pageInfo { hasNextPage endCursor }
     }
+  }
+}`;
+
+// ── Mirror pass (ADR-0046): the two native UPDATE surfaces ───────────────────
+//
+// Read from Linear's published GraphQL schema (`linear/linear` →
+// `packages/sdk/src/schema.graphql`, read 2026-08-16, THIS dispatch — ADR-0030's
+// declared-unexecutable-path comparison; no live Linear credential is reachable
+// from a worktree-isolated wave row, so neither mutation below is live-proven and
+// the first mirror pass on a linear consumer is the gate):
+//
+//   - `projectUpdateCreate(input: ProjectUpdateCreateInput!): ProjectUpdatePayload!`
+//     `ProjectUpdatePayload { lastSyncId, projectUpdate: ProjectUpdate!, success: Boolean! }`
+//   - `initiativeUpdateCreate(input: InitiativeUpdateCreateInput!): InitiativeUpdatePayload!`
+//     `InitiativeUpdatePayload { initiativeUpdate: InitiativeUpdate!, lastSyncId, success: Boolean! }`
+//
+// Both payloads carry `success: Boolean!`, so the success check matches every
+// other mutation in this file, and both nodes publish `id: ID!` and `url: String!`
+// — which is why the result reports a URL it READ rather than one it composed.
+//
+// `health` is typed by a REAL published enum on both inputs
+// (`ProjectUpdateHealthType` / `InitiativeUpdateHealthType`, both
+// `atRisk | offTrack | onTrack`), and both are OPTIONAL. See the read-stamp on
+// `LINEAR_UPDATE_HEALTH_VALUES` in linear-api.ts for what that settles, what it
+// does not, and the one asymmetry it exposed: the create inputs make health
+// optional while the created nodes declare it NON-NULL, so the server assigns
+// something when the key is omitted — a VALUE question no schema read answers.
+//
+// The variable is typed `$health: ProjectUpdateHealthType` (nullable) rather than
+// `String`, so GraphQL itself coerces and rejects an off-vocabulary value at the
+// wire with a message naming the enum. That is the loud-failure path the stamp
+// promises, and typing the variable is what arms it.
+
+const CREATE_PROJECT_UPDATE_MUTATION = `mutation CreateProjectUpdate($input: ProjectUpdateCreateInput!) {
+  projectUpdateCreate(input: $input) {
+    success
+    projectUpdate { id url }
+  }
+}`;
+
+const CREATE_INITIATIVE_UPDATE_MUTATION = `mutation CreateInitiativeUpdate($input: InitiativeUpdateCreateInput!) {
+  initiativeUpdateCreate(input: $input) {
+    success
+    initiativeUpdate { id url }
   }
 }`;
 
@@ -1171,6 +1223,46 @@ export class RealLinearApi implements LinearApi {
     }
   }
 
+  // ── Mirror pass (ADR-0046): the two native UPDATE surfaces ────────────────
+
+  async createProjectUpdate(
+    input: LinearUpdateInput & { projectId: string },
+  ): Promise<LinearUpdateResult> {
+    // Resolve first, so an unknown goal fails as a domain 404 rather than as a
+    // GraphQL rejection — the stance every other write in this file takes.
+    await this.getProject(input.projectId);
+    const { data } = await this.gql('CreateProjectUpdate', CREATE_PROJECT_UPDATE_MUTATION, {
+      input: {
+        projectId: input.projectId,
+        body: input.body,
+        ...healthIfSupplied(input.health),
+      },
+    });
+    return readUpdatePayload('CreateProjectUpdate', data.projectUpdateCreate, 'projectUpdate');
+  }
+
+  async createInitiativeUpdate(
+    input: LinearUpdateInput & { initiativeId: string },
+  ): Promise<LinearUpdateResult> {
+    await this.getInitiative(input.initiativeId);
+    const { data } = await this.gql(
+      'CreateInitiativeUpdate',
+      CREATE_INITIATIVE_UPDATE_MUTATION,
+      {
+        input: {
+          initiativeId: input.initiativeId,
+          body: input.body,
+          ...healthIfSupplied(input.health),
+        },
+      },
+    );
+    return readUpdatePayload(
+      'CreateInitiativeUpdate',
+      data.initiativeUpdateCreate,
+      'initiativeUpdate',
+    );
+  }
+
   // ── internals ─────────────────────────────────────────────────────────────
 
   /** One GraphQL round-trip; centralizes both failure modes (brief: non-2xx OR `errors[]` → typed error). */
@@ -1430,6 +1522,76 @@ function toLinearProject(raw: Record<string, unknown>): LinearProject {
     // recognized category leaves the projection byte-identical to what it was
     // before this field existed.
     ...vendorStatusTypeIfSubstituted(status.type, statusType),
+    // The member's OWN health (ADR-0046) — TRANSPORT, and the narrowing here is
+    // deliberately the strictest in this function: a `string` is carried
+    // verbatim, and ANYTHING else becomes an absent key.
+    //
+    // `Project.health` is documented as "derived from the most recent project
+    // update … Null if no health has been reported", and that documented NULL is
+    // the case this line exists to get right. It must arrive downstream as an
+    // ABSENT KEY, never as `null`, `''`, or a coalesced word — the frontier's
+    // contract is that absent means absent all the way out, and a health nobody
+    // authored is precisely the fabricated judgment ADR-0046 decision 4 forbids.
+    // So there is no `??` here and there must never be one.
+    ...(typeof raw.health === 'string' && raw.health !== '' ? { health: raw.health } : {}),
+    // Reported, never composed: a URL this adapter built from a workspace slug
+    // and a UUID would be a value the vendor never stated.
+    ...(typeof raw.url === 'string' && raw.url !== '' ? { url: raw.url } : {}),
+  };
+}
+
+/**
+ * The health fragment of an update-create input: `{ health }` when the caller
+ * supplied one, `{}` when it did not (ADR-0046 decision 4).
+ *
+ * **The omission is the point, and it has to be an omitted KEY.** Three spellings
+ * were available and only one is honest:
+ *
+ *  - `{ health: <value> }` — the caller's transcribed human judgment. Correct.
+ *  - `{}` — no key at all: "this update records no judgment". Correct for absence.
+ *  - `{ health: null }` — spellable (the input field is nullable) and REJECTED
+ *    here: null is an assertion ABOUT the value rather than a refusal to make
+ *    one, and whether the vendor reads it as "clear" or as "default" is exactly
+ *    the unmeasured question the read-stamp records. The engine does not guess in
+ *    either direction.
+ *
+ * A default would be a fourth spelling and is the one this whole seam exists to
+ * prevent, which is why this function has no fallback parameter to pass one
+ * through. The empty-string guard is part of the same rule: `''` is not a member
+ * of the vendor's enum, so treating it as absence keeps a caller's empty field
+ * from becoming a wire rejection that reads like a flotilla bug.
+ */
+function healthIfSupplied(health: string | undefined): { health?: string } {
+  return typeof health === 'string' && health !== '' ? { health } : {};
+}
+
+/**
+ * Narrow an update-create payload to {@link LinearUpdateResult}, applying the
+ * same success check every other mutation in this file applies.
+ *
+ * `url` is carried through only when the response actually contained one — the
+ * schema declares `url: String!` on both update nodes, but this projection
+ * degrades to an absent key rather than to the literal `"undefined"` a bare cast
+ * would produce, exactly as every other projection here does. Never composed.
+ */
+function readUpdatePayload(
+  op: string,
+  rawPayload: unknown,
+  nodeKey: 'projectUpdate' | 'initiativeUpdate',
+): LinearUpdateResult {
+  const payload = rawPayload as Record<string, unknown> | undefined;
+  if (payload?.success !== true) {
+    throw new LinearApiError(op, 200, `${nodeKey}Create did not report success`);
+  }
+  const node = payload[nodeKey] as Record<string, unknown> | undefined;
+  const id = node?.id;
+  if (typeof id !== 'string' || id === '') {
+    throw new LinearApiError(op, 200, `${nodeKey}Create did not return an update id`);
+  }
+  const url = node?.url;
+  return {
+    id,
+    ...(typeof url === 'string' && url !== '' ? { url } : {}),
   };
 }
 

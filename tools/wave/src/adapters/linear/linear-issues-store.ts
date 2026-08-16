@@ -38,6 +38,7 @@ import {
   goalMemberKind,
   requireGoalContainer,
   requireGoalMemberKind,
+  renderGoalUpdateBody,
   validateAmendPatch,
   GoalMemberJoinError,
   type IssueStore,
@@ -53,7 +54,10 @@ import {
   type CreateGoalInput,
   type CreateGoalMemberInput,
   type GoalContainer,
+  type GoalUpdateMemberIdentity,
+  type GoalUpdateReceipt,
   type GoalView,
+  type PublishGoalUpdateInput,
   withTriageDisclaimer,
 } from '../issue-store';
 import {
@@ -1075,6 +1079,94 @@ export class LinearIssuesStore implements IssueStore {
   }
 
   /**
+   * The mirror pass (ADR-0046) — publish this goal's derived accounting to its
+   * container's native update surface.
+   *
+   * **The frontier is derived HERE, inside the write.** `readGoalFrontier` is
+   * called on this same store, at this moment, and its result is the only source
+   * the anchor is rendered from. Nothing about the report reaches this method from
+   * the caller: {@link PublishGoalUpdateInput} carries prose and a transcribed
+   * health and has no field for a frontier, a member list or a body. So a caller
+   * cannot supply the anchor, cannot edit it, and cannot omit it — which is the
+   * entire guarantee the pass exists for.
+   *
+   * The identities are gathered from the SAME native nodes the derivation reads,
+   * for display only (a name, and the tracker's own link). They cannot change a
+   * reading — {@link renderGoalUpdateBody} joins them by id and falls back to the
+   * opaque id when one is missing, so a store that could not name a member
+   * publishes a less readable anchor rather than an incomplete one.
+   *
+   * Health is `input.health` or nothing. There is no branch below that can put a
+   * value there, and deliberately no read of the container's own health to fall
+   * back on: that value is the vendor's roll-up of the most recent update, which
+   * is what this pass is about to write, so falling back to it would publish this
+   * station's previous output as if it were a fresh human judgment.
+   */
+  async publishGoalUpdate(
+    goalId: string,
+    input: PublishGoalUpdateInput = {},
+    container?: GoalContainer,
+  ): Promise<GoalUpdateReceipt> {
+    const role = this.goalRole(container);
+    // Resolve the goal FIRST, so an unknown id fails as "no such goal" before any
+    // derivation work — and long before any write.
+    const goal = await this.readGoal(goalId, role);
+    // ── The safety property, in one statement: derived fresh, right here. ─────
+    const frontier = await this.readGoalFrontier(goalId, role);
+    const identities = await this.goalMemberIdentities(goalId, role);
+    const body = renderGoalUpdateBody({
+      goalName: goal.title,
+      frontier,
+      identities,
+      ...(input.narrative !== undefined ? { narrative: input.narrative } : {}),
+      ...(input.operatorNote !== undefined ? { operatorNote: input.operatorNote } : {}),
+    });
+    // The caller's health or NONE — an absent key all the way to the wire.
+    const health = input.health !== undefined ? { health: input.health } : {};
+    const result =
+      role === 'initiative'
+        ? await this.api.createInitiativeUpdate({ initiativeId: goalId, body, ...health })
+        : await this.api.createProjectUpdate({ projectId: goalId, body, ...health });
+    return {
+      goalId,
+      container: role,
+      updateId: result.id,
+      ...(result.url !== undefined ? { url: result.url } : {}),
+      body,
+      ...health,
+      frontier,
+    };
+  }
+
+  /**
+   * The members' DISPLAY identities — name, and the tracker's own link where one
+   * exists.
+   *
+   * Read from the same connections the frontier derivation reads, so the anchor
+   * names exactly the members it counts. A project member has a real
+   * `Project.url`; an issue member is named by its human identifier (`EX-16`),
+   * which is what a reader of a Linear project update already recognizes, and no
+   * URL is fabricated for it — the seam does not carry one, and composing one from
+   * a workspace slug would be inventing a value the vendor never stated.
+   */
+  private async goalMemberIdentities(
+    goalId: string,
+    role: GoalContainer,
+  ): Promise<GoalUpdateMemberIdentity[]> {
+    if (role === 'initiative') {
+      return (await this.api.listInitiativeProjects(goalId)).map((p) => ({
+        id: p.id,
+        name: p.name,
+        ...(p.url !== undefined ? { url: p.url } : {}),
+      }));
+    }
+    return (await this.api.listProjectIssues(goalId)).map((i) => ({
+      id: i.identifier,
+      name: `${i.identifier} — ${i.title}`,
+    }));
+  }
+
+  /**
    * What this store can SEE about one PROJECT goal member — the per-kind half of
    * ADR-0045 decision 2, mapped onto the SAME four facts the issue arm states.
    *
@@ -1123,15 +1215,22 @@ export class LinearIssuesStore implements IssueStore {
    * same way the issue arm's absence is: no category was stated, so none is
    * reported — a substituted one would be an invention.
    *
-   * The member's own HEALTH is the other half of ADR-0046's anchor block, and
-   * this store reports its ABSENCE today rather than a placeholder: Linear
-   * records a project health, but {@link LinearProject} does not carry one —
-   * `LinearApi`'s project selections fetch `status { type }` and nothing else.
-   * Widening that seam belongs to the mirror-pass slice that already widens
-   * `LinearApi` (ADR-0046 build-time items); when it lands, this method states
-   * `health` here and the transport all the way to the reading is already built.
-   * Absent is the honest answer meanwhile — never a derived one, which is the
-   * one thing this store must not do with a human's judgment.
+   * **The member's own HEALTH is now stated here — this is where the producer
+   * the frontier row left unbuilt actually lands (ADR-0046).** `LinearProject`
+   * carries a `health` since the mirror-pass slice widened the seam, so the value
+   * travels: read on the node this method was handed, carried verbatim, and
+   * ABSENT when the project has none.
+   *
+   * **What that value IS, stated precisely, because the obvious description is
+   * wrong.** Linear documents `Project.health` as "derived from the most recent
+   * project update … Null if no health has been reported" — so it is a ROLL-UP of
+   * the latest update's health, not a field a person sets on the project node. It
+   * is still human-AUTHORED (someone chose it when posting that update), which is
+   * what makes transporting it honest; it is simply authored one node over. The
+   * documented NULL is the case that matters here and it arrives as an absent KEY,
+   * never as a coalesced word — see the conditional spread below, which has no
+   * `??` and must never grow one. A `blocked` member with no reported health
+   * reports NO health, not `atRisk`.
    *
    * Closed short-circuits everything below it, exactly as the issue arm does: a
    * finished member is `done` whatever else is true of it, so its issues and its
@@ -1156,7 +1255,13 @@ export class LinearIssuesStore implements IssueStore {
       project.unreadStatusType === undefined
         ? project.statusType
         : (project.unreadStatusType ?? undefined);
-    const stated = nativeState !== undefined ? { nativeState } : {};
+    // TRANSPORT, never derivation: the vendor's roll-up value or nothing. No
+    // `??`, no mapping from a status category, no fallback of any kind — a health
+    // this store authored would be a fabricated human judgment.
+    const stated = {
+      ...(nativeState !== undefined ? { nativeState } : {}),
+      ...(project.health !== undefined ? { health: project.health } : {}),
+    };
     if (CLOSED_PROJECT_STATUS.has(project.statusType)) {
       return {
         id,

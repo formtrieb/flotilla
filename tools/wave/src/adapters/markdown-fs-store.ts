@@ -42,6 +42,7 @@ import {
   classifyCreateInput,
   CreateInputError,
   GoalMemberJoinError,
+  refuseGoalUpdateSurface,
   requireGoalContainer,
   validateAmendPatch,
   type IssueStore,
@@ -58,7 +59,9 @@ import {
   type CreateGoalInput,
   type CreateGoalMemberInput,
   type GoalContainer,
+  type GoalUpdateReceipt,
   type GoalView,
+  type PublishGoalUpdateInput,
   withTriageDisclaimer,
 } from './issue-store';
 import {
@@ -759,6 +762,32 @@ export class MarkdownFsStore implements IssueStore {
       facts.push(await this.goalMemberFacts(memberId));
     }
     return computeGoalFrontier(goalId, facts);
+  }
+
+  /**
+   * The mirror pass (ADR-0046) — REFUSED on this store, before any work.
+   *
+   * A goal FILE has no timeline and no update surface: it is a document this
+   * store rewrites in place, so "publishing an update to it" would either append
+   * a report to the container's own prose or overwrite it — both of them state
+   * writes onto the curation surface, and neither is a timeline artifact anyone
+   * subscribes to. The rejected milestone-description substitute one store over is
+   * the same shape, and it is rejected here for the same reason.
+   *
+   * Routed through the SHARED {@link refuseGoalUpdateSurface}, so this store and
+   * the GitHub store speak ONE refusal vocabulary — same class, same `failure`,
+   * same config key — rather than two that happen to agree.
+   */
+  async publishGoalUpdate(
+    goalId: string,
+    _input?: PublishGoalUpdateInput,
+    container?: GoalContainer,
+  ): Promise<GoalUpdateReceipt> {
+    // The binding wins if it is ALSO wrong: a bad container is the more
+    // fundamental complaint and must be the one reported.
+    const role = this.goalRole(container);
+    void goalId;
+    return refuseGoalUpdateSurface('markdown', role);
   }
 
   /**

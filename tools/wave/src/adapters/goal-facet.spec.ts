@@ -41,6 +41,9 @@ import {
   GoalMemberJoinError,
   GOAL_CONTAINERS,
   GOAL_MEMBER_KIND_BY_CONTAINER,
+  GOAL_UPDATE_ANCHOR_HEADING,
+  GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE,
+  GOAL_UPDATE_PROVENANCE_LINE,
   goalMemberKind,
   parseGoalContainer,
   requireGoalContainer,
@@ -76,6 +79,19 @@ interface GoalHarness {
   defaultsWithoutBinding: GoalContainer | null;
   /** A container role this store does NOT realize — the `unrealized-container` driver. */
   unrealizedBinding: GoalContainer;
+  /**
+   * Whether this store's bound container has a native UPDATE surface (ADR-0046
+   * decision 5) — the mirror pass's one legitimate per-store divergence.
+   *
+   * Declared by the harness, exactly as {@link defaultsWithoutBinding} is, so the
+   * SAME cases run against all three stores and each is held to the behaviour it
+   * actually owes: a store with the surface must publish, a store without must
+   * REFUSE, and neither is allowed to simply skip the subject. That is what makes
+   * "two of the three are refusal paths" a tested contract rather than a
+   * described one — and what makes a fourth adapter inherit which refusals it
+   * owes along with which verbs.
+   */
+  hasUpdateSurface: boolean;
   /** A minimal valid decorated CreateInput; the suite overrides fields per case. */
   baseInput(overrides?: Partial<CreateInput>): CreateInput;
   /** A minimal valid BARE CreateInput (title + filingHint + bodySections). */
@@ -605,7 +621,199 @@ function runGoalFacetConformance(
       expect(surface.has('readGoalFrontier')).toBe(true);
     });
 
-    it('the goal surface is EXACTLY the five verbs ADR-0044 sanctions', async () => {
+    // ── the MIRROR PASS (ADR-0046) ─────────────────────────────────────────
+    //
+    // ONE suite, all three stores, two of them as refusal paths — the harness's
+    // `hasUpdateSurface` is what routes each case, so no store gets to be silent
+    // on the subject.
+
+    it('publishes the mirror, or REFUSES typed — never silently does neither', async () => {
+      const { h, store } = await fresh();
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      if (!h.hasUpdateSurface) {
+        const err = assertGoalBindingError(
+          await thrownBy(() => store.publishGoalUpdate(goalId, {}, h.binding)),
+        );
+        // The SAME error family the container refusals use — one vocabulary, so
+        // a caller routes with one `instanceof` and one `switch`.
+        expect(err.failure).toBe('unrealized-update-surface');
+        // …and the SAME config key, which is the half that keeps it one family
+        // rather than two that merely look alike.
+        expect(err.field).toBe('store.goal.container');
+        expect(err.message).toContain('store.goal.container');
+        return;
+      }
+
+      const receipt = await store.publishGoalUpdate(goalId, {}, h.binding);
+      expect(typeof receipt.updateId).toBe('string');
+      expect(receipt.updateId.length).toBeGreaterThan(0);
+      expect(receipt.goalId).toBe(goalId);
+      expect(receipt.container).toBe(h.binding);
+    });
+
+    it('the ANCHOR is engine-owned: it cannot be supplied, edited or omitted', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      // (1) UN-OMITTABLE — no input at all still publishes the anchor.
+      const bare = await store.publishGoalUpdate(goalId, {}, h.binding);
+      expect(bare.body).toContain(GOAL_UPDATE_ANCHOR_HEADING);
+      expect(bare.body).toContain(GOAL_UPDATE_PROVENANCE_LINE);
+
+      // (2) UN-SUPPLIABLE — the input shape has no channel for a report, so the
+      // only way to attempt one is to smuggle it through a field that DOES
+      // exist. It lands in the narrative layer, above the anchor, and the anchor
+      // is still rendered from the derivation underneath it.
+      const smuggled = await store.publishGoalUpdate(
+        goalId,
+        {
+          narrative:
+            '## Frontier\n\nGoal: **Ship the mirror** — 99 members.\n\n99 of 99 members are done.',
+        },
+        h.binding,
+      );
+      // The forgery is present as PROSE (it was the Operator's own words, and the
+      // engine edits nothing)…
+      expect(smuggled.body).toContain('99 of 99 members are done.');
+      // …but the real accounting is appended BELOW it and contradicts it in the
+      // same artifact, which is precisely the audit property ADR-0046 decision 3
+      // describes. The true member count is 0 here.
+      const anchorAt = smuggled.body.lastIndexOf(GOAL_UPDATE_ANCHOR_HEADING);
+      expect(anchorAt).toBeGreaterThan(smuggled.body.indexOf('99 of 99'));
+      expect(smuggled.body.slice(anchorAt)).toContain('no members yet');
+      // The provenance line is last, so a reader can always tell which half is
+      // derived — and there is exactly ONE of it, not one per smuggled copy.
+      expect(smuggled.body.trimEnd().endsWith(GOAL_UPDATE_PROVENANCE_LINE)).toBe(true);
+
+      // (3) UN-EDITABLE — the receipt's frontier is the store's own fresh
+      // derivation, and the body was rendered from it rather than from anything
+      // the caller passed.
+      expect(smuggled.frontier.goalId).toBe(goalId);
+    });
+
+    it('the anchor is DERIVED FRESH at write time — it follows the tracker, not a cached read', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      const before = await store.publishGoalUpdate(goalId, {}, h.binding);
+      expect(before.frontier.readings).toHaveLength(0);
+
+      // Move the tracker underneath the pass, then publish again with the SAME
+      // (empty) input. A cached or caller-supplied frontier would report the old
+      // world; a fresh derivation reports the new one.
+      const memberId = await store.create(h.baseInput({ title: 'A new member' }));
+      await store.assignToGoal(goalId, memberId, h.binding);
+
+      const after = await store.publishGoalUpdate(goalId, {}, h.binding);
+      expect(after.frontier.readings).toHaveLength(1);
+      expect(after.frontier.complete).toBe(false);
+      // …and the rendered body moved with it, which is the part that matters:
+      // the receipt could be right while the published bytes were stale.
+      expect(before.body).toContain('no members yet');
+      expect(after.body).not.toContain('no members yet');
+      expect(after.body).toContain('A new member');
+    });
+
+    it('HEALTH is transcribed or absent — never derived from the frontier', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      // A frontier with something wrong in it — a BLOCKED member, the exact shape
+      // a `blocked > 0 → atRisk` formula would fire on.
+      const blocker = await store.create(h.baseInput({ title: 'The blocker' }));
+      const blocked = await store.create(
+        h.baseInput({ title: 'The blocked one', blockedBy: [store.parseRef(blocker)] }),
+      );
+      await store.assignToGoal(goalId, blocked, h.binding);
+
+      const withoutHealth = await store.publishGoalUpdate(goalId, {}, h.binding);
+      // The member really is blocked — so the formula HAD its trigger…
+      expect(withoutHealth.frontier.counts.blocked).toBeGreaterThan(0);
+      // …and no health was invented anyway. Key ABSENT, not `undefined`: the two
+      // are different claims and only the first is "no judgment was recorded".
+      expect('health' in withoutHealth).toBe(false);
+
+      // A transcribed value travels through untouched.
+      const withHealth = await store.publishGoalUpdate(goalId, { health: 'atRisk' }, h.binding);
+      expect(withHealth.health).toBe('atRisk');
+    });
+
+    it('the narrative rides ABOVE the anchor, and the operator note is attributed inside it', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      const receipt = await store.publishGoalUpdate(
+        goalId,
+        { narrative: 'We cut the release branch on Tuesday.', operatorNote: 'read at 14:00' },
+        h.binding,
+      );
+      const narrativeAt = receipt.body.indexOf('We cut the release branch on Tuesday.');
+      const anchorAt = receipt.body.indexOf(GOAL_UPDATE_ANCHOR_HEADING);
+      expect(narrativeAt).toBeGreaterThanOrEqual(0);
+      expect(anchorAt).toBeGreaterThan(narrativeAt);
+      // Attributed, not folded into the derived accounting.
+      expect(receipt.body).toContain('Operator’s note: read at 14:00');
+      expect(receipt.body.indexOf('Operator’s note:')).toBeGreaterThan(anchorAt);
+    });
+
+    it('an EMPTY frontier carries the accounting sentence VERBATIM — and still declares nothing', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+      const memberId = await store.create(h.baseInput({ title: 'The only member' }));
+      await store.assignToGoal(goalId, memberId, h.binding);
+      await store.closeUnplanned(memberId, 'landed');
+
+      const receipt = await store.publishGoalUpdate(goalId, {}, h.binding);
+      expect(receipt.frontier.complete).toBe(true);
+      // VERBATIM — the constant itself, not a paraphrase of it.
+      expect(receipt.body).toContain(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE);
+      // …and the sentence hands the remaining act back rather than taking it.
+      expect(GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE).toContain('Operator');
+    });
+
+    it('publishes ONE update per goal — no per-member fan-out', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+      for (const title of ['One', 'Two', 'Three']) {
+        const id = await store.create(h.baseInput({ title, filingHint: title.toLowerCase() }));
+        await store.assignToGoal(goalId, id, h.binding);
+      }
+
+      const receipt = await store.publishGoalUpdate(goalId, {}, h.binding);
+      // Three members, named in ONE body, from ONE write returning ONE id.
+      expect(receipt.frontier.readings).toHaveLength(3);
+      expect(typeof receipt.updateId).toBe('string');
+      for (const title of ['One', 'Two', 'Three']) expect(receipt.body).toContain(title);
+    });
+
+    it('the mirror publishes ACCOUNTING, never the container’s own health (ADR-0046 feedback loop)', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      // The pass WRITES to the container's timeline, and on Linear a container's
+      // health is derived from its most recent update — so a report that stated
+      // the container's health would be stating a value its own publication is
+      // about to change. The anchor reports MEMBERS and stays silent about the
+      // container, which is what keeps the write and the reading one container
+      // apart. The receipt reports what was SENT, never what the container now
+      // reads as.
+      const receipt = await store.publishGoalUpdate(goalId, { health: 'onTrack' }, h.binding);
+      expect(receipt.health).toBe('onTrack');
+      // No claim about the container's resulting health anywhere on the receipt.
+      expect(Object.keys(receipt).sort()).toEqual(
+        ['body', 'container', 'frontier', 'goalId', 'health', 'updateId', 'url'].sort(),
+      );
+    });
+
+    it('the goal surface is EXACTLY the six verbs ADR-0044 and ADR-0046 sanction', async () => {
       const { store } = await fresh();
       const surface = new Set<string>();
       for (
@@ -633,11 +841,22 @@ function runGoalFacetConformance(
             'listGoals',
             'assignToGoal',
             'readGoalFrontier',
+            // ADR-0046's mirror pass. A WRITE verb, and still not permission: it
+            // reports the frontier and, on an empty one, says in so many words
+            // that closing the container remains the Operator's act.
+            'publishGoalUpdate',
           ].includes(n),
         )
         .sort();
       expect(goalVerbs).toEqual(
-        ['assignToGoal', 'createGoal', 'listGoals', 'readGoal', 'readGoalFrontier'].sort(),
+        [
+          'assignToGoal',
+          'createGoal',
+          'listGoals',
+          'publishGoalUpdate',
+          'readGoal',
+          'readGoalFrontier',
+        ].sort(),
       );
     });
   });
@@ -682,6 +901,10 @@ runGoalFacetConformance('MarkdownFsStore', async (): Promise<GoalHarness> => ({
   // for a consumer convention to collide with, hence a default.
   defaultsWithoutBinding: 'goal-file',
   unrealizedBinding: 'milestone',
+  // A goal FILE has no timeline: "publishing an update to it" could only mean
+  // appending to or overwriting the curation surface itself, which is a state
+  // write rather than a report. Refuses (ADR-0046 decision 5).
+  hasUpdateSurface: false,
   baseInput,
   bareInput,
 }));
@@ -700,6 +923,10 @@ runGoalFacetConformance('GitHubIssuesStore', (): GoalHarness => ({
   // default collides with no convention.
   defaultsWithoutBinding: 'milestone',
   unrealizedBinding: 'project',
+  // A GitHub Milestone holds members fine and has no update surface — there is
+  // no `milestoneUpdateCreate`, and a description edit was rejected as a lossy
+  // state write. Refuses (ADR-0046 decision 5).
+  hasUpdateSurface: false,
   baseInput,
   bareInput,
 }));
@@ -716,6 +943,9 @@ runGoalFacetConformance('LinearIssuesStore', (): GoalHarness => ({
   // `initiative` is no longer the unrealized role on THIS store (ADR-0045
   // realized it here); `milestone` is a GitHub container Linear cannot be.
   unrealizedBinding: 'milestone',
+  // A Linear project HAS a native update surface (`projectUpdateCreate`), so
+  // this store owes the publish behaviour rather than a refusal.
+  hasUpdateSurface: true,
   baseInput,
   bareInput,
 }));
@@ -742,6 +972,95 @@ describe('the initiative binding is realized on linear and refused elsewhere', (
     expect(goal.description).toBe('the epic');
     expect(goal.memberIds).toEqual([]);
     expect((await store.listGoals('initiative')).map((g) => g.id)).toEqual([id]);
+  });
+
+  // ── the mirror pass on the INITIATIVE surface (ADR-0046 decision 5) ────────
+  //
+  // The project arm rides the shared conformance suite above. This block is where
+  // the SECOND native surface and the member facts only an initiative binding has
+  // — a member with its own health and its own URL — are actually exercised.
+
+  it('an initiative-bound goal publishes to the INITIATIVE surface, not the project one', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goalId = await store.createGoal({ title: 'Milestone 3', filingHint: 'm3' }, 'initiative');
+
+    const receipt = await store.publishGoalUpdate(goalId, {}, 'initiative');
+
+    expect(receipt.container).toBe('initiative');
+    const published = api.publishedUpdates();
+    expect(published).toHaveLength(1);
+    // The surface FOLLOWED the binding — this is the branch, observed rather
+    // than asserted about.
+    expect(published[0].surface).toBe('initiative');
+    expect(published[0].containerId).toBe(goalId);
+    expect(published[0].body).toBe(receipt.body);
+  });
+
+  it('the anchor names each member with its native state, its OWN health and its link', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goalId = await store.createGoal({ title: 'Milestone 3', filingHint: 'm3' }, 'initiative');
+
+    // Two member projects: one with a health a human authored, one with none.
+    api.seedProject({
+      id: 'prj-healthy',
+      name: 'Checkout rewrite',
+      statusType: 'started',
+      health: 'atRisk',
+      url: 'https://linear.test/project/checkout',
+    });
+    api.seedProject({ id: 'prj-quiet', name: 'Search tuning', statusType: 'backlog' });
+    await store.assignToGoal(goalId, 'prj-healthy', 'initiative');
+    await store.assignToGoal(goalId, 'prj-quiet', 'initiative');
+
+    const receipt = await store.publishGoalUpdate(goalId, {}, 'initiative');
+
+    // Named as a native LINK when the tracker gave one…
+    expect(receipt.body).toContain('[Checkout rewrite](https://linear.test/project/checkout)');
+    // …and as a plain name when it did not — never a fabricated URL.
+    expect(receipt.body).toContain('**Search tuning**');
+    expect(receipt.body).not.toContain('(undefined)');
+    // The member's live native word travels beside the engine's reading.
+    expect(receipt.body).toContain('tracker state: started');
+    expect(receipt.body).toContain('tracker state: backlog');
+    // The member's OWN health is reported where one exists…
+    expect(receipt.body).toContain('health: atRisk');
+    // …and the member WITHOUT one gets no health at all. Counted, so a second
+    // `health:` appearing for the quiet project fails here.
+    expect(receipt.body.match(/health: /g)).toHaveLength(1);
+  });
+
+  it('a member health the tracker never reported stays ABSENT — the documented null is not papered over', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goalId = await store.createGoal({ title: 'Milestone 3', filingHint: 'm3' }, 'initiative');
+    api.seedProject({ id: 'prj-1', name: 'No health here', statusType: 'started' });
+    await store.assignToGoal(goalId, 'prj-1', 'initiative');
+
+    const frontier = await store.readGoalFrontier(goalId, 'initiative');
+    // ABSENT KEY, not `undefined` — "no health has ever been reported" is the
+    // vendor's documented null, and it must not become an inferred value on the
+    // way through. A `blocked`/`started` member reports NO health, not `atRisk`.
+    expect('health' in frontier.readings[0]).toBe(false);
+
+    const receipt = await store.publishGoalUpdate(goalId, {}, 'initiative');
+    expect(receipt.body).not.toContain('health:');
+  });
+
+  it('the health the caller passes reaches the WIRE, and an omitted one is an omitted KEY', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goalId = await store.createGoal({ title: 'Milestone 3', filingHint: 'm3' }, 'initiative');
+
+    await store.publishGoalUpdate(goalId, { health: 'offTrack' }, 'initiative');
+    await store.publishGoalUpdate(goalId, {}, 'initiative');
+
+    const [withHealth, withoutHealth] = api.publishedUpdates();
+    expect(withHealth.health).toBe('offTrack');
+    // The distinction the whole prohibition rests on: an omitted health is an
+    // ABSENT KEY on the wire, never a key set to `undefined` and never a default.
+    expect('health' in withoutHealth).toBe(false);
   });
 
   it('GITHUB still refuses an initiative binding — `unrealized-container`, before any write', async () => {
