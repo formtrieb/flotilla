@@ -726,8 +726,11 @@ export const LINEAR_UPDATE_HEALTH_VALUES: readonly string[] = Object.freeze([
  * wrong one looked safe, which is the half that stops the mistake recurring on
  * some other vendor field. `'blocks'` was not invented — it was CARRIED ACROSS
  * FROM A REAL ENUM IN THE NEIGHBOURING ARM. Linear's published schema
- * (`linear/linear` → `packages/sdk/src/schema.graphql`, re-read live this
- * dispatch) treats its two relation arms completely differently:
+ * (`linear/linear` → `packages/sdk/src/schema.graphql` @ commit
+ * `91456bbd299d7db1fd39f60782fa2a59393e8b9b`, re-read live this dispatch —
+ * pinned 2026-08-16, the cheap moment: two independent fetches of that commit
+ * in this same dispatch returned identical byte sizes, so nothing here had
+ * drifted yet) treats its two relation arms completely differently:
  *
  *  - The **ISSUE** arm publishes a real enum — but it binds exactly ONE field
  *    with it, and naming WHICH field is the whole of the precision here. The
@@ -771,6 +774,14 @@ export const LINEAR_UPDATE_HEALTH_VALUES: readonly string[] = Object.freeze([
  * `similar`.) So the correction was recoverable from the published schema after
  * all. It just was not recoverable from the schema's TYPES, which is where the
  * eye goes.
+ *
+ * **House ruling, 2026-08-16 (ADR-0045-a amendment "one house lesson, not
+ * two"):** this section's hindsight framing and the decision record's TRAP
+ * framing ("the prose actively misled") are not in tension — the operator
+ * ruled the record's trap reading is the operative lesson (only a live
+ * measurement settles a vendor value; a doc string is corroboration at best),
+ * with the nuance above kept as a dated footnote to it. See that amendment
+ * for the full ruling; this section is not rewritten to match it.
  *
  * Two rules come out of that, and the second is the one that was missing:
  *
