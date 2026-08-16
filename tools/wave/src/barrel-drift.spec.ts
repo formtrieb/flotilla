@@ -74,14 +74,14 @@ import {
   // (`goalMemberKind`, `requireGoalMemberKind`), a typed ERROR class
   // (`GoalMemberKindError`, `GoalMemberJoinError`), a data MAPPING
   // (`GOAL_MEMBER_KIND_BY_CONTAINER`), and the MEASURED adapter wire values
-  // (`PROJECT_BLOCKS_RELATION_TYPE`, `PROJECT_RELATION_ANCHOR_TYPE`).
+  // (`PROJECT_BLOCKS_RELATION_TYPE`, `PROJECT_RELATION_ANCHOR_PAIR`).
   goalMemberKind,
   requireGoalMemberKind,
   GOAL_MEMBER_KIND_BY_CONTAINER,
   GoalMemberKindError,
   GoalMemberJoinError,
   PROJECT_BLOCKS_RELATION_TYPE,
-  PROJECT_RELATION_ANCHOR_TYPE,
+  PROJECT_RELATION_ANCHOR_PAIR,
 } from './index';
 // The three TYPE-ONLY promotions this guard's own placement constraint had
 // deferred (see the "types this guard deferred" block below), plus the
@@ -652,9 +652,12 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     // to, so the export became a frozen fragment keyed by its own wire field
     // names — see the read-stamp in `adapters/linear/linear-api.ts`. A future
     // edit collapsing it back to a scalar fails here at the ROOT surface, which
-    // is where a consumer would meet the regression.
-    expect(typeof PROJECT_RELATION_ANCHOR_TYPE).toBe('object');
-    expect(Object.isFrozen(PROJECT_RELATION_ANCHOR_TYPE)).toBe(true);
+    // is where a consumer would meet the regression. The name followed the
+    // shape one cycle later, once a single row owned this file and the root
+    // export inventory in `index.spec.ts` together — the singular spelling is
+    // gone from the surface entirely, not aliased.
+    expect(typeof PROJECT_RELATION_ANCHOR_PAIR).toBe('object');
+    expect(Object.isFrozen(PROJECT_RELATION_ANCHOR_PAIR)).toBe(true);
 
     // …and they BEHAVE like the modules' own bindings rather than merely
     // importing cleanly — the same standard the aliased pair below is held to.
@@ -666,15 +669,15 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     // itself cannot fail, and this family already shipped two values that were
     // green against exactly that kind of check for their whole wrong life.
     expect(PROJECT_BLOCKS_RELATION_TYPE).toBe('dependency');
-    expect(PROJECT_RELATION_ANCHOR_TYPE).toEqual({
+    expect(PROJECT_RELATION_ANCHOR_PAIR).toEqual({
       anchorType: 'end', // the BLOCKER's end …
       relatedAnchorType: 'start', // … onto the BLOCKED project's start
     });
     // The asymmetry itself, asserted as a property rather than as two values —
     // this is the line a "rename the single constant and reuse it for both
     // ends" repair would fail.
-    expect(PROJECT_RELATION_ANCHOR_TYPE.anchorType).not.toBe(
-      PROJECT_RELATION_ANCHOR_TYPE.relatedAnchorType,
+    expect(PROJECT_RELATION_ANCHOR_PAIR.anchorType).not.toBe(
+      PROJECT_RELATION_ANCHOR_PAIR.relatedAnchorType,
     );
     expect(() =>
       requireGoalMemberKind({
@@ -694,7 +697,7 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     // bearing — a consumer that could annotate this fragment as
     // `{ anchorType: string; relatedAnchorType: string }` would be back to a
     // shape in which the two ends are interchangeable.
-    const pair: ProjectRelationAnchorPair = PROJECT_RELATION_ANCHOR_TYPE;
+    const pair: ProjectRelationAnchorPair = PROJECT_RELATION_ANCHOR_PAIR;
     expect(pair.anchorType).toBe('end');
     expect(pair.relatedAnchorType).toBe('start');
   });

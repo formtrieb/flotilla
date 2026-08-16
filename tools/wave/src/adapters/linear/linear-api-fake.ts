@@ -22,7 +22,7 @@ import type {
   LinearPrAttachment,
   ProjectRelationAnchorPair,
 } from './linear-api';
-import { PROJECT_BLOCKS_RELATION_TYPE, PROJECT_RELATION_ANCHOR_TYPE } from './linear-api';
+import { PROJECT_BLOCKS_RELATION_TYPE, PROJECT_RELATION_ANCHOR_PAIR } from './linear-api';
 import type { LinearIssuesStore } from './linear-issues-store';
 import type { IssueStoreConformanceHooks, IssueStore } from '../issue-store';
 
@@ -520,7 +520,7 @@ export class InMemoryLinearApi implements LinearApi {
       projectId: blockerProjectId,
       relatedProjectId: blockedProjectId,
       type: PROJECT_BLOCKS_RELATION_TYPE,
-      ...PROJECT_RELATION_ANCHOR_TYPE,
+      ...PROJECT_RELATION_ANCHOR_PAIR,
     });
   }
 

@@ -901,13 +901,15 @@ export {
   // introspection — so these ride the root not as "least-proven values" but as
   // MEASURED ones a consumer can name verbatim if a workspace ever disagrees.
   //
-  // `PROJECT_RELATION_ANCHOR_TYPE` is a frozen fragment keyed by its own wire
-  // field names, meant to be spread wholesale: that shape, not its name, is
-  // what makes putting one end's anchor on the other end unspellable. Its
-  // literal-typed shape rides with it so a root-only consumer can annotate the
-  // fragment rather than re-widening it to `string`.
+  // `PROJECT_RELATION_ANCHOR_PAIR` is a frozen fragment keyed by its own wire
+  // field names, meant to be spread wholesale: that shape is what makes putting
+  // one end's anchor on the other end unspellable, and the name now says so —
+  // it spent one cycle as the singular `…_ANCHOR_TYPE`, because the row that
+  // reshaped it could not reach this barrel's by-name pin. Its literal-typed
+  // shape rides with it so a root-only consumer can annotate the fragment
+  // rather than re-widening it to `string`.
   PROJECT_BLOCKS_RELATION_TYPE,
-  PROJECT_RELATION_ANCHOR_TYPE,
+  PROJECT_RELATION_ANCHOR_PAIR,
   type ProjectRelationAnchorPair,
 } from './adapters/linear/linear-api';
 

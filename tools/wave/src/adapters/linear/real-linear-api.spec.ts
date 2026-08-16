@@ -3,7 +3,7 @@ import { RealLinearApi, LinearApiError } from './real-linear-api';
 import { FakeLinearHttp, type LinearHttpFakeHandler } from './linear-http-fake';
 import {
   PROJECT_BLOCKS_RELATION_TYPE,
-  PROJECT_RELATION_ANCHOR_TYPE,
+  PROJECT_RELATION_ANCHOR_PAIR,
 } from './linear-api';
 import type { LinearHttpResponse } from './linear-http';
 
@@ -1454,7 +1454,7 @@ describe('RealLinearApi', () => {
       // constant would move the expectation with it, which is exactly how the
       // disproven pair stayed green.
       expect(PROJECT_BLOCKS_RELATION_TYPE).toBe('dependency');
-      expect(PROJECT_RELATION_ANCHOR_TYPE).toEqual({
+      expect(PROJECT_RELATION_ANCHOR_PAIR).toEqual({
         anchorType: 'end',
         relatedAnchorType: 'start',
       });
@@ -1462,12 +1462,12 @@ describe('RealLinearApi', () => {
       // put on both ends, which is the shape the live API refuses — and a
       // swapped-but-valid pair it would silently accept as a backwards
       // dependency. This is the line a rename-in-place repair would fail.
-      expect(PROJECT_RELATION_ANCHOR_TYPE.anchorType).not.toBe(
-        PROJECT_RELATION_ANCHOR_TYPE.relatedAnchorType,
+      expect(PROJECT_RELATION_ANCHOR_PAIR.anchorType).not.toBe(
+        PROJECT_RELATION_ANCHOR_PAIR.relatedAnchorType,
       );
       // Frozen: the fragment is spread into every relation input, so a mutation
       // here would rewrite every subsequent write in the process.
-      expect(Object.isFrozen(PROJECT_RELATION_ANCHOR_TYPE)).toBe(true);
+      expect(Object.isFrozen(PROJECT_RELATION_ANCHOR_PAIR)).toBe(true);
     });
 
     it('addProjectBlockedBy resolves BOTH sides first, so an unknown project is a domain 404', async () => {

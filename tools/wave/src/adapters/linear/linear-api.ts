@@ -452,6 +452,93 @@ export interface LinearApi {
  * `[Deprecated]`) was real and is still true — it simply never spoke to the wire
  * value at all.
  *
+ * ── WHY `'blocks'` WAS PLAUSIBLE: THE ARM ASYMMETRY, AND THE RULE IT YIELDS ───
+ *
+ * The correction above records THAT the value was measured. This records WHY the
+ * wrong one looked safe, which is the half that stops the mistake recurring on
+ * some other vendor field. `'blocks'` was not invented — it was CARRIED ACROSS
+ * FROM A REAL ENUM IN THE NEIGHBOURING ARM. Linear's published schema
+ * (`linear/linear` → `packages/sdk/src/schema.graphql`, re-read live this
+ * dispatch) treats its two relation arms completely differently:
+ *
+ *  - The **ISSUE** arm publishes a real enum — but it binds exactly ONE field
+ *    with it, and naming WHICH field is the whole of the precision here. The
+ *    schema declares `enum IssueRelationType { blocks  duplicate  related
+ *    similar }` and then references it in exactly one place:
+ *    `IssueRelationCreateInput.type: IssueRelationType!`. The object's own
+ *    `IssueRelation.type` is `String!`, and `IssueRelationUpdateInput.type` is
+ *    `String`. So `BLOCKS_RELATION_TYPE` in `real-linear-api.ts` is
+ *    schema-pinned on the CREATE it feeds and NOT on the read that shares its
+ *    spelling — `toBlockedByIdentifiers` filters a bare-`String` field. The
+ *    rule this section yields already bites one field over, INSIDE the very arm
+ *    being called "the explicit one".
+ *  - The **PROJECT** arm declares NO enum anywhere. There is no
+ *    `ProjectRelationType`, and no anchor enum at all — the schema's six anchor
+ *    declarations (`anchorType`/`relatedAnchorType` on `ProjectRelation`,
+ *    `ProjectRelationCreateInput` and `ProjectRelationUpdateInput`) are every
+ *    one of them `String`. `ProjectRelationCreateInput.type` is bare `String!`
+ *    too, and the two CREATE inputs' `type` fields even carry near-identical
+ *    doc strings ("The type of relation of the {issue|project} to the related
+ *    {issue|project}").
+ *
+ * So the original inference met an arm whose TYPES were silent, turned to the
+ * parallel arm that was explicit, found `blocks` there among four named members,
+ * and adopted it. Every step of that is reasonable; the conclusion was wrong,
+ * because the two arms are validated by different vocabularies and only one of
+ * them publishes its own.
+ *
+ * **But the project arm was never silent — only untyped, and that is the half
+ * an account of "why it was plausible" must not leave out.** The published
+ * schema DID carry the accepted value, in prose, in the same declaration: the
+ * type description opens "A **dependency** relation between two projects",
+ * `project` is "The source project in the **dependency** relation",
+ * `relatedProject` is "The target project in the **dependency** relation", and
+ * `type` itself reads "The type of **dependency** relationship from the project
+ * to the related project (e.g., blocks)". The accepted wire value and the
+ * refused one sit in the SAME SENTENCE — `dependency` is its noun, `blocks` is
+ * its example — and the reading skimmed that sentence for the enum-shaped thing,
+ * found the example, and took it. (The issue arm's prose really does enumerate,
+ * and even there imperfectly: `IssueRelation.type` reads "Possible values
+ * include blocks, duplicate, and related" — non-exhaustive, and it drops
+ * `similar`.) So the correction was recoverable from the published schema after
+ * all. It just was not recoverable from the schema's TYPES, which is where the
+ * eye goes.
+ *
+ * Two rules come out of that, and the second is the one that was missing:
+ *
+ *  > A sibling field's enum is NOT this field's enum. Where one arm of a vendor
+ *  > API publishes an enum and the parallel arm types the same-named field as
+ *  > free `String`, that asymmetry is the SIGNAL — it usually means the second
+ *  > arm is validated somewhere the schema cannot show you, with a vocabulary
+ *  > that need not overlap the first. Carrying a member across is a guess
+ *  > wearing an enum's clothes. Measure it.
+ *
+ *  > And where a field is UNTYPED, its doc string is the only vocabulary the
+ *  > vendor hands you — so read it WHOLE, and weigh its NOUNS above its
+ *  > EXAMPLES. An example says what the field is like; the noun is often what
+ *  > the field IS. Measuring still beats both, but a doc string read whole
+ *  > would have made this measurement a confirmation instead of a surprise.
+ *
+ * The anchor pair below is the same error's second head, and the read-side doc
+ * string is where it came from — quoted WHOLE here, because the clause that
+ * gets trimmed is the load-bearing one. `ProjectRelation.anchorType` reads, in
+ * full:
+ *
+ *  > "The type of anchor on the source project end of the relation, indicating
+ *  > whether it is anchored to the project itself or a specific milestone."
+ *
+ * `'project'` was lifted out of the TRAILING clause — out of English prose
+ * rather than out of any enum, since there is none to lift from. But the
+ * OPENING clause, the one a short citation drops, already says this field is
+ * the anchor on ONE END of a relation: per-side, not per-relation. Read whole,
+ * the measured vocabulary (`start | end | milestone`) stops looking like a
+ * betrayal — "anchored to the project itself" names the CHOICE (project-level
+ * versus milestone-level), while the words that EXPRESS it are the ends the
+ * opening clause already promised. One symmetric value was never spellable in
+ * a field the vendor documents per-end. Cited short, the doc string reads like
+ * a clean binary the API then refused; cited whole, it reads like a per-end
+ * anchor whose vocabulary was simply never published — which is what it is.
+ *
  * ── What the SAME live probe CONFIRMED — do not re-measure this ──────────────
  *
  * With the corrected values a relation was created, read back and swept. Every
@@ -524,24 +611,27 @@ export const PROJECT_BLOCKS_RELATION_TYPE = 'dependency';
  *    on the end the measurement assigned it. Misuse is not discouraged, it is
  *    unspellable.
  *
- * The NAME is retained deliberately-with-residue: the root barrel's export
- * inventory pins this symbol by name (`index.spec.ts`'s recorded per-slice
- * family and its export-count arithmetic), and that file is outside this row's
- * declared Files globs — so a rename could not land in the same diff as the
- * shape change, and shipping the shape correction beat holding it for a
- * cosmetic name. The name is now the weakest thing about this binding; its
- * VALUE can no longer be used symmetrically.
+ * The NAME says PAIR, and that is load-bearing rather than cosmetic. For one
+ * cycle it did not: the reshape shipped under the old singular `…_ANCHOR_TYPE`
+ * spelling, a name for a scalar, because the shape correction's row could not
+ * reach `index.spec.ts` — where the root surface is pinned BY NAME and BY EXPORT
+ * COUNT — so the declaration and its pins could not move in one diff. The rename
+ * landed the moment a single row owned both, and BEFORE the reshape was
+ * published, so the exported symbol breaks once rather than twice for what was
+ * one repair. A name still promising a scalar was the last thing inviting a
+ * caller to reach for one end of an asymmetric value.
  *
  * @see PROJECT_BLOCKS_RELATION_TYPE for the full read-stamp, the structural
- * finding behind it, and what the same probe confirmed.
+ * finding behind it, the arm-asymmetry that made the original values plausible,
+ * and what the same probe confirmed.
  */
-export const PROJECT_RELATION_ANCHOR_TYPE: ProjectRelationAnchorPair = Object.freeze({
+export const PROJECT_RELATION_ANCHOR_PAIR: ProjectRelationAnchorPair = Object.freeze({
   anchorType: 'end',
   relatedAnchorType: 'start',
 });
 
 /**
- * The shape of {@link PROJECT_RELATION_ANCHOR_TYPE} — the two anchor fields of
+ * The shape of {@link PROJECT_RELATION_ANCHOR_PAIR} — the two anchor fields of
  * a whole-project blocking relation, pinned to the literals measured live on
  * 2026-08-16 rather than widened to `string`.
  *
