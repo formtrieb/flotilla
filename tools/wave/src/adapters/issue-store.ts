@@ -1509,6 +1509,35 @@ export interface IssueStore {
    * blocks the member, and an unreadable edge must not be able to counterfeit
    * one (the `ClosingState` evidence discipline, on the frontier side).
    *
+   * **Each reading also CARRIES the live native facts it was folded from**, so a
+   * caller can say WHICH fact produced a reading rather than rendering a static
+   * mapping of everything the word could have meant. Two obligations, and a
+   * fourth adapter inherits both:
+   *
+   *  - `nativeState` — the member's own state in the TRACKER's vocabulary.
+   *    Answer it where the binding HAS one, which in practice means a binding
+   *    whose members are themselves containers: a Linear project under
+   *    `initiative` reports its status category (`backlog`/`planned`/`started`/
+   *    `paused`/`completed`/`canceled`), precisely because five readings over six
+   *    categories is lossy. The three ISSUE-direct bindings report ABSENCE: an
+   *    issue's workflow state is already spent in full on the `closed`/`claimed`
+   *    facts, so a value here would re-spell a boolean rather than add a fact.
+   *  - `health` — the member's OWN health, a human's judgment recorded on the
+   *    tracker. Answer it where the tracker records one and this store can see
+   *    it; report ABSENCE otherwise.
+   *
+   * **Absence means the field is missing, never a placeholder** — not `'open'`,
+   * not `''`, not a re-spelling of a state the reading already carries. A caller
+   * distinguishes "this binding has no such value" from "this member's value is
+   * blank" only if the two are not written the same way.
+   *
+   * **And neither value is ever DERIVED.** The frontier computes accounting; it
+   * does not author an assessment. A store states what it read and nothing else:
+   * no default, no coalesce, and above all no mapping from a five-state reading
+   * back onto a health (`blocked` does not mean `atRisk` — that is the station
+   * judging, and ADR-0046 decision 4 names the only two sanctioned sources of a
+   * health value, neither of which is this read).
+   *
    * Reports completion (`complete`) and closes nothing: there is deliberately no
    * `closeGoal` on this facet. Throws on an unknown goal id.
    */

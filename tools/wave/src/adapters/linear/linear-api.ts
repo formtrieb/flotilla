@@ -113,8 +113,42 @@ export interface LinearProject {
    * status NAME is consumer-customizable and therefore unreadable as a rule;
    * the category is the fixed vocabulary, exactly as {@link LinearStateType} is
    * for issues.
+   *
+   * **A CLASSIFICATION substrate, and it is allowed to be a SUBSTITUTE.** A
+   * producer that meets a category outside the six above narrows it to the
+   * safe-direction default rather than failing the read — see
+   * {@link unreadStatusType}, which is how a consumer tells a substitute from
+   * the vendor's own word. Anything that merely CLASSIFIES may read this field
+   * directly; anything that REPORTS a native fact to a human must not.
    */
   statusType: LinearProjectStatusType;
+  /**
+   * Present **exactly when {@link statusType} is a SUBSTITUTE** — the narrowing's
+   * classification-safe default standing in for a category the producer could
+   * not read. Its value is what the vendor actually *said*: a category outside
+   * the six ({@link LinearProjectStatusType} is a snapshot of a VENDOR
+   * vocabulary, and a seventh value is a matter of when, not whether), or `null`
+   * when the response carried no category at all.
+   *
+   * **Absent — the ordinary case, and the one every honest producer is in for
+   * every real project — means {@link statusType} IS the vendor's own word.**
+   * That asymmetry is deliberate: a producer that never substitutes (the
+   * in-memory fake, whose statuses are drawn from the union by construction)
+   * states nothing here and is automatically correct, while the one act that
+   * needs disclosing — substituting — is the one act that has to say so.
+   *
+   * **Why this field exists at all: the two readings of a status category pulled
+   * apart.** Narrowing an unknown category to `backlog` is right for
+   * CLASSIFICATION — a category the adapter cannot read must make a member read
+   * `unready`, never counterfeit the positive claim `actionable` or the terminal
+   * claim `done`. It is wrong for REPORTING: a goal member's frontier reading
+   * now carries its live native state out to a caller (`GoalMemberReading`), and
+   * a substituted `backlog` would surface there as a native fact **the vendor
+   * never stated**, through the very field added to make native facts honest.
+   * One field cannot serve both readings, so there are two — and the honest
+   * report is reconstructed as "the vendor's own word, or nothing."
+   */
+  unreadStatusType?: string | null;
 }
 
 /**

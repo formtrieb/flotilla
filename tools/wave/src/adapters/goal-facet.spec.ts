@@ -445,6 +445,59 @@ function runGoalFacetConformance(
       ).rejects.toThrow();
     });
 
+    // ── the reading's live NATIVE facts ────────────────────────────────────
+    it('an ISSUE-DIRECT binding reports the native facts it does not have as ABSENT — never a placeholder', async () => {
+      // The obligation `readGoalFrontier`'s contract puts on a fourth adapter,
+      // pinned where all three shipped stores answer it in one body: a reading
+      // carries `nativeState` and `health` where the binding HAS them, and says
+      // NOTHING where it does not.
+      //
+      // All three bindings this suite drives are issue-direct — a GitHub
+      // milestone's members, a Linear project's members and a MarkdownFs goal
+      // file's members are all ISSUES — and for an issue there is no second,
+      // richer native fact left to report: its workflow state is already spent
+      // in full on `closed`/`claimed`, and none of the three trackers records a
+      // health on an issue at all. So absence is the honest answer here, and
+      // this is the case that holds a fourth adapter to giving it.
+      //
+      // **Asserted as key ABSENCE, which is the whole clause.** The failure this
+      // catches is not "reported the wrong word" — it is a store filling the
+      // field with something rather than leaving it out: `'open'`, `''`, `null`,
+      // the state name it already spent on `closed`, or a key set to
+      // `undefined`. Every one of those satisfies "the field is not a real
+      // value" and every one of them destroys the distinction a caller needs —
+      // "this binding has no such value" vs "this member's value is blank" —
+      // and `toBeUndefined()` would wave three of them through.
+      const { h, store } = await fresh();
+      const goal = await makeGoal(h, store);
+      const actionable = await store.create(h.baseInput({ title: 'ready' }));
+      const bare = await store.create(h.bareInput({ title: 'bare' }));
+      const finished = await store.create(h.baseInput({ title: 'finished' }));
+      const moving = await store.create(h.baseInput({ title: 'moving' }));
+      for (const id of [actionable, bare, finished, moving]) {
+        await store.assignToGoal(goal, id, h.binding);
+      }
+      await store.closeUnplanned(finished, 'landed elsewhere');
+      await store.transition(moving, 'in-flight');
+
+      const frontier = await store.readGoalFrontier(goal, h.binding);
+      // …across FOUR readings spanning four different states, so a green here is
+      // not one state's accident: `done` in particular is the reading a store is
+      // most tempted to decorate, because it is the one the five-state
+      // vocabulary is lossiest about.
+      expect(frontier.readings).toHaveLength(4);
+      expect(new Set(frontier.readings.map((r) => r.state))).toEqual(
+        new Set(['actionable', 'unready', 'done', 'in-motion']),
+      );
+      for (const reading of frontier.readings) {
+        expect(Object.keys(reading).sort(), `${reading.id} (${reading.state})`).toEqual([
+          'id',
+          'state',
+          'unresolvedBlockers',
+        ]);
+      }
+    });
+
     // ── the container binding (ADR-0044 decision 4) ────────────────────────
     it('an ABSENT binding resolves to this store\'s own default, or refuses loudly — never a silent pick', async () => {
       const { h, store } = await fresh();
@@ -736,6 +789,100 @@ describe('the initiative binding is realized on linear and refused elsewhere', (
       );
     }
   });
+
+  // ── the one binding whose members HAVE a native state (the other half of
+  //    the issue-direct absence the conformance suite pins) ────────────────
+  it('an initiative-bound member STATES its live native category — and the two lossy folds come apart', async () => {
+    // Why this binding and no other: a member here is itself a CONTAINER, so it
+    // carries a status category of its own, and five readings over six
+    // categories is a lossy projection by construction. `started` and `paused`
+    // both read `in-motion`; `completed` and `canceled` both read `done`. Those
+    // two folds are the entire reason the field exists, so they are what this
+    // case reads — a green on the four unfolded categories alone would prove
+    // nothing about the ambiguity anyone actually hit.
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goal = await store.createGoal({ title: 'Ship it', filingHint: 'ship' }, 'initiative');
+    const member = await store.createGoalMember(goal, memberInput(), 'initiative');
+
+    const seen = new Map<string, string[]>();
+    for (const [category, state] of [
+      ['backlog', 'unready'],
+      ['planned', 'unready'],
+      ['started', 'in-motion'],
+      ['paused', 'in-motion'],
+      ['completed', 'done'],
+      ['canceled', 'done'],
+    ] as const) {
+      api.setProjectStatus(member, category);
+      const reading = (await store.readGoalFrontier(goal, 'initiative')).readings[0];
+      expect(reading.state, category).toBe(state);
+      // the vendor's own word, verbatim — not a re-spelling of the reading.
+      expect(reading.nativeState, category).toBe(category);
+      seen.set(state, [...(seen.get(state) ?? []), category]);
+    }
+    // …and the folds really are folds: one reading, two native words, now
+    // distinguishable at the far end.
+    expect(seen.get('in-motion')).toEqual(['started', 'paused']);
+    expect(seen.get('done')).toEqual(['completed', 'canceled']);
+  });
+
+  it('a category the ADAPTER could not read never reaches the reading dressed as one it could', async () => {
+    // The failure this row would otherwise have SHIPPED. `LinearProject.statusType`
+    // is a classification substrate and is allowed to be a substitute: an adapter
+    // meeting a category outside the six narrows it to `backlog`, which is right
+    // for classification and catastrophic the moment it is reported — a seventh
+    // vendor category would surface here as `backlog`, a native fact the vendor
+    // never stated, through the very field added to make native facts honest.
+    //
+    // Driven at the STORE, over a substituting producer, because that is the
+    // seam that decides what a caller sees; `real-linear-api.spec.ts` pins the
+    // other end (that the real query path discloses the substitution at all).
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goal = await store.createGoal({ title: 'Ship it', filingHint: 'ship' }, 'initiative');
+    await store.createGoalMember(goal, memberInput(), 'initiative');
+
+    const listing = api.listInitiativeProjects.bind(api);
+    api.listInitiativeProjects = async (initiativeId: string) =>
+      (await listing(initiativeId)).map((p) => ({
+        ...p,
+        statusType: 'backlog' as const,
+        unreadStatusType: 'archived_v2',
+      }));
+
+    const reading = (await store.readGoalFrontier(goal, 'initiative')).readings[0];
+    // the vendor's actual word travels — opaque, unparsed, unmangled.
+    expect(reading.nativeState).toBe('archived_v2');
+    // …and the classification is EXACTLY what the narrowing's own justification
+    // promised: an unreadable category reads `unready`, never `done` and never
+    // `actionable`. Making the report honest must not cost that.
+    expect(reading.state).toBe('unready');
+  });
+
+  it('…and a response that stated NO category at all reports NO native state — not the substitute', async () => {
+    // The second substitution case, and the one a fix aimed only at "unknown
+    // word" would miss: `status` absent from the projection entirely. There is
+    // no vendor word to carry, so the honest report is the same absence the
+    // three issue-direct bindings give — never the `backlog` the narrowing put
+    // in `statusType` to keep the member off the wave's candidate set.
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goal = await store.createGoal({ title: 'Ship it', filingHint: 'ship' }, 'initiative');
+    await store.createGoalMember(goal, memberInput(), 'initiative');
+
+    const listing = api.listInitiativeProjects.bind(api);
+    api.listInitiativeProjects = async (initiativeId: string) =>
+      (await listing(initiativeId)).map((p) => ({
+        ...p,
+        statusType: 'backlog' as const,
+        unreadStatusType: null,
+      }));
+
+    const reading = (await store.readGoalFrontier(goal, 'initiative')).readings[0];
+    expect('nativeState' in reading).toBe(false);
+    expect(reading.state).toBe('unready');
+  });
 });
 
 // ── the MEMBER verbs, driven across all FOUR bindings (ADR-0045) ─────────────
@@ -949,6 +1096,50 @@ function runGoalMemberVerbConformance(
       expect(reading?.state).toBe('blocked');
       // …and the reading NAMES what it waits on rather than merely asserting it.
       expect(reading?.unresolvedBlockers.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // ── the live native facts, stated MEMBER-KIND-GENERICALLY ──────────────
+    it('a native fact is either a real word or ABSENT — never a placeholder, on any binding', async () => {
+      // The contract clause a fourth adapter inherits, in the form that holds
+      // for all four bindings at once — including `initiative`, where a member
+      // is a PROJECT and DOES have a native state to state. The suite above
+      // pins the issue-direct half (absent, because there is nothing to say);
+      // this one pins the half that survives a binding which has something to
+      // say, and it needs no `if` about which store is under test because it
+      // asserts the SHAPE rather than the value:
+      //
+      //   present ⇒ a non-empty string the tracker actually uses
+      //   otherwise ⇒ the key is not there at all
+      //
+      // Everything a store might reach for to avoid saying "I don't know" —
+      // `null`, `''`, `undefined`-as-a-value, a `{}`, a number — fails this,
+      // which is the point. An adapter that fills the field with a placeholder
+      // is worse than one that leaves it out, because a caller can act on
+      // absence and cannot act on a lie.
+      const { h, store, goal } = await fresh();
+      const a = await store.createGoalMember(goal, memberInput({ title: 'A' }), h.binding);
+      const b = await store.createGoalMember(
+        goal,
+        memberInput({ title: 'B', filingHint: 'b' }),
+        h.binding,
+      );
+
+      const frontier = await store.readGoalFrontier(goal, h.binding);
+      expect(frontier.readings.map((r) => r.id).sort()).toEqual([a, b].sort());
+      for (const reading of frontier.readings) {
+        for (const field of ['nativeState', 'health'] as const) {
+          // A MISSING key is a complete answer and asserts nothing further. The
+          // clause bites on a key that is THERE: it must hold a real word.
+          // `undefined`-as-a-value fails here too, and deliberately — a key set
+          // to `undefined` is present, disappears from a JSON render, and is
+          // exactly the half-absence that makes "absent stays absent all the way
+          // out" untestable at the far end.
+          if (!(field in reading)) continue;
+          const value = reading[field];
+          expect(typeof value, `${field} on ${reading.id}`).toBe('string');
+          expect((value as string).length, `${field} on ${reading.id}`).toBeGreaterThan(0);
+        }
+      }
     });
   });
 }

@@ -1415,12 +1415,44 @@ function toLinearIssue(node: ResolvedIssueNode): LinearIssue {
  */
 function toLinearProject(raw: Record<string, unknown>): LinearProject {
   const status = (raw.status ?? {}) as Record<string, unknown>;
+  const statusType = toProjectStatusType(status.type);
   return {
     id: String(raw.id),
     name: typeof raw.name === 'string' ? raw.name : '',
     description: typeof raw.description === 'string' ? raw.description : '',
-    statusType: toProjectStatusType(status.type),
+    statusType,
+    // …and when that narrowing SUBSTITUTED, say so, carrying what the vendor
+    // actually said. The narrowing itself is unchanged and stays right for what
+    // it is for (classification, safe direction); this is the second reading it
+    // cannot serve — a caller REPORTING a live native fact must never be handed
+    // `backlog` for a category the vendor never stated. The conditional spread
+    // is the contract: an absent KEY, not a key set to `undefined`, so a
+    // recognized category leaves the projection byte-identical to what it was
+    // before this field existed.
+    ...vendorStatusTypeIfSubstituted(status.type, statusType),
   };
+}
+
+/**
+ * The disclosure half of {@link toProjectStatusType}: `{ unreadStatusType }` when
+ * that narrowing substituted, `{}` when it did not.
+ *
+ * Deliberately derived from the NARROWING'S OWN RESULT rather than from a second,
+ * independent membership test — `statusType !== raw` is true exactly when the
+ * substitution happened, whatever the vocabulary grows to, so the disclosure
+ * cannot drift out of step with the thing it discloses. The two cases it
+ * distinguishes are genuinely different facts and are reported differently: the
+ * vendor stated a category this adapter does not know (carry the word verbatim —
+ * it is an opaque `GoalMemberNativeState` downstream, compared against nothing),
+ * or the response carried no category at all (`null`: there is no vendor word to
+ * report, and inventing one is the failure this whole field exists to prevent).
+ */
+function vendorStatusTypeIfSubstituted(
+  raw: unknown,
+  narrowed: LinearProjectStatusType,
+): { unreadStatusType?: string | null } {
+  if (typeof raw === 'string') return raw === narrowed ? {} : { unreadStatusType: raw };
+  return { unreadStatusType: null };
 }
 
 /**
@@ -1445,6 +1477,13 @@ const PROJECT_STATUS_TYPES: readonly LinearProjectStatusType[] = [
  * read makes the member read `unready` rather than counterfeiting the positive
  * claim `actionable` or the terminal claim `done`. Absent evidence must never
  * clear a member (the `closed-unknown` discipline, on the frontier side).
+ *
+ * That justification is about CLASSIFICATION and remains exactly true — this
+ * function is deliberately unchanged. What it does NOT justify is REPORTING the
+ * substitute to a caller as the member's live native state, which is what
+ * {@link vendorStatusTypeIfSubstituted} exists to prevent: the fallback is
+ * disclosed beside the value, never silently indistinguishable from a real
+ * `backlog`.
  */
 function toProjectStatusType(raw: unknown): LinearProjectStatusType {
   return typeof raw === 'string' &&

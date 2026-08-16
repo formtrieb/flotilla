@@ -27,6 +27,21 @@
  * marker. The engine never grew a second, lookalike ladder — which is precisely
  * what the classification rule being ONE seam is worth.
  *
+ * **A reading also CARRIES the facts it was folded from.** Five readings over a
+ * six-value native vocabulary is a lossy projection by construction: `started`
+ * and `paused` both read `in-motion`, and so does a `backlog` project with one
+ * wave-claimed issue inside. That fold used to be invisible past this seam, so
+ * the only honest rendering downstream was a static mapping *naming* what each
+ * word could mean. It no longer is: {@link GoalMemberReading.nativeState} and
+ * {@link GoalMemberReading.health} travel out beside the state, so a caller can
+ * say WHICH native fact produced a reading, and the mirror pass's anchor block
+ * (ADR-0046 decision 3) and the status pass read one derivation instead of two.
+ *
+ * The widening is deliberately to what a reading CARRIES, never to what it
+ * MEANS: the vocabulary, the ladder, and {@link classifyGoalMember} are
+ * byte-unchanged, and no reading flips because a native value is now visible.
+ * And health is TRANSPORT ONLY — see {@link GoalMemberHealth}.
+ *
  * **Completion is literally "the frontier is empty."** {@link GoalFrontier.complete}
  * reports it; nothing here closes anything. Closing the container is the
  * Operator's act in the tracker and is deliberately NOT a facet verb — the
@@ -57,6 +72,48 @@ import type { IssueRef } from './contract';
  * `typeof b === 'string'`.
  */
 export type GoalBlocker = IssueRef | string;
+
+/**
+ * A member's LIVE native state, in the TRACKER's own vocabulary — a Linear
+ * project's `backlog` / `planned` / `started` / `paused` / `completed` /
+ * `canceled`, and whatever a fourth adapter's container calls its own.
+ *
+ * **A `string`, deliberately, and the looseness is the design.** The engine is
+ * tracker-agnostic (CHARTER §4) and this value is a VENDOR enum living one layer
+ * behind a schema the engine never reads. Spelling the six Linear words into an
+ * engine union would import a vendor vocabulary into the store-blind layer, and
+ * would go stale the day a tracker adds a seventh — silently, because a value
+ * outside a union is a compile error at the adapter and an invisible
+ * mis-classification everywhere else. An opaque string cannot rot that way, and
+ * it makes the transport rule STRUCTURAL rather than merely stated: nothing here
+ * can branch on a value it does not enumerate.
+ *
+ * Same opacity contract as an id (ADR-0001): carried verbatim, compared against
+ * nothing, parsed nowhere. A renderer that wants to *display* it prints it; a
+ * renderer that wants to *reason* about it is asking the classification's
+ * question and must ask {@link GoalMemberState} instead.
+ */
+export type GoalMemberNativeState = string;
+
+/**
+ * A member's OWN health — the human-authored judgment recorded on the tracker
+ * (`onTrack` / `atRisk` / `offTrack` on Linear), carried out to a caller
+ * untouched.
+ *
+ * A `string` for the reason {@link GoalMemberNativeState} is, plus a sharper one
+ * that is the whole safety property of this field: **health is never derived
+ * here.** The frontier computes accounting; it does not author an assessment
+ * (ADR-0042's sentence, one station over; ADR-0046 decision 4 spells out the two
+ * sanctioned sources, and neither is this module). Carrying a health value
+ * through is TRANSPORT, and transport only — the moment this module computed,
+ * defaulted, coalesced or inferred one, the station would be judging, which is
+ * exactly the line it exists to hold.
+ *
+ * So: absent stays absent, all the way out. There is no fallback, no `??`, and
+ * no mapping from a five-state reading back onto a health — a `blocked` member
+ * with no authored health reports NO health, not `atRisk`.
+ */
+export type GoalMemberHealth = string;
 
 /**
  * The five readings a goal member can have — one terminal bookend and four open
@@ -141,9 +198,43 @@ export interface GoalMemberFacts {
    * {@link GoalBlocker}.
    */
   unresolvedBlockers: readonly GoalBlocker[];
+  /**
+   * The member's live native state, when the binding HAS one to report.
+   *
+   * **Optional because absence is the honest answer for three of the four
+   * container bindings, not a gap to paper over.** A native state of this kind
+   * belongs to a member that is itself a CONTAINER — a Linear project under an
+   * `initiative` binding, whose own status category the frontier folds into a
+   * reading. Under the three issue-direct bindings (GitHub milestone, Linear
+   * project, MarkdownFs goal file) the member is an issue, and everything its
+   * workflow state says is already fully spent on {@link closed} and
+   * {@link claimed}: there is no second, richer native fact left over to report.
+   * Those stores therefore leave this ABSENT rather than inventing a placeholder,
+   * an empty string, or a re-spelling of a boolean they already stated.
+   *
+   * Reported for EVERY reading, `done` included — this is a fact ABOUT the
+   * member, not evidence FOR one rung, which is exactly why it is not gated the
+   * way {@link unresolvedBlockers} is.
+   */
+  nativeState?: GoalMemberNativeState;
+  /**
+   * The member's own human-authored health, when the tracker records one and the
+   * store can see it. Optional for the same reason {@link nativeState} is, and
+   * NEVER derived — see {@link GoalMemberHealth}.
+   */
+  health?: GoalMemberHealth;
 }
 
-/** One member's reading — its state plus the evidence the state rests on. */
+/**
+ * One member's reading — its state, the evidence that state rests on, and the
+ * live native facts the state was folded FROM.
+ *
+ * The last part is what makes a reading informative rather than merely correct:
+ * `in-motion` is one word over several different native situations, and a caller
+ * that can see WHICH one produced it (a project a person moved to `started`, a
+ * project someone `paused`, a `backlog` project with one wave-claimed issue
+ * inside) can say so instead of documenting the ambiguity around a gap.
+ */
 export interface GoalMemberReading {
   id: string;
   state: GoalMemberState;
@@ -153,6 +244,18 @@ export interface GoalMemberReading {
    * waits. Empty for every other state.
    */
   unresolvedBlockers: readonly GoalBlocker[];
+  /**
+   * {@link GoalMemberFacts.nativeState}, carried verbatim and ungated — present
+   * on every reading whose store reported one, `done` included, and ABSENT (the
+   * key itself missing, not `undefined`) on every reading whose store did not.
+   */
+  nativeState?: GoalMemberNativeState;
+  /**
+   * {@link GoalMemberFacts.health}, carried verbatim and ungated, with the same
+   * absence rule — and nothing in this module can put a value here that the
+   * facts did not already carry.
+   */
+  health?: GoalMemberHealth;
 }
 
 /** The Goal's derived open remainder — the whole answer of the frontier query. */
@@ -243,6 +346,29 @@ export function computeGoalFrontier(
       // `in-motion` member would report an edge as load-bearing when the state
       // above it already decided the reading.
       unresolvedBlockers: state === 'blocked' ? [...facts.unresolvedBlockers] : [],
+      // TRANSPORT, and transport only — deliberately UNGATED where the blockers
+      // above are gated, because these are facts about the MEMBER rather than
+      // evidence for one rung: the reading a `done` project fell into says
+      // nothing about whether it was `completed` or `canceled`, and the whole
+      // point of carrying the native value is that a caller no longer has to
+      // guess.
+      //
+      // Conditional spread, not `nativeState: facts.nativeState`, and the
+      // difference is the contract: an absent fact yields an absent KEY rather
+      // than a key set to `undefined`, so "absent stays absent all the way out"
+      // is literally true (`'health' in reading === false`) and the rendered
+      // JSON of an issue-direct store is byte-identical to what it was before
+      // this field existed.
+      //
+      // There is no `??` here and there must never be one. A default would make
+      // this module author a native state or a HEALTH — a human's judgment
+      // recorded on the tracker — and the station computes accounting, never an
+      // assessment. Nothing is normalized either: whatever the store said
+      // travels byte-for-byte, because deciding that some value "means absent"
+      // is already interpreting it. The obligation to answer honestly (report
+      // it, or leave it out) sits on the store, where the native fact is.
+      ...(facts.nativeState !== undefined ? { nativeState: facts.nativeState } : {}),
+      ...(facts.health !== undefined ? { health: facts.health } : {}),
     });
   }
   const open = readings.filter((r) => r.state !== 'done');

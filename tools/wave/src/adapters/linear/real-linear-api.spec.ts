@@ -976,6 +976,67 @@ describe('RealLinearApi', () => {
       }
     });
 
+    it('…and DISCLOSES that `backlog` was a substitute, carrying what the vendor actually said', async () => {
+      // The other half of the case above, and the reason it needs one: the
+      // narrowing is right for CLASSIFICATION and wrong the moment the value is
+      // REPORTED. A goal member's frontier reading now carries its live native
+      // state out to a caller, so a silent `backlog` would surface a seventh
+      // vendor category as a native fact the vendor never stated — through the
+      // very field added to make native facts honest. Two genuinely different
+      // situations, reported differently:
+      //
+      //  - the vendor stated a category this adapter does not know → carry the
+      //    WORD, verbatim. It is opaque downstream, compared against nothing, so
+      //    a vocabulary that grows travels intact instead of being mangled.
+      //  - the response carried no category at all → `null`. There is no vendor
+      //    word to report and inventing one is the whole failure mode.
+      for (const type of ['invented', 'archived_v2', 'in_review']) {
+        const { api } = makeApi({
+          GetProject: () => ({
+            status: 200,
+            json: { data: { project: { id: 'p', name: 'n', description: '', status: { type } } } },
+          }),
+        });
+        const project = await api.getProject('p');
+        expect(project.unreadStatusType, type).toBe(type);
+        // …and the classification substrate is UNTOUCHED by the disclosure.
+        expect(project.statusType, type).toBe('backlog');
+      }
+
+      for (const status of [undefined, null, {}, { type: 7 }]) {
+        const { api } = makeApi({
+          GetProject: () => ({
+            status: 200,
+            json: { data: { project: { id: 'p', name: 'n', description: '', status } } },
+          }),
+        });
+        const project = await api.getProject('p');
+        expect(project.unreadStatusType, JSON.stringify(status)).toBeNull();
+        expect(project.statusType, JSON.stringify(status)).toBe('backlog');
+      }
+    });
+
+    it('a RECOGNIZED category discloses nothing — an absent KEY, not a key set to undefined', async () => {
+      // The asymmetry that lets a producer which never substitutes stay silent
+      // and be automatically correct: only the act of substituting has to say
+      // so. Pinned as key ABSENCE rather than `toBeUndefined()`, because a
+      // consumer distinguishes "this value is the vendor's own word" from "this
+      // producer substituted and told me nothing" only if the two are not
+      // written the same way — and because `toEqual` elsewhere in this file
+      // would go on passing against a key set to `undefined`.
+      for (const type of ['backlog', 'planned', 'started', 'paused', 'completed', 'canceled']) {
+        const { api } = makeApi({
+          GetProject: () => ({
+            status: 200,
+            json: { data: { project: { id: 'p', name: 'n', description: '', status: { type } } } },
+          }),
+        });
+        const project = await api.getProject('p');
+        expect('unreadStatusType' in project, type).toBe(false);
+        expect(project.statusType, type).toBe(type);
+      }
+    });
+
     it('getProject reports a NULL node as a domain 404, not a wire failure', async () => {
       // HTTP 200 with a null node is Linear's shape for "no such thing" — the
       // same reading `resolveIssue` gives an identifier that does not resolve.
@@ -1273,6 +1334,60 @@ describe('RealLinearApi', () => {
       const members = await api.listInitiativeProjects('init-1');
       expect(members).toEqual([
         { id: 'prj-1', name: 'story', description: '', statusType: 'paused' },
+      ]);
+    });
+
+    it('listInitiativeProjects discloses a substituted category too — the query path the FRONTIER actually reads', async () => {
+      // `getProject` is not the path that matters here: a goal member's reading
+      // comes from `readGoalFrontier` → `listInitiativeProjects`, so the
+      // disclosure has to survive THIS projection, not merely the single-node
+      // one. Both narrowing sites go through `toLinearProject`, and this case is
+      // what keeps that true rather than assumed — a second projection that
+      // spread the node itself would pass every case above and still hand the
+      // frontier a counterfeit `backlog`.
+      const { api } = makeApi({
+        GetInitiative: () => ({
+          status: 200,
+          json: { data: { initiative: { id: 'init-1', name: 'Epic', description: '' } } },
+        }),
+        ListInitiativeProjects: () => ({
+          status: 200,
+          json: {
+            data: {
+              initiative: {
+                projects: {
+                  nodes: [
+                    { id: 'p-known', name: 'a', description: '', status: { type: 'started' } },
+                    { id: 'p-new', name: 'b', description: '', status: { type: 'archived_v2' } },
+                    { id: 'p-none', name: 'c', description: '' },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        }),
+      });
+      expect(await api.listInitiativeProjects('init-1')).toEqual([
+        // recognized: the vendor's own word, nothing disclosed.
+        { id: 'p-known', name: 'a', description: '', statusType: 'started' },
+        // a seventh category: classified as `backlog` (safe direction), reported
+        // as `archived_v2` (the truth).
+        {
+          id: 'p-new',
+          name: 'b',
+          description: '',
+          statusType: 'backlog',
+          unreadStatusType: 'archived_v2',
+        },
+        // no category stated at all: nothing to report, and `null` says so.
+        {
+          id: 'p-none',
+          name: 'c',
+          description: '',
+          statusType: 'backlog',
+          unreadStatusType: null,
+        },
       ]);
     });
 

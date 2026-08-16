@@ -1087,8 +1087,9 @@ export class LinearIssuesStore implements IssueStore {
    *    inside. Two sources because a member can be in motion two ways: a human
    *    moved the project, or a wave drew a row out of it. `paused` reads
    *    in-motion rather than blocked because `blocked` asserts a NAMED
-   *    unresolved dependency, which paused lacks — the station's report shows
-   *    the native status alongside the reading, so nothing is hidden.
+   *    unresolved dependency, which paused lacks — and the reading now CARRIES
+   *    `nativeState`, so "a person parked it" and "a wave is working inside it"
+   *    are distinguishable at the far end instead of collapsing into one word.
    *  - `eligible` ← at least one OPEN issue inside carrying the eligibility
    *    marker. This is what makes `actionable` mean literally "a wave could draw
    *    here now": an EMPTY project has no such issue and reads `unready`, which
@@ -1097,14 +1098,74 @@ export class LinearIssuesStore implements IssueStore {
    *  - `unresolvedBlockers` ← native project relations whose other side is not
    *    closed, named as bare project ids ({@link GoalBlocker}).
    *
+   * …and a FIFTH value that is stated rather than mapped: `nativeState` ← the
+   * project's own status category, verbatim. This is the ONE binding of the four
+   * that has such a value at all, because it is the only one whose members are
+   * themselves containers, and it is exactly the value the four booleans above
+   * are lossy about — three different native situations (`started`, `paused`,
+   * and a `backlog`/`planned` project with a wave-claimed issue inside) all
+   * arrive at `in-motion`, and `completed`/`canceled` both arrive at `done`.
+   * Reporting the category alongside the facts costs no extra read (it is
+   * already on the node this method was handed) and retires the static mapping a
+   * caller previously had to render in its place.
+   *
+   * **Reported from the vendor's own word, NOT from the classification
+   * substrate** — the one place those two pull apart. `statusType` is allowed to
+   * be a substitute: an adapter that meets a category outside the six narrows it
+   * to `backlog`, which is right for classification (an unreadable category must
+   * read `unready`, never `done` and never `actionable`) and wrong the moment it
+   * is REPORTED, because a seventh vendor category would then reach a consumer
+   * as `backlog` — a native fact the vendor never stated, surfaced through the
+   * very field added to make native facts honest. So the two readings are taken
+   * from two places: the booleans above keep reading `statusType`, while
+   * `nativeState` reads {@link LinearProject.unreadStatusType} first and states
+   * either the vendor's actual word or NOTHING. Absence here is honest in the
+   * same way the issue arm's absence is: no category was stated, so none is
+   * reported — a substituted one would be an invention.
+   *
+   * The member's own HEALTH is the other half of ADR-0046's anchor block, and
+   * this store reports its ABSENCE today rather than a placeholder: Linear
+   * records a project health, but {@link LinearProject} does not carry one —
+   * `LinearApi`'s project selections fetch `status { type }` and nothing else.
+   * Widening that seam belongs to the mirror-pass slice that already widens
+   * `LinearApi` (ADR-0046 build-time items); when it lands, this method states
+   * `health` here and the transport all the way to the reading is already built.
+   * Absent is the honest answer meanwhile — never a derived one, which is the
+   * one thing this store must not do with a human's judgment.
+   *
    * Closed short-circuits everything below it, exactly as the issue arm does: a
    * finished member is `done` whatever else is true of it, so its issues and its
-   * relations are not read at all.
+   * relations are not read at all — but the native category still travels, since
+   * "which terminal category" is precisely what `done` cannot say.
    */
   private async goalProjectMemberFacts(project: LinearProject): Promise<GoalMemberFacts> {
     const id = project.id;
+    // `undefined` — the ordinary case — means the narrowing never substituted,
+    // so `statusType` IS what the vendor said and can be reported as-is.
+    // Anything else means it is a SUBSTITUTE, and the honest native state is
+    // what the vendor actually said (a category this adapter does not know,
+    // carried verbatim: `GoalMemberNativeState` is opaque by design and compares
+    // it against nothing) — or, for `null`, no native state at all, because the
+    // response stated no category and there is nothing honest to report.
+    //
+    // A conditional spread rather than `nativeState: x`, for the reason the
+    // frontier uses one: an absent fact must be an absent KEY, so "the vendor
+    // stated nothing" is written the same way the three issue-direct bindings
+    // write it, and never as a placeholder.
+    const nativeState =
+      project.unreadStatusType === undefined
+        ? project.statusType
+        : (project.unreadStatusType ?? undefined);
+    const stated = nativeState !== undefined ? { nativeState } : {};
     if (CLOSED_PROJECT_STATUS.has(project.statusType)) {
-      return { id, closed: true, claimed: false, eligible: false, unresolvedBlockers: [] };
+      return {
+        id,
+        closed: true,
+        claimed: false,
+        eligible: false,
+        unresolvedBlockers: [],
+        ...stated,
+      };
     }
     const issues = await this.api.listProjectIssues(id);
     const open = issues.filter((i) => !CLOSED_TYPES.has(i.stateType));
@@ -1117,6 +1178,7 @@ export class LinearIssuesStore implements IssueStore {
       claimed: CLAIMED_PROJECT_STATUS.has(project.statusType) || claimedInside,
       eligible: open.some((i) => this.isEligible(i.labels)),
       unresolvedBlockers: await this.unresolvedProjectBlockers(id),
+      ...stated,
     };
   }
 
@@ -1155,6 +1217,17 @@ export class LinearIssuesStore implements IssueStore {
    * bare member (no `## Files` section), and a bare member is exactly what the
    * `goal` station files at a cut — so going through `read()` would make a fresh
    * goal unreadable, while going around it makes `unready` observable.
+   *
+   * Neither `nativeState` nor `health` is stated here, and both omissions are
+   * deliberate. This is an ISSUE-direct binding: an issue's workflow state is
+   * already fully spent on `closed` and `claimed` above (that is what
+   * {@link rungOf} and {@link CLOSED_TYPES} consume it for), so re-reporting it
+   * as a "native state" would re-spell two booleans rather than add the fact the
+   * frontier is lossy about — and a Linear issue carries no health at all. The
+   * field stays ABSENT rather than being filled with the state name, an empty
+   * string, or any other placeholder: a caller distinguishes "this binding has
+   * no such value" from "this member is in an unnamed state" only if absence
+   * means absence.
    */
   private async goalMemberFacts(issue: LinearIssue): Promise<GoalMemberFacts> {
     const closed = CLOSED_TYPES.has(issue.stateType);
