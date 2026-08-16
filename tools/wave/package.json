@@ -1,6 +1,6 @@
 {
   "name": "@formtrieb/flotilla-engine",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "description": "Wave-orchestration engine for flotilla — conflict/parallelism reasoning, DoR gating, merge order, and tracker-agnostic issue stores.",
   "license": "Apache-2.0",
   "author": "Michael Helmbrecht",
