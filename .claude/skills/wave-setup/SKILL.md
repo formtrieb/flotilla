@@ -1,6 +1,6 @@
 ---
 name: wave-setup
-description: Use when setting flotilla up in a repo for the first time — writes the one `wave.config.json` every other flotilla skill reads: which issue tracker the repo's issues live on, which of them agents are allowed to pick up, and the build or test commands that have to pass before anything is proposed for merge. Triggers on "set up flotilla", "configure the wave store", "init wave config", "initialize flotilla for this repo".
+description: 'Use when setting flotilla up in a repo for the first time — writes the one `wave.config.json` every other flotilla skill reads: which issue tracker the repo''s issues live on, which of them agents are allowed to pick up, and the build or test commands that have to pass before anything is proposed for merge. Triggers on "set up flotilla", "configure the wave store", "init wave config", "initialize flotilla for this repo".'
 ---
 
 # wave-setup

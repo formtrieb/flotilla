@@ -1,6 +1,6 @@
 ---
 name: wave-plan
-description: Use when planning the next wave — one batch of issues that can safely run side by side. Lists which issues are ready to be picked up, then checks them for overlapping files, both against each other and against the issues another batch has already taken. Changes nothing: a person picks which ones to run and hands them to wave-create. Triggers on "plan a wave", "what can run next", "cross-wave check".
+description: 'Use when planning the next wave — one batch of issues that can safely run side by side. Lists which issues are ready to be picked up, then checks them for overlapping files, both against each other and against the issues another batch has already taken. Changes nothing: a person picks which ones to run and hands them to wave-create. Triggers on "plan a wave", "what can run next", "cross-wave check".'
 ---
 
 # wave-plan
