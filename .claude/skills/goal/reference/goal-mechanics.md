@@ -204,16 +204,18 @@ The CLI has no dry-run flag for this op — there is no way to ask the engine "w
      |---|---|
      | `done` | `done` |
      | `in-motion` | `in motion` |
-     | `actionable` | `ready to pick up` |
      | `blocked` | `blocked` |
+     | `actionable` | `ready to pick up` |
      | `unready` | `awaiting sharpening` |
    - `tracker state: <nativeState>` appears only when the store reported one (an initiative-bound project's own status category); `health: <health>` only when the member has one — both ABSENT rather than a placeholder when the store has nothing to say.
    - `waiting on <blockers>` lists every unresolved edge, rendered the same way [frontier-report.md](frontier-report.md#the-five-readings-and-what-each-one-costs-the-reader) renders them for the status pass.
    - Then a blank line, once, after the whole member list.
-5. **The distribution sentence**, then a blank line: `<done> of <total> member(s) [is/are] done.`, plus `Still open: <n> <anchor-word>, …` naming every non-zero open state in the same five-state order — or, when there are zero members at all, exactly `This goal has no members yet, so there is nothing to report against it.`
-6. **Whenever `frontier.complete` is true**, the empty-frontier sentence, verbatim, then a blank line:
+5. **The distribution sentence**, then a blank line: `<done> of <total> member(s) [is/are] done.`, plus `Still open: <n> <anchor-word>, …` naming every non-zero open state in the engine's own ladder/precedence order — `GOAL_MEMBER_STATES` ([goal-frontier.ts](../../../../tools/wave/src/goal-frontier.ts)), which is `done`, `in-motion`, `blocked`, `actionable`, `unready` (the table above is in that same order now — a mixed frontier's clause reads `in motion` first, then `blocked`, then `ready to pick up`, then `awaiting sharpening`, never the reverse) — or, when there are zero members at all, exactly `This goal has no members yet, so there is nothing to report against it.`
+6. **Whenever `frontier.complete` is true AND the goal has at least one member**, the empty-frontier sentence, verbatim, then a blank line:
 
    > Every member of this goal is closed. The remaining step — closing the container itself — is the Operator’s act in the tracker: this pass reports the finish line has been reached and does not declare it reached.
+
+   A zero-member goal is `complete` too (an empty remainder is empty), but this step does not fire there — see the note below step 8.
 
 7. **(if an operator's note was supplied)** `Operator’s note: <note>`, then a blank line.
 8. The provenance line, verbatim — no trailing blank line after it:
@@ -222,7 +224,7 @@ The CLI has no dry-run flag for this op — there is no way to ask the engine "w
 
 **Quote steps 6 and 8 exactly** in the preview — they are the engine's own fixed sentences, exported as `GOAL_UPDATE_EMPTY_FRONTIER_SENTENCE` and `GOAL_UPDATE_PROVENANCE_LINE` precisely so a preview can show the identical words the write will emit. The freshness caveat still applies: this preview is built from a READ (`goal-frontier`, taken as close to the confirm as possible), while the write derives its own frontier a second time, fresh, at the moment it runs — if the tracker moved in between, the published bytes can differ from what you just showed, in the member list and the counts, never in the two quoted sentences' own wording.
 
-> **A genuinely empty goal (zero members) ALSO triggers step 6 — verified against the shipped renderer, not assumed.** `frontier.complete` is `open.length === 0` ([goal-frontier.ts](../../../../tools/wave/src/goal-frontier.ts)), which is true for BOTH "every member is done" and "there are no members at all" — [frontier-report.md](frontier-report.md#empty-membership-vs-completion) draws that distinction sharply for the status pass, but step 6 above carries **no matching member-count guard**: a mirror run on a freshly-cut, still-empty goal renders step 5's `This goal has no members yet, so there is nothing to report against it.` immediately followed by step 6's `Every member of this goal is closed…`, both true to their own narrow claims and jarring side by side. This is the engine's actual behaviour, confirmed by calling `renderGoalUpdateBody` directly against a zero-reading `GoalFrontier` — not a hypothetical. **The skill's own judgment is the only guard here** (see "Pass 4 — mirror" in [SKILL.md](../SKILL.md#pass-4--mirror)): when `goal-frontier` shows zero members, say so plainly in the preview and flag that the published anchor will read as though the goal were finished, before asking for the confirm.
+> **A genuinely empty goal (zero members) does NOT trigger step 6 — the render gates on membership.** `frontier.complete` is `open.length === 0` ([goal-frontier.ts](../../../../tools/wave/src/goal-frontier.ts)), which is true for BOTH "every member is done" and "there are no members at all" — [frontier-report.md](frontier-report.md#empty-membership-vs-completion) draws that distinction sharply for the status pass, and `renderGoalUpdateBody` carries the same distinction into the mirror's own render: step 6 fires only when the frontier is complete AND has at least one member, so a mirror run on a freshly-cut, still-empty goal publishes step 5's `This goal has no members yet, so there is nothing to report against it.` alone, never doubled up with step 6's `Every member of this goal is closed…`. **The skill's own preview guard is now belt-and-suspenders, not the only line of defense** (see "Pass 4 — mirror" in [SKILL.md](../SKILL.md#pass-4--mirror)): flagging a zero-member frontier before the confirm is still good practice — an Operator publishing an update for a goal with nothing in it yet is a judgment call worth surfacing on its own — but the anchor itself no longer contradicts the flag if it is skipped. *(Before 2026-08-16, the render carried no such gate and step 6 fired for a zero-member goal exactly as it did for a finished one — that older behaviour is what the skill-side guard above was originally written to catch; the engine fix landed alongside this row, in the mirror-pass-residue slice.)*
 
 ### Output — `GoalUpdateReceipt`
 
