@@ -6,11 +6,44 @@
 
 > **Portable, Claude-Code-native wave-orchestration toolkit.** Plan a batch of independently-grabbable issues, dispatch parallel AFK agents in isolated worktrees, review each with a schema-validated verdict, land via PRs — with cross-wave **conflict/parallelism reasoning** as the universal core.
 
-**Stable.** The orchestration has been driving flotilla's own development across fifty-plus live waves. Three surfaces are semver contracts: the engine's package-root export surface, the `wave.config.json` schema (both since 1.0.0), and the CLI's output surface (since 1.1.0). [CHANGELOG.md](CHANGELOG.md) names what each release added and what remains unproven.
+**Stable.** The orchestration has been driving flotilla's own development across fifty-plus live waves, and runs in installed form — plugin plus published engine — in independent consumer repos beyond this one, operated by more than one person. Three surfaces are semver contracts: the engine's package-root export surface, the `wave.config.json` schema (both since 1.0.0), and the CLI's output surface (since 1.1.0). [CHANGELOG.md](CHANGELOG.md) names what each release added and what remains unproven.
 
 ## What flotilla is
 
 flotilla turns a backlog of tracker issues into a **wave**: a batch of independently-grabbable work items that a Coordinator plans, then dispatches to parallel AFK (away-from-keyboard) agents, each isolated in its own git worktree. Every agent's work is reviewed by a second, universal Reviewer agent before anything lands — the review returns a schema-validated verdict, not free prose, so routing to approve / request-changes / stop is deterministic rather than inferred. Landing happens via pull requests against a protected default branch; nothing is ever pushed directly to it.
+
+## Quickstart
+
+flotilla installs as two pieces — the skills as a Claude Code plugin, the engine from the public npm registry — and nothing is copied into your repo. In Claude Code, inside the repo you want to run waves in:
+
+1. **Install the plugin:**
+
+   ```
+   /plugin marketplace add formtrieb/flotilla
+   /plugin install flotilla@formtrieb
+   ```
+
+2. **Run the `wave-setup` skill.** The one-time bootstrap: it interviews you on three things (your tracker, the label set that marks an issue agent-ready, your build/test commands), installs the engine pinned into your repo, and writes `wave.config.json` — the single binding every other skill reads (ADR-0032). It also does the unglamorous parts for you: scaffolds the credential lookup so no token ever lands in a settings file, writes the permission allowlist a wave needs to run unattended, and preflights the live tracker and code-host preconditions before you ever plan a wave. Fix anything the preflights flag before continuing.
+
+3. **Get a few issues wave-ready.** `triage` works an existing issue into shape, or `to-issues` slices a plan/PRD into ready issues — each carrying a declared file scope, a risk/worker classification, and acceptance criteria. Hand-authoring in the same shape works too.
+
+4. **Run the wave:** `wave-plan` shows what can run side by side (read-only — you pick the ids), `wave-create` materializes the batch, `wave-start` dispatches one isolated Worker per issue plus a Reviewer per Worker. It ends with every row as an open, reviewed PR — **flotilla never merges on its own.**
+
+5. **Land the PRs, then `wave-close`.** It computes the advisory merge order, cleans up the agent worktrees, and archives the wave's record. Session died mid-wave? `wave-resume` picks up exactly where it stopped.
+
+The full adoption path — every step above in detail, plus the preconditions that fail silently if skipped — is **[docs/ONBOARDING.md](docs/ONBOARDING.md)**. Read its checklist before your first real wave.
+
+## Five terms that carry the rest
+
+The docs use a precise vocabulary; these five are enough to read everything else. The full glossary is [CONTEXT.md](CONTEXT.md).
+
+| Term | What it is |
+| --- | --- |
+| **Wave** | One batch of independently-grabbable issues, dispatched to parallel agents in isolated worktrees, reviewed, and landed via PRs. |
+| **Conflict map** | Pure set-intersection over each issue's declared file globs — answers *before dispatch* which work can safely run in parallel, both inside a wave and against what other waves already claimed. |
+| **Claim** | The coarse state a wave writes to your tracker (`queued → in-flight → in-review`) so humans and concurrent waves can see what is taken. One-way: the tracker is a projection, never the authority. |
+| **Spine** | The wave's durable, repo-local markdown record — a write-ahead log. It is what makes a killed Coordinator resumable. |
+| **Reviewer** | The independent, read-only agent that re-runs your verify commands and checks every acceptance criterion before a PR opens, returning a schema-validated verdict — the ground truth for whether the work is actually done. |
 
 ## The pipeline
 
@@ -84,26 +117,12 @@ flowchart TB
 
 Two properties worth knowing before you read further: the engine ships as raw TypeScript with no build step (`tsc --noEmit` is the type gate), and its public API is a deliberate, drift-guarded list — every module export is either deliberately public at the package root or on a reason-carrying allowlist, and a symbol in neither fails the test suite. There is deliberately **no dispatch-host abstraction**: the engine calls no agent-harness primitives; the Claude Code skills *are* the dispatch driver, and the schema-validated-subagent-return guarantee (agents cannot silently fabricate a result) is a property of that driver.
 
-## Getting started
+## Going deeper
 
-flotilla installs as two pieces: the **skills** as a Claude Code plugin, and the **engine** from the public npm registry. In Claude Code, inside the repo you want to run waves in:
-
-```
-/plugin marketplace add formtrieb/flotilla
-/plugin install flotilla@formtrieb
-```
-
-Then run the `wave-setup` skill. It interviews you on your tracker, your eligibility labels, and your verify commands, writes `wave.config.json`, and scaffolds the permission allowlist a wave needs to run unattended.
-
-The engine binds at **setup time, not at call time** (ADR-0032): `wave-setup` installs `@formtrieb/flotilla-engine` into your repo and records the one invocation form every skill uses under `engine.cli` in `wave.config.json` — for a Node consumer, the pinned `./node_modules/.bin/flotilla-engine`. Before that binding exists, you can explore the verb list with the unpinned bootstrap form:
-
-```bash
-npx @formtrieb/flotilla-engine        # exploration only — unpinned and slow; wave-setup replaces it with the pinned binding
-```
-
-The full path — what `wave-setup` asks you, the preconditions that fail silently if skipped, and the vendor-copy fallback for repos that cannot install a plugin — is **[docs/ONBOARDING.md](docs/ONBOARDING.md)**.
-
-Contributing to flotilla itself? Start with [CLAUDE.md](CLAUDE.md). Cutting a release? [docs/RELEASING.md](docs/RELEASING.md).
+- **Adopting flotilla in your repo** — [docs/ONBOARDING.md](docs/ONBOARDING.md): the [Quickstart](#quickstart) above in full detail, the preconditions checklist, credential mechanics, and the vendor-copy fallback for repos that cannot install a plugin. Before the setup-time binding exists, `npx @formtrieb/flotilla-engine` prints the engine's verb list (exploration only — unpinned and slow; `wave-setup` replaces it with the pinned binding).
+- **Why it works this way** — [docs/CHARTER.md](docs/CHARTER.md) for the architecture, [docs/adr/](docs/adr/) for the individual decisions with the options that were rejected and why.
+- **The vocabulary in full** — [CONTEXT.md](CONTEXT.md), the domain glossary.
+- **Contributing to flotilla itself?** Start with [CLAUDE.md](CLAUDE.md). Cutting a release? [docs/RELEASING.md](docs/RELEASING.md).
 
 ## License & provenance
 
