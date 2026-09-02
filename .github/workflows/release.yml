@@ -66,7 +66,21 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        # PIN BUMPED v6 -> v7 (ADR-0030 documented-form discipline, same as the
+        # checkout pin above). v7.0.0 release notes (2026-07-14) vs v6, read live in
+        # this dispatch: an ESM + dependency migration; two new cache-key outputs;
+        # `mirror-token` only used when given (no mirror here, inert); @actions/cache
+        # 5.1.0 (caching is off below, inert); and the one change that touches THIS
+        # job — the action no longer exports a placeholder `NODE_AUTH_TOKEN` when
+        # none is set (setup-node #1558). It still writes the .npmrc stanza
+        # `_authToken=${NODE_AUTH_TOKEN}` the `registry-url` note below explains; the
+        # reference now simply stays unresolved. Checked against both npm lines this
+        # job runs: npm 10.9 (bundled with the Node line below, runs the npm
+        # self-upgrade step) and npm 11 (everything after it) both leave an unset
+        # `${VAR}` in place as a literal rather than failing — the throw-on-missing
+        # behaviour the old placeholder guarded against is npm 6/7 history. The
+        # vendor's trusted-publishing example runs exactly this shape on v7.
+        uses: actions/setup-node@v7
         with:
           # Same Node line the verify workflow pins, so the gates re-run below on the
           # toolchain they gate against.
@@ -88,11 +102,12 @@ jobs:
           # once, which is why this comment needed rewriting rather than trusting its
           # own memory. The example lives at actions/setup-node's docs/advanced-usage.md,
           # under "Publishing to npm with Trusted Publisher (OIDC)" — read THAT page
-          # live before touching this pin or this comment again. As read on 2026-07-30:
+          # live before touching this pin or this comment again. As read on 2026-09-02:
           # the vendor's example pins actions/setup-node@v7 (with actions/checkout@v7
-          # and Node 24) — one major ahead of the actions/setup-node@v6 this step uses.
-          # `registry-url` and `package-manager-cache: false` below still match the
-          # example exactly; only the action major and the Node line have drifted.
+          # and Node 24) — the action major now matches this step. `registry-url` and
+          # `package-manager-cache: false` below still match the example exactly; the
+          # Node line (22 here, 24 there) is the one remaining drift, and the npm-floor
+          # step below is what covers it.
           registry-url: "https://registry.npmjs.org"
 
           # DEPENDENCY CACHING IS DELIBERATELY OFF — do not switch it on for speed.
