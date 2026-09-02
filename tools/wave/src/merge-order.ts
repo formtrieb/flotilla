@@ -91,8 +91,7 @@ export interface MergeOrderResult {
    */
   notInPlay: PR[];
   /**
-   * Advisory warnings collected while resolving branches. Two sources, one per
-   * path:
+   * Advisory warnings collected while resolving branches. Three sources:
    *
    * - MarkdownFs/Ur path: the `.scratch` NN-glob fallback
    *   (`resolveExactOrGlob`) firing — a real risk (Wave 2026-06-03 §L3: a stale
@@ -106,6 +105,13 @@ export interface MergeOrderResult {
    *   "genuinely has none" — the latter is {@link notInPlay}. Without it a
    *   wave-wide resolution failure emitted `"branch": null` for every row inside
    *   an order whose `reason` still read as authoritative.
+   *
+   * - `computeMergeOrderFromSpine` only (issue #635): the Plan-Table fallback
+   *   (#84, {@link parseWaveSpine}) rebinding a row to a `.scratch/` file it
+   *   found by numeric-tail match — one line per rebound row, so a fallback
+   *   that rebinds the store form never does so silently. Empty on the
+   *   footnote/bullet paths and on a tracker-backed spine, where the fallback
+   *   is gated off entirely (see {@link isFsFormPlanTableId}).
    */
   warnings: string[];
 }
@@ -782,6 +788,25 @@ function findRepoRootFrom(start: string): string {
 // ─── Plan-Table fallback: locate issue files by NN ─────────────────────────
 
 /**
+ * Whether a Plan-Table row id is shaped like the MarkdownFs / legacy `wo/NN`
+ * form the #84 Plan-Table fallback was built to resolve: bare digits, or a
+ * `slug/NN` pair split on one `/` (`29`, `wo/29`, `smdx/03`).
+ *
+ * A tracker-backed id glues a non-numeric prefix straight onto the digits
+ * with no separator (`TEAM-89`, `FOR-15` — Linear's `<TEAM-KEY>-<NN>`) and
+ * never matches this shape. That distinction is the store-form gate issue
+ * #635 needs: the fallback's numeric-tail extraction (`/(\d+)\s*$/`) reads
+ * `TEAM-89` as `89` just as readily as it reads `wo/89` as `89`, but only the
+ * latter's digits are a meaningful join key into `.scratch/` — a
+ * `TEAM-89`/`.scratch/**\/issues/done/89-*.md` match is a coincidence of two
+ * unrelated numbering schemes, not identity. See the fallback's call site in
+ * {@link parseWaveSpine} for how this gates the whole spine.
+ */
+function isFsFormPlanTableId(id: string): boolean {
+  return /^(?:[^/]+\/)?\d+$/.test(id.trim());
+}
+
+/**
  * Locate an issue file for a given numeric NN under any slug in the repo.
  *
  * Searches `<repoRoot>/.scratch/<slug>/issues/<NN>-*.md` for all `slug`
@@ -851,6 +876,17 @@ export interface ParsedSpine {
    * the spine declares no branches yet (e.g. a `planned` spine pre-dispatch).
    */
   branchesByIssueId: Record<string, string>;
+  /**
+   * Advisory warnings collected while parsing the spine. Currently populated
+   * only by the Plan-Table fallback (#84) rebinding a row to a `.scratch/`
+   * filesystem match (issue #635) — one line per rebound row, naming the row
+   * id and the path it was keyed to. Empty on every spine whose issue paths
+   * came from footnotes or `**Source issues**` bullets, and empty on a
+   * tracker-backed spine (the fallback never fires there — see
+   * {@link isFsFormPlanTableId}). `computeMergeOrderFromSpine` merges this
+   * into the final {@link MergeOrderResult.warnings}.
+   */
+  warnings: string[];
 }
 
 /**
@@ -1001,19 +1037,51 @@ export function parseWaveSpine(
   //     The existing footnote-driven path is untouched — the fallback fires
   //     ONLY when `issuePaths.length === 0` so a footnote-bearing spine is
   //     byte-identical in behaviour.
+  //
+  //     STORE-FORM GATE (issue #635): the numeric-tail match this fallback
+  //     performs only means anything when EVERY Plan-Table id is fs-form (see
+  //     {@link isFsFormPlanTableId}) — the MarkdownFs / legacy `wo/NN` shape
+  //     this fallback (#84) was built for. A single tracker-backed id (any
+  //     non-numeric-prefix id, e.g. `TEAM-89`) is proof the whole spine is
+  //     tracker-backed by construction, so the fallback must not run AT ALL:
+  //     `.scratch/` numeric-tail-matching such a spine risks joining a row to
+  //     a same-numbered file in an unrelated legacy corpus (a frozen
+  //     predecessor `.scratch/` tree is PROVENANCE's own adoption shape) —
+  //     silently rerouting merge-order onto foreign files instead of the
+  //     spine-self-contained path (`buildSpinePrs`) that already handles a
+  //     tracker-backed spine correctly. `issuePaths` simply stays empty in
+  //     that case, exactly as if the fallback had found nothing.
+  const warnings: string[] = [];
   if (issuePaths.length === 0) {
     const spine = readSpine(source);
-    for (const row of spine.planTable) {
-      const nnMatch = /(\d+)\s*$/.exec(row.id);
-      if (!nnMatch) continue;
-      const nn = Number(nnMatch[1]);
-      if (!Number.isFinite(nn)) continue;
-      const abs = findIssuePathByNN(nn, repoRoot);
-      if (!abs) continue;
-      // Key the path by bare NN so the Conflict-Map and branch-extraction steps
-      // can join correctly (bare NN is the join key for Plan-Table-only spines).
-      keyToPath.set(String(nn), abs);
-      issuePaths.push(abs);
+    const candidateRows = spine.planTable.filter((row) => row.id.trim());
+    const isFsFormSpine =
+      candidateRows.length > 0 &&
+      candidateRows.every((row) => isFsFormPlanTableId(row.id));
+    if (isFsFormSpine) {
+      for (const row of spine.planTable) {
+        const nnMatch = /(\d+)\s*$/.exec(row.id);
+        if (!nnMatch) continue;
+        const nn = Number(nnMatch[1]);
+        if (!Number.isFinite(nn)) continue;
+        const abs = findIssuePathByNN(nn, repoRoot);
+        if (!abs) continue;
+        // Key the path by bare NN so the Conflict-Map and branch-extraction
+        // steps can join correctly (bare NN is the join key for
+        // Plan-Table-only spines).
+        keyToPath.set(String(nn), abs);
+        issuePaths.push(abs);
+        // The rebinding is never silent (issue #635 AC2): a Plan-Table row
+        // whose fileCount/branch source got rerouted onto a `.scratch/` match
+        // it never named itself is exactly the kind of quiet reroute this
+        // whole gate exists to stop from happening unannounced.
+        warnings.push(
+          `${row.id.trim()}: Plan-Table fallback (#84) rebound this row to ` +
+            `\`${abs}\` under .scratch/ — no issue-path footnote or ` +
+            '**Source issues** bullet named it for this row; verify this is ' +
+            'the intended issue file.',
+        );
+      }
     }
   }
 
@@ -1039,7 +1107,7 @@ export function parseWaveSpine(
   const branchesByIssueId = extractSpineBranches(source, issuePaths);
 
   const issues = issuePaths.map((p) => extractIssueId(p));
-  return { issuePaths, conflictMap: { issues, cells }, branchesByIssueId };
+  return { issuePaths, conflictMap: { issues, cells }, branchesByIssueId, warnings };
 }
 
 /**
@@ -1154,6 +1222,14 @@ function tableIdToIssueId(
  *   `readSpine(source).conflictMap` (bare ids survive — `parseWaveSpine`'s
  *   `tableIdToIssueId` drops bare numbers) and build PRs from the Plan-Table
  *   with a conflict-footprint fileCount proxy.
+ *
+ * A tracker-backed spine (Linear `TEAM-NN`, or any id with a non-numeric
+ * prefix) always takes the second path: `parseWaveSpine`'s Plan-Table
+ * fallback (#84) is gated off for such a spine (issue #635) so it never
+ * numeric-tail-matches a row into an unrelated `.scratch/` corpus — a real
+ * risk in exactly the ordinary adoption shape PROVENANCE describes, a repo
+ * seeded from the predecessor system still carrying its frozen `.scratch/`
+ * tree.
  */
 export function computeMergeOrderFromSpine(
   spinePath: string,
@@ -1161,7 +1237,12 @@ export function computeMergeOrderFromSpine(
 ): MergeOrderResult {
   const abs = resolve(spinePath);
   const source = readFileSync(abs, 'utf-8');
-  const { issuePaths, conflictMap, branchesByIssueId } = parseWaveSpine(source, dirname(abs));
+  const {
+    issuePaths,
+    conflictMap,
+    branchesByIssueId,
+    warnings: parseWarnings,
+  } = parseWaveSpine(source, dirname(abs));
 
   const repoRoot = opts.repoRoot ?? process.cwd();
   const git = opts.git ?? defaultGitProbe(repoRoot);
@@ -1169,8 +1250,16 @@ export function computeMergeOrderFromSpine(
 
   // MarkdownFs / `.scratch` case: issue files were located on disk → read their
   // `Files:` headers for the real fileCount (the historical path, unchanged).
+  // `parseWarnings` carries forward any Plan-Table-fallback rebinding notices
+  // (issue #635 AC2) — collected while building `issuePaths` above, so they
+  // must ride along into the final result rather than being dropped here.
   if (issuePaths.length > 0) {
-    return computeMergeOrder(issuePaths, conflictMap, { ...opts, git, branchesByIssueId: branches });
+    const result = computeMergeOrder(issuePaths, conflictMap, {
+      ...opts,
+      git,
+      branchesByIssueId: branches,
+    });
+    return { ...result, warnings: [...parseWarnings, ...result.warnings] };
   }
 
   // GitHub / spine-self-contained case (ADR-0019): no issue files on disk.
@@ -1188,5 +1277,6 @@ export function computeMergeOrderFromSpine(
   // Thread the warnings through (issue #141) — without this the
   // could-not-recover signal is computed and then dropped, which is how a
   // wave-wide branch-resolution failure surfaced as a confident order.
-  return orderPrs(prs, spineConflictMap, git, { notInPlay, warnings });
+  const result = orderPrs(prs, spineConflictMap, git, { notInPlay, warnings });
+  return { ...result, warnings: [...parseWarnings, ...result.warnings] };
 }

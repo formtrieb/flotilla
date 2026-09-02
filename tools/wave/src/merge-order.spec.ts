@@ -1809,3 +1809,235 @@ describe('computeMergeOrderFromSpine — an unrecoverable branch is distinguishe
     expect(result.notInPlay).toEqual([]);
   });
 });
+
+// ─── issue #635: Plan-Table fallback store-form gate ─────────────────────────
+//
+// The #84 Plan-Table fallback numeric-tail-matches a spine's Plan-Table row
+// ids (`/(\d+)\s*$/`) against `.scratch/**/issues/{,done/}<NN>-*.md` when no
+// footnotes/bullets were found. That regex reads `TEAM-89` as `89` exactly as
+// readily as it reads `wo/89` as `89` — but only the latter's digits are a
+// meaningful join key into `.scratch/`. A tracker-backed spine (Linear
+// `TEAM-NN`, or any id with a non-numeric prefix) sharing a repo with a
+// frozen predecessor `.scratch/` corpus (PROVENANCE's own adoption shape) can
+// collide on that coincidence: the fallback silently rebinds a real,
+// dispatched row onto an unrelated legacy file, drops every row whose header
+// does not parse, and returns "Empty wave" with zero warnings — a wave that
+// held five `pr-created` rows disappearing without a trace.
+//
+// AC 1: a tracker-backed spine's numeric-tail never resolves into `.scratch/`
+//       at all — even with a colliding `done/89-*.md` present, the order is
+//       the full spine-self-contained order, not "Empty wave".
+// AC 2: when the fallback DOES resolve a bare-numeric (fs-form) row into
+//       `.scratch/`, the rebinding shows up in `warnings` — never silent.
+// AC 3: a bare-numeric (legacy `wo/NN` / MarkdownFs) spine is unaffected —
+//       covered by the existing wo/84 + ADR-0019 describe blocks above, which
+//       stay green unchanged.
+// AC 4: this describe block IS the regression spec: a tracker-backed spine of
+//       dispatched rows plus a colliding legacy `.scratch/.../done/` corpus.
+
+describe('parseWaveSpine / computeMergeOrderFromSpine — issue #635: Plan-Table fallback store-form gate', () => {
+  function trackerMeta635(slug: string): SpineMeta {
+    return {
+      slug,
+      description: '#635 fixture',
+      coordinator: 'human + claude',
+      model: 'opus',
+      created: '2026-08-31',
+      lastUpdated: '2026-08-31',
+    };
+  }
+
+  /**
+   * Plant a frozen-predecessor-shaped `.scratch/<slug>/issues/done/<nn>-*.md`
+   * file under `dir` — the exact adoption shape PROVENANCE describes (a
+   * consumer repo seeded from the predecessor system, still carrying its
+   * `.scratch/**\/issues/` tree). Content is a well-formed Header-Block so
+   * that, if the gate were absent, the fallback would successfully parse it
+   * and produce a (wrong) PR from it — the strongest form of the collision.
+   */
+  function plantCollidingLegacyIssue(dir: string, nn: number): void {
+    const legacyDir = join(dir, '.scratch', 'legacy-predecessor', 'issues', 'done');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(
+      join(legacyDir, `${nn}-unrelated-predecessor-issue.md`),
+      [
+        `# ${nn} — an unrelated predecessor issue`,
+        '',
+        '**Status:** done',
+        '**Risk:** mechanical',
+        '**Worker:** background',
+        '**Files:**',
+        '- some/unrelated/predecessor/file.ts',
+        '**Blocked by:** none',
+        '',
+        '## What to build',
+        '',
+        'Nothing — this file belongs to a frozen predecessor corpus.',
+      ].join('\n'),
+      'utf-8',
+    );
+  }
+
+  it('AC1+AC4: a tracker-backed spine (TEAM-NN) never numeric-tail-matches into a colliding .scratch/ corpus — spine-self-contained order wins, not "Empty wave"', () => {
+    const roster: SpineRosterRow[] = [
+      { id: 'TEAM-88', title: 'first dispatched row', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'TEAM-89', title: 'second dispatched row', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      trackerMeta635('for635-collision'),
+      roster,
+      { issues: ['TEAM-88', 'TEAM-89'], cells: [] },
+      'PASS',
+    );
+    source = setRowState(source, 'TEAM-88', 'dispatched');
+    source = upsertDispatchLogEntry(source, 'TEAM-88', 'wave/TEAM-88-first');
+    source = setRowState(source, 'TEAM-89', 'dispatched');
+    source = upsertDispatchLogEntry(source, 'TEAM-89', 'wave/TEAM-89-second');
+    const { dir, path } = writeSpineFile(source);
+
+    // The collision: TEAM-89's numeric tail (89) matches this legacy file.
+    plantCollidingLegacyIssue(dir, 89);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    // Pre-fix this was `Empty wave — no issues to order.` with both real rows
+    // dropped. Post-fix: the full spine-self-contained order survives.
+    expect(result.reason).not.toMatch(/Empty wave/);
+    expect(ids(result.algorithmic)).toEqual(['TEAM-88', 'TEAM-89']);
+    expect(result.algorithmic.map((p) => p.branch)).toEqual([
+      'wave/TEAM-88-first',
+      'wave/TEAM-89-second',
+    ]);
+    expect(result.notInPlay).toEqual([]);
+    // No rebinding happened, so no rebinding warning — and no other warning
+    // source fires either (every row's branch was recovered).
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('AC1: the gate holds even when EVERY row collides (the worst case — a wave that would otherwise vanish entirely)', () => {
+    const roster: SpineRosterRow[] = [
+      { id: 'TEAM-90', title: 'a', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'TEAM-91', title: 'b', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'TEAM-92', title: 'c', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      trackerMeta635('for635-full-collision'),
+      roster,
+      { issues: ['TEAM-90', 'TEAM-91', 'TEAM-92'], cells: [] },
+      'PASS',
+    );
+    for (const id of ['TEAM-90', 'TEAM-91', 'TEAM-92']) {
+      source = setRowState(source, id, 'dispatched');
+      source = upsertDispatchLogEntry(source, id, `wave/${id}-slice`);
+    }
+    const { dir, path } = writeSpineFile(source);
+
+    plantCollidingLegacyIssue(dir, 90);
+    plantCollidingLegacyIssue(dir, 91);
+    plantCollidingLegacyIssue(dir, 92);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    expect(result.reason).not.toMatch(/Empty wave/);
+    expect(ids(result.algorithmic)).toEqual(['TEAM-90', 'TEAM-91', 'TEAM-92']);
+    expect(result.notInPlay).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('AC2: when the fallback DOES rebind a bare-numeric (fs-form) row into .scratch/, the rebinding is reported in warnings, not silent', () => {
+    // A legacy MarkdownFs-shaped spine (bare NN ids) with NO footnotes and NO
+    // Source-issues bullets — the exact #84 fallback-fires condition — whose
+    // NN resolves to a real issue file placed directly (not via `writeIssue`,
+    // so the file lives at the exact NN the Plan-Table row names, proving this
+    // is a genuine rebind rather than the earlier wo/84 fixture's own writes).
+    const dir = mkdtempSync(join(tmpdir(), 'flotilla-635-rebind-'));
+    const issuesDir = join(dir, '.scratch', 'legacy-slug', 'issues');
+    mkdirSync(issuesDir, { recursive: true });
+    writeFileSync(
+      join(issuesDir, '77-rebind-target.md'),
+      [
+        '# 77 — rebind target',
+        '',
+        '**Status:** ready-for-agent',
+        '**Risk:** mechanical',
+        '**Worker:** background',
+        '**Files:**',
+        '- libs/legacy-slug/file-77-0.ts',
+        '**Blocked by:** none',
+        '',
+        '## What to build',
+        '',
+        'A thing.',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const spine = [
+      '# Wave — bare-numeric Plan-Table, no footnotes',
+      '',
+      '**Status:** in-flight',
+      '',
+      '## Plan-Table',
+      '',
+      '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+      '| -- | ----- | ------ | ---- | -------- | -- | ----- | ---- | ------------------ |',
+      '| 77 | rebind-target | background | isolated-refactor | quick-verify | — | planned | 1 | — |',
+      '',
+      '## Conflict-Map',
+      '',
+      '_No overlaps._',
+      '',
+    ].join('\n');
+    const spinePath = join(dir, 'sample.md');
+    writeFileSync(spinePath, spine, 'utf-8');
+
+    const parsed = parseWaveSpine(spine, dir);
+
+    expect(parsed.issuePaths).toHaveLength(1);
+    expect(parsed.warnings).toHaveLength(1);
+    expect(parsed.warnings[0]).toContain('77');
+    expect(parsed.warnings[0]).toMatch(/Plan-Table fallback/);
+    expect(parsed.warnings[0]).toContain('77-rebind-target.md');
+
+    // The rebinding warning also rides through computeMergeOrderFromSpine's
+    // final MergeOrderResult (no new field — the existing `warnings` channel).
+    const result = computeMergeOrderFromSpine(spinePath, {
+      repoRoot: dir,
+      git: fakeProbe({}),
+    });
+    expect(result.warnings.some((w) => w.includes('Plan-Table fallback'))).toBe(true);
+  });
+
+  it('AC3 (regression guard): a mixed spine (one fs-form id, one tracker-form id) is treated as tracker-backed — the gate is spine-wide, not per-row', () => {
+    // A single non-numeric-prefix id anywhere in the Plan-Table is proof the
+    // whole spine is tracker-backed (a real spine is never actually mixed —
+    // this fixture exists purely to pin the "every row" gate semantics).
+    const roster: SpineRosterRow[] = [
+      { id: '78', title: 'looks fs-form in isolation', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'TEAM-93', title: 'unambiguously tracker-form', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      trackerMeta635('for635-mixed'),
+      roster,
+      { issues: ['78', 'TEAM-93'], cells: [] },
+      'PASS',
+    );
+    source = setRowState(source, '78', 'dispatched');
+    source = upsertDispatchLogEntry(source, '78', 'wave/78-slice');
+    source = setRowState(source, 'TEAM-93', 'dispatched');
+    source = upsertDispatchLogEntry(source, 'TEAM-93', 'wave/TEAM-93-slice');
+    const { dir, path } = writeSpineFile(source);
+
+    // A file that WOULD satisfy the "78" row's numeric tail if the gate were
+    // per-row instead of spine-wide.
+    plantCollidingLegacyIssue(dir, 78);
+
+    const parsed = parseWaveSpine(source, dir);
+    expect(parsed.issuePaths).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+    expect(result.reason).not.toMatch(/Empty wave/);
+    expect(ids(result.algorithmic)).toEqual(['78', 'TEAM-93']);
+  });
+});
