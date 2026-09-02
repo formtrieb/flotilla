@@ -108,6 +108,17 @@ For an already-filed issue lacking the Header-Block — a triage-ready issue, **
 
 Either way, decorating an issue does not by itself grant wave-eligibility (the eligibility marker/label is a separate, consumer-owned step) — decorate makes the issue *readable and DoR-checkable*, eligibility is what a wave-planning step stamps on top.
 
+### Verify the write
+
+`annotate` is one of the nine mutating `issue-store` ops that answer success with **empty stdout** by design (#648) — the exit code is the whole signal at the call site, and on its own it says only "the write did not throw," never "the header now reads the way you meant it to." Read the header back before trusting it landed:
+
+```bash
+{{wave-cli}} issue-store read <id>                                             # IssueView
+{{wave-cli}} dor --id <id> --config <path-to-wave.config.json>                 # DoR gates
+```
+
+`read`'s `IssueView` is what proves the patched fields actually landed on the tracker — `risk`/`worker`/`files`/`acceptanceCriteria` reading back exactly as supplied (and, on GitHub/Linear, `blockedBy` reading `'none'` rather than throwing, per the store note above). `dor --id` is what proves the header is now *usable*, not merely present — a header-parseable, AC-complete row the self-content gates pass, rather than a write that landed syntactically but still leaves a gate failing. Never pipe the `annotate` call through another command before checking its exit code — a pipeline reports only the last command's status, so a non-zero `annotate` can hide behind a zero downstream command.
+
 ## GitHub blockedBy-mirror operating envelope (github consumers only)
 
 Every `create` or `decorate` call that carries a non-empty `blockedBy` on a **github**-store consumer also mirrors those refs into GitHub's native issue-dependencies API (`GithubIssuesStore.mirrorBlockedBy`, `tools/wave/src/adapters/github/github-issues-store.ts`) — best-effort, additive-only, and orthogonal to the authoritative body-codec write. That mirror costs **one `addBlockedBy` POST per unmirrored ref**, in addition to the one `getBlockedBy` GET the mirror always pays to check what is already native — the same per-call cost the Linear adapter pays for its own mirror.

@@ -310,6 +310,11 @@ git -C "$REPO" rev-parse --verify "${ANCHOR_SHA}^{commit}" > /dev/null
 #     either half of that row be missing/blank/"undefined" before any brief
 #     is composed.
 {{wave-cli}} issue-store transition "$ID" in-flight                     # coarse rung, second
+#   Verify the write: transition answers success with empty stdout (silent by
+#   design, #648) — the exit code alone says only "did not throw," never
+#   "the rung is now in-flight." `{{wave-cli}} issue-store read "$ID"` reads
+#   IssueView.status back and confirms `in-flight` (wave-shared "Verify the
+#   write"). Never pipe this call before reading its exit code.
 
 # 6. Dispatch — compose + run the Workflow script (workflow-driver.md), ISSUES
 #    built from the DISPATCHABLE rows only (both HELD_IDS and the HUMAN-HELD ids
@@ -657,6 +662,10 @@ fi
 #   and record an EMPTY PR cell: a row that reads as landed with nothing landed
 #   behind it. Both writes sit below it for that reason — the state flip is as
 #   wrong as the empty cell when no PR was opened.
+#   Verify the write: `transition` is silent by design (empty stdout, #648) —
+#   `{{wave-cli}} issue-store read "$ID"` reads IssueView.status back and
+#   confirms `in-review` (wave-shared "Verify the write"). Don't pipe the
+#   transition call before reading its exit code.
 
 # 7d. transition → re-dispatched (cap=1 — enforced by transition() itself):
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" re-dispatched
@@ -708,6 +717,12 @@ fi
   --kind <recoverable-stop|terminal-failure> \
   --question "<the decision needed from the Operator>" \
   --option "<A>" --option "<B>"
+#   Verify the write: `flag` is silent by design (empty stdout, #648) — the
+#   exit code alone says only "did not throw," never "the Operator will now
+#   see this." `{{wave-cli}} issue-store read "$ID"` reads back `status:
+#   needs-attention` (takes precedence over the rung in the coarse projection
+#   — see the Disclaimer at the end of this file). Never pipe this call
+#   before reading its exit code (wave-shared "Verify the write").
 
 # 8a. OPTIONAL Coordinator disposition of a `terminal-failure` STOP — park instead
 #     of abandoning (ADR-0022 §Consequences). The stopped row is still live
@@ -720,6 +735,10 @@ fi
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" parked    # from failed
 {{wave-cli}} issue-store unclaim "$ID"                     # releases the claim → available
 {{wave-cli}} issue-store clear-flag "$ID"                  # parked is silent, not needs-attention
+#   Verify the write: `clear-flag` is also silent by design (empty stdout,
+#   #648). `{{wave-cli}} issue-store read "$ID"` confirms `status` has
+#   dropped back to the underlying rung — `needs-attention` no longer shows.
+#   Never pipe this call before reading its exit code.
 ```
 
 ### Verified routing outputs (the JSON these verbs actually print)
