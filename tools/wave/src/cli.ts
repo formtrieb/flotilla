@@ -822,13 +822,19 @@ function renderMergeOrder(result: MergeOrderResult): string {
       override: result.override ? result.override.map(projectPr) : null,
       reason: result.reason,
       hasOverride: result.override !== null,
-      // FOR-15: rows never dispatched (no branch, no PR) — excluded above,
-      // listed here instead of silently dropped — and advisory warnings from
-      // branch resolution: the `.scratch` NN-glob fallback on the MarkdownFs
-      // path, and (issue #141) an in-play row whose branch could not be
-      // recovered on the spine-self-contained path. The two keys are what let a
-      // reader tell "genuinely has no branch" (notInPlay) from "I could not
-      // find its branch" (warnings) — see MergeOrderResult.
+      // notInPlay covers two reasons a row is excluded above, listed here
+      // instead of silently dropped: (FOR-15) never dispatched — still
+      // `planned`, no branch, no PR; and (ADR-0022, issue #636) `parked` — a
+      // row deliberately taken out of THIS wave, held before dispatch
+      // (`planned → parked`) or released at a STOP (`failed → parked`). A
+      // parked row's missing branch is the correct, expected shape, not a
+      // dispatch-log gap to go chase. warnings carries the DIFFERENT case
+      // that IS a gap to chase: the `.scratch` NN-glob fallback on the
+      // MarkdownFs path, and (issue #141) an in-play (never parked, never
+      // never-dispatched) row whose branch could not be recovered on the
+      // spine-self-contained path. The two keys are what let a reader tell
+      // "genuinely has/needs no branch" (notInPlay) from "I could not find
+      // its branch" (warnings) — see MergeOrderResult.
       notInPlay: result.notInPlay.map(projectPr),
       warnings: result.warnings,
     },

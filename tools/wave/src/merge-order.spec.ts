@@ -2041,3 +2041,99 @@ describe('parseWaveSpine / computeMergeOrderFromSpine — issue #635: Plan-Table
     expect(ids(result.algorithmic)).toEqual(['78', 'TEAM-93']);
   });
 });
+
+// ─── issue #636: `parked` rows are excluded from the merge-order, not warned
+// about as a branch-recovery failure ────────────────────────────────────────
+//
+// ADR-0022 makes `parked` a claim-releasing terminal, "deliberately taken out
+// of *this* wave", and its own text already says it is "excluded from the
+// advisory merge-order (no branch, no PR)". Before this fix `buildSpinePrs`'s
+// only exclusion was `neverDispatched` (`planned` + no branch + no PR) —
+// `parked` matched no filter, so it fell into the branch-null "in play" arm
+// that issue #141 added, rode into `algorithmic`, and produced a warning
+// telling the operator to go check the dispatch-log for a branch that was
+// NEVER supposed to exist (a parked row has no dispatch-log entry by design —
+// held before dispatch, or released at a STOP).
+
+describe('computeMergeOrderFromSpine — issue #636: parked rows never enter the order or the branch-recovery warning', () => {
+  it('a spine of dispatched rows plus parked rows: algorithmic keeps only the dispatched rows in order, parked rows land in notInPlay, warnings stays empty', () => {
+    const roster: SpineRosterRow[] = [
+      { id: 'FOR-90', title: 'dispatched, has a branch', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'FOR-91', title: 'dispatched, has a branch', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'FOR-92', title: 'held before dispatch', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'FOR-93', title: 'released at a STOP', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      forFifteenMeta('for636-parked'),
+      roster,
+      {
+        issues: ['FOR-90', 'FOR-91', 'FOR-92', 'FOR-93'],
+        cells: [{ a: 'FOR-90', b: 'FOR-91', files: ['some/shared.ts'] }],
+      },
+      'PASS',
+    );
+    source = setRowState(source, 'FOR-90', 'dispatched');
+    source = upsertDispatchLogEntry(source, 'FOR-90', 'wave/FOR-90-dispatched');
+    source = setRowState(source, 'FOR-91', 'dispatched');
+    source = upsertDispatchLogEntry(source, 'FOR-91', 'wave/FOR-91-dispatched');
+    // FOR-92: held before dispatch (`planned → parked`) — never had a branch.
+    source = setRowState(source, 'FOR-92', 'parked');
+    // FOR-93: released at a STOP (`failed → parked`) — its earlier, now-dead
+    // dispatch DID record a branch. Proves parked is excluded regardless of
+    // whether a branch happens to be on file, not merely when one is absent.
+    source = setRowState(source, 'FOR-93', 'parked');
+    source = upsertDispatchLogEntry(source, 'FOR-93', 'wave/FOR-93-failed-then-parked');
+    const { dir, path } = writeSpineFile(source);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    // Order: only the two dispatched rows, in the algorithmic order.
+    expect(ids(result.algorithmic)).toEqual(['FOR-90', 'FOR-91']);
+    expect(result.algorithmic.every((p) => p.branch !== null)).toBe(true);
+    expect(result.override).toBeNull();
+
+    // Bucket membership: both parked rows, and only them, are in notInPlay —
+    // never in algorithmic (ADR-0022 exclusion, MergeOrderResult gains no new
+    // field/bucket).
+    expect(ids(result.notInPlay).sort()).toEqual(['FOR-92', 'FOR-93']);
+    expect(ids(result.algorithmic)).not.toContain('FOR-92');
+    expect(ids(result.algorithmic)).not.toContain('FOR-93');
+    // FOR-93's branch survives onto its notInPlay entry (informational only —
+    // it does not pull the row back into play).
+    const for93 = result.notInPlay.find((p) => p.issueId === 'FOR-93');
+    expect(for93?.branch).toBe('wave/FOR-93-failed-then-parked');
+
+    // The `parked`-is-a-recovery-failure misreading this issue fixes: no
+    // warning at all, for either parked row, branch-having or not.
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('a dispatched row with a genuinely unrecoverable branch still gets the existing warning, unchanged in wording, even in a spine that also has parked rows', () => {
+    const roster: SpineRosterRow[] = [
+      { id: 'FOR-94', title: 'dispatched, branch unrecoverable', worker: 'background', risk: 'isolated-refactor' },
+      { id: 'FOR-95', title: 'held before dispatch', worker: 'background', risk: 'isolated-refactor' },
+    ];
+    let source = renderSpine(
+      forFifteenMeta('for636-warning-still-fires'),
+      roster,
+      { issues: ['FOR-94', 'FOR-95'], cells: [] },
+      'PASS',
+    );
+    source = setRowState(source, 'FOR-94', 'dispatched');
+    // No dispatch-log branch recorded for FOR-94 → in play, branch null.
+    source = setRowState(source, 'FOR-95', 'parked');
+    const { dir, path } = writeSpineFile(source);
+
+    const result = computeMergeOrderFromSpine(path, { repoRoot: dir, git: fakeProbe({}) });
+
+    expect(ids(result.algorithmic)).toEqual(['FOR-94']);
+    expect(ids(result.notInPlay)).toEqual(['FOR-95']);
+    // Byte-identical wording to the pre-#636 warning (issue #141's text) — the
+    // fix must not touch this case at all.
+    expect(result.warnings).toEqual([
+      'FOR-94: in play (state "dispatched") but no branch could be recovered from the spine — ' +
+        'the merge order below cannot name a ref for this row. ' +
+        'Check the dispatch-log recorded a `branch <ref>` token for it.',
+    ]);
+  });
+});

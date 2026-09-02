@@ -824,6 +824,73 @@ describe('merge-order subcommand — GitHub spine (no .scratch/ files, ADR-0019)
   });
 });
 
+// Issue #636: a `parked` Plan-Table row (ADR-0022 — a claim-releasing
+// terminal, deliberately taken out of THIS wave) must never ride into
+// `algorithmic` as a branch-null "in play" entry, and must never produce the
+// "no branch could be recovered from the spine" warning — it has no
+// dispatch-log entry by design. It belongs in the same `notInPlay` bucket the
+// CLI already renders for never-dispatched rows.
+describe('merge-order subcommand — a parked row in the rendered JSON (issue #636)', () => {
+  let parkedRoot: string;
+  let parkedSpineFile: string;
+
+  beforeAll(() => {
+    parkedRoot = mkdtempSync(join(tmpdir(), 'wave-cli-parked-'));
+    parkedSpineFile = join(parkedRoot, 'parked-wave.md');
+    writeFileSync(
+      parkedSpineFile,
+      [
+        '# Wave with a parked row',
+        '',
+        '**Status:** in-flight',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| 10 | Dispatched row | background | mechanical | universal | — | dispatched | 1 | — |',
+        '| 11 | Held before dispatch | background | mechanical | universal | — | parked | — | — |',
+        '',
+        '## Conflict-Map',
+        '',
+        'none',
+        '',
+        '## Resume-Metadata',
+        '',
+        '```yaml',
+        'dispatch-log:',
+        '  - "10 → agent wf_aaa branch wave/10-dispatched-row"',
+        '```',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+  });
+
+  afterAll(() => {
+    rmSync(parkedRoot, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReturnValue('');
+  });
+
+  it('the parked row is in notInPlay, never in algorithmic, and warnings stays empty', () => {
+    const code = main(['merge-order', parkedSpineFile]);
+    expect(code).toBe(0);
+    const jsonMatch = stdoutBuf.match(/\{[\s\S]*\}/);
+    expect(jsonMatch).not.toBeNull();
+    const parsed = JSON.parse(jsonMatch?.[0] ?? '{}') as {
+      algorithmic: Array<{ issueId: string }>;
+      notInPlay: Array<{ issueId: string }>;
+      warnings: string[];
+    };
+    expect(parsed.algorithmic.map((p) => p.issueId)).toEqual(['10']);
+    expect(parsed.notInPlay.map((p) => p.issueId)).toEqual(['11']);
+    expect(parsed.warnings).toEqual([]);
+  });
+});
+
 describe('merge-order subcommand — happy path (exit 0)', () => {
   beforeEach(() => {
     // Reset the shared node:child_process mock so defaultGitProbe sees empty
