@@ -29,7 +29,7 @@ Two pieces, deliberately decoupled — a plugin install runs no `npm install`, s
 
 ## Preconditions checklist
 
-Work through this before your first real wave — most of these fail silently rather than loudly if skipped.
+Work through this before your first real wave — most of these fail silently rather than loudly if skipped. **Prerequisites:** Node 20.11 or newer (the engine's declared floor), git, a repository on GitHub or Bitbucket Cloud whose default branch is protected, and a tracker token resolvable through a lookup command. What each tracker and each code host actually gives you beyond that — including where GitHub can arm a PR and Bitbucket Cloud cannot — is the dated, per-cell matrix in [docs/CAPABILITIES.md](CAPABILITIES.md).
 
 | Precondition | Why it matters | How to check |
 | --- | --- | --- |

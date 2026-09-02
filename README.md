@@ -14,6 +14,8 @@ flotilla turns a backlog of tracker issues into a **wave**: a batch of independe
 
 ## Quickstart
 
+**Prerequisites:** Node 20.11 or newer (the engine's declared floor), git, a repository on GitHub or Bitbucket Cloud whose default branch is protected, and a tracker token resolvable through a lookup command.
+
 flotilla installs as two pieces — the skills as a Claude Code plugin, the engine from the public npm registry — and nothing is copied into your repo. In Claude Code, inside the repo you want to run waves in:
 
 1. **Install the plugin:**
@@ -44,6 +46,8 @@ The docs use a precise vocabulary; these five are enough to read everything else
 | **Claim** | The coarse state a wave writes to your tracker (`queued → in-flight → in-review`) so humans and concurrent waves can see what is taken. One-way: the tracker is a projection, never the authority. |
 | **Spine** | The wave's durable, repo-local markdown record — a write-ahead log. It is what makes a killed Coordinator resumable. |
 | **Reviewer** | The independent, read-only agent that re-runs your verify commands and checks every acceptance criterion before a PR opens, returning a schema-validated verdict — the ground truth for whether the work is actually done. |
+
+**Capabilities, in three lines:** GitHub Issues and Linear both ship full tracker adapters — claim ledger, needs-attention, frontier — with Linear alone able to mirror that frontier back as a native Project/Initiative update. GitHub and Bitbucket Cloud both create and land PRs through the engine's own `host-pr` seam, never `gh`. Only GitHub can **arm** a PR to land itself once checks go green — Bitbucket Cloud's API has no per-PR auto-merge call, so `--auto` there merges what's already clean and leaves the rest for a human. The full dated, per-cell matrix: [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 ## The pipeline
 
