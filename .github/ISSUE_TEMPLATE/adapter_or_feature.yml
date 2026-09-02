@@ -1,0 +1,41 @@
+name: Adapter or feature request
+description: A new tracker or code-host adapter, or a feature that doesn't fit the bug template.
+title: "[Feature]: "
+labels:
+  - needs-triage
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do
+      description: Describe the outcome you want, not just the mechanism you have in mind.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Is this a new adapter?
+      options:
+        - "Yes — a new issue tracker"
+        - "Yes — a new code host"
+        - "No — a feature or change to an existing adapter"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach (optional)
+      description: >-
+        If you already have an idea of the shape — which interface it would
+        implement, what's different about this tracker or host — sketch it
+        here. See CONTRIBUTING.md for where the adapter contract lives.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Links, prior art, or constraints worth knowing about.
+    validations:
+      required: false

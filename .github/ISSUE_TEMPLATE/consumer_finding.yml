@@ -1,0 +1,89 @@
+name: Finding from a consumer run
+description: A gap, bug, or drift you found while running flotilla in your own project — not a bug in your project's own code.
+title: "[Finding]: "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when flotilla itself — the engine, a skill, or the docs — did
+        something wrong or drifted from what it documents, while you were
+        running it in your own repository. If you have Claude Code with the
+        flotilla plugin installed there, the `report` skill will ask you these
+        same questions, show you the composed issue, and file it here only
+        after you say yes — that's usually the faster way to get here.
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: One to three plain sentences — what did you observe?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >-
+        The exact command(s) and output you saw, or the exact doc/code passage
+        this contradicts (path plus quoted excerpt). Paste it verbatim, but
+        remove any token or credential first.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis (optional)
+      description: A possible cause, if you have one — label it as a guess, not a diagnosis.
+    validations:
+      required: false
+  - type: dropdown
+    id: consumer-form
+    attributes:
+      label: Consumer form
+      description: How is flotilla installed in the project where you saw this?
+      options:
+        - "Installed (the plugin plus the published npm package)"
+        - "Vendored (running flotilla's own source-form repo against itself)"
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: "n/a — source form, if Consumer form above is Vendored"
+      placeholder: "2.1.0"
+    validations:
+      required: false
+  - type: input
+    id: engine-version
+    attributes:
+      label: "@formtrieb/flotilla-engine version"
+      placeholder: "2.1.0"
+    validations:
+      required: false
+  - type: dropdown
+    id: store-kind
+    attributes:
+      label: Store kind
+      description: Which IssueStore does the project's wave.config.json select?
+      options:
+        - GitHub Issues
+        - Linear
+        - Markdown files (local)
+        - Not sure / other
+    validations:
+      required: false
+  - type: dropdown
+    id: harness
+    attributes:
+      label: Harness
+      description: What are you driving flotilla with?
+      options:
+        - Claude Code CLI
+        - Claude Code VS Code extension
+        - Other
+    validations:
+      required: false

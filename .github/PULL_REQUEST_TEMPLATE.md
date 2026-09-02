@@ -1,9 +1,17 @@
 <!--
-PR discipline (see .claude/skills/wave-shared — Convention 4 + the mention rule):
+Thanks for opening a pull request — here's what gets checked before this lands.
+Whether a person or one of flotilla's own background agents opened it, the same rules below apply either way.
 
-- A bare tracker issue id in the TITLE or BODY acts on that issue at merge —
-  host↔tracker integrations link and close on mention. Put an id here only when
-  closing that issue is intended; reference ADRs/specs/slugs otherwise.
-- If this PR closes an issue, the LAST line of the body carries the store-kind
-  close phrase (e.g. `Fixes ABC-123` on Linear, `Closes #123` on GitHub Issues).
+Mentioning an issue is itself an action, not just a reference: naming an
+issue's bare number anywhere in this title or body links it at merge time —
+GitHub (and a connected Linear workspace) act on every bare mention, not only
+an intentional one. So name an issue here only when you mean to close it on
+merge; for anything else — crediting related work, giving context — point at
+its ADR number or a doc name instead (see docs/adr/), never a second bare
+issue id.
+
+If this PR does close an issue, put the closing phrase on the LAST line of
+this body, alone on its own line: `Closes #123` for a GitHub issue, `Fixes
+ABC-123` for a Linear one. That line is what actually closes it — the issue
+number shouldn't appear anywhere else in this title or body.
 -->
