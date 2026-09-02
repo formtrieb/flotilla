@@ -17,10 +17,32 @@ updates:
     schedule:
       interval: monthly
     groups:
+      # Minor and patch bumps travel together. A major bump gets a PR of its
+      # own, so it is never hidden inside a green-looking group.
       runtime:
         dependency-type: production
+        update-types:
+          - minor
+          - patch
       tooling:
         dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # TypeScript majors are a compiler migration, not a dependency bump: the
+      # first Dependabot run offered 5.9 -> 7.0 and both required checks went
+      # red because the spec files use the 5.x compiler API. That move is a
+      # planned issue with its own wave row, done by hand.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+      # @types/node tracks the Node line the workflows run on (node-version in
+      # verify.yml and release.yml), so its major moves together with that pin,
+      # by hand, never on its own.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
     commit-message:
       prefix: "chore(deps)"
 
