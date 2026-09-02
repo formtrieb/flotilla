@@ -1,5 +1,7 @@
 # Ship plan — flotilla `v0.1.0-beta` as a Claude Code plugin
 
+> **Historical (2026-07-26).** This is a planning document from before flotilla ran on itself — kept because engine doc-comments cite it as the origin of the plugin-beta workstreams, not because it is a living plan. flotilla plans on its tracker now; nothing new is filed under `docs/plans/`.
+
 **Status:** proposed · **Date:** 2026-07-26 · **Target:** first public beta + announcement
 
 This is the scoping/checklist doc for turning flotilla from a *vendor-copy-only* toolkit

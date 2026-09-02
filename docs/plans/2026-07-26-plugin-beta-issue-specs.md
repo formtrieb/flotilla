@@ -1,5 +1,7 @@
 # Issue specs — flotilla `v0.1.0-beta` plugin wave (ready to file)
 
+> **Historical (2026-07-26).** This is a planning document from before flotilla ran on itself — kept because engine doc-comments cite it as the origin of the plugin-beta workstreams, not because it is a living plan. flotilla plans on its tracker now; nothing new is filed under `docs/plans/`.
+
 Companion to [`2026-07-26-plugin-beta-ship-plan.md`](2026-07-26-plugin-beta-ship-plan.md).
 Nine finer-grained, wave-ready slices in the exact shape flotilla's own header-parser /
 body-codec expect, each with a copy-paste `CreateInput` JSON. **This is the input for a live
