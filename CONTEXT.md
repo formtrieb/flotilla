@@ -58,15 +58,31 @@ _Avoid_: health write-mirror (the retired working name — the mirror carries th
 One batch of independently-grabbable issues dispatched as parallel workers in isolated worktrees, reviewed, and landed via PRs.
 
 **Spine**:
-The durable, repo-local `WAVE.md` markdown that holds the wave's orchestration state (plan-table, conflict-map, dispatch-log, PR-log, disclosures). It is branch-local and the source of truth for resume; it never lands on `main`.
-_Avoid_: manifest, state file, ledger.
+The durable, repo-local `WAVE.md` markdown that holds the wave's orchestration state (plan-table, conflict-map, dispatch-log, PR-log, disclosures, pulse-log). It is the source of truth for resume and lives on its own branch, `spine/<slug>` — born at `wave-create` from the wave anchor, carrying nothing but the spine and its **Sidecar**s, pushed so any authorized runner can drive the next **Pulse**. It lands on `main` exactly once, archived, at `wave-close` — a Coordinator-direct PR — and never before. Deliberately outside the `wave/*` namespace the row branches use, which `wave-close` sweeps after landing. *The branch is designed in ADR-0048 (2026-09-02), not yet built — until then the spine sits on whatever branch the Coordinator's checkout is on.*
+_Avoid_: manifest, state file, ledger, wave branch (there is no such branch — rows have theirs, the spine has its own).
 
 **Coordinator**:
-The (mostly-idle) foreground session that plans a wave and spawns/supervises its workers. Human-in-the-loop STOPs pause it. The session, never the person — the human directing it is the **Operator**.
+The (mostly-idle) foreground session that plans a wave and spawns/supervises its workers. Human-in-the-loop STOPs pause it — in chat when a person is present, as an **Ask** it flags and moves past when it runs as a **Pulse**. The session, never the person — the human directing it is the **Operator**.
 
 **Operator**:
 The person at the live session an agent is working for — the addressee of every user-directed line an agent prints, and the decider at every human gate (a STOP, a held row's release, an arm confirm). A role, not an identity: a flotilla maintainer, a consumer developer, or a first-time adopter may each hold it, and the word means the same in every case.
 _Avoid_: the Coordinator (the session, never the person), user (the harness's own overloaded term), consumer (the adopting repo/organization, not the person at the session).
+
+**Pulse**:
+A finite, triggered, unattended **Coordinator** run over one **Wave**: it reconciles from the durable homes, consumes every **Answer** to an open **Ask**, advances everything that needs no human — dispatches, routes returns, flags STOPs *and continues* (flag-and-continue: the same Ask an interactive session would ask in chat, minus the waiting), arms approved PRs under pre-authorization — and exits at **Quiescence** with a report. It selects its own wave — the one with live rows, else the oldest `ready` **Spine** — so an **Operator** plans and cuts several waves in one sitting and the pulses sequence them, one in flight at a time; it never plans, never creates, never archives. A STOP that is really a changed premise degrades instead of halting: Conflict-Map drift is rewritten and disclosed, DOR drift becomes a row **Ask**; intra-wave lanes (HELD rows) advance round by round inside one pulse. Between two pulses there is no process, only state; any authorized runner may drive the next one. A *mode* of the Coordinator, never a new agent, and never a daemon. Answers are read at the pulse's reconcile and once more at quiescence, never continuously.
+_Avoid_: daemon, watcher, loop (a pulse ends), headless Coordinator (the topology — a pulse is the run), tick (the trigger's word, not the run's). *Designed in ADR-0047/0048 (2026-09-02), not yet built — this clause leaves with the slice that builds it.*
+
+**Quiescence**:
+The **Pulse**'s exit condition: every row is `in-review`, paused on an open **Ask**, HELD/HUMAN-HELD, or terminal — nothing left the run can move without a human. Reached, not declared; a pulse that exits for any other reason (a wave-level STOP, a crash) has not reached it.
+_Avoid_: done/complete (the wave is neither — landing and closing are still owed), idle (a pulse is never idle; it exits). *Designed in ADR-0047/0048 (2026-09-02), not yet built — this clause leaves with the slice that builds it.*
+
+**Pulse-Log**:
+The **Spine** section that gives every **Pulse** (and every interactive dispatching pass) an identity and a durable trace: a start entry — pulse id, runner, started, and `takeover-of` when it replaced an expired **Lease** — and an end entry — ended, outcome (`quiescent` · `wave-stop:<reason>`), the **Answer**s consumed, the rows moved. A start entry with no end entry is a run that died. A wave-level STOP (a precondition that does not hold — another wave in flight, a red credential probe, an absent engine binding, a spine not ready) has no row and raises no **Ask**: it ends the run with exit ≠ 0 and its reason here, and the runner's own failure surface is the human's signal.
+_Avoid_: audit log (it is a coordination record, read by the next run), heartbeat (there is none). *Designed in ADR-0047/0048 (2026-09-02), not yet built — this clause leaves with the slice that builds it.*
+
+**Lease**:
+The exclusive right to write `spine/<slug>` and to dispatch on that wave, held by exactly one run at a time. Taken by pushing the **Pulse-Log** start entry before anything is dispatched — the push *is* the compare-and-swap: a rejected push means another run holds the lease, and the run exits without touching anything. Released by the end entry. Expires at the configured maximum pulse lifetime, which is the same value as the runner's own timeout, so a run cannot outlive its lease and an expired lease is provably dead — the next run may take it over, and says so. Held by interactive passes exactly as by pulses: two Operators on one wave are serialized structurally, not by convention.
+_Avoid_: lock (implies a lock service — it is a commit on a branch), claim (reserved for the tracker-side coarse-state write on an issue). *Designed in ADR-0047/0048 (2026-09-02), not yet built — this clause leaves with the slice that builds it.*
 
 **Worker**:
 A background agent that executes one issue in its own isolated worktree — created under the repo's worktree **Containment root**, never a system temp dir — and reports back via a schema-validated return.
@@ -158,8 +174,16 @@ The kanban projection written to the tracker so humans and concurrent waves can 
 _Avoid_: status (overloaded — see "Flagged ambiguities").
 
 **needs-attention**:
-An orthogonal attention flag (not a ledger rung) meaning "a human must look at this"; set on a STOP or terminal failure (a re-dispatch-cap-exhausted verdict, a PR closed without merge, a corrupt/orphan sidecar at resume), cleared on resolution, and carrying a kind+options payload — the bridge to headless-async resolution (ADR-0006). Written through the **IssueStore** (a needs-attention facet, parallel to the Triage/Document facets), so the flag and its payload are tracker-visible to humans and concurrent waves.
+An orthogonal attention flag (not a ledger rung) meaning "a human must look at this"; set on a STOP or terminal failure (a re-dispatch-cap-exhausted verdict, a PR closed without merge, a corrupt/orphan sidecar at resume), cleared on resolution, and carrying an **Ask** as its payload — the bridge to headless-async resolution (ADR-0006). The flag says a human must look; only the **Answer** says what they decided, and only a later Coordinator run clears the flag. Written through the **IssueStore** (a needs-attention facet, parallel to the Triage/Document facets), so the flag and its payload are tracker-visible to humans and concurrent waves.
 _Avoid_: blocked, failed (those are fine states or triage outcomes).
+
+**Ask**:
+The identified question a STOP raises for a human — a per-row, monotonically numbered record (`<row>#a<n>`) held first in the **Spine** (the WAL authority: this is what makes a paused row knowable from the spine rather than only from the tracker), then carried to the tracker as the **needs-attention** payload. It names the STOP reason and kind; its options are an engine-owned closed set per reason, each with one fixed execution meaning, so a later Coordinator run can act on the **Answer** without judgment. The question prose is the **Coordinator**'s; the option vocabulary never is.
+_Avoid_: needs-attention payload (the tracker-side carrier of an Ask, not the Ask), question (unidentified prose), prompt. *Designed in ADR-0047/0048 (2026-09-02), not yet built — this clause leaves with the slice that builds it.*
+
+**Answer**:
+The typed disposition a human returns to exactly one **Ask**, citing its id: one option from that Ask's closed set, an optional note (required where the note *is* the content — a reply to a Reviewer's blocking question), the author, the time. Consumed by a later Coordinator run, never by a live chat reading: the run records the consumption in the **Spine** first, acts on the option, then clears the **needs-attention** flag. Answering and clearing are different acts by different parties — a human never clears the flag. An Answer citing a stale Ask is ignored, never applied.
+_Avoid_: resolution (the whole arc — flag, answer, act, clear), comment (one native realization), reply (vague). *Designed in ADR-0047/0048 (2026-09-02), not yet built — this clause leaves with the slice that builds it.*
 
 **Claim**:
 A coarse-state write to the tracker that reserves an issue for a wave: `queued` is a soft claim (do not re-plan), `in-flight` is a hard claim (do not double-dispatch). The native realization is the adapter's: GitHub = `wave/*` labels; Linear = the workflow state itself (`Todo / In Progress / In Review`, config-mapped — the board is the ledger, ADR-0020). flotilla **writes only `queued / in-flight / in-review` (+`needs-attention`)**; `available` (eligible & unclaimed) and `done` (natively closed — `Closes #N` on GitHub, merged-PR attachment/state on Linear) are **derived bookends**, never written (ADR-0003/0005).

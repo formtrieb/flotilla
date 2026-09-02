@@ -9,6 +9,17 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [Unreleased]
+
+### Unsettled by construction, and what is not yet proven
+
+- **Headless is designed, not built.** The answer half of `needs-attention` and the
+  headless run are settled as two `proposed` records — ADR-0047 (a typed **Answer** bound to
+  a spine-anchored **Ask**) and ADR-0048 (a finite **Pulse** on a leased `spine/<slug>`
+  branch) — grilled 2026-09-01/02 against the shipped records and the code. Four premises of
+  the original sketch fell to that reading and are recorded there. No engine verb, skill, or
+  branch from either record exists yet; the glossary marks each new term accordingly.
+
 ## [2.1.0] — 2026-08-17
 
 **The goal station learns to publish.** The mirror pass ships whole — a sixth store verb
