@@ -4,9 +4,10 @@
 
 Please report a security vulnerability privately, using GitHub's private
 vulnerability reporting: open this repository's **Security** tab and choose
-**Report a vulnerability**. That starts a draft security advisory that only
-you and the maintainers can see. Please don't open a public issue for
-anything you believe is exploitable.
+**Report a vulnerability**, or go straight to
+<https://github.com/formtrieb/flotilla/security/advisories/new>. That starts a
+draft security advisory that only you and the maintainers can see. Please
+don't open a public issue for anything you believe is exploitable.
 
 We aim to acknowledge a new report within five business days, and to follow
 up with an assessment — a fix, a mitigation, or an explanation of why we
