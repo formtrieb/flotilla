@@ -7162,12 +7162,11 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
   });
 
   it('a worktree path containing BOTH a space and a non-ASCII character (issue #515) is safely single-quoted in the printed commands', () => {
-    // This repo's own checkout path is a ready-made live fixture for this
-    // class (two spaces, one typographic en-dash) — the class is otherwise
-    // invisible on a CI runner where every path is boring.
-    const spacedPath =
-      '/Users/neo/Documents/Brain/Freelancer/Projects – Clients/Projektionisten/DSW21/' +
-      '06 Development/flotilla/.claude/worktrees/wf_f61d54a0-64f-1';
+    // A checkout path like this is a real-world source for this class (two
+    // spaces, one typographic en-dash) — the class is otherwise invisible on
+    // a CI runner where every path is boring. Synthetic here, not a real
+    // filesystem location.
+    const spacedPath = '/opt/build/Projects – Sandbox/worktrees/wf_f61d54a0-64f-1';
     const { remover } = alwaysThrowRemover();
     const junky: WorktreeEntry = {
       path: spacedPath,

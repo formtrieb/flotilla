@@ -2,6 +2,18 @@
   "name": "@formtrieb/flotilla-engine",
   "version": "2.1.0",
   "description": "Wave-orchestration engine for flotilla — conflict/parallelism reasoning, DoR gating, merge order, and tracker-agnostic issue stores.",
+  "keywords": [
+    "wave-orchestration",
+    "multi-agent",
+    "issue-tracker",
+    "github-issues",
+    "linear",
+    "afk-agents",
+    "code-review",
+    "claude-code",
+    "merge-conflicts",
+    "conflict-map"
+  ],
   "license": "Apache-2.0",
   "author": "Michael Helmbrecht",
   "repository": {
