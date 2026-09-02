@@ -1,0 +1,14 @@
+# flotilla
+
+> Portable, Claude-Code-native wave-orchestration toolkit: plan a batch of independently-grabbable issues, dispatch parallel AFK agents in isolated worktrees, review each, land via pull requests — with cross-wave conflict/parallelism reasoning as the universal core.
+
+flotilla is tracker-agnostic (GitHub Issues, Linear, or local markdown files) and lands everything through pull requests against a protected default branch. The documents below are listed in the order they're meant to be read.
+
+## Docs
+
+- [README](README.md): what flotilla is, the quickstart, and the five terms that carry the rest of the docs.
+- [Onboarding](docs/ONBOARDING.md): the full adoption path for a consumer repository, step by step.
+- [Charter](docs/CHARTER.md): the architecture and the reasoning behind every decision.
+- [Decision records](docs/adr/): every architecture decision record, numbered in the order it was written.
+- [Glossary](CONTEXT.md): the domain vocabulary — read it before reaching for a term that isn't self-explanatory.
+- [Changelog](CHANGELOG.md): what each release added, and what remains unproven.

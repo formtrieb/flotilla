@@ -1,0 +1,79 @@
+name: Bug report
+description: Something in flotilla isn't working the way the docs say it should.
+title: "[Bug]: "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. A few concrete details below
+        go a long way toward getting it fixed quickly.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Plain description of the problem you ran into.
+      placeholder: When I ran `wave-plan` on a repo with two open issues, it reported zero candidates.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      placeholder: I expected both issues to show up as candidates.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands you ran, in order, and anything specific about your setup that seems relevant.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste the exact command output or error text. Please remove any token or credential first.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: plugin-version
+    attributes:
+      label: flotilla plugin version
+      placeholder: "2.1.0"
+    validations:
+      required: false
+  - type: input
+    id: engine-version
+    attributes:
+      label: "@formtrieb/flotilla-engine version"
+      placeholder: "2.1.0"
+    validations:
+      required: false
+  - type: dropdown
+    id: store-kind
+    attributes:
+      label: Which issue tracker are you using?
+      options:
+        - GitHub Issues
+        - Linear
+        - Markdown files (local)
+        - Not sure / other
+    validations:
+      required: false
+  - type: dropdown
+    id: host-kind
+    attributes:
+      label: Which code host are you landing pull requests on?
+      options:
+        - GitHub
+        - Bitbucket
+        - Not sure / other
+    validations:
+      required: false
