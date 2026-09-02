@@ -82,9 +82,17 @@ export interface MergeOrderResult {
   /** Human-readable rationale for the chosen order(s). */
   reason: string;
   /**
-   * Rows excluded from `algorithmic`/`override` because they were never
-   * dispatched (still `planned`, with no recorded branch and no PR) — listed
-   * separately for visibility rather than silently dropped (FOR-15 AC2).
+   * Rows excluded from `algorithmic`/`override`, for either of two reasons —
+   * listed here for visibility rather than silently dropped:
+   *
+   * - Never dispatched (still `planned`, with no recorded branch and no PR —
+   *   FOR-15 AC2).
+   * - `parked` (ADR-0022): a claim-releasing terminal, deliberately taken out
+   *   of *this* wave — held before dispatch (`planned → parked`) or released
+   *   at a STOP (`failed → parked`). Its missing branch is the deliberate,
+   *   correct shape, never a recovery failure (issue #636) — see `warnings`
+   *   below for the case that IS a recovery failure.
+   *
    * Populated only by the spine-self-contained path (`buildSpinePrs`), which
    * has Plan-Table row state to make that call; always `[]` on the
    * MarkdownFs/`loadPrs` path, which has no such state to consult.
@@ -104,7 +112,9 @@ export interface MergeOrderResult {
    *   not be recovered. This is the distinction between "could not resolve" and
    *   "genuinely has none" — the latter is {@link notInPlay}. Without it a
    *   wave-wide resolution failure emitted `"branch": null` for every row inside
-   *   an order whose `reason` still read as authoritative.
+   *   an order whose `reason` still read as authoritative. A `parked` row is
+   *   neither of these cases — it is never IN-PLAY (ADR-0022), so it never
+   *   reaches this check at all; see {@link notInPlay} (issue #636).
    *
    * - `computeMergeOrderFromSpine` only (issue #635): the Plan-Table fallback
    *   (#84, {@link parseWaveSpine}) rebinding a row to a `.scratch/` file it
@@ -347,6 +357,18 @@ function resolveExactOrGlob(
  * (e.g. a pre-ADR-0021 spine) still counts as in-play — branch/PR are only
  * corroborating signals for a `planned` row, not a substitute for the state.
  *
+ * `parked` rows are excluded the same way, for a different reason (issue
+ * #636): ADR-0022 makes `parked` a claim-releasing terminal — "deliberately
+ * taken out of *this* wave" — and its own decision record already excludes it
+ * from the advisory merge-order by name. A parked row was either held before
+ * dispatch (`planned → parked`) or released at a STOP (`failed → parked`); a
+ * missing branch is therefore the CORRECT, expected shape for it, never a
+ * recovery failure — so unlike the branchless in-play row below, `parked`
+ * never produces a `warnings` entry. It joins `notInPlay` unconditionally,
+ * regardless of whether `branch`/`prUrl` happen to be set (a `failed →
+ * parked` row may still carry the branch its failed dispatch used — that is
+ * informational only; the row is out of this wave's order either way).
+ *
  * That in-play-but-branchless row is the case issue #141 makes visible: it stays
  * in the order (correctly — it IS in play), but its `null` branch is now also
  * reported as a `warnings` entry, so a caller can distinguish it from the
@@ -386,7 +408,14 @@ function buildSpinePrs(
       title: row.title || undefined,
     };
     const neverDispatched = row.state === 'planned' && !branch && !pr.prUrl;
-    if (neverDispatched) {
+    // ADR-0022: `parked` is a claim-releasing terminal, deliberately excluded
+    // from the advisory merge-order — never algorithmic/override, and never
+    // the branch-recovery warning below (issue #636). A parked row has no
+    // dispatch-log entry to check for by design (held before dispatch, or
+    // released at a STOP), so it belongs beside the never-dispatched rows in
+    // `notInPlay`, not inside the branch-recovery-failure case.
+    const parked = row.state === 'parked';
+    if (neverDispatched || parked) {
       notInPlay.push(pr);
     } else {
       // A row that IS in play but whose branch is `null` is NOT the same thing
