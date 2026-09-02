@@ -1,0 +1,37 @@
+# Dependabot version updates.
+#
+# Security updates do not depend on this file: they come from the repository's
+# Dependabot settings (alerts + security updates) and open a PR whenever an
+# alert has a patch. This file only adds the routine "a newer version exists"
+# updates, on a monthly cadence and grouped so they arrive as one or two PRs
+# instead of one per package.
+#
+# Every PR Dependabot opens lands like any other PR: protected main, the two
+# required checks (Engine Tests, Engine Typecheck) must be green, and a human
+# merges or arms it.
+version: 2
+updates:
+  # The engine's npm manifest lives under tools/wave, not at the repository root.
+  - package-ecosystem: npm
+    directory: /tools/wave
+    schedule:
+      interval: monthly
+    groups:
+      runtime:
+        dependency-type: production
+      tooling:
+        dependency-type: development
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The actions the verify workflow pins (checkout, setup-node).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(ci)"
