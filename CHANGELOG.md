@@ -20,6 +20,49 @@ is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
   the original sketch fell to that reading and are recorded there. No engine verb, skill, or
   branch from either record exists yet; the glossary marks each new term accordingly.
 
+### The 2.1.0 not-yet-proven list, corrected against live operation (2026-09-02)
+
+The six items on 2.1.0's *Carried forward, still not live-proven* line, and the two on its
+*Unsettled by construction* list, re-read against what evidence now exists. Each lands as
+one of three things: a dated proof naming its evidence, a dated *still not proven*, or
+`verify` naming the one read that would settle it.
+
+- **Bitbucket's write half is proven for `create` and `status`, live-proven 2026-08-17;
+  `arm` and `merge` are not, and will gain no further evidence on this line.** A spine
+  reading (2026-08-31) of a consumer wave run 2026-08-17 shows `host-pr create` (the
+  Basic-auth path, five PRs) and `host-pr status` (mergeability reads) running live against
+  Bitbucket Cloud. `arm` and `merge` have no live reading on record, and that consumer moves
+  to GitHub in September 2026 — this corrects 2.1.0's line, which named the whole write half
+  unproven without separating the two verbs actually exercised from the two that were not.
+- **The Linear attachment upsert — `verify`: the next Linear-store consumer close, read for
+  the closing-PR attachment on the closed issue.** Unchanged since 2.1.0 (issue #511): no
+  consumer close is on record since, so the URL-uniqueness upsert semantics against a real
+  workspace are still unread.
+- **The `prUrl` notice's agent-mediated half — `verify`: the next wave whose Scribe stage
+  completes end-to-end, read at that wave's close for a real notice forwarded by a real
+  Scribe.** Unchanged since 2.1.0: the engine side stays live-measured, the agent-mediated
+  forwarding still has no completed round on record.
+- **The residue-probing worktree classification is still not proven, 2026-09-02, and
+  unchanged.** Measured negative twice against two different implementations, exactly as
+  2.1.0 recorded; no third read is on record, and the manual sandbox-off force-removal
+  remains the documented ordinary path.
+- **The grant-in-brief plugin half — `verify`: a mid-wave `issue-store annotate` followed by
+  a re-compose, exercised on an installed-form consumer.** The one exercise on record ran on
+  this repo's own source form during 2.1.0's own work, not on an installed consumer — that
+  distinction is the read still outstanding.
+- **The uppercase-team-key assumption — `verify`: record the actual team-key casing the
+  first initiative-bound live pass encounters.** `isIssueShapedId`'s
+  `/^[A-Z][A-Z0-9]*-\d+$/` narrowing is unconfirmed against a live workspace; the goal
+  skill's own reference still carries this as a pending-first-live-run note, unchanged since
+  1.5.0.
+- **A health-less mirror publish may still move the container's own health — `verify`: the
+  first live `goal-publish-update` call with `health` omitted, read against the container
+  afterward.** No live mirror publish is on record since 2.1.0 shipped the verb; the
+  question the engine deliberately declined to answer is still open.
+- **`LINEAR_UPDATE_HEALTH_VALUES` is still schema-read, not live-proven — `verify`: the
+  same first live mirror publish, cross-checked against the values Linear's workspace
+  actually accepts.** Unchanged since 2.1.0.
+
 ## [2.1.0] — 2026-08-17
 
 **The goal station learns to publish.** The mirror pass ships whole — a sixth store verb
