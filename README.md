@@ -35,6 +35,8 @@ flotilla installs as two pieces — the skills as a Claude Code plugin, the engi
 
 The full adoption path — every step above in detail, plus the preconditions that fail silently if skipped — is **[docs/ONBOARDING.md](docs/ONBOARDING.md)**. Read its checklist before your first real wave.
 
+Found something wrong with flotilla itself while running it here? The `report` skill is the built-in, consent-first feedback funnel — it walks your agent through filing a fully-analyzed finding upstream, in flotilla's own house format, and never files anything without your explicit go-ahead.
+
 ## Five terms that carry the rest
 
 The docs use a precise vocabulary; these five are enough to read everything else. The full glossary is [CONTEXT.md](CONTEXT.md).
@@ -48,6 +50,8 @@ The docs use a precise vocabulary; these five are enough to read everything else
 | **Reviewer** | The independent, read-only agent that re-runs your verify commands and checks every acceptance criterion before a PR opens, returning a schema-validated verdict — the ground truth for whether the work is actually done. |
 
 **Capabilities, in three lines:** GitHub Issues and Linear both ship full tracker adapters — claim ledger, needs-attention, frontier — with Linear alone able to mirror that frontier back as a native Project/Initiative update. GitHub and Bitbucket Cloud both create and land PRs through the engine's own `host-pr` seam, never `gh`. Only GitHub can **arm** a PR to land itself once checks go green — Bitbucket Cloud's API has no per-PR auto-merge call, so `--auto` there merges what's already clean and leaves the rest for a human. The full dated, per-cell matrix: [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+
+Cross-repo waves are proven too: two repos on two different code hosts, coordinated through one shared tracker, have run sister waves that resolve a cross-repo blocker purely by reading each other's claim status — see the cross-repo / cross-host row of [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the dated evidence.
 
 ## The pipeline
 
@@ -120,6 +124,27 @@ flowchart TB
 | **Conflict map** | `computeConflictMap` is wave-agnostic pure glob-set math: feed it `(candidate wave) ∪ (everything queued or in-flight)` and it answers directly whether two waves can run side by side. |
 
 Two properties worth knowing before you read further: the engine ships as raw TypeScript with no build step (`tsc --noEmit` is the type gate), and its public API is a deliberate, drift-guarded list — every module export is either deliberately public at the package root or on a reason-carrying allowlist, and a symbol in neither fails the test suite. There is deliberately **no dispatch-host abstraction**: the engine calls no agent-harness primitives; the Claude Code skills *are* the dispatch driver, and the schema-validated-subagent-return guarantee (agents cannot silently fabricate a result) is a property of that driver.
+
+## Using just the engine
+
+That "no dispatch-host abstraction" property is also what makes the engine useful on its own. flotilla's Claude Code skills are one driver built on top of it — not the only one a team could build. Someone assembling an agent fleet on a different harness (Copilot, Cursor, an in-house driver) can `npm install @formtrieb/flotilla-engine` and get a harness-neutral reference implementation for the three primitives a multi-agent dispatch loop actually needs:
+
+- **`computeConflictMap`** — pure set-intersection over each task's declared file globs. Feed it the file lists for a candidate batch plus whatever another fleet already has in flight, and it returns exactly the overlapping pairs, before anything is dispatched.
+- **The wave state machine** — `transition`, plus the `ISSUE_STATES` / `IssueState` vocabulary it operates over: a pure `(state, event) → outcome` reducer with no notion of *how* a worker gets started or reviewed.
+- **`computeMergeOrder`** — derives a safe PR landing order from a batch's declared file counts and branch ancestry, independent of who or what actually merges them.
+
+What the engine never assumes: which harness dispatches an agent, how an agent is invoked, or which tracker holds an issue. Every one of these functions takes plain data in — globs, states and events, PR shapes — and returns plain data out; none of them touches an agent runtime, writes to a file, or calls a tracker API.
+
+One worked call, against the real exported signature:
+
+```ts
+import { transition } from '@formtrieb/flotilla-engine';
+
+const outcome = transition('dispatched', 'worker-done');
+// → { type: 'transition', nextState: 'report-in' }
+```
+
+Everything named above lives on the package root — the same semver-contracted export surface the *Stable* paragraph at the top of this README already promises not to break silently.
 
 ## Going deeper
 
