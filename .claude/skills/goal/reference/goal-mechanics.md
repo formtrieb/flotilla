@@ -131,13 +131,15 @@ The store that minted the id owns its format, so use the printed shape verbatim.
 
 > **The first live `goal` cut that draws a dependency on an initiative-bound goal ran on 2026-08-16, it disproved both pinned values, and the repair has landed — read-back AND correction are both done.** `ProjectRelationCreateInput`'s `type`, `anchorType`, and `relatedAnchorType` fields are `String` in Linear's schema, not enums, so the schema only ever pinned their SHAPE; Linear validates them as enums one layer behind GraphQL, where introspection cannot see them. The live write answered what the schema could not, and neither original value held. Both were corrected in `tools/wave/src/adapters/linear/linear-api.ts` and are what this store now sends: `PROJECT_BLOCKS_RELATION_TYPE` is `"dependency"` (never the vendor's own documented example `blocks`, which its API refuses), and the anchor is not one symmetric value at all — `"project"` is not among the accepted values, and there is no symmetric value that is. It became `PROJECT_RELATION_ANCHOR_PAIR`, a frozen finish-to-start fragment spread wholesale into the relation input: the blocker's `end` anchored onto the blocked project's `start`. **A native project-relation write under an initiative binding therefore sends measured values and Linear accepts them** — the same probe created the relation, read it back verbatim (`{"type":"dependency","anchorType":"end","relatedAnchorType":"start"}`, with `projectMilestone: null`, the whole-project anchor this facet wants) and confirmed it surfaces on the blocked project's `inverseRelations`. `createGoalMember` still surfaces any rejection loudly (a GraphQL error reported as a typed failure naming the minted member, never a silent drop), so a workspace that ever disagrees is visible rather than silently lossy — but that is now the exception path, not the expected one. The read-stamp docblock on `PROJECT_BLOCKS_RELATION_TYPE` carries the full measurement, and the rule it yields for the next pinned vendor value: a sibling arm's published enum is not this arm's enum.
 
-### 4. Verify the round-trip
+### 4. Verify the write
+
+Aligned with the same step named across the other mechanics references (triage, filing, wave-start/wave-shared): some of Pass 1's calls are chatty (`goal-create`/`goal-create-member` print the minted opaque id), but `goal-assign` is one of the nine mutating `issue-store` ops that answer success with **empty stdout** by design (#648) — its exit code alone says only "did not throw," never "the member is actually in the container." Read the container back before trusting any of it landed:
 
 ```bash
 {{wave-cli}} issue-store goal-read <goalId>
 ```
 
-A `GoalView` whose `memberIds` holds every id you captured confirms the cut landed. `memberIds` keeps **closed** members deliberately — the frontier derives `done` from them, and a membership list that dropped finished work would make a completed goal indistinguishable from an empty one.
+A `GoalView` whose `memberIds` holds every id you captured confirms the cut landed. `memberIds` keeps **closed** members deliberately — the frontier derives `done` from them, and a membership list that dropped finished work would make a completed goal indistinguishable from an empty one. Never pipe `goal-assign`/`goal-create-member` through another command before reading its exit code — a pipeline reports only the last command's status.
 
 ## Pass 2 — curation
 

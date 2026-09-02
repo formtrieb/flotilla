@@ -73,6 +73,20 @@ The filename is **engine-computed** — the caller passes `--id` + `--iter`, nev
 | `{{wave-cli}} issue-store read-closing <id>` | print `ClosingState` JSON (`{ state: 'open'\|'merged'\|'closed-unmerged', prUrl? }`) — the closing-PR probe `wave-close` uses to confirm a merge |
 | `{{wave-cli}} issue-store amend <id> --patch <AmendPatch.json>` | amend authored content — `{ title?, sections? }`, upsert-by-heading prose (ADR-0025); the sanctioned Worker-discloses/Coordinator-amends path (Convention 5). Cannot touch Files/AC/Blocked by (that is `annotate`) |
 
+### Verify the write
+
+`transition`, `flag`, and `clear-flag` all answer success with **empty stdout** — three of the nine mutating `issue-store` ops that are silent by design (#648): the exit code is the whole signal at the call site, and on its own it says only "the write did not throw," never "the rung/flag now reads the way you meant it to." Read the coarse projection back before trusting any of the three landed:
+
+```bash
+{{wave-cli}} issue-store read <id>
+```
+
+- After `transition` — `IssueView.status` reflects the rung you just set (`in-flight`, `in-review`, …).
+- After `flag` — `status` reads `needs-attention`: the Disclaimer below already says why it shows here even though the underlying rung is unchanged (needs-attention takes precedence in the coarse projection).
+- After `clear-flag` — `status` has dropped back to the underlying rung; `needs-attention` no longer appears.
+
+Never pipe any of these three calls through another command before reading its exit code — a pipeline reports only the *last* command's status, so `{{wave-cli}} issue-store flag "$ID" … | tee log` would hide a non-zero `flag` behind a zero `tee`.
+
 ## Exit codes
 
 ### `route-verdict` / `route-outcome`

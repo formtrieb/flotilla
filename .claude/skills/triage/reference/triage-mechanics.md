@@ -80,6 +80,16 @@ The `comment` field holds the **brief body only** — the facet prepends `> *Thi
 
 A supplied `state` or `category` outside the configured vocab is rejected **before any write** (no partial application) — fix the value and re-run.
 
+### Verify the write
+
+`triage-apply` is one of the nine mutating `issue-store` ops that answer success with **empty stdout** by design (#648) — the exit code is the whole signal at the call site, and it says only "the write did not throw," never "the write did what you intended." Read the projection back before trusting it:
+
+```bash
+{{wave-cli}} issue-store triage-read <id>
+```
+
+The read-back must show `state` and `category` matching what you just applied, and — when the patch carried a `comment` — the posted brief at the end of `comments`, disclaimer prepended. That is the positive evidence a silent exit code cannot give you on its own. Never pipe the `triage-apply` call through another command before checking its exit code (`{{wave-cli}} issue-store triage-apply … | tee log`, say) — a pipeline reports only the *last* command's status, so a non-zero `triage-apply` hides behind a zero `tee`.
+
 ## Close — `wontfix`
 
 ```bash
@@ -87,6 +97,16 @@ A supplied `state` or `category` outside the configured vocab is rejected **befo
 ```
 
 One call sets the schema's won't-fix state (`wontfix`) **and** natively closes the issue (GitHub `close --reason not_planned`; MarkdownFs move to `done/`). After it, `triage-read` reports `state: wontfix` and `issue-store read` derives `status: done`. The disclaimer is prepended for you. Don't follow it with a separate close — it's already closed.
+
+### Verify the write
+
+`triage-close` is also one of the nine silent mutating ops (#648) — empty stdout on success, the exit code the only signal at the call site. Read it back the same way as `triage-apply` above:
+
+```bash
+{{wave-cli}} issue-store triage-read <id>
+```
+
+The read-back must show `state: wontfix` and the posted close comment (disclaimer prepended) at the end of `comments`. That confirms both halves of the one call actually landed — the state swap and the posted explanation — not just that the process exited zero. Never pipe `triage-close` through another command before reading its exit code — a pipeline reports only the last command's status.
 
 ### The superseded-close — the same verb, a different comment
 
