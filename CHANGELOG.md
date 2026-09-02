@@ -35,9 +35,9 @@ one of three things: a dated proof naming its evidence, a dated *still not prove
   to GitHub in September 2026 — this corrects 2.1.0's line, which named the whole write half
   unproven without separating the two verbs actually exercised from the two that were not.
 - **The Linear attachment upsert — `verify`: the next Linear-store consumer close, read for
-  the closing-PR attachment on the closed issue.** Unchanged since 2.1.0 (issue #511 /
-  ADR-0045): no consumer close is on record since, so the URL-uniqueness upsert semantics
-  against a real workspace are still unread.
+  the closing-PR attachment on the closed issue.** Unchanged since 2.1.0 (issue #511): no
+  consumer close is on record since, so the URL-uniqueness upsert semantics against a real
+  workspace are still unread.
 - **The `prUrl` notice's agent-mediated half — `verify`: the next wave whose Scribe stage
   completes end-to-end, read at that wave's close for a real notice forwarded by a real
   Scribe.** Unchanged since 2.1.0: the engine side stays live-measured, the agent-mediated
