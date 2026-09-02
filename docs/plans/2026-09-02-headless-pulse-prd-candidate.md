@@ -1,6 +1,6 @@
 # PRD candidate: Headless flotilla — the Answer protocol and the Pulse
 
-> **Status: candidate, not published.** Drafted 2026-09-02 at the end of the grill that settled [ADR-0047](../adr/0047-a-stops-answer-is-a-typed-disposition-bound-to-a-spine-anchored-ask.md) and [ADR-0048](../adr/0048-a-headless-coordinator-is-a-finite-pulse-on-a-leased-spine-branch.md). Publish through `/to-prd` once the two records are accepted; slice through `/to-issues`. Source: the Linear document "Headless-Skizze: der Coordinator als Puls" (Flotilla project, 2026-08-31).
+> **Status: published 2026-09-02 as a Linear Document** in the Flotilla project (Formtrieb workspace) — the tracker copy is the PRD; this file is the in-repo draft it was published from, kept beside the records that settled it: [ADR-0047](../adr/0047-a-stops-answer-is-a-typed-disposition-bound-to-a-spine-anchored-ask.md) and [ADR-0048](../adr/0048-a-headless-coordinator-is-a-finite-pulse-on-a-leased-spine-branch.md). Slice through `/to-issues` from the tracker copy. Source: the Linear document "Headless-Skizze: der Coordinator als Puls" (same project, 2026-08-31). Sequencing: post-launch work in the visibility plan.
 
 ## Problem Statement
 
