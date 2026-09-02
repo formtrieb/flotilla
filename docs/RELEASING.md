@@ -54,7 +54,10 @@ before doing anything else.** Do not tag first and discover this afterwards.
    PR like any other change. `main` is protected; the release commit is not an exception.
 
 3. **Update `CHANGELOG.md`** in that same PR. The entry describes what a consumer gets,
-   including what is not yet proven — see the existing entry for the tone.
+   including what is not yet proven — see the existing entry for the tone. If an
+   `## [Unreleased]` section sits at the top (design that landed ahead of a release —
+   the headless records were the first), fold its lines into the new version's entry;
+   the Unreleased heading never survives a cut.
 
 4. **Create the annotated tag** on the merge commit, and push it:
 
