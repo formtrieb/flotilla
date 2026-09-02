@@ -479,6 +479,45 @@ describe('unknown subcommand invocation', () => {
   });
 });
 
+// ─── issue #650 — the unknown-subcommand path lists every verb, one per line ──
+//
+// Convention 11 falsification for this block: comment out the `'available
+// subcommands:'` block in cli.ts's unknown-subcommand branch (leaving only
+// the pre-existing single `unknown subcommand: ...; available: a, b, c` line)
+// and this test fails — the per-verb search below finds zero `  <verb>  `
+// lines for every registered verb. Restoring the block makes it pass again.
+// See this row's report for the observed failing output.
+
+describe('unknown subcommand — full verb list with one-line purposes (issue #650)', () => {
+  it('every known subcommand appears exactly once, each on its own line with a one-line purpose, and exit code 2 is unchanged', () => {
+    const code = main(['definitely-bogus-verb']);
+    expect(code).toBe(2);
+
+    // Ground truth roster: parsed off the PRE-EXISTING `unknown subcommand:
+    // ...; available: a, b, c` line itself — never a second, hand-typed
+    // roster in this spec that could drift from KNOWN_SUBCOMMANDS.
+    const summaryLine = stderrBuf.split('\n').find((l) => l.includes('available:'));
+    expect(summaryLine, 'the pre-existing summary line must survive byte-for-byte').toBeDefined();
+    const verbs = summaryLine!
+      .slice(summaryLine!.indexOf('available:') + 'available:'.length)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    expect(verbs.length).toBeGreaterThan(20); // sanity: this is the real, long roster
+
+    const lines = stderrBuf.split('\n');
+    for (const verb of verbs) {
+      const matches = lines.filter((l) => new RegExp(`^ {2}${verb} {2}\\S`).test(l));
+      expect(matches, `expected exactly one purpose line for verb "${verb}"`).toHaveLength(1);
+    }
+  });
+
+  it('a known subcommand routes normally — the new list never fires on a real verb', () => {
+    main(['dor']); // no path following → dor's own (pre-existing) usage dump, exit 2, NOT the unknown-verb path
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+  });
+});
+
 // ─── Form 5: files-drift subcommand ──────────────────────────────────────────
 //
 // Integration tests for `runFilesDrift` reached via `main(['files-drift', ...])`.

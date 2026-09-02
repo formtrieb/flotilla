@@ -438,6 +438,47 @@ const KNOWN_SUBCOMMANDS = [
 ] as const;
 type Subcommand = (typeof KNOWN_SUBCOMMANDS)[number];
 
+/**
+ * A one-line purpose per subcommand (issue #650) — printed on the unknown-
+ * subcommand path below, alongside the pre-existing `available: <list>` line,
+ * so the first misgrip a stranger's Coordinator makes (a plausible spelling —
+ * `transition` for `spine set-row-state`, `close` for `closed-by`,
+ * `conflict-map` for `cross-wave`) gets an answer instead of a bare word to
+ * re-guess from. Typed as `Record<Subcommand, string>` — the SAME union
+ * `KNOWN_SUBCOMMANDS` derives — so a subcommand added to one without the other
+ * is a compile error: this table cannot drift from the router's own dispatch.
+ */
+const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
+  dor: 'Run the DOR-Gate validator against one or more issues (default when no subcommand is given).',
+  'files-drift':
+    'Detect same-project vs cross-project file drift for a wave issue against a sha-range.',
+  'merge-order': 'Compute the recommended merge order for a wave from its WAVE.md spine.',
+  'closed-by': 'Classify a `Closed-by:` line into { class, needsPin }.',
+  'detect-host': 'Parse a git remote URL into { host, workspace, repo }.',
+  'host-pr':
+    'Open, arm, merge or probe a pull request on the code host (create|arm|merge|status|preflight).',
+  'worktree-cleanup': 'List, plan, and (unless --dry-run) remove pushed-and-clean agent worktrees.',
+  'conflict-map': 'Compute the file-overlap conflict matrix across a set of issues.',
+  'cross-wave': 'Check whether a candidate batch is parallel-safe against an already-claimed batch.',
+  'issue-store': 'Run one IssueStore operation — create, read, transition, close, and the goal facet ops.',
+  spine: 'Read or mutate the WAVE.md orchestration spine (Plan-Table, disclosures, the human lane).',
+  config: 'Validate a wave.config.json file.',
+  resume: 'Reconcile a wave spine against live worktrees, reports and verdicts after an interruption.',
+  'store-preflight': 'Probe the configured tracker for the preconditions wave-setup requires.',
+  'credential-probe':
+    'Check whether every configured credential can be resolved right now (ADR-0029).',
+  'route-verdict': 'Route a reviewer verdict + iteration + risk to its state-machine event.',
+  'route-outcome': 'Route a worker outcome + state to its state-machine event.',
+  'validate-report': 'Validate a WorkerReport JSON file against its schema.',
+  'validate-verdict': 'Validate a ReviewerVerdict JSON file against its schema.',
+  'write-report': 'Validate a WorkerReport and persist it as its sidecar file.',
+  'write-verdict': 'Validate a ReviewerVerdict and persist it as its sidecar file.',
+  'verdict-acked': 'Derive the close --acked AC indexes from the final verdict sidecar for an id.',
+  'render-verdict':
+    'Render the Reviewer-verdict PR-body section from the final verdict sidecar for an id.',
+  version: 'Print the engine package version, optionally checked against --expect (ADR-0032).',
+};
+
 const STATUS_SYMBOL: Record<string, string> = {
   pass: '✓',
   warn: '⚠',
@@ -2073,9 +2114,23 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   }
 
   // Unknown subcommand: token looks like a keyword, not a file path.
+  //
+  // Issue #650 — the first misgrip a stranger's Coordinator makes. The
+  // original one-line `available: <list>` message survives BYTE-FOR-BYTE
+  // (cli.spec.ts's FOR-11 guard parses it at runtime); what is NEW is the
+  // block below it — one line per KNOWN_SUBCOMMANDS entry paired with its
+  // SUBCOMMAND_PURPOSE, so a plausible-but-wrong spelling gets the whole verb
+  // roster with a reason to pick each one, not just a comma-separated list of
+  // bare names to re-guess from.
   if (looksLikeSubcommand(first)) {
     process.stderr.write(
-      `unknown subcommand: ${first}; available: ${KNOWN_SUBCOMMANDS.join(', ')}\n`,
+      [
+        `unknown subcommand: ${first}; available: ${KNOWN_SUBCOMMANDS.join(', ')}`,
+        '',
+        'available subcommands:',
+        ...KNOWN_SUBCOMMANDS.map((cmd) => `  ${cmd}  ${SUBCOMMAND_PURPOSE[cmd]}`),
+        '',
+      ].join('\n'),
     );
     return 2;
   }

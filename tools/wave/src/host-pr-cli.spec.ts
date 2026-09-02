@@ -619,6 +619,44 @@ describe('host-pr usage errors (exit 2)', () => {
   });
 });
 
+// ─── issue #650 — the unknown-verb dump ALSO lists every verb, one per line ──
+//
+// Convention 11 falsification: comment out the `'verbs:'` block
+// `usageUnknownVerb` appends in host-pr-cli.ts (leaving only the pre-existing
+// `fullUsageLines()` prose) and this test fails — the per-verb search below
+// finds zero `usage: host-pr <verb> ` lines. Restoring the block makes it
+// pass again. See this row's report for the observed failing output.
+
+describe('host-pr usage errors — unknown verb prints the full verb list, one line per verb (issue #650)', () => {
+  it('every registered verb appears exactly once, each naming its own usage line, and the exit code is unchanged', async () => {
+    const code = await runHostPr(['definitely-bogus-verb', '--branch', 'b']);
+    expect(code).toBe(2);
+
+    // Ground truth roster: parsed off the PRE-EXISTING "expected one of: a, b,
+    // c" clause itself — never a second, hand-typed roster in this spec that
+    // could drift from `VERBS`/`VERB_CONTRACT`.
+    const m = /expected one of: ([^\n]+)/.exec(stderr);
+    expect(m, 'the pre-existing "expected one of" clause must survive byte-for-byte').not.toBeNull();
+    const verbs = (m as RegExpExecArray)[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    expect(verbs).toEqual(['create', 'arm', 'merge', 'status', 'preflight']);
+
+    const lines = stderr.split('\n');
+    for (const verb of verbs) {
+      const matches = lines.filter((l) => l.trim().startsWith(`usage: host-pr ${verb} `));
+      expect(matches, `expected exactly one usage line for verb "${verb}"`).toHaveLength(1);
+    }
+  });
+
+  it('a KNOWN verb with a bad flag is unaffected — no verb list leaks into its own contract', async () => {
+    const code = await runHostPr(['arm', '--remote', GITHUB_REMOTE]);
+    expect(code).toBe(2);
+    expect(stderr).not.toContain('verbs:');
+  });
+});
+
 // ─── issue #505 — a known verb's usage error teaches ONLY its own contract ──
 //
 // The motivating misfire: `host-pr arm --pr <url>` (the flag guessed from

@@ -788,6 +788,74 @@ describe('issue-store-cli — usage errors teach the op\'s own contract (issue #
   });
 });
 
+// ─── issue #650 — the unknown-op full dump now lists every op, one per line ──
+//
+// Convention 11 falsification for this block: comment out the `'ops:'`
+// block in issue-store-cli.ts's `usage()` (leaving only the pre-existing
+// `usage: ${FULL_OP_LIST}` line) and this test fails — the per-op search
+// below finds zero matches for every registered op, since none of their own
+// `OP_CONTRACT[op][0]` usage lines are printed anywhere. Restoring the block
+// makes it pass again. See this row's report for the observed failing output.
+
+describe('issue-store-cli — unknown op prints the full op list, one line per op (issue #650)', () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let stderr: string;
+
+  beforeEach(() => {
+    stderr = '';
+    errSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        stderr += chunk.toString();
+        return true;
+      });
+  });
+
+  afterEach(() => {
+    errSpy.mockRestore();
+  });
+
+  it('every registered op appears exactly once, each on its own line naming its own usage, and the exit code is unchanged', async () => {
+    const code = await runIssueStore(['definitely-bogus-op'], tmpStore());
+    expect(code).toBe(2);
+
+    // Ground truth roster: parsed off the PRE-EXISTING `usage: issue-store
+    // <op1|op2|...> [...args] [--config <path>]` line itself — never a
+    // second, hand-typed roster in this spec that could drift from
+    // `FULL_OP_LIST` / `OP_CONTRACT`.
+    const usageLine = stderr
+      .split('\n')
+      .find((l) => l.startsWith('usage: issue-store <'));
+    expect(usageLine, 'the pre-existing full usage line must survive byte-for-byte').toBeDefined();
+    const ops = usageLine!
+      .slice(usageLine!.indexOf('<') + 1, usageLine!.indexOf('>'))
+      .split('|');
+    expect(ops.length).toBeGreaterThan(20); // sanity: this is the real, long roster
+
+    const lines = stderr.split('\n');
+    for (const op of ops) {
+      const matches = lines.filter((l) => l.trim().startsWith(`usage: issue-store ${op} `));
+      expect(matches, `expected exactly one usage line for op "${op}"`).toHaveLength(1);
+    }
+  });
+
+  it('a missing op ALSO gets the per-op list — there is no op yet to narrow by', async () => {
+    const code = await runIssueStore([], tmpStore());
+    expect(code).toBe(2);
+    expect(stderr).toContain('usage: issue-store create ');
+    expect(stderr).toContain('usage: issue-store goal-publish-update ');
+  });
+
+  it("a KNOWN op's usage error is UNCHANGED — no per-op list leaks into its own contract section", async () => {
+    const code = await runIssueStore(['triage-apply', 'x#01'], tmpStore());
+    expect(code).toBe(2);
+    // triage-apply's own contract is a handful of lines; the full 26-op list
+    // would blow well past that.
+    expect(stderr.trim().split('\n').length).toBeLessThanOrEqual(6);
+    expect(stderr).not.toContain('ops:');
+  });
+});
+
 describe('issue-store-cli — triage ops (ADR-0015)', () => {
   let outSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;

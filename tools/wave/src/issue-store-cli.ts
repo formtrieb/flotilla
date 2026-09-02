@@ -324,6 +324,16 @@ const OP_CONTRACT: Record<Op, readonly string[]> = {
 };
 
 /**
+ * Every registered op, in the order {@link OP_CONTRACT} declares them —
+ * derived, never a second hand-typed roster (issue #650: the same discipline
+ * `SPINE_OPS`/`Object.keys(SPINE_OP_ARGS)` already uses in spine-cli.ts).
+ * `OP_CONTRACT` is `Record<Op, ...>`, so this list is exactly the `Op` union
+ * the switch above dispatches — it cannot omit or invent an op without a
+ * compile error.
+ */
+const ALL_OPS = Object.keys(OP_CONTRACT) as Op[];
+
+/**
  * Render a usage error. With a KNOWN `op`, prints ONLY that op's own contract
  * section (`OP_CONTRACT`) — its usage line, an inline worked input-shape
  * example where one applies, and its output format — never the full op-list
@@ -332,12 +342,25 @@ const OP_CONTRACT: Record<Op, readonly string[]> = {
  * the same imprecision). Without a known `op` (no op at all, or an unknown
  * one) the full dump is what teaches — the caller hasn't told us which
  * contract they meant yet.
+ *
+ * Issue #650 — that full dump used to be the single joined `usage: <op1|op2|
+ * ...>` line and nothing else. It now ALSO lists every op on its own line,
+ * each naming its own usage (`OP_CONTRACT[op][0]`, the same first line a
+ * KNOWN op's own contract leads with) — sourced from `ALL_OPS`/`OP_CONTRACT`,
+ * so the roster cannot drift from what the switch above actually dispatches.
+ * The original single-line summary survives byte-for-byte (existing specs
+ * read it back); the per-op block is additive.
  */
 function usage(message: string, op?: Op): number {
   const contract = op !== undefined ? OP_CONTRACT[op] : undefined;
-  process.stderr.write(
-    [`error: ${message}`, ...(contract ?? [`usage: ${FULL_OP_LIST}`]), ''].join('\n'),
-  );
+  const body =
+    contract ?? [
+      `usage: ${FULL_OP_LIST}`,
+      '',
+      'ops:',
+      ...ALL_OPS.map((o) => `  ${OP_CONTRACT[o][0]}`),
+    ];
+  process.stderr.write([`error: ${message}`, ...body, ''].join('\n'));
   return 2;
 }
 
