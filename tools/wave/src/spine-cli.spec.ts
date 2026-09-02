@@ -940,6 +940,26 @@ describe('spine-cli — the op vocabulary is one list, advertised twice', () => 
       );
     }
   });
+
+  // ── issue #650 — the unknown-op message ALSO lists every op, one per line ──
+  //
+  // Convention 11 falsification: comment out the `'ops:'` block appended in
+  // spine-cli.ts's `default:` case (leaving only the pre-existing single
+  // `unknown op: ...; available: a, b, c` line) and this test fails — the
+  // per-op search below finds zero `spine <op> ` lines. Restoring the block
+  // makes it pass again. See this row's report for the observed failing output.
+  it('the unknown-op message lists every op exactly once, each naming its own arg shape, and keeps exit code 2', () => {
+    const advertised = ops(); // ground truth: parsed off the pre-existing `available:` line
+    stderrOut = '';
+    const code = runSpine(['__still_unknown__', join(tmpdir(), 'no-such-650.md')]);
+    expect(code).toBe(2);
+
+    const lines = stderrOut.split('\n');
+    for (const op of advertised) {
+      const matches = lines.filter((l) => l.trim().startsWith(`spine ${op} `) || l.trim() === `spine ${op}`);
+      expect(matches, `expected exactly one arg-shape line for op "${op}"`).toHaveLength(1);
+    }
+  });
 });
 
 // ─── the human lane, in its post-fold home (issue #366, ADR-0012) ────────────

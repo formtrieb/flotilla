@@ -282,6 +282,30 @@ function usage(message: string, verb?: Verb): number {
 }
 
 /**
+ * The unknown-verb usage error (issue #650) — the first misgrip a stranger's
+ * Coordinator makes (a plausible spelling: `land` for `arm`, `open` for
+ * `create`). Keeps {@link fullUsageLines}'s full multi-verb dump byte-for-byte
+ * (issue #505's teaching value for a caller who has named no verb we
+ * recognise survives unchanged) and ADDS, sourced from {@link VERB_CONTRACT}
+ * — the exact table {@link VERBS}/the switch above are typed against — one
+ * line per verb naming its own usage (`VERB_CONTRACT[verb][0]`), so this list
+ * cannot drift from what the router actually dispatches.
+ */
+function usageUnknownVerb(verb: string): number {
+  process.stderr.write(
+    [
+      `error: unknown verb "${verb}" — expected one of: ${VERBS.join(', ')}`,
+      ...fullUsageLines(),
+      '',
+      'verbs:',
+      ...VERBS.map((v) => `  ${VERB_CONTRACT[v][0]}`),
+      '',
+    ].join('\n'),
+  );
+  return 2;
+}
+
+/**
  * Run the `host-pr` CLI (FOR-26 / FOR-28 / ADR-0019 + ADR-0023).
  *
  * @param args - CLI args; `args[0]` is the verb.
@@ -308,7 +332,7 @@ export async function runHostPr(
   const verb = args[0] as Verb | undefined;
   if (verb === undefined) return usage('a verb is required');
   if (!VERBS.includes(verb)) {
-    return usage(`unknown verb "${verb}" — expected one of: ${VERBS.join(', ')}`);
+    return usageUnknownVerb(verb);
   }
 
   // `preflight` is a REPO-level probe — it takes no --branch (it reads required

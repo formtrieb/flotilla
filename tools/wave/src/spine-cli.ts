@@ -739,8 +739,22 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       // DERIVED from `SPINE_OP_ARGS`, never transcribed — this message IS the
       // dispatch vocabulary, and cli.spec.ts's FOR-11 guard reads it back at
       // runtime to prove the router's own usage line names every op of it.
+      //
+      // Issue #650 — the summary line above survives byte-for-byte (the
+      // FOR-11 guard's regex captures only up to the first newline); what is
+      // NEW is the block below it, one line per SPINE_OPS entry rendered the
+      // SAME way `printUsage()` renders it (`spine <op> <args>`, straight off
+      // `SPINE_OP_ARGS`) — so a misspelled op (`transition` for
+      // `set-row-state`) gets the whole vocabulary with each op's own arg
+      // shape, not just a comma-separated list of bare names to re-guess from.
       process.stderr.write(
-        `unknown op: ${op}; available: ${SPINE_OPS.join(', ')}\n`,
+        [
+          `unknown op: ${op}; available: ${SPINE_OPS.join(', ')}`,
+          '',
+          'ops:',
+          ...SPINE_OPS.map((o) => `  spine ${o} ${SPINE_OP_ARGS[o]}`),
+          '',
+        ].join('\n'),
       );
       return 2;
   }
