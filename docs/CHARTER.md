@@ -1,6 +1,6 @@
 # flotilla — Project Charter
 
-> **Status:** design-approved, pre-seed · **Name:** `flotilla` (provisional, renameable) · **Date:** 2026-06-05
+> **Status:** shipped since 1.0.0 (2026-07-31) — living document · **Name:** `flotilla` · **Seed date:** 2026-06-05
 > Seeded from the Ur's wave-orchestration system. This document is self-contained so it travels with the seed into the new repo.
 
 ---

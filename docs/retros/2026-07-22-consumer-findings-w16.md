@@ -2,7 +2,7 @@
 
 Wave: `2026-07-22-consumer-findings` · Rows: **FOR-63, FOR-64, FOR-65, FOR-68** · Store: Linear (Formtrieb/`FOR`) · Repo: `github.com/formtrieb/flotilla` (öffentlich) · Anchor: `a19819c` → `main` nach dem Close: `4af9ca6`.
 
-Besonderheit dieses Laufs: **die erste Wave, deren Backlog vollständig aus dem Retro eines Consumers stammt** — die sieben Findings der ersten Linear-Consumer-Wave (`2026-07-21-keycloak-auth`, dsw21-mopla-server) wurden am selben Vormittag gegen den Upstream-Code validiert, als FOR-63…69 gefiled und die ersten vier davon noch am selben Tag gelandet. Der Consumer→Upstream-Rückkanal, für den die Retro-Disziplin existiert, hat damit seinen ersten vollen Umlauf.
+Besonderheit dieses Laufs: **die erste Wave, deren Backlog vollständig aus dem Retro eines Consumers stammt** — die sieben Findings der ersten Linear-Consumer-Wave (`2026-07-21-keycloak-auth`, Server-Pilot) wurden am selben Vormittag gegen den Upstream-Code validiert, als FOR-63…69 gefiled und die ersten vier davon noch am selben Tag gelandet. Der Consumer→Upstream-Rückkanal, für den die Retro-Disziplin existiert, hat damit seinen ersten vollen Umlauf.
 
 ## 0. Ergebnis in einem Satz
 
