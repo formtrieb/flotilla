@@ -1,6 +1,6 @@
 {
   "name": "@formtrieb/flotilla-engine",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Wave-orchestration engine for flotilla — conflict/parallelism reasoning, DoR gating, merge order, and tracker-agnostic issue stores.",
   "keywords": [
     "wave-orchestration",
