@@ -114,9 +114,12 @@ export interface ValidateOptions {
   /**
    * Optional consumer verify profiles (`wave.config.json`'s `verify`, ADR-0016).
    * Drives Gate 8 ({@link checkVerifyProfileCoverage}). Absent → the gate
-   * `defer`s rather than silently passing or spamming a warn — distinct from a
-   * consumer that legitimately configured zero profiles (`{ profiles: [] }`),
-   * which is a real "no automated gate anywhere" state and stays a quiet pass
+   * `defer`s (this call was never handed a config at all — resolvable by
+   * passing one, see {@link DEFER_NO_VERIFY_CONFIG}) rather than silently
+   * passing or spamming a warn — distinct from a consumer that legitimately
+   * configured zero profiles (`{ profiles: [] }`), which is a real "no
+   * automated gate anywhere" state and stays a `pass` carrying a note
+   * ({@link NOTE_VERIFY_PROFILES_EMPTY}, issue #676) rather than a silent one
    * (AC4 — the check is about a profile existing and not matching, not about
    * the absence of profiles).
    */
@@ -848,9 +851,28 @@ function checkLiteralFilesExistence(
  * distinct from a consumer that legitimately configured zero profiles (AC4:
  * "not about the absence of profiles"). The caller simply did not supply
  * `verify`, so this gate cannot compute anything here and must not guess.
+ *
+ * This is the "resolvable" deferral (issue #676): the CLI never reached a
+ * `--config` at all, so re-running with that flag is what would change the
+ * outcome — distinct from {@link NOTE_VERIFY_PROFILES_EMPTY}, where a config
+ * DID load and simply declares no profiles (the "genuinely nothing to check"
+ * case, which no flag resolves).
  */
 const DEFER_NO_VERIFY_CONFIG =
-  'No verify config supplied to this check — pass the consumer wave.config.json `verify` profiles to enable Gate 8.';
+  'No verify config reached this check — pass --config <path> so this call can read the consumer wave.config.json (its `verify` profiles drive Gate 8).';
+
+/**
+ * Emitted when a verify config DID reach this call and it declares zero
+ * profiles — either because the consumer's `wave.config.json` carries no
+ * `verify` block at all (the CLI substitutes `{ profiles: [] }` in that case,
+ * issue #676) or because it explicitly configured `verify: { profiles: [] }`.
+ * Both mean the same thing from this gate's vantage point: there is nothing
+ * to check, and no flag or re-run changes that — distinct from
+ * {@link DEFER_NO_VERIFY_CONFIG}, where the call never saw a config at all and
+ * IS resolvable by passing `--config`.
+ */
+const NOTE_VERIFY_PROFILES_EMPTY =
+  'Verify config loaded — it declares no profiles, so nothing gates this row (inspection-only).';
 
 /**
  * Expand a `Files:` entry list the same way Gate 2 ({@link checkFilesGlobs})
@@ -897,11 +919,16 @@ function resolveDeclaredFiles(
  * Three-way ADR-0014 capability classification, mirroring Gates 2/7:
  *   - `verify` absent from this call        → `'deferred'` (this invocation
  *     was not given the consumer's verify config at all — a capability gap,
- *     not evidence of anything about the row).
- *   - `verify.profiles` present but EMPTY   → `'pass'`, silently (AC4): a
- *     consumer with no verify profile configured at all must not be spammed —
- *     this check is about a profile existing and NOT matching, not about the
- *     absence of profiles.
+ *     not evidence of anything about the row). Resolvable: passing `--config`
+ *     is what would change the outcome ({@link DEFER_NO_VERIFY_CONFIG}).
+ *   - `verify.profiles` present but EMPTY   → `'pass'`, with a note (issue
+ *     #676; previously silent): a config DID load here and it legitimately
+ *     declares zero profiles — whether because the consumer's config carries
+ *     no `verify` block at all, or explicitly configured `{ profiles: [] }` —
+ *     so nothing gates this row (AC4: this check is about a profile existing
+ *     and NOT matching, not about the absence of profiles). Genuinely nothing
+ *     to check: unlike the deferred case above, no flag resolves this one
+ *     further ({@link NOTE_VERIFY_PROFILES_EMPTY}).
  *   - `repoRoot` absent (structured/`validateIssueView` path only) → `'deferred'`
  *     (working-tree gate: `Files:`/`appliesTo` globs cannot be expanded to
  *     determine overlap without a checkout).
@@ -918,7 +945,7 @@ function checkVerifyProfileCoverage(
     return { name, status: 'deferred', reason: DEFER_NO_VERIFY_CONFIG };
   }
   if (verify.profiles.length === 0) {
-    return { name, status: 'pass' };
+    return { name, status: 'pass', reason: NOTE_VERIFY_PROFILES_EMPTY };
   }
   if (repoRoot === undefined) {
     return { name, status: 'deferred', reason: DEFER_NO_WORKTREE };

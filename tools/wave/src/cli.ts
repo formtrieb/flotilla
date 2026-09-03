@@ -579,10 +579,20 @@ function printUsage(): void {
 function runDor(paths: string[]): number {
   // Optional `--config <path>` (FOR-151): threads the consumer's
   // wave.config.json `verify` block into Gate 8 (verify-profile-coverage) so it
-  // can actually run instead of always deferring for "no verify config
-  // supplied". Absent (the pre-existing, still-supported form) → `verify` stays
+  // can actually run instead of always deferring for "no config reached this
+  // check". Absent (the pre-existing, still-supported form) → `verify` stays
   // undefined and Gate 8 defers exactly as before this fix — no behavior change
   // for the many existing bare `dor <path>...` call sites.
+  //
+  // issue #676: a config that DID load but carries no `verify` block at all
+  // must NOT collapse back onto that same undefined-`verify` deferral — from
+  // the operator's chair that reads as "you forgot --config" when --config
+  // was right there. So a loaded config with no `verify` key is normalized to
+  // an explicit `{ profiles: [] }` here rather than left `undefined`: Gate 8
+  // already treats that shape as "a config loaded; it declares zero
+  // profiles" (see `NOTE_VERIFY_PROFILES_EMPTY` in dor-gate.ts) — `verify`
+  // stays `undefined` after this block ONLY when `--config` itself was never
+  // supplied, which is exactly the case that deferral should name.
   const filePaths = [...paths];
   let verify: VerifyConfig | undefined;
   const configIdx = filePaths.indexOf('--config');
@@ -594,7 +604,7 @@ function runDor(paths: string[]): number {
     }
     filePaths.splice(configIdx, 2);
     try {
-      verify = loadWaveConfig(configPath).verify;
+      verify = loadWaveConfig(configPath).verify ?? { profiles: [] };
     } catch (err) {
       process.stderr.write(
         `error: could not load --config ${configPath}: ${(err as Error).message}\n`,
@@ -684,19 +694,26 @@ export async function runDorById(
 
   // FOR-151: thread the consumer's wave.config.json `verify` block into
   // Gate 8 (verify-profile-coverage) so it can actually run instead of
-  // always deferring with "No verify config supplied" — the gate previously
-  // had no way to see `--config` at all. Loaded independently of
+  // always deferring with "no config reached this check" — the gate
+  // previously had no way to see `--config` at all. Loaded independently of
   // `resolveStore` above (which only surfaces the config to build the STORE,
   // not to the caller) so this stays a one-line addition rather than a
   // `resolveStore` signature change reaching into cli-store.ts (out of this
   // slice's declared Files). Absent `--config` (the pre-existing form, and
   // every test that passes an `injected` store without one) leaves `verify`
   // undefined — Gate 8 defers exactly as before this fix.
+  //
+  // issue #676: same normalization as `runDor` above — a config that DID
+  // load but carries no `verify` block at all is coerced to `{ profiles: [] }`
+  // rather than left `undefined`, so Gate 8 can tell "no config reached this
+  // check" (still genuinely `verify === undefined`, only when `--config`
+  // itself was never passed) apart from "a config loaded and declares zero
+  // profiles" (`NOTE_VERIFY_PROFILES_EMPTY` in dor-gate.ts).
   const configPath = flag(args, '--config');
   let verify: VerifyConfig | undefined;
   if (configPath !== undefined) {
     try {
-      verify = loadWaveConfig(configPath).verify;
+      verify = loadWaveConfig(configPath).verify ?? { profiles: [] };
     } catch (err) {
       process.stderr.write(
         `error: could not load --config ${configPath}: ${(err as Error).message}\n`,
