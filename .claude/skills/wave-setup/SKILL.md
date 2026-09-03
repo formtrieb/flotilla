@@ -288,6 +288,16 @@ Scope and the `create-credentials` preflight check that grades this precondition
 
    A reader who has never set up flotilla before must be able to follow this list top to bottom and finish setup without reading back into the record from step 10.
 
+12. **Offer the consumer orientation block — the last step, and only on an explicit yes.** Nothing above reaches an agent doing ordinary work in this repo between waves: between one wave and the next it inherits none of the standing context that keeps a wave safe — which file binds every flotilla skill, what the stations are called, that the default branch is protected and every change lands through a pull request, that the claim labels/states belong to the wave engine and are never hand-edited, that an issue's triage state is the readiness signal a wave reads, or where to send a flotilla finding. Offer to write a short block naming all of that into the consumer's own house file.
+
+    **Target file.** `CLAUDE.md`, or `AGENTS.md` instead when that file already exists in this repo as its house file; default to `CLAUDE.md` when neither exists yet.
+
+    **Idempotent by marker.** Check the target file, if it exists, for the line `<!-- flotilla:consumer-orientation -->`. Found anywhere in it → the block is already there: say so, offer nothing, write nothing — this holds even when the operator has since edited the surrounding text, which is left exactly as edited. Not found (including a target file that does not exist yet) → continue.
+
+    **Preview, then ask — write only on a clear yes.** Show the operator the block verbatim, then ask whether to add it. On yes: append it (one blank line ahead of it) to the target file, or create the file with just this block as its content if it does not exist yet. On anything else — no, silence, an ambiguous answer — write nothing, note "declined" in your report, and move on: setup is still complete either way.
+
+    Exact block text and the append/create mechanics: [reference/setup-mechanics.md](reference/setup-mechanics.md#consumer-orientation-block).
+
 ## Validating the quickstart on a throwaway consumer
 
 The README quickstart is measured, not remembered: a throwaway repository is created under the organisation, the quickstart is followed verbatim in installed form through this skill and one one-row wave, every disagreement between the text and the tool is recorded, and the repository is deleted. The create-and-teardown scaffold, the measured run of 2026-09-03 and its numbers live in [reference/throwaway-consumer.md](reference/throwaway-consumer.md) — the first instance of the golden-wave mechanic, to be re-run whenever the quickstart text or this skill changes.
@@ -327,6 +337,8 @@ The README quickstart is measured, not remembered: a throwaway repository is cre
 - **Naming only one fine-grained GitHub permission on the checklist (e.g. `Pull requests` alone).** `repo` on a classic PAT bundles issues, PRs, and contents into one scope; a fine-grained PAT needs all three named separately (`Issues`, `Pull requests`, `Contents`, each Read and write) or the setup passes `store-preflight` and then fails the first issue-labeling call.
 - **Leaving `gh auth status` and `GITHUB_TOKEN` presence conflated as "one auth problem."** They are two independent credentials (`gh`'s own keyring auth vs. the engine's env var) that fail independently; report and fix each on its own, or a mixed failure reads as one confusing state when it is really two.
 - **Ending the report with a scattered summary instead of a single ordered checklist.** An operator should never have to reconstruct the sequence — credentials → token scope → preflight fixes → committing the scaffold → `gh` auth (if used) → by-hand confirmations → editor exclusion → next step — from prose spread across the report. Print it as one ordered list, last, with a place/shape/reason on every item.
+- **Writing the consumer orientation block without an explicit yes, or re-asking after a decline.** A "seems fine" reading of an ambiguous answer, or a default-yes when nobody replied, is not consent — write nothing until the operator says yes clearly, and once declined, leave it declined; setup completes either way.
+- **Skipping the marker check and duplicating (or rewriting) the consumer orientation block on a re-run.** The marker line is the whole idempotency mechanic — a re-run that reads the surrounding prose instead of grepping for the marker risks stomping edits the consumer made since the block was written, or offering it a second time.
 
 ## Operator register (Convention 16)
 
