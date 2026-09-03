@@ -9,12 +9,12 @@ Break a plan into independently-grabbable issues using **tracer-bullet vertical 
 
 Your job is the **judgment** — slicing, classifying Risk/Worker, declaring Files, ordering the publish. The engine is the guardrail: it validates format, assigns ids, and runs the gates. So this skill stays on the judgment; the CLI invocation detail (commands, JSON shapes, the two-pass, the self-check) lives in [reference/filing-mechanics.md](reference/filing-mechanics.md) — reach for it once a breakdown is approved. You never write a tracker directly; everything goes through the engine CLI (`{{wave-cli}}`), which selects the configured store.
 
-Two modes: **create** (mint new issues from a plan) and **decorate** (add the missing wave fields to an issue someone already triaged).
+Two modes: **create** (mint new issues from a plan) and **decorate** (add the missing wave fields to an issue someone already triaged). Decorate is not an alternative to `triage` — it is the second half of the same readiness. `triage` stamps the eligibility marker; this skill writes the planning header into the body, and only an issue carrying both is one the wave side can actually read.
 
 ## When to Use
 
 - The user has a plan, PRD, spec, or design doc and wants it turned into issues.
-- The user wants existing triage-ready issues made wave-eligible (decorate).
+- The user wants an already-triaged issue made **wave-readable** (decorate) — a `ready-for-agent` issue carries the eligibility marker but no planning header, so the wave side cannot read it at all until this runs.
 - An upstream skill (`to-prd`, `triage`) hands off work to be sliced into a wave batch.
 
 Do **not** triage, label, or close issues — that is the `triage` skill's dimension. This skill only writes the `wave/*`-relevant Header-Block; it never touches issue-side taxonomy labels.
@@ -86,7 +86,7 @@ If a slice is HITL and the mode is unsignalled, prompt: `foreground` (you co-pil
 
 **create** — build one input per slice and publish **blockers first**, so dependents can name real ids. The ids are opaque: capture what `create` prints; never reconstruct one. Dependent refs are resolved by a two-pass that asks the engine to invert ids (never parse an id by hand).
 
-**decorate** — add only the *missing* wave fields (`risk`/`worker`/`files`, plus `parent` if it is a PRD slice). **Never supply `acceptanceCriteria`** — it silently replaces the human-authored AC.
+**decorate** — add only the *missing* wave fields (`risk`/`worker`/`files`, plus `parent` if it is a PRD slice). **`acceptanceCriteria` is conditional, not forbidden — read the body first, because that read is what decides which case you are in:** never replace an existing `## Acceptance criteria` section (supplying the field overwrites the modeled section wholesale and the human-authored AC is gone); when the body has none and the triage brief carries acceptance criteria, lift them verbatim into the body as that section. Two paths reach that second case — a bare issue filed at a wave's close never had an AC section, and a triaged issue's criteria live in the Agent Brief *comment* while the wave side reads the *body*. Lifting them is the step that moves them across; it is the ordinary path, not an exception you are bending a rule to reach.
 
 Exact commands, JSON shapes, and the two-pass steps: [reference/filing-mechanics.md](reference/filing-mechanics.md).
 
@@ -99,7 +99,7 @@ Run `dor` on each published issue: its **self-content gates** (header-parseable,
 - **Horizontal slices of feature work.** "Add the schema" is a layer, not a tracer bullet — feature slices reach end-to-end. (A genuinely `mechanical`/`isolated-refactor` slice MAY be horizontal — the narrow carve-out, not a license.)
 - **Parsing ids by hand.** Never split an id on `#`, derive a slug, or build an `IssueRef` shape yourself — the id is opaque; use `issue-store parse-ref`. And never derive an id from filingHint/title — capture the printed id.
 - **A PRD in `blockedBy`.** The PRD is the `parent`, never a blocker — it never lands, so it would stall the chain.
-- **Supplying AC on decorate.** It replaces the existing human-authored AC. Decorate only the missing wave fields (risk/worker/files, plus `parent` if a PRD slice).
+- **Replacing an existing AC section on decorate.** Supplying `acceptanceCriteria` overwrites the modeled section wholesale, so **never replace an existing `## Acceptance criteria` section**. The rule is conditional, not absolute: **when the body has none and the triage brief carries acceptance criteria, lift them verbatim into the body as that section.** Read the body before you decide — guessing which of the two cases you are in is what loses authored AC, and treating the rule as absolute is what leaves a decorated issue with no AC at all.
 - **Publishing on an unconfirmed breakdown.** Quiz and iterate first.
 - **Tracker-specific assumptions.** Don't assume a particular tracker, branch ritual, or build tool — no markdown-files-as-tracker, no `git mv` to a `done/` folder, no direct-push-to-main. The store behind the CLI is config-selected; stay tracker-agnostic and reach the engine only through `{{wave-cli}}`.
 - **An AC whose opening scope outreaches the declared Files.** An acceptance criterion that opens wider than the Files it's paired with makes full satisfaction structurally impossible — the Worker can never close the gap without scope-creep, so the row lands with an honest partial at best. Fix it at slicing time, not after: either qualify the AC down to the enumerated scope, or widen Files to match (the bias-toward-wider rule above applies to AC reach too — when unsure, widen). Seen live: an unqualified "no reference doc anywhere still presents the old behavior" clause reached over a Files list that named only a subset of the docs it touched; the Worker disclosed the gap via Convention 9 instead of scope-creeping, the Reviewer ticked an honest partial with precise evidence, and a one-line follow-up PR closed the cause.
