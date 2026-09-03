@@ -4,7 +4,7 @@ The README quickstart is validated the way a stranger meets it: a throwaway repo
 
 ## The scaffold — create, seed, tear down
 
-Everything here goes through `gh`'s **own** login, never the engine's `GITHUB_TOKEN` — the two are different credentials (SKILL.md, "`GITHUB_TOKEN` vs `gh`'s own auth"). The repository is public on purpose: on a Free-plan organisation, branch protection exists only for public repositories (docs/CAPABILITIES.md, the GitHub footnote). The seeded issue is deliberately **not** in wave shape — quickstart step 3 (`triage`) is what shapes it, and that step is part of what is being measured.
+Everything here goes through `gh`'s **own** login, never the engine's `GITHUB_TOKEN` — the two are different credentials (SKILL.md, "`GITHUB_TOKEN` vs `gh`'s own auth"). The repository is public on purpose: on a Free-plan organisation, branch protection exists only for public repositories (docs/CAPABILITIES.md, the GitHub footnote). The seeded issue is deliberately **not** in wave shape — quickstart step 3 (`triage`) is what shapes it, and that step is part of what is being measured. Save the fenced block below as a shell script under the name its usage lines show, wherever you keep your own operator scripts, and run it with `bash`; it is kept here as text so the reference guards read it with everything else.
 
 ```bash
 #!/bin/bash
@@ -34,8 +34,10 @@ case "$CMD" in
     git remote add origin "https://github.com/$REPO.git"
     git push -q -u origin main
     echo "seeded main"
-    # protected default branch: PRs only, no force-push, no deletion; no required checks (the repo has no CI).
-    printf '%s' '{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}' \
+    # protected default branch: a pull request is REQUIRED (zero approvals — a throwaway has no reviewers;
+    # `required_pull_request_reviews: null` would mean 'no pull request required' and let write users push
+    # straight to main), no force-push, no deletion; no required checks (the repo has no CI).
+    printf '%s' '{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":0},"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}' \
       | gh api -X PUT "repos/$REPO/branches/main/protection" -H "Accept: application/vnd.github+json" --input - >/dev/null
     echo "main protected"
     gh repo edit "$REPO" --enable-auto-merge --delete-branch-on-merge >/dev/null
@@ -60,7 +62,7 @@ What the scaffold does **not** do, on purpose: it creates none of the thirteen l
 
 ## The measured run — 2026-09-03
 
-Operator-driven, on a long-lived interactive machine, in a plain terminal (not an editor's integrated session), against the README as published at `25f7679` and the plugin at 2.1.0 with the engine at 2.1.0. Repository: a throwaway under the organisation, created by the scaffold above and deleted at the end.
+Operator-driven, on a long-lived interactive machine, in a plain terminal (not an editor's integrated session), against the README as published at `25f7679` and the plugin at 2.1.0 with the engine at 2.1.0. Repository: a throwaway under the organisation, created by the scaffold above and deleted by its teardown verb on 2026-09-03, once the Operator had released it.
 
 | Quickstart step | Wall clock | What the text said | What the tool did | Resolution |
 | --- | --- | --- | --- | --- |
