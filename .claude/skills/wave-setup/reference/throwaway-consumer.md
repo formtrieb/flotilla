@@ -71,9 +71,13 @@ Operator-driven, on a long-lived interactive machine, in a plain terminal (not a
 | 2 — harness settings | | "writes the permission allowlist a wave needs to run unattended" | the harness declined the skill's file-write and file-edit on `.claude/settings.json`; the skill staged the file and the operator applied it with one `! cp` from their own prompt; the Echo-Guard copy into `.claude/hooks/echo-guard.cjs` needed the sandbox override | README step 2, ONBOARDING, SKILL.md step 9 and the scaffold section now describe the hand-off as the documented path |
 | 2 — done | 02:20 | | `config validate`, `store-preflight`, `host-pr preflight` all exit 0 | **21 minutes** for step 2, of which the two hand-offs above are most |
 | 2 — closing checklist | | | the skill reported "this repo has no issues yet" although the seeded issue existed — it read the eligible pool | SKILL.md step 11 now says "no wave-ready issues" |
-| 3 — `triage` | | | | |
-| 4 — `wave-plan`, `wave-create`, `wave-start` | | | | |
-| 5 — land the PR, `wave-close` | | | | |
+| 3 — `triage` | 02:25 start | "`triage` works an existing issue into shape … carrying a declared file scope, a risk/worker classification, and acceptance criteria" | the first pass set the readiness state, the category and the acceptance criteria and then said the planning header was still missing; a second pass on the operator's word wrote the header (files, risk, worker) and the readiness check passed | README step 3 now describes the two passes |
+| 3 — readiness check | | | the verify-profile gate said "no verify config supplied" although the config file was passed — it has no `verify` block, which is correct for a repo without a build gate, but the wording says the opposite | follow-up issue (engine wording) named in the PR body |
+| 4 — `wave-plan`, `wave-create`, `wave-start` | 02:35 start | as written | plan read-only (one candidate, parallel-safe, ~4 agents), create wrote the spine then the `queued` claim, start ran four agents in about five minutes: Worker `done` on one file, Reviewer `approve` 4/4, PR opened with the rendered verdict, one disclosure captured and resolved in the row | as documented |
+| 4 — Reviewer agent name | | the driver names the Reviewer agent `wave-reviewer` | in the installed form the agent lives under the plugin namespace; the session had to use the namespaced name | follow-up issue (wave-start driver) named in the PR body |
+| 4 — worktree hygiene | | | the Worker's worktree under `.claude/worktrees/` showed as untracked in `git status` — the consumer's `.gitignore` scaffold did not cover it | the `.gitignore` scaffold now carries `.claude/worktrees/` |
+| 5 — land the PR, `wave-close --auto` | | "Land the PRs, then `wave-close`" | with no required checks the arm is a direct squash merge (one confirmation for the wave); phase 4a pulled main and re-swept; phase 5 closed the issue with the four confirmed criteria; the spine was archived | as documented — the README's "land the PRs" is one of two routes, the `--auto` arm being the other |
+| end | 03:00 | | | **61 minutes** end to end, steps 3–5 about 35 of them |
 
 Misfire counter of the validation wave (the pre-launch baseline for the first ten minutes): _recorded in the PR body of the row that landed this file._
 

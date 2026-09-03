@@ -497,7 +497,7 @@ Pass `--expect <plugin-version>` on this run too, for an installed-form consumer
 
 Written at [Procedure step 4](../SKILL.md#procedure), alongside `wave.config.json` — the consumer repo root is already in hand for that write, and this is the same moment.
 
-**One line, and it is the only flotilla-owned `.gitignore` entry a consumer needs.** Write it into the consumer repo's `.gitignore` at setup time, beside whatever else that file already carries:
+**Two lines, and they are the only flotilla-owned `.gitignore` entries a consumer needs.** Write them into the consumer repo's `.gitignore` at setup time, beside whatever else that file already carries:
 
 ```gitignore
 # flotilla — the Scribe's per-stage hand-off payloads (wave-start, ADR-0024).
@@ -507,6 +507,11 @@ Written at [Procedure step 4](../SKILL.md#procedure), alongside `wave.config.jso
 # into a commit; SWEPT at close by `worktree-cleanup --orphans` (reported under
 # `orphans.scratch`). Do not ignore `.flotilla/` wholesale — see below.
 .flotilla/tmp/
+# flotilla — the per-row agent worktrees wave-start registers (and wave-close
+# removes). Registered checkouts, never content to commit; without this line every
+# in-flight wave shows its worktrees as untracked in `git status` (measured live on
+# a fresh consumer, 2026-09-03).
+.claude/worktrees/
 ```
 
 **Why this line exists at all, given that flotilla's own repo never needed it.** This repo gitignores `.flotilla/` **wholesale** — it is the toolkit, not a consumer, and a stray in-repo spine must never land here. That blanket ignore silently covers the scratch path too, which is exactly why the gap was invisible for several wave-generations: the one repo that dogfoods the pipeline is the one repo the problem cannot appear in.
@@ -520,7 +525,7 @@ A consumer is the opposite case. The recommended posture is to **track** `.floti
 | **`.gitignore` line** | the whole **in-flight** window — a payload can never enter a commit, from the moment the Scribe writes it | the files themselves: they accumulate on disk forever, unignored-but-unremoved |
 | **close-time sweep** (`worktree-cleanup --orphans`, reported at `orphans.scratch`) | the **accumulation** — payloads are physically removed once the wave closes | the hours between the write and the close, where the consumer is committing spine updates |
 
-Scaffold both. A consumer that has only the sweep will commit a payload sooner or later; a consumer that has only the ignore line grows the directory without bound.
+Scaffold both. A consumer that has only the sweep will commit a payload sooner or later; a consumer that has only the ignore line grows the directory without bound. The worktree line has no sweep counterpart to weigh against: `wave-close` removes the worktrees, and the line only keeps them out of `git status` while they live.
 
 **Never widen it to `.flotilla/`.** Ignoring the whole directory in a consumer repo is not a stronger version of this rule — it is a different, and wrong, decision: it discards the spine's durability (the point of tracking it) to solve a scratch-file problem one line already solves. If a consumer *does* choose the gitignored posture deliberately, this line is simply redundant there, not harmful.
 
