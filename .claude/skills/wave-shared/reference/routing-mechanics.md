@@ -18,7 +18,7 @@ Reading the configured value is only half an instruction. The other half is **ho
 # dogfooding session in THIS checkout reads out of its own config:
 wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }
 
-# --state is verdict-keyed, not iteration-keyed (wave-start/reference/start-mechanics.md §7b) — reviewing is correct for this approve/iteration-1 cell, not a fixed value for every call.
+# --state is verdict-keyed, not iteration-keyed (wave-start/reference/start-mechanics.md "Verified routing outputs") — reviewing is correct for this approve/iteration-1 cell, not a fixed value for every call. `route-tuple` derives it for you; this single verb does not.
 wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing
 ```
 
@@ -54,16 +54,45 @@ These validate a structured return on disk against the same constraints the inli
 
 The filename is **engine-computed** — the caller passes `--id` + `--iter`, never a path with a name. These are the printers paired with the reader (`renderSpine`↔`readSpine` symmetry): a Scribe (or the inline Coordinator) runs them the moment an agent returns, so a durable record exists before any routing. Never hand-format a sidecar; never bundle the writes after routing.
 
-## Routing (typed field → event → outcome)
+## Routing a whole tuple — one verb
+
+| Call | Prints |
+|---|---|
+| `{{wave-cli}} route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> --config <cfg> [--title <text>]` | ONE JSON result: `{ ok, verb, id, iter, disposition, steps[], wrote{…}, … }` |
+
+This is the whole post-return sequence for one row, in the write-ahead order, in one process: the sidecar presence-and-validation check (recovering a missing or corrupt record from the passed `--report`/`--verdict` payload through the same writer the Scribe stages use, and refusing rather than guessing when it cannot), the worker-phase route, the verdict-phase route, the verdict render, find-before-create of the PR, the host status re-query, the two spine writes, and the `in-review` rung transition. Both `--state` derivations are the verb's — iteration-keyed for the worker phase, **verdict**-keyed for the reviewer phase — and `riskClass` comes off the typed verdict, so neither is a flag anyone can garble.
+
+Read `disposition`:
+
+| `disposition` | What happened | What is still yours |
+|---|---|---|
+| `pr-created` | PR open (body: summary → rendered verdict → close phrase), spine row `pr-created` with its PR cell filled, rung `in-review`. `prUrl` is what the HOST answered on the re-query. | nothing |
+| `re-dispatched` | The spine row state and the iteration bump were written. Host and tracker untouched. | the worktree teardown and the re-compose, in the order `next` names |
+| `stop` | The row halts; `stop.reason` + `stop.severity` say why. **No spine, host or tracker write happened.** | the `needs-attention` flag (below) |
+
+Every entry in `steps[]` carries `performed` or `performed-before`, so a re-run after an interruption is safe and says what it found already done — the open PR is reused rather than duplicated, no second verdict section is stacked into its body, and a rung already at `in-review` is left alone.
+
+**Two things the verb deliberately does not do.** It never captures a disclosure — that is judgment, and the Coordinator's own observation is a source no payload carries, so `spine add-disclosure` stays a separate call made *before* this one. And it never flags and never dispatches: a `stop` is reported, not acted on.
+
+Exit codes: `0` — the sequence completed (a `stop` is a routed outcome, not a failure); `1` — a refusal that wrote nothing past the step it names (an unrecoverable sidecar, a routing `noop` — a caller bug — a failed create, a refused reuse, a status re-query that found no PR); `2` — usage, an unreadable config, or an unreadable spine.
+
+## The single-verb pages (the building blocks a resume path reaches for one at a time)
+
+`route-tuple` composes these; they are unchanged, and they remain the right call when the question is about ONE step rather than a whole tuple — which is exactly the shape `wave-resume` works in, row by row, after a reconstruction.
 
 | Call | Prints | Wraps |
 |---|---|---|
 | `{{wave-cli}} route-outcome --outcome <workerOutcome> --state <issueState>` | JSON `{ event, outcome }` | `outcomeToEvent` → `transition` |
 | `{{wave-cli}} route-verdict --verdict <approve\|changes-requested\|questions-blocking> --iteration <1\|2> --risk <riskValue> --state <issueState>` | JSON `{ event, outcome }` | `verdictToEvent` → `transition` |
+| `{{wave-cli}} render-verdict <verdictsDir> <id> --anchor <sha>` | the `## Reviewer verdict` markdown section (text) | the MAX-iter valid verdict sidecar → `renderVerdictSection` |
+| `{{wave-cli}} host-pr create --branch <b> --title <t> --body <body>` | JSON `{ ok, outcome, url, … }` | find-before-create, then update-or-create |
+| `{{wave-cli}} host-pr status --branch <b>` | JSON `{ state, url?, … }` | the host's own answer for that branch |
 
 `<workerOutcome>` ∈ `done | done-with-concerns | needs-context | blocked`. `<riskValue>` ∈ `mechanical | isolated-refactor | cross-feature-refactor | public-API-change`. `<issueState>` is the issue's current fine state. The router derives the `event` deterministically and computes the resulting `outcome` (the target rung) — you never hand-pick the event.
 
 ## Apply + flag
+
+`route-tuple` performs the first row of this table itself, as its last step. The rest stay hand-called, and `flag` is deliberately one of them: a `stop` is reported by the routing verb and acted on here, by a Coordinator that has decided what to ask the Operator.
 
 | Call | Purpose |
 |---|---|
@@ -88,6 +117,14 @@ The filename is **engine-computed** — the caller passes `--id` + `--iter`, nev
 Never pipe any of these three calls through another command before reading its exit code — a pipeline reports only the *last* command's status, so `{{wave-cli}} issue-store flag "$ID" … | tee log` would hide a non-zero `flag` behind a zero `tee`.
 
 ## Exit codes
+
+### `route-tuple`
+
+| Code | Meaning |
+|---|---|
+| `0` | the sequence completed — read `disposition` (`pr-created` \| `re-dispatched` \| `stop`). A `stop` is a ROUTED outcome, not a failure of this verb |
+| `1` | a refusal, having written nothing past the step it names: an unrecoverable sidecar, a routing `noop` (a caller bug), a failed create, a refused reuse, a status re-query that found no PR, or a spine/tracker write that threw |
+| `2` | usage error, an unreadable/invalid `--config`, or an unreadable `--spine` |
 
 ### `route-verdict` / `route-outcome`
 

@@ -18,8 +18,9 @@
  *                  an injected adapter is honoured only for a host that HAS one,
  *                  so it can never smuggle an unrecognised remote onto a
  *                  host path.
- *   create       → `findOpenPrRef` then `createPr` (host-pr.ts owns the
- *                  find-before-create idempotency): an existing open PR for the
+ *   create       → `createOrReusePr` (host-pr.ts owns the whole
+ *                  find-before-create decision, in ONE function this runner and
+ *                  the `route-tuple` terminator both call): an existing open PR for the
  *                  branch is REUSED — and its title/body are RE-WRITTEN to the
  *                  passed values via `updateOpenPr` (PATCH), so the terminator's
  *                  composed render lands on a Worker-opened PR (`updated:true`
@@ -93,9 +94,7 @@ import {
   detectHost,
   armPullRequest,
   mergePullRequestNow,
-  findOpenPrRef,
-  updateOpenPr,
-  createPr,
+  createOrReusePr,
   preflightHost,
   alignedPrRef,
   LandingNotImplementedError,
@@ -464,12 +463,18 @@ export async function runHostPr(
 
 /**
  * Build the host's own {@link LandingHost} adapter. One switch, so `arm`,
- * `merge` and `status` cannot each grow their own idea of which adapter a host
+ * `merge`, `status` — and, since the routing terminator landed, `route-tuple`'s
+ * own status re-query — cannot each grow their own idea of which adapter a host
  * gets. Both factories resolve their credential through the ADR-0029 seam and
  * run a construction-time preflight, so a bad credential fails HERE rather than
  * mid-landing.
+ *
+ * Exported for that fourth caller alone: `route-tuple` asks the host the same
+ * "what is the PR for this branch?" question `status` asks, and a second switch
+ * built beside this one is precisely the drift this comment has always warned
+ * about.
  */
-async function landingHostFor(
+export async function landingHostFor(
   info: HostInfo,
   remoteUrl: string,
   deps: HostPrDeps,
@@ -535,48 +540,48 @@ async function runCreate(
   }
 
   const opts = deps.http ? { http: deps.http } : {};
-  // Only the reuse-time update reads the guard override; find/create ignore it.
-  const updateOpts = { ...opts, allowClosePhraseLoss };
 
   try {
-    // find-before-create: a re-run (or a cap=1 re-dispatch onto the same branch)
-    // re-pins the already-open PR instead of opening a duplicate.
-    const existing = await findOpenPrRef(info.host, creds, branch, info, opts);
-    if (existing !== null) {
-      // Update-on-reuse: re-write the open PR's title/body to the passed values
-      // through the same seam (PATCH), so the terminator's composed render (the
-      // authoritative final body) lands on a Worker-opened PR instead of being
-      // silently discarded. Best-effort — a declined update still re-pins the
-      // URL (`updated:false`), never a duplicate, never a wave-abort.
-      const update = await updateOpenPr(
-        info.host,
-        creds,
-        existing,
-        { title, body },
-        info,
-        updateOpts,
-      );
-      if (update.refused === true) {
-        // The close-phrase guard stopped the rewrite BEFORE any write: the live
-        // body carries a phrase this body would have dropped. Loud + typed, not
-        // a silent success — the whole point is that the damage is undetectable
-        // afterwards. The PR's URL is still reported (it genuinely is this
-        // branch's PR), but `ok:false` + exit 1 keep it out of a success path.
-        process.stderr.write(`error: ${update.reason}\n`);
-        printJson({
-          ok: false,
-          verb: 'create',
-          host: info.host,
-          branch,
-          outcome: 'reuse-refused',
-          // Unchanged meaning: the live PR body/title were NOT re-written.
-          updated: false,
-          error: update.reason,
-          reason: update.reason,
-          ...alignedPrRef({ url: update.url }),
-        });
-        return 1;
-      }
+    // find-before-create, in ONE library call (host-pr.ts's `createOrReusePr`).
+    // The decision used to be spelled out here; it is shared with the
+    // `route-tuple` terminator, which performs the same sequence in-process, so
+    // it lives in the library and this runner is the thin router it always
+    // claimed to be. The four outcomes below are the four it returns, projected
+    // onto the JSON shape this verb has always printed — nothing about that
+    // shape moved with the logic.
+    //
+    // Only the reuse-time update reads the guard override; find/create ignore it.
+    const result = await createOrReusePr(
+      info.host,
+      creds,
+      { branch, title, body, destination: base },
+      info,
+      { ...opts, allowClosePhraseLoss },
+    );
+
+    if (result.outcome === 'reuse-refused') {
+      // The close-phrase guard stopped the rewrite BEFORE any write: the live
+      // body carries a phrase this body would have dropped. Loud + typed, not
+      // a silent success — the whole point is that the damage is undetectable
+      // afterwards. The PR's URL is still reported (it genuinely is this
+      // branch's PR), but `ok:false` + exit 1 keep it out of a success path.
+      process.stderr.write(`error: ${result.reason}\n`);
+      printJson({
+        ok: false,
+        verb: 'create',
+        host: info.host,
+        branch,
+        outcome: 'reuse-refused',
+        // Unchanged meaning: the live PR body/title were NOT re-written.
+        updated: false,
+        error: result.reason,
+        reason: result.reason,
+        ...alignedPrRef({ url: result.url }),
+      });
+      return 1;
+    }
+
+    if (result.outcome === 'reused') {
       printJson({
         ok: true,
         verb: 'create',
@@ -584,22 +589,16 @@ async function runCreate(
         branch,
         outcome: 'reused',
         // Disclose whether the reuse re-wrote the live PR body/title (FOR-58).
-        updated: update.updated,
+        updated: result.updated,
         // Aligned url/number field names across every verb (FOR-54): `url` +
         // `prUrl`. `create` carries no PR number (documented omission) — even on
         // reuse, where the number is known internally but deliberately not emitted.
-        ...alignedPrRef({ url: update.url }),
+        ...alignedPrRef({ url: result.url }),
       });
       return 0;
     }
 
-    const result = await createPr(
-      info.host,
-      creds,
-      { branch, title, body, destination: base, info },
-      opts,
-    );
-    if ('url' in result) {
+    if (result.outcome === 'created') {
       printJson({
         ok: true,
         verb: 'create',
@@ -657,7 +656,7 @@ async function runCreate(
  * Throws (never returns a partial credential); the caller turns the throw into
  * the exit-1 JSON payload.
  */
-function createCredsFor(host: Host, env: NodeJS.ProcessEnv | undefined): Creds {
+export function createCredsFor(host: Host, env: NodeJS.ProcessEnv | undefined): Creds {
   if (host === 'bitbucket') {
     const token = resolveCredential(BITBUCKET_TOKEN_VAR, {
       env,
@@ -767,7 +766,7 @@ function notImplemented(verb: Verb, host: Host, branch: string | undefined): num
 }
 
 /** Read the origin remote URL (a local git read — not a gh-creds call, sandbox-OK). */
-function gitRemoteUrl(): string {
+export function gitRemoteUrl(): string {
   return execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8' }).trim();
 }
 

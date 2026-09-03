@@ -181,7 +181,7 @@ const fsSidecarReader: SidecarReader = {
 };
 
 /** Outcome of reconciling a payload's own id field against `--id`. */
-type Reconciled =
+export type Reconciled =
   | { payload: unknown; notice?: string }
   | { error: string };
 
@@ -212,6 +212,28 @@ interface WriteSidecarSpec {
    * true by construction rather than by the reader's good manners.
    */
   postWriteNotice?: (payload: unknown) => string | undefined;
+}
+
+/**
+ * The on-disk sidecar body — a human-scan heading over the fenced `json` block
+ * the `sidecar.ts` reader parses. THE single owner of that format: the write
+ * verbs render through it, and so does `route-tuple`'s sidecar-recovery step,
+ * which persists the very same record from an in-memory payload rather than
+ * from a file. A second renderer is how the printer half of the
+ * printer/parser pair (ADR-0016) drifts from the reader.
+ */
+export function renderSidecarBody(
+  heading: 'WorkerReport' | 'ReviewerVerdict',
+  id: string,
+  iter: number,
+  payload: unknown,
+): string {
+  return (
+    `# ${heading} ${id} iter ${iter}\n\n` +
+    '```json\n' +
+    JSON.stringify(payload, null, 2) +
+    '\n```\n'
+  );
 }
 
 /**
@@ -298,11 +320,7 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
       process.stderr.write(`notice: ${spec.label}: ${reconciled.notice}\n`);
     }
   }
-  const body =
-    `# ${spec.heading} ${id} iter ${iter}\n\n` +
-    '```json\n' +
-    JSON.stringify(payload, null, 2) +
-    '\n```\n';
+  const body = renderSidecarBody(spec.heading, id, iter, payload);
   const target = join(dir, `${id}-${iter}.md`);
   try {
     mkdirSync(dir, { recursive: true });
@@ -354,7 +372,7 @@ function warnAboutMisnamedSidecars(dir: string, spec: WriteSidecarSpec): void {
  * against `--id "138"` used to pass on `"138".startsWith("13")` — a wrong report
  * accepted by an accident of string prefixes — and now refuses.
  */
-function reconcileReportIssue(payload: unknown, id: string): Reconciled {
+export function reconcileReportIssue(payload: unknown, id: string): Reconciled {
   const record = payload as Record<string, unknown>;
   const issue = record.issue;
   if (typeof issue !== 'string' || issue.length === 0) return { payload };

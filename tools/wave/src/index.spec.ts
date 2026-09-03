@@ -1032,8 +1032,33 @@ const GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT = [
   'renderGoalUpdateBody',
 ].sort();
 
+/**
+ * The find-before-create lift (issue #681) — ONE runtime name.
+ *
+ * `createOrReusePr` is not new BEHAVIOUR at the root: it is the decision the
+ * `host-pr create` verb has always made, moved out of the CLI runner and into
+ * the library so the routing terminator (`route-tuple`) and the CLI perform it
+ * through one function rather than two copies. What the root gains is the
+ * composition of three names it already carried — `findOpenPrRef`,
+ * `updateOpenPr`, `createPr` — behind the four-outcome answer the verb already
+ * printed.
+ *
+ * It is a family of one for a reason worth stating: the four TYPES that came
+ * with it (`CreateOrReuseOutcome`, `CreateOrReuseRequest`,
+ * `CreateOrReuseOptions`, `CreateOrReuseResult`) are erased at runtime and add
+ * nothing to the count below — `tsc --noEmit` is their gate, exactly as it is
+ * for the goal family's type half directly above. And the rest of the slice's
+ * new surface deliberately did NOT come here: `route-tuple.ts`'s own exports
+ * are module-local by the same CLI-edge reasoning `compose-driver`'s are, with
+ * their reasons recorded per symbol in barrel-drift.spec.ts.
+ *
+ * Semver: an ADDITION, so minor. Nothing was renamed and nothing narrowed.
+ */
+const CREATE_OR_REUSE_FAMILY_ADDED_AT_ROOT = ['createOrReusePr'].sort();
+
 const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   ROOT_RUNTIME_EXPORT_COUNT_BEFORE +
+  CREATE_OR_REUSE_FAMILY_ADDED_AT_ROOT.length +
   COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length +
   HUMAN_LANE_FAMILY_ADDED_AT_ROOT.length +
   MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT.length +
@@ -1581,6 +1606,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // The count alone is necessary but not sufficient: a stowaway arriving in
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(CREATE_OR_REUSE_FAMILY_ADDED_AT_ROOT),
+    );
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT),
     );

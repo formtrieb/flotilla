@@ -25,6 +25,7 @@
 import {
   readSpine,
   setRowState,
+  setRowIter,
   setRowPrCell,
   upsertPrLogRow,
   upsertDispatchLogEntry,
@@ -635,6 +636,21 @@ export interface SpineStore {
   flush(): void;
 
   setRowState(id: string, state: RowState): void;
+  /**
+   * Bump the row's `Iter` cell (and re-render its sidecar-link cell to the same
+   * iteration's paths — observability only, FOR-53).
+   *
+   * It arrives on the store late, and for one reason: the cap=1 re-dispatch
+   * writes the row STATE and this bump as a PAIR, and the pair must share one
+   * flush. `spine set-row-iter` could stay off the store while it was a lone
+   * CLI op — it reads and writes the file directly and says so — but a caller
+   * that mixes the store (for the state) with the raw writer (for the iter)
+   * flushes the store's pristine source over the raw write. `route-tuple`'s
+   * re-dispatch branch is exactly that caller, so the op comes home.
+   *
+   * Throws when no Plan-Table row matches `id`, like every sibling writer.
+   */
+  setRowIter(id: string, iter: number): void;
   setRowPrCell(id: string, prCell: string): void;
   upsertPrLogRow(input: PrLogRowInput): void;
   /** The dispatch-log is the DURABLE branch home; Plan-Table.branch is derived-only. */
@@ -689,6 +705,9 @@ export function spineStoreFromSource(initial: string, path?: string, io?: SpineI
     },
     setRowState(id, state) {
       rebind(setRowState(src, id, state));
+    },
+    setRowIter(id, iter) {
+      rebind(setRowIter(src, id, iter));
     },
     setRowPrCell(id, prCell) {
       rebind(setRowPrCell(src, id, prCell));

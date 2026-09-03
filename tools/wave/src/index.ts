@@ -298,6 +298,15 @@ export {
 //     (the `reuse-refused` guard's own vocabulary).
 //   - updating an already-open PR — `updateOpenPr` + its request/result types
 //     and `findOpenPrRef`/`OpenPrRef` (the narrower ref shape it reads).
+//   - find-before-create as ONE decision — `createOrReusePr` + its
+//     request/options/result types (issue #681). It composes the three
+//     already-exported pieces directly above (`findOpenPrRef` → `updateOpenPr`
+//     or `createPr`) into the four-outcome answer the `host-pr create` verb has
+//     always printed, and it is on the barrel for the same reason its three
+//     collaborators are: the whole of this module's create/reuse surface is
+//     public, and a lifted composition of public parts that was itself
+//     module-local would be the odd one out. Two in-repo callers today — the
+//     `host-pr create` runner and the `route-tuple` terminator.
 //   - the arm decision — `armPullRequest`, `decideArmAction`,
 //     `refineArmDecisionForCheckAttach`, `alignedPrRef`, and every type their
 //     signatures carry (`ArmOptions`, `ArmDecision`, `AlignedPrRef`,
@@ -342,6 +351,7 @@ export {
   closePhraseLossReason,
   findOpenPrRef,
   updateOpenPr,
+  createOrReusePr,
   armPullRequest,
   decideArmAction,
   refineArmDecisionForCheckAttach,
@@ -368,6 +378,10 @@ export {
   type PrUpdateFields,
   type UpdateOpenPrResult,
   type UpdateOpenPrOptions,
+  type CreateOrReuseOutcome,
+  type CreateOrReuseRequest,
+  type CreateOrReuseOptions,
+  type CreateOrReuseResult,
   type MergeMethod,
   type PrMergeability,
   type PrLandingStatus,

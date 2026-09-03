@@ -687,6 +687,158 @@ export async function createPr(
   };
 }
 
+// ─── createOrReusePr (find-before-create, as ONE library function) ───────────
+
+/** The four ways a find-before-create attempt can end. */
+export type CreateOrReuseOutcome = 'created' | 'reused' | 'reuse-refused' | 'create-failed';
+
+/** The authored fields plus the branch a find-before-create attempt is about. */
+export interface CreateOrReuseRequest {
+  /** Source branch. */
+  branch: string;
+  /** PR title. */
+  title: string;
+  /** PR description / body — it carries the store-kind close phrase. */
+  body: string;
+  /** Destination branch. Defaults to `'main'`. */
+  destination?: string;
+}
+
+/** Options for {@link createOrReusePr} — the update guard's, plus a pre-resolved find. */
+export interface CreateOrReuseOptions extends UpdateOpenPrOptions {
+  /**
+   * A find the CALLER already performed — a value (the open PR) or `null`
+   * ("I looked; there is none"). Supplied so a caller that must READ the live
+   * body before it can compose the body it passes does not pay a second list
+   * query: the routing terminator composes its PR body FROM the live body (a
+   * Worker-authored summary is what a reuse must preserve), which is knowable
+   * only from the find. Omitted — the ordinary case, and the CLI's — this
+   * function performs the find itself.
+   */
+  existing?: OpenPrRef | null;
+}
+
+/**
+ * The result of one find-before-create attempt. Every field is optional-by-
+ * outcome and named the way the `host-pr create` payload already names it, so
+ * the CLI projects this straight onto its JSON without re-deriving anything:
+ *
+ *   - `created`        — `url`.
+ *   - `reused`         — `url` + `updated` (did the title/body PATCH land?).
+ *   - `reuse-refused`  — `url` + `updated:false` + `reason`. NO write happened.
+ *   - `create-failed`  — `error` + `fallbackPrefillUrl`. No `url`: none exists.
+ */
+export interface CreateOrReuseResult {
+  outcome: CreateOrReuseOutcome;
+  /** The PR's html URL. Present on `created` / `reused` / `reuse-refused`. */
+  url?: string;
+  /** Whether the reuse PATCH landed. Present on `reused` / `reuse-refused`. */
+  updated?: boolean;
+  /** Why the close-phrase guard refused. Present iff `outcome === 'reuse-refused'`. */
+  reason?: string;
+  /** The create failure message. Present iff `outcome === 'create-failed'`. */
+  error?: string;
+  /** The manual-open fallback. Present iff `outcome === 'create-failed'`. */
+  fallbackPrefillUrl?: string;
+  /**
+   * The live PR body the find read, when the host surfaced one — the evidence
+   * {@link closePhraseLossReason} graded, echoed so a caller can report what the
+   * PR said BEFORE the rewrite without issuing a second query. `undefined` on a
+   * create (there was no live body) and on a host that omits it.
+   */
+  existingBody?: string;
+}
+
+/**
+ * Find-before-create, idempotently — the ONE implementation of the decision the
+ * `host-pr create` verb and the `route-tuple` terminator both make.
+ *
+ * It used to live inside the CLI runner (`host-pr-cli.ts`'s `runCreate`), which
+ * was fine while the CLI was its only caller. It is lifted here because the
+ * routing terminator now performs the same sequence in-process: two copies of
+ * "find, then update-or-create, and refuse the one rewrite whose damage is
+ * silent" is exactly the shape that drifts, and the property being protected
+ * (the close phrase survives a reuse) is the one property nothing downstream
+ * can detect the loss of. One function, two callers.
+ *
+ * The four outcomes are the four the CLI already published, unchanged:
+ *
+ *   - an OPEN PR on the branch is **reused** — its title/body re-written to the
+ *     passed values through {@link updateOpenPr} (`updated` discloses whether
+ *     the PATCH landed), never duplicated;
+ *   - unless that rewrite would DROP the close phrase the live body carries, in
+ *     which case it is **refused** before any write
+ *     ({@link closePhraseLossReason}); `opts.allowClosePhraseLoss` is the
+ *     deliberate override;
+ *   - no open PR → **created** through {@link createPr};
+ *   - a create that fails returns the pre-fill fallback signal rather than
+ *     throwing (ADR-0019), so a caller can open the PR by hand and continue.
+ *
+ * Network failures inside the find degrade to "no known open PR" exactly as
+ * {@link findOpenPrRef} documents. A throw from the create path is NOT caught
+ * here — `createPr` already returns its failures as values, so anything that
+ * escapes is a genuine defect the caller should see.
+ */
+export async function createOrReusePr(
+  host: Host,
+  creds: Creds,
+  req: CreateOrReuseRequest,
+  info: Pick<HostInfo, 'workspace' | 'repo'>,
+  opts: CreateOrReuseOptions = {},
+): Promise<CreateOrReuseResult> {
+  const { existing: preResolved, ...updateOpts } = opts;
+  const findOpts: HostOptions = opts.http ? { http: opts.http } : {};
+
+  // A caller that has already looked passes its answer — including `null`, which
+  // is an ANSWER. Only `undefined` means "nobody has looked yet".
+  const existing =
+    preResolved !== undefined
+      ? preResolved
+      : await findOpenPrRef(host, creds, req.branch, info, findOpts);
+
+  if (existing !== null) {
+    const update = await updateOpenPr(
+      host,
+      creds,
+      existing,
+      { title: req.title, body: req.body },
+      info,
+      updateOpts,
+    );
+    const base: CreateOrReuseResult = {
+      outcome: 'reused',
+      url: update.url,
+      updated: update.updated,
+      ...(existing.body === undefined ? {} : { existingBody: existing.body }),
+    };
+    if (update.refused === true) {
+      return { ...base, outcome: 'reuse-refused', updated: false, reason: update.reason };
+    }
+    return base;
+  }
+
+  const result = await createPr(
+    host,
+    creds,
+    {
+      branch: req.branch,
+      title: req.title,
+      body: req.body,
+      destination: req.destination,
+      info: { host, workspace: info.workspace, repo: info.repo },
+    },
+    findOpts,
+  );
+  if ('url' in result) {
+    return { outcome: 'created', url: result.url };
+  }
+  return {
+    outcome: 'create-failed',
+    error: result.error,
+    fallbackPrefillUrl: result.fallbackPrefillUrl,
+  };
+}
+
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);

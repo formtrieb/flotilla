@@ -25,17 +25,21 @@ mkdir -p -m 700 "/tmp/flotilla-start-$SLUG"
 
 # 0. THE CALL BOUNDARY (wave-shared Convention 12, half two). There is no setup
 #    step here — deliberately. This file used to define a `require_capture()`
-#    helper "once per wave-start shell session" and invoke it at steps 4b and 7c;
-#    that helper is RETIRED, because a shell function is session state and shell
-#    state does not survive from one Bash call to the next. A guard defined in one
-#    call and invoked in another was never in scope for the value it named.
+#    helper "once per wave-start shell session" and invoke it at step 4b and
+#    across the routing sequence; that helper is RETIRED, because a shell
+#    function is session state and shell state does not survive from one Bash
+#    call to the next. A guard defined in one call and invoked in another was
+#    never in scope for the value it named.
 #
 #    The rule that replaces it, applied at every capture below:
 #      * verify a captured value IN THE SAME Bash call that produced it —
 #        inline, with `if`, never `case`/`esac` (Convention 13, Catalog entry 1);
 #      * or better, do not capture it at all: re-query its source in the call
-#        that needs it. Step 7c does exactly that — `host-pr status --branch`
-#        instead of a PR URL carried forward from `host-pr create`.
+#        that needs it — or leave no call boundary for a value to cross. The
+#        routing step took the second road outright: `route-tuple` performs the
+#        render, the create, the status re-query and the writes that depend on
+#        them in ONE process, so the PR URL is never carried anywhere. It still
+#        re-queries the host rather than trusting the create's own answer.
 #    Refuse `null` and `undefined` alongside `''` (jq -r on a missing key prints
 #    the four characters `null`), and print only the NAME, never the value — a
 #    capture may be a credential (Convention 8).
@@ -539,40 +543,33 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 
 **There is no copy any more.** The script ships as an engine package asset (`tools/wave/driver/wave-start-inflight.js`) and `compose-driver` reads it from the package on every run. The failure class the gate existed for — a document edited out from under a script someone kept around — cannot occur, so the gate goes rather than being restated. Its two motivating occurrences (a frozen template that outlived the cwd-persistence fix; a compose-fresh anchor-diff that caught a falsified reviewer-isolation claim one wave later) stay recorded in [workflow-driver.md](workflow-driver.md) as the evidence for why the transcription had to end.
 
-**Its tracker-currency sibling survives, and is likewise the verb's now (ADR-0041).** Whether each row's EMBEDDED SPEC (`issue.issueSpec`, and `issue.scopeGrants`) still matches what the tracker holds is a per-row fact that goes stale independently of anything. `compose-driver` re-reads every dispatchable row through `issue-store read` + `triage-read` on EVERY run — a fresh dispatch, a cap=1 re-dispatch (step 7d below), a wave-resume `redispatch` hand-off alike — with no condition and no cache. [workflow-driver.md](workflow-driver.md)'s "The recompose-refetch rule" states it in full, including why a conditional re-fetch was the failure mode it replaces and the same-round boundary it deliberately does not retroactively fix.
+**Its tracker-currency sibling survives, and is likewise the verb's now (ADR-0041).** Whether each row's EMBEDDED SPEC (`issue.issueSpec`, and `issue.scopeGrants`) still matches what the tracker holds is a per-row fact that goes stale independently of anything. `compose-driver` re-reads every dispatchable row through `issue-store read` + `triage-read` on EVERY run — a fresh dispatch, a cap=1 re-dispatch (step 7c below), a wave-resume `redispatch` hand-off alike — with no condition and no cache. [workflow-driver.md](workflow-driver.md)'s "The recompose-refetch rule" states it in full, including why a conditional re-fetch was the failure mode it replaces and the same-round boundary it deliberately does not retroactively fix.
 
 ## Routing a tuple `{ id, risk, iteration, report, verdict }`
 
-```bash
-# 7.0. Sidecar existence check (recovery path, not the default). The Scribe stages
-#      (step 6) already wrote these at agent-return; confirm, and write any missing
-#      one through the SAME verb — never hand-format, never bundle.
-REPORTS=".flotilla/waves/$SLUG/reports"; VERDICTS=".flotilla/waves/$SLUG/verdicts"
-[ -f "$REPORTS/$ID-$ITER.md" ] || \
-  {{wave-cli}} write-report  "/tmp/flotilla-start-$SLUG/report-$ID.json"  --dir "$REPORTS"  --id "$ID" --iter "$ITER"
-[ -f "$VERDICTS/$ID-$ITER.md" ] || \
-  {{wave-cli}} write-verdict "/tmp/flotilla-start-$SLUG/verdict-$ID.json" --dir "$VERDICTS" --id "$ID" --iter "$ITER"
-#   write-* validates-then-writes: exit 1 = invalid payload / report.issue↔--id
-#   mismatch → NOTHING written (re-collect); exit 0 prints the absolute path.
-#   That same write also sweeps its target dir for a MISNAMED sidecar (a filename
-#   id that fails the bare-id rule — present to `ls`, invisible to the `[ -f … ]`
-#   probe above for the same reason a missing file is) and reports it on stderr,
-#   naming the file's path, the row it belongs to, and the name it should have
-#   carried — it never rewrites or deletes it.
+**Two calls: the disclosure capture, then `route-tuple`.** Everything between them that used to be shell — the sidecar probe, the two routes, the render captured and consumed inside the same Bash call as the create, the status re-query guarding two spine writes and a rung transition — is the verb's now. The single-verb pages below it (`write-report`, `route-outcome`, `route-verdict`, `render-verdict`, `host-pr create`, `host-pr status`, `spine set-row-*`, `issue-store transition`) all still exist and are still the building blocks a resume path reaches for one at a time; what retires is composing them by hand, every wave, with a guard around every capture.
 
-# 7.0a. Disclosure capture (ADR-0027) — for EVERY tuple, BEFORE the outcome/
-#       verdict branch below (7a-7c), source-neutral. Routing is the moment of
-#       maximum context: the report/verdict sidecars from 7.0 are already open
-#       to read the outcome, so read them here too — for a Convention 9 wiring
+```bash
+# 7.0a. Disclosure capture (ADR-0027) — for EVERY tuple, BEFORE the routing verb
+#       below (7a), source-neutral. Routing is the moment of maximum context:
+#       the tuple's report/verdict payloads are in front of you and the sidecars
+#       are on disk, so read them here — for a Convention 9 wiring
 #       gap, a Convention 10 runtime residue, a Convention 11 unfalsified
-#       check, or anything the Coordinator itself notices while routing. One
-#       add-disclosure call per disclosed item, --source matching who raised
+#       check, or anything the Coordinator itself notices while routing.
+#
+#       The two payload paths below are the Scribe stages' own: the driver tells
+#       each Scribe to write its payload to
+#       `$REPO/.flotilla/tmp/<report|verdict>-<id>-<iter>.json` before running
+#       the write verb over it, so both files are already on disk here — and are
+#       the same two the routing verb takes as --report/--verdict at 7a.
+#
+#       One add-disclosure call per disclosed item, --source matching who raised
 #       it — the verb is source-neutral, Worker/Reviewer/Coordinator land
 #       identically:
 {{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source worker \
-  --text "$(jq -r '.judgmentCalls[0]' "/tmp/flotilla-start-$SLUG/report-$ID.json")"       # one call per disclosed item in report.judgmentCalls
+  --text "$(jq -r '.judgmentCalls[0]' "$REPO/.flotilla/tmp/report-$ID-$ITER.json")"       # one call per disclosed item in report.judgmentCalls
 {{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source reviewer \
-  --text "$(jq -r '.reviewerFocusItems[0]' "/tmp/flotilla-start-$SLUG/verdict-$ID.json")" # a Reviewer-raised item the Worker didn't already flag
+  --text "$(jq -r '.reviewerFocusItems[0]' "$REPO/.flotilla/tmp/verdict-$ID-$ITER.json")" # a Reviewer-raised item the Worker didn't already flag
 {{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter "$ITER" --source coordinator \
   --text "<what you, the Coordinator, noticed routing this tuple>"
 #   Each call prints the created ref (`<row-id>.<ordinal>`, e.g. `01.1`) AFTER
@@ -588,117 +585,81 @@ REPORTS=".flotilla/waves/$SLUG/reports"; VERDICTS=".flotilla/waves/$SLUG/verdict
 #   slice, ADR-0027) blocks Archive until every disclosure this wave captured
 #   carries a disposition other than `open`.
 
-# 7a. Worker-phase gate (state = dispatched on iter 1, re-dispatched on iter 2)
-WSTATE=$([ "$ITER" -gt 1 ] && echo re-dispatched || echo dispatched)
-{{wave-cli}} route-outcome --outcome "$OUTCOME" --state "$WSTATE"
-#   a clean worker-done →  {"event":"worker-done","outcome":{"type":"transition","nextState":"report-in"}}
-#   outcome.type=='transition' && nextState 'report-in' → proceed to 7b
-#   else apply outcome directly (transition→re-dispatched: step 7d; stop: step 8)
-
-# 7b. Reviewer-phase routing (state is VERDICT-keyed, not iteration-keyed —
-#     the legal source state is not uniform across verdicts. `re-dispatched`
-#     is the ONLY state the 2nd changes-requested's cap-exhaustion STOP is
-#     reachable from; every other verdict/iteration cell routes from
-#     `reviewing` instead — including `approve`, which is a noop FROM
-#     `re-dispatched` (transition() has no case for it there).
-RSTATE=$([ "$VERDICT" = "changes-requested" ] && [ "$ITER" -gt 1 ] && echo re-dispatched || echo reviewing)
-{{wave-cli}} route-verdict --verdict "$VERDICT" --iteration "$ITER" --risk "$RISKCLASS" --state "$RSTATE"
-#   → { "event": "...", "outcome": { "type": "...", ... } }
-#   A noop here is NEVER a legitimate nothing-to-do: with --state picked by
-#   RSTATE above, every verdict/iteration cell this row can reach maps to a
-#   transition or a stop (Verified routing outputs below). A noop means THIS
-#   call passed a --state the resolved event is not legal from — a CALLER BUG
-#   to investigate, never something to log-and-continue past.
-
-# 7c. Apply (WAL — spine first, then rung)
-# transition → approved:  render the verdict, then open the PR through the
-#   engine (NEVER gh pr create). find-before-create is idempotent: the Worker
-#   already opened it (report.prUrl); this re-pins the same open PR — no
-#   duplicate — AND re-writes its title/body to the values passed here
-#   (`updated: true` discloses it), so the rendered verdict reliably lands on
-#   the Worker-opened PR (last-writer-wins). --body carries the rendered
-#   `## Reviewer verdict` section (wave-shared "the reviewer-verdict render")
-#   ABOVE the store-kind close phrase (Convention 4), the ONLY tracker id the
-#   title/body may name. Because that render always carries the close phrase,
-#   `create`'s reuse-refusal guard should never legitimately fire here — the
-#   CREATE_EXIT check below interprets it as a compose defect if it does
-#   (workflow-driver.md "PR-open reuse-refusal"), never routes around it.
-#   host-routed since the Bitbucket adapter landed (ADR-0023 amendment 2026-08-10):
-#   reads GITHUB_TOKEN on a github remote, BITBUCKET_TOKEN + BITBUCKET_EMAIL on a
-#   bitbucket one; unknown hosts fail loud + typed.
-# CALL 1 — render the verdict and open the PR. The rendered section is captured
-# and CONSUMED in this same call (Convention 12, half two): it is the PR body's
-# own input, so it never crosses a call boundary. An empty VERDICT_SECTION means
-# `render-verdict` did not run, and the body would then be composed WITHOUT the
-# verdict while still reading as complete — so it is guarded here, inline, where
-# the variable actually exists.
-VERDICT_SECTION=$({{wave-cli}} render-verdict "$VERDICTS" "$ID" --anchor "$ANCHOR_SHA")
-if [ -z "$VERDICT_SECTION" ] || [ "$VERDICT_SECTION" = "null" ]; then
-  echo "STOP: VERDICT_SECTION came back empty — render-verdict did not run. Refusing to open a PR whose body silently omits the verdict." >&2
-  exit 1
-fi
+# 7a. Route the tuple — ONE verb, the whole write-ahead sequence, one result.
+{{wave-cli}} route-tuple --spine "$SPINE" --id "$ID" --iter "$ITER" \
+  --report  "$REPO/.flotilla/tmp/report-$ID-$ITER.json" \
+  --verdict "$REPO/.flotilla/tmp/verdict-$ID-$ITER.json" \
+  --anchor "$ANCHOR_SHA" --config wave.config.json
+#   Run it BARE — no `| jq`, no `$( )`, no assignment. Its JSON lands in this
+#   session's own output, which is where you read it. Nothing crosses a call
+#   boundary any more, so there is nothing to guard: the render, the create, the
+#   status re-query and the writes that depend on them all happen inside one
+#   process. That is the whole point of the verb — the five shell-variable
+#   incidents behind Convention 12 were incidents of composition, and the
+#   composition is gone.
+#
+#   IN ORDER, and this IS the write-ahead order:
+#     sidecar presence + validation   the Scribe stages (step 6) normally wrote
+#                                     both already; a MISSING or CORRUPT one is
+#                                     recovered from the --report/--verdict
+#                                     payload through the same renderer
+#                                     write-report uses, and reported under
+#                                     `recovered`. If it cannot be recovered the
+#                                     verb REFUSES (exit 1) naming write-report /
+#                                     write-verdict — it never guesses a record.
+#     route-outcome                   --state derived from the iteration
+#     route-verdict                   --state derived from the VERDICT (see below)
+#     render-verdict                  the MAX-iter valid verdict sidecar, so a
+#                                     changes-requested → re-dispatch cycle
+#                                     renders the LATEST iteration, never a stale one
+#     pr-create-or-reuse              find-before-create; a Worker-opened PR is
+#                                     REUSED and its own body kept as the summary
+#     pr-status                       the host is asked AGAIN for the URL
+#     spine-row-state                 pr-created
+#     spine-row-pr                    the URL the re-query answered
+#     rung-transition                 issue-store transition <id> in-review
+#
 #   $ANCHOR_SHA is the row's roster-bound anchor — the SAME value threaded into
 #   this row's Worker/Reviewer briefs as `issue.anchorSha` (workflow-driver.md).
-#   render-verdict reads the MAX-iter valid verdict sidecar — the LATEST
-#   iteration's verdict, never a stale one from a changes-requested →
-#   re-dispatch cycle.
-{{wave-cli}} host-pr create --branch "wave/$ID-$SLUG" \
-  --title "$PR_TITLE" --body "<summary>
-
-$VERDICT_SECTION
-
-<close phrase>"
-CREATE_EXIT=$?
-#   Run the CALL ITSELF bare — no `| jq`, no `$( )` around it — so its JSON
-#   lands directly in this session's own output; find-before-create is
-#   idempotent, so this re-pins the PR the Worker already opened and re-writes
-#   its body. `$?` above is the exit status of THAT bare call, read in the
-#   SAME call it ran in — not a value captured across a call boundary
-#   (Convention 12 governs the latter, not this).
+#   `--title` overrides the PR title; the default is the spine row's own title
+#   with bare tracker ids stripped. The body is composed as summary → rendered
+#   verdict section → store-kind close phrase, and on a REUSE the summary is the
+#   live PR body's own summary half — a Worker who opened the PR and wrote a
+#   substantive body keeps it, with the verdict placed beneath. A re-run appends
+#   no second verdict section. The close phrase is the only tracker id the title
+#   or body may name (Convention 4 / mention discipline).
 #
-#   INTERPRET THE OUTCOME BEFORE CALL 2 — a non-zero exit here is not a case
-#   CALL 2's re-query papers over (workflow-driver.md "PR-open reuse-refusal"):
-if [ "$CREATE_EXIT" -ne 0 ]; then
-  echo "STOP: host-pr create exited $CREATE_EXIT for wave/$ID-$SLUG — read its printed JSON's .outcome before doing anything else (create-failed | reuse-refused; workflow-driver.md 'PR-open reuse-refusal'). A reuse-refused response still names the existing PR's .url — the refusal made NO write, so that URL is not evidence the rendered verdict landed. Never pass --allow-close-phrase-loss to get past this: the body composed above already carries the close phrase (Convention 4), so a refusal here means THIS body is malformed, not that the guard is wrong. Fix the composition and re-run create (idempotent) before CALL 2." >&2
-  exit 1
-fi
+#   host-routed since the Bitbucket adapter landed (ADR-0023 amendment
+#   2026-08-10): GITHUB_TOKEN on a github remote, BITBUCKET_TOKEN +
+#   BITBUCKET_EMAIL on a bitbucket one; unknown hosts fail loud + typed.
 
-# CALL 2 — RE-QUERY THE HOST FOR THE URL, then write the spine from that answer.
-# The URL is never carried from call 1: shell state does not survive between Bash
-# calls, so a PR_URL captured there would be unset here (wave-shared Convention
-# 12, half two — this is the site whose cross-call `require_capture` could never
-# fire, and the closest in-repo analogue of the `#83` gate failure). `host-pr
-# status` asks the host again and answers with `state` as well as `url`, which
-# distinguishes the two things an empty capture cannot: a PR that exists from one
-# that does not. Everything below runs in THIS one call, so the guard and the two
-# spine writes share the scope of the value they are about. This call ALONE only
-# ever answers "does a PR exist for this branch" — it is reached at all only
-# because the CREATE_EXIT check above already interpreted CALL 1's own outcome,
-# so a reuse-refused rewrite can no longer flow through to a silent pr-created
-# flip via this re-query's mere presence-of-a-url answer.
-PR_URL=$({{wave-cli}} host-pr status --branch "wave/$ID-$SLUG" | jq -r '.url // empty')
-if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ] || [ "$PR_URL" = "undefined" ]; then
-  echo "STOP: host-pr status reports no URL for wave/$ID-$SLUG — no PR exists (state: none) or the verb did not run. NOT flipping the row to pr-created." >&2
-  exit 1
-fi
-{{wave-cli}} spine set-row-state "$SPINE" "$ID" pr-created
-{{wave-cli}} spine set-row-pr    "$SPINE" "$ID" "$PR_URL"   # never reached on an empty re-query
-{{wave-cli}} issue-store transition "$ID" in-review
-#   Without the guard above, the two writes would flip the row to `pr-created`
-#   and record an EMPTY PR cell: a row that reads as landed with nothing landed
-#   behind it. Both writes sit below it for that reason — the state flip is as
-#   wrong as the empty cell when no PR was opened.
-#   Verify the write: `transition` is silent by design (empty stdout, #648) —
-#   `{{wave-cli}} issue-store read "$ID"` reads IssueView.status back and
-#   confirms `in-review` (wave-shared "Verify the write"). Don't pipe the
-#   transition call before reading its exit code.
+# 7b. READ THE RESULT. `disposition` is the answer; `steps[]` names every step
+#     and what it returned, each marked `performed` or `performed-before`.
+#
+#   "disposition": "pr-created"   → the PR is open, the spine row reads
+#     pr-created with its PR cell filled, and the rung is in-review. `prUrl` is
+#     what the HOST answered on the re-query, not what the create call returned.
+#     Nothing further is owed for this row.
+#
+#   "disposition": "re-dispatched" → the cap=1 re-dispatch. The verb wrote the
+#     row state and the iteration bump (one store, one flush) and touched
+#     NEITHER the host NOR the tracker. `next` names the two acts still yours:
+#     the worktree teardown below, then the re-compose. Continue at "MANDATORY
+#     teardown".
+#
+#   "disposition": "stop"          → the row halts. `stop.reason` and
+#     `stop.severity` say why, and NOTHING was written — no spine write, no host
+#     write, no tracker write. Flagging is your separate act: step 8.
+#
+#   exit 1 is a refusal, and it wrote nothing past the step it names — an
+#   unrecoverable sidecar, a routing noop (a caller bug: with both --state values
+#   derived by the verb, every reachable cell maps to a transition or a stop), a
+#   failed create (its message carries the manual-open fallback), a refused
+#   reuse, or a status re-query that found no PR. Read the message, fix what it
+#   names, re-run: every step is idempotent and reports what it found done.
+#   exit 2 is usage, an unreadable config, or an unreadable spine.
 
-# 7d. transition → re-dispatched (cap=1 — enforced by transition() itself):
-{{wave-cli}} spine set-row-state "$SPINE" "$ID" re-dispatched
-{{wave-cli}} spine set-row-iter  "$SPINE" "$ID" 2   # cap=1 → the new iteration is always 2;
-#   bumps the Plan-Table Iter cell + re-renders the sidecar-link cell to the
-#   <id>-2 reports/verdicts paths (observability-only, FOR-53 — the reconciler
-#   still reads the max-iter sidecar off disk, never this cell, per ADR-0024)
+# 7c. The re-dispatch branch's remaining acts (the verb already wrote the spine).
 
 # MANDATORY teardown, BEFORE the iteration-2 dispatch (W26-F1, docs/retros/
 # 2026-07-23-w25-followups-w26.md): the row's iteration-1 worktree still HOLDS
@@ -771,7 +732,9 @@ fi
 #   Never pipe this call before reading its exit code.
 ```
 
-### Verified routing outputs (the JSON these verbs actually print)
+### Verified routing outputs (the cells `route-tuple` resolves internally)
+
+`route-tuple` derives both `--state` values and runs both routes itself, so these are no longer calls you make — they are the table of what it resolves, and the reference for reading `steps[]`. The single verbs below still exist and still print exactly this, which is what makes a one-cell question answerable without running a whole route.
 
 | Invocation | Output |
 |---|---|
@@ -783,9 +746,9 @@ fi
 
 The public-API `approve` STOPs (it never silently fast-paths to the auto-PR) and the 2nd `changes-requested` STOPs (the cap=1, enforced inside `transition()`) are the two load-bearing routes — verified against the live CLI.
 
-## `riskClass` for `route-verdict`
+## `riskClass` for the verdict route
 
-Read it **off the typed `ReviewerVerdict`** (`verdict.riskClass`), never from the spine row or by eye — the verb forwards it to `verdictToEvent`, which bifurcates the `approve` branch (a `public-API-change` approve STOPs for human confirm). Omitting/garbling it is the G3 bug the typed return + this verb structurally prevent.
+It comes **off the typed `ReviewerVerdict`** (`verdict.riskClass`), never from the spine row and never by eye — it bifurcates the `approve` branch (a `public-API-change` approve STOPs for human confirm), and omitting or garbling it is the G3 bug the typed return prevents. `route-tuple` reads it out of the verdict sidecar itself, so there is no longer a flag anyone can forget; the standalone `route-verdict` still takes `--risk`, and the same rule governs where that value comes from.
 
 ## Convention 11 at compose + routing — a row whose slice ships a NEW check
 

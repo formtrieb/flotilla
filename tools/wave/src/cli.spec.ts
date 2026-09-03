@@ -583,6 +583,62 @@ describe('compose-driver — router wiring (issue #680)', () => {
   });
 });
 
+// ─── issue #681 — the route-tuple verb is wired into the router ──────────────
+//
+// Same shape as the compose-driver block directly above, and for the same
+// reason: the roster is self-pinning, so what needs its own assertions is the
+// ROUTING. `route-tuple` is async twice over — it does host I/O AND resolves a
+// store — so it must be intercepted by `mainAsync` before the sync router.
+//
+// Convention 11 falsification for this block: deleting the
+// `if (argv[0] === 'route-tuple')` interception from `mainAsync` makes the
+// SECOND test below fail. The discriminator is deliberately the runner's OWN
+// first usage line, and it had to be: the sync router's zero-arg guard prints
+// the whole-CLI usage dump, which ALSO names --spine/--id/--iter (the verb's
+// own usage line lives in it), so asserting those flag names alone is a check
+// that cannot fail. The observed failing output is recorded in this row's
+// report.
+describe('route-tuple — router wiring (issue #681)', () => {
+  it('is on the verb roster, so it never reaches the unknown-subcommand path', () => {
+    const code = main(['definitely-bogus-verb']);
+    expect(code).toBe(2);
+    const summaryLine = stderrBuf.split('\n').find((l) => l.includes('available:'))!;
+    expect(summaryLine).toContain('route-tuple');
+    // …and its purpose line rides along, one per verb.
+    expect(stderrBuf).toMatch(/^ {2}route-tuple {2}\S/m);
+  });
+
+  it("mainAsync intercepts it BEFORE the sync router — the answer is the RUNNER's own usage, not the router's whole-CLI dump", async () => {
+    const code = await mainAsync(['route-tuple']);
+    expect(code).toBe(2);
+    // Only the RUNNER can print this line, and it is the first thing it prints.
+    expect(stderrBuf.split('\n')[0]).toBe('error: route-tuple requires --spine <spine>');
+    expect(stderrBuf).toMatch(/--report/);
+    expect(stderrBuf).toMatch(/--verdict/);
+    // …and neither the sync router's async refusal nor its whole-CLI dump answered.
+    expect(stderrBuf).not.toMatch(/invoke it via the async entrypoint/);
+    expect(stderrBuf).not.toMatch(/available subcommands:/);
+  });
+
+  it('the sync main() refuses it the way it refuses every other async verb', () => {
+    const code = main(['route-tuple', '--spine', 'x']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/route-tuple is async/);
+    expect(stderrBuf).toMatch(/mainAsync/);
+  });
+
+  it('the top-level usage names the verb and its required flags', () => {
+    main([]); // zero args → printUsage()
+    const usageLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('flotilla-engine route-tuple'))!;
+    expect(usageLine).toBeDefined();
+    for (const f of ['--spine', '--id', '--iter', '--report', '--verdict', '--anchor']) {
+      expect(usageLine).toContain(f);
+    }
+  });
+});
+
 // ─── Form 5: files-drift subcommand ──────────────────────────────────────────
 //
 // Integration tests for `runFilesDrift` reached via `main(['files-drift', ...])`.

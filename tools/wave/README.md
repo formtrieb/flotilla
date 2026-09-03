@@ -20,6 +20,7 @@ npx @formtrieb/flotilla-engine files-drift path/to/ISSUE.md <sha-range>
 npx @formtrieb/flotilla-engine merge-order path/to/WAVE.md
 npx @formtrieb/flotilla-engine host-pr status --branch <branch>
 npx @formtrieb/flotilla-engine compose-driver --spine path/to/WAVE.md --out driver.js --anchor <sha>
+npx @formtrieb/flotilla-engine route-tuple --spine path/to/WAVE.md --id <id> --iter 1 --report r.json --verdict v.json --anchor <sha>
 ```
 
 The full subcommand list, flags, and exit-code semantics are documented at the top of [`src/cli.ts`](src/cli.ts).
@@ -39,6 +40,23 @@ npx @formtrieb/flotilla-engine compose-driver \
 ```
 
 **The engine still calls no agent-harness primitive.** This verb writes a file; the harness runs it. The schema-validated-return guarantee that makes a dispatched agent unable to fabricate a result is a property of the driver script's own `agent({ schema })` calls, not of this package.
+
+### `route-tuple` — the whole post-return sequence for one row, as one call
+
+When a dispatched row returns its `{ report, verdict }` pair, landing it takes a fixed sequence: confirm the durable sidecars, route the worker outcome, route the reviewer verdict, render the verdict section, open-or-reuse the pull request, re-query the host for its URL, write the spine's row state and PR cell, and move the tracker rung to `in-review`. `route-tuple` performs that sequence in one process, in that order, and prints one JSON result naming every step and what it returned.
+
+```bash
+npx @formtrieb/flotilla-engine route-tuple \
+  --spine .flotilla/waves/<slug>.md \
+  --id <row-id> --iter 1 \
+  --report .flotilla/tmp/<slug>/report-<id>.json \
+  --verdict .flotilla/tmp/<slug>/verdict-<id>.json \
+  --anchor "$(git rev-parse HEAD)" \
+  --config wave.config.json \
+  [--title "<pr title>"] [--base main] [--remote <url>]
+```
+
+Read `disposition` for the answer. `pr-created` landed the pull request and the rung; `re-dispatched` wrote the spine's row state and iteration bump and nothing else; `stop` reports the halt with its reason and performs no write at all — flagging the row for a human is a separate, deliberate call. Every step reports `performed` or `performed-before`, so re-running the verb on the same tuple reuses the open pull request rather than opening a second one, appends no second verdict section to its body, and does not re-transition a rung that already reads `in-review`.
 
 The CLI works with a plain, unmodified Node runtime — no setup step, no loader flag, nothing to install beyond the package itself. The shipped `flotilla-engine` binary brings its own TypeScript loader in-process before it does anything else, so this is true regardless of how the package was installed.
 
