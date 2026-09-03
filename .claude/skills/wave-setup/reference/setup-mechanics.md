@@ -868,3 +868,31 @@ On a Bitbucket-hosted consumer, the `flotilla-github-token` line above is replac
 A clean exit is the live-gate: the keychain item is readable — Always-Allowed if this machine's first read needed the click, or simply promptless from the start if it didn't — the `<VAR>_CMD` command is spelled correctly, and the engine's precedence resolves it ahead of any stray ambient variable. Read only the exit code — never execute the `<VAR>_CMD` value directly to "check" it; its stdout **is** the secret, and the engine's own resolution inside the preflight is the sanctioned check (SECRET-SAFE).
 
 **The ambient path stays legitimate — do not scaffold `<VAR>_CMD` for a credential that should stay ambient.** An ephemeral CI-style environment (a per-job-scoped token injected into a minutes-lived environment with no keychain) is a first-class destination by design (ADR-0029), not a gap to close — leave `<VAR>_CMD` unset there, or set it explicitly to `""` if a repo-wide `env` block would otherwise apply it. There is no deprecation horizon for this path.
+
+## Consumer orientation block
+
+The exact text Procedure step 12 offers to write into the consumer's `CLAUDE.md` or `AGENTS.md` — the standing orientation an agent doing ordinary work in this repo, between waves, otherwise has no way to see. Twelve lines is the ceiling this row's acceptance criteria set, not a target the block reaches for; it sits well under that so a later wording pass has room before it needs trimming.
+
+```markdown
+<!-- flotilla:consumer-orientation -->
+## Working with flotilla in this repo
+
+- `wave.config.json` is the one file every flotilla skill reads — treat it as configuration, not a scratch file.
+- Skills: `goal`, `triage`, `to-prd`, `to-issues` plan the work; `wave-setup`, `wave-plan`, `wave-create`, `wave-start`, `wave-reviewer`, `wave-close`, `wave-resume` run one wave end to end.
+- The default branch is protected. Every change lands through a pull request — never push to it directly.
+- The labels and states that mark an issue claimed, in progress, or in review belong to the wave engine. Never relabel or move one by hand.
+- An issue's triage state is what makes it pickable by a wave — leave an untriaged issue alone.
+- Spotted something wrong with flotilla itself, not this repo? Use the `report` skill to file it upstream.
+```
+
+**The marker is the whole idempotency mechanic.** `<!-- flotilla:consumer-orientation -->` is an HTML comment — invisible once the file renders — and its presence ANYWHERE in the target file, not the surrounding prose, is what a re-run checks:
+
+```bash
+grep -qF '<!-- flotilla:consumer-orientation -->' CLAUDE.md   # or AGENTS.md, whichever is the target
+```
+
+Exit 0 → the block is already there; stop, offer nothing, write nothing, even when the operator has since edited the prose around the marker — an edited block is left as edited. Exit 1 (marker not found), or the target file does not exist yet → offer the block as Procedure step 12 describes.
+
+**Target file.** `CLAUDE.md` is the default. Use `AGENTS.md` instead only when that file already exists in the consumer repo as its house file — never both, and never invent an `AGENTS.md` for a repo that has none.
+
+**On yes.** If the target file exists, append one blank line then the block above to its end — nothing else in the file changes. If it does not exist yet, create it with the block as its entire content. On anything other than a clear yes — no, no answer, an ambiguous one — write nothing: note the decline in the report, and setup still completes.
