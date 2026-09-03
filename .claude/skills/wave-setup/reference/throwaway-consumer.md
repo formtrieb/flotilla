@@ -62,7 +62,7 @@ What the scaffold does **not** do, on purpose: it creates none of the thirteen l
 
 ## The measured run — 2026-09-03
 
-Operator-driven, on a long-lived interactive machine, in a plain terminal (not an editor's integrated session), against the README as published at `25f7679` and the plugin at 2.1.0 with the engine at 2.1.0. Repository: a throwaway under the organisation, created by the scaffold above and deleted by its teardown verb on 2026-09-03, once the Operator had released it.
+Operator-driven, on a long-lived interactive machine, in a plain terminal (not an editor's integrated session), against the README as published at `25f7679` and the plugin at 2.1.0 with the engine at 2.1.0. Repository: a throwaway under the organisation, created by the scaffold above and deleted on 2026-09-03 by the Operator through GitHub's own settings page once released — the same outcome the scaffold's teardown verb produces; the engine token has no delete scope by design, so the verb runs on the operator's own `gh` login.
 
 | Quickstart step | Wall clock | What the text said | What the tool did | Resolution |
 | --- | --- | --- | --- | --- |
