@@ -9,56 +9,164 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
-## [Unreleased]
+## [2.2.0] — 2026-09-03
+
+**The release the public step lands on.** No new station ships here: this is the version
+a stranger meets, so the work went into the seams a stranger actually hits. Two
+merge-order defects — both found by reading a real consumer's spine, not by a test — are
+fixed. An unknown engine verb now answers with the whole roster and a reason to pick each
+entry, instead of a bare name to re-guess from. `wave-setup` closes by offering the
+consumer's own agent a standing orientation block. And the reading a visitor lands on — a
+dated capability matrix, the second-audience README sections, the community files — is
+here rather than promised. One widening earns the implementer heads-up below; it is the
+whole reason this is not a patch.
+
+### Added
+
+- **An unknown verb or op prints the verb list, one line each** (issue #650). An unknown
+  top-level subcommand — and an unknown op under `issue-store`, `spine`, or `host-pr` —
+  now prints the full roster one entry per line, each with a one-line purpose sourced
+  from that group's own parser-paired usage table, instead of a single joined name list.
+  The pre-existing summary line, the exit code (`2`), and every *known* op's own
+  usage-error contract survive **byte-for-byte**; only the unknown path's text grows. The
+  top-level purpose table is typed `Record<Subcommand, string>` over the very union the
+  router dispatches on, so a verb added to one without the other is a compile error — the
+  roster cannot drift from the dispatcher it documents.
+- **`wave-setup` offers the consumer a standing orientation block** (plugin side, issue
+  #653). Setup's last step previews a short, plain-language block for the consumer's
+  `CLAUDE.md` (or `AGENTS.md`) and writes it **only on an explicit yes**: the one binding
+  config file, the skills by name, the protected-branch / PR-only rule, the claim labels
+  and states as engine-owned, the triage state as the readiness signal, and the `report`
+  skill as the route for feedback. A marker comment makes a re-run idempotent without
+  touching a block the consumer has since edited; a decline leaves every consumer file
+  untouched, and setup still completes.
+- **A dated capability matrix per tracker and code host**
+  ([`docs/CAPABILITIES.md`](docs/CAPABILITIES.md), issue #642), summarised in the README
+  and pointed at from `ONBOARDING.md` and `llms.txt`. Every cell is either a dated fact
+  naming its evidence or the word `verify` naming the one read that would settle it —
+  including the two footnotes a consumer has to plan around: Bitbucket Cloud has no
+  arm API (BCLOUD-22062, open since 2023), and arming on GitHub requires branch
+  protection, which on the Free plan exists only for public repositories.
+- **The reading a visitor actually does.** README sections for the second audiences —
+  using the engine on its own, the `report` skill as the upstream feedback funnel, the
+  cross-repo capability named (#646); the files a public repository owes a contributor —
+  `CONTRIBUTING.md`, `SECURITY.md` naming the direct advisory link, a code of conduct,
+  three issue forms, a plain-language PR template, `llms.txt` (#652, #665); and
+  ADR-0047 / ADR-0048 recording the headless design as `proposed` (see the first
+  not-yet-proven item below).
+- **Keywords on the npm package.** The package carried none, so it was unfindable by
+  registry search.
+
+### Fixed
+
+- **`parseWaveSpine`'s Plan-Table fallback no longer numeric-tail-matches a
+  tracker-backed row** (issue #635). The #84 fallback matched *any* Plan-Table row id — a
+  tracker-backed `TEAM-89` included — against `.scratch/**/issues/{,done/}<NN>-*.md`. A
+  coincidental digit match against a frozen predecessor `.scratch/` corpus silently
+  rerouted merge-order onto foreign issue files, dropped every real row, and returned
+  **"Empty wave" with zero warnings** — a wrong answer that looked like a clean one. The
+  fallback now runs only when *every* Plan-Table id is fs-form (bare digits, or
+  `slug/NN`): a single non-numeric-prefix id is proof by construction that the spine is
+  tracker-backed, so the `.scratch/` corpus is never consulted and the existing
+  spine-self-contained path is taken instead. When the fallback does legitimately rebind
+  an fs-form row, that rebinding is now reported in `warnings` instead of happening
+  silently. Reproduced as a failing regression spec against the pre-fix code before the
+  gate was written.
+- **`parked` rows leave the algorithmic merge order and the branch-recovery warning**
+  (issue #636). ADR-0022 makes `parked` a claim-releasing terminal — a row deliberately
+  taken out of *this* wave, held before dispatch or released at a STOP — and its own text
+  already excludes it from the advisory order. But `buildSpinePrs` filtered only
+  `neverDispatched`, so a parked row fell through into the branch-null "in play" arm,
+  rode into `algorithmic`, and raised a "no branch could be recovered from the spine"
+  warning that sent operators hunting for a dispatch-log entry that was never supposed to
+  exist. Parked rows now join the existing `notInPlay` bucket unconditionally —
+  `MergeOrderResult` gains no field — regardless of whether a stale branch from an
+  earlier failed dispatch happens to be on file. The branch-recovery warning for a
+  genuinely dispatched row is untouched, byte-for-byte.
+
+### Changed
+
+- **`ParsedSpine` widens by ONE required field — the implementer heads-up.**
+  `warnings: string[]` is now required on `ParsedSpine`, a package-root exported type, so
+  the Plan-Table fallback's rebinding notice can travel out of `parseWaveSpine` and be
+  merged into `MergeOrderResult.warnings`. **Breaking for any consumer that *constructs* a
+  `ParsedSpine` itself** — a hand-built fixture, a test double — and invisible to any
+  consumer merely *using* the engine: `MergeOrderResult` and the CLI surface are
+  unchanged, no runtime export moves, and only the type gate sees it. Minor per the house
+  rule, the same shape as the widenings 1.5.0 and 2.1.0 carried and ruled on. The fix at
+  a call site is one line: add `warnings: []` to the literal.
+
+### Proven since 2.1.0
+
+- **The installed form ran end to end on a fresh consumer, 2026-09-03 — the first
+  measured stranger's arc.** Plugin `flotilla@formtrieb` and engine
+  `@formtrieb/flotilla-engine`, both 2.1.0, on a throwaway GitHub-Issues repository with
+  no prior flotilla state: install → `wave-setup` → `triage` → `to-issues` → `wave-plan`
+  → `wave-create` → `wave-start` → `wave-close --auto`; one issue, one PR, merged and
+  archived. 59 minutes wall clock, 4 agents, **0 permission prompts and 0 Coordinator
+  misfires during the wave itself**, 3 operator hand steps (all three now documented
+  steps rather than surprises). The credential indirection held — the token appeared in
+  no output — every read-back matched its write, and `host-pr arm` on a check-less PR
+  returned `merged` with a usable reason. The full measurement, its thirteen findings and
+  where each one was filed:
+  [`docs/retros/2026-09-03-quickstart-probe.md`](docs/retros/2026-09-03-quickstart-probe.md).
+  That probe is also what corrected the README quickstart, `docs/ONBOARDING.md` and
+  `wave-setup` in this release.
 
 ### Unsettled by construction, and what is not yet proven
 
+The list below is 2.1.0's, corrected against live operation on 2026-09-02 (issue #641)
+and re-read against the consumer probe of 2026-09-03. Each item lands as one of three
+things: a dated proof naming its evidence, a dated *still not proven*, or `verify` naming
+the one read that would settle it.
+
 - **Headless is designed, not built.** The answer half of `needs-attention` and the
-  headless run are settled as two `proposed` records — ADR-0047 (a typed **Answer** bound to
-  a spine-anchored **Ask**) and ADR-0048 (a finite **Pulse** on a leased `spine/<slug>`
-  branch) — grilled 2026-09-01/02 against the shipped records and the code. Four premises of
-  the original sketch fell to that reading and are recorded there. No engine verb, skill, or
-  branch from either record exists yet; the glossary marks each new term accordingly.
-
-### The 2.1.0 not-yet-proven list, corrected against live operation (2026-09-02)
-
-The six items on 2.1.0's *Carried forward, still not live-proven* line, and the two on its
-*Unsettled by construction* list, re-read against what evidence now exists. Each lands as
-one of three things: a dated proof naming its evidence, a dated *still not proven*, or
-`verify` naming the one read that would settle it.
-
+  headless run are settled as two `proposed` records — ADR-0047 (a typed **Answer** bound
+  to a spine-anchored **Ask**) and ADR-0048 (a finite **Pulse** on a leased `spine/<slug>`
+  branch) — grilled 2026-09-01/02 against the shipped records and the code. Four premises
+  of the original sketch fell to that reading and are recorded there. No engine verb,
+  skill, or branch from either record exists yet; the glossary marks each new term
+  accordingly.
 - **Bitbucket's write half is proven for `create` and `status`, live-proven 2026-08-17;
   `arm` and `merge` are not, and will gain no further evidence on this line.** A spine
   reading (2026-08-31) of a consumer wave run 2026-08-17 shows `host-pr create` (the
-  Basic-auth path, five PRs) and `host-pr status` (mergeability reads) running live against
-  Bitbucket Cloud. `arm` and `merge` have no live reading on record, and that consumer moves
-  to GitHub in September 2026 — this corrects 2.1.0's line, which named the whole write half
-  unproven without separating the two verbs actually exercised from the two that were not.
-- **The Linear attachment upsert — `verify`: the next Linear-store consumer close, read for
-  the closing-PR attachment on the closed issue.** Unchanged since 2.1.0 (issue #511): no
-  consumer close is on record since, so the URL-uniqueness upsert semantics against a real
-  workspace are still unread.
-- **The `prUrl` notice's agent-mediated half — `verify`: the next wave whose Scribe stage
-  completes end-to-end, read at that wave's close for a real notice forwarded by a real
-  Scribe.** Unchanged since 2.1.0: the engine side stays live-measured, the agent-mediated
-  forwarding still has no completed round on record.
-- **The residue-probing worktree classification is still not proven, 2026-09-02, and
+  Basic-auth path, five PRs) and `host-pr status` (mergeability reads) running live
+  against Bitbucket Cloud. `arm` and `merge` have no live reading on record, and that
+  consumer moves to GitHub in September 2026 — this corrects 2.1.0's line, which named
+  the whole write half unproven without separating the two verbs actually exercised from
+  the two that were not. `docs/CAPABILITIES.md` now carries the same split per cell.
+- **The Linear attachment upsert — `verify`: the next Linear-store consumer close, read
+  for the closing-PR attachment on the closed issue.** Unchanged since 2.1.0 (issue
+  #511): no consumer close is on record since, and the 2026-09-03 probe ran on GitHub
+  Issues, so the URL-uniqueness upsert semantics against a real workspace are still
+  unread.
+- **The `prUrl` notice's agent-mediated half — a completed Scribe round is now on record,
+  and no notice arose in it, so the forwarding itself is still unread (2026-09-03).** The
+  probe's wave completed both Scribe stages clean, with `write-report` and `write-verdict`
+  validating — which is the round 2.1.0's line was waiting for. But no notice was raised
+  during it, so a real notice forwarded by a real Scribe has still never been observed.
+  The engine side stays live-measured; `verify` is now narrower than it was: the next wave
+  in which a notice actually fires.
+- **The residue-probing worktree classification is still not proven, 2026-09-03, and
   unchanged.** Measured negative twice against two different implementations, exactly as
   2.1.0 recorded; no third read is on record, and the manual sandbox-off force-removal
-  remains the documented ordinary path.
-- **The grant-in-brief plugin half — `verify`: a mid-wave `issue-store annotate` followed by
-  a re-compose, exercised on an installed-form consumer.** The one exercise on record ran on
-  this repo's own source form during 2.1.0's own work, not on an installed consumer — that
-  distinction is the read still outstanding.
+  remains the documented ordinary path. The 2026-09-03 probe's cleanup ran through
+  `wave-close --auto`'s branch deletion and did not exercise it.
+- **The grant-in-brief plugin half — still not proven, 2026-09-03, but the gap has
+  narrowed to the timing.** `verify` was "a mid-wave `issue-store annotate` followed by a
+  re-compose, exercised on an installed-form consumer". The installed-form consumer now
+  exists and is measured — but its `annotate` ran during `to-issues` decoration, *before*
+  `wave-create`, and no re-compose followed. What is still outstanding is precisely a
+  mid-wave annotate on that form.
 - **The uppercase-team-key assumption — `verify`: record the actual team-key casing the
   first initiative-bound live pass encounters.** `isIssueShapedId`'s
   `/^[A-Z][A-Z0-9]*-\d+$/` narrowing is unconfirmed against a live workspace; the goal
-  skill's own reference still carries this as a pending-first-live-run note, unchanged since
-  1.5.0.
-- **A health-less mirror publish may still move the container's own health — `verify`: the
-  first live `goal-publish-update` call with `health` omitted, read against the container
-  afterward.** No live mirror publish is on record since 2.1.0 shipped the verb; the
-  question the engine deliberately declined to answer is still open.
+  skill's own reference still carries this as a pending-first-live-run note, unchanged
+  since 1.5.0.
+- **A health-less mirror publish may still move the container's own health — `verify`:
+  the first live `goal-publish-update` call with `health` omitted, read against the
+  container afterward.** No live mirror publish is on record since 2.1.0 shipped the
+  verb; the question the engine deliberately declined to answer is still open.
 - **`LINEAR_UPDATE_HEALTH_VALUES` is still schema-read, not live-proven — `verify`: the
   same first live mirror publish, cross-checked against the values Linear's workspace
   actually accepts.** Unchanged since 2.1.0.
