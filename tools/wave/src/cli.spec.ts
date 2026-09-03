@@ -518,6 +518,71 @@ describe('unknown subcommand — full verb list with one-line purposes (issue #6
   });
 });
 
+// ─── issue #680 — the compose-driver verb is wired into the router ───────────
+//
+// The verb roster itself is self-pinning (the block above derives its ground
+// truth from the printed `available:` line), so what needs its own assertions
+// here is the ROUTING: compose-driver resolves a store — it re-reads every
+// dispatchable row through `read`/`triage-read` at every compose — so it must
+// be intercepted by `mainAsync` before the sync router, exactly as
+// `issue-store` / `host-pr` / `store-preflight` are. A verb added to
+// KNOWN_SUBCOMMANDS but NOT intercepted would reach the sync `case`, which is
+// why that case exists and prints the "invoke it via mainAsync" refusal rather
+// than silently returning nothing.
+//
+// Convention 11 falsification for this block: deleting the
+// `if (argv[0] === 'compose-driver')` interception from `mainAsync` makes the
+// first test below fail with the sync router's "compose-driver is async" line
+// on stderr instead of the runner's own usage. See this row's report for the
+// observed failing output.
+
+describe('compose-driver — router wiring (issue #680)', () => {
+  it('is on the verb roster, so it never reaches the unknown-subcommand path', () => {
+    const code = main(['definitely-bogus-verb']);
+    expect(code).toBe(2);
+    const summaryLine = stderrBuf.split('\n').find((l) => l.includes('available:'))!;
+    expect(summaryLine).toContain('compose-driver');
+    // …and its purpose line rides along, one per verb.
+    expect(stderrBuf).toMatch(/^ {2}compose-driver {2}\S/m);
+  });
+
+  it('mainAsync intercepts it BEFORE the sync router — the answer is the RUNNER\'s own usage, not the router\'s whole-CLI dump', async () => {
+    const code = await mainAsync(['compose-driver']);
+    expect(code).toBe(2);
+    // The discriminator has to be a line only the RUNNER can print. A bare
+    // `compose-driver` reaching the sync router instead hits its zero-arg guard,
+    // which dumps the whole-CLI usage — and that dump also names --spine/--out/
+    // --anchor (the verb's own usage line lives in it), so asserting those flags
+    // alone is a check that cannot fail. Observed live while falsifying this
+    // block: with the interception deleted, the flag-only assertions stayed
+    // green. The runner's first line is what tells the two apart.
+    expect(stderrBuf.split('\n')[0]).toBe('error: compose-driver requires --spine <spine>');
+    expect(stderrBuf).toMatch(/--out/);
+    expect(stderrBuf).toMatch(/--anchor/);
+    // …and neither the sync router's async refusal nor its whole-CLI dump answered.
+    expect(stderrBuf).not.toMatch(/invoke it via the async entrypoint/);
+    expect(stderrBuf).not.toMatch(/available subcommands:/);
+  });
+
+  it('the sync main() refuses it the way it refuses every other async verb', () => {
+    const code = main(['compose-driver', '--spine', 'x']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/compose-driver is async/);
+    expect(stderrBuf).toMatch(/mainAsync/);
+  });
+
+  it('the top-level usage names the verb and its required flags', () => {
+    main([]); // zero args → printUsage()
+    const usageLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('flotilla-engine compose-driver'))!;
+    expect(usageLine).toBeDefined();
+    expect(usageLine).toContain('--spine');
+    expect(usageLine).toContain('--out');
+    expect(usageLine).toContain('--anchor');
+  });
+});
+
 // ─── Form 5: files-drift subcommand ──────────────────────────────────────────
 //
 // Integration tests for `runFilesDrift` reached via `main(['files-drift', ...])`.

@@ -15,6 +15,7 @@
  *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports <dir> --verdicts <dir> [...]
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
+ *   npx tsx tools/wave/src/cli.ts compose-driver --spine <spine> --out <path> --anchor <sha> [...]
  *
  * Subcommands:
  *   dor          Run the DOR-Gate validator (default when no subcommand is given).
@@ -266,6 +267,32 @@
  *   1 — at least one probed credential failed to resolve
  *   2 — usage (no selection, unknown flag, stray positional)
  *
+ * compose-driver (issue #680) — composes the Workflow dispatch driver instead
+ * of leaving a Coordinator to transcribe it. Reads the spine (every row in a
+ * dispatchable state, with its branch/slug/iteration/model), the wave config
+ * (the `engine.cli` binding, the store kind, the verify profile) and the store
+ * (`read` + `triage-read` per row, unconditionally, at every compose), then
+ * substitutes the five compose-time constants and the `ISSUES` array into the
+ * SHIPPED driver template (`driver/wave-start-inflight.js`, a package asset
+ * exactly as `hooks/` is) and writes the finished script to `--out` — the file
+ * the harness's Workflow tool takes as its `scriptPath`. Prints one JSON
+ * receipt: the rows composed, the model and branch per row, the anchor, the
+ * Reviewer agent name and how it was derived, the template and its size.
+ *
+ * THE ENGINE STILL DISPATCHES NOTHING (ADR-0009). This verb writes a file; the
+ * harness runs it; the schema-validated-return guarantee stays a property of
+ * the driver script's own `agent({ schema })` calls. No agent-harness primitive
+ * is called from engine code, here or anywhere.
+ *
+ * ASYNC (it resolves a store), so `mainAsync` intercepts it before the sync
+ * `main()` router, like `issue-store` / `store-preflight`. Exit codes:
+ *   0 — the script was written; the receipt is on stdout
+ *   1 — a compose refusal (an unresolvable anchor, a human-gated or foreground
+ *       row, a row with no recorded branch, an underivable Reviewer agent name,
+ *       a missing required row field) or a store/domain failure
+ *   2 — usage, an unreadable/invalid config, an unreadable spine, or a config
+ *       with no `engine.cli` binding (a STOP — wave-setup has not finished)
+ *
  * version (ADR-0032 — the plugin/engine lockstep gate's engine half) — prints
  * the ENGINE PACKAGE's own version as JSON, and, with `--expect <version>`,
  * compares it against a caller-supplied expectation. Resolves no store and
@@ -386,6 +413,7 @@ import {
   engineVersionExitCode,
 } from './cli-store';
 import { runResume } from './resume-cli';
+import { runComposeDriver } from './compose-driver';
 import type { IssueStore } from './adapters/issue-store';
 import { readSidecars, type SidecarReader } from './sidecar';
 import { metAcIndexes, renderVerdictSection } from './reviewer-verdict-schema';
@@ -426,6 +454,7 @@ const KNOWN_SUBCOMMANDS = [
   'resume',
   'store-preflight',
   'credential-probe',
+  'compose-driver',
   'route-verdict',
   'route-outcome',
   'validate-report',
@@ -467,6 +496,8 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
   'store-preflight': 'Probe the configured tracker for the preconditions wave-setup requires.',
   'credential-probe':
     'Check whether every configured credential can be resolved right now (ADR-0029).',
+  'compose-driver':
+    'Compose the Workflow dispatch driver from the spine, the config and the store, and write it to --out.',
   'route-verdict': 'Route a reviewer verdict + iteration + risk to its state-machine event.',
   'route-outcome': 'Route a worker outcome + state to its state-machine event.',
   'validate-report': 'Validate a WorkerReport JSON file against its schema.',
@@ -553,6 +584,7 @@ function printUsage(): void {
       '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]   # prints JSON',
       '  flotilla-engine store-preflight [--config <path>]   # prints JSON',
       '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
+      '  flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha> [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>] [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>] [--row-meta <json|path>]   # writes the Workflow driver script to --out; prints a JSON receipt',
       '  flotilla-engine route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>   # prints JSON',
       '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
       '  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON',
@@ -2133,6 +2165,15 @@ export function main(argv: string[] = process.argv.slice(2)): number {
           'error: store-preflight is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
         );
         return 2;
+      case 'compose-driver':
+        // Same again: `compose-driver` re-reads every dispatchable row through
+        // `issue-store read` / `triage-read` (the recompose-refetch rule, now
+        // the verb's own behaviour rather than a Coordinator discipline), so it
+        // resolves a store and is async. `mainAsync` intercepts it first.
+        process.stderr.write(
+          'error: compose-driver is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
+        );
+        return 2;
     }
   }
 
@@ -2199,6 +2240,16 @@ export async function mainAsync(
     // router spelling and the direct-module alias cannot drift.
     if (argv[0] === 'store-preflight') {
       return await runStorePreflightSubcommand(argv.slice(1), injected);
+    }
+    // `compose-driver` resolves a store — it re-reads every dispatchable row
+    // through `read`/`readTriage` at every compose, unconditionally — so it is
+    // async and intercepted here, exactly like `store-preflight` above. The
+    // interception bypasses `main()`'s zero-arg guard, so the runner owns that
+    // case itself: a bare `compose-driver` has no meaningful default —
+    // --spine/--out/--anchor are all required — and its own usage names all
+    // three, which is a better answer than the router's whole-CLI usage dump.
+    if (argv[0] === 'compose-driver') {
+      return await runComposeDriver(argv.slice(1), injected);
     }
     // `dor --id <id>` is the store-backed (async) form; bare `dor <path>...`
     // stays in the sync `main()`. The `--id` flag is the disambiguator (ADR-0014).

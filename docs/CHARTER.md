@@ -76,6 +76,8 @@ The whole "source → `IssueView`" projection, the host, the verify commands, th
 
 There is no separate "parameterized middle layer" and **no `DispatchHost` adapter** — the engine needs neither.
 
+*2026-09-03 — clarification, not a change of this decision ([`0009`](adr/0009-harness-agnostic-engine-no-dispatch-host.md)): the engine now **ships** the Workflow driver script as a package asset and **composes** it (`compose-driver` writes the filled script to a file), which is file I/O and not dispatch — the harness still runs the script, the engine still calls no agent-harness primitive, and the schema-validated-subagent-return guarantee remains a property of that script's own `agent({ schema })` calls.*
+
 ---
 
 ## 5. The canonical contract: `IssueView`

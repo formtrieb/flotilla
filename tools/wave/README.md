@@ -19,9 +19,26 @@ npx @formtrieb/flotilla-engine dor path/to/ISSUE.md
 npx @formtrieb/flotilla-engine files-drift path/to/ISSUE.md <sha-range>
 npx @formtrieb/flotilla-engine merge-order path/to/WAVE.md
 npx @formtrieb/flotilla-engine host-pr status --branch <branch>
+npx @formtrieb/flotilla-engine compose-driver --spine path/to/WAVE.md --out driver.js --anchor <sha>
 ```
 
 The full subcommand list, flags, and exit-code semantics are documented at the top of [`src/cli.ts`](src/cli.ts).
+
+### `compose-driver` — the dispatch driver, composed rather than transcribed
+
+The Workflow dispatch script ships as a package asset, `driver/wave-start-inflight.js`, alongside the hooks. `compose-driver` reads it, fills its five compose-time constants and its per-row `ISSUES` array from the wave spine, the wave config and the issue store, and writes the finished script to `--out` — the file a Claude Code Workflow run takes as its `scriptPath`. It prints one JSON receipt naming the rows composed, each row's branch and model tier, the wave anchor, and the Reviewer agent name it derived. The file form is a deliberate departure from the harness's inline default: it keeps the composed script inspectable and replayable, and the file must sit inside the repo (the gitignored `.flotilla/tmp/`) where the session may read it — the harness refuses to start a workflow from a path it is not allowed to read.
+
+```bash
+npx @formtrieb/flotilla-engine compose-driver \
+  --spine .flotilla/waves/<slug>.md \
+  --config wave.config.json \
+  --anchor "$(git rev-parse HEAD)" \
+  --out /tmp/driver.js \
+  [--plugin-manifest <plugin-clone>/.claude-plugin/plugin.json] [--reviewer-agent <name>] \
+  [--coordinator-branch <b>] [--deps-setup "<install cmd>"] [--row-meta '<json>']
+```
+
+**The engine still calls no agent-harness primitive.** This verb writes a file; the harness runs it. The schema-validated-return guarantee that makes a dispatched agent unable to fabricate a result is a property of the driver script's own `agent({ schema })` calls, not of this package.
 
 The CLI works with a plain, unmodified Node runtime — no setup step, no loader flag, nothing to install beyond the package itself. The shipped `flotilla-engine` binary brings its own TypeScript loader in-process before it does anything else, so this is true regardless of how the package was installed.
 

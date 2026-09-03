@@ -1,12 +1,12 @@
 # wave-start — start mechanics
 
-The engine-CLI plumbing for the dispatch loop. `SKILL.md` owns the judgment (gate stances, STOP handling, WAL ordering rationale); this file owns the exact invocations + exit codes. The Workflow script itself is in [workflow-driver.md](workflow-driver.md).
+The engine-CLI plumbing for the dispatch loop. `SKILL.md` owns the judgment (gate stances, STOP handling, WAL ordering rationale); this file owns the exact invocations + exit codes. The Workflow script itself ships in the engine package, at `tools/wave/driver/wave-start-inflight.js`; [workflow-driver.md](workflow-driver.md) is the reasoning about it and the compose verb, and step 6 below is the one call that fills it in.
 
 > **The CLI is the source of truth for shapes.** Every command prints usage with no args and validates input on every call. Run store-touching verbs from a dir containing `wave.config.json`, or append `--config <path>` **after** the subcommand + op. The routing verbs (`route-outcome`/`route-verdict`/`validate-report`/`validate-verdict`) are **top-level** — no `--config` (they wrap pure adapters, no store).
 
 ## `{{wave-cli}}` resolution
 
-The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the command string this repo's `wave.config.json` names under `engine.cli`** — the Coordinator reads it host-side at compose time, the driver's `WAVE_CLI` constant is filled from it ([workflow-driver.md](workflow-driver.md)), and every dispatched role inherits that one string. There is no invocation-form ordering to weigh: a configured binding that fails is a STOP/needs-attention finding — a broken install, config or release — not a cue to reach for another spelling. An **absent** `engine.cli` is a STOP before the flip, never something to guess at: it means `wave-setup` has not finished in this repo. Step 4b below reads the same field to scope the plugin/engine lockstep gate. Store-touching verbs (`spine`, `issue-store`, `dor`, `cross-wave`, `detect-host`) read the store config; the routing/validation verbs do not.
+The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the command string this repo's `wave.config.json` names under `engine.cli`** — the Coordinator reads it host-side at compose time, the driver's `WAVE_CLI` constant is filled from it by `compose-driver` ([workflow-driver.md](workflow-driver.md)), and every dispatched role inherits that one string. There is no invocation-form ordering to weigh: a configured binding that fails is a STOP/needs-attention finding — a broken install, config or release — not a cue to reach for another spelling. An **absent** `engine.cli` is a STOP before the flip, never something to guess at: it means `wave-setup` has not finished in this repo. Step 4b below reads the same field to scope the plugin/engine lockstep gate. Store-touching verbs (`spine`, `issue-store`, `dor`, `cross-wave`, `detect-host`) read the store config; the routing/validation verbs do not.
 
 ## Phase sequence
 
@@ -265,24 +265,15 @@ else
   #            (a value-less --expect), not a verdict: fix the call and re-run.
 fi
 
-# 4c. Anchor resolvability gate — a well-formed but FABRICATED anchorSha
-#     (workflow-driver.md's own compose-time assertion only checks
-#     presence/non-emptiness, not resolvability — see "The anchor-
-#     resolvability gate" below) fails once here, host-side, instead of
-#     reaching every Worker + Reviewer brief individually. Per row, before
-#     ISSUES is composed:
-git -C "$REPO" rev-parse --verify "${ANCHOR_SHA}^{commit}" > /dev/null
-#   exit 0    → resolves to a real commit in this checkout; proceed.
-#   non-zero  → STOP `(blocking) anchorSha for row $ID does not resolve — re-
-#   derive it (git rev-parse HEAD at dispatch time) before composing ISSUES.
-
-# 4d. Driver compose-currency gate — confirm the Workflow script about to be
-#     dispatched is either freshly extracted from workflow-driver.md's current
-#     `## The script` fence, or (if reused) has passed its seeded currency-
-#     assertion checklist — see "The driver compose-currency gate" below and
-#     workflow-driver.md's "The compose-fresh-or-verify rule". No engine verb
-#     backs this one; it is a Coordinator discipline, run before ANY row is
-#     composed into ISSUES.
+# 4c/4d. RETIRED — both gates moved INSIDE the compose verb (step 6).
+#     4c was the anchor-resolvability gate, host-side because the Workflow
+#     script has no filesystem of its own to check a SHA with. `compose-driver`
+#     does: it runs `git rev-parse --verify <sha>^{commit}` itself and refuses
+#     (exit 1, naming the SHA) before it writes anything, so a fabricated
+#     anchor never reaches a brief. 4d was the compose-currency gate over a
+#     hand-extracted copy of the driver script; there is no copy any more —
+#     the script ships in the engine package and is read from there at every
+#     compose. Nothing to run here, and nothing to remember.
 
 # 5. Mark each NON-HELD row in-flight (WAL: spine first, then rung, in row order).
 #    Skip any id present in HELD_IDS (step 3) — its State stays `planned`. Skip
@@ -291,24 +282,23 @@ git -C "$REPO" rev-parse --verify "${ANCHOR_SHA}^{commit}" > /dev/null
 #    part of this pass. (The heading above says NON-HELD; both holds are HELD in
 #    that sense — one on a sibling row, one on a human.)
 #    Per row, bind $ID / $ROW_SLUG / $MODEL from the roster — the SAME id+slug+model
-#    that go into the Workflow ISSUES array (workflow-driver.md), NOT the wave-level
+#    that `compose-driver` reads back off this spine for the ISSUES array, NOT the wave-level
 #    $SLUG. Both spine writes precede the coarse rung (spine-first WAL).
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" dispatched              # fine state, FIRST (WAL)
 {{wave-cli}} spine set-branch    "$SPINE" "$ID" "wave/$ID-$ROW_SLUG" --model "$MODEL"
 #   ^ durable branch home (ADR-0021): resume() joins worktrees to rows by this
 #     branch via branchesByIssueId. WITHOUT it, resume redispatches committed
 #     rows and discards their work. Record it BEFORE the worktree/Worker exists,
-#     and it MUST byte-match `issue.branch` in workflow-driver.md — NOT a line
-#     number (those go stale the moment the script is edited; FOR-139 dropped
-#     the last such reference for exactly that reason). workflow-driver.md
-#     derives issue.branch exactly ONCE, immediately after ISSUES, from the
-#     SAME formula (`wave/<id>-<slug>`) applied to the SAME id+slug this step
-#     binds as $ID/$ROW_SLUG — see that derivation's own comment for the full
-#     rationale. The two values are demonstrably the same because both read
-#     off one roster row, not because the two files happen to agree today;
-#     workflow-driver.md's REQUIRED_ROW_FIELDS additionally refuses to let
-#     either half of that row be missing/blank/"undefined" before any brief
-#     is composed.
+#     and it MUST byte-match `issue.branch` in the composed script — which it
+#     does BY CONSTRUCTION now, not by agreement: `compose-driver` reads this
+#     very branch back off this spine, and the shipped script re-derives it
+#     exactly ONCE from the same `wave/<id>-<slug>` formula over the same
+#     id+slug. The engine's own `branchFor()` and the script's derivation are
+#     the two spellings of that one formula, and the drift spec pins them.
+#     `compose-driver` additionally REFUSES a row whose branch this spine does
+#     not record (exit 1, naming the row and `spine set-branch`), and its
+#     REQUIRED_ROW_FIELDS assertion refuses a missing/blank/"undefined" half
+#     of that row before any brief is composed.
 {{wave-cli}} issue-store transition "$ID" in-flight                     # coarse rung, second
 #   Verify the write: transition answers success with empty stdout (silent by
 #   design, #648) — the exit code alone says only "did not throw," never
@@ -316,18 +306,59 @@ git -C "$REPO" rev-parse --verify "${ANCHOR_SHA}^{commit}" > /dev/null
 #   IssueView.status back and confirms `in-flight` (wave-shared "Verify the
 #   write"). Never pipe this call before reading its exit code.
 
-# 6. Dispatch — compose + run the Workflow script (workflow-driver.md), ISSUES
-#    built from the DISPATCHABLE rows only (both HELD_IDS and the HUMAN-HELD ids
-#    excluded from the array). The driver carries a `worker` field per row and
-#    refuses at compose time if a human-gated one reached ISSUES anyway — the
-#    structural backstop for this exclusion, in the same place as the
-#    anchor/branch assertion (workflow-driver.md).
-#    The driver's Scribe stages persist each sidecar AT AGENT-RETURN via
+# 6. Dispatch — ONE verb composes the Workflow script, then the harness runs it.
+#    The verb reads the spine (every row in a dispatchable state), the config
+#    (engine.cli, store.kind, the verify profile) and the store (issue-store
+#    read + triage-read per row, unconditionally, every compose), and writes the
+#    finished script to --out. Nothing is transcribed and nothing is hand-filled.
+{{wave-cli}} compose-driver \
+  --spine "$SPINE" --config "$WAVE_CONFIG" \
+  --anchor "$ANCHOR_SHA" \
+  --out "$REPO/.flotilla/tmp/$SLUG/driver.js" \
+  --row-meta '{"<id>":{"reviewerHints":["..."],"note":"..."}}'
+#   --out sits INSIDE the repo, deliberately — under the Scribe's gitignored
+#   .flotilla/tmp/ (wave-setup ignores it; worktree-cleanup sweeps it at close),
+#   NOT in the /tmp scratch dir the other files of this run use. The difference:
+#   those files are read by the engine, this one is read by the HARNESS — the
+#   Workflow tool can only start from a script file the session is already
+#   allowed to read, and a path outside the working directory first needs
+#   /add-dir or a Read allow rule. Inside the repo, nothing needs adding.
+#   Optional, and only where the default is wrong for this repo:
+#     --plugin-manifest <plugin-clone-root>/.claude-plugin/plugin.json
+#                       REQUIRED on the installed form unless --reviewer-agent
+#                       is passed: the engine cannot know which clone the
+#                       running skills came from, so it is TOLD (the same
+#                       division of labour `version --expect` uses, step 4b).
+#                       On the source form the repo-root manifest is the
+#                       default and nothing needs passing.
+#     --reviewer-agent <name>        override the derived Stage-3 agentType
+#     --coordinator-branch <b>       default: the repo's current branch
+#     --deps-setup "<cmd>"           default: the first install command in the
+#                                    row's verify profile
+#     --repo-root / --template / --reports-dir / --verdicts-dir
+#   exit 0 → ONE JSON receipt on stdout. READ IT — it is the dispatch record:
+#            { out, template, templateBytes, wave, anchor, reviewerAgent,
+#              reviewerAgentForm, pluginName, waveCli,
+#              rows: [{ id, slug, branch, model, iteration, risk, worker,
+#                       scopeGrants }] }
+#            Confirm the row set matches the DISPATCHABLE rows (both HELD_IDS
+#            and the HUMAN-HELD ids must be absent), the per-row branch matches
+#            the `spine set-branch` write of step 5, and `reviewerAgent` is the
+#            form that resolves where this wave runs.
+#   exit 1 → a compose refusal, already loud on stderr: an anchor that does not
+#            resolve, a human-gated or `foreground` row, a row with no recorded
+#            branch, a missing required row field, or an underivable Reviewer
+#            agent name. STOP and fix the named cause — never re-run past it.
+#   exit 2 → usage, an unreadable spine/config, or a config with no `engine.cli`
+#            (a STOP: wave-setup has not finished in this repo, ADR-0032).
+#
+#    Then hand `--out` to the harness Workflow tool as its `scriptPath`.
+#    The script's Scribe stages persist each sidecar AT AGENT-RETURN via
 #    write-report/write-verdict (ADR-0024) — nothing is written bundled in step 9.
 #    Per row, decide whether the slice SHIPS A NEW CHECK (wave-shared Convention
-#    11) and, if so, name that check in the row's `reviewerHints` — the clause
-#    itself needs no per-row wiring (it ships in every brief as workerBrief()
-#    policy clause 9). See "Convention 11 at compose + routing" below.
+#    11) and, if so, name that check in the row's `reviewerHints` VIA --row-meta
+#    — the clause itself needs no per-row wiring (it ships in every brief as
+#    workerBrief() policy clause 9). See "Convention 11 at compose + routing".
 
 # 7. Route each returned tuple (see below) — incl. the sidecar existence check (7.0),
 #    the disclosure capture (7.0a, ADR-0027 — every tuple, before the outcome/verdict
@@ -484,36 +515,31 @@ Single-owner, deliberately: the command lives in the engine (`tools/wave/src/cli
 
 **The same comparison, earlier and softer.** `{{wave-cli}} store-preflight --expect <plugin-version>` reports the identical check as an `advisory` entry in its `checks` array at setup/plan time. It never fails the preflight and never moves its exit code: at plan time a skew is information, and refusing there would block a `wave-plan` on a fact that only bites at dispatch. The refusal belongs *here*, where the next action is a dispatch.
 
-## The anchor-resolvability gate (step 4c) — a fabricated SHA fails once, host-side
+## The anchor-resolvability gate — a fabricated SHA fails once, inside the compose verb
 
-**What is checked, and why the existing compose-time assertion cannot catch it.** `workflow-driver.md`'s `assertRequiredRowFields` runs `isMissingField` over every row before any brief is composed — but that predicate tests presence/non-emptiness only (`undefined`, `null`, the literal string `"undefined"`, or a blank/whitespace-only value). A well-formed anchor SHA that simply does not name a real commit in this checkout — a fabricated value with a correct-looking short prefix, a copy-paste of the wrong hash, a stale value left over from an earlier session — is present and non-empty, so it passes that check exactly as a real anchor does. Nothing inside the composed script can catch the gap either: a Workflow `script` has no filesystem or git access (§Harness constraint, `workflow-driver.md`), so resolvability can only be checked host-side, by the Coordinator, before compose.
+**What is checked, and why the compose-time field assertion cannot catch it.** `assertRequiredRowFields` runs `isMissingField` over every row before any brief is composed — but that predicate tests presence/non-emptiness only (`undefined`, `null`, the literal string `"undefined"`, or a blank/whitespace-only value). A well-formed anchor SHA that simply does not name a real commit in this checkout — a fabricated value with a correct-looking short prefix, a copy-paste of the wrong hash, a stale value left over from an earlier session — is present and non-empty, so it passes that check exactly as a real anchor does.
 
-**Why this is a STOP and not left to the Reviewer.** A bad anchor reaches every row's Worker (`git reset --hard <anchorSha>`) AND every row's Reviewer (the diff base) individually — the defect is discovered N times, once per dispatched agent, instead of once. §Recovery protocol below already documents the cost of a bad anchor caught only downstream (two Reviewers returning spurious `questions-blocking` against the literal string `"undefined"`); an unresolvable-but-well-formed SHA is the same failure shape one layer earlier, and the check is one `git` invocation host-side.
+**It used to be step 4c, run by hand; it is now the verb's (issue #680).** Nothing INSIDE the composed script can check this: a Workflow `script` has no filesystem or git access (§Harness constraint, [workflow-driver.md](workflow-driver.md)). `compose-driver` is not the script — it is engine code with a real filesystem — so it runs the check itself, per compose, before it writes anything:
 
 ```bash
-git -C "$REPO" rev-parse --verify "${ANCHOR_SHA}^{commit}" > /dev/null
+git -C <repo-root> rev-parse --verify "<anchorSha>^{commit}"
 ```
 
-`--verify … ^{commit}` fails (non-zero) on anything that is not a real, resolvable commit object in this checkout — a fabricated hash, a real-looking prefix with no match, a SHA that belongs to a different remote/fork entirely — while passing on any resolvable commit-ish (full SHA, unique abbreviation, tag, branch). Run it per row, before `ISSUES` is composed and before step 5 flips anything.
+`--verify … ^{commit}` fails (non-zero) on anything that is not a real, resolvable commit object in this checkout — a fabricated hash, a real-looking prefix with no match, a SHA that belongs to a different remote/fork entirely — while passing on any resolvable commit-ish (full SHA, unique abbreviation, tag, branch). The verb turns a failure into **exit 1 naming the SHA and the repair** ("re-derive it — `git rev-parse HEAD` at dispatch time"), and writes no script at all.
 
-**Live occurrence.** A fabricated anchor SHA with a correct 7-character prefix passed compose and reached four parallel Worker/Reviewer briefs; all four Workers independently caught it themselves during their own workspace-setup `git rev-parse HEAD` confirmation (workflow-driver.md's own step-2 check) — four agent budgets spent discovering, individually, a defect this one host-side check would have caught once, before any of them ran.
+**Why it is a refusal and not left to the Reviewer.** A bad anchor reaches every row's Worker (`git reset --hard <anchorSha>`) AND every row's Reviewer (the diff base) individually — the defect is discovered N times, once per dispatched agent, instead of once. §Recovery protocol below documents the cost of a bad anchor caught only downstream (two Reviewers returning spurious `questions-blocking` against the literal string `"undefined"`); an unresolvable-but-well-formed SHA is the same failure shape one layer earlier.
 
-**Layered on top of, never a replacement for, the presence-only check.** `REQUIRED_ROW_FIELDS`/`isMissingField` in `workflow-driver.md` still catches an absent/blank/`"undefined"` `anchorSha` — that check is unchanged, and stays exactly as narrow as it was (Authoring constraint #7 there names why: it asks "is this field present enough to interpolate", not "does this value resolve"). This gate is the ONLY place that catches a well-formed value that does not exist.
+**Live occurrence.** A fabricated anchor SHA with a correct 7-character prefix passed compose and reached four parallel Worker/Reviewer briefs; all four Workers independently caught it themselves during their own workspace-setup `git rev-parse HEAD` confirmation — four agent budgets spent discovering, individually, a defect one check catches once, before any of them runs.
 
-## The driver compose-currency gate (step 4d) — the composed script is a copy, and copies go stale
+**Layered on top of, never a replacement for, the presence-only check.** `REQUIRED_ROW_FIELDS`/`isMissingField` still catches an absent/blank/`"undefined"` `anchorSha`, and stays exactly as narrow as it was: it asks "is this field present enough to interpolate", never "does this value resolve" (composition constraint 3 in [workflow-driver.md](workflow-driver.md) names the split). This gate is the ONLY thing that catches a well-formed value that does not exist.
 
-Every dispatch composes the Workflow script from `workflow-driver.md`'s current `## The script` fence. That composition is a COPY, and — unlike a bad row (caught by step 4c above, or by `workflow-driver.md`'s own compose-time assertions) — a stale COPY of the whole driver is a defect nothing INSIDE the copy can detect: a copy's own assertions are exactly as out of date as the rest of it.
+## The driver compose gate — RETIRED with the transcription it policed (issue #680)
 
-**The gate.** Before any row is composed into `ISSUES`, confirm the script about to be dispatched is either:
+There used to be a **compose-currency gate** here, at step 4d: every dispatch extracted the Workflow script from `workflow-driver.md`'s `## The script` fence and filled it in by hand, so the thing about to be dispatched was a COPY — and a stale copy of the whole driver is a defect nothing INSIDE the copy can detect, because a copy's own assertions are exactly as out of date as the rest of it. The gate asked, before any row was composed, whether the script had been freshly extracted or currency-checked against a seeded checklist.
 
-1. **freshly extracted** from `workflow-driver.md`'s current `## The script` fence at this compose time, or
-2. **currency-checked**, if a previously-composed copy is being reused instead (a scratch file, a compose carried over from an earlier wave in the same session) — diffed against the document's CURRENT script and walked against the seeded currency-assertion checklist in `workflow-driver.md`'s "The compose-fresh-or-verify rule".
+**There is no copy any more.** The script ships as an engine package asset (`tools/wave/driver/wave-start-inflight.js`) and `compose-driver` reads it from the package on every run. The failure class the gate existed for — a document edited out from under a script someone kept around — cannot occur, so the gate goes rather than being restated. Its two motivating occurrences (a frozen template that outlived the cwd-persistence fix; a compose-fresh anchor-diff that caught a falsified reviewer-isolation claim one wave later) stay recorded in [workflow-driver.md](workflow-driver.md) as the evidence for why the transcription had to end.
 
-A copy that is neither is not eligible to dispatch. There is no engine verb behind this one and no exit code to read — it is a Coordinator discipline, the same shape as step 3b's per-pass human confirmation: asked fresh, every time, because the fact it checks (does this copy match the document) is exactly as perishable as that gate's own "has a human acted yet."
-
-**Why this is a gate here and not just a note in `workflow-driver.md`.** The rule lives with its full rationale and its currency-assertion checklist in `workflow-driver.md` (where a Coordinator composing the script is already reading); this file names it as a required step in the dispatch sequence, in the same place the other pre-fan-out gates (4a, 4b, 4c) live, so a Coordinator following the phase sequence mechanically cannot skip past it the way a note living only in prose elsewhere could be skimmed over. Both motivating occurrences — a frozen template that outlived the cwd-persistence fix, and the compose-fresh anchor-diff that caught a falsified reviewer-isolation claim one wave later — are recorded as evidence in `workflow-driver.md`'s own section.
-
-**Its tracker-currency sibling, one row per compose, not once per wave (ADR-0041).** The gate above governs whether the SCRIPT TEXT is current; a SEPARATE, per-row fact can go stale independently of it — whether each row's EMBEDDED SPEC (`issue.issueSpec`, and now `issue.scopeGrants`) still matches what the tracker holds for that row. Every recompose — this fresh dispatch, a cap=1 re-dispatch (step 7d below), or a wave-resume `redispatch` hand-off — re-reads the row through `issue-store read` and re-embeds the result, UNCONDITIONALLY: never "only if I annotated this row since the last compose." `workflow-driver.md`'s "The recompose-refetch rule" states the rule in full, including why the condition itself is the failure mode it replaces and the same-round boundary it deliberately does not retroactively fix.
+**Its tracker-currency sibling survives, and is likewise the verb's now (ADR-0041).** Whether each row's EMBEDDED SPEC (`issue.issueSpec`, and `issue.scopeGrants`) still matches what the tracker holds is a per-row fact that goes stale independently of anything. `compose-driver` re-reads every dispatchable row through `issue-store read` + `triage-read` on EVERY run — a fresh dispatch, a cap=1 re-dispatch (step 7d below), a wave-resume `redispatch` hand-off alike — with no condition and no cache. [workflow-driver.md](workflow-driver.md)'s "The recompose-refetch rule" states it in full, including why a conditional re-fetch was the failure mode it replaces and the same-round boundary it deliberately does not retroactively fix.
 
 ## Routing a tuple `{ id, risk, iteration, report, verdict }`
 
@@ -696,17 +722,21 @@ fi
 #   worktree-isolated agent, and the exact second edge W26-F1 hit right behind
 #   the stale-registration one (recovered only by hand via `git symbolic-ref`).
 
-#   RE-COMPOSE, DO NOT REUSE THE ROUND-1 ROW (ADR-0041, unconditional — never
-#   "only if this row was annotated"): before composing the iteration-2 row,
-#   re-read this row through `issue-store read` and re-embed the result as
-#   `issue.issueSpec`, and re-project any `scope-extension`-disposition
-#   disclosures this row now carries into `issue.scopeGrants`. Both are the
-#   SAME re-derivation "The driver compose-currency gate" above performs for
-#   the Workflow SCRIPT text, one level down — the tracker instead of the
-#   document. See workflow-driver.md "The recompose-refetch rule" for the full
-#   rule, the same-round boundary it deliberately does NOT retroactively fix,
-#   and why a wave-resume `redispatch` hand-off is the identical case, not a
-#   separate one.
+#   RE-COMPOSE BY RE-RUNNING THE VERB — never hand-edit the round-1 script.
+#   `{{wave-cli}} compose-driver` again (step 6, same flags, the row now at
+#   State `re-dispatched` and Iter 2) writes a fresh script for the rows that
+#   are still dispatchable. The re-fetch is the VERB's, unconditional and
+#   built in (ADR-0041, never "only if this row was annotated"): it re-reads
+#   the row through `issue-store read` + `triage-read` and re-embeds the
+#   result as `issue.issueSpec`, and re-projects any `scope-extension`-
+#   disposition disclosures this row now carries into `issue.scopeGrants`.
+#   Pass the round-1 head SHA and any changes-requested items through
+#   --row-meta ('{"<id>":{"iteration1HeadSha":"<sha>","reviewerHints":[…]}}')
+#   — those are the only per-round inputs the spine and the tracker do not
+#   already carry. See workflow-driver.md "The recompose-refetch rule" for the
+#   full rule, the same-round boundary it deliberately does NOT retroactively
+#   fix, and why a wave-resume `redispatch` hand-off is the identical case,
+#   not a separate one.
 
 # 8. stop → flag needs-attention. `--question` and each `--option` land VERBATIM
 #    in a tracker field a person reads, so they are operator-directed output
