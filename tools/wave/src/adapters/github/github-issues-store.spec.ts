@@ -29,6 +29,13 @@ runIssueStoreConformance('GitHubIssuesStore', (): ConformanceHarness => ({
   },
   hooks: githubConformanceHooks,
   baseInput,
+  // #654: the native-only blocked-by edge case reaches through the store to
+  // its injected fake — the same test-affordance stance `githubConformanceHooks`
+  // itself takes above.
+  addNativeDependency(store, blockedId, blockerId) {
+    const api = (store as GitHubIssuesStore).api as InMemoryGitHubApi;
+    api.addNativeDependency(Number(blockedId), Number(blockerId));
+  },
 }));
 
 // ── GitHub-specific properties (storage-aware: labels, body, derived status) ──
@@ -249,13 +256,30 @@ describe('GitHubIssuesStore — blockedBy read-union (ADR-0020 DoR-gate fix)', (
     expect(refs).toEqual(expect.arrayContaining([{ slug: 'other', issue: n }, { issue: n }]));
   });
 
-  it('the union is a read()-only layer — list scans stay codec-only (documented asymmetry)', async () => {
+  // #654: listOpen/listClaimed used to skip the native union scan()'s own
+  // getBlockedBy call would have cost, so a natively-only edge read as
+  // 'none' from the candidate table while read() (and the goal frontier) both
+  // saw it. These two cases invert that pinned asymmetry into pinned
+  // agreement — the union now runs inside scan() too.
+  it('listOpen unions the native blocked-by the same way read() does', async () => {
     const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
     const blocked = await store.create(baseInput({ title: 'blocked', blockedBy: 'none' }));
     api.addNativeDependency(Number(blocked), Number(nativeBlocker));
     const listed = (await store.listOpen('wave-ready')).find((v) => v.id === blocked);
-    expect(listed?.blockedBy).toBe('none'); // no per-issue getBlockedBy call in a scan
-    expect((await store.read(blocked)).blockedBy).not.toBe('none'); // read() DOES union
+    const read = await store.read(blocked);
+    expect(listed?.blockedBy).not.toBe('none'); // listOpen now unions codec ∪ native too
+    expect(listed?.blockedBy).toEqual(read.blockedBy); // agrees with read(), byte-for-byte
+  });
+
+  it('listClaimed unions the native blocked-by the same way read() does', async () => {
+    const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
+    const blocked = await store.create(baseInput({ title: 'blocked', blockedBy: 'none' }));
+    await store.transition(blocked, 'queued');
+    api.addNativeDependency(Number(blocked), Number(nativeBlocker));
+    const listed = (await store.listClaimed()).find((v) => v.id === blocked);
+    const read = await store.read(blocked);
+    expect(listed?.blockedBy).not.toBe('none');
+    expect(listed?.blockedBy).toEqual(read.blockedBy);
   });
 });
 

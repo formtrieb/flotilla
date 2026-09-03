@@ -391,10 +391,13 @@ export class GitHubIssuesStore implements IssueStore {
     // Accepted per-call cost (matches what RealLinearApi.addBlockedBy pays for
     // its own mirror): a read() costs +1 dependency GET; a create()/annotate()
     // costs the +1 GET above PLUS up to one addBlockedBy POST per unmirrored
-    // ref in THIS loop. A wide wave-plan or a bulk to-issues decorate/create
-    // pass on a github-store consumer — many issues, each with fresh
-    // `blockedBy` refs — walks straight at that envelope: one POST per
-    // unmirrored ref, no pacing between them.
+    // ref in THIS loop. `listOpen`/`listClaimed` (`scan()`, #654) cost +1
+    // dependency GET per KEPT issue too, now that the union runs there as
+    // well — read SEQUENTIALLY, never fanned out, but still one GET per row on
+    // every draw. A wide wave-plan or a bulk to-issues decorate/create pass on
+    // a github-store consumer — many issues, each with fresh `blockedBy`
+    // refs — walks straight at that envelope: one POST per unmirrored ref, no
+    // pacing between them, plus now one GET per listed row on the read side.
     // No throttle/backoff/retry is added: this mirror is best-effort by
     // design (class doc above) and a rate-limited or otherwise refused POST
     // is swallowed below exactly like any other refusal — the authoritative
@@ -513,17 +516,34 @@ export class GitHubIssuesStore implements IssueStore {
       .map((gh) => ({ id: String(gh.number), title: gh.title, body: gh.body }));
   }
 
-  /** Shared open-issue scan; `keep` selects, malformed bodies are skipped. */
+  /**
+   * Shared open-issue scan; `keep` selects, malformed bodies are skipped.
+   *
+   * Unions each KEPT issue's native blocked-by dependency into its
+   * `blockedBy` (#654), the same {@link unionBlockedBy} layer `read()`
+   * applies — so `listOpen`/`listClaimed` agree with `read()` (and the goal
+   * frontier) on every edge, codec or native, instead of the codec-only view
+   * this scan used to return. That means one extra `getBlockedBy` GET per
+   * KEPT issue, read SEQUENTIALLY — a `for…of` with `await` inside, never
+   * `Promise.all` — against the same secondary-rate-limit envelope
+   * {@link mirrorBlockedBy}'s doc names; the accepted cost, decided at
+   * sharpening rather than left as a documented asymmetry. A failed native
+   * read (or a garbled body) drops just that ONE issue from the result —
+   * GitHub state is remotely editable and this call crosses the network, so a
+   * single flaky read must not abort the whole scan.
+   */
   private async scan(keep: (gh: GhIssue) => boolean): Promise<IssueView[]> {
     const open = await this.api.listOpenIssues();
     const out: IssueView[] = [];
     for (const gh of open) {
       if (!keep(gh)) continue;
       try {
-        out.push(this.project(String(gh.number), gh));
+        const view = this.project(String(gh.number), gh);
+        out.push({ ...view, blockedBy: await this.unionBlockedBy(gh.number, view.blockedBy) });
       } catch {
-        // a human-garbled body throws in project(); skip it rather than aborting
-        // the whole scan (GitHub bodies are remotely editable).
+        // a human-garbled body throws in project(), or unionBlockedBy's native
+        // read fails (transient/rate-limited) — either way, skip this one
+        // issue rather than aborting the whole scan.
       }
     }
     return out;
@@ -531,14 +551,14 @@ export class GitHubIssuesStore implements IssueStore {
 
   // ── internals ─────────────────────────────────────────────────────────────
   /**
-   * NOTE — deliberate read()/list asymmetry (the same one the Linear port
-   * carries): `read()` layers {@link unionBlockedBy} on top of this projection,
-   * so its `blockedBy` is codec ∪ native. Views built directly from `project()`
-   * (i.e. `listOpen`/`listClaimed`, via `scan()`) carry the codec-only
-   * `blockedBy` — no native union, since that would mean one extra
-   * `getBlockedBy` call per scanned issue. A future consumer that reasons about
-   * `blockedBy` across a list scan must not assume the union holds there; only a
-   * single-issue `read()` guarantees it.
+   * `blockedBy` here is codec-only — parsed straight off the body, nothing
+   * more. The native union is layered on top by every CALLER of `project()`:
+   * `read()` applies {@link unionBlockedBy} directly, and `listOpen`/
+   * `listClaimed` apply the SAME union inside {@link scan}, so every read
+   * surface this store exposes agrees on `blockedBy` (#654 — they used to
+   * diverge, with `scan()` skipping the union to save a `getBlockedBy` call
+   * per scanned issue; see {@link scan}'s own doc for the cost that saving no
+   * longer buys).
    */
   private project(id: string, gh: GhIssue): IssueView {
     const parsed = parseBody(gh.body);

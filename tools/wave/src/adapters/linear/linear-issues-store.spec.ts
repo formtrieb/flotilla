@@ -31,6 +31,13 @@ runIssueStoreConformance('LinearIssuesStore', (): ConformanceHarness => ({
   },
   hooks: linearConformanceHooks,
   baseInput,
+  // #654: the native-only blocked-by edge case reaches through the store to
+  // its injected fake — the same test-affordance stance `linearConformanceHooks`
+  // itself takes.
+  addNativeDependency(store, blockedId, blockerId) {
+    const api = (store as LinearIssuesStore).api as InMemoryLinearApi;
+    api.addNativeRelation(blockedId, blockerId);
+  },
 }));
 
 // ── Linear-specific mapping (storage-aware: the part conformance can't see) ──
@@ -294,6 +301,37 @@ describe('LinearIssuesStore — blockedBy read-union (ADR-0020 DoR-gate fix)', (
     api.addNativeRelation(blocked, blocker);
     const view = await store.read(blocked);
     expect(view.blockedBy === 'none' ? [] : view.blockedBy).toHaveLength(1);
+  });
+
+  // #654: checked in the same row as the GitHub store's list/read asymmetry —
+  // this store's `listOpen`/`listClaimed` went through the SAME codec-only
+  // `project()` scan() read() bypasses via `unionBlockedBy`, so a natively-only
+  // relation was invisible to the candidate table while read() (and the goal
+  // frontier) both saw it. These pin the fix: the union now runs inside
+  // scan() too, so all three surfaces agree.
+  it('listOpen unions the native blocked-by the same way read() does', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
+    const blocked = await store.create(baseInput({ title: 'blocked', blockedBy: 'none' }));
+    api.addNativeRelation(blocked, nativeBlocker);
+    const listed = (await store.listOpen('wave-ready')).find((v) => v.id === blocked);
+    const read = await store.read(blocked);
+    expect(listed?.blockedBy).not.toBe('none'); // listOpen now unions codec ∪ native too
+    expect(listed?.blockedBy).toEqual(read.blockedBy); // agrees with read(), byte-for-byte
+  });
+
+  it('listClaimed unions the native blocked-by the same way read() does', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const nativeBlocker = await store.create(baseInput({ title: 'native blocker' }));
+    const blocked = await store.create(baseInput({ title: 'blocked', blockedBy: 'none' }));
+    await store.transition(blocked, 'queued');
+    api.addNativeRelation(blocked, nativeBlocker);
+    const listed = (await store.listClaimed()).find((v) => v.id === blocked);
+    const read = await store.read(blocked);
+    expect(listed?.blockedBy).not.toBe('none');
+    expect(listed?.blockedBy).toEqual(read.blockedBy);
   });
 });
 
