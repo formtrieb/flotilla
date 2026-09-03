@@ -413,6 +413,78 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
   // outcome a finishing one?" in its own code — a consumer-side driver, or a
   // second gate outside this engine — is the trigger to move these onto the
   // barrel and delete this block.
+  // ─── the Workflow-driver composer (issue #680) ───────────────────────────
+  //
+  // `compose-driver.ts` is a CLI-EDGE module with one caller: cli.ts's router,
+  // which reaches `runComposeDriver` the way it reaches `runResume` and
+  // `runIssueStore`. The difference that puts this block here rather than on
+  // the barrel is what a CONSUMER holds: the public surface of this slice is
+  // the `compose-driver` VERB and the receipt JSON it prints, not a TypeScript
+  // import path. A consumer composes a driver by running the verb; the pure
+  // helpers below exist so the composition is spec-pinnable in pieces
+  // (`compose-driver.spec.ts`), which is exactly the standard every other
+  // "exported so its own spec can pin it" entry in this file is held to.
+  //
+  // Honest caveat, stated the way the two blocks above state theirs:
+  // `src/index.ts` is outside this row's declared Files globs, so root-export
+  // parity was not an option to weigh here even had the reasoning come out the
+  // other way — and root-exporting this family would also mint a
+  // twenty-odd-symbol semver commitment no acceptance criterion asked for. The
+  // trigger to revisit is a consumer that composes a driver from ITS OWN code
+  // rather than through the verb (a consumer-side dispatcher, or a second
+  // harness driver); that row moves these onto the barrel and deletes this
+  // block.
+  './compose-driver': {
+    runComposeDriver:
+      "The `compose-driver` verb's runner. Its one call site is cli.ts's async interception, exactly as runResume/runIssueStore are reached; a consumer drives it as a CLI subcommand and reads the JSON receipt.",
+    composeDriverScript:
+      'The pure substitution — template plus five constants plus ISSUES in, finished script out. Exported so compose-driver.spec.ts can compare it against an independently re-implemented expectation; the verb is the consumer-facing form.',
+    ComposeDriverScriptInput:
+      'The input shape of composeDriverScript directly above — unusable without it, and module-local for the same reason.',
+    DRIVER_TEMPLATE_PATH:
+      "The shipped driver template's path inside the package (`driver/wave-start-inflight.js`). Exported so the spec reads the SAME file the verb reads rather than re-deriving a path that could drift from it.",
+    SOURCE_FORM_ENGINE_CLI_MARKER:
+      "The `engine.cli` substring that discriminates flotilla's own source form from a consumer's installed form (ADR-0032) — the same discriminator start-mechanics step 4b uses. Named rather than inlined so the Reviewer-agent resolution and its spec cannot disagree about it.",
+    FOREGROUND_WORKER:
+      'The Worker value that means "a human co-pilots this in chat" — refused at compose time with its own message. A consumer reasons about the Worker vocabulary through its own wave config, never through this constant.',
+    REQUIRED_ROW_FIELDS:
+      "Every scalar field a composed ISSUES row must carry. It is the pin skill-schema-drift.spec.ts holds the shipped driver's own copy against, which is the whole reason it is a named export rather than an inline literal.",
+    isMissingField:
+      'The three shapes a template can silently render for an absent value (undefined, the literal string "undefined", blank). Exported so its own spec can pin all three; callers get it through assertRequiredRowFields.',
+    assertRequiredRowFields:
+      'The compose-time required-field refusal, run by the verb over every row it builds. Exported so the spec can drive it field by field rather than only through a whole compose.',
+    assertDispatchableWorker:
+      'The compose-time human-gate / foreground refusal — two refusals with two remedies, so two messages. Exported for the same field-by-field spec reason as its neighbour above.',
+    branchFor:
+      'The `wave/<id>-<slug>` formula, in one place, so the receipt and the shipped script cannot disagree with the Coordinator\'s own `spine set-branch` write (ADR-0021).',
+    modelForRisk:
+      'The Risk → model-tier default used only when the spine records no dispatched model (ADR-0007 Amendment). A consumer states its tiers in its own roster, never by calling this.',
+    closePhraseFor:
+      'The store-kind close phrase (wave-shared Convention 4). Exported so the spec pins all three store kinds; the verb is what a caller actually runs.',
+    stripBareIds:
+      'The deliberately NARROW mention-discipline strip applied to a default PR title. Exported so its narrowness — `#<digits>` and the row id only, never a general TEAM-NN sweep — is pinnable; a Coordinator that wants another title passes --row-meta.',
+    depsSetupFrom:
+      "Picks the first dependency-install command out of a row's verify profile. Exported so the spec pins the recognised installers; the verb is where it is used, and --deps-setup is the override.",
+    composeIssueSpec:
+      'Builds the embedded, verbatim issue spec both briefs read. Exported so the spec can assert its sections without composing a whole driver.',
+    IssueSpecInput:
+      'The input shape of composeIssueSpec directly above — module-local for the same reason it is.',
+    projectScopeGrants:
+      "Projects a row's `scope-extension` disclosures into the driver's scopeGrants shape (ADR-0041). Exported so the spec pins both the structured and the degraded string form; the spine stays the sole durable record either way.",
+    ScopeGrant: 'The structured half of the projection directly above — module-local for the same reason.',
+    DriverRow:
+      "One composed ISSUES entry. It is the verb's internal row shape, not a consumer contract: what a consumer holds is the receipt JSON and the written script.",
+    RowMeta: "The per-row `--row-meta` override shape, parsed from a flag rather than imported by anyone.",
+    resolveReviewerAgent:
+      'Derives the Reviewer agent name for the distribution form the skills are running in (issue #677). Exported so the spec pins source, installed and override in isolation, with an injected reader instead of a plugin clone on disk.',
+    ReviewerAgentInput: 'The input shape of resolveReviewerAgent directly above — module-local for the same reason.',
+    ReviewerAgentResolution:
+      'The result shape of resolveReviewerAgent — it rides into the receipt as plain JSON, which is the form a caller actually reads.',
+    agentDefinitionName:
+      "Reads the `name:` out of an agent definition's YAML frontmatter. A one-purpose helper of the resolution above, exported so its null cases are pinnable.",
+    slugFromSpinePath:
+      'The wave slug a spine path names — the basis of the two absolute sidecar dirs. Exported for the spec; the verb derives it itself on every run.',
+  },
   './worker-report-schema': {
     FINISHING_OUTCOMES:
       "The `done`/`done-with-concerns` partition of WORKER_OUTCOME_VALUES (which IS root-exported). It exists so the sidecar-write gate and the schema's own anyOf branch read ONE set rather than two hand-kept lists; a consumer asking the same question already has outcomeToEvent(o) === 'worker-done'.",

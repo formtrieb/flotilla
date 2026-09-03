@@ -48,6 +48,19 @@ const WORKFLOW_DRIVER_MD = join(
   '../../../.claude/skills/wave-start/reference/workflow-driver.md',
 );
 
+/**
+ * The SHIPPED dispatch driver (issue #680) — the successor to the reference
+ * document's `## The script` fence. The script now ships as a package asset
+ * (`tools/wave/driver/`, listed in package.json's `files` exactly as `hooks/`
+ * is) and the engine's `compose-driver` verb fills its five compose-time
+ * constants and its `ISSUES` array; there is no hand-transcribed copy left to
+ * drift. So every assertion below that pins the SCRIPT reads THIS file, while
+ * the two blocks that pin the reference document's own design PROSE — the
+ * classifier-refusal failure class, the SIDECAR-WRITE NOTICE header mention —
+ * still read the markdown above.
+ */
+const WORKFLOW_DRIVER_JS = join(__dirname, '../driver/wave-start-inflight.js');
+
 const START_MECHANICS_MD = join(
   __dirname,
   '../../../.claude/skills/wave-start/reference/start-mechanics.md',
@@ -256,7 +269,7 @@ describe('skill-schema-drift — wave-shared inlined literals pin the engine con
 });
 
 describe('skill-schema-drift — the driver-facing schema literal is boundary-safe (W5-F1)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   function extractDriverWorkerReportSchema(md: string): Record<string, unknown> {
     return extractInlinedSchema(
@@ -297,7 +310,7 @@ describe('skill-schema-drift — the driver-facing schema literal is boundary-sa
     // combinator — never its *content*). Observed RED against the shipped
     // divergence, then GREEN once the copy's `prUrl` regained `minLength: 1`
     // — see the PR description for that order of evidence.
-    const driverSchema = extractDriverWorkerReportSchema(driverMd);
+    const driverSchema = extractDriverWorkerReportSchema(driverJs);
     expect(driverSchema).toEqual(CANONICAL_WORKER_REPORT_MODULO_ANYOF);
   });
 
@@ -325,8 +338,8 @@ describe('skill-schema-drift — the driver-facing schema literal is boundary-sa
   ])(
     'negative control — a seeded content divergence (%s) on the driver copy fails the pin',
     (_label, from, to) => {
-      const regressed = driverMd.replace(from, to);
-      expect(regressed).not.toEqual(driverMd); // the replace actually matched
+      const regressed = driverJs.replace(from, to);
+      expect(regressed).not.toEqual(driverJs); // the replace actually matched
       const schema = extractDriverWorkerReportSchema(regressed);
       expect(schema).not.toEqual(CANONICAL_WORKER_REPORT_MODULO_ANYOF);
     },
@@ -337,10 +350,10 @@ describe('skill-schema-drift — the driver-facing schema literal is boundary-sa
     expect(Array.isArray(WORKER_REPORT_JSON_SCHEMA.anyOf)).toBe(true);
   });
 
-  it('the driver-facing WORKER_REPORT_SCHEMA literal (workflow-driver.md) carries no top-level anyOf/oneOf/allOf', () => {
-    const driverSchema = extractDriverWorkerReportSchema(driverMd);
+  it('the driver-facing WORKER_REPORT_SCHEMA literal (the shipped driver) carries no top-level anyOf/oneOf/allOf', () => {
+    const driverSchema = extractDriverWorkerReportSchema(driverJs);
     expect(() =>
-      assertBoundarySafe(driverSchema, 'workflow-driver.md WORKER_REPORT_SCHEMA'),
+      assertBoundarySafe(driverSchema, 'driver/wave-start-inflight.js WORKER_REPORT_SCHEMA'),
     ).not.toThrow();
     // Belt-and-braces: the guard above is the load-bearing assertion, but a
     // direct key check pins the exact shape without going through the helper.
@@ -365,7 +378,7 @@ describe('skill-schema-drift — the driver-facing schema literal is boundary-sa
   it.each(TOP_LEVEL_COMBINATOR_KEYS)(
     'negative control — assertBoundarySafe fails when a bare top-level %s is introduced onto the driver literal',
     (key) => {
-      const regressed = { ...extractDriverWorkerReportSchema(driverMd), [key]: [] };
+      const regressed = { ...extractDriverWorkerReportSchema(driverJs), [key]: [] };
       expect(() =>
         assertBoundarySafe(regressed, `regressed driver schema (${key})`),
       ).toThrow(new RegExp(key));
@@ -408,7 +421,7 @@ type ReviewerVerdictSchemaShape = {
 
 describe('skill-schema-drift — documentedFormComparison rides BOTH verdict copies (ADR-0030)', () => {
   const sharedMd = readFileSync(SKILL_MD, 'utf-8');
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   function sharedVerdictSchema(md: string): ReviewerVerdictSchemaShape {
     return extractInlinedSchema(
@@ -427,7 +440,7 @@ describe('skill-schema-drift — documentedFormComparison rides BOTH verdict cop
   }
 
   it("the DRIVER's REVIEWER_VERDICT_SCHEMA copy deep-equals the engine const (previously pinned by nothing)", () => {
-    expect(driverVerdictSchema(driverMd)).toEqual(
+    expect(driverVerdictSchema(driverJs)).toEqual(
       plain(REVIEWER_VERDICT_JSON_SCHEMA),
     );
   });
@@ -443,8 +456,8 @@ describe('skill-schema-drift — documentedFormComparison rides BOTH verdict cop
     // "the Documented-Form duty is briefed" block below).
     expect(() =>
       assertBoundarySafe(
-        driverVerdictSchema(driverMd),
-        'workflow-driver.md REVIEWER_VERDICT_SCHEMA',
+        driverVerdictSchema(driverJs),
+        'driver/wave-start-inflight.js REVIEWER_VERDICT_SCHEMA',
       ),
     ).not.toThrow();
   });
@@ -452,13 +465,13 @@ describe('skill-schema-drift — documentedFormComparison rides BOTH verdict cop
   /** Both verdict-schema copies, loaded lazily so a failure names its file. */
   const BOTH_COPIES: Array<[string, () => ReviewerVerdictSchemaShape]> = [
     ['wave-shared/SKILL.md', () => sharedVerdictSchema(sharedMd)],
-    ['workflow-driver.md', () => driverVerdictSchema(driverMd)],
+    ['driver/wave-start-inflight.js', () => driverVerdictSchema(driverJs)],
   ];
 
   /** The same two copies as raw source + extraction anchor, for the regressions. */
   const BOTH_SOURCES: Array<[string, string, string]> = [
     ['wave-shared/SKILL.md', sharedMd, WAVE_SHARED_REVIEWER_VERDICT_ANCHOR],
-    ['workflow-driver.md', driverMd, DRIVER_REVIEWER_VERDICT_ANCHOR],
+    ['driver/wave-start-inflight.js', driverJs, DRIVER_REVIEWER_VERDICT_ANCHOR],
   ];
 
   it.each(BOTH_COPIES)(
@@ -537,11 +550,11 @@ describe('skill-schema-drift — documentedFormComparison rides BOTH verdict cop
     // Making it required would break the common case outright: every row with
     // an executable core path fires no trigger, so its verdict has no field to
     // supply, and a required field would reject the verdict at the boundary.
-    const regressed = driverMd.replace(
+    const regressed = driverJs.replace(
       "required: ['verdict','branchReviewed','riskClass','workerReportDigest','acVerification','reviewerFocusItems'],",
       "required: ['verdict','branchReviewed','riskClass','workerReportDigest','acVerification','reviewerFocusItems','documentedFormComparison'],",
     );
-    expect(regressed).not.toEqual(driverMd); // the replace actually matched
+    expect(regressed).not.toEqual(driverJs); // the replace actually matched
     const schema = extractInlinedSchema(
       regressed,
       DRIVER_REVIEWER_VERDICT_ANCHOR,
@@ -553,16 +566,16 @@ describe('skill-schema-drift — documentedFormComparison rides BOTH verdict cop
 });
 
 describe('skill-schema-drift — the Documented-Form duty is briefed, not only schema-shaped (ADR-0030)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   it("the Worker brief carries the declare-and-self-compare clause (defense-in-depth)", () => {
-    expect(driverMd).toContain('UNEXECUTABLE CORE PATH');
-    expect(driverMd).toMatch(/read it in this dispatch, do not recall it from memory/i);
+    expect(driverJs).toContain('UNEXECUTABLE CORE PATH');
+    expect(driverJs).toMatch(/read it in this dispatch, do not recall it from memory/i);
   });
 
   it('the Reviewer brief names the field and the no-restatement constraint', () => {
-    expect(driverMd).toContain('documentedFormComparison');
-    expect(driverMd).toMatch(/only source is the Worker's report is\s+invalid/);
+    expect(driverJs).toContain('documentedFormComparison');
+    expect(driverJs).toMatch(/only source is the Worker's report is\s+invalid/);
   });
 
   /**
@@ -575,14 +588,14 @@ describe('skill-schema-drift — the Documented-Form duty is briefed, not only s
   function flatOptionalRationale(md: string): string {
     return contractRegion(
       md,
-      'workflow-driver.md documentedFormComparison rationale',
+      'driver/wave-start-inflight.js documentedFormComparison rationale',
       '// Documented-Form Comparison (ADR-0030) — FLAT + OPTIONAL.',
       'documentedFormComparison: {',
     );
   }
 
   it('the driver states the flat-optional rationale — the enforcement RUNG, not a boundary refusal (ADR-0034)', () => {
-    const region = flatOptionalRationale(driverMd);
+    const region = flatOptionalRationale(driverJs);
 
     // Half one — the corrected fact. The boundary refuses a root COMBINATOR
     // (W5-F1) and accepts a root `if`/`then`; a copy still teaching "a root
@@ -605,7 +618,7 @@ describe('skill-schema-drift — the Documented-Form duty is briefed, not only s
     // A restructure that moves or renames the FLAT + OPTIONAL comment must
     // break this pin rather than quietly reduce it to scanning nothing.
     expect(() => flatOptionalRationale('# no rationale here\n')).toThrow(
-      /contract region start anchor missing in workflow-driver\.md documentedFormComparison rationale/,
+      /contract region start anchor missing in driver\/wave-start-inflight\.js documentedFormComparison rationale/,
     );
   });
 });
@@ -627,7 +640,7 @@ describe('skill-schema-drift — the Documented-Form duty is briefed, not only s
 // second one, because re-inflated prose still contains every keyword.
 
 describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL and names its enforcing gate (issue #556)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   /**
    * The Report section's prUrl passage, sliced to itself. A whole-file scan
@@ -639,7 +652,7 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
   function reportPrUrlPassage(md: string): string {
     return contractRegion(
       md,
-      "workflow-driver.md workerBrief Report-section prUrl passage",
+      "driver/wave-start-inflight.js workerBrief Report-section prUrl passage",
       '**On \\`done\\`/\\`done-with-concerns\\`, \\`prUrl\\` MUST be',
       '## Reviewer-handoff hints',
     );
@@ -660,7 +673,7 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
   const RESIDUAL_WORD_BUDGET = 75;
 
   it('states the rule and sources the value from the step-4 re-query', () => {
-    const region = reportPrUrlPassage(driverMd);
+    const region = reportPrUrlPassage(driverJs);
     expect(region).toMatch(/Termination step 4/);
     expect(region).toMatch(/verbatim/);
   });
@@ -668,7 +681,7 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
   it('points at the ENGINE gate — the rule is enforced somewhere the Worker can be told about', () => {
     // Without this pointer the residual form is strictly weaker than the prose
     // it replaced: a one-line rule with no named enforcer reads as advice.
-    const region = reportPrUrlPassage(driverMd);
+    const region = reportPrUrlPassage(driverJs);
     expect(region).toContain('write-report');
     expect(region).toContain('notice:');
   });
@@ -677,12 +690,12 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
     // A brief that threatens rejection would misdescribe the shipped gate AND
     // invite the wrong fix: refusing the write costs a finished row its durable
     // record, which is the damage ADR-0024's Scribe stage exists to prevent.
-    const region = reportPrUrlPassage(driverMd);
+    const region = reportPrUrlPassage(driverJs);
     expect(region).not.toMatch(/reject|refus|invalid/i);
   });
 
   it('stays RESIDUAL — the walk-back cannot silently re-inflate', () => {
-    expect(wordCount(reportPrUrlPassage(driverMd))).toBeLessThanOrEqual(
+    expect(wordCount(reportPrUrlPassage(driverJs))).toBeLessThanOrEqual(
       RESIDUAL_WORD_BUDGET,
     );
   });
@@ -691,7 +704,7 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
     // The exact shape this guards: the pre-promotion prose appended back onto
     // the residual form. Every keyword above still matches; only the measure
     // notices.
-    const reInflated = driverMd.replace(
+    const reInflated = driverJs.replace(
       '## Reviewer-handoff hints',
       "There is no other legitimate source for this field and no legitimate reason for it " +
         "to be absent on these two outcomes. Live occurrence (the W3-F2 recurrence class): " +
@@ -700,7 +713,7 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
         "CONFIRM the PR, not, explicitly enough, how to CARRY that value into THIS field of " +
         "THIS report. State it here, as the one place it counts.\n\n## Reviewer-handoff hints",
     );
-    expect(reInflated).not.toEqual(driverMd); // the replace actually matched
+    expect(reInflated).not.toEqual(driverJs); // the replace actually matched
     expect(wordCount(reportPrUrlPassage(reInflated))).toBeGreaterThan(
       RESIDUAL_WORD_BUDGET,
     );
@@ -708,7 +721,7 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
 
   it('NEGATIVE CONTROL — the passage region fails loud when its anchor is gone', () => {
     expect(() => reportPrUrlPassage('# no report section here\n')).toThrow(
-      /contract region start anchor missing in workflow-driver\.md workerBrief Report-section prUrl passage/,
+      /contract region start anchor missing in driver\/wave-start-inflight\.js workerBrief Report-section prUrl passage/,
     );
   });
 
@@ -729,18 +742,18 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
     // where it happens, and the terminator still recovers the URL from the host.
     // Deleting the re-query because "the engine catches it now" would trade a
     // recovery for a log line.
-    expect(driverMd).toMatch(STEP_4_REQUERY_RECIPE);
-    expect(driverMd).toMatch(/The confirmation is a re-query, not a guard on a capture/);
+    expect(driverJs).toMatch(STEP_4_REQUERY_RECIPE);
+    expect(driverJs).toMatch(/The confirmation is a re-query, not a guard on a capture/);
   });
 
   it('NEGATIVE CONTROL — the backstop pin fires when the recipe line is removed, and is NOT satisfied by the fallback mention', () => {
     // Seed the exact regression: the fenced recipe deleted, the redirect-to-file
     // fallback left in place. A weaker pin passes this; this one must not.
-    const withoutRecipe = driverMd.replace(
+    const withoutRecipe = driverJs.replace(
       '   ${WAVE_CLI} host-pr status --branch ${issue.branch}\n',
       '',
     );
-    expect(withoutRecipe).not.toEqual(driverMd); // the replace actually matched
+    expect(withoutRecipe).not.toEqual(driverJs); // the replace actually matched
     expect(withoutRecipe).toContain('host-pr status --branch ${issue.branch} > pr-status.json');
     expect(withoutRecipe).not.toMatch(STEP_4_REQUERY_RECIPE);
   });
@@ -759,8 +772,8 @@ describe('skill-schema-drift — the Worker brief\'s prUrl passage is RESIDUAL a
  * driver's rationale for why the binding is a per-repo SETUP-TIME decision, and
  * is pinned as such below.
  */
-describe('skill-schema-drift — workflow-driver.md WAVE_CLI is filled from the configured binding (ADR-0032)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+describe('skill-schema-drift — the shipped driver WAVE_CLI is filled from the configured binding (ADR-0032)', () => {
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   /**
    * Extract the `const WAVE_CLI = '...'` value verbatim. Throws (rather than
@@ -772,13 +785,13 @@ describe('skill-schema-drift — workflow-driver.md WAVE_CLI is filled from the 
   function extractWaveCliConst(md: string): string {
     const m = md.match(/^const WAVE_CLI = '([^']*)'$/m);
     if (!m) {
-      throw new Error("const WAVE_CLI = '...' not found in workflow-driver.md");
+      throw new Error("const WAVE_CLI = '...' not found in the shipped driver");
     }
     return m[1];
   }
 
   it('WAVE_CLI names NO invocation form — it points at the configured binding', () => {
-    const value = extractWaveCliConst(driverMd);
+    const value = extractWaveCliConst(driverJs);
     // No form, in either direction. Hardcoding one here is what re-creates the
     // two-authorities-disagree drift ADR-0032 exists to end.
     expect(value).not.toContain('npx @formtrieb/flotilla-engine');
@@ -792,11 +805,11 @@ describe('skill-schema-drift — workflow-driver.md WAVE_CLI is filled from the 
   });
 
   it('the driver states the binding rule the constant is filled from', () => {
-    expect(driverMd).toContain('wave.config.json');
-    expect(driverMd).toMatch(/filled from .{0,40}configured .{0,20}engine\.cli/i);
+    expect(driverJs).toContain('wave.config.json');
+    expect(driverJs).toMatch(/filled from .{0,40}configured .{0,20}engine\.cli/i);
     // An absent binding is a STOP, not a cue to pick a form — the half of the
     // rule a reader is most likely to improvise past.
-    expect(driverMd).toMatch(/ABSENT `engine\.cli` is a STOP/);
+    expect(driverJs).toMatch(/ABSENT `engine\.cli` is a STOP/);
   });
 
   it('the DA-F1 evidence survives as the rationale for a per-repo binding', () => {
@@ -804,23 +817,23 @@ describe('skill-schema-drift — workflow-driver.md WAVE_CLI is filled from the 
     // the binding is a setup-time decision at all. Deleting it would leave the
     // rule with no observed failure behind it, which is how a rule gets
     // "simplified" away by the next author.
-    expect(driverMd).toContain('DA-F1');
-    expect(driverMd).toMatch(/vendored `tools\/wave` and no local `tsx` binary/);
+    expect(driverJs).toContain('DA-F1');
+    expect(driverJs).toMatch(/vendored `tools\/wave` and no local `tsx` binary/);
   });
 
   it('negative control — extractWaveCliConst would catch a HARDCODED form, either one', () => {
-    const placeholder = extractWaveCliConst(driverMd);
+    const placeholder = extractWaveCliConst(driverJs);
 
     for (const hardcoded of [
       'NODE_USE_ENV_PROXY=1 npx @formtrieb/flotilla-engine',
       'NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts',
       'NODE_USE_ENV_PROXY=1 ./node_modules/.bin/flotilla-engine',
     ]) {
-      const regressed = driverMd.replace(
+      const regressed = driverJs.replace(
         `const WAVE_CLI = '${placeholder}'`,
         `const WAVE_CLI = '${hardcoded}'`,
       );
-      expect(regressed).not.toEqual(driverMd); // the replace actually matched something
+      expect(regressed).not.toEqual(driverJs); // the replace actually matched something
       const value = extractWaveCliConst(regressed);
       expect(value).toBe(hardcoded);
       expect(value).not.toContain('engine.cli'); // …which the assertion above rejects
@@ -831,17 +844,17 @@ describe('skill-schema-drift — workflow-driver.md WAVE_CLI is filled from the 
     // The Convention-12 regression this extractor doubles as a guard against:
     // the "helpful" refactor that turns the compose-time literal into a runtime
     // lookup. It stops being `const WAVE_CLI = '...'`, so the extractor throws.
-    const regressed = driverMd.replace(
+    const regressed = driverJs.replace(
       /^const WAVE_CLI = '[^']*'$/m,
       'const WAVE_CLI = `$(node -e "…engine.cli…")`',
     );
-    expect(regressed).not.toEqual(driverMd);
-    expect(() => extractWaveCliConst(regressed)).toThrow(/not found in workflow-driver\.md/);
+    expect(regressed).not.toEqual(driverJs);
+    expect(() => extractWaveCliConst(regressed)).toThrow(/not found in the shipped driver/);
   });
 });
 
-describe('skill-schema-drift — workflow-driver.md path constants are shell-quoted (FOR-122, DA-F2)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+describe('skill-schema-drift — the shipped driver path constants are shell-quoted (FOR-122, DA-F2)', () => {
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   /**
    * True iff the bare, UNQUOTED interpolation form (`--dir ${name}`) is
@@ -884,7 +897,7 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
   it('the Scribe brief interpolates REPO_ROOT shell-quoted at every path position', () => {
     /*
      * RE-PINNED (#251). This assertion used to read
-     *   expect(driverMd).toContain('cd "${REPO_ROOT}"')
+     *   expect(driverJs).toContain('cd "${REPO_ROOT}"')
      * because the Scribe brief's step 1 was a `cd` to the repo root. That step
      * is RETIRED: a dispatched agent's cwd is reset to its dispatch root before
      * every Bash call, so the `cd` never reached the step-3 engine call, which
@@ -899,14 +912,14 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
      * shell as part of a PATH: step 2's payload file (primary spelling and
      * heredoc-fallback redirect target) and step 3's payload argument.
      */
-    expect(driverMd).toContain('Read your working directory — one bare ');
-    expect(unquotedRepoRootPaths(driverMd)).toEqual([]);
-    expect(driverMd).toContain('"${REPO_ROOT}/.flotilla/tmp/');
+    expect(driverJs).toContain('Read your working directory — one bare ');
+    expect(unquotedRepoRootPaths(driverJs)).toEqual([]);
+    expect(driverJs).toContain('"${REPO_ROOT}/.flotilla/tmp/');
   });
 
   it('the Scribe brief --dir interpolates the sidecar dir shell-quoted', () => {
-    expect(hasUnquotedInterpolation(driverMd, '--dir ${dir}')).toBe(false);
-    expect(driverMd).toContain('--dir "${dir}"');
+    expect(hasUnquotedInterpolation(driverJs, '--dir ${dir}')).toBe(false);
+    expect(driverJs).toContain('--dir "${dir}"');
   });
 
   it('negative control — both detectors actually fire on the unquoted forms (would have failed pre-fix, DA-F2)', () => {
@@ -917,17 +930,17 @@ describe('skill-schema-drift — workflow-driver.md path constants are shell-quo
     // being written durably at exactly the moment ADR-0024 exists to
     // guarantee it is. If these detectors stopped firing on the unquoted
     // form, that regression could reappear and this spec would not catch it.
-    const regressed = driverMd
+    const regressed = driverJs
       .replace('"${REPO_ROOT}/.flotilla/tmp/', '${REPO_ROOT}/.flotilla/tmp/')
       .replace('--dir "${dir}"', '--dir ${dir}');
-    expect(regressed).not.toEqual(driverMd); // both replacements actually matched
+    expect(regressed).not.toEqual(driverJs); // both replacements actually matched
     expect(unquotedRepoRootPaths(regressed).length).toBeGreaterThan(0);
     expect(hasUnquotedInterpolation(regressed, '--dir ${dir}')).toBe(true);
   });
 });
 
 describe('skill-schema-drift — the retired Scribe cd-to-REPO_ROOT split stays a documented dead end (#356)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   /**
    * The exact, quoted prose mention `scribeBrief()` step 1 names as retired
@@ -974,21 +987,21 @@ describe('skill-schema-drift — the retired Scribe cd-to-REPO_ROOT split stays 
   }
 
   it('the dead-end mention is present, quoted, in prose — never inside a runnable bash fence', () => {
-    expect(deadEndStillADeadEnd(driverMd)).toBe(true);
+    expect(deadEndStillADeadEnd(driverJs)).toBe(true);
   });
 
   it('negative control — the check fails when the mention leaves prose, and when it turns executable (Convention 11 falsification)', () => {
     // Probe A — "leaves prose": the exact quoted mention is altered. A
     // reviewer probe already did exactly this, unquoted, live, with no check
     // here to catch it before this re-pin.
-    const unquoted = driverMd.replace(DEAD_END_MENTION, 'cd ${REPO_ROOT}');
-    expect(unquoted).not.toEqual(driverMd); // the replace actually matched
+    const unquoted = driverJs.replace(DEAD_END_MENTION, 'cd ${REPO_ROOT}');
+    expect(unquoted).not.toEqual(driverJs); // the replace actually matched
     expect(deadEndStillADeadEnd(unquoted)).toBe(false);
 
     // Probe A2 — the mention leaves prose a second way: deleted outright
     // rather than merely corrupted.
-    const deleted = driverMd.replace(DEAD_END_MENTION, '');
-    expect(deleted).not.toEqual(driverMd);
+    const deleted = driverJs.replace(DEAD_END_MENTION, '');
+    expect(deleted).not.toEqual(driverJs);
     expect(deadEndStillADeadEnd(deleted)).toBe(false);
 
     // Probe B — "turns executable": the retired form is re-adopted as a
@@ -997,14 +1010,14 @@ describe('skill-schema-drift — the retired Scribe cd-to-REPO_ROOT split stays 
     // (Probe A's check alone would miss this), which is exactly why the
     // fence check exists as its own half of the predicate.
     const fenceMarker = '\\`\\`\\`bash\ncd "${REPO_ROOT}"\n\\`\\`\\`';
-    const reAdopted = `${driverMd}\n${fenceMarker}\n`;
+    const reAdopted = `${driverJs}\n${fenceMarker}\n`;
     expect(reAdopted.includes(DEAD_END_MENTION)).toBe(true); // substring alone still present
     expect(deadEndStillADeadEnd(reAdopted)).toBe(false); // but the fence check catches it
   });
 });
 
 describe('skill-schema-drift — the Scribe brief carries provenance + the filing-clerk framing (issue #577)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   /**
    * `scribeBrief()`'s own body, sliced to itself — a whole-file scan would be
@@ -1015,14 +1028,14 @@ describe('skill-schema-drift — the Scribe brief carries provenance + the filin
   function scribeBriefBody(md: string): string {
     return contractRegion(
       md,
-      'workflow-driver.md scribeBrief() body',
+      'driver/wave-start-inflight.js scribeBrief() body',
       'function scribeBrief(kind, issue, iter, payload) {',
       '// The stage wrapper ALWAYS returns',
     );
   }
 
   it('carries the provenance clause — producing agent label (both kinds) and the same-run-one-stage-earlier phrasing', () => {
-    const region = scribeBriefBody(driverMd);
+    const region = scribeBriefBody(driverJs);
     // The SAME template serves both brief kinds — `kind` is a runtime
     // parameter, not two separate copies — so pinning the ternary that
     // computes `producer` for BOTH branches is what proves report symmetry,
@@ -1035,7 +1048,7 @@ describe('skill-schema-drift — the Scribe brief carries provenance + the filin
   });
 
   it('never attempts the workflow run id — every interpolated fact stays script-knowable', () => {
-    const region = scribeBriefBody(driverMd);
+    const region = scribeBriefBody(driverJs);
     expect(region).toMatch(/workflow run's own id is not one of them/);
     // No `${...runId...}`-shaped interpolation anywhere in the brief — the
     // corrected-away hypothesis from the ticket's own "Settled direction".
@@ -1043,7 +1056,7 @@ describe('skill-schema-drift — the Scribe brief carries provenance + the filin
   });
 
   it("carries the sharpened filing-clerk framing — the review is not the Scribe's, altering the payload is the only forbidden act, persisting an approve is not approval by the writer", () => {
-    const region = scribeBriefBody(driverMd);
+    const region = scribeBriefBody(driverJs);
     expect(region).toMatch(/review is not the\s+Scribe's/);
     expect(region).toMatch(/is the only act this brief forbids/);
     expect(region).toMatch(/is not approval by the writer/);
@@ -1051,16 +1064,16 @@ describe('skill-schema-drift — the Scribe brief carries provenance + the filin
 
   it('NEGATIVE CONTROL — the region fails loud when its start anchor is gone', () => {
     expect(() => scribeBriefBody('# no scribeBrief here\n')).toThrow(
-      /contract region start anchor missing in workflow-driver\.md scribeBrief\(\) body/,
+      /contract region start anchor missing in driver\/wave-start-inflight\.js scribeBrief\(\) body/,
     );
   });
 
   it('NEGATIVE CONTROL — the provenance + framing assertions actually fire when the clause is stripped', () => {
-    const stripped = driverMd.replace(
+    const stripped = driverJs.replace(
       /\*\*Provenance, stated once[\s\S]*?is the only act this brief forbids\. /,
       '',
     );
-    expect(stripped).not.toEqual(driverMd); // the replace actually matched
+    expect(stripped).not.toEqual(driverJs); // the replace actually matched
     const region = scribeBriefBody(stripped);
     expect(region).not.toMatch(/same workflow run, one stage\s+earlier, journal-recorded/);
     expect(region).not.toMatch(/review is not the\s+Scribe's/);
@@ -1164,7 +1177,7 @@ function extractBalanced(
 ): string {
   const openIdx = md.indexOf(openCh, fromIdx);
   if (openIdx < 0) {
-    throw new Error(`no "${openCh}" found at/after index ${fromIdx} in workflow-driver.md`);
+    throw new Error(`no "${openCh}" found at/after index ${fromIdx} in the shipped driver`);
   }
   let depth = 0;
   for (let i = openIdx; i < md.length; i++) {
@@ -1175,7 +1188,7 @@ function extractBalanced(
       if (depth === 0) return md.slice(openIdx, i + 1);
     }
   }
-  throw new Error(`unbalanced ${openCh}/${closeCh} starting at index ${openIdx} in workflow-driver.md`);
+  throw new Error(`unbalanced ${openCh}/${closeCh} starting at index ${openIdx} in the shipped driver`);
 }
 
 /**
@@ -1202,21 +1215,21 @@ function loadAssertionModule(md: string): {
   const constNeedle = 'const REQUIRED_ROW_FIELDS = ';
   const constIdx = md.indexOf(constNeedle);
   if (constIdx < 0) {
-    throw new Error('const REQUIRED_ROW_FIELDS = [...] not found in workflow-driver.md');
+    throw new Error('const REQUIRED_ROW_FIELDS = [...] not found in the shipped driver');
   }
   const constSrc = extractBalanced(md, constIdx + constNeedle.length, '[', ']');
 
   const missingNeedle = 'function isMissingField(value) ';
   const missingIdx = md.indexOf(missingNeedle, constIdx);
   if (missingIdx < 0) {
-    throw new Error('function isMissingField(value) {...} not found in workflow-driver.md');
+    throw new Error('function isMissingField(value) {...} not found in the shipped driver');
   }
   const missingSrc = extractBalanced(md, missingIdx + missingNeedle.length, '{', '}');
 
   const assertNeedle = 'function assertRequiredRowFields(issue) ';
   const assertIdx = md.indexOf(assertNeedle, missingIdx);
   if (assertIdx < 0) {
-    throw new Error('function assertRequiredRowFields(issue) {...} not found in workflow-driver.md');
+    throw new Error('function assertRequiredRowFields(issue) {...} not found in the shipped driver');
   }
   const assertSrc = extractBalanced(md, assertIdx + assertNeedle.length, '{', '}');
 
@@ -1230,8 +1243,8 @@ function loadAssertionModule(md: string): {
   return Function(src)();
 }
 
-describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FIELDS assertion (FOR-139)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+describe('skill-schema-drift — the shipped driver compose-time REQUIRED_ROW_FIELDS assertion (FOR-139)', () => {
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   /** A row with every REQUIRED_ROW_FIELDS entry present and valid. */
   const VALID_ROW: Record<string, unknown> = {
@@ -1249,7 +1262,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FI
   };
 
   it('AC1/AC3 — REQUIRED_ROW_FIELDS names more than just anchorSha, in one place', () => {
-    const { REQUIRED_ROW_FIELDS } = loadAssertionModule(driverMd);
+    const { REQUIRED_ROW_FIELDS } = loadAssertionModule(driverJs);
     expect(REQUIRED_ROW_FIELDS).toEqual(expect.arrayContaining(['anchorSha', 'branch']));
     // The original W2-F1 fix covered exactly one field; this must cover more.
     expect(REQUIRED_ROW_FIELDS.length).toBeGreaterThan(1);
@@ -1259,14 +1272,14 @@ describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FI
   });
 
   it('a fully-populated row passes without throwing', () => {
-    const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+    const { assertRequiredRowFields } = loadAssertionModule(driverJs);
     expect(() => assertRequiredRowFields({ ...VALID_ROW })).not.toThrow();
   });
 
   it.each(Object.keys(VALID_ROW))(
     'AC1 — a row with an ABSENT %s throws, naming both the row id and the field',
     (field) => {
-      const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+      const { assertRequiredRowFields } = loadAssertionModule(driverJs);
       const row = { ...VALID_ROW };
       delete row[field];
       expect(() => assertRequiredRowFields(row)).toThrow(new RegExp(field));
@@ -1280,7 +1293,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FI
   it.each(Object.keys(VALID_ROW))(
     'AC2 — a row with the literal string "undefined" for %s throws (the template-renders-a-missing-property shape)',
     (field) => {
-      const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+      const { assertRequiredRowFields } = loadAssertionModule(driverJs);
       const row = { ...VALID_ROW, [field]: 'undefined' };
       expect(() => assertRequiredRowFields(row)).toThrow(new RegExp(field));
     },
@@ -1289,7 +1302,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FI
   it.each(Object.keys(VALID_ROW))(
     'AC2 — a row with an empty/whitespace-only %s throws',
     (field) => {
-      const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+      const { assertRequiredRowFields } = loadAssertionModule(driverJs);
       const row = { ...VALID_ROW, [field]: '   ' };
       expect(() => assertRequiredRowFields(row)).toThrow(new RegExp(field));
     },
@@ -1326,7 +1339,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FI
     expect(() => assertAnchorShaOnly(rowMissingPrTitle)).not.toThrow();
 
     // ...while the new, generalized assertion catches each and names the field.
-    const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+    const { assertRequiredRowFields } = loadAssertionModule(driverJs);
     expect(() => assertRequiredRowFields(rowMissingBranch)).toThrow(/branch/);
     expect(() => assertRequiredRowFields(rowMissingSlug)).toThrow(/slug/);
     expect(() => assertRequiredRowFields(rowMissingPrTitle)).toThrow(/prTitle/);
@@ -1340,7 +1353,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time REQUIRED_ROW_FI
 });
 
 describe('skill-schema-drift — issue.branch matches the Coordinator spine set-branch formula (FOR-139, AC5)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
   const mechanicsMd = readFileSync(START_MECHANICS_MD, 'utf-8');
 
   /**
@@ -1359,7 +1372,7 @@ describe('skill-schema-drift — issue.branch matches the Coordinator spine set-
   }
 
   it('the driver derives issue.branch exactly once, as wave/${issue.id}-${issue.slug}', () => {
-    expect(driverMd).toContain('issue.branch = `wave/${issue.id}-${issue.slug}`');
+    expect(driverJs).toContain('issue.branch = `wave/${issue.id}-${issue.slug}`');
   });
 
   it('every brief call site reads issue.branch — none re-interpolates wave/${issue.id}-${issue.slug} on its own', () => {
@@ -1369,7 +1382,7 @@ describe('skill-schema-drift — issue.branch matches the Coordinator spine set-
     // read the one derived value instead, so the four call sites the FOR-139
     // recurrence hit (plus the reviewer's diff-range mention) cannot diverge
     // from each other.
-    expect(countRawBranchReconstructions(driverMd)).toBe(1);
+    expect(countRawBranchReconstructions(driverJs)).toBe(1);
   });
 
   it("the Coordinator's spine set-branch call (start-mechanics.md step 5) uses the identical wave/<id>-<slug> shape", () => {
@@ -1381,11 +1394,11 @@ describe('skill-schema-drift — issue.branch matches the Coordinator spine set-
     // call site instead of reading `issue.branch`, this count would rise
     // above 1 and the assertion above would fail — proving the count is not
     // vacuously 1 regardless of content.
-    const regressed = driverMd.replace(
+    const regressed = driverJs.replace(
       '3. \\`git checkout -b ${issue.branch}\\`',
       '3. \\`git checkout -b wave/${issue.id}-${issue.slug}\\`',
     );
-    expect(regressed).not.toEqual(driverMd); // the replace actually matched
+    expect(regressed).not.toEqual(driverJs); // the replace actually matched
     expect(countRawBranchReconstructions(regressed)).toBe(2);
   });
 });
@@ -1840,7 +1853,12 @@ const HUMAN_GATE_LITERAL_CENSUS: ReadonlyArray<{
 }> = [
   { label: 'wave-start/SKILL.md', path: WAVE_START_SKILL_MD, occurrences: 4 },
   { label: 'wave-start/reference/start-mechanics.md', path: START_MECHANICS_MD, occurrences: 5 },
-  { label: 'wave-start/reference/workflow-driver.md', path: WORKFLOW_DRIVER_MD, occurrences: 3 },
+  // The fence's two EXECUTABLE occurrences moved to the shipped driver with the
+  // script (issue #680); the reference document keeps the ONE prose mention in
+  // its own human-gate section. Both halves stay counted, so neither can drift
+  // and neither can quietly absorb the other.
+  { label: 'wave-start/reference/workflow-driver.md', path: WORKFLOW_DRIVER_MD, occurrences: 1 },
+  { label: 'engine driver/wave-start-inflight.js', path: WORKFLOW_DRIVER_JS, occurrences: 2 },
   { label: 'wave-create/SKILL.md', path: WAVE_CREATE_SKILL_MD, occurrences: 3 },
   { label: 'wave-create/reference/create-mechanics.md', path: CREATE_MECHANICS_MD, occurrences: 2 },
 ];
@@ -1887,14 +1905,14 @@ function loadHumanGateModule(md: string): {
   const constNeedle = 'const HUMAN_GATED_WORKERS = ';
   const constIdx = md.indexOf(constNeedle);
   if (constIdx < 0) {
-    throw new Error('const HUMAN_GATED_WORKERS = [...] not found in workflow-driver.md');
+    throw new Error('const HUMAN_GATED_WORKERS = [...] not found in the shipped driver');
   }
   const constSrc = extractBalanced(md, constIdx + constNeedle.length, '[', ']');
 
   const assertNeedle = 'function assertNotHumanGated(issue) ';
   const assertIdx = md.indexOf(assertNeedle, constIdx);
   if (assertIdx < 0) {
-    throw new Error('function assertNotHumanGated(issue) {...} not found in workflow-driver.md');
+    throw new Error('function assertNotHumanGated(issue) {...} not found in the shipped driver');
   }
   const assertSrc = extractBalanced(md, assertIdx + assertNeedle.length, '{', '}');
 
@@ -2075,19 +2093,19 @@ describe('skill-schema-drift — the padded-cell grep detector pins HUMAN_GATED_
 // same file, same reason — the driver has no importable module, so the shipped
 // markdown IS the source of truth and this spec runs it.
 
-describe('skill-schema-drift — workflow-driver.md compose-time human gate (issue #323)', () => {
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+describe('skill-schema-drift — the shipped driver compose-time human gate (issue #323)', () => {
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   it("the driver's HUMAN_GATED_WORKERS array pins the engine constant", () => {
     // The compose-time-filled copy of the token, extracted from the shipped
     // script rather than transcribed. This is the strongest of the three literal
     // pins: an exact array comparison against the engine value.
-    const { HUMAN_GATED_WORKERS } = loadHumanGateModule(driverMd);
+    const { HUMAN_GATED_WORKERS } = loadHumanGateModule(driverJs);
     expect(HUMAN_GATED_WORKERS).toEqual([HUMAN_GATED_WORKER]);
   });
 
   it('a human-gated row THROWS, naming both the row id and the offending worker', () => {
-    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    const { assertNotHumanGated } = loadHumanGateModule(driverJs);
     const row = { id: '11', worker: HUMAN_GATED_WORKER };
     expect(() => assertNotHumanGated(row)).toThrow(/11/);
     expect(() => assertNotHumanGated(row)).toThrow(new RegExp(HUMAN_GATED_WORKER));
@@ -2096,7 +2114,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
   });
 
   it('an ordinary AFK row passes without throwing', () => {
-    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    const { assertNotHumanGated } = loadHumanGateModule(driverJs);
     expect(() => assertNotHumanGated({ id: '42', worker: 'background' })).not.toThrow();
     expect(() => assertNotHumanGated({ id: '43', worker: 'background-heavy' })).not.toThrow();
     expect(() => assertNotHumanGated({ id: '44', worker: 'foreground' })).not.toThrow();
@@ -2108,7 +2126,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
     // and this one asks "may this row be dispatched at all?". Merging them would
     // make a missing `worker` read as a human gate — a wiring bug reported as a
     // hold, sending the Coordinator to look for a human who does not exist.
-    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    const { assertNotHumanGated } = loadHumanGateModule(driverJs);
     expect(() => assertNotHumanGated({ id: '45' })).not.toThrow();
     expect(() => assertNotHumanGated({ id: '46', worker: undefined })).not.toThrow();
   });
@@ -2118,7 +2136,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
     // substring of the row's line); the driver's `includes` over an array of
     // whole tokens is the same discipline, and this pins it. A row whose worker
     // is `background` while its TITLE mentions the gate must dispatch normally.
-    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    const { assertNotHumanGated } = loadHumanGateModule(driverJs);
     expect(() =>
       assertNotHumanGated({ id: '47', worker: `not-${HUMAN_GATED_WORKER}` }),
     ).not.toThrow();
@@ -2137,7 +2155,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
     // already-pinned neighbour lets through. `assertRequiredRowFields` inspects
     // PRESENCE only, so a fully-populated human-gated row sails past it — which
     // is why a second, separate assertion exists at all.
-    const { assertRequiredRowFields } = loadAssertionModule(driverMd);
+    const { assertRequiredRowFields } = loadAssertionModule(driverJs);
     const gatedButComplete: Record<string, unknown> = {
       id: '11',
       slug: 'rotate-the-credential',
@@ -2156,7 +2174,7 @@ describe('skill-schema-drift — workflow-driver.md compose-time human gate (iss
     // The pinned neighbour is silent about it…
     expect(() => assertRequiredRowFields(gatedButComplete)).not.toThrow();
     // …and the gate this block pins is not.
-    const { assertNotHumanGated } = loadHumanGateModule(driverMd);
+    const { assertNotHumanGated } = loadHumanGateModule(driverJs);
     expect(() => assertNotHumanGated(gatedButComplete)).toThrow(/human-gated/);
   });
 
@@ -2440,7 +2458,7 @@ function refusesAtAnchorAsClean(region: string): boolean {
 describe('skill-schema-drift — sibling merge-tree prediction states its coverage denominator, and reads named refs never FETCH_HEAD (#419, #445)', () => {
   const reviewerSkillMd = readFileSync(WAVE_REVIEWER_SKILL_MD, 'utf-8');
   const reviewerChecksMd = readFileSync(REVIEWER_CHECKS_MD, 'utf-8');
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
   const reviewerAgentMd = readFileSync(WAVE_REVIEWER_AGENT_MD, 'utf-8');
 
   /** Check 5's own section of the runnable checks reference. */
@@ -2453,7 +2471,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
   function driverClause(md: string): string {
     return contractRegion(
       md,
-      'workflow-driver.md reviewerBrief',
+      'driver/wave-start-inflight.js reviewerBrief',
       DRIVER_SIBLING_COVERAGE_OPENER,
       '**If this slice ships a NEW check**',
     );
@@ -2485,7 +2503,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
   const COPIES: Array<[string, string]> = [
     ['wave-reviewer/SKILL.md', reviewerSkillMd],
     ['reviewer-checks.md Check 5', checksCheck5(reviewerChecksMd)],
-    ['workflow-driver.md reviewerBrief', driverClause(driverMd)],
+    ['driver/wave-start-inflight.js reviewerBrief', driverClause(driverJs)],
     ['wave-reviewer.md agent definition (reduced form)', agentCheck5(reviewerAgentMd)],
   ];
 
@@ -2540,7 +2558,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     // mutation that breaks the interpolation (and prints the literal template
     // text at dispatch time instead of the row's SHA) would still satisfy a bare
     // substring check. Require the `$` to NOT be escaped.
-    const clause = driverClause(driverMd);
+    const clause = driverClause(driverJs);
     expect(clause).toMatch(ANCHOR_INTERPOLATION);
     // #445: the comparison reads the sibling's OWN named ref, never FETCH_HEAD —
     // inverted from the pre-#445 assertion this replaced (which required the
@@ -2593,7 +2611,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     // literal text at dispatch time — every Reviewer would receive the SAME
     // uninterpolated string instead of its own row's SHA — yet the substring
     // `${issue.anchorSha}` is still sitting right there inside it.
-    const clause = driverClause(driverMd);
+    const clause = driverClause(driverJs);
     // Escape EVERY occurrence — the clause interpolates the anchor twice (the
     // vacuity explanation, and the fetch-tip comparison itself), and a mutation
     // that broke only one would leave the other genuinely interpolating.
@@ -2637,7 +2655,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     // modelling the outcomes as a field, both halves of this assertion fail —
     // the deep-equal first, and the token scan second, naming the leak.
     const schema = extractInlinedSchema(
-      driverMd,
+      driverJs,
       DRIVER_REVIEWER_VERDICT_ANCHOR,
       'REVIEWER_VERDICT_SCHEMA',
     );
@@ -2671,7 +2689,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     // enumeration occurrence of `at-anchor` is removed; the copy still names the
     // outcome further down (the vacuity prose, the coverage-line example), so a
     // `toContain` check keeps passing and only the SPAN moves.
-    const clause = driverClause(driverMd);
+    const clause = driverClause(driverJs);
     const listOnly = clause.replace(' | \\`at-anchor\\`', '');
     expect(listOnly).not.toEqual(clause); // the replace actually matched
     expect(listOnly).toContain('at-anchor'); // presence-only would still pass…
@@ -2753,7 +2771,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
       /start anchor missing in reviewer-checks\.md/,
     );
     expect(() => driverClause('a driver with no reviewerBrief clause')).toThrow(
-      /start anchor missing in workflow-driver\.md reviewerBrief/,
+      /start anchor missing in driver\/wave-start-inflight\.js reviewerBrief/,
     );
     expect(() => agentCheck5('# an agent definition with no Check 5\n')).toThrow(
       /start anchor missing in wave-reviewer\.md agent definition/,
@@ -2838,7 +2856,7 @@ const MISMATCH_ABORT_RE = /mismatch[^.]{0,220}questions-blocking/i;
 describe('skill-schema-drift — the FETCH_HEAD named-ref clause rides all FOUR contract copies (#407)', () => {
   const reviewerSkillMd = readFileSync(WAVE_REVIEWER_SKILL_MD, 'utf-8');
   const reviewerChecksMd = readFileSync(REVIEWER_CHECKS_MD, 'utf-8');
-  const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
   const agentMd = readFileSync(FETCH_HEAD_CLAUSE_AGENT_MD, 'utf-8');
 
   /** The clause's own section in reviewer-checks.md — the primary teaching site. */
@@ -2850,7 +2868,7 @@ describe('skill-schema-drift — the FETCH_HEAD named-ref clause rides all FOUR 
   function driverClause(md: string): string {
     return contractRegion(
       md,
-      'workflow-driver.md reviewerBrief',
+      'driver/wave-start-inflight.js reviewerBrief',
       '## Resolve the branch — a stable named ref',
       '## Workspace setup (do first)',
     );
@@ -2873,7 +2891,7 @@ describe('skill-schema-drift — the FETCH_HEAD named-ref clause rides all FOUR 
   const COPIES: Array<[string, string]> = [
     ['wave-reviewer/SKILL.md', reviewerSkillMd],
     ['reviewer-checks.md', checksClause(reviewerChecksMd)],
-    ['workflow-driver.md reviewerBrief', driverClause(driverMd)],
+    ['driver/wave-start-inflight.js reviewerBrief', driverClause(driverJs)],
     ['wave-reviewer.md agent definition', agentClause(agentMd)],
   ];
 
@@ -2903,7 +2921,7 @@ describe('skill-schema-drift — the FETCH_HEAD named-ref clause rides all FOUR 
     // against for `${issue.anchorSha}` above. And the point of the whole
     // clause is undone if the driver copy still tells the Reviewer to read
     // FETCH_HEAD for the branch under review.
-    const clause = driverClause(driverMd);
+    const clause = driverClause(driverJs);
     expect(clause).toContain('${issue.branch}');
     expect(clause).toContain('refs/review/${issue.id}');
     expect(clause).not.toContain('git rev-parse FETCH_HEAD');
@@ -2914,7 +2932,7 @@ describe('skill-schema-drift — the FETCH_HEAD named-ref clause rides all FOUR 
       /start anchor missing in reviewer-checks\.md/,
     );
     expect(() => driverClause('# no clause here\n')).toThrow(
-      /start anchor missing in workflow-driver\.md reviewerBrief/,
+      /start anchor missing in driver\/wave-start-inflight\.js reviewerBrief/,
     );
     expect(() => agentClause('# no clause here\n')).toThrow(
       /start anchor missing in wave-reviewer\.md agent definition/,

@@ -32,6 +32,7 @@
     "!src/__fixtures__",
     "bin",
     "hooks",
+    "driver",
     "LICENSE",
     "README.md"
   ],

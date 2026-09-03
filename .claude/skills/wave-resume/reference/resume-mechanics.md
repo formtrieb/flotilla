@@ -197,7 +197,20 @@ ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("f
   --question "corrupt sidecar(s): report@1 — disposition required" \
   --option re-dispatch --option abandon
 
-# 8. ONLY NOW: hand the decision==="redispatch" rows to wave-start
+# 8. ONLY NOW: hand the decision==="redispatch" rows to wave-start — i.e. run
+#    ITS compose step over this same spine (wave-start/reference/start-mechanics.md
+#    step 6). One verb, no resume-specific wiring:
+{{wave-cli}} compose-driver \
+  --spine "$SPINE" --config "$WAVE_CONFIG" \
+  --anchor "$ANCHOR_SHA" --out "/tmp/flotilla-resume-$SLUG/driver.js"
+#    It composes exactly the rows the spine has in a dispatchable state, so the
+#    `adopt`/`keep`/`needs-attention` rows this reconciliation left alone are
+#    excluded by the spine itself rather than by a second hand-kept list. Each
+#    composed row's spec is re-read from the tracker on this run (ADR-0041's
+#    unconditional re-fetch — it is the verb's behaviour, not a discipline to
+#    remember), and a human-gated, `foreground` or branch-less row is refused
+#    (exit 1) rather than dispatched. Read the receipt before handing --out to
+#    the harness Workflow tool.
 ```
 
 ## Exit codes
