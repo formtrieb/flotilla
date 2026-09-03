@@ -9,6 +9,168 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.3.0] — 2026-09-03
+
+**The release after the first ten minutes.** Everything in it was found by measuring a
+stranger's first hour on a throwaway consumer
+([`docs/retros/2026-09-03-quickstart-probe.md`](docs/retros/2026-09-03-quickstart-probe.md))
+and fixed before the demo is recorded, so the package a stranger installs matches what the
+recording will show: no hand-typed label loop, no hand-transcribed dispatch script, no
+guessed Reviewer name, the ten guarded shell calls per landed row collapsed into one verb,
+and a quarter less to read before the first agent runs. Minor, because a flag and two verbs
+join the CLI surface and two interface widenings earn the implementer heads-up below;
+nothing is removed.
+
+### Added
+
+- **`store-preflight --create-missing-labels`** (issue #675). The GitHub label set a wave
+  reads — the claim rungs, `needs-attention`, the triage states — is created through the
+  engine credential, opt-in and idempotent: a label that exists is left byte-untouched, a
+  missing one is created with the engine's colour and description, and the receipt names
+  both sets. Setup no longer sends a stranger through a hand-typed label loop.
+  `wave-setup`'s credential-scope table names the write (`POST /repos/{owner}/{repo}/labels`
+  — Issues: read and write) and `docs/ONBOARDING.md` names the flag as the setup act.
+- **The Workflow dispatch driver ships as a package asset, and `compose-driver` composes
+  it** (issue #680). `driver/wave-start-inflight.js` is the source of truth for the
+  dispatch script — nothing is pasted from a reference document or filled by hand any
+  more. `compose-driver --spine <spine> --config <cfg> --anchor <sha> --out <path>
+  [--row-meta <json|path>] [--reviewer-agent <name>] [--plugin-manifest <path>]` reads the
+  spine's dispatchable rows and the dispatch-log, re-reads each row's spec through the
+  store on every run, fills the five compose-time constants and the per-row roster,
+  projects the verify gate, the dependency install and the store-kind close phrase from
+  the config, writes the file the harness Workflow tool takes as its `scriptPath`, and
+  prints one JSON receipt. The Reviewer agent name is **derived per distribution form**
+  from the plugin manifest and the agent definition — bare `wave-reviewer` in the source
+  form, `flotilla:wave-reviewer` in the installed form — with an explicit override and a
+  loud refusal where neither is available; this closes the agent-name gap the first
+  installed-form run hit (issue #677). The required-row-fields and human-gate assertions
+  move into the engine, joined by a `foreground` refusal and the anchor-resolvability
+  gate; the compose-currency checklist and the compose-fresh-or-verify rule retire with
+  the transcription they policed. The engine still calls no agent-harness primitive: it
+  writes a file, the harness runs it — ADR-0009's principle, clarified by one dated
+  sentence each in `CLAUDE.md` and the charter. The composed file lives **inside the
+  repo**, under the gitignored `.flotilla/tmp/`, because the harness can only start a
+  workflow from a file the session is already allowed to read.
+- **`route-tuple` lands one returned tuple in a single verb** (issue #681).
+  `route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path>
+  --anchor <sha> --config <cfg> [--title <text>]` performs the post-return write-ahead
+  sequence the mechanics prescribed as ten guarded shell calls — sidecar presence and
+  validation (a missing or corrupt sidecar is recovered from the payload), outcome
+  routing, verdict routing with both `--state` values derived rather than typed, the
+  verdict render, create-or-reuse of the PR, the status re-query, the two spine writes,
+  the rung transition — and prints exactly one JSON result naming every step and what it
+  returned. A stop prints the stop and performs no spine, host or tracker write; a
+  re-dispatch writes the row state and the iteration bump only; disclosure capture stays
+  a separate, judgment-carrying call. Re-runnable: a second run reuses the open PR,
+  appends no second verdict section, re-transitions no rung, and reports each step as
+  performed-before. An existing Worker-authored PR body is preserved with the verdict
+  section placed beneath it; the verdict digest is only the fallback when no PR exists.
+  `createOrReusePr` is lifted into the host-pr library so the CLI and the verb call one
+  function. wave-start step 7 shrinks to the verb call and the reading of its result.
+- **triage and to-issues say, in the same words, that `ready-for-agent` is a two-skill
+  state** (issue #679). triage's `ready-for-agent` outcome names to-issues (decorate) as
+  the next step, never wave-plan; to-issues' decorate rule is conditional — never replace
+  an existing `## Acceptance criteria` section, lift the brief's criteria verbatim into
+  the body when it has none — in the SKILL body, its Common Mistakes bullet and the
+  filing-mechanics reference; wave-plan's hand-off and the README quickstart name the
+  order. Prose only; the one-gate readiness redesign is deferred to a decision record.
+
+### Fixed
+
+- **`listOpen` and `listClaimed` union the native blocked-by the way `read` does**
+  (issue #654). On both the GitHub and the Linear store the scan path returned only the
+  body-codec edges, so a dependency drawn natively — GitHub's issue-dependencies API,
+  Linear's blocked-by relation — was visible to `read` and invisible to the candidate
+  table wave-plan draws from. Both scans now return codec ∪ native, and the conformance
+  suite gains an `addNativeDependency` hook so every store proves it the same way.
+- **`dor`'s `verify-profile-coverage` tells "no config reached this check" from "config
+  loaded, no verify block"** (issue #676). The CLI normalises an absent `verify` to
+  `{ profiles: [] }`; a loaded config with no profiles is a `pass` with a note, and only
+  a call that never saw a config defers. Two facts that shared one `deferred` text no
+  longer do.
+- **Conventions 13, 12 and 8 moved their occurrence narratives to `evidence/`**
+  (issue #689): a quarter less across the three files (46.7 → 30.0 KB, 27.7 → 20.2 KB,
+  29.7 → 27.7 KB), the wave-shared reference directory from 183 KB to 157 KB, every rule
+  and every cited occurrence still resolvable one hop away.
+
+### Changed
+
+- **Two interface widenings, both implementer-facing — the heads-up.** `GitHubApi` gains
+  `createLabel` (issue #675) and `SpineStore` gains a required `setRowIter` member
+  (issue #681): any out-of-tree implementer of either interface must add the method. A
+  consumer merely *using* the engine sees nothing — no runtime export moves or changes
+  shape — and only the type gate sees it. Minor per the house rule, the same shape as the
+  widenings 1.5.0, 2.1.0 and 2.2.0 carried and ruled on. Additive at the package root:
+  the `CreateLabelInput` type, and `createOrReusePr` with its four types.
+- **The documented dispatch and routing sequences shrink to two verbs.** wave-start step 6
+  is one `compose-driver` call and its receipt; step 7 is one `route-tuple` call and its
+  result; the compose-currency gate, the compose-fresh-or-verify rule and the
+  four-hundred-line script fence are gone from the reading a Coordinator loads.
+  wave-resume names the same two verbs where it re-composes and re-routes; the
+  wave-shared routing-mechanics reference describes the whole-tuple verb and keeps the
+  single-verb pages as the resume path's building blocks; conventions 4 and 5 name the
+  verb where they cited the shell sequence it replaced.
+
+### Proven since 2.2.0
+
+- **`compose-driver` composed the driver that dispatched its own successor row,
+  2026-09-03, source form.** The last row of the wave that shipped it (issue #681) was
+  dispatched from a driver the verb wrote: receipt read, twenty-five currency assertions
+  green over the composed file, four agents, zero errors, PR merged. The installed form's
+  *compose* is proven by a packed-tarball run in a throwaway consumer that produced a
+  byte-identical script (the Reviewer's simulation on the #680 branch); an installed-form
+  *dispatch* from a composed driver is not yet on record — that is what the demo
+  recording on a fresh throwaway consumer will be.
+- **Every row of the wave that built this release landed in iteration one.** Seven rows
+  in three tiers, twenty-eight agents, zero agent errors, two public-API rulings each
+  resolved by one Coordinator commit on the branch, and every Worker-authored PR body
+  preserved through the terminator — the first wave where that held from the second tier
+  on (the first tier's bodies had to be recovered from agent transcripts, which is why
+  `route-tuple` preserves an existing body by construction).
+
+### Unsettled by construction, and what is not yet proven
+
+The list below is 2.2.0's, re-read against the wave of 2026-09-03 that built this
+release. Each item lands as one of three things: a dated proof naming its evidence, a
+dated *still not proven*, or `verify` naming the one read that would settle it.
+
+- **`route-tuple` has no live dispatch-path use yet — `verify`: the next wave's first
+  returned tuple.** It landed in the last row of its own wave, so every tuple of that
+  wave was routed with the single verbs it replaces. Its specs pin every branch against
+  the in-memory host and store fakes, and three falsifications were reproduced by the
+  Reviewer; a real tuple through the verb is the read that is still missing.
+- **The harness's refusal to start a workflow from a path outside the working directory
+  is documentation-read, not observed.** It is why the composed driver now lives under
+  `.flotilla/tmp/`; the session that built this release ran composed drivers from an
+  allow-listed scratch path without ever meeting the refusal. `verify`: unnecessary —
+  the in-repo path sidesteps the question by construction.
+- **Headless is designed, not built.** Unchanged since 2.2.0: ADR-0047 and ADR-0048
+  remain `proposed`; no engine verb, skill or branch from either record exists yet.
+- **Bitbucket's write half is proven for `create` and `status`; `arm` and `merge` are
+  not, and will gain no further evidence on this line.** Unchanged since 2.2.0.
+- **The Linear attachment upsert — `verify`: the next Linear-store consumer close, read
+  for the closing-PR attachment on the closed issue.** Unchanged since 2.1.0; this
+  release's wave ran on GitHub Issues.
+- **The `prUrl` notice's agent-mediated half — fourteen more Scribe rounds completed
+  clean on 2026-09-03, and still no notice arose in any of them.** The forwarding itself
+  remains unread; `verify` is unchanged: the next wave in which a notice actually fires.
+- **The residue-probing worktree classification is still not proven, and a third
+  negative read is now on record (2026-09-03).** In this release's wave the sandboxed
+  removal of the agent worktrees reported `erroredStillListed` with survivors on the
+  first tier, and the documented sandbox-off removal cleared every worktree on all three
+  tiers. The manual sandbox-off force-removal remains the ordinary path.
+- **The grant-in-brief plugin half — still not proven, and the gap is unchanged: a
+  mid-wave `issue-store annotate` followed by a re-compose on an installed-form
+  consumer.** This wave's re-composes were per tier on the source form, none after a
+  mid-wave annotate.
+- **The uppercase-team-key assumption — `verify`: record the actual team-key casing the
+  first initiative-bound live pass encounters.** Unchanged since 1.5.0.
+- **A health-less mirror publish may still move the container's own health — `verify`:
+  the first live `goal-publish-update` call with `health` omitted, read against the
+  container afterward.** Unchanged since 2.1.0.
+- **`LINEAR_UPDATE_HEALTH_VALUES` is still schema-read, not live-proven — `verify`: the
+  same first live mirror publish.** Unchanged since 2.1.0.
+
 ## [2.2.0] — 2026-09-03
 
 **The release the public step lands on.** No new station ships here: this is the version
