@@ -52,7 +52,7 @@ Each check reports `pass` / `fail` / `not-applicable`; the report `ok` is `true`
 | Check (`name`) | `github` | `linear` | `markdown` |
 |---|---|---|---|
 | `tracker-host-integration` | n/a (GitHub is its own host) | **probed** — Linear↔GitHub integration installed? (n/a when `states.doneState` is set — the FOR-13 fallback) | n/a |
-| `state-catalog` | n/a (claims are labels) | **probed** — team catalog covers every configured claim state (`Todo`/`In Progress`/`In Review` + `Backlog`/`Canceled` + `doneState`) | n/a |
+| `state-catalog` | **probed** (issue #131) — GitHub's claims *are* labels, which is exactly why they need verifying: every label the wave reads or writes must exist in the repository — the eligibility set, `risk/*` (four), `worker/*` (four), the three `wave/*` claim rungs and `wave/needs-attention` (thirteen on a fresh repo with the defaults). A `fail` names each missing label in `detail`; the engine never creates labels and no verb of it does — create them once (`gh label create <name>` per name, or the repository's label settings) and re-run | **probed** — team catalog covers every configured claim state (`Todo`/`In Progress`/`In Review` + `Backlog`/`Canceled` + `doneState`) | n/a |
 
 The report is JSON on stdout:
 
@@ -75,7 +75,7 @@ The report is JSON on stdout:
 | `1` | a precondition FAILED loudly (read the failing check's `detail` — it names the gap), **or** the probe/host itself threw (bad token, unreachable host) |
 | `2` | usage error, the config was unreadable/invalid, or `--expect` was supplied without a usable `<plugin-version>` value |
 
-On exit 1 from a `fail`, fix the named gap (create the missing Linear state, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0. The `--expect` lockstep check (above) is advisory-only by construction — it can only be `pass`/`advisory`, so it never turns a `0` into a `1`; only a value-less/blank `--expect` moves the exit code, and it moves it to `2`, not `1`.
+On exit 1 from a `fail`, fix the named gap (create the missing GitHub labels; create the missing Linear state, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0. The `--expect` lockstep check (above) is advisory-only by construction — it can only be `pass`/`advisory`, so it never turns a `0` into a `1`; only a value-less/blank `--expect` moves the exit code, and it moves it to `2`, not `1`.
 
 ## Host-preflight (`host-pr preflight`) — code-host posture
 
@@ -497,7 +497,7 @@ Pass `--expect <plugin-version>` on this run too, for an installed-form consumer
 
 Written at [Procedure step 4](../SKILL.md#procedure), alongside `wave.config.json` — the consumer repo root is already in hand for that write, and this is the same moment.
 
-**One line, and it is the only flotilla-owned `.gitignore` entry a consumer needs.** Write it into the consumer repo's `.gitignore` at setup time, beside whatever else that file already carries:
+**Two lines, and they are the only flotilla-owned `.gitignore` entries a consumer needs.** Write them into the consumer repo's `.gitignore` at setup time, beside whatever else that file already carries:
 
 ```gitignore
 # flotilla — the Scribe's per-stage hand-off payloads (wave-start, ADR-0024).
@@ -507,6 +507,11 @@ Written at [Procedure step 4](../SKILL.md#procedure), alongside `wave.config.jso
 # into a commit; SWEPT at close by `worktree-cleanup --orphans` (reported under
 # `orphans.scratch`). Do not ignore `.flotilla/` wholesale — see below.
 .flotilla/tmp/
+# flotilla — the per-row agent worktrees wave-start registers (and wave-close
+# removes). Registered checkouts, never content to commit; without this line every
+# in-flight wave shows its worktrees as untracked in `git status` (measured live on
+# a fresh consumer, 2026-09-03).
+.claude/worktrees/
 ```
 
 **Why this line exists at all, given that flotilla's own repo never needed it.** This repo gitignores `.flotilla/` **wholesale** — it is the toolkit, not a consumer, and a stray in-repo spine must never land here. That blanket ignore silently covers the scratch path too, which is exactly why the gap was invisible for several wave-generations: the one repo that dogfoods the pipeline is the one repo the problem cannot appear in.
@@ -520,13 +525,15 @@ A consumer is the opposite case. The recommended posture is to **track** `.floti
 | **`.gitignore` line** | the whole **in-flight** window — a payload can never enter a commit, from the moment the Scribe writes it | the files themselves: they accumulate on disk forever, unignored-but-unremoved |
 | **close-time sweep** (`worktree-cleanup --orphans`, reported at `orphans.scratch`) | the **accumulation** — payloads are physically removed once the wave closes | the hours between the write and the close, where the consumer is committing spine updates |
 
-Scaffold both. A consumer that has only the sweep will commit a payload sooner or later; a consumer that has only the ignore line grows the directory without bound.
+Scaffold both. A consumer that has only the sweep will commit a payload sooner or later; a consumer that has only the ignore line grows the directory without bound. The worktree line has no sweep counterpart to weigh against: `wave-close` removes the worktrees, and the line only keeps them out of `git status` while they live.
 
 **Never widen it to `.flotilla/`.** Ignoring the whole directory in a consumer repo is not a stronger version of this rule — it is a different, and wrong, decision: it discards the spine's durability (the point of tracking it) to solve a scratch-file problem one line already solves. If a consumer *does* choose the gitignored posture deliberately, this line is simply redundant there, not harmful.
 
 ## AFK harness config scaffold: env block + permission allowlist (`.claude/settings.json`)
 
 The SKILL.md "Scaffolding the tracked permission allowlist and env block" precondition owns the **judgment** (what must be in the env block and on the allowlist, and why `docker` stays off it); this is the concrete scaffold. Write it to the consumer repo's **tracked** `.claude/settings.json` — the ONLY permission *and* environment source an AFK Worker/Reviewer worktree inherits (a worktree carries tracked files only, so the gitignored `.claude/settings.local.json` never reaches it). This is a separate file from `wave.config.json` and is not validated by any engine verb; it is a harness config the consumer commits.
+
+> **How the file actually lands — the hand-off, measured live (2026-09-03).** The harness refuses an agent's own write to `.claude/settings.json`: the file-write and file-edit tools are declined on that path and the sandbox denies a shell write to it. That is the harness protecting the file that governs what agents may do, not a misconfiguration to route around. The skill therefore stages the complete, valid JSON below in its session scratchpad and hands the operator a one-line copy for their own prompt — `! cp <staged path> .claude/settings.json` — then reads the landed file back and confirms it matches the staged one byte for byte, and re-runs the value-free checks (`credential-probe --all`, `host-pr preflight`) from inside the session so the new `env` block is proven live. The Echo-Guard script copy into `.claude/hooks/echo-guard.cjs` (below) hits the same sandbox denial and lands with the sandbox override the harness offers on that failure — one approval, expected.
 
 **Beyond the engine CLI: the measured AFK worker command block.** The engine-CLI entry covers only *how* a Worker or Reviewer invokes the engine — it says nothing about everything else a dispatched agent actually runs. The first multi-wave overnight run measured that surface for real: the workspace mechanic (`git fetch`/`reset`/`checkout`/`add`/`commit`), the wave-branch push, the Reviewer's probe-worktree creation (its "probe license" — see `wave-reviewer`'s SKILL.md), the sibling merge-tree prediction, and the verify-gate commands (`npm ci`, `npx vitest run`, `npx tsc --noEmit`) — and found **none of it** on the tracked allowlist scaffolded at the time. Consequence: 2–4 human approvals landed mid-dispatch over one night, one of which suspended a wave for roughly seven hours until the operator woke and clicked approve (docs/retros/2026-07-29-overnight-triple-wave.md, finding NF-F1). The scaffold below carries that full measured command block, not only the engine-CLI invocation form. **The allowlist is part of the dispatch contract, the same as the brief**: the AFK guarantee is a property of the permission layer, not only of the protocol — a perfectly-written brief still stalls on an un-allowlisted command with nobody there to answer the prompt.
 
