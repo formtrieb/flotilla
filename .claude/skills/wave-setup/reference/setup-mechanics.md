@@ -128,6 +128,7 @@ Neither preflight substitutes for checking scope up front — `store-preflight`/
 |---|---|---|---|
 | `GET/POST /repos/{o}/{r}/issues`, `PATCH /issues/{n}` | store: read, create, transition, close | `repo` | Issues: Read and write |
 | `POST/DELETE /issues/{n}/labels` | coarse-status projection, needs-attention flag | `repo` | Issues: Read and write |
+| `GET /repos/{o}/{r}/labels`, `POST /repos/{o}/{r}/labels` | `store-preflight`: the `state-catalog` probe, and the opt-in `--create-missing-labels` repair | `repo` | Issues: Read and write (GitHub's fine-grained-token permissions reference lists the label-registry write under the Issues permission) |
 | `GET/POST /issues/{n}/comments` | closing probe, scribe | `repo` | Issues: Read and write |
 | `GET/POST /repos/{o}/{r}/pulls`, `PATCH /pulls/{n}` | `host-pr` open / read | `repo` | Pull requests: Read and write |
 | `PUT /repos/{o}/{r}/pulls/{n}/merge`, the auto-merge arm mutation | `host-pr` merge / arm | `repo` | Pull requests: Read and write, **and** Contents: Read and write (writing the merge commit to the protected branch) |
