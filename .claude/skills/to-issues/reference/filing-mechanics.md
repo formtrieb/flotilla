@@ -85,7 +85,7 @@ Publish **blockers first** so a dependent's `blockedBy` can name real ids. The s
 
 ## `decorate` mode — `AnnotatePatch`
 
-For an already-filed issue lacking the Header-Block — a triage-ready issue, **or a bare issue** from the `create` path above. Supply **only the missing wave fields**: `risk`, `worker`, `files`, `parent` (if it is a PRD slice), and — on the bare-to-decorated path specifically — `acceptanceCriteria` (a bare issue has no AC section to begin with) and any additional `bodySections` prose the decorate step wants to add. The patch is additive and surgical (omitted fields and unmodeled sections untouched); `files` and `acceptanceCriteria` each *replace* the modeled section when supplied, `bodySections` are appended verbatim.
+For an already-filed issue lacking the Header-Block — a triaged issue, **or a bare issue** from the `create` path above. Supply **only the missing wave fields**: `risk`, `worker`, `files`, `parent` (if it is a PRD slice), plus any additional `bodySections` prose the decorate step wants to add — and `acceptanceCriteria` under the condition the SKILL body states in these same words: **never replace an existing `## Acceptance criteria` section; when the body has none and the triage brief carries acceptance criteria, lift them verbatim into the body as that section.** Two paths reach that no-AC case, and they are the same case: a **bare** issue filed at a wave's close never had an AC section, and a **triaged** issue's criteria sit in the Agent Brief *comment* while the wave side reads the *body*. The patch is additive and surgical (omitted fields and unmodeled sections untouched); `files` and `acceptanceCriteria` each *replace* the modeled section when supplied — which is exactly why the "existing section" half of the condition is absolute — and `bodySections` are appended verbatim.
 
 ```json
 {
@@ -106,7 +106,9 @@ For an already-filed issue lacking the Header-Block — a triage-ready issue, **
 - **GitHub / Linear** — `Blocked by` is a `##` body section; an **absent** one reads as `none` (no blockers) on read, the same as an explicit `none`. A bare issue decorated via `annotate` (risk/worker/files/acceptanceCriteria) becomes a fully readable, DoR-checkable `IssueView` with `blockedBy: 'none'` — no out-of-band step needed just to make it readable.
 - **MarkdownFs** — `Blocked by` is a required `**Blocked by:**` header line, not a section with an absence-means-none default; the header parser rejects a read while it is missing. Since `annotate` cannot write it, a bare MarkdownFs issue stays unreadable after decorate until that line is added out-of-band (or the issue is filed decorated via `create` in the first place).
 
-Either way, decorating an issue does not by itself grant wave-eligibility (the eligibility marker/label is a separate, consumer-owned step) — decorate makes the issue *readable and DoR-checkable*, eligibility is what a wave-planning step stamps on top.
+Either way, decorating an issue does not by itself grant wave-eligibility (the eligibility marker/label is a separate, consumer-owned step, ordinarily `triage`'s `ready-for-agent`, applied before this one ever runs) — decorate makes the issue *readable and DoR-checkable*, eligibility is the other half.
+
+The two halves are independent writes and neither implies the other, which is the whole reason the order matters: an **eligible, undecorated** issue is in the wave-ready pool and a wave-side read of it fails on the missing header; a **decorated, ineligible** one is readable and invisible. A row belongs in a wave only once both writes have happened — so for an already-filed issue the path is `triage`, then `to-issues` (decorate), never one instead of the other.
 
 ### Verify the write
 

@@ -18,7 +18,7 @@ Your job is the **judgment** — reading the report, flagging what needs attenti
 - Reviewing the PRD panel to find un-sliced planning documents.
 - Reading the goal panel to see which named finish line each candidate serves — display only, never a reason to include a row.
 
-Do **not** use this to slice work into issues (`to-issues`), to triage an issue (`triage`), or to materialize a wave into a spine and worktrees (`wave-create`). wave-plan is the advisory pass; wave-create is the authoritative materialization.
+Do **not** use this to slice a plan into issues or to sharpen an already-filed one — slicing is `to-issues`, and sharpening is `triage`, **then** `to-issues` (decorate), in that order and never one instead of the other — and do **not** use it to materialize a wave into a spine and worktrees (`wave-create`). wave-plan is the advisory pass; wave-create is the authoritative materialization.
 
 ## THE FLOTILLA BOUNDARY — wave-plan persists nothing
 
@@ -117,7 +117,7 @@ Returns `GoalView[]` (`{ id, title, description, container, memberIds }`). Use i
 - **A column.** Beside each candidate, name the goal whose `memberIds` contains its id (exact string match, the same discipline the PRD panel's `parent` match uses). The human choosing a set can then see which finish line each row moves.
 - **A filter.** "Show me only the candidates in that goal" narrows what is *displayed*. It never narrows, widens, or reorders what is eligible.
 
-**Membership authorizes nothing** (the goal station's own boundary — ADR-0044). A goal member is a candidate because it is eligible and passes DoR, and for no other reason; a non-member that is eligible is not demoted. So do not rank, score, sort, or pre-select by membership, and **never add a row to the candidate set that `listOpen` did not return** — a goal member missing from the pool is the readiness gate working, and the answer is to sharpen it (`triage`, then `to-issues`), never to reach past the gate here. Goals are also never cross-wave inputs: `cross-wave` takes candidates and claims, and a container id is neither.
+**Membership authorizes nothing** (the goal station's own boundary — ADR-0044). A goal member is a candidate because it is eligible and passes DoR, and for no other reason; a non-member that is eligible is not demoted. So do not rank, score, sort, or pre-select by membership, and **never add a row to the candidate set that `listOpen` did not return** — a goal member missing from the pool is the readiness gate working, and the answer is to sharpen it (`triage`, then `to-issues` decorate — both, in that order), never to reach past the gate here. Goals are also never cross-wave inputs: `cross-wave` takes candidates and claims, and a container id is neither.
 
 ### 5. Present the report; pick ids
 

@@ -17,7 +17,7 @@ Your job is the **judgment** — categorize, reproduce, grill if underspecified,
 - An underspecified issue needs grilling into a fully-specified spec.
 - An issue is ready to be marked grabbable for an AFK agent (`ready-for-agent`) or routed to a human (`ready-for-human`).
 
-Do **not** use this to slice work into a wave batch or write the wave Header-Block (Risk / Worker / Files) — that is the **`to-issues`** skill's separate dimension. triage decides *whether* an issue is ready; `to-issues` / `wave-plan` decide *how* a ready issue is sliced into a wave. The two never overlap.
+Do **not** use this to slice work into a wave batch or write the wave Header-Block (Risk / Worker / Files) — that is the **`to-issues`** skill's separate dimension. triage decides *whether* an issue is ready; `to-issues` (decorate) then writes *how* it is sliced. The two dimensions never overlap — but the two skills are **not alternatives**. An already-filed issue goes through `triage`, **then** `to-issues` (decorate), in that order, and it is not wave-readable until both have run.
 
 ## THE FLOTILLA BOUNDARY — triage NEVER writes the wave claim ledger
 
@@ -26,6 +26,7 @@ This is the one rule that makes this skill flotilla's own rather than inherited.
 - triage writes **only** through the Triage facet (`triage-apply` / `triage-close`) — the consumer's issue-side triage roles and categories (`bug`, `enhancement`, `ready-for-agent`, …). These are the consumer's taxonomy; the engine imposes none (ADR-0003).
 - triage **NEVER** writes a `wave/*` claim rung and **NEVER** calls `issue-store transition`. The `wave/*` rungs — `queued → in-flight → in-review → done` (+ `needs-attention`) — are flotilla's product, written **only** by the wave skills (wave-create / wave-start / wave-close). The engine enforces the split structurally: `triage-apply` touches only the triage dimension, never the claim ledger or the open/closed state. If you reach for `transition`, **stop** — that is a category error.
 - triage's **only** coupling to waves: setting an issue's state to one in the configured **eligibility set** (a real consumer uses `ready-for-agent`) is what later makes `wave-plan` see it as grabbable. You are flipping the *issue-side* eligibility signal — you are **not** claiming the issue into a wave. The first ledger write (`queued`) happens later, in the wave skills, never here.
+- That flip is only the **eligibility half** of readiness, and eligible is not the same as wave-readable. The wave side reads an issue's *body*, and the planning header it needs there — declared Files, Risk, Worker — is written by `to-issues` (decorate), never by triage. So a `ready-for-agent` issue that has not been decorated yet is one a wave-side read fails on outright. Flipping the signal is still correct and still yours; what you owe alongside it is naming the second half as the next step (step 7).
 
 ## The state machine
 
@@ -95,11 +96,17 @@ If the issue needs fleshing out before it can be `ready-for-agent` / `ready-for-
 
 Apply the state, category, and matching comment in **one** `triage-apply` call (or `triage-close` for `wontfix`). The facet **prepends the AI-provenance disclaimer to every comment for you** — never add it by hand. Exact input shapes per outcome: [reference/triage-mechanics.md](reference/triage-mechanics.md).
 
-- **`ready-for-agent`** — post an **Agent Brief** (template below). Setting this eligibility state is what later makes `wave-plan` see the issue as grabbable (per the boundary — this is *not* a wave claim).
+- **`ready-for-agent`** — post an **Agent Brief** (template below). Setting this eligibility state is what later makes `wave-plan` see the issue as grabbable (per the boundary — this is *not* a wave claim). **It is the eligibility half of a two-skill readiness state:** the issue is not wave-readable until `to-issues` (decorate) writes the planning header — declared Files, Risk, Worker — into the body, and until then a wave-side read of it fails on the missing header. Two writes, two skills, one readiness; stamping this state does not complete it. Name the second half as the next step when you report (step 7).
 - **`ready-for-human`** — post an Agent-Brief-shaped comment plus a note on *why* it can't be delegated (judgment call, external access, design decision, manual testing).
 - **`needs-info`** — post **Triage Notes** (template below).
 - **`wontfix`** — `triage-close` with a polite explanation; it sets the won't-fix state and natively closes the issue in one call.
 - **`needs-triage`** — apply the state; comment only if there's partial progress to record.
+
+### 7. Hand the issue on — the operator block names the next step
+
+Your closing operator block (the register clause at the end of this skill) says what happened, where it lives, and what the person does next. For a **`ready-for-agent`** outcome the next step is **`to-issues` (decorate)** — never `wave-plan`. Say it plainly, in the operator's own language: the issue is now marked ready, and running `to-issues` on it next is what writes the planning header the wave side reads, which is what actually makes the issue pickable. Ending a `ready-for-agent` run by pointing at wave planning hands the eligible pool an issue nothing downstream can read.
+
+For every other outcome there is no wave hand-off at all — name who is next (`needs-info`: the reporter, and exactly what you asked them for; `ready-for-human`: a maintainer, and why it cannot be delegated; `wontfix`: nobody, it is closed) and stop.
 
 ## Quick state override
 
@@ -188,7 +195,8 @@ Put everything resolved during grilling under "established so far" so it isn't l
 
 - **Writing the wave claim ledger from triage.** Never call `issue-store transition` or write a `wave/*` rung — that is the wave skills' job. triage flips only the *issue-side* triage state (`ready-for-agent`); the claim is written later, elsewhere. (The engine enforces this — `triage-apply` cannot reach the ledger — but don't go hunting for a back door.)
 - **Confusing eligibility with a claim.** Setting `ready-for-agent` makes an issue *grabbable*; it does **not** queue or claim it into any wave.
-- **Doing `to-issues`' job.** triage does not slice work, declare Files, or set Risk/Worker. A `ready-for-agent` issue is handed to `to-issues` / `wave-plan` for that — different dimension.
+- **Doing `to-issues`' job.** triage does not slice work, declare Files, or set Risk/Worker. A `ready-for-agent` issue is handed to `to-issues` (decorate) for that — a different dimension, and the required next step rather than an alternative to this one.
+- **Ending a `ready-for-agent` run by pointing at `wave-plan`.** Readiness is a two-skill state: this skill stamps eligibility, `to-issues` (decorate) writes the planning header that makes the issue readable to the wave side. Sending the operator straight to wave planning puts an issue in the eligible pool that a wave-side read fails on. Name `to-issues` (decorate) as the next step (step 7).
 - **Hand-rolling the label swap or the disclaimer.** The facet is single-select (the adapter swaps state for you) and prepends the AI-provenance disclaimer structurally. Don't add/remove labels or paste the disclaimer yourself.
 - **Hardcoding a native label string.** Pass the canonical role; the adapter resolves it to the store's native representation from config.
 - **File paths / line numbers in the agent brief.** They go stale. Describe interfaces and behavioral contracts instead.
