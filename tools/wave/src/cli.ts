@@ -16,6 +16,7 @@
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
  *   npx tsx tools/wave/src/cli.ts compose-driver --spine <spine> --out <path> --anchor <sha> [...]
+ *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [...]
  *
  * Subcommands:
  *   dor          Run the DOR-Gate validator (default when no subcommand is given).
@@ -293,6 +294,34 @@
  *   2 — usage, an unreadable/invalid config, an unreadable spine, or a config
  *       with no `engine.cli` binding (a STOP — wave-setup has not finished)
  *
+ * route-tuple (issue #681) — performs the whole post-return write-ahead
+ * sequence for ONE returned tuple and prints one JSON result, in place of the
+ * ten guarded shell calls the routing mechanics used to prescribe. In order:
+ * the sidecar presence + validation check (recovering a missing record from the
+ * passed `--report`/`--verdict` payload through the same renderer `write-report`
+ * uses), the worker-phase route, the verdict-phase route, the verdict render,
+ * find-before-create of the PR, the host status re-query, the two spine writes
+ * (row state, PR cell), and the `in-review` rung transition. Every step reports
+ * `performed` or `performed-before`, so a re-run on the same tuple is a
+ * described no-op rather than a duplicate PR.
+ *
+ * Two things it deliberately does NOT do. **Disclosure capture stays a separate
+ * call** — step 7.0a is judgment, and the Coordinator's own observation is the
+ * one source no payload carries. **It never flags and never dispatches**: a
+ * `stop` outcome is reported with its reason and performs no spine, host or
+ * tracker write, and a re-dispatch writes the spine row state and the iteration
+ * bump only.
+ *
+ * ASYNC (host I/O plus a resolved store), so `mainAsync` intercepts it before
+ * the sync `main()` router, like `host-pr` / `issue-store` / `compose-driver`.
+ * Exit codes:
+ *   0 — the sequence completed; read `disposition` (`pr-created` |
+ *       `re-dispatched` | `stop`). A `stop` is a ROUTED outcome, not a failure.
+ *   1 — a refusal: an unrecoverable sidecar, a routing `noop` (a caller bug), a
+ *       failed create, a refused reuse, a status re-query that found no PR, or a
+ *       spine/tracker write that threw
+ *   2 — usage, an unreadable/invalid config, or an unreadable spine
+ *
  * version (ADR-0032 — the plugin/engine lockstep gate's engine half) — prints
  * the ENGINE PACKAGE's own version as JSON, and, with `--expect <version>`,
  * compares it against a caller-supplied expectation. Resolves no store and
@@ -414,6 +443,7 @@ import {
 } from './cli-store';
 import { runResume } from './resume-cli';
 import { runComposeDriver } from './compose-driver';
+import { runRouteTuple } from './route-tuple';
 import type { IssueStore } from './adapters/issue-store';
 import { readSidecars, type SidecarReader } from './sidecar';
 import { metAcIndexes, renderVerdictSection } from './reviewer-verdict-schema';
@@ -455,6 +485,7 @@ const KNOWN_SUBCOMMANDS = [
   'store-preflight',
   'credential-probe',
   'compose-driver',
+  'route-tuple',
   'route-verdict',
   'route-outcome',
   'validate-report',
@@ -498,6 +529,8 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
     'Check whether every configured credential can be resolved right now (ADR-0029).',
   'compose-driver':
     'Compose the Workflow dispatch driver from the spine, the config and the store, and write it to --out.',
+  'route-tuple':
+    'Perform the whole post-return sequence for one returned tuple — sidecar check, routing, verdict render, create-or-reuse, status re-query, spine writes, rung transition — and print one result.',
   'route-verdict': 'Route a reviewer verdict + iteration + risk to its state-machine event.',
   'route-outcome': 'Route a worker outcome + state to its state-machine event.',
   'validate-report': 'Validate a WorkerReport JSON file against its schema.',
@@ -585,6 +618,7 @@ function printUsage(): void {
       '  flotilla-engine store-preflight [--config <path>]   # prints JSON',
       '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
       '  flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha> [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>] [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>] [--row-meta <json|path>]   # writes the Workflow driver script to --out; prints a JSON receipt',
+      '  flotilla-engine route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--config <path>] [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>] [--reports-dir <dir>] [--verdicts-dir <dir>]   # the whole post-return sequence for one row; prints one JSON result',
       '  flotilla-engine route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>   # prints JSON',
       '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
       '  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON',
@@ -2174,6 +2208,16 @@ export function main(argv: string[] = process.argv.slice(2)): number {
           'error: compose-driver is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
         );
         return 2;
+      case 'route-tuple':
+        // Same again, twice over: `route-tuple` does host I/O (find-before-
+        // create, the status re-query) AND resolves a store (the `in-review`
+        // rung transition), so it is async on both counts. `mainAsync`
+        // intercepts it first; reaching this case means a caller invoked the
+        // sync `main(['route-tuple', ...])` path directly.
+        process.stderr.write(
+          'error: route-tuple is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
+        );
+        return 2;
     }
   }
 
@@ -2250,6 +2294,16 @@ export async function mainAsync(
     // three, which is a better answer than the router's whole-CLI usage dump.
     if (argv[0] === 'compose-driver') {
       return await runComposeDriver(argv.slice(1), injected);
+    }
+    // `route-tuple` is async twice over — it talks to the code HOST
+    // (find-before-create, the status re-query) and it resolves a store (the
+    // `in-review` rung transition) — so it is intercepted here like
+    // `compose-driver` above. The interception bypasses `main()`'s zero-arg
+    // guard, which is deliberate: a bare `route-tuple` has six required flags
+    // and the runner's own usage names all six, which teaches far better than
+    // the router's whole-CLI dump.
+    if (argv[0] === 'route-tuple') {
+      return await runRouteTuple(argv.slice(1), injected ? { store: injected } : {});
     }
     // `dor --id <id>` is the store-backed (async) form; bare `dor <path>...`
     // stays in the sync `main()`. The `--id` flag is the disambiguator (ADR-0014).

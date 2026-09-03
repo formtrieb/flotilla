@@ -485,6 +485,66 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     slugFromSpinePath:
       'The wave slug a spine path names — the basis of the two absolute sidecar dirs. Exported for the spec; the verb derives it itself on every run.',
   },
+  // ─── the post-return routing terminator (issue #681) ─────────────────────
+  //
+  // `route-tuple.ts` is a CLI-EDGE module, held to exactly the standard the
+  // `./compose-driver` block above sets and for the same reason: what a
+  // CONSUMER holds is the `route-tuple` VERB and the single JSON result it
+  // prints, not a TypeScript import path. Nothing outside this engine composes
+  // a routing sequence of its own — the whole point of the verb is that there
+  // is one sequence, in one order, in one place.
+  //
+  // The pure helpers below are exported so `route-tuple.spec.ts` can pin them
+  // in isolation rather than only through a whole run, which is the standard
+  // every other "exported so its own spec can pin it" entry in this file is
+  // held to — and two of them earn it twice over: `reviewerStateForVerdict`
+  // encodes the verdict-keyed-not-iteration-keyed rule whose misreading is the
+  // documented failure, and `workerSummaryFromBody` is what keeps a re-run from
+  // stacking a second verdict section onto a live PR body.
+  //
+  // The honest caveat the two blocks above state, stated again: `src/index.ts`
+  // is outside this row's declared Files globs. It was reachable for the ONE
+  // symbol whose absence from the barrel would have been anomalous —
+  // `createOrReusePr`, a lifted composition of three already-public host-pr
+  // functions — and that one went onto the barrel. Root-exporting this family
+  // as well would mint a ten-symbol semver commitment no acceptance criterion
+  // asked for. The trigger to revisit is a consumer that routes a tuple from
+  // ITS OWN code rather than through the verb.
+  './route-tuple': {
+    runRouteTuple:
+      "The `route-tuple` verb's runner. Its one call site is cli.ts's async interception, exactly as runComposeDriver/runHostPr are reached; a consumer drives it as a CLI subcommand and reads the one JSON result.",
+    RouteTupleDeps:
+      'The injected seams the runner takes (store, http, landing host, env, spine io, sidecar reader/writer). Its purpose IS spec injection — production passes none of them — so a root export would advertise a testing surface as a consumer contract.',
+    RouteTupleDisposition:
+      'The three answers the printed result can carry (`pr-created` | `re-dispatched` | `stop`). A consumer reads the string out of the JSON; the TYPE is only useful to code that imports the runner, which is the thing this block says nobody does.',
+    StepStatus:
+      'The `performed` / `performed-before` / `skipped` vocabulary of one step entry — same reading: it is JSON to every consumer.',
+    StepResult: 'One entry in the printed `steps[]`. Module-local for the same reason StepStatus is.',
+    workerStateForIteration:
+      "The iteration-keyed worker-phase `--state` derivation (start-mechanics §7a). Exported so the spec pins both cells without running a whole route; a consumer never picks this state — that is exactly what the verb took away.",
+    reviewerStateForVerdict:
+      'The VERDICT-keyed reviewer-phase `--state` derivation (start-mechanics §7b) — the rule whose misreading silently turns a second-round approve into a noop. Exported so every verdict/iteration cell is pinnable on its own, which is the whole reason it is a named function rather than a ternary inline.',
+    workerSummaryFromBody:
+      "Cuts a live PR body back to its Worker-authored summary — everything above the rendered verdict section, close phrase trimmed. It is what makes a re-run idempotent about the BODY and not merely about the PR; exported so that property is pinnable directly rather than only through two full runs.",
+    composePrBody:
+      'Joins summary + verdict section + close phrase in the mechanics\' order, close phrase last so `host-pr`\'s reuse guard sees it. Exported for the same direct-pinning reason as its neighbour above.',
+    PrBodyParts: 'The input shape of composePrBody directly above — unusable without it, and module-local for the same reason.',
+  },
+  './route-cli': {
+    renderSidecarBody:
+      "The on-disk sidecar format — a heading over the fenced json the sidecar.ts reader parses. Exported for ONE in-engine caller: route-tuple's recovery step, which persists the same record from an in-memory payload. A consumer writes a sidecar by running `write-report`/`write-verdict`, which is the surface that also validates, reconciles and sweeps; handing it the renderer alone would be handing it the one part that does none of that.",
+    reconcileReportIssue:
+      "Reconciles a WorkerReport's own `issue` field against the compose-time row id — pass-through, repair-with-a-notice, or refuse. Same single reason as renderSidecarBody directly above: route-tuple's recovery step must apply the identical rule `write-report` applies, and two copies of it is how the repair and the refusal drift apart.",
+    Reconciled: 'The three-way result of reconcileReportIssue directly above — module-local for the same reason it is.',
+  },
+  './host-pr-cli': {
+    landingHostFor:
+      "The one switch from a detected host to its LandingHost adapter. Its file-header comment has always said why it is one switch; it is exported now because `route-tuple` asks the host the same question `host-pr status` asks, and a second switch beside it is the drift that comment warns about. A consumer reaches this through the `host-pr` verb, or by constructing its own adapter — both of which are already root-exported surfaces.",
+    createCredsFor:
+      "Owns the per-host Basic-auth `user:secret` pairing (`x-access-token:<token>` on GitHub, `<email>:<token>` on Bitbucket Cloud — measured, not assumed). Exported for the same one-owner reason: route-tuple's create-or-reuse needs the identical pairing, and the Bitbucket arm's second, non-secret precondition is exactly the kind of rule a copy loses.",
+    gitRemoteUrl:
+      "Reads `git remote get-url origin`. Exported so route-tuple's default remote is literally the same read `host-pr` performs rather than a second spawn that could disagree about the remote name; a consumer passes `--remote` or lets the verb read it.",
+  },
   './worker-report-schema': {
     FINISHING_OUTCOMES:
       "The `done`/`done-with-concerns` partition of WORKER_OUTCOME_VALUES (which IS root-exported). It exists so the sidecar-write gate and the schema's own anyOf branch read ONE set rather than two hand-kept lists; a consumer asking the same question already has outcomeToEvent(o) === 'worker-done'.",
