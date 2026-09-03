@@ -4602,6 +4602,27 @@ function writeVerifyConfig(profiles: { name: string; appliesTo: string[] }[]): s
   return cfgPath;
 }
 
+/**
+ * A config that loads successfully and carries no `verify` key at all — the
+ * ordinary shape for a repo without a build gate (issue #676). Distinct from
+ * `writeVerifyConfig([])`, which writes an EXPLICIT `verify: { profiles: [] }`
+ * — both reach Gate 8 the same way (see `NOTE_VERIFY_PROFILES_EMPTY` in
+ * dor-gate.ts), but this helper is the one that reproduces the actually
+ * reported bug: no `verify` block, not an empty one.
+ */
+function writeConfigWithoutVerifyBlock(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'dor-no-verify-cfg-'));
+  const cfgPath = join(dir, 'wave.config.json');
+  writeFileSync(
+    cfgPath,
+    JSON.stringify({
+      store: { kind: 'markdown', repoRoot: '.', slug: 'x' },
+    }),
+    'utf-8',
+  );
+  return cfgPath;
+}
+
 describe('dor --id <id> --config <path> threads verify profiles into Gate 8 (FOR-151)', () => {
   it("reports pass — never deferred — when the row's Files match a configured verify profile", async () => {
     const store = tmpStore();
@@ -4657,7 +4678,35 @@ describe('dor --id <id> --config <path> threads verify profiles into Gate 8 (FOR
       // by a missing checkout.
       expect(stdoutBuf).not.toMatch(/deferred\s+files-glob-valid/);
       expect(stdoutBuf).toMatch(/deferred\s+verify-profile-coverage/);
-      expect(stdoutBuf).toMatch(/No verify config supplied/);
+      // issue #676: this is the "resolvable" case — no --config reached this
+      // call at all — so the text must say so AND name the flag, distinct
+      // from a config that loaded but declared no `verify` block (below).
+      expect(stdoutBuf).toMatch(/No verify config reached this check/);
+      expect(stdoutBuf).toMatch(/--config/);
+      expect(stdoutBuf).not.toMatch(/declares no profiles/);
+    },
+  );
+
+  it(
+    'reports pass — with a note, never the old "no config supplied" deferral — ' +
+      'when --config loads a config that carries no `verify` block at all (issue #676)',
+    async () => {
+      const store = tmpStore();
+      const repoRoot = (store as unknown as { repoRoot: string }).repoRoot;
+      const id = await store.create({ ...DOR_INPUT, files: ['apps/web/src/thing.ts'] });
+      const configPath = writeConfigWithoutVerifyBlock();
+
+      const code = await runDorById(
+        ['--id', id, '--repo-root', repoRoot, '--config', configPath],
+        store,
+      );
+
+      expect(code).toBe(0);
+      expect(stdoutBuf).toMatch(/pass\s+verify-profile-coverage/);
+      expect(stdoutBuf).not.toMatch(/deferred\s+verify-profile-coverage/);
+      expect(stdoutBuf).not.toMatch(/No verify config supplied/);
+      expect(stdoutBuf).not.toMatch(/No verify config reached this check/);
+      expect(stdoutBuf).toMatch(/declares no profiles/);
     },
   );
 
@@ -4702,7 +4751,25 @@ describe('dor <path> --config <path> threads verify profiles into Gate 8 (file f
 
     expect(code).toBe(0);
     expect(stdoutBuf).toMatch(/deferred\s+verify-profile-coverage/);
+    expect(stdoutBuf).toMatch(/No verify config reached this check/);
   });
+
+  it(
+    'reports pass — with a note, never a deferral — when --config loads a config ' +
+      'that carries no `verify` block at all (issue #676)',
+    () => {
+      const configPath = writeConfigWithoutVerifyBlock();
+
+      const code = main(['dor', '--config', configPath, issueFile]);
+
+      expect(code).toBe(0);
+      expect(stdoutBuf).toMatch(/pass\s+verify-profile-coverage/);
+      expect(stdoutBuf).not.toMatch(/deferred\s+verify-profile-coverage/);
+      expect(stdoutBuf).not.toMatch(/No verify config supplied/);
+      expect(stdoutBuf).not.toMatch(/No verify config reached this check/);
+      expect(stdoutBuf).toMatch(/declares no profiles/);
+    },
+  );
 
   it('exits 1 with a clear stderr message when --config points at an unreadable file', () => {
     const code = main(['dor', '--config', join(root, 'no-such-config.json'), issueFile]);

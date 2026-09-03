@@ -955,6 +955,12 @@ describe('validateIssue — verify-profile-coverage advisory (gate 8)', () => {
     expect(result.overall).toBe('PASS');
     const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
     expect(gate8).toMatchObject({ status: 'deferred' });
+    // issue #676: this is the "genuinely absent" case — `verify` was never
+    // even supplied to this call — and the text must name the flag that
+    // would resolve it, distinct from the loaded-but-empty pass case below.
+    expect(gate8?.reason).toMatch(/No verify config reached this check/);
+    expect(gate8?.reason).toMatch(/--config/);
+    expect(gate8?.reason).not.toMatch(/declares no profiles/);
   });
 
   it('does NOT warn (AC4) when the consumer has zero verify profiles configured at all — a legitimately doc-only row', () => {
@@ -980,6 +986,11 @@ describe('validateIssue — verify-profile-coverage advisory (gate 8)', () => {
     expect(result.overall).toBe('PASS');
     const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
     expect(gate8).toMatchObject({ status: 'pass' });
+    // issue #676: a config that DID reach this call and declares zero
+    // profiles carries a note distinguishing it from the deferred,
+    // never-reached-this-call case above — chosen status: pass-with-a-note.
+    expect(gate8?.reason).toMatch(/declares no profiles/);
+    expect(gate8?.reason).not.toMatch(/No verify config reached this check/);
   });
 
   it('passes when the row\'s declared files match a configured verify profile', () => {
