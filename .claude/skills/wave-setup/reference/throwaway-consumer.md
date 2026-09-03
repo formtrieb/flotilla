@@ -79,6 +79,6 @@ Operator-driven, on a long-lived interactive machine, in a plain terminal (not a
 | 5 — land the PR, `wave-close --auto` | | "Land the PRs, then `wave-close`" | with no required checks the arm is a direct squash merge (one confirmation for the wave); phase 4a pulled main and re-swept; phase 5 closed the issue with the four confirmed criteria; the spine was archived | as documented — the README's "land the PRs" is one of two routes, the `--auto` arm being the other |
 | end | 03:00 | | | **61 minutes** end to end, steps 3–5 about 35 of them |
 
-Misfire counter of the validation wave (the pre-launch baseline for the first ten minutes): _recorded in the PR body of the row that landed this file._
+Misfire counter of the validation wave (the pre-launch baseline for the first ten minutes): **0 in the wave itself** — no engine usage error, no hook block across plan, create, start and close, self-counted by the consumer session's `wave-close` — and **3 during `wave-setup` before it**: one Echo-Guard block on the skill's own value-substituting probe, two classifier denials of the settings-file write. The two hand-offs this run turned into documented steps are exactly where those three sit.
 
 Two things the run surfaced that are not README disagreements: `gh`'s own keyring login was invalid while the engine's token was fine — two credentials failing independently, exactly as SKILL.md's credentials section describes — and the interview itself, the part the README describes, took well under the ten minutes; the overrun is the two hand-offs.
