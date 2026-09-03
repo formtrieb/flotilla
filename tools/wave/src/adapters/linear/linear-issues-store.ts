@@ -623,17 +623,36 @@ export class LinearIssuesStore implements IssueStore {
     return docs.map((d) => ({ id: d.id, title: d.title, body: d.content }));
   }
 
-  /** Shared open-issue scan; `keep` selects, malformed descriptions are skipped. */
+  /**
+   * Shared open-issue scan; `keep` selects, malformed descriptions are
+   * skipped.
+   *
+   * Unions each KEPT issue's native blocked-by relation into its `blockedBy`
+   * (#654), the same {@link unionBlockedBy} layer `read()` applies — so
+   * `listOpen`/`listClaimed` agree with `read()` (and the goal frontier) on
+   * every edge, codec or native, instead of the codec-only view this scan
+   * used to return. One extra `getBlockedBy` call per KEPT issue, read
+   * SEQUENTIALLY — a `for…of` with `await` inside, never `Promise.all` — the
+   * accepted cost, decided at sharpening rather than left as a documented
+   * asymmetry (mirrors the GitHub port's own `scan()`, #654). A failed native
+   * read (or a garbled description) drops just that ONE issue from the
+   * result rather than aborting the whole scan.
+   */
   private async scan(keep: (issue: LinearIssue) => boolean): Promise<IssueView[]> {
     const open = await this.api.listOpenIssues();
     const out: IssueView[] = [];
     for (const issue of open) {
       if (!keep(issue)) continue;
       try {
-        out.push(this.project(issue.identifier, issue));
+        const view = this.project(issue.identifier, issue);
+        out.push({
+          ...view,
+          blockedBy: await this.unionBlockedBy(issue.identifier, view.blockedBy),
+        });
       } catch {
-        // a human-garbled description throws in project(); skip it rather than
-        // aborting the whole scan (Linear descriptions are remotely editable).
+        // a human-garbled description throws in project(), or unionBlockedBy's
+        // native read fails (transient) — either way, skip this one issue
+        // rather than aborting the whole scan.
       }
     }
     return out;
@@ -641,13 +660,14 @@ export class LinearIssuesStore implements IssueStore {
 
   // ── internals ─────────────────────────────────────────────────────────────
   /**
-   * NOTE — deliberate read()/list asymmetry: `read()` layers `unionBlockedBy`
-   * on top of this projection, so its `blockedBy` is codec ∪ native. Views
-   * built directly from `project()` (i.e. `listOpen`/`listClaimed`, via
-   * `scan()`) carry the codec-only `blockedBy` — no native union, since that
-   * would mean one extra `getBlockedBy` call per scanned issue. A future
-   * consumer that reasons about `blockedBy` across a list scan must not assume
-   * the union holds there; only a single-issue `read()` guarantees it.
+   * `blockedBy` here is codec-only — parsed straight off the description,
+   * nothing more. The native union is layered on top by every CALLER of
+   * `project()`: `read()` applies {@link unionBlockedBy} directly, and
+   * `listOpen`/`listClaimed` apply the SAME union inside {@link scan}, so
+   * every read surface this store exposes agrees on `blockedBy` (#654 — they
+   * used to diverge, with `scan()` skipping the union to save a
+   * `getBlockedBy` call per scanned issue; see {@link scan}'s own doc for the
+   * cost that saving no longer buys).
    */
   private project(id: string, issue: LinearIssue): IssueView {
     const parsed = parseBody(issue.description);

@@ -39,6 +39,25 @@ export interface ConformanceHarness {
   hooks: IssueStoreConformanceHooks;
   /** A minimal valid CreateInput; the suite overrides fields per case. */
   baseInput(overrides?: Partial<CreateInput>): CreateInput;
+  /**
+   * Record a dependency — `blockedId` is blocked by `blockerId` — on the
+   * store's NATIVE dependency surface ONLY, bypassing the body codec entirely
+   * (the shape ADR-0044's bare `blockedBy` arm produces natively: a bare
+   * issue has no Header-Block to hold a `## Blocked by` section, so the edge
+   * exists natively or not at all). Reaches through the store to its injected
+   * fake, the same test-affordance stance as `IssueStoreConformanceHooks`'
+   * `simulateNativeClose` (#654).
+   *
+   * OPTIONAL: a store with no native dependency surface (`MarkdownFsStore`)
+   * has nothing to union and leaves this `undefined` — the ONE conformance
+   * case that needs it is then SKIPPED (`ctx.skip`), never run against an
+   * assertion it structurally cannot satisfy.
+   */
+  addNativeDependency?(
+    store: IssueStore,
+    blockedId: string,
+    blockerId: string,
+  ): Promise<void> | void;
 }
 
 /**
@@ -887,6 +906,48 @@ export function runIssueStoreConformance(
         expect(v.status).toBe('available');
         expect(Array.isArray(v.files)).toBe(true);
       }
+    });
+
+    // ── native-only blockedBy edge (#654): read()/listOpen()/listClaimed() agree ──
+    //
+    // ADR-0044's bare `blockedBy` arm draws a dependency that lives ONLY on
+    // the native side — a bare issue has no Header-Block to carry a
+    // `## Blocked by` section, so the edge is never written to the body codec
+    // at all. `read()` has always unioned codec ∪ native (ADR-0020);
+    // `listOpen`/`listClaimed` used to skip that union to save a
+    // `getBlockedBy` call per scanned issue, so a natively-only edge was
+    // invisible to the candidate table while `read()` (and the goal frontier)
+    // both saw it. This case pins the fix: an edge that exists NATIVELY ONLY
+    // must read identically off all three surfaces.
+    //
+    // Runs only on a store whose harness exposes `addNativeDependency` — a
+    // store with no native dependency surface (MarkdownFsStore) has nothing
+    // to union, so its harness leaves the hook `undefined` and this case is
+    // SKIPPED BY CONSTRUCTION (`ctx.skip`), never failed on a capability the
+    // store was never meant to have.
+    it('a natively-only blocked-by edge reads identically from read(), listOpen(), and listClaimed()', async (ctx) => {
+      const { h, store } = await fresh();
+      if (h.addNativeDependency === undefined) {
+        ctx.skip(true, `${label} has no native dependency surface`);
+        return;
+      }
+      const blocker = await store.create(h.baseInput({ title: 'native-only blocker' }));
+      const blocked = await store.create(h.baseInput({ title: 'native-only blocked' }));
+      await h.addNativeDependency(store, blocked, blocker);
+
+      // claimed → listClaimed must show the same union read() sees.
+      await store.transition(blocked, 'queued');
+      const fromRead = (await store.read(blocked)).blockedBy;
+      expect(fromRead).not.toBe('none');
+      const fromListClaimed = (await store.listClaimed()).find((v) => v.id === blocked)
+        ?.blockedBy;
+      expect(fromListClaimed).toEqual(fromRead);
+
+      // unclaimed → listOpen must show the same union too.
+      await store.unclaim(blocked);
+      const fromListOpen = (await store.listOpen('wave-ready')).find((v) => v.id === blocked)
+        ?.blockedBy;
+      expect(fromListOpen).toEqual(fromRead);
     });
 
     // ── readClosing (the closing probe, ADR-0005 / W2-F1c) ────────────────
