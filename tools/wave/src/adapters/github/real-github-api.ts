@@ -6,6 +6,7 @@
 
 import type {
   GitHubApi, GhIssue, GhMilestone, GhStateReason, CreateIssueInput, CreateMilestoneInput,
+  CreateLabelInput,
   ClosingPrState, RequiredChecksInfo, RulesetChecksInfo,
   ReportedCheck,
 } from './github-api';
@@ -127,6 +128,37 @@ const MERGEABLE_STATE: Record<string, PrMergeability> = {
   unknown: 'unknown',
 };
 
+/**
+ * GitHub's own validation-error code for "another resource already has this
+ * value" — the answer a duplicate `POST …/labels` gets
+ * (docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api,
+ * read 2026-09-03: `already_exists` — "Another resource has the same value as
+ * one of your parameters… resources requiring unique keys, like label names").
+ *
+ * Pinned as a NAMED CONSTANT with a TOLERANT companion matcher, the ADR-0020
+ * precedent for a schema fact that cannot be observed without live credentials:
+ * the machine `code` is the primary read and the human `message` a secondary
+ * one, so a cosmetic upstream reword cannot turn an already-existing label back
+ * into a hard failure — the one outcome {@link GitHubApi.createLabel}'s
+ * contract forbids.
+ */
+const VALIDATION_CODE_ALREADY_EXISTS = 'already_exists';
+
+/** True when a 422 body says the resource already exists. See {@link VALIDATION_CODE_ALREADY_EXISTS}. */
+function saysAlreadyExists(json: unknown): boolean {
+  const errors = (json as { errors?: unknown } | null)?.errors;
+  if (Array.isArray(errors)) {
+    for (const entry of errors) {
+      const code = (entry as { code?: unknown } | null)?.code;
+      if (code === VALIDATION_CODE_ALREADY_EXISTS) return true;
+    }
+  }
+  // Secondary, deliberately tolerant: some validation failures carry the fact
+  // only in the human message. Never the primary read — see the constant.
+  const message = (json as { message?: unknown } | null)?.message;
+  return typeof message === 'string' && /already exists/i.test(message);
+}
+
 /** {@link MergeMethod} → the GraphQL `PullRequestMergeMethod` enum. */
 const GQL_MERGE_METHOD: Record<MergeMethod, string> = {
   squash: 'SQUASH',
@@ -229,6 +261,25 @@ export class RealGitHubApi implements GitHubApi {
       if (items.length < 100) break; // short page → exhausted (count heuristic, ADR-0019)
     }
     return out;
+  }
+
+  async createLabel(input: CreateLabelInput): Promise<{ created: boolean }> {
+    // The registry's WRITE half (`POST /repos/{o}/{r}/labels` → 201 Created;
+    // docs.github.com/en/rest/issues/labels, read 2026-09-03). `description` is
+    // OMITTED from the payload rather than sent as `null` when the caller has
+    // none, so an absent description stays absent instead of blanking one.
+    const res = await this.send('POST', `${this.base()}/labels`, {
+      name: input.name,
+      color: input.color,
+      ...(input.description === undefined ? {} : { description: input.description }),
+    });
+    if (res.status === 201) return { created: true };
+    // 422 `already_exists` = the label was created between the caller's probe
+    // and this write (or was always there). The seam's contract calls that a
+    // PRESENT label, so it is ANSWERED (`created: false`), never thrown — a
+    // concurrent creator must not fail a preflight repair.
+    if (res.status === 422 && saysAlreadyExists(res.json)) return { created: false };
+    throw new GitHubApiError(res.status, 'createLabel');
   }
 
   async addComment(number: number, body: string): Promise<void> {

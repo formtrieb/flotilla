@@ -109,6 +109,24 @@ export interface CreateMilestoneInput {
 }
 
 /**
+ * What the seam needs to create ONE label in the repository's label REGISTRY —
+ * the input half of {@link GitHubApi.createLabel}.
+ *
+ * The two constraints are GitHub's own on `POST /repos/{owner}/{repo}/labels`
+ * (docs.github.com/en/rest/issues/labels, read 2026-09-03): `color` is a
+ * hexadecimal code *without* the leading `#`, and `description` "must be 100
+ * characters or fewer". They are restated here rather than only at the caller
+ * because the seam is the last place a caller can still be told.
+ */
+export interface CreateLabelInput {
+  name: string;
+  /** Hexadecimal colour code WITHOUT the leading `#` (e.g. `0e8a16`). */
+  color: string;
+  /** At most 100 characters. Omitted -> the label is created without one. */
+  description?: string;
+}
+
+/**
  * The GitHub seam.
  *
  * It `extends LandingHost` (ADR-0023): the GitHub adapter IS the GitHub landing
@@ -164,6 +182,31 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    * `linearChecks` runs against the team's workflow-state catalog.
    */
   listLabels(): Promise<string[]>;
+  /**
+   * Create ONE label in the repository's label REGISTRY — the WRITE half of
+   * {@link listLabels}, and the only repository-level write this seam carries.
+   *
+   * It exists for `store-preflight --create-missing-labels` (issue #675). The
+   * `state-catalog` check already names every label a wave will read or write
+   * that the repository lacks, and the credential that ran the check is
+   * permitted to create them, so the operator's hand-typed `gh label create`
+   * loop was a step the engine could take itself. Nothing ELSE calls this: the
+   * preflight stays read-only by default and creation is an explicit act, so a
+   * wave never quietly mints a label it failed to find.
+   *
+   * IDEMPOTENT BY ANSWER rather than by pre-check. `created: false` means the
+   * label was already there — GitHub answers a duplicate create with 422 and a
+   * validation error whose `code` is `already_exists`
+   * (docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api,
+   * read 2026-09-03). That is exactly the race window between a probe that said
+   * "missing" and the create that follows it, and the contract calls it a
+   * PRESENT label, never a failure. Any other rejected write throws.
+   *
+   * Real impl: `POST /repos/{owner}/{repo}/labels` with `{ name, color,
+   * description }` -> 201 Created (docs.github.com/en/rest/issues/labels, read
+   * 2026-09-03).
+   */
+  createLabel(input: CreateLabelInput): Promise<{ created: boolean }>;
   /** Append a comment to an issue (NOT idempotent — each call adds one). Throws on an unknown number. */
   addComment(number: number, body: string): Promise<void>;
   /** All comments on an issue, oldest-first. Throws on an unknown number. */

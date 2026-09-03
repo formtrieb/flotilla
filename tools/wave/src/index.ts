@@ -995,6 +995,12 @@ export {
   // default no consumer convention can collide with.
   type GhMilestone,
   type CreateMilestoneInput,
+  // The input of the seam's one repository-level write (issue #675). It rides
+  // the barrel because the METHOD it belongs to does: `GitHubApi` is exported
+  // above, so an implementer of the seam — the reason this widening is called
+  // out as implementer-facing — cannot type its `createLabel` parameter without
+  // this name being reachable from the root.
+  type CreateLabelInput,
 } from './adapters/github/github-api';
 
 export {

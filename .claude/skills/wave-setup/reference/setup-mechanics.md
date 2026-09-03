@@ -36,12 +36,14 @@ On exit 1, read the error, fix the named field in the JSON, and re-run. Do not p
 > **Unified subcommand form.** `store-preflight` is a `{{wave-cli}}` (`cli.ts` router) subcommand, invoked exactly like every other engine op:
 >
 > ```bash
-> {{wave-cli}} store-preflight [--config wave.config.json] [--expect <plugin-version>]
+> {{wave-cli}} store-preflight [--config wave.config.json] [--expect <plugin-version>] [--create-missing-labels]
 > ```
 >
 > `--config` selects the store config (default `wave.config.json`). Like the other store-touching verbs, this one builds the real store — a `github` config needs `GITHUB_TOKEN`, a `linear` config needs `LINEAR_API_KEY`, resolved through the engine's credential seam (`credential-resolver.ts`, ADR-0029): a configured `<VAR>_CMD` first, the ambient `<VAR>` otherwise. On Node ≥ 24 under a proxied sandbox this needs `NODE_USE_ENV_PROXY=1` so the raw-fetch adapters honour the harness proxy — the tracked env block below is the standing source for that flag once it's scaffolded; prefix it explicitly (dogfood in the sandbox) only where no tracked env block applies yet.
 >
 > **This resolution is also the credential live-gate.** Re-running `store-preflight` right after scaffolding a `<VAR>_CMD` entry ([Credential lookup-command scaffold](#credential-lookup-command-scaffold-adr-0029) below) proves the newly-wired lookup command resolves ahead of any stray ambient variable — nothing extra to run.
+>
+> **`--create-missing-labels` is the probe's one WRITE, and the primary repair when the `state-catalog` check fails on a `github` store's labels:** it creates every label that check reports missing through the engine's own credential, then re-probes, and the printed `state-catalog` detail names each label it created (or says it created nothing — it is idempotent, and a label some other actor creates between the probe and the create is read as present, never as a failure). Read-only stays the default: without the flag the probe writes nothing at all. `github` store only — on a `linear` or `markdown` config it is a usage error (exit 2) raised before anything is built or written, since Linear's claims are workflow states configured in the workspace and the markdown store has no label registry.
 >
 > **`--expect <plugin-version>` (ADR-0032) additionally reports the plugin/engine lockstep comparison, as an ADVISORY-ONLY `engine-version` check.** It never fails the preflight and never moves `ok` — a version skew is a setup-time NOTICE here, not a refusal; the hard version gate that STOPs a wave over the identical comparison lives in `wave-start`'s gate phase instead (`{{wave-cli}} version --expect <plugin-version>` — see [wave-start's reference](../../wave-start/reference/start-mechanics.md)). Supply the SAME plugin version that gate derives — read from `.claude-plugin/plugin.json` at this skill's own resolution anchor (the installed-form consumer's plugin clone) — so setup and dispatch compare against one source, never two; on the source-form repo (skills and engine sharing one SHA by construction) the comparison is vacuous and `--expect` is omitted. A value-less or blank `--expect` is a usage error (exit 2, below), never a silent "no expectation" — see [Exit codes for `store-preflight`](#exit-codes-for-store-preflight).
 
@@ -52,7 +54,7 @@ Each check reports `pass` / `fail` / `not-applicable`; the report `ok` is `true`
 | Check (`name`) | `github` | `linear` | `markdown` |
 |---|---|---|---|
 | `tracker-host-integration` | n/a (GitHub is its own host) | **probed** — Linear↔GitHub integration installed? (n/a when `states.doneState` is set — the FOR-13 fallback) | n/a |
-| `state-catalog` | **probed** (issue #131) — GitHub's claims *are* labels, which is exactly why they need verifying: every label the wave reads or writes must exist in the repository — the eligibility set, `risk/*` (four), `worker/*` (four), the three `wave/*` claim rungs and `wave/needs-attention` (thirteen on a fresh repo with the defaults). A `fail` names each missing label in `detail`; the engine never creates labels and no verb of it does — create them once (`gh label create <name>` per name, or the repository's label settings) and re-run | **probed** — team catalog covers every configured claim state (`Todo`/`In Progress`/`In Review` + `Backlog`/`Canceled` + `doneState`) | n/a |
+| `state-catalog` | **probed** (issue #131) — GitHub's claims *are* labels, which is exactly why they need verifying: every label the wave reads or writes must exist in the repository — the eligibility set, `risk/*` (four), `worker/*` (four), the three `wave/*` claim rungs and `wave/needs-attention` (thirteen on a fresh repo with the defaults). A `fail` names each missing label in `detail`; re-run with `--create-missing-labels` (above) to create exactly that set through the engine's own credential, or, when that credential cannot create labels, create them once by hand (`gh label create <name>` per name, or the repository's label settings) and re-run | **probed** — team catalog covers every configured claim state (`Todo`/`In Progress`/`In Review` + `Backlog`/`Canceled` + `doneState`) | n/a |
 
 The report is JSON on stdout:
 
@@ -73,9 +75,9 @@ The report is JSON on stdout:
 |---|---|
 | `0` | every check passed or is `not-applicable`/`advisory` — safe to hand off to `wave-plan`/`wave-create` |
 | `1` | a precondition FAILED loudly (read the failing check's `detail` — it names the gap), **or** the probe/host itself threw (bad token, unreachable host) |
-| `2` | usage error, the config was unreadable/invalid, or `--expect` was supplied without a usable `<plugin-version>` value |
+| `2` | usage error, the config was unreadable/invalid, `--expect` was supplied without a usable `<plugin-version>` value, or `--create-missing-labels` was supplied on a non-`github` store (refused before anything is built or written) |
 
-On exit 1 from a `fail`, fix the named gap (create the missing GitHub labels; create the missing Linear state, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0. The `--expect` lockstep check (above) is advisory-only by construction — it can only be `pass`/`advisory`, so it never turns a `0` into a `1`; only a value-less/blank `--expect` moves the exit code, and it moves it to `2`, not `1`.
+On exit 1 from a `fail`, fix the named gap (create the missing GitHub labels — `--create-missing-labels` does it for you; create the missing Linear state, install the integration or set `states.doneState`) and re-run. Do not hand the config to downstream skills until the preflight exits 0. The `--expect` lockstep check (above) is advisory-only by construction — it can only be `pass`/`advisory`, so it never turns a `0` into a `1`; only a value-less/blank `--expect` moves the exit code, and it moves it to `2`, not `1`.
 
 ## Host-preflight (`host-pr preflight`) — code-host posture
 
@@ -126,6 +128,7 @@ Neither preflight substitutes for checking scope up front — `store-preflight`/
 |---|---|---|---|
 | `GET/POST /repos/{o}/{r}/issues`, `PATCH /issues/{n}` | store: read, create, transition, close | `repo` | Issues: Read and write |
 | `POST/DELETE /issues/{n}/labels` | coarse-status projection, needs-attention flag | `repo` | Issues: Read and write |
+| `GET /repos/{o}/{r}/labels`, `POST /repos/{o}/{r}/labels` | `store-preflight`: the `state-catalog` probe, and the opt-in `--create-missing-labels` repair | `repo` | Issues: Read and write (GitHub's fine-grained-token permissions reference lists the label-registry write under the Issues permission) |
 | `GET/POST /issues/{n}/comments` | closing probe, scribe | `repo` | Issues: Read and write |
 | `GET/POST /repos/{o}/{r}/pulls`, `PATCH /pulls/{n}` | `host-pr` open / read | `repo` | Pull requests: Read and write |
 | `PUT /repos/{o}/{r}/pulls/{n}/merge`, the auto-merge arm mutation | `host-pr` merge / arm | `repo` | Pull requests: Read and write, **and** Contents: Read and write (writing the merge commit to the protected branch) |
