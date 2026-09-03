@@ -202,7 +202,11 @@ ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("f
 #    step 6). One verb, no resume-specific wiring:
 {{wave-cli}} compose-driver \
   --spine "$SPINE" --config "$WAVE_CONFIG" \
-  --anchor "$ANCHOR_SHA" --out "/tmp/flotilla-resume-$SLUG/driver.js"
+  --anchor "$ANCHOR_SHA" --out "$REPO/.flotilla/tmp/resume-$SLUG/driver.js"
+#    --out sits INSIDE the repo (the gitignored .flotilla/tmp/), same as
+#    wave-start's own step 6: the harness Workflow tool reads this file itself
+#    and can only start from a path the session may read — outside the working
+#    directory that would first need /add-dir or a Read allow rule.
 #    It composes exactly the rows the spine has in a dispatchable state, so the
 #    `adopt`/`keep`/`needs-attention` rows this reconciliation left alone are
 #    excluded by the spine itself rather than by a second hand-kept list. Each

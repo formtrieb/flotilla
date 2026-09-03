@@ -157,7 +157,7 @@ Two call sites in this pipeline open a PR through the engine's find-before-creat
   --spine .flotilla/waves/<slug>.md \
   --config wave.config.json \
   --anchor <COORDINATOR_HEAD_SHA> \
-  --out /tmp/flotilla-start-<slug>/driver.js \
+  --out <consumer-root>/.flotilla/tmp/<slug>/driver.js \
   [--plugin-manifest <plugin-clone-root>/.claude-plugin/plugin.json] \
   [--reviewer-agent <name>] [--coordinator-branch <b>] [--deps-setup "<cmd>"] \
   [--row-meta '{"<id>":{"prTitle":"…","reviewerHints":["…"],"note":"…"}}']
@@ -168,6 +168,14 @@ takes as its `scriptPath`, unchanged in shape — and prints ONE JSON receipt:
 the rows composed, each row's branch, model, iteration, risk, worker and
 grant-count, the anchor, the Reviewer agent name and how it was derived, the
 template path and its byte size. Read the receipt; do not re-derive any of it.
+
+**Keep `--out` inside the repo** — under the Scribe's gitignored `.flotilla/tmp/`,
+not in the `/tmp` scratch directory the run's other files use. Those files are
+read by the engine; this one is read by the harness, and the Workflow tool can
+only start from a script file the session is already allowed to read — a path
+outside the working directory would first need `/add-dir` or a Read allow rule.
+Inside the repo, nothing needs adding, and `worktree-cleanup` sweeps the file
+at close with the rest of `.flotilla/tmp/`.
 
 **Every value the old currency checklist policed is now filled from a source.**
 The repo root and the two absolute sidecar dirs come from `--repo-root` (or the

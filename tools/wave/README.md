@@ -26,7 +26,7 @@ The full subcommand list, flags, and exit-code semantics are documented at the t
 
 ### `compose-driver` — the dispatch driver, composed rather than transcribed
 
-The Workflow dispatch script ships as a package asset, `driver/wave-start-inflight.js`, alongside the hooks. `compose-driver` reads it, fills its five compose-time constants and its per-row `ISSUES` array from the wave spine, the wave config and the issue store, and writes the finished script to `--out` — the file a Claude Code Workflow run takes as its `scriptPath`. It prints one JSON receipt naming the rows composed, each row's branch and model tier, the wave anchor, and the Reviewer agent name it derived.
+The Workflow dispatch script ships as a package asset, `driver/wave-start-inflight.js`, alongside the hooks. `compose-driver` reads it, fills its five compose-time constants and its per-row `ISSUES` array from the wave spine, the wave config and the issue store, and writes the finished script to `--out` — the file a Claude Code Workflow run takes as its `scriptPath`. It prints one JSON receipt naming the rows composed, each row's branch and model tier, the wave anchor, and the Reviewer agent name it derived. The file form is a deliberate departure from the harness's inline default: it keeps the composed script inspectable and replayable, and the file must sit inside the repo (the gitignored `.flotilla/tmp/`) where the session may read it — the harness refuses to start a workflow from a path it is not allowed to read.
 
 ```bash
 npx @formtrieb/flotilla-engine compose-driver \

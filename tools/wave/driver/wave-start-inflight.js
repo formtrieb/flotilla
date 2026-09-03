@@ -11,6 +11,14 @@
 // it — lives beside this file in the wave-start skill's workflow-driver
 // reference document; what actually runs lives here.
 //
+// Handing the harness a FILE (`scriptPath`) is a deliberate departure from the
+// workflow authoring reference's default, which is to pass the script inline.
+// The file form is what makes the composed script inspectable before it runs
+// and replayable afterwards (`Workflow({ scriptPath, resumeFromRunId })` re-runs
+// the same bytes), and it is the point of composing at all: nothing is pasted
+// by hand. The file must sit where the session may read it — inside the repo,
+// under the gitignored `.flotilla/tmp/` — or the harness refuses to start it.
+//
 // The engine never dispatches anything. It writes this file out with its
 // constants filled; the HARNESS runs the result. The schema-validated-return
 // guarantee (a dispatched agent cannot silently fabricate a result) is a

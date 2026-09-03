@@ -314,8 +314,15 @@ fi
 {{wave-cli}} compose-driver \
   --spine "$SPINE" --config "$WAVE_CONFIG" \
   --anchor "$ANCHOR_SHA" \
-  --out "/tmp/flotilla-start-$SLUG/driver.js" \
+  --out "$REPO/.flotilla/tmp/$SLUG/driver.js" \
   --row-meta '{"<id>":{"reviewerHints":["..."],"note":"..."}}'
+#   --out sits INSIDE the repo, deliberately — under the Scribe's gitignored
+#   .flotilla/tmp/ (wave-setup ignores it; worktree-cleanup sweeps it at close),
+#   NOT in the /tmp scratch dir the other files of this run use. The difference:
+#   those files are read by the engine, this one is read by the HARNESS — the
+#   Workflow tool can only start from a script file the session is already
+#   allowed to read, and a path outside the working directory first needs
+#   /add-dir or a Read allow rule. Inside the repo, nothing needs adding.
 #   Optional, and only where the default is wrong for this repo:
 #     --plugin-manifest <plugin-clone-root>/.claude-plugin/plugin.json
 #                       REQUIRED on the installed form unless --reviewer-agent
