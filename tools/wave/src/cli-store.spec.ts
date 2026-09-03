@@ -27,6 +27,14 @@ import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
+// The REAL GitHub client, plus its http fixture — imported here rather than
+// exercised in `real-github-api.spec.ts` because issue #675's declared Files
+// globs do not include that file. The `createLabel` cases at the bottom of this
+// file say so at their own site; the natural home is the real client's own spec
+// and they should move there the next time it is in scope.
+import { RealGitHubApi, GitHubApiError } from './adapters/github/real-github-api';
+import { FakeGitHubHttp } from './adapters/github/github-http-fake';
+import type { GitHubHttpRequest, GitHubHttpResponse } from './adapters/github/github-http';
 import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
 import type { IssueStore } from './adapters/issue-store';
 // TYPE-ONLY, through the PACKAGE ROOT. Erased at compile time, so it loads no
@@ -745,6 +753,358 @@ describe('runStorePreflight (FOR-12) — the CLI verb wave-setup runs', () => {
         (c: { name: string }) => c.name === 'engine-version',
       );
       expect(check.status).toBe('advisory');
+    });
+  });
+
+  // ── store-preflight --create-missing-labels (issue #675) ──────────────────
+  //
+  // The `state-catalog` check already named every missing label and the
+  // credential that ran it may create them, so a fresh consumer's first ten
+  // minutes went to a hand-typed `gh label create` loop the docs did not
+  // mention. The flag closes that: the probe's ONE write, opt-in, idempotent,
+  // and reported in the same detail the check that found the gap prints.
+  //
+  // The property the whole group is built around: the read-only default must
+  // stay the default. The first spec below is therefore an EQUALITY against the
+  // anchor's own wording, not a `toContain` — a repair that leaked into the
+  // no-flag path would pass a looser assertion.
+
+  describe('--create-missing-labels — the label repair', () => {
+    /** The thirteen a fresh repo with the default eligibility set needs. */
+    const REQUIRED_LABELS = [
+      'ready-for-agent',
+      'risk/mechanical',
+      'risk/isolated-refactor',
+      'risk/cross-feature-refactor',
+      'risk/public-API-change',
+      'worker/background',
+      'worker/background-heavy',
+      'worker/foreground',
+      'worker/HITL-required',
+      'wave/queued',
+      'wave/in-flight',
+      'wave/in-review',
+      'wave/needs-attention',
+    ];
+
+    /** The healthy `state-catalog` detail, verbatim from the anchor. */
+    const CATALOG_PASS_DETAIL =
+      'GitHub claims are labels (eligibility, risk/*, worker/*, wave/* rungs) — every one the wave will read or write exists in the repository.';
+
+    function githubConfigDir(): string {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-labels-'));
+      return writeConfig(dir, { store: { kind: 'github' } });
+    }
+
+    function catalogCheck(): { status: string; detail: string } {
+      return JSON.parse(stdout).checks.find(
+        (c: { name: string }) => c.name === 'state-catalog',
+      );
+    }
+
+    it('WITHOUT the flag nothing is written and the report is byte-identical to the anchor', async () => {
+      const path = githubConfigDir();
+      const api = new InMemoryGitHubApi();
+      api.setRepoLabels(
+        REQUIRED_LABELS.filter((l) => l !== 'wave/in-review' && l !== 'wave/needs-attention'),
+      );
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path],
+        new GitHubIssuesStore({ api }),
+      );
+
+      expect(code).toBe(1);
+      // EQUALITY, not containment — the anchor's exact wording, so a repair that
+      // leaked into the read-only path is caught by the assertion rather than
+      // tolerated by it.
+      expect(catalogCheck()).toEqual({
+        name: 'state-catalog',
+        status: 'fail',
+        detail:
+          'GitHub claims are labels — which is exactly why they need verifying: the following are missing from the repository and must be created before running a wave: "wave/in-review", "wave/needs-attention".',
+      });
+      expect(api.labelWrites()).toEqual([]); // the probe wrote nothing at all
+      expect(await api.listLabels()).not.toContain('wave/in-review');
+    });
+
+    it('creates exactly the MISSING labels, re-probes to pass, and names each one it created', async () => {
+      const path = githubConfigDir();
+      const api = new InMemoryGitHubApi();
+      api.setRepoLabels(
+        REQUIRED_LABELS.filter((l) => l !== 'wave/in-review' && l !== 'wave/needs-attention'),
+      );
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new GitHubIssuesStore({ api }),
+      );
+
+      expect(code).toBe(0);
+      const catalog = catalogCheck();
+      expect(catalog.status).toBe('pass'); // the RE-probe, not the first look
+      expect(catalog.detail).toBe(
+        `${CATALOG_PASS_DETAIL} --create-missing-labels created 2 missing label(s) through the engine's own credential: "wave/in-review", "wave/needs-attention".`,
+      );
+      // Exactly the two missing ones were written — the eleven present ones were
+      // not re-written.
+      expect(api.labelWrites().map((w) => w.name)).toEqual([
+        'wave/in-review',
+        'wave/needs-attention',
+      ]);
+      expect((await api.listLabels()).sort()).toEqual([...REQUIRED_LABELS].sort());
+    });
+
+    it('an unconfigured repo gets all thirteen, each with a 6-hex colour and a one-sentence description of at most 100 characters', async () => {
+      const path = githubConfigDir();
+      const api = new InMemoryGitHubApi(); // default: zero labels created
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new GitHubIssuesStore({ api }),
+      );
+
+      expect(code).toBe(0);
+      expect(catalogCheck().status).toBe('pass');
+      const writes = api.labelWrites();
+      expect(writes.map((w) => w.name).sort()).toEqual([...REQUIRED_LABELS].sort());
+      for (const write of writes) {
+        // GitHub's own constraints on the create endpoint: hex WITHOUT a leading
+        // `#`, description 100 characters or fewer.
+        expect(write.color).toMatch(/^[0-9a-f]{6}$/);
+        expect(write.description).toBeDefined();
+        expect((write.description as string).length).toBeGreaterThan(0);
+        expect((write.description as string).length).toBeLessThanOrEqual(100);
+        // One sentence: no sentence break inside it, and no newline.
+        expect(write.description as string).not.toMatch(/[.!?]\s/);
+        expect(write.description as string).not.toContain('\n');
+      }
+    });
+
+    it('a CONFIGURED eligibility label is created under its own name with the eligibility row of the table', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-labels-'));
+      const path = writeConfig(dir, {
+        store: { kind: 'github', eligibility: ['agent-ok'] },
+      });
+      const api = new InMemoryGitHubApi();
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new GitHubIssuesStore({ api, eligibility: ['agent-ok'] }),
+      );
+
+      expect(code).toBe(0);
+      const names = api.labelWrites().map((w) => w.name);
+      expect(names).toContain('agent-ok');
+      expect(names).not.toContain('ready-for-agent'); // the default is NOT required here
+      expect(api.labelWrites().find((w) => w.name === 'agent-ok')).toEqual({
+        name: 'agent-ok',
+        color: '0e8a16',
+        description: 'Wave-eligible: an AFK agent may grab this issue',
+      });
+    });
+
+    it('a SECOND run creates nothing and says so — idempotent, not merely harmless', async () => {
+      const path = githubConfigDir();
+      const api = new InMemoryGitHubApi();
+
+      const first = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new GitHubIssuesStore({ api }),
+      );
+      expect(first).toBe(0);
+      const afterFirst = api.labelWrites().length;
+      expect(afterFirst).toBe(REQUIRED_LABELS.length);
+
+      stdout = '';
+      const second = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new GitHubIssuesStore({ api }),
+      );
+
+      expect(second).toBe(0);
+      const catalog = catalogCheck();
+      expect(catalog.status).toBe('pass');
+      expect(catalog.detail).toBe(
+        `${CATALOG_PASS_DETAIL} --create-missing-labels created nothing: every label the wave will read or write already existed.`,
+      );
+      expect(api.labelWrites().length).toBe(afterFirst); // not one extra write
+    });
+
+    it('a label that appears BETWEEN the probe and the create is read as present, never as a failure', async () => {
+      const path = githubConfigDir();
+      const api = new InMemoryGitHubApi();
+      // The race: this probe will report `wave/queued` missing, and by the time
+      // the create runs another actor has created it (GitHub's 422
+      // `already_exists`).
+      api.setLabelsCreatedConcurrently(['wave/queued']);
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new GitHubIssuesStore({ api }),
+      );
+
+      expect(code).toBe(0); // not a failure
+      const catalog = catalogCheck();
+      expect(catalog.status).toBe('pass');
+      expect(catalog.detail).toContain('created 12 missing label(s)');
+      expect(catalog.detail).not.toMatch(/created 12 missing label\(s\)[^.]*"wave\/queued"/);
+      expect(catalog.detail).toContain(
+        'Created by someone else between the probe and the create, and read as present rather than as a failure: "wave/queued".',
+      );
+      expect(await api.listLabels()).toContain('wave/queued');
+    });
+
+    it('on a LINEAR store the flag is refused with exit 2 before anything is built or written', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-labels-'));
+      const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+      const api = new InMemoryLinearApi();
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new LinearIssuesStore({ api }),
+      );
+
+      expect(code).toBe(2);
+      expect(stderr).toContain('--create-missing-labels applies to a "github" store only');
+      expect(stderr).toContain('this config is "linear"');
+      expect(stderr).toContain('configured in the workspace');
+      expect(stderr).toContain('Nothing was written.');
+      expect(stdout).toBe(''); // no report at all — the probe never even ran
+    });
+
+    it('on a MARKDOWN store the refusal names why that store has nothing to create', async () => {
+      const repoRoot = mkdtempSync(join(tmpdir(), 'cli-store-labels-repo-'));
+      mkdirSync(join(repoRoot, '.scratch'), { recursive: true });
+      const dir = mkdtempSync(join(tmpdir(), 'cli-store-labels-'));
+      const path = writeConfig(dir, {
+        store: { kind: 'markdown', repoRoot, slug: '2026-09-03-x' },
+      });
+
+      const code = await runStorePreflight(
+        ['preflight', '--config', path, '--create-missing-labels'],
+        new MarkdownFsStore({ repoRoot, slug: '2026-09-03-x' }),
+      );
+
+      expect(code).toBe(2);
+      expect(stderr).toContain('this config is "markdown"');
+      expect(stderr).toContain('no label registry');
+      expect(stdout).toBe('');
+    });
+
+    it('the usage text lists the flag', async () => {
+      await runStorePreflight(['bogus']); // any usage error prints the block
+      expect(stderr).toContain('[--create-missing-labels]');
+      expect(stderr).toContain('creates every label the state-catalog check reports');
+    });
+
+    it('the router spelling carries the flag through unchanged', async () => {
+      const path = githubConfigDir();
+      const api = new InMemoryGitHubApi();
+
+      const code = await mainAsync(
+        ['store-preflight', '--config', path, '--create-missing-labels'],
+        new GitHubIssuesStore({ api }),
+      );
+
+      expect(code).toBe(0);
+      expect(catalogCheck().status).toBe('pass');
+      expect(catalogCheck().detail).toContain('created 13 missing label(s)');
+    });
+  });
+});
+
+// ─── RealGitHubApi.createLabel — the seam's one repository-level write ────────
+//
+// PLACEMENT, stated rather than left to be wondered at: the real client's own
+// spec (`real-github-api.spec.ts`) is where these belong and is NOT in issue
+// #675's declared Files globs, so they ride here with the flag that needs them.
+// They exercise the same three answers the fake models — created,
+// already-exists, rejected — against the documented HTTP shapes, which is the
+// half no in-memory fake can check.
+
+describe('RealGitHubApi.createLabel', () => {
+  function makeApi(handler: (req: GitHubHttpRequest) => GitHubHttpResponse): {
+    api: RealGitHubApi;
+    http: FakeGitHubHttp;
+  } {
+    const http = new FakeGitHubHttp(handler);
+    return { api: new RealGitHubApi('o', 'r', 't', http), http };
+  }
+
+  it('POSTs to the repository label registry and reads 201 as created', async () => {
+    const { api, http } = makeApi(() => ({ status: 201, json: { name: 'wave/queued' } }));
+
+    const answer = await api.createLabel({
+      name: 'wave/queued',
+      color: 'd4c5f9',
+      description: 'Claim: soft-claimed by a wave, not yet dispatched',
+    });
+
+    expect(answer).toEqual({ created: true });
+    expect(http.requests).toHaveLength(1);
+    expect(http.requests[0].method).toBe('POST');
+    expect(http.requests[0].url).toBe('https://api.github.com/repos/o/r/labels');
+    expect(JSON.parse(http.requests[0].body as string)).toEqual({
+      name: 'wave/queued',
+      color: 'd4c5f9',
+      description: 'Claim: soft-claimed by a wave, not yet dispatched',
+    });
+  });
+
+  it('omits `description` from the payload when the caller has none, rather than sending null', async () => {
+    const { api, http } = makeApi(() => ({ status: 201, json: {} }));
+
+    await api.createLabel({ name: 'agent-ok', color: '0e8a16' });
+
+    expect(JSON.parse(http.requests[0].body as string)).toEqual({
+      name: 'agent-ok',
+      color: '0e8a16',
+    });
+  });
+
+  it('reads a 422 whose validation code is already_exists as PRESENT, not as a failure', async () => {
+    const { api } = makeApi(() => ({
+      status: 422,
+      json: {
+        message: 'Validation Failed',
+        errors: [{ resource: 'Label', code: 'already_exists', field: 'name' }],
+      },
+    }));
+
+    await expect(api.createLabel({ name: 'wave/queued', color: 'd4c5f9' })).resolves.toEqual({
+      created: false,
+    });
+  });
+
+  it('tolerates a 422 that carries the fact only in the human message', async () => {
+    const { api } = makeApi(() => ({
+      status: 422,
+      json: { message: 'label already exists' },
+    }));
+
+    await expect(api.createLabel({ name: 'wave/queued', color: 'd4c5f9' })).resolves.toEqual({
+      created: false,
+    });
+  });
+
+  it('throws on a 422 that is a DIFFERENT validation failure — only already-exists is tolerated', async () => {
+    const { api } = makeApi(() => ({
+      status: 422,
+      json: { message: 'Validation Failed', errors: [{ resource: 'Label', code: 'invalid', field: 'color' }] },
+    }));
+
+    await expect(api.createLabel({ name: 'x', color: 'nothex' })).rejects.toBeInstanceOf(
+      GitHubApiError,
+    );
+  });
+
+  it('throws on any other rejected write', async () => {
+    const { api } = makeApi(() => ({ status: 403, json: { message: 'Resource not accessible' } }));
+
+    await expect(api.createLabel({ name: 'x', color: '0e8a16' })).rejects.toMatchObject({
+      status: 403,
+      op: 'createLabel',
     });
   });
 });

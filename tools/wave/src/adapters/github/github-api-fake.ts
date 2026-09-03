@@ -13,6 +13,7 @@ import type {
   GhStateReason,
   CreateIssueInput,
   CreateMilestoneInput,
+  CreateLabelInput,
   ClosingPrState,
   RequiredChecksInfo,
   RulesetChecksInfo,
@@ -125,6 +126,48 @@ export class InMemoryGitHubApi implements GitHubApi {
   /** Test affordance (issue #131): set the repo's label registry. */
   setRepoLabels(labels: string[]): void {
     this.repoLabels = [...labels];
+  }
+
+  /**
+   * Every {@link createLabel} call this fake received, in order — whether it
+   * created the label or answered already-exists. Test affordance (issue #675)
+   * and the ONLY place a spec can see the colour + description a create was
+   * given, which is a fact the registry (`listLabels`, names only) cannot carry.
+   */
+  private readonly labelWriteLog: CreateLabelInput[] = [];
+
+  /**
+   * Names whose NEXT create is answered as already-existing — the fake's model
+   * of GitHub's 422 `already_exists`, i.e. a label some other actor created
+   * between a probe that said "missing" and the create that followed it. The
+   * fake inserts the label first (the concurrent creator really did win) and
+   * then answers `created: false`, which is precisely the state the seam
+   * contract says must read as PRESENT rather than as a failure.
+   */
+  private readonly concurrentlyCreatedLabels = new Set<string>();
+
+  async createLabel(input: CreateLabelInput): Promise<{ created: boolean }> {
+    this.labelWriteLog.push({ ...input });
+    if (this.concurrentlyCreatedLabels.delete(input.name)) {
+      // A concurrent creator won the race — the label exists now, and this
+      // write neither created it nor failed.
+      if (!this.repoLabels.includes(input.name)) this.repoLabels.push(input.name);
+      return { created: false };
+    }
+    if (this.repoLabels.includes(input.name)) return { created: false };
+    this.repoLabels.push(input.name);
+    return { created: true };
+  }
+
+  /** Test affordance (issue #675): read {@link labelWriteLog}. */
+  labelWrites(): CreateLabelInput[] {
+    return this.labelWriteLog.map((w) => ({ ...w }));
+  }
+
+  /** Test affordance (issue #675): arm {@link concurrentlyCreatedLabels}. */
+  setLabelsCreatedConcurrently(names: string[]): void {
+    this.concurrentlyCreatedLabels.clear();
+    for (const name of names) this.concurrentlyCreatedLabels.add(name);
   }
 
   async addComment(number: number, body: string): Promise<void> {

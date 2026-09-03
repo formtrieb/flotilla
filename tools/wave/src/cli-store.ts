@@ -78,6 +78,7 @@ import {
   parseGoalContainer,
   type IssueStore,
   type GoalContainer,
+  type ClaimRung,
 } from './adapters/issue-store';
 import { buildStore } from './store-factory';
 import { loadWaveConfig, type WaveConfig, type StoreConfig, type GitHubStoreConfig, type LinearStoreConfig, type StoreGoalConfig } from './wave-config';
@@ -89,7 +90,7 @@ import type { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import type { LinearApi } from './adapters/linear/linear-api';
 import type { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { DEFAULT_LINEAR_STATES, type LinearStateMap } from './adapters/linear/linear-issues-store';
-import { RISK_VALUES, WORKER_VALUES } from './header-parser';
+import { RISK_VALUES, WORKER_VALUES, type Risk, type Worker } from './header-parser';
 import { flag, printJson, describeConfigLoadError } from './cli-utils';
 
 /**
@@ -592,11 +593,255 @@ const GITHUB_NEEDS_ATTENTION_LABEL = 'wave/needs-attention';
  *     needs-attention overlay — non-negotiable, the projection writes them.
  */
 function requiredGitHubLabels(storeConfig: GitHubStoreConfig): string[] {
+  return requiredGitHubWaveLabels(storeConfig).map((label) => label.name);
+}
+
+// ── the label set the `--create-missing-labels` repair writes (issue #675) ────
+
+/**
+ * flotilla's DEFAULT presentation for one wave label — the colour and the
+ * one-sentence description a create gives it.
+ *
+ * `color` is a 6-digit hexadecimal code WITHOUT a leading `#` and `description`
+ * is at most 100 characters, because those are GitHub's own constraints on the
+ * create-label endpoint (docs.github.com/en/rest/issues/labels, read
+ * 2026-09-03) — see `CreateLabelInput`, the seam this feeds.
+ *
+ * MODULE-PRIVATE, with the three shapes and the pass below it, for a reason
+ * worth stating rather than re-deriving: the way a caller reaches this repair
+ * is the flag on the probe that found the gap, which reports what it wrote in
+ * the same detail. A root-exported constructor beside it would be a second,
+ * report-less spelling of one question — the same one-way-to-ask reason
+ * {@link engineVersionPreflightCheck} and {@link engineManifestPath} are held
+ * back for.
+ */
+interface GitHubLabelDefault {
+  readonly color: string;
+  readonly description: string;
+}
+
+/** One required wave label, carrying the presentation a create would give it. */
+interface GitHubWaveLabel extends GitHubLabelDefault {
+  readonly name: string;
+}
+
+/**
+ * ONE table, in the engine, for the colour + description every wave label is
+ * created with. Deliberately not restated in skill prose: the flag and the
+ * documentation would then be two owners of one fact, and a fresh repository's
+ * appearance would drift from whichever one the operator happened to read. The
+ * values are the ones flotilla's own repository uses.
+ *
+ * KEYED BY THE VOCABULARIES THEMSELVES rather than by label string, which makes
+ * the table EXHAUSTIVE AT COMPILE TIME: a fifth `RISK_VALUES` member, a fourth
+ * claim rung, a renamed worker tier — each breaks `tsc` right here instead of
+ * silently inheriting some other row's wording through a string lookup that
+ * missed. That is the same reason {@link requiredGitHubWaveLabels} derives its
+ * list from the constants rather than hardcoding the thirteen names a fresh
+ * setup happens to need today.
+ *
+ * `eligibility` is the one row applied BY ROLE rather than by name: the
+ * eligibility OR-set is the consumer's own declaration (ADR-0003), so a repo
+ * that renamed `ready-for-agent` gets this colour and description under its own
+ * chosen name.
+ */
+const GITHUB_LABEL_DEFAULTS: {
+  readonly eligibility: GitHubLabelDefault;
+  readonly risk: Readonly<Record<Risk, GitHubLabelDefault>>;
+  readonly worker: Readonly<Record<Worker, GitHubLabelDefault>>;
+  readonly rung: Readonly<Record<ClaimRung, GitHubLabelDefault>>;
+  readonly needsAttention: GitHubLabelDefault;
+} = {
+  eligibility: {
+    color: '0e8a16',
+    description: 'Wave-eligible: an AFK agent may grab this issue',
+  },
+  risk: {
+    'cross-feature-refactor': {
+      color: 'f9d0c4',
+      description: 'Risk: touches 2+ areas or shared infra',
+    },
+    'isolated-refactor': {
+      color: 'fef2c0',
+      description: 'Risk: one module/area, no cross-cutting impact',
+    },
+    mechanical: {
+      color: 'c2e0c6',
+      description: 'Risk: script/codemod, no judgment calls',
+    },
+    'public-API-change': {
+      color: 'e99695',
+      description: 'Risk: adds/changes a public input/output/contract',
+    },
+  },
+  worker: {
+    background: {
+      color: '1d76db',
+      description: 'Worker: autonomous AFK agent',
+    },
+    'background-heavy': {
+      color: '0052cc',
+      description: 'Worker: autonomous AFK agent, strong model tier',
+    },
+    foreground: {
+      color: '5319e7',
+      description: 'Worker: human co-pilots in chat',
+    },
+    'HITL-required': {
+      color: 'b60205',
+      description: 'Worker: cannot be delegated, pure human judgment',
+    },
+  },
+  rung: {
+    'in-flight': {
+      color: 'bfd4f2',
+      description: 'Claim: a Worker is actively on this row',
+    },
+    'in-review': {
+      color: 'c5def5',
+      description: 'Claim: Worker finished, PR open / under review',
+    },
+    queued: {
+      color: 'd4c5f9',
+      description: 'Claim: soft-claimed by a wave, not yet dispatched',
+    },
+  },
+  needsAttention: {
+    color: 'd93f0b',
+    description: 'Orthogonal: this row STOPped and needs a human',
+  },
+};
+
+/**
+ * The same required set {@link requiredGitHubLabels} names, each row carrying
+ * the presentation a create would give it.
+ *
+ * ONE OWNER for the list: the string form above is literally this function's
+ * names, so the check that REPORTS a missing label and the repair that CREATES
+ * it can never disagree about what "required" means — which is the whole reason
+ * the repair is a flag on this probe rather than a verb of its own.
+ */
+function requiredGitHubWaveLabels(storeConfig: GitHubStoreConfig): GitHubWaveLabel[] {
   const eligibility = storeConfig.eligibility ?? DEFAULT_ELIGIBILITY;
-  const risk = RISK_VALUES.map((r) => `risk/${r}`);
-  const worker = WORKER_VALUES.map((w) => `worker/${w}`);
-  const waveRungs = [...RUNG_PRECEDENCE.map((r) => `wave/${r}`), GITHUB_NEEDS_ATTENTION_LABEL];
-  return [...new Set([...eligibility, ...risk, ...worker, ...waveRungs])];
+  const rows: GitHubWaveLabel[] = [
+    ...eligibility.map((name) => ({ name, ...GITHUB_LABEL_DEFAULTS.eligibility })),
+    ...RISK_VALUES.map((r) => ({ name: `risk/${r}`, ...GITHUB_LABEL_DEFAULTS.risk[r] })),
+    ...WORKER_VALUES.map((w) => ({ name: `worker/${w}`, ...GITHUB_LABEL_DEFAULTS.worker[w] })),
+    ...RUNG_PRECEDENCE.map((r) => ({ name: `wave/${r}`, ...GITHUB_LABEL_DEFAULTS.rung[r] })),
+    { name: GITHUB_NEEDS_ATTENTION_LABEL, ...GITHUB_LABEL_DEFAULTS.needsAttention },
+  ];
+  // First occurrence wins, exactly as the `new Set([...])` dedup the string form
+  // used to do — a consumer whose eligibility token collides with an engine
+  // label keeps the eligibility row's presentation, and the name appears once.
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.name)) return false;
+    seen.add(row.name);
+    return true;
+  });
+}
+
+/**
+ * What one `--create-missing-labels` pass did. Names only — the presentation it
+ * wrote is {@link GITHUB_LABEL_DEFAULTS}'s and is not restated per row.
+ *
+ * THREE buckets rather than a count, because they are three different facts
+ * about the repository and only the first one is a write this pass performed:
+ * conflating "I created it" with "it was already there" is what makes a second
+ * run read like a first one.
+ */
+interface GitHubLabelEnsureResult {
+  /** Created by THIS pass, in required-list order. */
+  readonly created: string[];
+  /**
+   * Reported missing by this pass's own probe, but the API answered
+   * already-exists — some other actor created them in between. Treated as
+   * PRESENT, never as a failure (the {@link GitHubApi.createLabel} contract).
+   */
+  readonly concurrentlyCreated: string[];
+  /** Already in the registry when the pass began — nothing was written. */
+  readonly alreadyPresent: string[];
+}
+
+/**
+ * Create every wave label the repository lacks, through the engine's own
+ * credential — the repair half of the `state-catalog` check (issue #675).
+ *
+ * IDEMPOTENT: it probes the registry first and writes only the difference, so a
+ * second run creates nothing and says so. RACE-SAFE: a label that appears
+ * between that probe and the create comes back as `created: false` from the
+ * seam and lands in {@link GitHubLabelEnsureResult.concurrentlyCreated} —
+ * present, not failed. Any other rejected write throws, and the runner reports
+ * it as the loud failure it is.
+ *
+ * MODULE-PRIVATE — see {@link GitHubLabelDefault} for the reason. Its one
+ * caller is {@link runStorePreflight}, and the specs reach it through that verb
+ * rather than around it, which is also the only way a consumer can.
+ */
+async function ensureGitHubWaveLabels(
+  api: GitHubApi,
+  storeConfig: GitHubStoreConfig,
+): Promise<GitHubLabelEnsureResult> {
+  const required = requiredGitHubWaveLabels(storeConfig);
+  const existing = new Set(await api.listLabels());
+  const created: string[] = [];
+  const concurrentlyCreated: string[] = [];
+  const alreadyPresent: string[] = [];
+  for (const label of required) {
+    if (existing.has(label.name)) {
+      alreadyPresent.push(label.name);
+      continue;
+    }
+    const answer = await api.createLabel({
+      name: label.name,
+      color: label.color,
+      description: label.description,
+    });
+    (answer.created ? created : concurrentlyCreated).push(label.name);
+  }
+  return { created, concurrentlyCreated, alreadyPresent };
+}
+
+/** `"a", "b"` — the same quoting the missing-label detail uses. */
+function quoteNames(names: string[]): string {
+  return names.map((n) => `"${n}"`).join(', ');
+}
+
+/**
+ * The one sentence (two, when a race happened) the create pass adds to the
+ * re-probed `state-catalog` detail. It names each label it created, so the
+ * operator sees the repair rather than only its absence of complaint — and, on
+ * a second run, says plainly that it created nothing.
+ */
+function describeLabelCreation(result: GitHubLabelEnsureResult): string {
+  const head =
+    result.created.length === 0
+      ? "--create-missing-labels created nothing: every label the wave will read or write already existed."
+      : `--create-missing-labels created ${result.created.length} missing label(s) through the engine's own credential: ${quoteNames(result.created)}.`;
+  if (result.concurrentlyCreated.length === 0) return head;
+  return `${head} Created by someone else between the probe and the create, and read as present rather than as a failure: ${quoteNames(result.concurrentlyCreated)}.`;
+}
+
+/**
+ * The report to PRINT after a create pass: the re-probe, with that pass's
+ * account appended to the `state-catalog` detail.
+ *
+ * The created names travel in `detail` on purpose — {@link PreflightCheck} keeps
+ * its three-member `name` union and gains no field, so a root consumer's
+ * exhaustive switch over the check names is untouched by this flag existing.
+ */
+function withLabelCreation(
+  report: StorePreflightReport,
+  result: GitHubLabelEnsureResult,
+): StorePreflightReport {
+  return {
+    ...report,
+    checks: report.checks.map((check) =>
+      check.name === 'state-catalog'
+        ? { ...check, detail: `${check.detail} ${describeLabelCreation(result)}` }
+        : check,
+    ),
+  };
 }
 
 async function githubChecks(api: GitHubApi, storeConfig: GitHubStoreConfig): Promise<PreflightCheck[]> {
@@ -717,14 +962,26 @@ function markdownChecks(): PreflightCheck[] {
   ];
 }
 
+/**
+ * The opt-in repair flag (issue #675): create every label the `state-catalog`
+ * check reports missing, then re-probe. A NAMED CONSTANT because three places
+ * spell it — the parse, the refusal message and the usage text — and a typo in
+ * any one of them would present as a silently read-only run.
+ */
+const CREATE_MISSING_LABELS_FLAG = '--create-missing-labels';
+
 function preflightUsage(message: string): number {
   process.stderr.write(
     [
       `error: ${message}`,
-      'usage: cli-store preflight [--config <path>] [--expect <plugin-version>]   # prints the StorePreflightReport as JSON',
+      `usage: cli-store preflight [--config <path>] [--expect <plugin-version>] [${CREATE_MISSING_LABELS_FLAG}]   # prints the StorePreflightReport as JSON`,
       '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
       '  --expect <plugin-version> additionally reports the plugin/engine lockstep',
       '  comparison as an ADVISORY check — it never fails the preflight.',
+      `  ${CREATE_MISSING_LABELS_FLAG} creates every label the state-catalog check reports`,
+      "  missing, through the engine's own credential, then re-probes and names what it",
+      '  created. `github` store only (exit 2 on any other kind), idempotent, and never',
+      '  the default — without it the probe writes nothing at all.',
       '  For code-host posture (pr-merge-token, allow-auto-merge, required-checks) run',
       '  `host-pr preflight` — it is store-blind and reports on every store kind.',
       '',
@@ -773,6 +1030,16 @@ function readExpectFlag(args: string[]): string | undefined | null {
  * noticed at setup/plan time is information, and turning it into a refusal here
  * would block a `wave-plan` on a fact that only bites at dispatch. The hard
  * refusal is wave-start's gate phase.
+ *
+ * `--create-missing-labels` (issue #675) is the probe's one WRITE, and it is
+ * opt-in: with it, a `github` store's missing wave labels are created through
+ * the engine's own credential before the checks are read, so the printed
+ * `state-catalog` is the RE-PROBE and its detail names what was created. The
+ * read-only default is unchanged — without the flag this runner touches nothing
+ * and prints byte-identical output. On any other store kind the flag is a usage
+ * error (exit 2) raised BEFORE the store is even built: Linear's workflow states
+ * are configured in the workspace and the markdown store has no label registry,
+ * so there is nothing for the engine to create in either case.
  */
 export async function runStorePreflight(args: string[], injected?: IssueStore): Promise<number> {
   const op = args[0];
@@ -793,12 +1060,36 @@ export async function runStorePreflight(args: string[], injected?: IssueStore): 
     process.stderr.write(`error: ${(err as Error).message}\n`);
     return 2;
   }
+  // The repair flag, resolved to the GitHub store config it applies to — or
+  // `undefined`, which on a flagged run is the refusal below. Narrowing HERE
+  // rather than at the call site keeps `config.store` a discriminated read
+  // instead of a cast, and puts the refusal ahead of `resolveStore`: on a store
+  // kind the flag cannot serve, nothing is built, nothing is probed, and above
+  // all nothing is written.
+  const createMissingLabels = args.includes(CREATE_MISSING_LABELS_FLAG);
+  const labelRepairTarget =
+    createMissingLabels && config.store.kind === 'github' ? config.store : undefined;
+  if (createMissingLabels && labelRepairTarget === undefined) {
+    return preflightUsage(
+      `${CREATE_MISSING_LABELS_FLAG} applies to a "github" store only — this config is "${config.store.kind}". Linear's claims are workflow states, configured in the workspace (create them in Linear, or fix the states map); the markdown store has no label registry at all. Nothing was written.`,
+    );
+  }
   try {
     const store = await resolveStore(args, injected);
+    // The repair runs BEFORE the checks are read, which is what makes the
+    // printed `state-catalog` the re-probe the flag promises rather than a
+    // stale first look.
+    const labelRepair =
+      labelRepairTarget === undefined
+        ? undefined
+        : await ensureGitHubWaveLabels(
+            (store as GitHubIssuesStore).api,
+            labelRepairTarget,
+          );
     const report = await preflightStore(config, store, {
       ...(expected !== undefined ? { expectedEngineVersion: expected } : {}),
     });
-    printJson(report);
+    printJson(labelRepair === undefined ? report : withLabelCreation(report, labelRepair));
     return report.ok ? 0 : 1; // 1 = a precondition failed LOUDLY (the FOR-12 signal)
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
@@ -823,9 +1114,9 @@ export async function runStorePreflight(args: string[], injected?: IssueStore): 
  * a bare `cli-store.ts preflight` does. `cli.ts` therefore intercepts this
  * subcommand in `mainAsync` BEFORE the router's zero-arg guard.
  *
- * `--expect <plugin-version>` rides through unchanged like every other flag —
- * the shim adds no parsing of its own, so the two spellings cannot drift on it
- * either.
+ * `--expect <plugin-version>` and `--create-missing-labels` ride through
+ * unchanged like every other flag — the shim adds no parsing of its own, so the
+ * two spellings cannot drift on either.
  */
 export function runStorePreflightSubcommand(
   args: string[],
