@@ -35,6 +35,33 @@
  *                  `--allow-close-phrase-loss` is the deliberate override. This
  *                  is the ADR-0019 cross-host Basic-auth seam (`HttpProbe` +
  *                  `Creds`), NOT the ADR-0023 `LandingHost` seam.
+ *                  The body arrives EITHER inline (`--body`) OR from a file
+ *                  (`--body-file <path>`) — exactly one, never both, never
+ *                  neither. The file form exists because the inline one cannot
+ *                  carry a real PR body from every caller: a worktree-isolated
+ *                  Worker's `host-pr create` has been REFUSED in the field by an
+ *                  agent harness's worktree-isolation guard when `--body` was a
+ *                  long multi-paragraph string with blank lines, while the same
+ *                  shape from the Coordinator's own un-isolated checkout went
+ *                  through unrefused — a failure invisible from the place the
+ *                  Worker brief is authored. That guard is harness-side, and its
+ *                  predicate is neither documented nor stable across harness
+ *                  versions: measured from one worktree-isolated flotilla
+ *                  dispatch, it did NOT fire on the refused shape, at ~900 bytes
+ *                  or at several kilobytes. That is an argument FOR the file
+ *                  form, not against it — a caller cannot tell from inside
+ *                  whether its own call will be refused, so the fix has to be
+ *                  structural rather than a rule about how to phrase a body.
+ *                  `--body-file` takes the body off
+ *                  the command line entirely, so it is a structural fix whatever
+ *                  that guard's predicate turns out to be, and it also retires
+ *                  the shell-quoting hazard and the command-length advisory a
+ *                  multi-KB quoted argument carries. The file is read VERBATIM —
+ *                  blank lines, indentation and any trailing newline preserved —
+ *                  because the close-phrase guard needs the phrase to own its
+ *                  own line, and everything downstream (the guard, the reuse
+ *                  rewrite, the printed JSON) sees a string that is
+ *                  byte-identical to the same content passed inline.
  *   arm          → `armPullRequest` (host-pr.ts owns the arm intent). `--delete-branch`
  *                  (consumer KW-F6, threaded onto arm's own merge call-sites, #140)
  *                  deletes the head branch when the arm decision resolves to an
@@ -90,6 +117,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import {
   detectHost,
   armPullRequest,
@@ -168,7 +196,7 @@ function fullUsageLines(): string[] {
     // NB: deliberately NO --config. host-pr talks to the code HOST, not the
     // tracker, so there is no store to build and no wave.config.json to read.
     `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
-    `         create: --branch <branch> --title <title> --body <body> [--base <branch>] [--allow-close-phrase-loss]`,
+    `         create: --branch <branch> --title <title> (--body <body> | --body-file <path>) [--base <branch>] [--allow-close-phrase-loss]`,
     `                 (a WRITE: the PR body carries the store-kind close phrase, and a reuse rewrites both fields)`,
     `         arm: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
     `         merge: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
@@ -176,7 +204,15 @@ function fullUsageLines(): string[] {
     `         preflight: (no --branch — a repo-level probe)`,
     '',
     '  create    Open the PR for --branch (find-before-create): an existing OPEN PR on the branch is reused',
-    '            (never duplicated) and a missing one is created. Requires --title and --body.',
+    '            (never duplicated) and a missing one is created. Requires --title, plus EXACTLY ONE of',
+    '            --body <body> and --body-file <path> — both, or neither, is a usage error naming both flags.',
+    '            --body-file reads the body from that file VERBATIM (blank lines, indentation and any trailing',
+    '            newline preserved) and is otherwise indistinguishable from passing the same bytes inline.',
+    '            Reach for it whenever the body is more than one paragraph. A multi-paragraph --body has been',
+    '            refused in the field by an agent harness\'s worktree-isolation guard (not by every such guard —',
+    '            which is the trouble: the caller cannot tell from inside whether theirs will), and a multi-KB',
+    '            quoted argument is a shell-quoting and command-length hazard wherever it runs. A file has',
+    '            neither problem, because the body never reaches the command line at all.',
     '            NOT a read-only probe. "Idempotent" describes CREATION only: reuse RE-WRITES the live PR\'s',
     '            title AND body to the --title/--body you pass (last-writer-wins), so running this twice with',
     '            different arguments changes the PR twice. To ask whether a branch already has a PR without',
@@ -210,6 +246,8 @@ function fullUsageLines(): string[] {
     `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
     '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
     '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
+    '  --body-file <path> (create only) is the alternative to --body: the file\'s bytes become the PR body,',
+    '    unchanged. The close phrase must still own its own line INSIDE the file.',
     '  Every verb resolves its host credential through the engine credential seam:',
     '    <VAR>_CMD (a lookup command, run via the shell, 60s budget) wins over the ambient <VAR>.',
     '    A configured command that fails is a loud typed error naming the command — never its output,',
@@ -232,11 +270,15 @@ function fullUsageLines(): string[] {
  */
 const VERB_CONTRACT: Record<Verb, readonly string[]> = {
   create: [
-    'usage: host-pr create --branch <branch> --title <title> --body <body> [--base <branch>] [--remote <url>] [--allow-close-phrase-loss]',
+    'usage: host-pr create --branch <branch> --title <title> (--body <body> | --body-file <path>) [--base <branch>] [--remote <url>] [--allow-close-phrase-loss]',
     '  Opens the PR for --branch (find-before-create): an existing OPEN PR is REUSED — and its title AND body',
     '  are RE-WRITTEN to the values you pass (last-writer-wins) — so this is NOT a read-only probe; use `status`',
     '  for that. A reuse that would drop the live body\'s close phrase is REFUSED (exit 1, reuse-refused) unless',
     '  --allow-close-phrase-loss is passed.',
+    '  The body comes from EXACTLY ONE of --body (inline) and --body-file (a path, read verbatim). Prefer the',
+    '  file whenever the body runs to more than one paragraph — a worktree-isolated caller\'s multi-paragraph',
+    '  --body has been refused in the field by an agent harness\'s isolation guard (not by every such guard), and',
+    '  a long quoted argument is a quoting hazard everywhere. The close phrase must own its own line in the file.',
     'output: a single JSON object on stdout',
   ],
   arm: [
@@ -354,8 +396,23 @@ export async function runHostPr(
     );
   }
 
+  // `--body-file` is create's file form of `--body`. Rejected on every other
+  // verb rather than silently ignored — the same discipline
+  // `--allow-close-phrase-loss` and `--delete-branch` get, for the same reason:
+  // a flag that looks accepted but does nothing is a footgun, and this one
+  // would look like it had supplied a body to a verb that composes none.
+  const bodyFileGiven = args.includes('--body-file');
+  if (bodyFileGiven && verb !== 'create') {
+    return usage(
+      `--body-file is only supported by 'create' (it supplies the PR body); '${verb}' composes no PR body`,
+      verb,
+    );
+  }
+
   // `create`'s own required flags are decided here, before any host build or
-  // network — same "usage first" discipline. `--method` is landing-only and is
+  // network — same "usage first" discipline. That includes READING the
+  // `--body-file`: an unreadable path is a usage error, decided before any
+  // routing, credential resolve or request. `--method` is landing-only and is
   // neither read nor validated for `create` or `preflight`.
   let title: string | undefined;
   let body: string | undefined;
@@ -365,14 +422,69 @@ export async function runHostPr(
     if (title === undefined || title.length === 0) {
       return usage('--title <title> is required for create', verb);
     }
-    body = flag(args, '--body');
-    if (body === undefined || body.length === 0) {
-      // The body carries the store-kind close phrase (Convention 4); an empty
-      // one would open a PR that closes nothing. Refuse, do not default.
+
+    // The body arrives by exactly ONE of the two routes. Presence is decided on
+    // the FLAG TOKEN, not on its value, so `--body ""` is an empty body (the
+    // refusal below) rather than "no --body at all" (a different refusal that
+    // would teach the wrong fix). Both-at-once and neither-at-all are the two
+    // ways a caller can be ambiguous about which route they meant, and both
+    // errors name BOTH flags — a message naming only the one they omitted
+    // cannot teach a caller who passed the other one twice over.
+    const bodyInlineGiven = args.includes('--body');
+    if (bodyInlineGiven && bodyFileGiven) {
       return usage(
-        '--body <body> is required for create (it carries the store-kind close phrase)',
+        'pass exactly ONE of --body <body> and --body-file <path> for create — both were given',
         verb,
       );
+    }
+    if (!bodyInlineGiven && !bodyFileGiven) {
+      return usage(
+        'exactly ONE of --body <body> and --body-file <path> is required for create (the body carries the store-kind close phrase)',
+        verb,
+      );
+    }
+
+    if (bodyFileGiven) {
+      const bodyFile = flag(args, '--body-file');
+      if (bodyFile === undefined || bodyFile.length === 0) {
+        return usage(
+          '--body-file <path> needs a path (the file whose bytes become the PR body)',
+          verb,
+        );
+      }
+      try {
+        // VERBATIM — no trim, no normalisation. The close-phrase guard is
+        // line-anchored, so trimming a trailing newline would be a silent
+        // rewrite of the one property the guard reads; and the equivalence this
+        // flag promises ("the same content, either way, byte-identical
+        // downstream") only holds if nothing here touches the bytes.
+        body = readFileSync(bodyFile, 'utf-8');
+      } catch (err) {
+        // Missing, a directory, unreadable — one message, and it names the
+        // PATH, because the path is the thing the caller can fix.
+        return usage(
+          `could not read --body-file "${bodyFile}": ${(err as Error).message}`,
+          verb,
+        );
+      }
+      if (body.length === 0) {
+        // Same rule as an empty `--body`, stated against the file so the caller
+        // knows WHICH empty thing to fix.
+        return usage(
+          `--body-file "${bodyFile}" is empty — the PR body carries the store-kind close phrase`,
+          verb,
+        );
+      }
+    } else {
+      body = flag(args, '--body');
+      if (body === undefined || body.length === 0) {
+        // The body carries the store-kind close phrase (Convention 4); an empty
+        // one would open a PR that closes nothing. Refuse, do not default.
+        return usage(
+          '--body <body> is required for create (it carries the store-kind close phrase)',
+          verb,
+        );
+      }
     }
     base = flag(args, '--base') ?? 'main';
   }
@@ -505,6 +617,12 @@ export async function landingHostFor(
  * refusal precisely because the alternative — a PR that merges normally while
  * closing nothing — leaves the wave looking finished with one row quietly open.
  * `allowClosePhraseLoss` is the deliberate override.
+ *
+ * `body` arrives here as a plain string with its provenance already resolved by
+ * the caller — `--body` inline or `--body-file` read verbatim. That is WHY the
+ * two routes are indistinguishable downstream: there is no second code path for
+ * a file-sourced body to travel, so the close-phrase guard, the reuse rewrite
+ * and the printed JSON cannot tell (or treat) them apart.
  *
  * The host token is RESOLVED through the engine credential seam (ADR-0029) and
  * never printed; every way that can fail — nothing configured, a lookup command

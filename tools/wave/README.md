@@ -25,6 +25,22 @@ npx @formtrieb/flotilla-engine route-tuple --spine path/to/WAVE.md --id <id> --i
 
 The full subcommand list, flags, and exit-code semantics are documented at the top of [`src/cli.ts`](src/cli.ts).
 
+### `host-pr create` — the PR body arrives inline or from a file
+
+`create` is find-before-create: an open pull request on the branch is reused and its title and body rewritten, a missing one is opened. Its body comes from exactly one of two flags — `--body <body>` inline, or `--body-file <path>`, which reads the file verbatim. Both, or neither, is a usage error naming both flags, and a path that cannot be read is a usage error naming the path; all three are decided before any host routing, credential resolution or request.
+
+```bash
+npx @formtrieb/flotilla-engine host-pr create \
+  --branch wave/<id>-<slug> \
+  --title "<pr title>" \
+  --body-file .flotilla/tmp/pr-body-<id>.md \
+  [--base main] [--remote <url>] [--allow-close-phrase-loss]
+```
+
+**Reach for `--body-file` whenever the body runs past one paragraph.** An agent running inside an isolated git worktree has had this call refused outright, in the field, by its harness's worktree-isolation guard when `--body` carried blank-line paragraph breaks, while the identical shape from an ordinary checkout went through unrefused — so the failure is invisible from the place such a command is usually authored and reachable only from the place it actually runs. That guard is harness-side and its predicate is neither documented nor stable: a later measurement from an isolated worktree did *not* reproduce the refusal, at either size tried. Which is the argument for the file form rather than against it — a caller cannot tell from inside whether its own call will be refused. Independently of any guard, a multi-kilobyte quoted argument is a shell-quoting and command-length hazard everywhere. A file has neither problem, because the body never reaches the command line.
+
+The file is read byte-for-byte — blank lines, indentation and a trailing newline all preserved — and travels the same path an inline body does, so the close-phrase refusal, the reuse rewrite and the printed JSON are identical for the same content supplied either way. That matters for one property in particular: the close phrase that links the pull request to its tracker issue must own its own line, and nothing here trims it off.
+
 ### `compose-driver` — the dispatch driver, composed rather than transcribed
 
 The Workflow dispatch script ships as a package asset, `driver/wave-start-inflight.js`, alongside the hooks. `compose-driver` reads it, fills its five compose-time constants and its per-row `ISSUES` array from the wave spine, the wave config and the issue store, and writes the finished script to `--out` — the file a Claude Code Workflow run takes as its `scriptPath`. It prints one JSON receipt naming the rows composed, each row's branch and model tier, the wave anchor, and the Reviewer agent name it derived. The file form is a deliberate departure from the harness's inline default: it keeps the composed script inspectable and replayable, and the file must sit inside the repo (the gitignored `.flotilla/tmp/`) where the session may read it — the harness refuses to start a workflow from a path it is not allowed to read.

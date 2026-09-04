@@ -5631,6 +5631,56 @@ describe('host-pr subcommand routing', () => {
     expect(code).toBe(2);
     expect(stderrBuf).toMatch(/--title/);
   });
+
+  // ── issue #702 — the file form of the PR body is reachable through the router ──
+  //
+  // The verb's own behaviour is host-pr-cli.spec.ts's; what is pinned here is
+  // that `--body-file` survives the async wire (it is parsed by the runner, not
+  // the router) and that the CLI surface a stranger reaches first NAMES it.
+
+  it('"host-pr create --body-file" reaches the runner through the async wire — an unreadable path is the runner\'s own exit-2', async () => {
+    const code = await mainAsync([
+      'host-pr', 'create', '--branch', 'b', '--title', 'T',
+      '--body-file', join(tmpdir(), 'flotilla-no-such-pr-body-702.md'),
+      '--remote', 'git@github.com:o/r.git',
+    ]);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/could not read --body-file/);
+    // The ROUTER never answered: no unknown-subcommand line, no async refusal.
+    expect(stderrBuf).not.toMatch(/unknown subcommand/);
+    expect(stderrBuf).not.toMatch(/invoke it via the async entrypoint/);
+  });
+
+  it('"host-pr create" with BOTH body routes exits 2 through the same wire', async () => {
+    const code = await mainAsync([
+      'host-pr', 'create', '--branch', 'b', '--title', 'T',
+      '--body', 'x', '--body-file', 'anything.md',
+      '--remote', 'git@github.com:o/r.git',
+    ]);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/exactly ONE/);
+    expect(stderrBuf).toContain('--body-file');
+  });
+
+  it('the top-level usage names the create body routes, so a caller can find --body-file without probing', () => {
+    main([]); // zero args → printUsage()
+    const line = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('host-pr create --branch'))!;
+    expect(line).toBeDefined();
+    expect(line).toContain('--body <body>');
+    expect(line).toContain('--body-file <path>');
+    // …and it says WHEN to reach for it, not merely that it exists.
+    expect(line).toMatch(/one paragraph/);
+  });
+
+  it("the host-pr purpose line names both body routes (the unknown-subcommand answer)", () => {
+    const code = main(['definitely-bogus-verb']);
+    expect(code).toBe(2);
+    const purpose = stderrBuf.split('\n').find((l) => /^ {2}host-pr {2}\S/.test(l))!;
+    expect(purpose).toBeDefined();
+    expect(purpose).toContain('--body-file');
+  });
 });
 
 // ─── verdict-acked subcommand (FOR-49 — end-to-end CLI composition) ─────────

@@ -574,7 +574,21 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
 ## Termination
 1. Commit all work in one commit.
 2. \`git push origin ${issue.branch}\` (never \`-u\`, never to default).
-3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused, never duplicated — and its title/body are re-written to the \`--title\`/\`--body\` you pass** (\`updated: true\` in the JSON discloses it), so the body you compose reliably lands on the live PR (last-writer-wins). Compose a PR body whose last line is the store-kind close phrase, then run:
+3. Open the PR **through the engine — never \`gh pr create\`** (\`gh\`'s creds are sandbox-denied and its TLS fought the proxy in every live run; this verb uses the same \`fetch\` path the landing verbs do). Find-before-create is idempotent: a PR already open on this branch (e.g. a cap=1 re-dispatch onto the same branch) is **reused, never duplicated — and its title/body are re-written to the \`--title\` and the body you hand over** (\`updated: true\` in the JSON discloses it), so the body you compose reliably lands on the live PR (last-writer-wins).
+
+   **Write the body to a FILE and pass \`--body-file\`. Never put a PR body on the command line.** Two reasons, each sufficient on its own. (a) A long multi-paragraph \`--body\` has been REFUSED in the field by a worktree-isolation guard of the family you run under — the guard reporting it could not be shown not to be a git command — while the identical shape from the Coordinator's own un-isolated checkout went through unrefused, eight such PRs in one day. The refusal does NOT reproduce on every harness version (measured from one isolated dispatch, it did not fire at all), and that is the argument FOR the file rather than against it: you cannot tell from where you stand whether your call will be refused, so a rule about how to phrase a body buys you nothing. (b) A multi-KB quoted argument is a shell-quoting hazard and a command-length hazard wherever it runs. A file has neither problem, because the body never reaches the command line.
+
+   **And write a REAL body.** This step used to ask for "a one-paragraph summary", and one paragraph is what it got — which is why a Coordinator has repeatedly had to recover Worker-authored PR bodies out of agent transcripts instead of reading them on the PR. You are the only role that watched this change being made: say what you changed and why, what you falsified and what it printed, which decisions you took and which alternatives you rejected, and anything a reviewer would otherwise have to reconstruct. Length is not the point; being the durable record is.
+
+   a. Write the body with your file-writing TOOL — it takes the path directly, creates the parent directory, and involves no shell at all — to this RELATIVE path in your own worktree's wave scratch directory:
+
+      \`.flotilla/tmp/pr-body-${issue.id}.md\`
+
+      RELATIVE because every Bash call of yours starts at your dispatch root (workspace setup step 1), which is where a relative path lands; and INSIDE your worktree because that is the only place your isolation posture lets you write — the Coordinator's own scratch directory is outside it. The name is deterministic, so a retry overwrites rather than accumulates. You write it AFTER step 1's commit, so it can never enter the commit; delete it once step 4 has confirmed the PR.
+
+      The file's LAST line must be the close phrase \`${issue.closePhrase}\`, owning that line by itself (wave-shared Convention 4). The engine's close-phrase guard is line-anchored, and \`--body-file\` reads the file VERBATIM — blank lines, indentation and a trailing newline all preserved — so the phrase keeps exactly the line you gave it. That phrase is the **only** tracker id the title or body may name (mention discipline, policy clause 6): do not reference any other issue id anywhere, in the file or the title.
+
+   b. Then, as its own Bash call, run:
    \`\`\`bash
    # WAVE_CLI carries this consumer's configured engine.cli binding, which the
    # config layer validated as repo-relative — so it resolves from this
@@ -586,9 +600,7 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
    ${WAVE_CLI} host-pr create \\
      --branch ${issue.branch} \\
      --title "${issue.prTitle}" \\
-     --body "<one-paragraph summary of what you changed>
-
-${issue.closePhrase}"
+     --body-file .flotilla/tmp/pr-body-${issue.id}.md
    # exit 0 → stdout is one JSON object; its .url (outcome: created | reused) is your prUrl.
    #
    # exit NON-ZERO → READ .outcome IN THAT SAME JSON BEFORE DOING ANYTHING ELSE.
@@ -597,8 +609,9 @@ ${issue.closePhrase}"
    #   outcome create-failed → the create attempt itself failed; .fallbackPrefillUrl
    #     is the manual-open fallback. Report blocked.
    #   outcome reuse-refused → the close-phrase guard stopped a REWRITE: the body
-   #     you just passed above is missing ${issue.closePhrase} (re-read it — the
-   #     guard checks the body YOU pass, never the live one). .url still names
+   #     in the file you just passed is missing ${issue.closePhrase} (re-read the
+   #     FILE — the guard checks the body YOU pass, never the live one; and an
+   #     exit 2 instead means the path itself could not be read). .url still names
    #     the branch's existing PR, but the refusal made NO write at all — the PR
    #     is exactly as it was before this call, and that URL is not evidence
    #     anything landed. Never reach for --allow-close-phrase-loss to get past
@@ -609,7 +622,7 @@ ${issue.closePhrase}"
    #     report blocked with the printed .reason — never let step 4's re-query
    #     of that same URL read as success for a rewrite that never happened.
    \`\`\`
-   The body MUST carry the close phrase \`${issue.closePhrase}\` on its own line (wave-shared Convention 4 — reads GITHUB_TOKEN from your env, never printed), and that is the **only** tracker id the title or body may name (mention discipline, policy clause 6): do not reference any other issue id anywhere.
+   \`--body-file\` and \`--body\` are alternatives: exactly one of them, never both and never neither, or the verb exits 2 naming both flags. The verb reads GITHUB_TOKEN from your env and never prints it.
 
    Run that command **bare** — no \`|\`, no \`$( )\`, no assignment. Its JSON lands in your tool output, where you can read it; you do not need it in a shell variable, and step 4 explains why you must not put it in one.
 4. **Confirm the PR by asking the HOST, in a separate Bash call — never by carrying a value from step 3** (wave-shared Convention 12, half two). A finishing report with a missing or empty \`prUrl\` is the live failure this step exists to stop. **The confirmation is a re-query, not a guard on a capture**, because in your dispatch a guard on a capture cannot run at all:
