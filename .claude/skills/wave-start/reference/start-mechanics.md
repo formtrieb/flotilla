@@ -578,7 +578,7 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 #   grant the scope extension it's asking for — set it right here, same
 #   routing pass:
 {{wave-cli}} spine set-disposition "$SPINE" "01.1" resolved-in-slice
-#   ^ or scope-extension | filed:<id> | dropped:<reason> — never `open` (the
+#   ^ or scope-extension | filed:<id> | dropped:<reason> | upstream:<ref> — never `open` (the
 #   capture default, refused as a disposition by set-disposition itself, exit 1).
 #   Anything you can't dispose of now stays `open` and rides forward: step 9
 #   reports it (below), and wave-close's fail-closed archive gate (its own
