@@ -1,6 +1,6 @@
 {
   "name": "flotilla",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Portable, Claude-Code-native wave-orchestration toolkit: plan a batch of independently-grabbable issues, dispatch parallel AFK agents in isolated worktrees, review each, land via PRs.",
   "author": {
     "name": "formtrieb"

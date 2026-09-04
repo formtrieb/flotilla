@@ -9,6 +9,209 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.4.0] — 2026-09-04
+
+**The release the consumers wrote.** Three repositories ran their first waves on 2.3.0
+within a day of its publish, and every line below answers something one of them hit: a
+build gate that needed the sandbox off and hung an unattended wave for five hours on a
+prompt nobody could answer; a brief that asserted "nothing gitignored here" to a Swift
+consumer whose engine binary lives in `node_modules`; a coverage gate that read a
+half-tested row as fully tested; a pull request that ended up with three titles; a cleanup
+that refused every worktree and named no reason. The answers were grilled into one
+decision record and landed in two waves the same day, eight rows, sixteen agents each,
+every row approved in its first iteration. Minor: a config field, a binding, two
+dispositions, a routing cell and a flag join the surface; one reuse default changes and
+one dogfood-store value changes, both under Changed below; nothing is removed, and the
+package-root export list is byte-identical to 2.3.0.
+
+### Added
+
+- **A verify command declares what it needs, and a dispatched agent never escalates to
+  get it** (issue #709, [ADR-0049](docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md)).
+  `VerifyCommand` gains an optional `needs` — a closed set of three requirement classes,
+  `writes` (paths outside the worktree), `network` (hosts) and `host` (a daemon socket,
+  a simulator, a device: the class that cannot be narrowed) — validated at `config
+  validate`, which refuses any other key and now reports how many commands declare a
+  need. Both composed briefs render each command with its needs as data. The Worker brief
+  states the rule in its own words — a dispatched agent never escalates its own
+  permissions, attended or not — and retires the retry-with-the-sandbox-off path by name:
+  a command refused for a sandbox reason whose need is unprovided is reported as not run,
+  never re-run un-sandboxed, never dropped silently. The Reviewer runs under at most the
+  Worker's rights, and its deferred valve gains `capability-gated` as a fourth trigger, so
+  the acceptance criteria such a gate would have backed land `deferred` and the row
+  continues: the human act moves from a blocking click to a disposition at close.
+- **`wave-setup` provides what a gate declares** (issue #716). The verify interview asks
+  per command which of the three classes it needs and records the answer as that
+  command's `needs`; the AFK harness-config scaffold derives a tracked `sandbox` block
+  (write paths and allowed domains, path-exact) from the declared `writes` and `network`
+  entries; `host` never enters the tracked file — the docker note is rewritten as the rule
+  for the whole class; setup runs each needs-bearing command once inside the scaffolded
+  sandbox and records pass or refused, a refused declared-and-scaffolded need being a
+  setup STOP. A parity spec holds the tracked block and the declared needs in step in
+  both directions, the way the allowlist guard already does for `permissions.allow`.
+- **The install step is a setup-time binding: `engine.install`** (issue #717,
+  ADR-0032 amendment). The command that makes the engine binary exist in a tracked-files-
+  only worktree now has a config home beside `engine.cli`, validated by the same
+  repo-relative rule and reported by `config validate`. The composer's precedence is
+  stated and pinned — row metadata, then the `--deps-setup` flag, then `engine.install`,
+  then the step derived from the verify profile, then nothing — and each composed row's
+  receipt names which level answered (`depsSetupSource`). When `engine.cli` resolves
+  through a path the repository gitignores and no source offers an install step, the
+  composer refuses instead of composing a brief that cannot run. The driver's three
+  workspace-setup fallback sites no longer manufacture a confirmation: an absent install
+  step renders as a deferral — none recorded, verify before the first engine call — never
+  as "consumer confirmed: nothing gitignored here".
+- **`upstream:<ref>` is a fifth disclosure disposition** (issue #683). A consumer's finding
+  about the toolkit itself now has an honest exit at the archive gate — filed upstream,
+  referenced — instead of `dropped:` with a reason that was never true. The reference is
+  free-form and non-empty; the `report` skill files, the Coordinator records.
+- **The Operator-ruled Reviewer-only round has its own routing cell** (issue #684).
+  `route-verdict --ruling "<reason>"` and `route-tuple --ruling` admit an iteration above
+  the re-dispatch cap — the one round the cap does not govern, because it re-reviews a
+  fixed world rather than re-running the Worker. The reason is mandatory and quoted back
+  in the result; a bare token is refused; cap accounting is untouched.
+- **`host-pr create --body-file <path>`** (issue #702). A PR body read verbatim from a
+  file, so a Worker can write more than one paragraph and a worktree-isolated caller
+  survives the harness guard that refused a multi-paragraph `--body`. Exactly one of the
+  two forms per call; a reuse that would drop the live close phrase is still refused.
+- **A dirty cleanup entry names what blocked it** (issue #718). `worktree-cleanup`'s
+  `dirty` entries carry `blockingPaths` — tracked-deleted, untracked and other-tracked
+  survivors listed separately, bounded to twenty per bucket with an overflow marker — in
+  the JSON and the text summary, so an operator sees which paths kept a worktree from
+  being disposable without re-running `git status` by hand. The measurement the finding
+  asked for was run with controls: none of the three path classes it could not explain is
+  refused on this harness, so the classifier's denied set was correctly left alone; the
+  hooks directory it named as missing had been in that set since the carve-out itself.
+- **`route-tuple`'s result reports where the PR title came from** (`titleSource`:
+  `live-pr` | `row` | `flag`), beside the body's existing summary source (issue #713).
+
+### Fixed
+
+- **Partial verify coverage is its own outcome** (issue #711). The `verify-profile-coverage`
+  DoR gate read `pass` as soon as one declared file matched a profile; a row half in tested
+  sources and half in untested application targets was indistinguishable from a fully
+  verify-backed one. It now `warn`s, naming the uncovered files and the profiles that did
+  match, and wave-create carries the uncovered files into the row's reviewer hint. The
+  all-covered and all-uncovered texts are byte-identical to before.
+- **`route-tuple` preserves the live PR title on reuse** (issue #713). One change carried
+  three titles: the Worker's, the row's the verb wrote over it, and the Worker's again on
+  the squash. The body was preserved by acceptance criterion; the title is the same claim
+  in one line and is now preserved the same way — byte-identically, no strip, no trim —
+  with `--title` as the explicit override and the create path's default unchanged.
+- **The to-prd filing reference names the document verbs as `issue-store` subverbs**
+  (issue #704) — the bare form printed the top-level usage and published nothing — and its
+  store sentence names all three shipped stores, a PRD being a native Document on Linear.
+- **Five reconciliation residues of the first-ten-minutes wave** (issue #699): ADR-0009
+  carries the dated amendment line CLAUDE.md and the charter already carried; triage's
+  boundary line enumerates the planning header as Files, Risk, Worker *and* Acceptance
+  criteria, matching what the body codec requires on read; the shipped driver's
+  `meta.phases` agrees with the script's phase usage; `closePhraseFor` on the markdown
+  store composes a close line the reuse guard accepts (see Changed); `route-tuple`'s
+  sidecar recovery runs the misnamed-sidecar sweep the dispatch path had stopped running.
+- **The wave-close phase-3 reference names the classifier's denied set by its constants**
+  instead of restating a stale subset, and says plainly that untracked build residue is the
+  consumer's `cleanup.disposableNames` to declare; `wave-setup`'s disposable-names
+  question names macOS/Xcode residue beside `.build` and `node_modules` (issue #718).
+- **A decision record and a glossary term for the escalation seam** (PR #715). ADR-0049
+  settles six forks — brief clause as the floor and setup coverage as the optimisation, no
+  escalation ever, the need declared as a class and never a knob, the withheld gate
+  through the Reviewer's existing valve, tracked for writes/network and local for host,
+  enforcement as a brief clause — and CONTEXT.md gains **Capability requirement** beside
+  *Scope extension*, with the ruling that "deferred" has three moments and a withheld gate
+  is deliberately not a fourth sense.
+- **The README header is drawn from a real wave** (PR #703): branches leaving `main`,
+  running side by side, landing back — a consumer's actual wave, plotted, with the caption
+  that says so.
+
+### Changed
+
+- **A reuse default changes — the heads-up.** `route-tuple` on a branch with an open pull
+  request and no `--title` previously wrote the spine row's title over the live one and
+  now leaves the live title standing. A caller that relied on the rewrite passes `--title`
+  explicitly. Ruled at the public-API STOP with the strip deliberately *not* applied to
+  the live title: the bare-id strip belongs on the row title, which comes off the tracker;
+  the live title is Worker-authored text under mention discipline and is not the verb's
+  to edit.
+- **A dogfood-store value changes.** `closePhraseFor` on the markdown store composed
+  `Closes #<slug>#NN` for a compound id, which the reuse guard refused; it now composes
+  `Closes #NN`. Module-local, the GitHub and Linear paths byte-identical; only the local
+  markdown store — dev and dogfood, never a consumer's tracker — sees the new value. Read
+  against ADR-0035 at review and judged below the public surface; recorded here so the
+  judgment is not rediscovered.
+- **A blank install step no longer wins its precedence level.** An explicit empty
+  `--deps-setup` or row-meta `depsSetup` used to resolve to an empty step; it now falls
+  through to the next source. No documented recipe ever spelled a blank.
+- **No implementer heads-up this time.** Every interface widening is optional —
+  `VerifyCommand.needs`, `EngineConfig.install`, `OpenPrRef.title`,
+  `WorktreeEntry.blockingPaths` — an out-of-tree implementer compiles unchanged, and
+  `index.ts` is byte-identical to 2.3.0.
+
+### Proven since 2.3.0
+
+- **An installed-form dispatch from a composed driver, with the Reviewer resolving by
+  its namespaced name — the read 2.3.0 said was missing.** Three consumers ran waves on
+  2.3.0 the day after its publish; the one whose findings opened this release ran one row,
+  four agents, zero agent errors, approve at iteration one, PR merged and archived, on the
+  installed form with a Linear store. Issue #697 closes with this release on that evidence.
+- **`route-tuple` in the dispatch path: eight returned tuples across the two waves of
+  2026-09-04.** Among them a public-API STOP that wrote nothing, a transient host fetch
+  failure whose re-run found every earlier step `performed-before` and wrote only the
+  rest, and a Reviewer-only recovery round at the same iteration after a Worker reported
+  a thirty-nine-character commit SHA — corrected through `write-report`, re-reviewed,
+  routed, landed.
+- **`--body-file` opened every PR of both waves** — eight Worker-authored, multi-paragraph
+  bodies, none refused by the isolation guard, each preserved by the terminator.
+- **The partial-coverage warn fired live the same day it landed**, at the second wave's
+  cut, on two rows whose only uncovered file was the decision record each owed an
+  amendment line — and each Reviewer stated the inspection-only half in its verdict.
+- **The no-escalation clause in its first live exercise, on both roles.** A Reviewer's
+  scratch-worktree removal was refused by the sandbox and it did not force it; a Worker's
+  `git reset` was refused on tracked skill paths and it used its file-editing tool
+  instead. Both disclosed; neither escalated.
+
+### Unsettled by construction, and what is not yet proven
+
+The list is 2.3.0's, re-read against the two waves of 2026-09-04, plus what this release
+adds to it.
+
+- **The `capability-gated` path has not run end-to-end — `verify`: a consumer wave with a
+  declared need that setup did not provide.** Every verify command in both waves ran; no
+  command was refused for a capability reason; the acceptance criteria that shipped the
+  path are artifact-level. The first live exercise is a consumer's.
+- **Whether a project-tracked `sandbox` block widens a dispatched worktree agent's own
+  sandbox is open by construction — `verify`: the first consumer that runs the new setup
+  interview's live gate.** No dispatch can observe it: neither agent may write the tracked
+  settings file, and a successful write needs a fresh session to observe. The setup half
+  grounds its go/no-go on the vendor's documented settings scope, re-fetched independently
+  by both agents, and states the deferral in the row's own report.
+- **No consumer has declared `engine.install` or a `needs` yet — `verify`: the next
+  consumer setup on 2.4.0.**
+- **The preserved reuse title has not been exercised against a real host — `verify`: the
+  next wave's first reuse.** Both reuses of 2026-09-04 preceded the fix landing; the
+  vendor list-PR shapes are confirmed from the documented forms (GitHub by the Worker,
+  Bitbucket by the Reviewer from the downloaded OpenAPI spec).
+- **The ruled Reviewer-only cell has no live above-cap round yet, and `upstream:` has no
+  consumer use yet.** Both landed in the wave that opened this release; neither situation
+  arose since.
+- **The residue-probing worktree classification: two more negative reads (2026-09-04,
+  both closes).** The sandboxed sweep reported every agent worktree `erroredStillListed`
+  with survivors; the documented sandbox-off removal cleared them each time. The new
+  `blockingPaths` field was not observed on those entries — they were refusals of the
+  removal itself, not junk-classification misses — so its first live read is still owed.
+- **Headless is designed, not built; Bitbucket's `arm` and `merge`, the Linear attachment
+  upsert, the `prUrl` notice's forwarding, the team-key casing and the health-less mirror
+  publish — unchanged since their last entries.** Sixteen more Scribe rounds completed
+  clean without a notice arising.
+- **Filed from the two closes, bare:** the ADR-0049 follow-through bundle (#723 — the
+  Scribe brief's missing clause, two stale copies of the valve, a headline-only clause
+  spec, a reviewer reaching for raw `gh`, and the harness fact that a file-editing tool and
+  a shell call carry different write rights on the same tracked path), the engine-hygiene
+  bundle (#724 — the module-private types and helpers the barrel should name, a NUL-byte separator
+  that makes `verify.ts` diff as binary, a missing negative assertion), a fresh-worktree
+  `npm ci` failure at the lockfile (#725), a retried Worker inheriting its own earlier
+  attempt's uncommitted work (#731), and the review-ref namespaces no sweep reaches — 187
+  stale refs at one close (#732).
+
 ## [2.3.0] — 2026-09-03
 
 **The release after the first ten minutes.** Everything in it was found by measuring a
