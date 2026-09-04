@@ -748,15 +748,82 @@ git fetch, git pull, git push
 
 An **HTTPS** origin that authenticates through the harness proxy does not need this — it is an SSH-origin concern.
 
-### `docker` — kept OUT of the tracked `excludedCommands` (host-escape)
+### The `host`-class rule — kept OUT of every tracked file (host-escape); `docker` is its worked example
 
-Do **not** scaffold a `docker`-star entry into the tracked `excludedCommands`. A tracked un-sandboxed `docker` grants a host escape to **every future agent of the repo**, not just this wave's Workers — a security review on the first Linear consumer wave flagged exactly this. The proven pattern:
+**A tracked, un-sandboxed command exclusion grants a host escape to every future agent of the repo, not just this wave's Workers — this is the rule for the whole `host` class (ADR-0049 decision 3), not a `docker`-specific carve-out.** `docker` was the first instance a security review on the first Linear consumer wave flagged, and the reasoning generalizes verbatim to anything else a verify command's `needs.host: true` might name — a daemon socket, a simulator, a physical device: none of it is narrowable to a path or a host the way `writes`/`network` are (see [Sandbox capability scaffold](#sandbox-capability-scaffold-writesnetwork-from-declared-needs-adr-0049) below for the declaration this class backs), so there is no exact, path-scoped grant to write into the tracked `sandbox` block or `excludedCommands` — only a blanket, repo-wide one. Do **not** scaffold ANY `host`-class exclusion — `docker`-star or otherwise — into a tracked file. The proven pattern, worked through `docker` (the same shape applies to a simulator, a device, or any other `needs.host` command):
 
-- **Operator-local only.** If the operator needs docker un-sandboxed, it goes in their **untracked** `.claude/settings.local.json`, never the tracked file that Workers inherit.
+- **Operator-local only.** If the operator needs docker (or another `host`-class capability) un-sandboxed, it goes in their **untracked** `.claude/settings.local.json`, never a tracked file a dispatched Worker/Reviewer inherits. A `host`-class gate deferring on every other runner is the expected, honest line this produces — not a defect to engineer around.
 - **Brief the Worker for graceful degradation** (the Coordinator embeds this in the row's `issueSpec`/verify expectations when a verify step touches docker):
   1. **Socket-free floor, always** — `docker compose config` (validates the compose file) and `bash -n` (syntax-checks scripts) need no daemon; run them unconditionally.
   2. **Live path only when reachable** — run the actual `docker` / `docker compose up` path **only when the docker socket happens to be reachable**.
   3. **Precise deferral disclosure otherwise** — when the socket is unreachable, the Worker names in its report exactly which checks were deferred, so the Reviewer reads a deferred-not-passed signal rather than a false green.
+
+For a `needs.host: true` verify command with no docker-shaped socket-free floor of its own, the same three-part shape still applies at the level ADR-0049 actually specifies it: run whatever narrower probe the command supports (an equivalent of `docker compose config`) unconditionally, run the live path only when the capability is actually reachable on this runner, and disclose a precise `capability-gated` deferral otherwise — never a silent skip and never a re-run with the sandbox off (policy clause 12, every dispatched brief).
+
+## Sandbox capability scaffold: writes/network from declared `needs` (ADR-0049)
+
+The SKILL.md ["Sandbox capability requirements"](../SKILL.md#scaffolding-the-tracked-sandbox-block-writesnetwork--the-capability-requirement-adr-0049) precondition owns the **judgment** (measure before scaffolding, `host` stays operator-local, the docker rule generalizes to the whole class above); this is the concrete scaffold. Like the AFK harness config, it merges into the consumer repo's **tracked** `.claude/settings.json` — the same hand-off, the same file, not a second one — because a dispatched Worker/Reviewer worktree carries tracked files only, and a declared `writes`/`network` need has to reach that worktree for the wave's own dispatched agents to have it, not only the operator's interactive session.
+
+### Measuring whether the tracked sandbox block is honored — the probe (issue #716, ADR-0049's one open assumption)
+
+ADR-0049 decision 3 names `.claude/settings.json`'s `sandbox` block (`filesystem.allowWrite` / `network.allowedDomains`) as the tracked home for a declared `writes`/`network` need, and records — deliberately — that whether the harness actually merges a **project-tracked** `sandbox` block into a **dispatched worktree agent's** own sandbox, alongside the operator's global settings, is an open assumption the implementing row measures first, with real positive and negative controls, before scaffolding anything on the strength of it. A probe that cannot fail proves nothing (Convention 11) — the two controls below are chosen so that either one, run in isolation, would come back the *other* way if the sandbox were not genuinely live for a dispatched worktree agent.
+
+**Run the baseline discrimination probe first, inside the sandbox, from the target worktree** — this is the same probe issue #716's own dispatch ran live (2026-09-04) to ground this section, and it is what `wave-setup` re-runs at every consumer's own setup, on that consumer's own machine and harness version, rather than trusting a determination made once here and never re-checked:
+
+```bash
+# Positive control — a path no sandbox-allowed root covers. Expect a denial:
+# "operation not permitted", non-zero exit. If this SUCCEEDS, the sandbox
+# is not actually enforcing filesystem writes on this machine at all, and
+# nothing below in this section is trustworthy evidence either way — stop
+# and treat the whole precondition as unmeasurable here, not as passing.
+echo "probe" > ~/Desktop/flotilla-sandbox-probe.txt
+
+# Negative control — an ordinary in-worktree write. Expect success, exit 0.
+# If THIS is denied too, the probe isn't discriminating (everything fails),
+# which is the same "unmeasurable, don't trust either result" case above.
+echo "probe" > ./.flotilla-sandbox-probe.tmp && rm -f ./.flotilla-sandbox-probe.tmp
+```
+
+Issue #716's own run: the positive control was denied (`operation not permitted`, exit 1 — the exact sandbox-violation shape) and the negative control succeeded (exit 0) — a genuinely discriminating pair, confirming the filesystem sandbox is live and enforced against a dispatched worktree agent's own Bash calls. That establishes the **baseline** the rest of this measurement reasons from; it does not, by itself, answer whether a *declared, tracked* `sandbox.filesystem.allowWrite` entry would widen that baseline for this same dispatched agent — the harness declines an agent's own write to `.claude/settings.json` (the same finding the AFK permission scaffold section above already documents), so a single dispatched Worker cannot add an entry and observe the effect on itself; proving the widening needs the operator hand-off below **plus** a fresh session reading the landed file, which is exactly what the live-gate later in this section runs.
+
+**Grounding the go/no-go decision beyond the baseline probe alone.** Issue #716 read Claude Code's own published settings documentation (`code.claude.com/docs/en/settings` and `/settings-reference`, fetched 2026-09-04) rather than assume either way: `sandbox.filesystem.allowWrite` and `sandbox.network.allowedDomains` — the exact two keys ADR-0049 decision 3 names — carry **"Any file"** scope, meaning nothing excludes them from a shared, project-committed `.claude/settings.json`. That is a real, load-bearing distinction the same reference draws elsewhere: twelve other `sandbox.*` subkeys (`sandbox.filesystem.disabled`, `sandbox.network.strictAllowlist`, `sandbox.bwrapPath`, and nine more — the security-sensitive ones a project file could otherwise use to *weaken* the sandbox for every future agent, not just widen a path) are restricted to user, local, or managed sources only, precisely the shape a self-widening escape would need and precisely the shape ADR-0049 already worries about for the `host` class above. `filesystem.allowWrite` / `network.allowedDomains` are not on that restricted list. Structurally, `sandbox` and `permissions` live in the identical settings file, read by the identical loader, under the identical "shared project settings" scope rule — and that rule is not theoretical here: it is what issue #716's own dispatch runs under right now, since this worktree's own tracked `permissions.allow` (read directly, not inferred) is demonstrably what lets this dispatch run its engine/git/npm calls unprompted.
+
+**What this measurement does NOT close, and the live-gate below exists for exactly that gap.** Documentation plus structural analogy plus a discriminating baseline probe is real evidence, not a substitute for observing the actual widening on the actual consumer's own machine and harness version once the file has genuinely landed. Treat the finding above as **positive** — proceed to scaffold — and treat the **live-gate** below (after the hand-off lands) as the step that actually proves it for THIS consumer, THIS harness build, THIS run — the identical posture ADR-0029's credential live-gate already takes toward the keychain ACL-bind question ("a live-gate question, not a doctrine assertion in either direction").
+
+**A NEGATIVE live-gate result — the STOP this precondition names.** If the live-gate below (after scaffolding and hand-off) still shows the declared path denied, that is not a bug in this scaffold to work around — it is ADR-0049's open assumption resolving to "no" for this consumer's environment. STOP the sandbox portion of this precondition: do not treat the tracked `sandbox` block as a working carrier here. Disclose the alternative carrier explicitly in your report and operator checklist — today that means every `writes`/`network` need on this consumer stays **declared but unprovided**, deferring as `capability-gated` on every wave exactly the way a `host` need always does, until either a harness update changes the finding or the consumer adopts a different carrier (an operator-local `.claude/settings.local.json`, accepted as narrower-reaching and not wave-dispatch-safe, or a future flotilla mechanism this finding would motivate). Nothing about the needs INTERVIEW changes — commands still declare what they need, honestly — only which of those declarations this consumer's setup can actually provide.
+
+### The scaffold JSON — deriving `sandbox.filesystem.allowWrite` / `sandbox.network.allowedDomains` from declared needs
+
+Once the measurement above is positive (or the live-gate below has already passed once for this consumer), compose the tracked `sandbox` block as the **union, deduplicated, of every verify command's declared `needs.writes` / `needs.network`** — narrow and path-exact, never a broader grant than what was actually declared:
+
+```json
+{
+  "sandbox": {
+    "filesystem": {
+      "allowWrite": ["~/Library/Developer/Xcode/DerivedData"]
+    },
+    "network": {
+      "allowedDomains": ["registry.example-cache.internal"]
+    }
+  }
+}
+```
+
+- **One entry per declared path/host, verbatim.** `writes.ts`/`wave-config.ts`'s own validator (ADR-0049 decision 2) deliberately does not resolve, normalize, or home-root-refuse a `needs.writes` path — a leading `~` is common and correct in a harness's own sandbox block, unlike `cleanup.extraRoots`'s repo-relative convention. Carry the string straight from `needs.writes[]` into `sandbox.filesystem.allowWrite[]`, and from `needs.network[]` into `sandbox.network.allowedDomains[]`, with no reshaping in between — a reshaping step is exactly where the parity guard below would start drifting from what was actually declared.
+- **`host` never appears here, or in `excludedCommands`, or anywhere else in a tracked file.** See [the `host`-class rule](#the-host-class-rule--kept-out-of-every-tracked-file-host-escape-docker-is-its-worked-example) above — a `needs.host: true` command is provided operator-local only, by design, and every dispatched agent's brief already carries the declaration as data (`compose-driver.ts`'s `renderVerifyNeeds`) so the deferral is honest rather than silent.
+- **Declaring a need is not the same as scaffolding a WIDER grant "while we're at it."** Scaffold exactly the declared entries, nothing broader — the parity guard below fails loud on an undeclared entry the same way it fails on a missing one.
+
+### The live-gate — run each needs-bearing command once inside the now-scaffolded sandbox
+
+After the hand-off lands (the same `! cp <staged path> .claude/settings.json` the AFK permission scaffold above already runs — one staged file now carries `env`, `permissions`, `hooks`, **and** `sandbox`, landed in the same copy), run every verify command that declared a `writes` or `network` need **for real, once, inside the sandbox** — proven by execution, not inspection, the same standard the verify-command *form* already holds (["Measure before you record"](#measure-before-recording--resolution-proven-by-execution-not-inspection) above) now extended to the command's *capability*:
+
+- **Pass** — the command ran to completion without a sandbox refusal. Record it plainly; this command's declared need is now genuinely provided, not merely declared.
+- **Refused, and the need was declared and just scaffolded** — a **setup STOP**. Quote the refusal verbatim (the exact "operation not permitted" / sandbox-violation text) in your report, and fix the gap here, before handing this config to any wave — a `writes`/`network` need that fails five hours into a dispatched Worker's wave, unattended, with the harness asking a permission question nobody is there to answer, is the exact live occurrence ADR-0049 exists to close; a setup-time STOP with a human present costs one click, the five hours it replaces cost the same click except unattended. Never carry a refused-but-scaffolded command forward as "a finding for the first wave" — that defers a gap this precondition exists to catch before any wave ever sees it.
+- **Refused, and the need is `host`** — expected, not a STOP. Record it as a known, by-design deferral (never scaffolded, never expected to pass here) — this is the same information the Worker/Reviewer briefs will read as a `capability-gated` deferral once a real wave runs.
+
+### Enforced by `tools/wave/src/sandbox-scaffold-guard.spec.ts` (issue #716)
+
+Same family as `allowlist-scaffold-guard.spec.ts` above: a guard whose subject is config/doc consistency, run for real in CI on every `npm test`, not a static prose claim nothing falsifies. It holds the tracked `sandbox` block's `filesystem.allowWrite` / `network.allowedDomains` arrays and the declared `verify.profiles[].commands[].needs.writes` / `.needs.network` arrays in parity in **both** directions — every declared entry present in the block, every block entry declared — reading `wave.config.json` through the real `loadWaveConfig()` loader, never a restated copy of `VerifyCommand`'s shape. `wave.config.json` is absent from this worktree by construction (this repo's own dogfood config lives at the gitignored `.flotilla/wave.config.json`, and this repo's own tracked `.claude/settings.json` carries no `sandbox` block either, since no dogfood verify command declares a `writes`/`network` need) — both sides of the live-file check are therefore the vacuous, trivially-in-parity case (nothing declared, nothing scaffolded), which the spec asserts explicitly rather than skipping; the real parity logic is exercised against fixtures built through the same `loadWaveConfig()` loader, with permanent, in-spec positive and negative controls (a planted declared-but-unscaffolded entry, and a planted scaffolded-but-undeclared entry) — the same falsification style `allowlist-scaffold-guard.spec.ts` already uses, so "the check works" stays distinguishable from "the check cannot fail" on every run, not only once, by hand, in a PR description.
 
 ## Credential lookup-command scaffold (ADR-0029)
 
