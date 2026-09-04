@@ -20,6 +20,7 @@ import {
 } from './dor-gate';
 import type { HeaderBlock } from './header-parser';
 import type { IssueView } from './contract';
+import type { VerifyConfig } from './verify';
 
 /**
  * Each test spins up a throwaway repo-like tree under $TMPDIR with the bits
@@ -1088,6 +1089,142 @@ describe('validateIssue — verify-profile-coverage advisory (gate 8)', () => {
     const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
     expect(gate8).toMatchObject({ status: 'pass' });
   });
+
+  // ── issue #711: the PARTIAL-coverage case — some declared files match a
+  // profile, some don't. Before this fix, `commands.length > 0` (true because
+  // at least one file matched) short-circuited straight to `pass`, so the
+  // uncovered half was silently indistinguishable from a fully verify-backed
+  // approve. This is the reported shape: a row split between covered package
+  // sources and uncovered application targets.
+
+  it(
+    'passes — no reason, byte-identical to the full-coverage case above — when EVERY declared ' +
+      'file matches at least one profile (issue #711 AC1, negative control)',
+    () => {
+      writeRealFile('apps/web/src/full-a.ts');
+      writeRealFile('apps/web/src/full-b.ts');
+      const issuePath = writeIssue(
+        'verify-coverage-feature',
+        '75-full-coverage.md',
+        ISSUE_FIXTURE_BODY(
+          [
+            '**Risk:** mechanical',
+            '**Worker:** background',
+            '**Files:**',
+            '- apps/web/src/full-a.ts',
+            '- apps/web/src/full-b.ts',
+            '**Blocked by:** none',
+          ].join('\n'),
+        ),
+      );
+      const result = validateIssue({
+        repoRoot: root,
+        issuePath,
+        source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+        verify: {
+          profiles: [
+            { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+          ],
+        },
+      });
+      const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+      // Byte-identical to the plain pre-#711 pass shape: status only, no reason.
+      expect(gate8).toStrictEqual({ name: 'verify-profile-coverage', status: 'pass' });
+    },
+  );
+
+  it(
+    'warns — naming the uncovered files verbatim and the profile(s) that DID match — when SOME ' +
+      'but not all declared files match a configured profile (issue #711 AC2, the partial case)',
+    () => {
+      writeRealFile('apps/web/src/covered.ts');
+      writeRealFile('apps/ios/src/uncovered.ts');
+      const issuePath = writeIssue(
+        'verify-coverage-feature',
+        '76-partial-coverage.md',
+        ISSUE_FIXTURE_BODY(
+          [
+            '**Risk:** mechanical',
+            '**Worker:** background',
+            '**Files:**',
+            '- apps/web/src/covered.ts',
+            '- apps/ios/src/uncovered.ts',
+            '**Blocked by:** none',
+          ].join('\n'),
+        ),
+      );
+      const result = validateIssue({
+        repoRoot: root,
+        issuePath,
+        source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+        verify: {
+          profiles: [
+            { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+            { name: 'android', appliesTo: ['apps/android/**'], commands: [{ command: 'gradle test' }] },
+          ],
+        },
+      });
+      // Advisory only — a partial gap still never fails the row (AC2 policy unchanged).
+      expect(result.overall).toBe('PASS');
+      const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+      expect(gate8).toMatchObject({ status: 'warn' });
+      // Uncovered file named verbatim.
+      expect(gate8?.reason).toContain('apps/ios/src/uncovered.ts');
+      // Covered file is NOT listed among the uncovered ones.
+      expect(gate8?.reason).not.toMatch(/uncovered.*covered\.ts/);
+      // The profile that DID match is named ('web'); the one that never matched
+      // anything on this row ('android') is not claimed as a match.
+      expect(gate8?.reason).toMatch(/\bweb\b/);
+      // States the covered/inspection-only split explicitly.
+      expect(gate8?.reason).toMatch(/verify-backed only for the covered files/);
+      expect(gate8?.reason).toMatch(/inspection-only/);
+    },
+  );
+
+  it(
+    'keeps the all-uncovered warn text UNCHANGED (byte-identical) when the row was already ' +
+      'covered by the pre-#711 fully-uncovered test above',
+    () => {
+      writeRealFile('apps/ios/src/still-only-ios.ts');
+      const issuePath = writeIssue(
+        'verify-coverage-feature',
+        '77-still-all-uncovered.md',
+        ISSUE_FIXTURE_BODY(
+          [
+            '**Risk:** mechanical',
+            '**Worker:** background',
+            '**Files:**',
+            '- apps/ios/src/still-only-ios.ts',
+            '**Blocked by:** none',
+          ].join('\n'),
+        ),
+      );
+      const verify: VerifyConfig = {
+        profiles: [
+          { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+          { name: 'cms', appliesTo: ['cms/**'], commands: [{ command: 'composer test' }] },
+          { name: 'android', appliesTo: ['apps/android/**'], commands: [{ command: 'gradle test' }] },
+        ],
+      };
+      const result = validateIssue({
+        repoRoot: root,
+        issuePath,
+        source: require('node:fs').readFileSync(issuePath, 'utf-8'),
+        verify,
+      });
+      const gate8 = result.gates.find((g) => g.name === 'verify-profile-coverage');
+      expect(gate8).toStrictEqual({
+        name: 'verify-profile-coverage',
+        status: 'warn',
+        reason:
+          'Declared files (apps/ios/src/still-only-ios.ts) match no configured verify profile ' +
+          '(web, cms, android) — this row has no automated build/test gate behind it. ' +
+          'An approve here is inspection-only, not verify-backed: state that ' +
+          'explicitly in the Worker/Reviewer brief rather than letting it read the ' +
+          'same as a row a full verify run actually backed.',
+      });
+    },
+  );
 });
 
 describe('validateIssueView — verify-profile-coverage advisory (gate 8, structured path)', () => {
@@ -1147,6 +1284,32 @@ describe('validateIssueView — verify-profile-coverage advisory (gate 8, struct
     );
     expect(gate(result, 'verify-profile-coverage').status).toBe('pass');
   });
+
+  // issue #711 — the partial case reaches the structured (non-file) path too.
+  it(
+    'warns — naming the uncovered file(s) — when only SOME of the view\'s declared files match a ' +
+      'configured profile',
+    () => {
+      writeRealFile('apps/web/src/view-covered.ts');
+      writeRealFile('apps/ios/src/view-uncovered.ts');
+      const result = validateIssueView(
+        buildView({ files: ['apps/web/src/view-covered.ts', 'apps/ios/src/view-uncovered.ts'] }),
+        {
+          repoRoot: root,
+          verify: {
+            profiles: [
+              { name: 'web', appliesTo: ['apps/web/**'], commands: [{ command: 'npm test' }] },
+            ],
+          },
+        },
+      );
+      const gate8 = gate(result, 'verify-profile-coverage');
+      expect(gate8.status).toBe('warn');
+      expect(gate8.reason).toContain('apps/ios/src/view-uncovered.ts');
+      expect(gate8.reason).toMatch(/\bweb\b/);
+      expect(result.overall).toBe('PASS');
+    },
+  );
 });
 
 describe('extractAcBody', () => {

@@ -4880,6 +4880,32 @@ describe('dor --id <id> --config <path> threads verify profiles into Gate 8 (FOR
     expect(code).toBe(1);
     expect(stderrBuf).toMatch(/could not load --config/);
   });
+
+  it(
+    'reports warn — naming the uncovered file — when only SOME of the row\'s Files match a ' +
+      'configured verify profile (issue #711 — the partial case, threaded through the real ' +
+      '`dor --id` CLI entry point, not just the bare dor-gate.ts unit)',
+    async () => {
+      const store = tmpStore();
+      const repoRoot = (store as unknown as { repoRoot: string }).repoRoot;
+      const id = await store.create({
+        ...DOR_INPUT,
+        files: ['apps/web/src/thing.ts', 'apps/ios/src/thing.ts'],
+      });
+      const configPath = writeVerifyConfig([{ name: 'web', appliesTo: ['apps/web/**'] }]);
+
+      const code = await runDorById(
+        ['--id', id, '--repo-root', repoRoot, '--config', configPath],
+        store,
+      );
+
+      expect(code).toBe(0);
+      expect(stdoutBuf).toMatch(/warn\s+verify-profile-coverage/);
+      expect(stdoutBuf).not.toMatch(/deferred\s+verify-profile-coverage/);
+      expect(stdoutBuf).toMatch(/partially match/);
+      expect(stdoutBuf).toContain('apps/ios/src/thing.ts');
+    },
+  );
 });
 
 describe('dor <path> --config <path> threads verify profiles into Gate 8 (file form, FOR-151)', () => {
