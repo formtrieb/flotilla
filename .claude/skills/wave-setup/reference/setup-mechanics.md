@@ -357,12 +357,13 @@ The engine's built-in disposable set knows `.DS_Store`, `.vscode/`, `.claude/` �
 | Toolchain | Typical value |
 |---|---|
 | Swift / SwiftPM | `".build"` |
+| Xcode (macOS/iOS app) | `"DerivedData"`, plus the project's own generated `<Name>.xcodeproj` bundle (issue #718 — a live consumer close reported both left behind by a local macOS build gate) |
 | Rust / Maven | `"target"` |
 | Node | `"node_modules"` |
 | Python | `"__pycache__"`, `".pytest_cache"` |
 | Go | `"vendor"` |
 
-**Exact names only — a glob is rejected, not honoured.** `config validate` fails on any of: a pattern (`*`, `?`, `[`, `]`, `{`, `}`, `!` — so `".*"` and `"*.o"` are both refused), a path (`"build/debug"`), `"."`, `".."`, or `".git"`. That refusal is the point: a wildcard broad enough to catch `".build"` is also broad enough to catch `".git"`, and destroying a worktree's `.git` is exactly the failure the fixed built-in list exists to prevent. A name is matched **at any depth** and as either a directory (whole subtree) or a file, so `".build"` covers a nested `Packages/Foo/.build/` too — which is why a name is all it needs, and a path is refused.
+**Exact names only — a glob is rejected, not honoured.** `config validate` fails on any of: a pattern (`*`, `?`, `[`, `]`, `{`, `}`, `!` — so `".*"` and `"*.o"` are both refused), a path (`"build/debug"`), `"."`, `".."`, or `".git"`. That refusal is the point: a wildcard broad enough to catch `".build"` is also broad enough to catch `".git"`, and destroying a worktree's `.git` is exactly the failure the fixed built-in list exists to prevent. A name is matched **at any depth** and as either a directory (whole subtree) or a file, so `".build"` covers a nested `Packages/Foo/.build/` too — which is why a name is all it needs, and a path is refused. The Xcode row above is worth reading this rule against directly: `<Name>.xcodeproj` LOOKS like it wants a pattern (it is one name with a fixed extension, for every project that has one) — declare the project's own literal bundle name (e.g. `"FlotillaStatus.xcodeproj"`), never `"*.xcodeproj"`; the latter is a glob and `config validate` refuses it the same as any other.
 
 ```json
 {

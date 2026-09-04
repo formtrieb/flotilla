@@ -1124,6 +1124,40 @@ import * as nodePath from 'node:path';
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 /**
+ * What kept a `dirty`, non-`dirtyAllJunk` worktree from being disposable
+ * (issue #718) — see {@link WorktreeEntry.blockingPaths} for the full
+ * rationale behind the three buckets and the bound/overflow discipline.
+ *
+ * Deliberately NOT exported on its own: a root-only caller reads this shape
+ * structurally, as the type of `WorktreeEntry.blockingPaths` (already
+ * root-reachable — see {@link WorktreeEntry}), and does not need to import
+ * it by name to annotate one. Exporting it would be a second, independent
+ * change — widening the barrel (`tools/wave/src/index.ts`) — outside this
+ * change's own declared Files glob; the same reachable-but-not-nameable gap
+ * `UnaccountedWorktree` (worktree-cleanup.ts) once left for a later
+ * `index.ts`-owning row is the precedent for doing that as its own move,
+ * not folding it in here.
+ */
+interface BlockingPaths {
+  /** Bounded sample of tracked paths git reports missing (any `D` status code). */
+  trackedDeleted: string[];
+  /** Exact count `trackedDeleted` is a sample of. */
+  trackedDeletedTotal: number;
+  /** Bounded sample of `??` (untracked) paths. */
+  untracked: string[];
+  /** Exact count `untracked` is a sample of. */
+  untrackedTotal: number;
+  /** Bounded sample of any other divergent tracked path (modified, added, staged, renamed, quoted). */
+  otherTracked: string[];
+  /** Exact count `otherTracked` is a sample of. */
+  otherTrackedTotal: number;
+  /** `true` when ANY of the three lists above is a sample of a larger set. */
+  truncated: boolean;
+  /** The same information as one human-readable line. */
+  summary: string;
+}
+
+/**
  * A single git worktree entry as parsed from `git worktree list --porcelain`.
  */
 export interface WorktreeEntry {
@@ -1184,6 +1218,57 @@ export interface WorktreeEntry {
    * `parseWorktreeList` alone (pure text parsing, no filesystem access).
    */
   dirtyAllJunk?: boolean;
+  /**
+   * Present only when `dirty` is `true` AND `dirtyAllJunk` is `false` — names
+   * WHICH paths kept this worktree from being disposable (issue #718). Until
+   * this field, `dirtyAllJunk:false` said only THAT a worktree was blocked,
+   * never WHAT blocked it — an operator reading a stuck close had to run
+   * `git -C <path> status --porcelain` by hand to find out, every time.
+   *
+   * The paths git reported are split three ways, because a reader needs to
+   * tell them apart to know what to do about each:
+   *
+   *   • `trackedDeleted` — a tracked path git reports missing from the
+   *     worktree (any status code containing `D`). A candidate for a harness
+   *     write-denial ({@link HARNESS_DENIED_DIRS} / {@link
+   *     HARNESS_DENIED_FILES} above) — but landing in THIS bucket does not
+   *     by itself mean it IS one; a deletion outside that fixed allowlist is
+   *     exactly as real a block as any other (see the "a deleted SOURCE
+   *     file... still blocks removal" test). Whether a given repeat offender
+   *     belongs in the allowlist is a question this field only supplies
+   *     evidence for — it is never self-classifying (issue #718 AC1: only a
+   *     REPRODUCED refusal, looked at with evidence, widens that allowlist).
+   *   • `untracked` — a `??` path: build residue, an editor dropping, or
+   *     anything else `git status` was never told to ignore. This module
+   *     never guesses at these; the consumer's `cleanup.disposableNames`
+   *     (wave config) plus their own `.gitignore` are what make an entry
+   *     here vanish, never a wider allowlist in this file (see the
+   *     "disposable set is DECLARABLE" file-level doc section — this is
+   *     exactly the asymmetry it already documents, now given a name a
+   *     report can print).
+   *   • `otherTracked` — a tracked path diverging some other way (a
+   *     modification, an addition, a staged change, a rename, a quoted
+   *     path) — ordinarily genuine work-in-progress, exactly the shape the
+   *     existing "a MODIFIED tracked file... is NOT disposable" tests
+   *     already pin as blocking. Named here so a report never implies "only
+   *     deletions and residue can block" when a real edit is what did it.
+   *
+   * Each bucket is bounded ({@link BLOCKING_PATHS_LIMIT}) with its own
+   * `xxxTotal`; `truncated` is `true` when ANY bucket's list is a sample of
+   * a larger set. `summary` renders the same information as one
+   * human-readable line — the text-summary half of this report, computed
+   * alongside the structured lists so a caller never has to build one
+   * itself.
+   *
+   * A disposable path (junk, harness-injected, or a harness-denied
+   * deletion) is silently excluded from every bucket — this field explains
+   * `dirtyAllJunk:false`, it does not re-litigate `dirtyAllJunk:true`.
+   * Absent whenever `dirty` is `false`, or `dirty` is `true` with
+   * `dirtyAllJunk` also `true` (nothing blocking — the worktree is already
+   * disposable). Populated only by `listAgentWorktrees`'s probe — never by
+   * `parseWorktreeList` alone.
+   */
+  blockingPaths?: BlockingPaths;
   /**
    * Present only on an entry `planCleanup` places into
    * `CleanupPlan.skipped` / `CleanupResult.skipped` (FOR-59) — names the
@@ -1820,7 +1905,15 @@ export function listAgentWorktrees(
     // there is nothing to classify and the entry stays skipped.
     const dirty = entry.dirty || probe.dirty;
     if (!dirty) return { ...entry, dirty: false };
-    return { ...entry, dirty: true, dirtyAllJunk: probe.dirty && probe.dirtyAllJunk };
+    return {
+      ...entry,
+      dirty: true,
+      dirtyAllJunk: probe.dirty && probe.dirtyAllJunk,
+      // issue #718 — rides along only when the probe actually computed it
+      // (dirty and not all-junk); absent on every other shape, same as the
+      // probe itself leaves it.
+      ...(probe.blockingPaths ? { blockingPaths: probe.blockingPaths } : {}),
+    };
   });
 }
 
@@ -5283,6 +5376,21 @@ const HARNESS_DENIED_DIRS: readonly string[] = [
   // the dirty path into line with that. A MODIFIED `.vscode/settings.json` is
   // still real work and still blocks removal, exactly as before.
   '.vscode',
+  // NOT added (issue #718): a consumer close reported three OTHER
+  // tracked-deleted classes alongside genuine harness denials — an
+  // archived-wave directory, the CI workflow directory, and the repo's own
+  // `.gitignore` — and hypothesized (explicitly marked unverified) that they
+  // belonged here too. Measured with controls in the dispatch that resolved
+  // #718: a positive control (write to `.claude/hooks/`, already in this
+  // list) reproduced "Operation not permitted"; the same probe against the
+  // three unexplained classes did NOT — every one of them was writable in
+  // that session's sandbox. Per this list's own discipline (widen only on a
+  // REPRODUCED refusal, never by analogy — the `.vscode` entry above is the
+  // positive precedent), none of the three were added. Sandbox write-deny
+  // sets are session/harness-version-specific, so a different environment
+  // reproducing a genuine refusal for one of these three remains grounds to
+  // revisit this — but that measurement has to happen again, live, in
+  // whichever environment makes the claim; it does not carry over from here.
 ];
 
 const HARNESS_DENIED_FILES = new Set<string>([
@@ -5356,6 +5464,109 @@ function isStatusExclusivelyDisposable(porcelain: string): boolean {
     if (path.includes(' -> ')) return false;
     return isDisposableStatusPath(line.slice(0, 2), path);
   });
+}
+
+/**
+ * How many paths ONE {@link BlockingPaths} bucket lists before it stops and
+ * leaves the rest to its own `xxxTotal` (issue #718) — the same bounded-
+ * sample discipline as {@link SURVIVOR_PATHS_LIMIT}, applied per bucket so a
+ * report can never grow with the size of a checkout.
+ */
+const BLOCKING_PATHS_LIMIT = 20;
+
+/**
+ * Render a {@link BlockingPaths} (minus its own `summary`) as one
+ * human-readable line — the text-summary half of the report, always computed
+ * alongside the structured lists by {@link classifyBlockingPaths} so a caller
+ * never has to build one itself. Empty buckets are omitted entirely rather
+ * than printed as zero.
+ */
+function formatBlockingPathsSummary(bp: Omit<BlockingPaths, 'summary'>): string {
+  const clause = (label: string, shown: string[], total: number): string | null => {
+    if (total === 0) return null;
+    const names = shown.join(', ') + (shown.length < total ? ', …' : '');
+    return `${total} ${label}(${names})`;
+  };
+  const parts = [
+    clause('tracked-deleted path', bp.trackedDeleted, bp.trackedDeletedTotal),
+    clause('untracked path', bp.untracked, bp.untrackedTotal),
+    clause('other tracked change', bp.otherTracked, bp.otherTrackedTotal),
+  ].filter((p): p is string => p !== null);
+  if (parts.length === 0) {
+    // Defensive only — the caller never invokes this with all three buckets
+    // empty, since that is exactly the `isStatusExclusivelyDisposable: true`
+    // case this function is never reached for.
+    return 'no blocking paths';
+  }
+  return `${parts.join('; ')} keep this worktree from being disposable`;
+}
+
+/**
+ * Classify every non-disposable path in a dirty worktree's `git status
+ * --porcelain` output (issue #718) into the three buckets
+ * {@link WorktreeEntry.blockingPaths} documents — the paths that kept
+ * {@link WorktreeEntry.dirtyAllJunk} `false`. A disposable path
+ * ({@link isDisposableStatusPath}) is silently excluded from every bucket,
+ * exactly like {@link isStatusExclusivelyDisposable} excludes it from
+ * failing the all-junk check — this function EXPLAINS that verdict, it does
+ * not re-derive it, and the caller is expected to have already confirmed the
+ * status is dirty and not exclusively disposable before calling this.
+ *
+ * A quoted or renamed path — refused outright by
+ * {@link isStatusExclusivelyDisposable} for the reasons its own doc comment
+ * gives — is never disposable and always lands in `otherTracked` here, keyed
+ * on its own two-character status code like everything else.
+ */
+function classifyBlockingPaths(porcelain: string): BlockingPaths {
+  const lines = porcelain.split('\n').filter((l) => l.trim().length > 0);
+
+  const trackedDeleted: string[] = [];
+  const untracked: string[] = [];
+  const otherTracked: string[] = [];
+
+  for (const line of lines) {
+    const statusCode = line.slice(0, 2);
+    const path = line.slice(3);
+
+    if (path.startsWith('"') || path.includes(' -> ')) {
+      otherTracked.push(path);
+      continue;
+    }
+    if (isDisposableStatusPath(statusCode, path)) continue;
+
+    if (statusCode === '??') {
+      untracked.push(path);
+    } else if (statusCode.includes('D')) {
+      trackedDeleted.push(path);
+    } else {
+      otherTracked.push(path);
+    }
+  }
+
+  const trackedDeletedTotal = trackedDeleted.length;
+  const untrackedTotal = untracked.length;
+  const otherTrackedTotal = otherTracked.length;
+
+  const boundedTrackedDeleted = trackedDeleted.slice(0, BLOCKING_PATHS_LIMIT);
+  const boundedUntracked = untracked.slice(0, BLOCKING_PATHS_LIMIT);
+  const boundedOtherTracked = otherTracked.slice(0, BLOCKING_PATHS_LIMIT);
+
+  const truncated =
+    boundedTrackedDeleted.length < trackedDeletedTotal ||
+    boundedUntracked.length < untrackedTotal ||
+    boundedOtherTracked.length < otherTrackedTotal;
+
+  const withoutSummary = {
+    trackedDeleted: boundedTrackedDeleted,
+    trackedDeletedTotal,
+    untracked: boundedUntracked,
+    untrackedTotal,
+    otherTracked: boundedOtherTracked,
+    otherTrackedTotal,
+    truncated,
+  };
+
+  return { ...withoutSummary, summary: formatBlockingPathsSummary(withoutSummary) };
 }
 
 /**
@@ -5778,6 +5989,7 @@ function probeWorktreeGitState(worktreePath: string): {
   dirty: boolean;
   dirtyAllJunk: boolean;
   orphan: boolean;
+  blockingPaths?: BlockingPaths;
 } {
   const toplevel = resolveGitToplevel(worktreePath);
   const selfScoped =
@@ -5801,10 +6013,15 @@ function probeWorktreeGitState(worktreePath: string): {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const dirty = out.trim().length > 0;
+    const dirtyAllJunk = dirty && isStatusExclusivelyDisposable(out);
     return {
       dirty,
-      dirtyAllJunk: dirty && isStatusExclusivelyDisposable(out),
+      dirtyAllJunk,
       orphan: false,
+      // issue #718: only computed for the shape that NEEDS explaining — a
+      // dirty worktree that is not already all-junk. A clean or all-junk
+      // worktree has nothing blocking it, so there is nothing to name.
+      ...(dirty && !dirtyAllJunk ? { blockingPaths: classifyBlockingPaths(out) } : {}),
     };
   } catch {
     // If git status fails (e.g. path no longer exists), treat as not dirty

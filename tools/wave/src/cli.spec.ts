@@ -1808,6 +1808,137 @@ describe('worktree-cleanup subcommand — full summary is always printed (FOR-67
   });
 });
 
+// ─── worktree-cleanup subcommand — `blockingPaths` rides the CLI's JSON
+//     output (issue #718) ─────────────────────────────────────────────────
+//
+// The engine computes `WorktreeEntry.blockingPaths` (worktree-cleanup.spec.ts
+// pins the classification itself); this describe block's only job is to
+// prove the CLI verb does not drop it on the way to stdout — cli.ts spreads
+// the whole `WorktreeEntry` into `skipped` with no field allowlist, so this
+// is a pass-through proof, not a re-test of the classifier.
+
+describe('worktree-cleanup subcommand — `blockingPaths` rides the CLI JSON output (issue #718)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): void {
+    realExecFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  function makeMainRoot(prefix: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    tempRoots.push(root);
+    realGit(['init', '-q'], root);
+    realGit(['config', 'user.email', 'test@example.com'], root);
+    realGit(['config', 'user.name', 'Test'], root);
+    // Pinned empty so this fixture never inherits the developer's own global
+    // excludes — mirrors worktree-cleanup.spec.ts's makeConsumerWorktree.
+    realGit(['config', 'core.excludesFile', '/dev/null'], root);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], root);
+    return root;
+  }
+
+  type CleanupJson = {
+    skipped: Array<{
+      path: string;
+      reason?: string;
+      dirtyAllJunk?: boolean;
+      blockingPaths?: {
+        trackedDeleted: string[];
+        trackedDeletedTotal: number;
+        untracked: string[];
+        untrackedTotal: number;
+        otherTracked: string[];
+        otherTrackedTotal: number;
+        truncated: boolean;
+        summary: string;
+      };
+    }>;
+    removed: Array<{ path: string; blockingPaths?: unknown }>;
+  };
+
+  it('a worktree blocked by untracked residue reports `blockingPaths` on its `skipped` entry, named and bounded, exactly as the engine computed it', () => {
+    const mainRoot = makeMainRoot('wave-cli-718-blocked-');
+    const rel = join('.claude', 'worktrees', 'wf_718-blocked');
+    realGit(['worktree', 'add', '-q', rel, '-b', 'wave/718-blocked'], mainRoot);
+    const worktreePath = join(mainRoot, rel);
+    mkdirSync(join(worktreePath, 'node_modules', 'some-pkg'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, 'node_modules', 'some-pkg', 'index.js'),
+      'module.exports = {};',
+      'utf-8',
+    );
+
+    const code = main(['worktree-cleanup', mainRoot]);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as CleanupJson;
+    const entry = parsed.skipped.find((w) => w.path === worktreePath);
+    expect(entry, `no skipped entry for ${worktreePath}: ${JSON.stringify(parsed.skipped)}`).toBeDefined();
+    expect(entry?.reason).toBe('dirty');
+    expect(entry?.dirtyAllJunk).toBe(false);
+    expect(entry?.blockingPaths?.trackedDeleted).toEqual([]);
+    expect(entry?.blockingPaths?.untracked).toEqual([
+      expect.stringContaining('node_modules/'),
+    ]);
+    expect(entry?.blockingPaths?.untrackedTotal).toBe(1);
+    expect(entry?.blockingPaths?.summary).toContain('untracked path');
+    // Still on disk — a dirty worktree is never removed.
+    expect(existsSync(worktreePath)).toBe(true);
+  });
+
+  it('negative control — a worktree dirtied ONLY by junk is REMOVED, not skipped, and carries no `blockingPaths`', () => {
+    const mainRoot = makeMainRoot('wave-cli-718-junkonly-');
+    const rel = join('.claude', 'worktrees', 'wf_718-junk-only');
+    realGit(['worktree', 'add', '-q', rel, '-b', 'wave/718-junk-only'], mainRoot);
+    const worktreePath = join(mainRoot, rel);
+    mkdirSync(join(worktreePath, '.claude'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, '.claude', 'settings.local.json'),
+      '{"permissions":{}}',
+      'utf-8',
+    );
+
+    const code = main(['worktree-cleanup', mainRoot]);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as CleanupJson;
+    expect(parsed.skipped.find((w) => w.path === worktreePath)).toBeUndefined();
+    const removedEntry = parsed.removed.find((w) => w.path === worktreePath);
+    expect(removedEntry, `no removed entry for ${worktreePath}: ${JSON.stringify(parsed.removed)}`).toBeDefined();
+    expect(removedEntry && 'blockingPaths' in removedEntry).toBe(false);
+    expect(existsSync(worktreePath)).toBe(false);
+  });
+});
+
 describe('worktree-cleanup subcommand — --orphans sweep (FOR-67)', () => {
   let orphanRepo: string;
   let worktreesRoot: string;
