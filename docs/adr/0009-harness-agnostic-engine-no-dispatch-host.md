@@ -16,3 +16,11 @@ A grep proved the engine is *already* harness-agnostic — it never reaches a di
 - flotilla's external consumers are **other Claude Code users** — not a limitation but the value proposition (AFK-agent orchestration *under Claude Code*).
 - The engine stays the only surface kept manually in sync with the Ur; the skills diverge freely (rewritten generic against GitHub + `IssueStore` + protected-main).
 - The schema-validated subagent return (the fabrication-prevention guarantee, ADR-0004) is kept as a driver property and must not be abstracted away.
+
+## Amendment 2026-09-03 — the engine now WRITES the driver script; it still calls no agent-harness primitive
+
+*Clarification, not a change of this decision — the same line [CLAUDE.md](../../CLAUDE.md) and [docs/CHARTER.md](../CHARTER.md) §4 already carry, recorded here because the decision record is where the reading is anchored.*
+
+The engine now **ships** the Workflow driver script as a package asset (`tools/wave/driver/wave-start-inflight.js`) and **composes** it: the `compose-driver` verb reads that template, substitutes its five compose-time constants and the per-row `ISSUES` array, and writes the finished script to a file. That is **file I/O, not dispatch** — the harness is still what runs the script, the engine still calls no agent-harness primitive, and the schema-validated-subagent-return guarantee (ADR-0004) remains a property of that script's own `agent({ schema })` calls, exactly as the decision above requires. Nothing here reintroduces a `DispatchHost`: composing a file the harness may run is not an abstraction over dispatching, because the composer never learns whether, when, or by what the file is run.
+
+Provenance: wave `2026-09-03-first-ten-minutes`, row 680 iteration 1 — the row landed the CLAUDE.md and CHARTER halves and deferred this one as disclosure 680.2, the ADR being outside its declared Files globs.

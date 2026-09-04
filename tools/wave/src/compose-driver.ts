@@ -211,9 +211,30 @@ export function modelForRisk(risk: string): string {
  * GitHub spelling deliberately: the local markdown store is a dev/dogfood
  * tracker, but the PR it closes still lands on a code host that reads
  * `Closes #<n>`.
+ *
+ * **The `#<digits>` tail is lifted out of a compound id, and that is not
+ * cosmetic.** A markdown-store id is `<slug>#NN` (opaque to the ENGINE —
+ * ADR-0001 — never to the adapter that minted it), and pasting the whole string
+ * after a `#` composed `Closes #<slug>#NN`: a phrase no code host resolves and,
+ * worse, one the close-phrase guard cannot SEE. That guard recognises exactly
+ * `#<digits>`, `TEAM-<digits>` or an issue URL, so a dogfood row's legitimate
+ * PR-body rewrite came back `reuse-refused` — the guard reading the body as
+ * carrying no close phrase at all, and refusing to drop the one already live.
+ * The trailing `#NN` the markdown adapter appends IS the issue number, so the
+ * phrase takes that and nothing else.
+ *
+ * **Narrow on purpose, in two directions.** Only a `#`-suffixed NUMERIC tail is
+ * lifted: a `<slug>#prd` or `<slug>#goal-01` id — neither of which is a wave row
+ * a PR ever closes — is left byte-for-byte as it was rather than silently
+ * reshaped into something that reads like a row reference. And the digits are
+ * carried VERBATIM, zero-padding included (`#01`, not `#1`), because the pad is
+ * part of the id the adapter minted and this function's job is to render a
+ * phrase, never to renumber a tracker.
  */
 export function closePhraseFor(storeKind: string, id: string): string {
-  return storeKind === 'linear' ? `Fixes ${id}` : `Closes #${id}`;
+  if (storeKind === 'linear') return `Fixes ${id}`;
+  const numericTail = /^.+#(\d+)$/.exec(id);
+  return `Closes #${numericTail ? numericTail[1] : id}`;
 }
 
 /**

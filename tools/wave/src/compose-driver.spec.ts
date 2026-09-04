@@ -235,6 +235,31 @@ async function runComposedDriver(script: string): Promise<{
   return { calls, logs, phases, result };
 }
 
+/**
+ * The driver's `meta` literal, evaluated.
+ *
+ * `meta` must be a PURE LITERAL under the Workflow-tool contract (no variables,
+ * calls, spreads or interpolation), so lifting it out of the script text and
+ * evaluating it is exact rather than a parse approximation. It is also the only
+ * way to see it at all from a run: the script's own `return` hands back the
+ * routing tuples, never its own metadata.
+ */
+function metaOf(script: string): {
+  name: string;
+  description: string;
+  phases: Array<Record<string, unknown>>;
+} {
+  const opener = 'export const meta = ';
+  const at = script.indexOf(opener);
+  expect(at).toBeGreaterThan(-1);
+  // The literal closes on a `}` at column 0 — the same own-line anchoring
+  // `expectedScript` above uses for the ISSUES array's `\n]\n`.
+  const close = script.indexOf('\n}\n', at);
+  expect(close).toBeGreaterThan(at);
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  return new Function(`return (${script.slice(at + opener.length, close + 2)})`)();
+}
+
 // ─── 1. the substitution ──────────────────────────────────────────────────────
 
 describe('compose-driver — the composed script is the shipped template with its constants filled', () => {
@@ -364,6 +389,36 @@ describe('compose-driver — a composed driver runs under the Workflow-tool cont
       expect(schema).toBeDefined();
       for (const key of ['anyOf', 'oneOf', 'allOf']) expect(schema).not.toHaveProperty(key);
     }
+  });
+
+  it('meta.phases agrees with the phase groups the script actually enters — both directions — and no phase claims a model', async () => {
+    // The authoring contract: titles are matched EXACTLY, so a declared entry
+    // nothing enters is a group box that never fills, and an entered group with
+    // no entry silently mints its own. Both directions are asserted because
+    // only one of them was ever wrong: `Review` is declared and entered ONLY
+    // through `opts.phase` on the Stage-3 agent (a global `phase('Review')`
+    // would race inside `pipeline()`), which reads as "declared but never
+    // entered" to anyone grepping for `phase(` alone.
+    const { calls, phases } = await runComposedDriver(script);
+    const declared = metaOf(script).phases;
+    const entered = new Set<string>([
+      ...phases,
+      ...calls.map((c) => c.opts.phase).filter((p): p is string => typeof p === 'string'),
+    ]);
+
+    expect([...entered].sort()).toEqual(['Dispatch', 'Review']);
+    expect(new Set(declared.map((p) => p.title))).toEqual(entered);
+    // `Review` really is entered per-call, not by the global cursor.
+    expect(phases).not.toContain('Review');
+    expect(calls.filter((c) => c.opts.phase === 'Review').map((c) => c.opts.label)).toEqual([
+      'review:42',
+      'review:43',
+    ]);
+
+    // The model tier is per ROW (Risk-derived, ADR-0007 Amendment 2026-07-31),
+    // so no phase can state one: a `model` here would be a constant that does
+    // not exist, contradicting the per-call binding the stages actually use.
+    for (const p of declared) expect(p).not.toHaveProperty('model');
   });
 
   it('a human-gated row that reached ISSUES anyway is refused by the script itself, before any agent() call', async () => {
@@ -576,6 +631,43 @@ describe('compose-driver — the derivations', () => {
     expect(closePhraseFor('github', '680')).toBe('Closes #680');
     expect(closePhraseFor('linear', 'FOR-379')).toBe('Fixes FOR-379');
     expect(closePhraseFor('markdown', '07')).toBe('Closes #07');
+  });
+
+  /**
+   * The guard the phrase has to survive, as this spec's own second reading of
+   * it — a phrase the close-phrase guard cannot SEE is a phrase that makes a
+   * legitimate PR-body rewrite come back `reuse-refused`. Deliberately re-typed
+   * from the shape rule rather than imported: `route-tuple`'s own regex is
+   * module-local, and a spec that imported the implementation would be checking
+   * the phrase against itself.
+   */
+  const GUARD_SEES = (line: string): boolean =>
+    /^(?:Closes|Fixes|Resolves) (?:#\d+|[A-Z][A-Z0-9]{0,9}-\d+|https?:\/\/\S+\/issues\/\d+)$/.test(line);
+
+  it('closePhraseFor on the markdown store composes a phrase the close-phrase guard can SEE', () => {
+    // The markdown id is `<slug>#NN`; the whole string after a `#` used to
+    // compose `Closes #<slug>#01`, which no host resolves and the guard reads
+    // as no close phrase at all.
+    expect(closePhraseFor('markdown', '2026-09-04-honest-absences#01')).toBe('Closes #01');
+    expect(GUARD_SEES(closePhraseFor('markdown', '2026-09-04-honest-absences#01'))).toBe(true);
+    expect(GUARD_SEES('Closes #2026-09-04-honest-absences#01')).toBe(false); // what it used to compose
+    // Zero-padding is carried verbatim — the pad is part of the minted id.
+    expect(closePhraseFor('markdown', 'w#7')).toBe('Closes #7');
+    expect(GUARD_SEES(closePhraseFor('markdown', '07'))).toBe(true); // the bare-NN form, unchanged
+  });
+
+  it('the tail lift is NARROW — a non-numeric tail and a plain id are untouched', () => {
+    // Neither of these is a wave row a PR ever closes (a PRD document, a goal
+    // container), so the phrase is left byte-for-byte rather than reshaped into
+    // something that reads like a row reference.
+    expect(closePhraseFor('markdown', 'a-slug#prd')).toBe('Closes #a-slug#prd');
+    expect(closePhraseFor('markdown', 'a-slug#goal-01')).toBe('Closes #a-slug#goal-01');
+    // A GitHub id carries no `#` at all and must survive the rule untouched.
+    expect(closePhraseFor('github', '680')).toBe('Closes #680');
+    // And `linear` never reaches the lift — the #700 negative control's premise.
+    expect(closePhraseFor('linear', 'a-slug#01')).toBe('Fixes a-slug#01');
+    expect(closePhraseFor('linear', '1')).toBe('Fixes 1');
+    expect(GUARD_SEES(closePhraseFor('linear', '1'))).toBe(false);
   });
 
   it('stripBareIds removes the mention-discipline shapes and leaves ADR numbers alone', () => {
@@ -963,7 +1055,14 @@ describe('compose-driver — the verb, end to end', () => {
     expect(brief).toContain('- tools/wave/**');
     expect(brief).toContain('npm ci --prefix tools/wave');
     expect(brief).toContain('vitest run --root tools/wave');
-    expect(brief).toContain(`Closes #${id}`);
+    // This fixture's store is `markdown`, so the row id is the compound
+    // `<slug>#NN`. The brief's close phrase carries the LIFTED numeric tail —
+    // the whole-id form this line used to assert (`Closes #<slug>#NN`) is a
+    // phrase no code host resolves and the close-phrase guard cannot see, which
+    // is what made a dogfood reuse come back `reuse-refused`.
+    expect(id).toMatch(/#\d+$/);
+    expect(brief).toContain('Closes #01');
+    expect(brief).not.toContain(`Closes #${id}`);
   });
 
   // ADR-0049 AC2 — BOTH composed briefs render each verify command with its

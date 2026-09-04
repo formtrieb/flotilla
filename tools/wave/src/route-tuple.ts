@@ -109,8 +109,10 @@ import { createCredsFor, gitRemoteUrl, landingHostFor } from './host-pr-cli';
 import type { Risk } from './header-parser';
 import { reconcileReportIssue, renderSidecarBody } from './route-cli';
 import {
+  findMisnamedSidecars,
   readSidecars,
   type CorruptSidecar,
+  type MisnamedSidecar,
   type SidecarReader,
 } from './sidecar';
 import {
@@ -343,6 +345,45 @@ interface SidecarStepResult {
   detail: Record<string, unknown>;
 }
 
+/**
+ * The misnamed-sidecar sweep's finding as one `warning:` line, in this verb's
+ * voice.
+ *
+ * **Why the sweep runs here at all.** `write-report`/`write-verdict` sweep their
+ * target dir on every successful write, and wave-shared Convention 5 leans on
+ * that: the routing-time recovery of a missing sidecar is what catches a
+ * MISNAMED one, because an existence probe answers false for both cases
+ * identically and the recovery is where somebody is finally looking. That
+ * reading was true of the resume path and quietly false of the DISPATCH path —
+ * this verb's recovery writes through {@link renderSidecarBody} plus its own
+ * injected writer, never through `runWriteSidecar`, so the sweep did not run at
+ * the one moment the convention says it does. The recovery would rewrite the
+ * correctly-named file and walk past the leftover in silence: present to an
+ * `ls`, absent to resume, and now also invisible at the step designed to see it.
+ *
+ * **The DETECTOR is shared; only the sentence is local.** The rule about what a
+ * misnamed name is lives once, in `sidecar.ts` (`findMisnamedSidecars` over
+ * `bareIssueIdViolation`) — the part that could drift is the part both callers
+ * import. What differs is the label and the fact that this verb also carries the
+ * finding structurally, in its `sidecar-check` step detail, because this verb's
+ * output is a JSON result a Coordinator reads and a stderr line alone would
+ * leave it out of the record.
+ *
+ * Never deletes, for the same reason the write verbs never delete: a misnamed
+ * sidecar may hold the only copy of a report, and a durability path does not
+ * destroy data to tidy a directory.
+ */
+function misnamedSidecarWarning(dir: string, m: MisnamedSidecar): string {
+  return (
+    `warning: route-tuple: MISNAMED SIDECAR ${JSON.stringify(join(dir, m.file))} — its\n` +
+    `  filename id ${JSON.stringify(m.filenameId)} ${m.reason}, so the reader resolves it for NO row\n` +
+    `  (it holds the record for ${JSON.stringify(m.resolvesAs)}, which would be filed as\n` +
+    `  ${JSON.stringify(`${m.resolvesAs}-${m.iter}.md`)}). A file like this is present to an \`ls\` and\n` +
+    '  absent to resume, and an existence probe cannot tell it from a missing one.\n' +
+    '  Confirm the correctly-named record holds the same content, then delete it.\n'
+  );
+}
+
 function loadSidecars(input: {
   id: string;
   iter: number;
@@ -352,8 +393,23 @@ function loadSidecars(input: {
   verdictPayloadPath: string;
   reader: SidecarReader;
   writer: (dir: string, file: string, content: string) => void;
+  /** Where a sweep finding goes. Never fails the recovery it reports on. */
+  warn: (text: string) => void;
 }): SidecarStepResult {
   const recovered: string[] = [];
+  const misnamed: string[] = [];
+
+  /**
+   * Run the sweep over the dir a recovery just wrote into, exactly as the write
+   * verbs do: AFTER the bytes are on disk, so the finding can only ever appear
+   * on a run that genuinely persisted the record, and never as a refusal.
+   */
+  const sweep = (dir: string, kind: 'report' | 'verdict'): void => {
+    for (const m of findMisnamedSidecars(dir, kind, input.reader)) {
+      misnamed.push(m.file);
+      input.warn(misnamedSidecarWarning(dir, m));
+    }
+  };
 
   const readIndex = () => readSidecars(input.reportsDir, input.verdictsDir, input.reader);
   let index = readIndex();
@@ -393,6 +449,7 @@ function loadSidecars(input: {
       renderSidecarBody('WorkerReport', input.id, input.iter, reconciled.payload),
     );
     recovered.push('report');
+    sweep(input.reportsDir, 'report');
     index = readIndex();
     reportHit = index.reportFor(input.id);
   }
@@ -425,6 +482,7 @@ function loadSidecars(input: {
       renderSidecarBody('ReviewerVerdict', input.id, input.iter, payload),
     );
     recovered.push('verdict');
+    sweep(input.verdictsDir, 'verdict');
     index = readIndex();
     verdictHit = index.verdictFor(input.id);
   }
@@ -451,6 +509,7 @@ function loadSidecars(input: {
       verdictIter: verdictHit.iter,
       recovered,
       corrupt: index.corruptFor(input.id).length,
+      misnamed,
     },
   };
 }
@@ -566,6 +625,10 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       verdictPayloadPath: isAbsolute(verdictPath) ? verdictPath : resolve(repoRoot, verdictPath),
       reader: deps.sidecarReader ?? fsSidecarReader,
       writer: deps.sidecarWriter ?? fsSidecarWriter,
+      // Loud where the write verbs are loud, and on the same channel: a sweep
+      // finding is an operator finding about the DIRECTORY, never a failure of
+      // the record this step just persisted.
+      warn: (text) => void process.stderr.write(text),
     });
     const recovered = sidecars.detail.recovered as string[];
     push('sidecar-check', recovered.length === 0 ? 'performed-before' : 'performed', sidecars.detail);
