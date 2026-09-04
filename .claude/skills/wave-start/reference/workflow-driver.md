@@ -198,21 +198,67 @@ cwd) plus the spine's own slug; `WAVE_CLI` from the config's `engine.cli`
 branch, model tier, iteration — from the spine's Plan-Table and dispatch-log
 (so it byte-matches the Coordinator's own `spine set-branch` write, ADR-0021);
 each row's `issueSpec` from `issue-store read` + `triage-read`, embedded
-verbatim; the verify-gate block and `depsSetup` from the config's `verify`
-profile; `closePhrase` from `store.kind` (Convention 4); `scopeGrants` from
+verbatim; the verify-gate block from the config's `verify` profile and
+`depsSetup` through the five-level precedence below;
+`closePhrase` from `store.kind` (Convention 4); `scopeGrants` from
 this row's `scope-extension` disclosures in the spine (ADR-0041); `anchorSha`
 from `--anchor`, **verified with `git rev-parse --verify <sha>^{commit}`
 before anything is written** — the host-side anchor-resolvability gate, folded
 in. Nothing is typed twice, so nothing can disagree with itself.
 
-**Three compose-time refusals, before any `agent()` fan-out.** A row whose
+**Four compose-time refusals, before any `agent()` fan-out.** A row whose
 Worker is human-gated, or `foreground`, is refused with its own message and its
 own remedy; a row missing any `REQUIRED_ROW_FIELDS` entry is refused naming the
-row and the field; an anchor that does not resolve is refused naming the SHA.
+row and the field; an anchor that does not resolve is refused naming the SHA;
+and a row with **no install step and a gitignored engine binding** is refused
+naming the binding and the path (below).
 The shipped script keeps its own copies of the first two as the backstop for a
 hand-edited script, and `tools/wave/src/skill-schema-drift.spec.ts` pins those
 copies to the engine's own `REQUIRED_ROW_FIELDS` and `HUMAN_GATED_WORKER`, so
 the two cannot disagree.
+
+### `depsSetup` — five precedence levels, and one refusal
+
+The row's dependency-install step is resolved most-specific-first
+(ADR-0032 amendment 2026-09-04):
+
+1. **the row's own `--row-meta` `depsSetup`** — one row installs differently;
+2. **the compose call's `--deps-setup` flag** — one answer for this compose;
+3. **`engine.install` in the wave config** — the consumer's standing setup-time
+   binding, written by `wave-setup` beside `engine.cli`;
+4. **the install-shaped command in the row's own verify profile** — a
+   derivation, and a good one, but still a guess about intent;
+5. **nothing.**
+
+A blank at any level is **not an answer** — it falls through rather than
+resolving to an empty step. There is deliberately no way to spell "confirmed:
+no install needed": level 5 renders as a **deferral** in all three
+workspace-setup sites (iteration-1 Worker, re-dispatch Worker, Reviewer) —
+*"no install step was recorded for this consumer — verify this worktree can run
+the verify gate and the engine CLI before the first engine call"*.
+
+The wording that replaces asserted a consumer answer the composer never had
+("consumer confirmed at wave-setup: nothing gitignored here — no install step
+needed"), and it was **false on the first consumer that read it**: both Workers
+of a two-row wave found their own `engine.cli` binary missing — that consumer
+binds `./node_modules/.bin/flotilla-engine` and gitignores `node_modules/` — and
+each installed by hand before any engine verb resolved.
+
+**The refusal is the half a deferral cannot cover.** An honest deferral is the
+right answer where the row can still do its work. It is the wrong answer where
+`engine.cli` ITSELF resolves through a gitignored path: the binary is absent
+from every dispatched worktree, so the row could neither run its verify gate nor
+open its PR, however carefully it read. `compose-driver` therefore measures the
+repo with `git check-ignore` — index-aware, so the question is *"would this path
+be absent from a fresh worktree"*, and a TRACKED file under an ignored directory
+composes normally — and exits non-zero naming the binding, the ignored path, and
+the setup-time fix. The probe runs at most once per compose, and only when some
+row reached level 5.
+
+The receipt reports **which level answered**, per row, as `depsSetupSource`
+(`row-meta` | `flag` | `engine.install` | `verify` | `none`). Read it rather
+than inferring from the command string: a level-3 and a level-4 answer are
+frequently the same bytes and are not the same claim.
 
 **The Reviewer agent name is derived, never spelled (issue #677).** In
 flotilla's own SOURCE form the agent is registered under its bare definition
@@ -340,7 +386,7 @@ numbered list is cited by name from elsewhere in the skill surface.
 - **The dependency directory.** If it is gitignored (the ordinary case for a lockfile-managed dependency tree), a fresh worktree has it **absent, not merely un-installed** — the verify gate the brief tells the agent to run cannot run at all without an install step first. The Reviewer brief hits the identical wall: it independently re-runs the same verify commands in its own worktree.
 - **The store config** (e.g. `wave.config.json`). If it is gitignored, it is likewise **absent** from the worktree, so an agent standing inside that checkout cannot resolve a tracker id against a store it has no config for — a bare `issueRef` is unreadable from there.
 
-Neither gap is flotilla's to close generically with a hardcoded command — the dependency dir, the install command, and the config's location are all **consumer-specific**. The mitigation is two per-row inputs the Coordinator supplies (`depsSetup` / `issueSpec` below), sourced from the consumer's own setup — `wave-setup`'s preconditions record exactly these two answers so the Coordinator has them ready at compose time instead of re-deriving them wave after wave.
+Neither gap is flotilla's to close generically with a hardcoded command — the dependency dir, the install command, and the config's location are all **consumer-specific**. The mitigation is two per-row inputs the composer fills (`depsSetup` / `issueSpec` below), sourced from the consumer's own setup. The install half is no longer a Coordinator hand-off at all: `wave-setup` writes it into the config as `engine.install`, and the composer resolves it through the precedence above — the loop where a Coordinator re-supplied it per wave is what let it be absent, silently, on the one consumer whose binding needed it most.
 
 ## A gate the sandbox withholds — the clause both briefs now carry ([ADR-0049](../../../../docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md))
 

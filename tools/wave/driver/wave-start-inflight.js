@@ -178,7 +178,13 @@ const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // depsSetup (Worker step 4, the FIRST step) installs whatever the configured
 // binding resolves through, so the binary exists before the terminator's
 // WAVE_CLI call — keep depsSetup first for this reason as well as the
-// verify-gate one.
+// verify-gate one. That coupling is why the install command is a SETUP-TIME
+// BINDING of its own, `engine.install`, sitting beside `engine.cli` in the
+// wave config (ADR-0032 amendment 2026-09-04): a worktree carries tracked files
+// only, so the command that makes the binary exist is as much a binding as the
+// command that calls it, and compose-driver REFUSES to compose a row that has
+// neither an install step from any source nor a tracked path for the binding to
+// resolve through.
 // (Provenance: ADR-0032; `docs/retros/2026-07-27-plugin-consumer-w1.md` DA-F1.)
 //
 // WAVE_CLI also carries an explicit NODE_USE_ENV_PROXY=1 prefix (wave-shared
@@ -298,9 +304,17 @@ const ISSUES = [
     model: 'sonnet',               // 'opus' for cross-feature-refactor / public-API-change, else 'sonnet'
     anchorSha: '<COORDINATOR_HEAD_SHA>',   // git rev-parse HEAD at dispatch time — the wave anchor
     coordinatorBranch: 'feat/<slug>',
-    // The consumer's own dependency-install command(s) — from the wave-setup
-    // preconditions answer for "is the dependency dir gitignored?". Empty
-    // string only if the consumer confirmed nothing is gitignored there.
+    // The consumer's own dependency-install command(s), resolved by
+    // compose-driver through five precedence levels, most specific first: this
+    // row's own --row-meta depsSetup, the compose call's --deps-setup flag,
+    // the config's `engine.install` binding (the consumer's standing setup-time
+    // answer, ADR-0032 amendment 2026-09-04), the install-shaped command in the
+    // row's verify profile, then nothing. An empty string means NO SOURCE
+    // ANSWERED — a deferral, which both briefs render as such. It has never
+    // meant "the consumer confirmed nothing is gitignored": that claim was
+    // false on the first consumer that read it, and the composer now MEASURES
+    // the repo instead — it refuses outright when `engine.cli` resolves through
+    // a gitignored path and no source offered an install step.
     // COMPOSE IT UNFUSED (wave-shared Convention 13): this string is the FIRST
     // command every Worker and Reviewer runs, so a fused `cd <depsDir> &&
     // <installCmd>` here teaches the shape the briefs' own clause forbids —
@@ -473,7 +487,7 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    ordinary case: a pinned local binary), the terminator's engine CLI call (see
    Termination step 3) has nothing to resolve either — without this step first:
    \`\`\`bash
-   ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
+   ${issue.depsSetup || '# no install step was recorded for this consumer — verify this worktree can run the verify gate and the engine CLI before the first engine call'}
    \`\`\``
 
 // The iteration≥2 (re-dispatch) workspace setup (W26-F1, §Re-dispatch above):
@@ -520,7 +534,7 @@ const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) —
    ordinary case: a pinned local binary), the terminator's engine CLI call (see
    Termination step 3) has nothing to resolve either — without this step first:
    \`\`\`bash
-   ${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
+   ${issue.depsSetup || '# no install step was recorded for this consumer — verify this worktree can run the verify gate and the engine CLI before the first engine call'}
    \`\`\``
 
 function workerBrief(issue) {
@@ -700,7 +714,7 @@ Your own worktree also carries **tracked files only**. If this consumer's
 dependency directory is gitignored, it is absent here too, and you cannot
 re-run the verify commands below without installing first:
 \`\`\`bash
-${issue.depsSetup || '# consumer confirmed at wave-setup: nothing gitignored here — no install step needed'}
+${issue.depsSetup || '# no install step was recorded for this consumer — verify this worktree can run the verify gate and the engine CLI before the first engine call'}
 \`\`\`
 
 **ONE BASH CALL PER STEP** (wave-shared Convention 13) — it binds you exactly as it binds the Worker, and this install is the first place it bites. Never fuse a setup step onto the command that matters (\`cd X && <command>\`) into one compound Bash call. Two unrelated mechanisms break on that shape, with opposite signatures: **the permission gate** splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY subcommand to match a rule independently — so an allowlisted verify command carries only itself past the gate, never the \`cd\` in front of it, and a dialog mid-dispatch has nobody to answer it; and **the worktree-isolation guard** can REJECT a fused command as too complex to verify that it stays inside your worktree — no dialog, nothing run. A refusal is about the command's SHAPE, not about the check: re-issue it as separate calls. **NEVER drop a verify command or a floor check because its fused form was refused** — reporting a check as run when it was skipped is the exact failure this clause exists to stop, and it is yours to avoid as well as to catch in the Worker's evidence. Your cwd is reset to your dispatch root before every one of your Bash calls, so one \`pwd\` characterizes all of them and a preceding \`cd\` characterizes none: carry the directory in the command where a flag exists (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`) rather than trusting a \`cd\` to reach the next call. **A bare newline joining two statements in one call is the same shape as \`&&\`, just quieter — and most refusals are not fusion at all:** \`case\`/\`esac\` has been observed refused standing entirely alone, and so has any command naming a **shell variable** — an \`if\`-guard on one, or a lone \`test -n "$VAR"\` — whether the variable was set in an earlier Bash call or in the same one. Shell state does not survive between your Bash calls either, so a value must be re-queried in the call that needs it rather than carried. Before re-deriving a split by hand, check the "Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch" section in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\` for what was actually verified — entry 1's evidence arc records three remedies that looked right and could not run. When reviewing a Worker's evidence for THIS convention, treat a Worker's own citation of that catalog as legitimate rather than a shortcut — including a Worker reporting it COULD NOT verify a working form for a cataloged shape (the catalog's own heredoc-spec-append entry is exactly that outcome, honestly reported rather than guessed). **And check what the Worker's PR evidence rests on:** its Termination step now confirms the PR with a \`host-pr status --branch\` re-query, so a report whose \`prUrl\` traces back to a shell-variable capture is following a recipe the brief no longer carries.

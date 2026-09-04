@@ -430,11 +430,40 @@ export interface EngineConfig {
    * Validated by {@link normalizeEngineCli}.
    */
   cli?: string;
+  /**
+   * The command that makes {@link cli} exist — this consumer's dependency
+   * install, as the same kind of plain space-separated argv word list
+   * (`npm ci`, `npm ci --prefix tools/wave`, `composer install -d cms`).
+   *
+   * **Why it lives beside `cli` rather than being re-derived per wave**
+   * (2026-09-04 amendment to ADR-0032, issue #717). A worktree carries TRACKED
+   * FILES ONLY. Wherever `cli` resolves through a gitignored directory — the
+   * ordinary case, a pinned local binary under `node_modules/` — the binary is
+   * ABSENT from every dispatched worktree, not merely un-installed, so the
+   * command that makes it exist is as much a setup-time binding as the command
+   * that calls it. Two Workers of one consumer's wave each discovered this for
+   * themselves and each had to run the install by hand before a single engine
+   * verb would resolve; their dispatch brief meanwhile asserted the opposite.
+   *
+   * Repo-relative by the same rule and for the same reason as `cli`: the
+   * tracked allowlist a dispatched worktree inherits can only carry
+   * repo-relative prefixes, so an absolute or `~`-rooted install command is
+   * refused at `config validate` rather than stalling a row at the permission
+   * gate. Absent is valid and means "this consumer recorded no install step" —
+   * a DEFERRAL the composed brief states as such, never a confirmation that
+   * none is needed.
+   */
+  install?: string;
 }
 
 /**
- * Why an `engine.cli` binding was rejected. Present-but-invalid only — an
- * absent binding is not a failure, it is the unbound case.
+ * Why an `engine` binding was rejected. Present-but-invalid only — an absent
+ * binding is not a failure, it is the unbound case.
+ *
+ * The four shapes are about the VALUE, not the field, so the same union
+ * describes an `engine.install` rejection (issue #717) as well as an
+ * `engine.cli` one. It keeps its original name because a name is a semver
+ * commitment and a rename is a removal.
  */
 export type EngineCliBindingFailure =
   /** Present, but not a JSON string (a number, an object, `null`, …). */
@@ -510,6 +539,111 @@ export class EngineCliBindingError extends Error {
 const ENGINE_CLI_FORBIDDEN_CHAR = /[^ A-Za-z0-9_.\/:@=+,-]/;
 
 /**
+ * How one `engine` binding names itself in a refusal. The RULE is one rule —
+ * the character allow-list and the leading-slash position check above — applied
+ * to both `engine.cli` and `engine.install` (issue #717); only the field name,
+ * the example shown as the shape to use instead, and what omitting the key
+ * means differ between them.
+ */
+interface ArgvBindingRule {
+  /** How the field is named in the thrown message. */
+  label: string;
+  /** The repo-relative command a refusal offers as the shape to use instead. */
+  example: string;
+  /** The sentence that tells an author what omitting the key entirely means. */
+  omitMeans: string;
+}
+
+/** A present-but-invalid binding, as the data a caller needs to throw its own error. */
+interface ArgvBindingRejection {
+  failure: EngineCliBindingFailure;
+  /** The offending value AS AUTHORED (untrimmed), when it was a string at all. */
+  configured: string | undefined;
+  message: string;
+}
+
+/**
+ * The whole plain-argv rule, in ONE implementation, returning the rejection as
+ * DATA rather than throwing it.
+ *
+ * Returning instead of throwing is what lets the two bindings keep their own
+ * refusal types without either one re-stating the rule: `engine.cli` wraps this
+ * in its long-standing typed {@link EngineCliBindingError} (a caller catches it
+ * and reads `failure`/`field`), while `engine.install` — a new key, and the
+ * newest peer of `verify.…needs` / `cleanup.disposableNames` / `extraRoots` —
+ * follows the house style those three set and throws a plain `Error` whose
+ * message names the rule. One rule, two refusal shapes, no second copy of the
+ * regex or the position check.
+ */
+function argvBindingRejection(
+  value: unknown,
+  rule: ArgvBindingRule,
+): ArgvBindingRejection | null {
+  // Absent means the key is not set, which is valid for both bindings. What an
+  // absent value MEANS operationally is the consuming skill's decision, not the
+  // engine's (ADR-0032).
+  if (value === undefined) return null;
+
+  if (typeof value !== 'string') {
+    // `null` lands here deliberately, and is NOT treated as absent the way
+    // `cleanup.disposableNames` treats it. A JSON `null` is something an author
+    // wrote down; silently reading it as "unbound" is precisely the quiet
+    // degradation these fields exist to abolish.
+    const got = value === null ? 'null' : Array.isArray(value) ? 'an array' : `a ${typeof value}`;
+    return {
+      failure: 'not-a-string',
+      configured: undefined,
+      message: `${rule.label} must be a command string — got ${got}. A configured binding is authoritative, so a malformed one fails here rather than being read as unbound.`,
+    };
+  }
+
+  const cli = value.trim();
+  if (cli.length === 0) {
+    return {
+      failure: 'empty',
+      configured: value,
+      message: `${rule.label} must be a non-empty command string — an empty binding is not "unbound", it is a binding that cannot be invoked. ${rule.omitMeans}`,
+    };
+  }
+
+  if (cli[0] === '/') {
+    // Leading-slash ABSOLUTE path — refused the same loud way a `~`-rooted path
+    // already is (ADR-0032's Considered-Options text frames these bindings as
+    // repo-relative, non-machine-specific, the exact ground the plugin-clone
+    // option was rejected on). Checked ahead of the character allow-list because
+    // `/` stays accepted everywhere else in the word list — this rule is about
+    // POSITION, not membership, so the negated-class regex above cannot express
+    // it.
+    return {
+      failure: 'absolute-path',
+      configured: value,
+      message: `${rule.label} ${JSON.stringify(cli)} starts with ${JSON.stringify('/')} at index 0 — the binding must be repo-relative (ADR-0032), not a machine-specific absolute path; the tracked permission allowlist an AFK Worker's worktree inherits can only carry repo-relative prefixes. Use a repo-relative command such as ${JSON.stringify(rule.example)}.`,
+    };
+  }
+
+  const offending = ENGINE_CLI_FORBIDDEN_CHAR.exec(cli);
+  if (offending) {
+    // The message quotes the TRIMMED command, not the raw one, so the quoted
+    // string and the index agree — an index counted against the trimmed value
+    // but printed beside the raw one would point at the wrong character for any
+    // binding with leading whitespace. `configured` still carries what the
+    // author actually wrote.
+    return {
+      failure: 'not-plain-argv',
+      configured: value,
+      message: `${rule.label} ${JSON.stringify(cli)} carries ${JSON.stringify(offending[0])} at index ${offending.index} — the binding is a plain space-separated argv word list, not a shell line, so shell metacharacters, expansions, globs, quotes, control characters and non-ASCII characters are all refused. Use a repo-relative command such as ${JSON.stringify(rule.example)}.`,
+    };
+  }
+
+  return null;
+}
+
+/** The trimmed command a binding carries, or `undefined` when it is absent. */
+function trimmedBinding(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() : undefined;
+}
+
+/**
  * Validate + normalize an `engine.cli` binding, returning the trimmed command
  * or `undefined` when the binding is absent.
  *
@@ -527,63 +661,51 @@ export function normalizeEngineCli(
   value: unknown,
   label = 'wave config "engine.cli"',
 ): string | undefined {
-  // Absent means UNBOUND, and unbound is valid here. The engine has no opinion
-  // about what a consumer should do without a binding — the consuming skills
-  // own that STOP (ADR-0032).
-  if (value === undefined) return undefined;
-
-  if (typeof value !== 'string') {
-    // `null` lands here deliberately, and is NOT treated as absent the way
-    // `cleanup.disposableNames` treats it. A JSON `null` is something an author
-    // wrote down; silently reading it as "unbound" is precisely the quiet
-    // degradation this field exists to abolish.
-    const got = value === null ? 'null' : Array.isArray(value) ? 'an array' : `a ${typeof value}`;
-    throw new EngineCliBindingError(
-      'not-a-string',
-      undefined,
-      `${label} must be a command string — got ${got}. A configured binding is authoritative, so a malformed one fails here rather than being read as unbound.`,
-    );
+  const rejection = argvBindingRejection(value, {
+    label,
+    example: './node_modules/.bin/flotilla-engine',
+    // Absent means UNBOUND, and unbound is valid here. The engine has no opinion
+    // about what a consumer should do without a binding — the consuming skills
+    // own that STOP (ADR-0032).
+    omitMeans: 'Omit the key entirely to leave the engine unbound.',
+  });
+  if (rejection) {
+    throw new EngineCliBindingError(rejection.failure, rejection.configured, rejection.message);
   }
+  return trimmedBinding(value);
+}
 
-  const cli = value.trim();
-  if (cli.length === 0) {
-    throw new EngineCliBindingError(
-      'empty',
-      value,
-      `${label} must be a non-empty command string — an empty binding is not "unbound", it is a binding that cannot be invoked. Omit the key entirely to leave the engine unbound.`,
-    );
-  }
-
-  if (cli[0] === '/') {
-    // Leading-slash ABSOLUTE path — refused the same loud, typed way a
-    // `~`-rooted path already is (ADR-0032's Considered-Options text frames
-    // `engine.cli` as repo-relative, non-machine-specific, the exact ground
-    // the plugin-clone option was rejected on). Checked ahead of the
-    // character allow-list because `/` stays accepted everywhere else in the
-    // word list — this rule is about POSITION, not membership, so the
-    // negated-class regex above cannot express it.
-    throw new EngineCliBindingError(
-      'absolute-path',
-      value,
-      `${label} ${JSON.stringify(cli)} starts with ${JSON.stringify('/')} at index 0 — the binding must be repo-relative (ADR-0032), not a machine-specific absolute path; the tracked permission allowlist an AFK Worker's worktree inherits can only carry repo-relative prefixes. Use a repo-relative command such as "./node_modules/.bin/flotilla-engine".`,
-    );
-  }
-
-  const offending = ENGINE_CLI_FORBIDDEN_CHAR.exec(cli);
-  if (offending) {
-    // The message quotes the TRIMMED command, not the raw one, so the quoted
-    // string and the index agree — an index counted against the trimmed value
-    // but printed beside the raw one would point at the wrong character for any
-    // binding with leading whitespace. `configured` still carries what the
-    // author actually wrote.
-    throw new EngineCliBindingError(
-      'not-plain-argv',
-      value,
-      `${label} ${JSON.stringify(cli)} carries ${JSON.stringify(offending[0])} at index ${offending.index} — the binding is a plain space-separated argv word list, not a shell line, so shell metacharacters, expansions, globs, quotes, control characters and non-ASCII characters are all refused. Use a repo-relative command such as "./node_modules/.bin/flotilla-engine".`,
-    );
-  }
-
-  return cli;
+/**
+ * Validate + normalize an `engine.install` binding (issue #717), returning the
+ * trimmed command or `undefined` when the key is absent.
+ *
+ * The SAME rule as {@link normalizeEngineCli} — literally the same
+ * implementation, {@link argvBindingRejection} — because the two bindings live
+ * or die on the same property: a dispatched worktree carries tracked files
+ * only, and its sole permission source is a tracked allowlist that can carry
+ * repo-relative prefixes and nothing else. An absolute or `~`-rooted install
+ * command fails there exactly as an absolute `cli` would.
+ *
+ * Module-private, and a plain `Error` rather than a typed one, deliberately.
+ * `engine.cli`'s typed refusal exists because a CONSUMER re-applies that rule
+ * when it authors a binding of its own (hence the root re-export). Nothing
+ * outside this engine authors an install command through the engine's API — it
+ * is written by `wave-setup` into the config and read by `compose-driver` — so
+ * this key follows the house style set by the config schema's other additive
+ * keys (`verify.…needs`, `cleanup.disposableNames`, `cleanup.extraRoots`): fail
+ * loud at `config validate` time with a message that names the rule.
+ */
+function normalizeEngineInstall(
+  value: unknown,
+  label = 'wave config "engine.install"',
+): string | undefined {
+  const rejection = argvBindingRejection(value, {
+    label,
+    example: 'npm ci --prefix tools/wave',
+    omitMeans: 'Omit the key entirely to record no install step.',
+  });
+  if (rejection) throw new Error(rejection.message);
+  return trimmedBinding(value);
 }
 
 export interface WaveConfig {
@@ -621,8 +743,9 @@ export interface WaveConfig {
  * both additions to this schema have been strictly additive: no key here has
  * ever been renamed, removed or re-typed, which is what lets an existing
  * consumer config keep validating unchanged (the `wave.config` schema is a
- * semver contract). `store.goal.container` (ADR-0044) joins that list as the
- * newest additive optional key — and is the one addition this function
+ * semver contract). `engine.install` (issue #717) is the newest entry on that
+ * list, validated by the same rule as `engine.cli` below.
+ * `store.goal.container` (ADR-0044) is the one addition this function
  * deliberately does NOT validate: its refusal ladder is store-side, for the
  * reason spelled out above {@link MarkdownStoreConfig}. The key survives the
  * load verbatim, which is exactly what `readGoalContainer` (cli-store.ts) then
@@ -689,6 +812,12 @@ export function loadWaveConfig(path: string): WaveConfig {
   // ADR-0032 — the engine-invocation binding. Absent `engine` is valid and
   // means unbound; a present one must be an object, and its `cli` must survive
   // the plain-argv rule in {@link normalizeEngineCli}.
+  //
+  // `install` (issue #717, the 2026-09-04 amendment to ADR-0032) is validated
+  // beside it by the SAME rule, through the same implementation: the command
+  // that makes the binary exist is as much a setup-time binding as the command
+  // that calls it, because a worktree carries tracked files only. Both keys are
+  // optional, and a config written before either existed loads unchanged.
   const engine = (raw as { engine?: unknown }).engine;
   if (engine !== undefined) {
     if (!engine || typeof engine !== 'object' || Array.isArray(engine)) {
@@ -701,6 +830,8 @@ export function loadWaveConfig(path: string): WaveConfig {
     // of `config.engine.cli` — `config validate`'s report, a host-side brief
     // composer — gets the exact string that will be invoked.
     if (cli !== undefined) (engine as { cli?: string }).cli = cli;
+    const install = normalizeEngineInstall((engine as { install?: unknown }).install);
+    if (install !== undefined) (engine as { install?: string }).install = install;
   }
 
   return raw as WaveConfig;
