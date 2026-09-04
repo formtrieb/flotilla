@@ -77,14 +77,29 @@
  * state an ordinary approve reaches, and a ruled changes-requested lands on the
  * cap-exhaustion STOP rather than buying the row another round.
  *
+ * ## What a reuse preserves — one rule for the body AND the title
+ *
+ * On a reuse this verb keeps the LIVE PR's authored content and writes its own
+ * section beneath it: the body's summary half survives
+ * ({@link workerSummaryFromBody}) and so does the title ({@link resolveTitle}).
+ * The two used to disagree — the body was preserved by acceptance criterion
+ * while the title was overwritten from the spine row in the same call — and the
+ * disagreement was visible in the field as one change wearing three titles: the
+ * Worker's commit subject and PR title, the row title written over it here, and
+ * the Worker's again on the squash commit that landed. Whatever argument keeps
+ * the body keeps the title, because a title is the same claim in one line.
+ * `--title` is the deliberate override, and the printed `titleSource`
+ * (`flag | live-pr | row`) says which of the three the call used.
+ *
  * ## Idempotence
  *
  * Every step is re-runnable and reports which of the two it did:
  * `performed` (it acted now) or `performed-before` (it found the work already
  * done and did nothing). A second run reuses the open PR instead of creating
  * another, does not append a second verdict section to the body it composes,
- * and does not re-transition a rung already at `in-review`. None of those is an
- * error, and none is reported as one.
+ * writes back the same title it found, and does not re-transition a rung
+ * already at `in-review`. None of those is an error, and none is reported as
+ * one.
  */
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -248,6 +263,79 @@ export function composePrBody(parts: PrBodyParts): string {
     .join('\n\n');
 }
 
+/**
+ * Where the PR title this verb writes came from — the title's `summarySource`.
+ *
+ * Module-local, like every other type in this file that only ever reaches a
+ * consumer as a JSON string (`StepStatus`, `RouteTupleDisposition`): the value
+ * is read off the printed result, never imported.
+ */
+type TitleSource = 'flag' | 'live-pr' | 'row';
+
+/** The title the reuse/create writes, and the provenance the result discloses. */
+interface ResolvedTitle {
+  title: string;
+  titleSource: TitleSource;
+}
+
+/**
+ * Resolve the PR title: `--title` if passed, else the LIVE PR's own title on a
+ * reuse, else the spine row's title with bare tracker ids stripped.
+ *
+ * **Why the live title comes before the row title — the asymmetry this closes.**
+ * One change used to carry three titles: the Worker's commit subject and the
+ * title it opened the PR with (from the driver's `prTitle`), the row title this
+ * verb wrote over it on reuse, and — because a single-commit squash takes its
+ * subject from the commit — the Worker's again on the default branch. The
+ * middle one was the odd one out, and it was odd against this verb's OWN rule:
+ * {@link workerSummaryFromBody} preserves the live BODY on reuse precisely
+ * because a Worker's account of its change outranks a generated summary. A
+ * title is that same claim in one line, so whatever argument keeps the body
+ * keeps the title. It now does.
+ *
+ * The three-way precedence, and what each rung is for:
+ *   - `flag`    — `--title` is the Coordinator saying it means to rename the PR.
+ *                 An explicit override outranks preservation, always.
+ *   - `live-pr` — a reuse with no flag preserves what is on the PR, byte for
+ *                 byte. Only a non-empty STRING counts: `OpenPrRef.title` is
+ *                 three-valued (absent = "not readable here", never "no title"),
+ *                 and an empty live title is not a claim worth preserving.
+ *   - `row`     — the create path, and the reuse whose live title was
+ *                 unreadable. Unchanged from what this verb always did: the
+ *                 spine row's title with bare ids stripped (mention discipline),
+ *                 the same narrow strip `compose-driver` applies to `prTitle`.
+ *
+ * Pure: it decides, it never writes. `existing` is the find the caller already
+ * paid for, so this costs no second query.
+ *
+ * **Module-local on purpose, unlike its two body-side neighbours.**
+ * {@link workerSummaryFromBody} and {@link composePrBody} are exported so their
+ * properties can be pinned without a whole run; this one is not, because every
+ * cell it decides is observable in the printed result (`titleSource` plus the
+ * title the host was handed), so the spec drives it end to end and no new
+ * module export — nor the barrel-drift allowlist entry an export would need —
+ * has to be minted for a rule the JSON already discloses.
+ */
+function resolveTitle(input: {
+  args: string[];
+  existing: OpenPrRef | null;
+  rowTitle: string;
+  id: string;
+}): ResolvedTitle {
+  const flagged = flag(input.args, '--title');
+  if (flagged !== undefined) return { title: flagged, titleSource: 'flag' };
+
+  const live = input.existing?.title;
+  if (typeof live === 'string' && live.trim().length > 0) {
+    // Byte-identical: no strip, no trim, no re-composition. Preserving a title
+    // means writing back exactly what the host reported, and a strip here would
+    // silently edit a Worker-authored title on every re-run.
+    return { title: live, titleSource: 'live-pr' };
+  }
+
+  return { title: stripBareIds(input.rowTitle, input.id), titleSource: 'row' };
+}
+
 // ─── Injected seams ──────────────────────────────────────────────────────────
 
 /** Everything impure this verb touches, injectable so every branch is spec-drivable. */
@@ -297,6 +385,11 @@ function usage(message: string): number {
       '         --report <path> --verdict <path> --anchor <sha> --config <cfg>\n' +
       '         [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>]\n' +
       '         [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]\n' +
+      '  --title renames the PR. Without it, a REUSE preserves the live PR title\n' +
+      '  byte-identically (the Worker opened it and named its own change), exactly as\n' +
+      '  the body preserves the live PR body; a CREATE falls back to the spine row\n' +
+      '  title with bare tracker ids stripped. The result reports which of the three\n' +
+      '  it used as `titleSource` (flag | live-pr | row).\n' +
       '  --ruling is the Operator\'s stated reason for a Reviewer-only round ABOVE the\n' +
       '  re-dispatch cap, and the only thing that admits an --iter above it.\n',
   );
@@ -859,10 +952,7 @@ async function finishApproved(input: {
 
   const closePhrase = closePhraseFor(config.store.kind, id);
   const body = composePrBody({ summary, verdictSection, closePhrase });
-  // The title carries no tracker id (mention discipline). `--title` overrides;
-  // the default is the spine row's own title with bare ids stripped — the same
-  // narrow strip `compose-driver` applies to a row's `prTitle`.
-  const title = flag(args, '--title') ?? stripBareIds(row.title, id);
+  const { title, titleSource } = resolveTitle({ args, existing, rowTitle: row.title, id });
 
   const prResult = await createOrReusePr(
     info.host,
@@ -897,6 +987,11 @@ async function finishApproved(input: {
     url: prResult.url,
     ...(prResult.updated === undefined ? {} : { updated: prResult.updated }),
     summarySource: existing !== null && summary !== verdict.workerReportDigest ? 'live-pr-body' : 'workerReportDigest',
+    // The title's own provenance, reported the way the body reports its summary
+    // source — because the two are now decided by the same rule and a reader
+    // who can see one and not the other cannot tell a preserved title from a
+    // coincidentally identical one.
+    titleSource,
   });
 
   // ── 6. status re-query ───────────────────────────────────────────────────
@@ -972,6 +1067,7 @@ async function finishApproved(input: {
     branch,
     prUrl,
     title,
+    titleSource,
     ...(ruled === undefined ? {} : { ruled }),
     steps,
     wrote: {

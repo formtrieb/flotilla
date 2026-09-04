@@ -774,6 +774,90 @@ describe('findOpenPrRef — the live body the guard grades against', () => {
   });
 });
 
+// ─── findOpenPrRef — the live TITLE a preserving caller composes from ─────────
+//
+// The title rides the same three-valued contract as the body, because the caller
+// that consumes it (`route-tuple`'s reuse) has the same question to answer: is
+// there EVIDENCE of what the live PR says, or merely no reading? A missing key
+// must never be mistaken for "the PR has no title", which would let a caller
+// write an invented one over a real one.
+
+describe('findOpenPrRef — the live title a preserving caller reads', () => {
+  it('surfaces the GitHub PR title alongside url + number + body', async () => {
+    const { http } = fakeProbe([
+      [
+        isGet,
+        {
+          status: 200,
+          json: [
+            {
+              html_url: 'https://github.com/acme/w/pull/9',
+              number: 9,
+              title: 'What the Worker wrote',
+              body: 'live\n\nCloses #9',
+            },
+          ],
+        },
+      ],
+    ]);
+    const r = await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http });
+    expect(r).toEqual({
+      url: 'https://github.com/acme/w/pull/9',
+      number: 9,
+      body: 'live\n\nCloses #9',
+      title: 'What the Worker wrote',
+    });
+  });
+
+  it('surfaces the Bitbucket PR title the same way', async () => {
+    const { http } = fakeProbe([
+      [
+        isGet,
+        {
+          status: 200,
+          json: {
+            values: [
+              {
+                id: 7,
+                title: 'What the Worker wrote',
+                description: 'live\n\nFixes EX-1',
+                links: { html: { href: 'https://bitbucket.org/ws/repo/pull-requests/7' } },
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const r = await findOpenPrRef('bitbucket', { auth: 'u:p' }, 'b', { workspace: 'ws', repo: 'repo' }, { http });
+    expect(r).toEqual({
+      url: 'https://bitbucket.org/ws/repo/pull-requests/7',
+      number: 7,
+      body: 'live\n\nFixes EX-1',
+      title: 'What the Worker wrote',
+    });
+  });
+
+  it('a null / absent title leaves the key ABSENT — unreadable, not "no title"', async () => {
+    const { http } = fakeProbe([
+      [
+        isGet,
+        { status: 200, json: [{ html_url: 'https://github.com/acme/w/pull/9', number: 9, title: null }] },
+      ],
+    ]);
+    const r = await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http });
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', number: 9 });
+    expect(r && 'title' in r).toBe(false);
+  });
+
+  it('an EMPTY-STRING title is EVIDENCE and survives the read — the caller, not the reader, decides', async () => {
+    const { http } = fakeProbe([
+      [isGet, { status: 200, json: [{ html_url: 'https://github.com/acme/w/pull/9', number: 9, title: '' }] }],
+    ]);
+    const r = await findOpenPrRef('github', { auth: 'u:t' }, 'b', { workspace: 'acme', repo: 'w' }, { http });
+    expect(r).toEqual({ url: 'https://github.com/acme/w/pull/9', number: 9, title: '' });
+  });
+});
+
 // ─── createPr ────────────────────────────────────────────────────────────────
 
 const createReq = {
