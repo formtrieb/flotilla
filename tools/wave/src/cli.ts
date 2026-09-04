@@ -10,7 +10,7 @@
  *   npx tsx tools/wave/src/cli.ts merge-order <wave-md-path>
  *   npx tsx tools/wave/src/cli.ts closed-by <closed-by-line>
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
- *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>]
+ *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>] [--body <t> | --body-file <path>]
  *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]
  *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports <dir> --verdicts <dir> [...]
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
@@ -193,14 +193,21 @@
  * host-pr (ADR-0019 + ADR-0023) — the host-write verb group. Every host write
  * goes through the engine host seam; `gh` is on none of these paths. `create`
  * opens the PR (find-before-create idempotent — an existing open PR is reused,
- * requires --title/--body, reads GITHUB_TOKEN from the env); arm/merge/status
- * land it. Routed by detect-host (github only in M1; bitbucket/unknown fail loud
- * + typed for every verb). See host-pr-cli.ts. Exit codes:
+ * requires --title plus EXACTLY ONE of --body <body> and --body-file <path>,
+ * reads GITHUB_TOKEN from the env); arm/merge/status land it. `--body-file`
+ * reads the body from a file verbatim and is the form to reach for whenever the
+ * body is more than one paragraph — a multi-paragraph inline `--body` has been
+ * refused in the field by an agent harness's worktree-isolation guard on a call
+ * from an isolated worktree (not by every such guard, which is the trouble: the
+ * caller cannot tell from inside), and a long quoted argument is a shell-quoting
+ * hazard everywhere. Routed by detect-host (github only in M1; bitbucket/unknown
+ * fail loud + typed for every verb). See host-pr-cli.ts. Exit codes:
  *   0 — create opened/reused the PR; arm/merge landed the row (merged | armed |
  *       already-merged); status probed
  *   1 — create failed (create-failed + fallbackPrefillUrl); not landed (no-pr |
  *       refused); no adapter for the host; or a host error
- *   2 — usage error
+ *   2 — usage error — including create's body routes: --body and --body-file
+ *       both given, neither given, or a --body-file path that cannot be read
  *
  * worktree-cleanup exit codes:
  *   0 — success (nothing to remove, or all selected removed cleanly). The
@@ -526,7 +533,7 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
   'closed-by': 'Classify a `Closed-by:` line into { class, needsPin }.',
   'detect-host': 'Parse a git remote URL into { host, workspace, repo }.',
   'host-pr':
-    'Open, arm, merge or probe a pull request on the code host (create|arm|merge|status|preflight).',
+    'Open, arm, merge or probe a pull request on the code host (create|arm|merge|status|preflight); create takes its body inline (--body) or from a file (--body-file).',
   'worktree-cleanup': 'List, plan, and (unless --dry-run) remove pushed-and-clean agent worktrees.',
   'conflict-map': 'Compute the file-overlap conflict matrix across a set of issues.',
   'cross-wave': 'Check whether a candidate batch is parallel-safe against an already-claimed batch.',
@@ -609,6 +616,7 @@ function printUsage(): void {
       '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints JSON',
       '  flotilla-engine cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]   # prints JSON',
       '  flotilla-engine host-pr <create|arm|merge|status|preflight> --branch <b> [--remote <url>] [--method <m>]   # prints JSON on every verb (see `host-pr <verb>`\'s own usage error for that verb\'s contract)',
+      '    host-pr create --branch <b> --title <t> (--body <body> | --body-file <path>) [--base <branch>] [--allow-close-phrase-loss]   # exactly one body route; --body-file reads the file verbatim — reach for it whenever the body runs past one paragraph (a multi-paragraph --body has been refused by a worktree-isolation guard, and a long quoted argument is a quoting hazard everywhere else)',
       '  flotilla-engine issue-store <op> [...args] [--config <path>]   # per-op output — most read ops print JSON, create/publishDocument print the plain id as text, several mutation ops print nothing on success (see `issue-store <op>`\'s own usage error for that op\'s contract)',
       // This ONE line must name every op spine-cli's own dispatch table reports
       // — cli.spec.ts's FOR-11 guard reads the first `flotilla-engine spine `

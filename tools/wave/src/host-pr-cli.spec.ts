@@ -15,7 +15,16 @@
  * real `RealBitbucketApi` over a fixture HTTP seam), so neither adapter factory
  * — and therefore no credential resolution and no network — is ever reached
  * except where a test is specifically about that failure.
+ *
+ * The one exception to "no I/O" is `create --body-file` (issue #702), whose whole
+ * point is that the body comes off the filesystem: those tests write real files
+ * into a temp dir and let the runner read them, because a mocked read would test
+ * the mock rather than the flag.
  */
+
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runHostPr } from './host-pr-cli';
@@ -1106,6 +1115,294 @@ describe('host-pr create — usage + credential guards', () => {
     expect(String(out().error)).toMatch(/GITHUB_TOKEN/);
     // No network was attempted without a credential.
     expect(requests).toEqual([]);
+  });
+});
+
+// ─── host-pr create --body-file (issue #702) ────────────────────────────────
+//
+// The reported gap: a worktree-isolated Worker's `host-pr create` was REFUSED by
+// the harness's worktree-isolation guard when `--body` was a long multi-paragraph
+// string with blank lines, while the Coordinator — running from an un-isolated
+// checkout — never saw it. `--body-file` takes the body off the command line
+// entirely, so it fixes that whatever the guard's predicate is, and retires the
+// shell-quoting/command-length hazard of a multi-KB quoted argument besides.
+//
+// What is pinned here is the CONTRACT, not the guard (which is harness-side and
+// unreachable from a spec): the exclusive-or between the two flags, the
+// verbatim read, the unreadable-path usage error, and — the property that makes
+// the flag safe to reach for — that a body supplied by file is INDISTINGUISHABLE
+// downstream from the same bytes supplied inline.
+//
+// Convention 11 falsification: each of the four usage refusals below was
+// observed FAILING with the guard removed, and the equivalence test was observed
+// failing against a body-file read that trimmed its input. See this row's report
+// for the observed output.
+
+describe('host-pr create --body-file — the body comes from a file (issue #702)', () => {
+  /** A body of exactly the shape the isolation guard refused: multi-paragraph, blank-line separated. */
+  const MULTI_PARAGRAPH_BODY = [
+    'Adds the file form of the PR body, so a body that runs past one paragraph can reach the host at all.',
+    '',
+    'The inline form is refused by the worktree-isolation guard when it carries blank-line breaks — a',
+    'refusal the Coordinator never sees, because it runs from an un-isolated checkout.',
+    '',
+    '## Falsification',
+    '',
+    'The guard was removed and each refusal observed failing, then restored.',
+    '',
+    'Closes #702',
+  ].join('\n');
+
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'host-pr-body-file-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Write `content` to a fresh file under the temp dir and return its path. */
+  function bodyFile(content: string, name = 'pr-body.md'): string {
+    const p = join(dir, name);
+    writeFileSync(p, content, 'utf-8');
+    return p;
+  }
+
+  it('reads the body from the file VERBATIM — every blank line survives into the create POST', async () => {
+    let posted: string | undefined;
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: (_url, body) => {
+        posted = body;
+        return { status: 201, json: { html_url: NEW_PR } };
+      },
+    });
+
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/702-body-file', '--title', 'T', '--body-file', bodyFile(MULTI_PARAGRAPH_BODY), '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, verb: 'create', outcome: 'created', url: NEW_PR });
+    // Byte-for-byte: not trimmed, not re-wrapped, blank lines intact.
+    expect(JSON.parse(posted as string).body).toBe(MULTI_PARAGRAPH_BODY);
+  });
+
+  it('a trailing newline is preserved too — the close phrase still owns its own last line', async () => {
+    let posted: string | undefined;
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: (_url, body) => {
+        posted = body;
+        return { status: 201, json: { html_url: NEW_PR } };
+      },
+    });
+
+    await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body-file', bodyFile(`${MULTI_PARAGRAPH_BODY}\n`), '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+
+    const sent = JSON.parse(posted as string).body as string;
+    expect(sent).toBe(`${MULTI_PARAGRAPH_BODY}\n`);
+    // The guard is line-anchored, so the phrase surviving on a line of its own
+    // is the property that matters — a trailing newline does not cost it.
+    expect(sent.split('\n').filter((l) => l.trim().length > 0).pop()).toBe('Closes #702');
+  });
+
+  it('EQUIVALENCE: the same multi-paragraph body inline and by file prints byte-identical JSON and sends an identical request', async () => {
+    const capture = async (bodyArgs: string[]) => {
+      stdout = '';
+      let posted: string | undefined;
+      const { http, requests } = fakeHttp({
+        get: () => ({ status: 200, json: [] }),
+        post: (_url, body) => {
+          posted = body;
+          return { status: 201, json: { html_url: NEW_PR } };
+        },
+      });
+      const code = await runHostPr(
+        ['create', '--branch', 'wave/702-body-file', '--title', 'Same title', ...bodyArgs, '--remote', GITHUB_REMOTE],
+        undefined,
+        { http, env: ENV },
+      );
+      return { code, json: stdout, posted, methods: requests.map((r) => r.method) };
+    };
+
+    const inline = await capture(['--body', MULTI_PARAGRAPH_BODY]);
+    const viaFile = await capture(['--body-file', bodyFile(MULTI_PARAGRAPH_BODY)]);
+
+    expect(inline.code).toBe(0);
+    expect(viaFile.code).toBe(inline.code);
+    // The printed JSON is the caller-visible surface — byte-identical.
+    expect(viaFile.json).toBe(inline.json);
+    // …and so is what went on the wire.
+    expect(viaFile.posted).toBe(inline.posted);
+    expect(viaFile.methods).toEqual(inline.methods);
+  });
+
+  it('EQUIVALENCE on the refusal path: a file body with no close phrase is refused exactly as the same inline body is', async () => {
+    const noPhrase = 'A body with paragraphs.\n\nBut no close phrase anywhere.';
+    const capture = async (bodyArgs: string[]) => {
+      stdout = '';
+      stderr = '';
+      const { http } = fakeHttp({
+        // The LIVE body carries a phrase → the guard has something to lose.
+        get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7, body: 'Live body.\n\nCloses #702' }] }),
+        patch: () => {
+          throw new Error('the refusal must happen BEFORE any write');
+        },
+      });
+      const code = await runHostPr(
+        ['create', '--branch', 'wave/702-body-file', '--title', 'T', ...bodyArgs, '--remote', GITHUB_REMOTE],
+        undefined,
+        { http, env: ENV },
+      );
+      return { code, json: stdout, err: stderr };
+    };
+
+    const inline = await capture(['--body', noPhrase]);
+    const viaFile = await capture(['--body-file', bodyFile(noPhrase)]);
+
+    expect(inline.code).toBe(1);
+    expect(JSON.parse(inline.json)).toMatchObject({ ok: false, outcome: 'reuse-refused', updated: false });
+    expect(viaFile.code).toBe(inline.code);
+    expect(viaFile.json).toBe(inline.json);
+    expect(viaFile.err).toBe(inline.err);
+  });
+
+  it('EQUIVALENCE on reuse: a file body rewrites the open PR with exactly the bytes an inline body would', async () => {
+    const capture = async (bodyArgs: string[]) => {
+      stdout = '';
+      let patched: string | undefined;
+      const { http, requests } = fakeHttp({
+        get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7 }] }),
+        patch: (_url, body) => {
+          patched = body;
+          return { status: 200, json: {} };
+        },
+      });
+      const code = await runHostPr(
+        ['create', '--branch', 'wave/702-body-file', '--title', 'Same title', ...bodyArgs, '--remote', GITHUB_REMOTE],
+        undefined,
+        { http, env: ENV },
+      );
+      return { code, json: stdout, patched, methods: requests.map((r) => r.method) };
+    };
+
+    const inline = await capture(['--body', MULTI_PARAGRAPH_BODY]);
+    const viaFile = await capture(['--body-file', bodyFile(MULTI_PARAGRAPH_BODY)]);
+
+    expect(inline.code).toBe(0);
+    expect(JSON.parse(inline.json)).toMatchObject({ outcome: 'reused', updated: true, url: EXISTING_PR });
+    expect(viaFile.json).toBe(inline.json);
+    expect(viaFile.patched).toBe(inline.patched);
+    expect(JSON.parse(viaFile.patched as string)).toEqual({ title: 'Same title', body: MULTI_PARAGRAPH_BODY });
+    // Find-before-create is unchanged: no duplicate POST on either route.
+    expect(viaFile.methods).toEqual(['GET', 'PATCH']);
+  });
+
+  it('BOTH --body and --body-file → exit 2, and the message names BOTH flags', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'x\n\nCloses #702', '--body-file', bodyFile(MULTI_PARAGRAPH_BODY), '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toContain('--body ');
+    expect(stderr).toContain('--body-file');
+    expect(stderr).toMatch(/exactly ONE/);
+    // Decided before any routing or network — the guard is a usage guard.
+    expect(requests).toEqual([]);
+  });
+
+  it('NEITHER --body nor --body-file → exit 2, and the message names BOTH flags', async () => {
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toContain('--body ');
+    expect(stderr).toContain('--body-file');
+    expect(stderr).toMatch(/exactly ONE/);
+    expect(requests).toEqual([]);
+  });
+
+  it('a --body-file path that does not exist → exit 2, and the message names the PATH', async () => {
+    const missing = join(dir, 'nope', 'not-here.md');
+    const { http, requests } = fakeHttp({});
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body-file', missing, '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toContain(missing);
+    expect(stderr).toMatch(/could not read --body-file/);
+    // No routing, no credential resolve, no request.
+    expect(requests).toEqual([]);
+  });
+
+  it('a --body-file path that is a DIRECTORY is the same unreadable-path refusal, naming the path', async () => {
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body-file', dir, '--remote', GITHUB_REMOTE],
+      undefined,
+      { env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toContain(dir);
+    expect(stderr).toMatch(/could not read --body-file/);
+  });
+
+  it('an EMPTY --body-file → exit 2 naming the path (the same rule an empty --body gets)', async () => {
+    const empty = bodyFile('', 'empty.md');
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--body-file', empty, '--remote', GITHUB_REMOTE],
+      undefined,
+      { env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toContain(empty);
+    expect(stderr).toMatch(/empty/);
+  });
+
+  it('--body-file with no path after it → exit 2 naming the flag', async () => {
+    const code = await runHostPr(
+      ['create', '--branch', 'b', '--title', 'T', '--remote', GITHUB_REMOTE, '--body-file'],
+      undefined,
+      { env: ENV },
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--body-file <path> needs a path/);
+  });
+
+  it('--body-file on a verb that composes no PR body is a usage error, never silently ignored', async () => {
+    const { host, calls } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(
+      ['status', '--branch', 'b', '--body-file', bodyFile(MULTI_PARAGRAPH_BODY), '--remote', GITHUB_REMOTE],
+      host,
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--body-file is only supported by 'create'/);
+    // status's OWN contract answered (issue #505), and the host was never touched.
+    expect(stderr).toContain('usage: host-pr status --branch');
+    expect(calls).toEqual([]);
+  });
+
+  it("create's usage contract names the flag and says when to reach for it", async () => {
+    // A create call with neither body route prints create's own contract.
+    await runHostPr(['create', '--branch', 'b', '--title', 'T', '--remote', GITHUB_REMOTE], undefined, { env: ENV });
+    expect(stderr).toContain('--body-file <path>');
+    expect(stderr).toMatch(/more than one paragraph/);
+    expect(stderr).toContain('usage: host-pr create --branch');
   });
 });
 
