@@ -916,7 +916,22 @@ function resolveDeclaredFiles(
  * stay dispatchable either way; what changes is that the gap is now *stated*
  * instead of silently indistinguishable from a fully verify-backed approve.
  *
- * Three-way ADR-0014 capability classification, mirroring Gates 2/7:
+ * **The partial case (issue #711):** matching {@link verifyCommands}'s own
+ * changed-files-wide question ("does at least one file match at least one
+ * profile?") is not the same question as "does EVERY declared file have a
+ * gate behind it?" A row half of whose files sit under a covered profile and
+ * half under nothing used to read identically to a row a full verify run
+ * actually backs — `commands.length > 0` was true either way. This is the
+ * ORDINARY shape (a feature row spanning package sources plus untested
+ * application targets is more common than a row fully outside every
+ * profile), so it gets its own outcome rather than folding into `pass`: once
+ * every declared file individually clears at least one profile's `appliesTo`
+ * do we `pass`; a row where only *some* files clear it `warn`s, naming the
+ * uncovered files and the profile(s) that DID match, so an approve reads as
+ * verify-backed for the covered half and inspection-only for the rest — never
+ * silently equivalent to full coverage.
+ *
+ * Four-way ADR-0014 capability classification, mirroring Gates 2/7:
  *   - `verify` absent from this call        → `'deferred'` (this invocation
  *     was not given the consumer's verify config at all — a capability gap,
  *     not evidence of anything about the row). Resolvable: passing `--config`
@@ -932,8 +947,16 @@ function resolveDeclaredFiles(
  *   - `repoRoot` absent (structured/`validateIssueView` path only) → `'deferred'`
  *     (working-tree gate: `Files:`/`appliesTo` globs cannot be expanded to
  *     determine overlap without a checkout).
- *   - otherwise: expand the row's declared files (same policy as Gate 2) and
- *     ask `verifyCommands` whether any profile would fire on them.
+ *   - otherwise: expand the row's declared files (same policy as Gate 2), then
+ *     — three outcomes, pinned by the spec:
+ *       - NO file matches any profile     → `'warn'`, the pre-existing text
+ *         unchanged (byte-identical — this is the FOR-127 case this gate was
+ *         first built for, not touched by #711).
+ *       - EVERY file matches some profile → `'pass'`, no reason (byte-identical
+ *         to the pre-#711 full-coverage text — the negative control).
+ *       - SOME files match, some don't    → `'warn'`, naming the uncovered
+ *         files verbatim and the profile(s) that matched (issue #711 — the
+ *         gap this gate previously let disappear).
  */
 function checkVerifyProfileCoverage(
   files: readonly string[],
@@ -953,20 +976,49 @@ function checkVerifyProfileCoverage(
 
   const resolved = resolveDeclaredFiles(files, repoRoot);
   const commands = verifyCommands(resolved, verify);
-  if (commands.length > 0) {
+  if (commands.length === 0) {
+    // No declared file matches any profile — the fully-uncovered case this
+    // gate was originally built for (FOR-127). Text unchanged by #711.
+    const profileNames = verify.profiles.map((p) => p.name).join(', ');
+    return {
+      name,
+      status: 'warn',
+      reason:
+        `Declared files (${files.join(', ')}) match no configured verify profile ` +
+        `(${profileNames}) — this row has no automated build/test gate behind it. ` +
+        `An approve here is inspection-only, not verify-backed: state that ` +
+        `explicitly in the Worker/Reviewer brief rather than letting it read the ` +
+        `same as a row a full verify run actually backed.`,
+    };
+  }
+
+  // At least one declared file matched — but "at least one" is not "all of
+  // them" (issue #711). Test each resolved file individually against every
+  // profile's `appliesTo` to find the half (if any) that still has nothing
+  // behind it.
+  const uncovered = resolved.filter(
+    (f) => !verify.profiles.some((p) => micromatch.isMatch(f, p.appliesTo)),
+  );
+  if (uncovered.length === 0) {
+    // Every declared file cleared at least one profile — full coverage, the
+    // negative control (AC1): pass, no reason, byte-identical to pre-#711.
     return { name, status: 'pass' };
   }
 
-  const profileNames = verify.profiles.map((p) => p.name).join(', ');
+  const matchedProfileNames = verify.profiles
+    .filter((p) => resolved.some((f) => micromatch.isMatch(f, p.appliesTo)))
+    .map((p) => p.name)
+    .join(', ');
   return {
     name,
     status: 'warn',
     reason:
-      `Declared files (${files.join(', ')}) match no configured verify profile ` +
-      `(${profileNames}) — this row has no automated build/test gate behind it. ` +
-      `An approve here is inspection-only, not verify-backed: state that ` +
-      `explicitly in the Worker/Reviewer brief rather than letting it read the ` +
-      `same as a row a full verify run actually backed.`,
+      `Declared files partially match configured verify profile(s) (${matchedProfileNames}) — ` +
+      `the following declared file(s) match none: ${uncovered.join(', ')}. ` +
+      `An approve here is verify-backed only for the covered files; the rest is ` +
+      `inspection-only, not verify-backed: state that explicitly in the ` +
+      `Worker/Reviewer brief rather than letting it read the same as a row a ` +
+      `full verify run actually backed.`,
   };
 }
 

@@ -17,7 +17,7 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 | `issue-store read <id>` | `IssueView` — worker, risk, files |
 | `issue-store triage-read <id>` | `TriageView` — `.title` (tracker-native title, triaged or not) and `.body` (the sanctioned source for embedding the issue spec into a Worker brief at compose time) |
 | `issue-store listClaimed` | `IssueView[]` — all currently queued + in-flight issues |
-| `dor --id <id> --repo-root <dir> --config <path>` | DoR gate; working-tree gates run against the coordinator's checkout (including `files-touched-since-tracker-update`, the staleness advisory, which reads the default branch's history there), and `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring |
+| `dor --id <id> --repo-root <dir> --config <path>` | DoR gate; working-tree gates run against the coordinator's checkout (including `files-touched-since-tracker-update`, the staleness advisory, which reads the default branch's history there), and `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring — its `warn` fires on the ALL-uncovered row (no declared file matches any profile) *and* on the PARTIAL row (issue #711 — some but not all match); only a row where every declared file matches at least one profile reads `pass` |
 | `cross-wave --candidates <f.json> --claimed <f.json> --repo-root <dir>` | `CrossWaveResult` — parallel-safety check |
 | `spine create <out-path> <payload.json>` | render and write the `WAVE.md` spine |
 | `issue-store transition <id> queued` | set the soft claim |
