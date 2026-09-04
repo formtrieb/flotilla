@@ -29,6 +29,27 @@
 // compose time, and a placeholder reaching a dispatch is a compose bug, never a
 // default. Do not fill one in by hand.
 
+// `meta` must be a PURE LITERAL (no variables, calls, spreads or interpolation),
+// so what has to be said about the two phase entries is said here instead.
+//
+// BOTH entries name a progress group this script really uses, and they are
+// entered by two DIFFERENT mechanisms — which is the reason this comment exists
+// rather than a third entry or a missing one:
+//   • `Dispatch` is entered by the global `phase('Dispatch')` call below AND
+//     carried explicitly as `opts.phase` on the Worker and Scribe stages.
+//   • `Review` is entered ONLY as `opts.phase: 'Review'` on the Stage-3
+//     Reviewer `agent()` call. There is deliberately no `phase('Review')`:
+//     inside a `pipeline()` the global phase cursor is a race (row A can be in
+//     Stage 3 while row B is still in Stage 1), and the authoring reference's
+//     own remedy for exactly that is per-call `opts.phase`. Titles are matched
+//     EXACTLY, so `opts.phase: 'Review'` lands in this entry's group box; the
+//     entry is not display-only decoration.
+// No entry carries a `model`, and none can: the reference permits `model` on a
+// phase entry only when that phase uses one specific model override, and here
+// the tier is PER ROW (Risk-derived, `issue.model` — ADR-0007 Amendment
+// 2026-07-31). Both roles in both phases bind it per row, so a phase-level
+// `model` would state a constant that does not exist.
+// `compose-driver.spec.ts` pins this agreement in both directions.
 export const meta = {
   name: 'wave-start-inflight',
   description: 'Dispatch + review one ready wave; return schema-validated reports + verdicts',

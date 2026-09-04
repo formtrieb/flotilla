@@ -283,11 +283,23 @@ export function renderSidecarBody(
  * The target dir is swept for MISNAMED sidecars (see
  * the header note): they are reported loudly on stderr and never touched. This
  * is what makes the Coordinator's routing-time recovery catch the misnamed case
- * — that recovery IS this verb, and its `[ -f … ]` trigger fires for a misnamed
- * file exactly as it does for a missing one, so the sweep runs precisely when it
- * is needed. Deleting the litter is deliberately NOT automatic: a misnamed
- * sidecar may hold the only copy of a report, and destroying data to tidy a
- * directory is the wrong trade for a verb whose whole purpose is durability.
+ * — on a RESUME that recovery IS this verb, and its `[ -f … ]` trigger fires for
+ * a misnamed file exactly as it does for a missing one, so the sweep runs
+ * precisely when it is needed. Deleting the litter is deliberately NOT
+ * automatic: a misnamed sidecar may hold the only copy of a report, and
+ * destroying data to tidy a directory is the wrong trade for a verb whose whole
+ * purpose is durability.
+ *
+ * **This verb is not the only recovery, and was not the only one that needed the
+ * sweep.** On the DISPATCH path the recovery is `route-tuple`'s `sidecar-check`
+ * step, which renders through {@link renderSidecarBody} and writes with its own
+ * injected writer rather than through here — so for several wave-generations the
+ * sweep did not run at the routing-time recovery the sentence above describes.
+ * That verb now runs the same sweep, over the same shared detector
+ * (`findMisnamedSidecars`), after each of its own successful writes. The rule
+ * about what a misnamed name IS therefore still has exactly one owner
+ * (`sidecar.ts`); only the `warning:` label differs, because the two verbs speak
+ * under their own names.
  */
 function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
   const file = args[0];

@@ -44,6 +44,8 @@ import {
 } from './route-tuple';
 import { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
+import { MarkdownFsStore } from './adapters/markdown-fs-store';
+import type { IssueStore } from './adapters/issue-store';
 import { renderSidecarBody } from './route-cli';
 import { renderSpine, setRowState, upsertDispatchLogEntry } from './wave-md-rw';
 import type {
@@ -148,7 +150,7 @@ describe('route-tuple', () => {
   let payloadDir: string;
   let id: string;
   let branch: string;
-  let store: GitHubIssuesStore;
+  let store: IssueStore;
   let stdout: string;
   let stderr: string;
   let outSpy: ReturnType<typeof vi.spyOn>;
@@ -164,9 +166,16 @@ describe('route-tuple', () => {
    * shape `host-pr`'s close-phrase guard recognises as a phrase at all. A
    * fixture whose composed phrase the guard cannot see would make every reuse
    * assertion below a test of the wrong thing.
+   *
+   * `markdown: true` swaps in the real dogfood store instead, for the one
+   * property only its id shape can exercise: a `<slug>#NN` id is the compound
+   * shape `closePhraseFor` has to lift the numeric tail out of before the guard
+   * can see the phrase at all.
    */
-  async function seed(): Promise<void> {
-    store = new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
+  async function seed(opts: { markdown?: boolean } = {}): Promise<void> {
+    store = opts.markdown
+      ? new MarkdownFsStore({ repoRoot, slug: SLUG })
+      : new GitHubIssuesStore({ api: new InMemoryGitHubApi() });
     id = await store.create({
       title: 'Route one returned tuple in one call',
       filingHint: 'route-tuple-verb',
@@ -209,7 +218,7 @@ describe('route-tuple', () => {
     writeFileSync(
       configPath,
       JSON.stringify({
-        store: { kind: 'github' },
+        store: opts.markdown ? { kind: 'markdown', repoRoot, slug: SLUG } : { kind: 'github' },
         engine: { cli: './tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts' },
       }),
       'utf8',
@@ -825,6 +834,67 @@ describe('route-tuple', () => {
       expect(await rungOf()).toBe('in-flight');
     });
 
+    it('a recovery SWEEPS its target dir for misnamed sidecars — the litter an existence probe cannot see', async () => {
+      // Convention 5 says the routing-time recovery is what catches a MISNAMED
+      // sidecar, because `[ -f <dir>/<id>-<iter>.md ]` answers false for a
+      // misnamed file exactly as it does for a missing one. That was true of
+      // `write-report` (the resume path's recovery) and false of THIS verb (the
+      // dispatch path's), which recovered through its own writer and swept
+      // nothing — rewriting the correctly-named file and walking past the
+      // leftover in silence.
+      await seed();
+      writePayloads({ ...report(), issue: id, branch }, { ...verdict(), branchReviewed: branch });
+      mkdirSync(reportsDir, { recursive: true });
+      // A real, schema-valid record filed under a DECORATED id: present to an
+      // `ls`, resolvable for no row at all.
+      writeFileSync(
+        join(reportsDir, `#${id}-1.md`),
+        renderSidecarBody('WorkerReport', `#${id}`, 1, { ...report(), issue: id, branch }),
+        'utf8',
+      );
+
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      // Loud, and never a refusal: the record this step was asked to persist is
+      // on disk, and litter beside it is an operator finding about the DIRECTORY.
+      expect(code).toBe(0);
+      expect(stderr).toMatch(/MISNAMED SIDECAR/);
+      expect(stderr).toContain(`#${id}-1.md`);
+      expect(stderr).toMatch(/present to an `ls` and\n {2}absent to resume/);
+      // Carried structurally too — this verb's output is a JSON result the
+      // Coordinator reads at routing, and a stderr line alone would leave the
+      // finding out of the record.
+      expect(step('sidecar-check')).toMatchObject({
+        status: 'performed',
+        recovered: ['report', 'verdict'],
+        misnamed: [`#${id}-1.md`],
+      });
+      // Never deleted: it may hold the only copy of a report.
+      expect(readFileSync(join(reportsDir, `#${id}-1.md`), 'utf8')).toContain('WorkerReport');
+    });
+
+    it('a recovery over a CLEAN directory sweeps and says nothing', async () => {
+      // The other half of the pair: the sweep must be silent when there is
+      // nothing to report, or every recovery would carry noise and the warning
+      // above would stop meaning anything.
+      await seed();
+      writePayloads({ ...report(), issue: id, branch }, { ...verdict(), branchReviewed: branch });
+
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(stderr).toBe('');
+      expect(step('sidecar-check')).toMatchObject({ recovered: ['report', 'verdict'], misnamed: [] });
+    });
+
     it('a payload that fails its schema is refused rather than written — nothing recovered, nothing routed', async () => {
       await seed();
       writePayloads({ ...report(), issue: id, branch }, { verdict: 'approve' } as unknown as ReviewerVerdict);
@@ -892,7 +962,14 @@ describe('route-tuple', () => {
       // `linear`-kind config over a numeric id composes `Fixes 1` — a phrase to
       // a human and nothing at all to the guard — so replacing a live body that
       // DOES carry one is a drop, and the guard stops before writing anything.
-      // The same hole opens on a markdown-store id (`Closes #<slug>#NN`).
+      //
+      // This control is deliberately KEPT as the reachable form. The other one
+      // it used to name — a markdown-store id composing `Closes #<slug>#NN` —
+      // was a defect rather than a control and is now closed: `closePhraseFor`
+      // lifts the numeric tail, and the test below drives that whole way through
+      // this verb. What stays reachable here is a genuinely misconfigured pair
+      // (a `linear` kind over an id that is not a Linear reference), which no
+      // phrase composition can rescue.
       await seed();
       landTuple(1, report(), verdict());
       writeFileSync(configPath, JSON.stringify({ store: { kind: 'linear', team: 'EX' } }), 'utf8');
@@ -916,6 +993,40 @@ describe('route-tuple', () => {
       expect(requests.map((r) => r.method)).toEqual(['GET']);
       expect(spineSource()).toBe(before);
       expect(await rungOf()).toBe('in-flight');
+    });
+
+    it('a markdown-store row REWRITES its live PR body — the composed phrase is one the guard can see', async () => {
+      // The positive half of the control above, and the reason the defect was
+      // worth closing at all: on the dogfood store the id is `<slug>#NN`, so the
+      // composed phrase used to be `Closes #<slug>#01` — invisible to the guard,
+      // which then refused a legitimate reuse as a close-phrase LOSS. Nothing
+      // about the row was wrong; only the phrase was unreadable.
+      await seed({ markdown: true });
+      expect(id).toMatch(/#\d+$/); // the compound shape this test exists for
+      landTuple(1, report(), verdict());
+      const { http, requests } = fakeHttp({
+        get: () => ({
+          status: 200,
+          json: [{ html_url: EXISTING_PR, number: 7, body: 'Live body.\n\nCloses #01' }],
+        }),
+      });
+
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: EXISTING_PR }) }),
+      );
+
+      expect(stderr).toBe('');
+      expect(code).toBe(0);
+      expect(step('pr-create-or-reuse')).toMatchObject({ outcome: 'reused' });
+      // The rewrite actually landed: a PATCH went out, and its body ends on the
+      // tail-lifted phrase rather than on the whole compound id.
+      expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
+      const patched = JSON.parse(requests.find((r) => r.method === 'PATCH')!.body!) as {
+        body: string;
+      };
+      expect(patched.body.split('\n').at(-1)).toBe('Closes #01');
+      expect(patched.body).not.toContain(`Closes #${id}`);
     });
 
     it('a status re-query that finds no PR refuses — the row is not flipped and the PR cell stays empty', async () => {

@@ -25,6 +25,17 @@ A Workflow `script` is plain JS with **no filesystem and no local-module import*
 | **Dispatch + Review + Scribe**: fan out Workers, collect schema-validated `WorkerReport`s, **persist each report sidecar (Scribe stage)**, pipeline each into a `wave-reviewer`, collect schema-validated `ReviewerVerdict`s, **persist each verdict sidecar (Scribe stage)** | **inside the Workflow script** (`pipeline()` + `agent()`) | the `agent()`-heavy parallel part; schema validation at the `agent({schema})` boundary kills the report-fabrication class. A Workflow script has no fs/shell of its own, so the sidecar write is delegated to a cheap `agent()` — the **Scribe** — that runs the paired `write-report`/`write-verdict` verb (ADR-0024) |
 | **Route + mutate**: `route-outcome`/`route-verdict` → `spine set-row-state` + `issue-store transition` + the terminator (renders the verdict via `render-verdict` into the PR body it opens with `host-pr create`) | **the Coordinator, after the Workflow returns**, via `{{wave-cli}}` calls | the script can't `import` the engine; spine writes must be **sequential** on the Coordinator branch (an in-script parallel writer would race the byte-preserving spine round-trip) |
 
+## `meta.phases` — two entries, two DIFFERENT ways of being entered
+
+The `meta` literal declares two phases, `Dispatch` and `Review`. Both name a progress group the script really uses, and neither is decoration — but they are entered by different mechanisms, and knowing only the first is how a reader concludes the second is dead:
+
+- **`Dispatch`** is entered by the global `phase('Dispatch')` call **and** carried as `opts.phase` on the Worker and Scribe stages.
+- **`Review`** is entered **only** as `opts.phase: 'Review'` on the Stage-3 Reviewer `agent()` call. There is deliberately no `phase('Review')`: the global phase cursor is a **race** inside `pipeline()` — row A can be in Stage 3 while row B is still in Stage 1, so whichever row moved last would relabel the group for every other — and per-call `opts.phase` is the authoring reference's own remedy for exactly that. Titles are matched **exactly**, so `opts.phase: 'Review'` lands in the declared entry's group box. Grepping for `phase(` alone therefore reads "declared but never entered", which it is not.
+
+**No entry carries a `model`, and none can.** The reference permits `model` on a phase entry only when that phase uses one specific model override; here the tier is **per row** (Risk-derived, `issue.model` — [ADR-0007](../../../../docs/adr/0007-risk-is-a-load-bearing-key-config-authoritative.md) Amendment 2026-07-31), bound identically on the Worker and the Reviewer. A phase-level `model` would state a constant that does not exist.
+
+`compose-driver.spec.ts` pins the agreement in **both** directions — every declared title is entered, every entered title is declared — over the phase groups a real run produces, not over a grep.
+
 ## The Scribe stages — the durable record exists the moment the work does (ADR-0024)
 
 The single sharpest live-gate finding (retro P-1) was that sidecars — the durable record the whole resume doctrine ("disk beats a non-landed spine flip") stands on — used to be written by the Coordinator *after* the Workflow returned and routing ran. A Coordinator death mid-wave left **zero sidecars on disk** despite finished Workers with mergeable PRs. The fix moves the write to the moment the agent returns, through the engine verbs that own the format:
