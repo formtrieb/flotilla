@@ -461,6 +461,78 @@ _(none yet)_
       expect(readFileSync(path, 'utf-8')).toContain('dropped:noise, not a gap');
     });
 
+    // ── The fifth disposition (ADR-0027 Amendment 2026-09-04) ───────────────
+    //
+    // A consumer's wave that finds a defect in the TOOLKIT has no honest exit
+    // among the first four: `filed:<id>` names the consumer's own tracker, and
+    // `dropped:<reason>` reads as discarded. `upstream:<ref>` says what
+    // actually happened — handed to the toolkit's own tracker — and the gate
+    // counts it exactly like the other terminal values.
+
+    it('set-disposition accepts `upstream:<ref>`, including a colon-carrying URL ref, and writes it verbatim', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '2', '--source', 'reviewer', '--text', 'gap B']);
+
+      expect(runSpine(['set-disposition', path, '01.1', 'upstream:683'])).toBe(0);
+      expect(
+        runSpine([
+          'set-disposition', path, '01.2',
+          'upstream:https://github.com/formtrieb/flotilla/issues/683',
+        ]),
+      ).toBe(0);
+
+      const after = readFileSync(path, 'utf-8');
+      expect(after).toContain('| 01.1 | 01 | 1 | worker | upstream:683 | gap A |');
+      expect(after).toContain(
+        '| 01.2 | 01 | 2 | reviewer | upstream:https://github.com/formtrieb/flotilla/issues/683 | gap B |',
+      );
+      // Parsed back byte-preserving — the ref's own colons change nothing.
+      expect(readDisclosures(after).map((d) => d.disposition)).toEqual([
+        'upstream:683',
+        'upstream:https://github.com/formtrieb/flotilla/issues/683',
+      ]);
+    });
+
+    it('set-disposition refuses an EMPTY `upstream:` ref — exit 1, nothing written, vocabulary named', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+      const before = readFileSync(path, 'utf-8');
+
+      expect(runSpine(['set-disposition', path, '01.1', 'upstream:'])).toBe(1);
+      expect(runSpine(['set-disposition', path, '01.1', 'upstream: '])).toBe(1);
+      expect(stderrSpy).toHaveBeenCalled();
+      const said = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+      expect(said).toContain('invalid disposition');
+      expect(said).toContain('upstream:<ref>');
+      expect(readFileSync(path, 'utf-8')).toBe(before);
+    });
+
+    it('check-disclosures counts `upstream:` as dispositioned — an open sibling still BLOCKS, the last one clears', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'plugin agent name is wrong']);
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'reviewer', '--text', 'DoR verify wording']);
+      expect(runSpine(['check-disclosures', path])).not.toBe(0);
+
+      expect(runSpine(['set-disposition', path, '01.1', 'upstream:683'])).toBe(0);
+      expect(runSpine(['check-disclosures', path])).not.toBe(0); // 01.2 still open
+
+      expect(runSpine(['set-disposition', path, '01.2', 'upstream:683'])).toBe(0);
+      stdoutSpy.mockClear();
+      expect(runSpine(['check-disclosures', path])).toBe(0);
+      expect(printed()).toContain('archive gate CLEAR');
+    });
+
+    it('the BLOCKED hint names all five values, upstream among them', () => {
+      const path = writeTmpSpine();
+      runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+      stdoutSpy.mockClear();
+      expect(runSpine(['check-disclosures', path])).not.toBe(0);
+      expect(printed()).toContain(
+        'resolved-in-slice | scope-extension | filed:<id> | dropped:<reason> | upstream:<ref>',
+      );
+    });
+
     it('check-disclosures is fail-CLOSED on an unreadable spine (never a silent green)', () => {
       const code = runSpine(['check-disclosures', join(tmpdir(), 'no-such-spine-adr-0027.md')]);
       expect(code).not.toBe(0);

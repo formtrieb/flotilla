@@ -12,6 +12,7 @@ import {
   isSettableDisposition,
   normalizeDisclosureText,
   DISCLOSURE_SOURCES,
+  DISPOSITION_VOCABULARY,
   OPEN_DISPOSITION,
   WAVE_SCOPE_ROW,
   WAVE_SCOPE_ITER_CELL,
@@ -262,7 +263,7 @@ describe('Disclosures — set-disposition (ADR-0027 vocabulary)', () => {
     expect(changed).toEqual([entries[0].line]);
   });
 
-  it('accepts the full four-way vocabulary, and only that', () => {
+  it('accepts the four pre-existing vocabulary forms, and only those', () => {
     for (const ok of ['resolved-in-slice', 'scope-extension', 'filed:#158', 'filed:FOR-90', 'dropped:noise']) {
       expect(isSettableDisposition(ok)).toBe(true);
       expect(readDisclosures(setDispositionInSource(withOpenPair(), '156.1', ok))[0].disposition).toBe(ok);
@@ -283,6 +284,75 @@ describe('Disclosures — set-disposition (ADR-0027 vocabulary)', () => {
     expect(() => setDispositionInSource(withOpenPair(), '156.9', 'scope-extension')).toThrow(
       /no disclosure with ref "156\.9"; known refs: 156\.1, 157\.1/,
     );
+  });
+
+  // ── The fifth value (ADR-0027 Amendment 2026-09-04) ────────────────────────
+  //
+  // A consumer running flotilla is not flotilla: when their wave surfaces a
+  // defect in the TOOLKIT, `filed:<id>` would name the wrong tracker and
+  // `dropped:<reason>` reads in their own retro as discarded. `upstream:<ref>`
+  // is the honest exit — accepted wherever `filed:<id>` is, and counted by the
+  // archive gate identically.
+
+  it('accepts `upstream:<ref>` wherever `filed:<id>` is accepted, ref shape unvalidated', () => {
+    for (const ok of [
+      'upstream:683',
+      'upstream:#683',
+      'upstream:https://github.com/formtrieb/flotilla/issues/683',
+      'upstream:reported via the report skill, awaiting a number',
+    ]) {
+      expect(isSettableDisposition(ok)).toBe(true);
+      expect(
+        readDisclosures(setDispositionInSource(withOpenPair(), '156.1', ok))[0].disposition,
+      ).toBe(ok);
+    }
+  });
+
+  it('refuses an EMPTY or whitespace `upstream:` ref with the usual vocabulary message', () => {
+    const before = withOpenPair();
+    for (const bad of ['upstream:', 'upstream: ', 'upstream:\t', 'upstream:   ']) {
+      expect(isSettableDisposition(bad)).toBe(false);
+      expect(() => setDispositionInSource(before, '156.1', bad)).toThrow(/invalid disposition/);
+      // The message names the whole vocabulary, exactly as it does for `filed:`.
+      expect(() => setDispositionInSource(before, '156.1', bad)).toThrow(
+        /expected one of: resolved-in-slice \| scope-extension \| filed:<id> \| dropped:<reason> \| upstream:<ref>/,
+      );
+    }
+    // …and nothing was written on any of those refusals.
+    expect(setDispositionInSource(before, '157.1', 'upstream:683')).not.toBe(before);
+    expect(before).toContain('| 156.1 | 156 | 1 | worker | open | gap A |');
+  });
+
+  it('renders the fifth value in DISPOSITION_VOCABULARY, the four existing ones unchanged and in order', () => {
+    expect(DISPOSITION_VOCABULARY).toBe(
+      'resolved-in-slice | scope-extension | filed:<id> | dropped:<reason> | upstream:<ref>',
+    );
+    // The pre-existing four still render byte-identically as the message's head.
+    expect(DISPOSITION_VOCABULARY).toContain(
+      'resolved-in-slice | scope-extension | filed:<id> | dropped:<reason>',
+    );
+  });
+
+  it('a colon-carrying ref (a URL) survives the disclosure round-trip byte-for-byte', () => {
+    const url = 'upstream:https://github.com/formtrieb/flotilla/issues/683#issuecomment-1';
+    const after = setDispositionInSource(withOpenPair(), '156.1', url);
+
+    const entries = readDisclosures(after);
+    expect(entries[0].disposition).toBe(url);
+    // ADR-0016's printer/parser pairing: re-rendering the parsed entry
+    // reproduces its source line exactly, colons and all.
+    expect(after.split('\n')[entries[0].line]).toBe(renderDisclosureRow(entries[0]));
+    // The sibling is untouched.
+    expect(entries[1].disposition).toBe(OPEN_DISPOSITION);
+  });
+
+  it('the archive gate counts an `upstream:` entry as dispositioned; an `open` sibling still blocks', () => {
+    const both = setDispositionInSource(withOpenPair(), '156.1', 'upstream:683');
+    // 157.1 is still open — the gate must still see exactly one.
+    expect(openDisclosures(both).map((d) => d.ref)).toEqual(['157.1']);
+
+    const cleared = setDispositionInSource(both, '157.1', 'upstream:FOR-683');
+    expect(openDisclosures(cleared)).toEqual([]);
   });
 });
 

@@ -100,12 +100,51 @@ export const DISPOSITION_LITERALS = [
   'scope-extension',
 ] as const;
 
-/** The two parameterised dispositions — `filed:<id>` / `dropped:<reason>`. */
-export const DISPOSITION_PREFIXES = ['filed:', 'dropped:'] as const;
+/**
+ * The parameterised dispositions — `filed:<id>` / `dropped:<reason>` /
+ * `upstream:<ref>`. This array is the SINGLE source of truth: both
+ * {@link isSettableDisposition} (the validator) and
+ * {@link DISPOSITION_VOCABULARY} (the rendering) read it, so the list is never
+ * spelled twice.
+ *
+ * `upstream:<ref>` (ADR-0027 Amendment 2026-09-04) is the honest exit for a
+ * finding about the TOOLKIT rather than about the consumer's own code: it was
+ * handed to the toolkit's own tracker, where `filed:<id>` would name the wrong
+ * tracker and `dropped:<reason>` would read as discarded.
+ */
+export const DISPOSITION_PREFIXES = [
+  'filed:',
+  'dropped:',
+  'upstream:',
+] as const;
 
-/** Human-readable rendering of the vocabulary, for error messages + usage text. */
-export const DISPOSITION_VOCABULARY =
-  'resolved-in-slice | scope-extension | filed:<id> | dropped:<reason>';
+/**
+ * The placeholder each parameterised disposition renders after its colon.
+ * Typed against {@link DISPOSITION_PREFIXES}, so a prefix added there without a
+ * placeholder here is a COMPILE error rather than a silently unrendered value —
+ * which is what keeps the vocabulary derived instead of hand-maintained.
+ *
+ * Not exported: the rendered {@link DISPOSITION_VOCABULARY} is the public
+ * surface, and a second exported list is exactly the duplication this avoids.
+ */
+const DISPOSITION_PLACEHOLDERS: Record<
+  (typeof DISPOSITION_PREFIXES)[number],
+  string
+> = {
+  'filed:': '<id>',
+  'dropped:': '<reason>',
+  'upstream:': '<ref>',
+};
+
+/**
+ * Human-readable rendering of the vocabulary, for error messages + usage text.
+ * DERIVED from the two lists above (never hand-written) so the message a
+ * rejected caller reads can never disagree with what the validator accepts.
+ */
+export const DISPOSITION_VOCABULARY = [
+  ...DISPOSITION_LITERALS,
+  ...DISPOSITION_PREFIXES.map((p) => `${p}${DISPOSITION_PLACEHOLDERS[p]}`),
+].join(' | ');
 
 /** One parsed `## Disclosures` entry. */
 export interface Disclosure {
@@ -238,6 +277,13 @@ function findDisclosuresSection(
 /**
  * True for a disposition `set-disposition` accepts. `open` is excluded on
  * purpose — it is the capture default, not a decision.
+ *
+ * A parameterised form must carry a NON-BLANK argument after its colon; the
+ * argument's SHAPE is deliberately unvalidated. `filed:` takes this consumer's
+ * own id scheme, `dropped:` free prose, and `upstream:` a reference into a
+ * tracker this repo does not own — a URL, a bare number, a short phrase — which
+ * a consumer cannot be expected to spell in any fixed form (ADR-0027 Amendment
+ * 2026-09-04). Only emptiness is refused.
  */
 export function isSettableDisposition(value: string): boolean {
   if ((DISPOSITION_LITERALS as readonly string[]).includes(value)) return true;
