@@ -65,6 +65,14 @@ const EXISTING_PR = 'https://github.com/example-org/example-repo/pull/7';
 const NEW_PR = 'https://github.com/example-org/example-repo/pull/8';
 const ANCHOR = 'a'.repeat(40);
 const CREDS: Creds = { auth: 'x-access-token:test-token' };
+/**
+ * The Operator's stated reason for a Reviewer-only round above the cap, shaped
+ * like the ones the two live occurrences produced. It is a SENTENCE on purpose:
+ * a bare token is refused, which is what keeps a ruled round from being
+ * something a script can mint.
+ */
+const RULING =
+  'Operator ruling 03:50 — the throwaway repository was deleted; re-dispatch the Reviewer only.';
 
 function report(overrides: Partial<WorkerReport> = {}): WorkerReport {
   return {
@@ -815,6 +823,114 @@ describe('route-tuple', () => {
     });
   });
 
+  // ── the Operator-ruled round (issue #684) ──────────────────────────────────
+  //
+  // The ruled round had to reach THIS verb and not only the single
+  // `route-verdict`: the whole post-return sequence runs through route-tuple on
+  // the ordinary dispatch path, so a cell admitted only by the single verb would
+  // work on a resume and nowhere else. The two properties asserted here are the
+  // PASSTHROUGH (the ruling reaches the adapter and comes back out in the
+  // printed result) and the REFUSAL (without it, an above-cap `--iter` is
+  // refused with the adapter's own pre-existing message, having written nothing).
+
+  describe('an Operator-ruled round above the cap', () => {
+    it('lands the PR at iteration 3 with a ruling, and the result quotes the ruling', async () => {
+      await seed();
+      landTuple(3, report(), verdict());
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(3, ['--ruling', RULING]),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+      );
+
+      expect(stderr).toBe('');
+      expect(code).toBe(0);
+      expect(result()).toMatchObject({
+        disposition: 'pr-created',
+        iter: 3,
+        prUrl: NEW_PR,
+        ruled: { cell: 'reviewer-approve-ruled', ruling: RULING },
+      });
+      // The `--state` derivation is unmoved by the ruling: a ruled approve
+      // routes from `reviewing`, exactly as an ordinary one does, and reaches
+      // the state an ordinary approve reaches.
+      expect(step('route-verdict')).toMatchObject({
+        from: 'reviewing',
+        event: 'reviewer-approve',
+        outcome: { type: 'transition', nextState: 'approved' },
+        ruled: { cell: 'reviewer-approve-ruled', ruling: RULING },
+      });
+      expect(spineSource()).toContain('pr-created');
+      expect(await rungOf()).toBe('in-review');
+    });
+
+    it('NEGATIVE CONTROL — the same tuple WITHOUT --ruling is refused, and nothing is written', async () => {
+      await seed();
+      landTuple(3, report(), verdict());
+      const before = spineSource();
+      const code = await runRouteTuple(
+        argv(3),
+        deps({ landingHost: fakeLanding({ state: 'none' }) }),
+      );
+
+      expect(code).toBe(1);
+      expect(stderr).toBe(
+        'error: route-tuple: verdictToEvent: iteration 3 is out of range. ' +
+          'Expected an integer in [1, 2] (re-dispatch cap = 1).\n',
+      );
+      expect(spineSource()).toBe(before);
+      expect(await rungOf()).toBe('in-flight');
+    });
+
+    it('a ruled changes-requested STOPs on the cap-exhaustion cell — no spine, host or tracker write', async () => {
+      await seed();
+      landTuple(3, report(), verdict({ verdict: 'changes-requested' }));
+      const before = spineSource();
+      const code = await runRouteTuple(
+        argv(3, ['--ruling', RULING]),
+        deps({ landingHost: fakeLanding({ state: 'none' }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(result()).toMatchObject({
+        disposition: 'stop',
+        stop: { phase: 'route-verdict', reason: 're-dispatch-cap-exhausted', severity: 'error' },
+        wrote: { spine: false, host: false, tracker: false },
+        ruled: { cell: 'reviewer-changes-requested-ruled', ruling: RULING },
+      });
+      // The row is NOT handed a fresh round by the ruling it already used.
+      expect(result().disposition).not.toBe('re-dispatched');
+      expect(spineSource()).toBe(before);
+      expect(await rungOf()).toBe('in-flight');
+    });
+
+    it('a ruling that states no reason is refused as loudly as a missing one', async () => {
+      await seed();
+      landTuple(3, report(), verdict());
+      const before = spineSource();
+      const code = await runRouteTuple(
+        argv(3, ['--ruling', 'true']),
+        deps({ landingHost: fakeLanding({ state: 'none' }) }),
+      );
+
+      expect(code).toBe(1);
+      expect(stderr).toMatch(/A ruled round is auditable only if it states WHY it exists/);
+      expect(spineSource()).toBe(before);
+    });
+
+    it('an ORDINARY iteration-1 run is unchanged — no `ruled` key anywhere in the result', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+      );
+      expect(result()).not.toHaveProperty('ruled');
+      expect(step('route-verdict')).not.toHaveProperty('ruled');
+    });
+  });
+
   // ── usage + preconditions ──────────────────────────────────────────────────
 
   describe('usage and preconditions', () => {
@@ -826,6 +942,17 @@ describe('route-tuple', () => {
       expect(stderr).toMatch(/--report/);
       expect(stderr).toMatch(/--verdict/);
       expect(stderr).toMatch(/--anchor/);
+      // …and the optional flag that admits the Operator-ruled round.
+      expect(stderr).toMatch(/--ruling/);
+    });
+
+    it('a --ruling with no value is usage, not a message about the iteration', async () => {
+      await seed();
+      landTuple(3, report(), verdict());
+      const code = await runRouteTuple(argv(3, ['--ruling']), deps());
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/--ruling takes the Operator's reason as its value/);
+      expect(stderr).not.toMatch(/out of range/);
     });
 
     it('a non-integer --iter is usage, not a domain failure', async () => {

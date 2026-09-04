@@ -58,7 +58,7 @@ The filename is **engine-computed** — the caller passes `--id` + `--iter`, nev
 
 | Call | Prints |
 |---|---|
-| `{{wave-cli}} route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> --config <cfg> [--title <text>]` | ONE JSON result: `{ ok, verb, id, iter, disposition, steps[], wrote{…}, … }` |
+| `{{wave-cli}} route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> --config <cfg> [--title <text>] [--ruling <text>]` | ONE JSON result: `{ ok, verb, id, iter, disposition, steps[], wrote{…}, … }` — plus a `ruled` object on an Operator-ruled round |
 
 This is the whole post-return sequence for one row, in the write-ahead order, in one process: the sidecar presence-and-validation check (recovering a missing or corrupt record from the passed `--report`/`--verdict` payload through the same writer the Scribe stages use, and refusing rather than guessing when it cannot), the worker-phase route, the verdict-phase route, the verdict render, find-before-create of the PR, the host status re-query, the two spine writes, and the `in-review` rung transition. Both `--state` derivations are the verb's — iteration-keyed for the worker phase, **verdict**-keyed for the reviewer phase — and `riskClass` comes off the typed verdict, so neither is a flag anyone can garble.
 
@@ -83,12 +83,34 @@ Exit codes: `0` — the sequence completed (a `stop` is a routed outcome, not a 
 | Call | Prints | Wraps |
 |---|---|---|
 | `{{wave-cli}} route-outcome --outcome <workerOutcome> --state <issueState>` | JSON `{ event, outcome }` | `outcomeToEvent` → `transition` |
-| `{{wave-cli}} route-verdict --verdict <approve\|changes-requested\|questions-blocking> --iteration <1\|2> --risk <riskValue> --state <issueState>` | JSON `{ event, outcome }` | `verdictToEvent` → `transition` |
+| `{{wave-cli}} route-verdict --verdict <approve\|changes-requested\|questions-blocking> --iteration <n> --risk <riskValue> --state <issueState> [--ruling <text>]` | JSON `{ event, outcome }`, plus `ruled` on an above-cap ruled round | `verdictToRouting` → `transition` |
 | `{{wave-cli}} render-verdict <verdictsDir> <id> --anchor <sha>` | the `## Reviewer verdict` markdown section (text) | the MAX-iter valid verdict sidecar → `renderVerdictSection` |
 | `{{wave-cli}} host-pr create --branch <b> --title <t> --body <body>` | JSON `{ ok, outcome, url, … }` | find-before-create, then update-or-create |
 | `{{wave-cli}} host-pr status --branch <b>` | JSON `{ state, url?, … }` | the host's own answer for that branch |
 
 `<workerOutcome>` ∈ `done | done-with-concerns | needs-context | blocked`. `<riskValue>` ∈ `mechanical | isolated-refactor | cross-feature-refactor | public-API-change`. `<issueState>` is the issue's current fine state. The router derives the `event` deterministically and computes the resulting `outcome` (the target rung) — you never hand-pick the event.
+
+## The Operator-ruled round — the one cell above the re-dispatch cap
+
+A second `changes-requested` exhausts the cap and stops the row. The documented recovery is an **Operator ruling**: fix the world, then re-dispatch the **Reviewer only**, outside the cap, with the row's iteration bumped so the sidecars land at the third iteration. `--ruling "<the Operator's own reason>"` is what admits that round, on `route-verdict` and on `route-tuple` alike — it is the only thing that opens an iteration above the cap, and it is a **stated reason, never a switch**: a blank, a bare token (`true`, `yes`, `ok`) or anything under three words is refused, so a ruled round cannot exist without saying why it exists.
+
+| `--verdict` | `--risk` | `--state` (derived by `route-tuple`; pass it yourself to the single verb) | `event` | `ruled.cell` | `outcome` |
+|---|---|---|---|---|---|
+| `approve` | not `public-API-change` | `reviewing` | `reviewer-approve` | `reviewer-approve-ruled` | `transition → approved` |
+| `approve` | `public-API-change` | `reviewing` | `reviewer-approve-public-api` | `reviewer-approve-public-api-ruled` | `stop public-api-approval-required` |
+| `changes-requested` | any | `re-dispatched` | `reviewer-changes-requested-2nd` | `reviewer-changes-requested-ruled` | `stop re-dispatch-cap-exhausted` |
+| `questions-blocking` | any | `reviewing` | `reviewer-questions-blocking` | `reviewer-questions-blocking-ruled` | `stop reviewer-questions-blocking` |
+
+Three properties of that table are the point, and each is pinned by a spec:
+
+- **The cap is untouched.** A ruled `approve` reaches the state an ordinary `approve` reaches, and nothing else. A ruled `changes-requested` lands on the cap-exhaustion STOP — it neither spends a budget that is already spent nor hands the row a fresh one. A further ruled round takes a further ruling; nothing here grants one.
+- **The refusal survives.** Drop `--ruling` and an above-cap iteration is refused with the message it has always printed: `iteration 3 is out of range. Expected an integer in [1, 2] (re-dispatch cap = 1).` The flag widens the range for *this* round and for nobody else.
+- **The reason is in the output.** `ruled` carries `{ cell, ruling }` — on `route-verdict`'s printed JSON, and on `route-tuple`'s both in the `route-verdict` step and at the top level. Quote it from there in the closing report rather than reconstructing it from memory.
+
+```bash
+wave_cli route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing \
+  --ruling "Operator ruling 03:50 — the throwaway repository was deleted; re-dispatch the Reviewer only."
+```
 
 ## Apply + flag
 
@@ -130,9 +152,9 @@ Never pipe any of these three calls through another command before reading its e
 
 | Code | Meaning |
 |---|---|
-| `0` | success (`{ event, outcome }` on stdout) |
-| `1` | domain failure (un-mappable verdict/outcome, or invalid transition for the given state) |
-| `2` | usage error (missing/unknown flag) |
+| `0` | success (`{ event, outcome }` on stdout, plus `ruled` on an Operator-ruled round) |
+| `1` | domain failure (un-mappable verdict/outcome, invalid transition for the given state, an above-cap iteration with no ruling, or a ruling that states no reason) |
+| `2` | usage error (missing/unknown flag, or `--ruling` passed with no value) |
 
 ### `validate-report` / `validate-verdict`
 

@@ -16,7 +16,8 @@
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
  *   npx tsx tools/wave/src/cli.ts compose-driver --spine <spine> --out <path> --anchor <sha> [...]
- *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [...]
+ *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--ruling <text>] [...]
+ *   npx tsx tools/wave/src/cli.ts route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]
  *
  * Subcommands:
  *   dor          Run the DOR-Gate validator (default when no subcommand is given).
@@ -312,6 +313,14 @@
  * tracker write, and a re-dispatch writes the spine row state and the iteration
  * bump only.
  *
+ * `--ruling "<the Operator's reason>"` admits the Operator-ruled, Reviewer-only
+ * round that runs ABOVE the re-dispatch cap — the documented recovery from a
+ * cap-exhaustion STOP. It is the only thing that opens an above-cap `--iter`
+ * (without it that iteration stays refused, unchanged), and it reaches this verb
+ * as well as the single `route-verdict` because this is the verb the ordinary
+ * dispatch path runs. The result names the ruled cell and quotes the ruling, so
+ * the round is auditable from the output. Cap accounting is untouched.
+ *
  * ASYNC (host I/O plus a resolved store), so `mainAsync` intercepts it before
  * the sync `main()` router, like `host-pr` / `issue-store` / `compose-driver`.
  * Exit codes:
@@ -531,7 +540,8 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
     'Compose the Workflow dispatch driver from the spine, the config and the store, and write it to --out.',
   'route-tuple':
     'Perform the whole post-return sequence for one returned tuple — sidecar check, routing, verdict render, create-or-reuse, status re-query, spine writes, rung transition — and print one result.',
-  'route-verdict': 'Route a reviewer verdict + iteration + risk to its state-machine event.',
+  'route-verdict':
+    'Route a reviewer verdict + iteration + risk to its state-machine event; --ruling <text> is the Operator ruling that alone admits an iteration above the re-dispatch cap.',
   'route-outcome': 'Route a worker outcome + state to its state-machine event.',
   'validate-report': 'Validate a WorkerReport JSON file against its schema.',
   'validate-verdict': 'Validate a ReviewerVerdict JSON file against its schema.',
@@ -618,8 +628,9 @@ function printUsage(): void {
       '  flotilla-engine store-preflight [--config <path>]   # prints JSON',
       '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
       '  flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha> [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>] [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>] [--row-meta <json|path>]   # writes the Workflow driver script to --out; prints a JSON receipt',
-      '  flotilla-engine route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--config <path>] [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>] [--reports-dir <dir>] [--verdicts-dir <dir>]   # the whole post-return sequence for one row; prints one JSON result',
-      '  flotilla-engine route-verdict --verdict <v> --iteration <1|2> --risk <r> --state <s>   # prints JSON',
+      '  flotilla-engine route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--config <path>] [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>] [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]   # the whole post-return sequence for one row; prints one JSON result',
+      '  flotilla-engine route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]   # prints JSON',
+      '    --ruling "<the Operator\'s reason>" is the ONLY thing that admits an iteration ABOVE the re-dispatch cap — the Operator-ruled, Reviewer-only round. Without it an above-cap iteration stays refused; with it the result names the ruled cell and quotes the ruling. Accepted by route-tuple too, for the same round.',
       '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
       '  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON',
       '  flotilla-engine validate-verdict <file>   # prints text ("valid"), not JSON',

@@ -61,6 +61,22 @@
  * which a re-run of THIS verb resolves by reusing that PR rather than opening a
  * second one.
  *
+ * ## The Operator-ruled round (`--ruling`)
+ *
+ * A second `changes-requested` exhausts the re-dispatch cap and stops the row.
+ * The documented recovery is an Operator ruling — fix the world, re-dispatch the
+ * **Reviewer only**, outside the cap — with the spine row bumped so the sidecars
+ * land at the third iteration. `--ruling "<the Operator's reason>"` is what
+ * admits that round here, and it had to reach THIS verb: the whole post-return
+ * sequence runs through it on the ordinary dispatch path, so a ruled round
+ * admitted only by the single `route-verdict` verb would land on a resume and
+ * nowhere else. Without the flag an above-cap `--iter` is refused with the
+ * adapter's own pre-existing message, unchanged. With it, the `route-verdict`
+ * step and the top-level result both carry a `ruled` object naming the cell and
+ * quoting the ruling. Cap accounting is untouched: the ruled approve reaches the
+ * state an ordinary approve reaches, and a ruled changes-requested lands on the
+ * cap-exhaustion STOP rather than buying the row another round.
+ *
  * ## Idempotence
  *
  * Every step is re-runnable and reports which of the two it did:
@@ -104,7 +120,7 @@ import {
 } from './reviewer-verdict-schema';
 import { createSpineStore, defaultSpineIo, type SpineIo, type SpineStore } from './spine-store';
 import { transition, type IssueState, type Outcome } from './stop-condition-state-machine';
-import { verdictToEvent, type Verdict } from './verdict-to-event';
+import { verdictToRouting, type RuledRound, type Verdict } from './verdict-to-event';
 import {
   outcomeToEvent,
   validateWorkerReport,
@@ -280,7 +296,9 @@ function usage(message: string): number {
       'usage: flotilla-engine route-tuple --spine <spine> --id <id> --iter <n>\n' +
       '         --report <path> --verdict <path> --anchor <sha> --config <cfg>\n' +
       '         [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>]\n' +
-      '         [--reports-dir <dir>] [--verdicts-dir <dir>]\n',
+      '         [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]\n' +
+      '  --ruling is the Operator\'s stated reason for a Reviewer-only round ABOVE the\n' +
+      '  re-dispatch cap, and the only thing that admits an --iter above it.\n',
   );
   return 2;
 }
@@ -479,6 +497,20 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
     return usage(`route-tuple: --iter must be a positive integer, got ${JSON.stringify(iterRaw)}`);
   }
 
+  // The Operator-ruled round reaches the whole-tuple path too, and had to: this
+  // verb is what the ordinary dispatch path runs, so a ruled round admitted only
+  // by the single `route-verdict` verb would work on a resume and nowhere else.
+  // The flag is carried, unread, all the way to the verdict route below — the
+  // adapter owns every judgment about it, including the refusal when it is
+  // absent, so there is nothing here to keep in step with it.
+  const ruling = flag(args, '--ruling');
+  if (ruling === undefined && args.includes('--ruling')) {
+    return usage(
+      "route-tuple: --ruling takes the Operator's reason as its value — the ruling IS the reason, " +
+        'so pass it as a quoted sentence a reader can quote back',
+    );
+  }
+
   const configPath = flag(args, '--config') ?? 'wave.config.json';
   let config: WaveConfig;
   try {
@@ -577,8 +609,20 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
     }
 
     // ── 3. Reviewer-phase routing (7b) ──────────────────────────────────────
+    // The `--state` derivation is unchanged by the ruled round, and deliberately:
+    // it is verdict-keyed, so an above-cap approve routes from `reviewing` (the
+    // state an ordinary approve routes from) and an above-cap changes-requested
+    // from `re-dispatched` (the one state the cap-exhaustion STOP is reachable
+    // from). The ruling widens what the ADAPTER accepts, never what this derives.
     const reviewerState = reviewerStateForVerdict(verdict.verdict, iter);
-    const reviewerEvent = verdictToEvent(verdict.verdict as Verdict, iter, verdict.riskClass as Risk);
+    const reviewerRouting = verdictToRouting(
+      verdict.verdict as Verdict,
+      iter,
+      verdict.riskClass as Risk,
+      ruling,
+    );
+    const reviewerEvent = reviewerRouting.event;
+    const ruled: RuledRound | undefined = reviewerRouting.ruled;
     const reviewerOutcome = transition(reviewerState, reviewerEvent, verdict.riskClass as Risk);
     push('route-verdict', 'performed', {
       from: reviewerState,
@@ -586,10 +630,11 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       riskClass: verdict.riskClass,
       event: reviewerEvent,
       outcome: reviewerOutcome,
+      ...(ruled === undefined ? {} : { ruled }),
     });
 
     if (reviewerOutcome.type === 'stop') {
-      return finishStop(steps, id, iter, 'route-verdict', reviewerOutcome);
+      return finishStop(steps, id, iter, 'route-verdict', reviewerOutcome, ruled);
     }
     if (reviewerOutcome.type !== 'transition') {
       throw new RouteTupleRefusal(
@@ -626,6 +671,7 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       verdict,
       verdictIter: sidecars.verdictIter,
       report,
+      ruled,
     });
   } catch (err) {
     process.stderr.write(
@@ -642,6 +688,11 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
  * ran and answered; the answer is that this row halts. `issue-store flag` is
  * the Coordinator's separate act, deliberately (start-mechanics step 8), and
  * the `next` line below says so rather than leaving it implied.
+ *
+ * `ruled` rides along on the two branches an Operator-ruled round can end in, so
+ * the ruling is quotable off the top-level result and not only out of `steps[]`
+ * — a ruled changes-requested lands HERE, on the cap-exhaustion STOP, which is
+ * exactly the round whose reason a closing report most needs.
  */
 function finishStop(
   steps: StepResult[],
@@ -649,6 +700,7 @@ function finishStop(
   iter: number,
   phase: 'route-outcome' | 'route-verdict',
   outcome: Extract<Outcome, { type: 'stop' }>,
+  ruled?: RuledRound,
 ): number {
   printJson({
     ok: true,
@@ -657,6 +709,7 @@ function finishStop(
     iter,
     disposition: 'stop' satisfies RouteTupleDisposition,
     stop: { phase, reason: outcome.reason, severity: outcome.severity },
+    ...(ruled === undefined ? {} : { ruled }),
     steps,
     wrote: { spine: false, host: false, tracker: false },
     next:
@@ -751,8 +804,10 @@ async function finishApproved(input: {
   verdict: ReviewerVerdict;
   verdictIter: number;
   report: WorkerReport;
+  /** Present iff this landing came through an Operator-ruled above-cap round. */
+  ruled?: RuledRound;
 }): Promise<number> {
-  const { steps, push, args, deps, config, spineStore, id, iter, row, anchor, verdict, report } =
+  const { steps, push, args, deps, config, spineStore, id, iter, row, anchor, verdict, report, ruled } =
     input;
 
   const branch = row.branch;
@@ -917,6 +972,7 @@ async function finishApproved(input: {
     branch,
     prUrl,
     title,
+    ...(ruled === undefined ? {} : { ruled }),
     steps,
     wrote: {
       spine: spineWrote,

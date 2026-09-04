@@ -639,6 +639,45 @@ describe('route-tuple — router wiring (issue #681)', () => {
   });
 });
 
+// ─── issue #684 — the Operator-ruled round is nameable from the CLI ──────────
+//
+// The flag is the documented exit of a cap-exhaustion STOP, so a Coordinator has
+// to be able to FIND it: the usage that answers a misinvocation names it on both
+// verbs that accept it, and the per-verb purpose line says what it is for. The
+// adapter's and the runners' own specs own the behaviour; what is pinned here is
+// only that the flag is discoverable from the surface a stranger reaches first.
+describe('route-verdict --ruling — the flag is named on the CLI surface (issue #684)', () => {
+  it('the route-verdict usage line names the flag, and drops the old <1|2> iteration bound', () => {
+    main([]); // zero args → printUsage()
+    const usageLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('flotilla-engine route-verdict'))!;
+    expect(usageLine).toBeDefined();
+    expect(usageLine).toContain('--ruling <text>');
+    // The bound moved from the flag's own spelling into the adapter, where the
+    // ruling can lift it; advertising `<1|2>` would now be a lie in the one
+    // place a Coordinator looks first.
+    expect(usageLine).not.toContain('<1|2>');
+  });
+
+  it('the route-tuple usage line names it too — the ruled round reaches the whole-tuple path', () => {
+    main([]);
+    const usageLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('flotilla-engine route-tuple'))!;
+    expect(usageLine).toContain('--ruling <text>');
+  });
+
+  it("the verb's purpose line says what the flag admits, on the unknown-subcommand path", () => {
+    const code = main(['definitely-bogus-verb']);
+    expect(code).toBe(2);
+    const purposeLine = stderrBuf.split('\n').find((l) => /^ {2}route-verdict {2}\S/.test(l))!;
+    expect(purposeLine).toBeDefined();
+    expect(purposeLine).toContain('--ruling');
+    expect(purposeLine).toMatch(/above the re-dispatch cap/);
+  });
+});
+
 // ─── Form 5: files-drift subcommand ──────────────────────────────────────────
 //
 // Integration tests for `runFilesDrift` reached via `main(['files-drift', ...])`.

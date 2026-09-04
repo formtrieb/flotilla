@@ -4,7 +4,7 @@
  * already-tested library function and adds no domain logic of its own (mirrors
  * runClosedBy / runDetectHost in cli.ts):
  *
- *   route-verdict    verdictToEvent(verdict, iteration, risk) → transition(state, event, risk)
+ *   route-verdict    verdictToRouting(verdict, iteration, risk, ruling?) → transition(state, event, risk)
  *   route-outcome    outcomeToEvent(outcome)                  → transition(state, event)
  *   validate-report  validateWorkerReport(JSON.parse(file))
  *   validate-verdict validateReviewerVerdict(JSON.parse(file))
@@ -21,9 +21,11 @@
  * this file only parses flags and shapes JSON, files, and exit codes.
  *
  * route-verdict / route-outcome exit codes:
- *   0 — routed (JSON { event, outcome } on stdout)
- *   1 — the library rejected an input (out-of-enum verdict/outcome/risk/state)
- *   2 — usage (a required flag is missing)
+ *   0 — routed (JSON { event, outcome } on stdout; route-verdict adds a `ruled`
+ *       object — the cell and the Operator's ruling — on an above-cap ruled round)
+ *   1 — the library rejected an input (out-of-enum verdict/outcome/risk/state, an
+ *       above-cap iteration with no ruling, or a ruling that states no reason)
+ *   2 — usage (a required flag is missing, or `--ruling` was passed no value)
  *
  * validate-report / validate-verdict exit codes:
  *   0 — valid ("valid" on stdout)
@@ -62,7 +64,7 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { flag, printJson } from './cli-utils';
-import { verdictToEvent, type Verdict } from './verdict-to-event';
+import { verdictToRouting, type Verdict } from './verdict-to-event';
 import {
   finishingReportLacksUsablePrUrl,
   outcomeToEvent,
@@ -80,27 +82,51 @@ import { transition, type IssueState } from './stop-condition-state-machine';
 import type { Risk } from './header-parser';
 
 /**
- * `route-verdict --verdict <v> --iteration <n> --risk <r> --state <s>`.
- * Wraps verdictToEvent → transition. The library throws (TypeError/RangeError)
+ * `route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]`.
+ * Wraps verdictToRouting → transition. The library throws (TypeError/RangeError)
  * on any out-of-enum/out-of-range input — we catch and map to exit 1 so a bad
  * subagent return is a loud failure, never a silent mis-route.
+ *
+ * `--ruling` is the Operator's stated reason for a **Reviewer-only round above
+ * the re-dispatch cap**, and it is the ONLY thing that admits an iteration above
+ * it. Without the flag an above-cap iteration is refused exactly as it always
+ * was; with it, the printed result grows a `ruled` object naming the cell and
+ * quoting the ruling, so the round is auditable from the verb's own output
+ * rather than from a Coordinator's memory. Cap accounting is untouched: a ruled
+ * approve routes to the state an ordinary approve reaches, and a ruled
+ * changes-requested lands on the cap-exhaustion STOP rather than buying a round.
  */
 export function runRouteVerdict(args: string[]): number {
   const verdict = flag(args, '--verdict');
   const iterationRaw = flag(args, '--iteration');
   const risk = flag(args, '--risk');
   const state = flag(args, '--state');
+  const ruling = flag(args, '--ruling');
   if (verdict === undefined || iterationRaw === undefined || risk === undefined || state === undefined) {
     process.stderr.write(
-      'error: route-verdict requires --verdict <v> --iteration <n> --risk <r> --state <s>\n',
+      'error: route-verdict requires --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]\n',
+    );
+    return 2;
+  }
+  // A bare trailing `--ruling` reads as "no ruling" to the flag parser, which
+  // would surface as the out-of-range refusal — a message about the iteration
+  // for a mistake about the flag. Name the real fault instead.
+  if (ruling === undefined && args.includes('--ruling')) {
+    process.stderr.write(
+      "error: route-verdict: --ruling takes the Operator's reason as its value — the ruling IS the reason,\n" +
+        '  so pass it as a quoted sentence a reader can quote back.\n',
     );
     return 2;
   }
   const iteration = Number(iterationRaw);
   try {
-    const event = verdictToEvent(verdict as Verdict, iteration, risk as Risk);
-    const outcome = transition(state as IssueState, event, risk as Risk);
-    printJson({ event, outcome });
+    const routing = verdictToRouting(verdict as Verdict, iteration, risk as Risk, ruling);
+    const outcome = transition(state as IssueState, routing.event, risk as Risk);
+    printJson(
+      routing.ruled === undefined
+        ? { event: routing.event, outcome }
+        : { event: routing.event, outcome, ruled: routing.ruled },
+    );
     return 0;
   } catch (err) {
     process.stderr.write(`error: route-verdict: ${(err as Error).message}\n`);
