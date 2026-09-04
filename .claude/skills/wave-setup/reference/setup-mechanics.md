@@ -175,22 +175,25 @@ Same discipline as the GitHub table above, and the same reason it matters: neith
 | Field | Required | Shape |
 |---|---|---|
 | `cli` | no | a plain space-separated argv command string — repo-relative, no shell metacharacters, no `~`-rooted path |
+| `install` | no | the same shape, for the dependency-install command that makes `cli` exist (ADR-0032 amendment 2026-09-04) |
 
-Absent `engine` (or an absent `cli` inside it) is valid and means unbound — the engine itself has no opinion about what a consumer should do without a binding, that STOP belongs to the consuming skill that hits it. A **present** `cli` is validated by `normalizeEngineCli` (re-exported from the package root as `normalizeEngineCli` / `EngineCliBindingError` / `EngineCliBindingFailure`, alongside the `EngineConfig`/`WaveConfig` types) and must survive an ALLOW-list of characters — ASCII letters/digits, the separating space, and `_ . / : @ = + , -` — refusing every shell metacharacter, quote, glob, control character, and non-ASCII codepoint, and refusing a `~`-rooted path (machine-specific, unusable in a tracked allowlist). A malformed value throws `EngineCliBindingError` (`code: "engine-cli-binding-invalid"`, `field: "engine.cli"`) naming the offending character and its index — `config validate` surfaces this at exit 1, not a silent read-as-unbound.
+Absent `engine` (or an absent key inside it) is valid and means unbound — the engine itself has no opinion about what a consumer should do without a binding, that STOP belongs to the consuming skill that hits it. A **present** `cli` is validated by `normalizeEngineCli` (re-exported from the package root as `normalizeEngineCli` / `EngineCliBindingError` / `EngineCliBindingFailure`, alongside the `EngineConfig`/`WaveConfig` types) and must survive an ALLOW-list of characters — ASCII letters/digits, the separating space, and `_ . / : @ = + , -` — refusing every shell metacharacter, quote, glob, control character, and non-ASCII codepoint, and refusing a `~`-rooted path (machine-specific, unusable in a tracked allowlist). A malformed value throws `EngineCliBindingError` (`code: "engine-cli-binding-invalid"`, `field: "engine.cli"`) naming the offending character and its index — `config validate` surfaces this at exit 1, not a silent read-as-unbound.
 
-**The two values `wave-setup` ever writes here:**
+**`install` is held to the identical rule, through the identical implementation**, and refuses for the identical reason: a dispatched worktree's sole permission source is a tracked allowlist that can carry repo-relative prefixes only, so `/usr/local/bin/install.sh` or `~/bin/install.sh` would stall every row at the permission gate exactly as an absolute `cli` would. A fused `cd tools/wave && npm ci` is refused on the same rule — it is a shell line, not an argv word list, and wave-shared Convention 13 forbids it a tier earlier. The refusal is a plain `Error` naming the field and the rule rather than a typed class: `engine.cli`'s typed refusal exists because a CONSUMER re-applies that rule when authoring a binding of its own, and nothing outside the engine authors an install command through the API.
 
-```json
-{ "engine": { "cli": "./node_modules/.bin/flotilla-engine" } }
-```
-
-the consumer default — every Node consumer, pinned by its own lockfile; and, only in this repo's own dogfood config:
+**The values `wave-setup` writes here:**
 
 ```json
-{ "engine": { "cli": "./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts" } }
+{ "engine": { "cli": "./node_modules/.bin/flotilla-engine", "install": "npm ci" } }
 ```
 
-Once written, `config validate` echoes the bound value verbatim on its `ok:` line (`engine.cli: <value>`) — see [Validation round-trip](#validation-round-trip) below.
+the consumer default — every Node consumer, pinned by its own lockfile, with whatever install command that consumer actually runs (`npm ci`, `npm ci --prefix <depsDir>`, `composer install -d <depsDir>`); and, only in this repo's own dogfood config:
+
+```json
+{ "engine": { "cli": "./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts", "install": "npm ci --prefix tools/wave" } }
+```
+
+Once written, `config validate` echoes both bound values verbatim on its `ok:` line (`engine.cli: <value>, engine.install: <value>`) — see [Validation round-trip](#validation-round-trip) below. An absent `install` is silent there and stays valid; it is an honest absence, never a confirmation that no install is needed. `compose-driver` is what turns that distinction into a gate: it refuses a compose in which `engine.cli` resolves through a path this repository gitignores and no source — the row's `--row-meta` `depsSetup`, the `--deps-setup` flag, `engine.install`, or the row's verify profile — offered an install step.
 
 #### The non-Node manifest
 
@@ -212,7 +215,7 @@ then run the install once, from the consumer repo root, to produce the lockfile 
 npm install
 ```
 
-This is not a second scaffold form — it produces the identical `./node_modules/.bin/flotilla-engine` binary and the identical `{ "engine": { "cli": "./node_modules/.bin/flotilla-engine" } }` config value as the ordinary Node-consumer path above. The only difference is that this `npm install` is a **new, prepended** row step rather than one more line inside an install the consumer already runs — record it as the first thing the row's `depsSetup` does (`workflow-driver.md`'s per-row dependency-install input), ahead of whatever the consumer's own build already installs, so `engine.cli` resolves before the row's first engine call. The engine needs a Node runtime regardless of what this consumer builds — this manifest makes that already-true prerequisite explicit and worktree-resolvable, not a new one.
+This is not a second scaffold form — it produces the identical `./node_modules/.bin/flotilla-engine` binary and the identical `{ "engine": { "cli": "./node_modules/.bin/flotilla-engine", "install": "npm ci" } }` config value as the ordinary Node-consumer path above. **The install command is recorded the same way on both paths: as `engine.install`.** The only difference is that this install is a **new** step rather than one more line inside an install the consumer already runs — so on the non-Node path it comes FIRST in whatever `install` names, ahead of the consumer's own build install, so `engine.cli` resolves before the row's first engine call. Where a consumer needs both, record them as one plain argv command list, never two fused with `&&` (the plain-argv rule refuses that outright, and wave-shared Convention 13 forbids it a tier earlier); if the two genuinely cannot be expressed as one argv command, that is the case for `--deps-setup` at compose time, which sits one precedence level above `engine.install`. The engine needs a Node runtime regardless of what this consumer builds — this manifest makes that already-true prerequisite explicit and worktree-resolvable, not a new one.
 
 ### `MarkdownStoreConfig`
 
@@ -337,7 +340,7 @@ Three further spellings of this same pair are measured, with real call counts, i
 
 Three occurrences, one root cause, and the third happened to someone who had just read the warning. A prose warning demonstrably does not close this — the fix has to remove the bare spelling from reach entirely, which is exactly what naming the pinned, discovery-rooted form directly inside `commands` does: there is no shorter, more-obvious-looking alternative left to compose or reach for, because the command that actually runs already **is** the correct one.
 
-**The recorded forms are the compose-time source for the driver's verify constants.** Once measured, record the exact resolved command strings alongside the config — SKILL.md's "Worktree-brief inputs" precondition, item 3 — the same way `depsSetup` and `engine.cli` are recorded from their own items. `workflow-driver.md`'s per-row brief quotes this recorded shape when it renders the row's Verification-gates step, rather than a Coordinator re-deriving a plausible form from `wave.config.json`'s own profile description at every wave's compose time. **That re-derivation loop is retired** (issue #272): the form is proven once, here, at setup — not re-guessed, per wave, at dispatch.
+**The recorded forms are the compose-time source for the driver's verify constants.** Once measured, record the exact resolved command strings alongside the config — SKILL.md's "Worktree-brief inputs" precondition, item 3 — the same way `engine.install` and `engine.cli` are recorded from their own items (those two land IN the config, which is the difference item 3 has yet to close). `workflow-driver.md`'s per-row brief quotes this recorded shape when it renders the row's Verification-gates step, rather than a Coordinator re-deriving a plausible form from `wave.config.json`'s own profile description at every wave's compose time. **That re-derivation loop is retired** (issue #272): the form is proven once, here, at setup — not re-guessed, per wave, at dispatch.
 
 ### `CleanupConfig`
 
@@ -484,7 +487,7 @@ Or with an explicit path (dogfood / temp file — use `$TMPDIR`, not a hardcoded
 {{wave-cli}} config validate "$TMPDIR/my-wave-config.json"
 ```
 
-Exit 0 means the engine will accept it. Any other exit code means there is a problem — the error output names the field; fix it and re-run. When `engine.cli` is set, the `ok:` line echoes the bound value verbatim (`engine.cli: ./node_modules/.bin/flotilla-engine`) — read it to confirm the repo is bound to the form you think it is, not merely that a binding exists; a present-but-malformed binding (a shell metacharacter, an empty string, a `~`-rooted path) is a typed `EngineCliBindingError` at exit 1 naming the offending character, never a silent read-as-unbound.
+Exit 0 means the engine will accept it. Any other exit code means there is a problem — the error output names the field; fix it and re-run. When `engine.cli` is set, the `ok:` line echoes the bound value verbatim (`engine.cli: ./node_modules/.bin/flotilla-engine`) — read it to confirm the repo is bound to the form you think it is, not merely that a binding exists; a present-but-malformed binding (a shell metacharacter, an empty string, a `~`-rooted path) is a typed `EngineCliBindingError` at exit 1 naming the offending character, never a silent read-as-unbound. `engine.install` is echoed beside it on the same line (`engine.install: npm ci`) and refused on exit 1 by the same rule — read BOTH: the invocation binding and the command that makes it exist are one answer to "is this repo bound to the forms I think it is", not two (ADR-0032 amendment 2026-09-04).
 
 Then, once `config validate` passes, prove the live **tracker** preconditions (integration, state catalog) with the store-preflight, and the live **code-host** posture (merge token, allow-auto-merge, required-checks) with the host-preflight:
 

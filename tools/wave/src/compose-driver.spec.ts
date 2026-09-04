@@ -824,6 +824,84 @@ describe('composeIssueSpec — declared verify needs ride beside the command (AD
   });
 });
 
+// ── the composed brief never manufactures a confirmation (issue #717) ────────
+//
+// The wording this replaces asserted a CONSUMER ANSWER the composer never had:
+// "consumer confirmed at wave-setup: nothing gitignored here — no install step
+// needed". Two Workers of one consumer's two-row wave each read it, each found
+// it false — that consumer's `engine.cli` resolves through a gitignored
+// `node_modules/` — and each had to run `npm ci` itself before a single engine
+// verb would resolve. An empty `depsSetup` means NO SOURCE ANSWERED, which is a
+// deferral; only a measurement of the repo could support the confirmation, and
+// the composer now makes that measurement itself (the refusal block below).
+//
+// THREE sites render the fallback — the iteration-1 Worker setup, the
+// re-dispatch Worker setup, and the Reviewer's own setup — so all three are
+// driven here, from ONE composed script carrying one row of each iteration.
+
+describe('compose-driver — an absent install step reads as a deferral, never a confirmation (issue #717)', () => {
+  const CONFIRMATION = 'consumer confirmed at wave-setup: nothing gitignored here';
+  const DEFERRAL = 'no install step was recorded for this consumer';
+
+  /** One iteration-1 row and one re-dispatch row, neither carrying an install step. */
+  const rows = [
+    row({ id: '42', slug: 'first', depsSetup: '' }),
+    row({ id: '43', slug: 'second', iteration: 2, depsSetup: '', siblingBranches: 'wave/42-first' }),
+  ];
+  const script = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows });
+
+  it('renders the deferral at ALL THREE fallback sites, and the old confirmation at none of them', async () => {
+    const { calls } = await runComposedDriver(script);
+    const briefFor = (label: string) => calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+
+    // site 1: the iteration-1 Worker workspace setup
+    const iter1 = briefFor('worker:42');
+    // site 2: the re-dispatch Worker workspace setup
+    const redispatch = briefFor('worker:43');
+    // site 3: the Reviewer's own workspace setup — its worktree is just as bare
+    const reviewer = briefFor('review:42');
+
+    // Guard the fixture before the claim: these really are the two DIFFERENT
+    // workspace-setup blocks, not the same one twice — which is what makes
+    // "all three sites" a checked statement rather than a label-shaped hope.
+    expect(redispatch).toContain('## Workspace setup (do first) — RE-DISPATCH');
+    expect(iter1).not.toContain('RE-DISPATCH');
+
+    for (const brief of [iter1, redispatch, reviewer]) {
+      expect(brief).not.toBe('');
+      expect(brief).not.toContain(CONFIRMATION);
+      expect(brief).toContain(DEFERRAL);
+      expect(brief).toContain('before the first engine call');
+    }
+  });
+
+  // POSITIVE CONTROL beside it (wave-shared Convention 11): a row that DOES
+  // carry an install step renders the command at all three sites and no
+  // deferral at any of them — so "the deferral is everywhere" above is not the
+  // trivial result of a fallback that always fires.
+  it('POSITIVE CONTROL — a row WITH an install step renders the command, not the deferral', async () => {
+    const withStep = composeDriverScript({
+      template: TEMPLATE,
+      ...CONSTANTS,
+      rows: [
+        row({ id: '42', slug: 'first', depsSetup: 'npm ci --prefix tools/wave' }),
+        row({ id: '43', slug: 'second', iteration: 2, depsSetup: 'npm ci --prefix tools/wave' }),
+      ],
+    });
+    const { calls } = await runComposedDriver(withStep);
+    for (const label of ['worker:42', 'worker:43', 'review:42']) {
+      const brief = calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+      expect(brief).toContain('npm ci --prefix tools/wave');
+      expect(brief).not.toContain(DEFERRAL);
+      expect(brief).not.toContain(CONFIRMATION);
+    }
+  });
+
+  it('the retired wording is gone from the shipped template itself, not merely unrendered', () => {
+    expect(TEMPLATE).not.toContain(CONFIRMATION);
+  });
+});
+
 describe('compose-driver — the scope-grant projection reads the spine, never a hand-authored field (ADR-0041)', () => {
   function spineWithGrant(text: string): string {
     const base = renderSpine(
@@ -1031,6 +1109,10 @@ describe('compose-driver — the verb, end to end', () => {
         risk: 'public-API-change',
         worker: 'background-heavy',
         scopeGrants: 0,
+        // issue #717 — WHICH precedence level answered, not just what it said.
+        // This config carries no `engine.install`, so the install-shaped
+        // command in the row's own verify profile is what answered.
+        depsSetupSource: 'verify',
       },
     ]);
 
@@ -1226,5 +1308,265 @@ describe('compose-driver — the verb, end to end', () => {
   it('usage: the three required flags are named, exit 2', async () => {
     expect(await runComposeDriver([])).toBe(2);
     expect(stderr).toMatch(/--spine/);
+  });
+
+  // ── the install-step precedence, level by level (issue #717) ─────────────
+  //
+  // Five levels, most specific first: the row's own metadata, the compose
+  // call's explicit flag, `engine.install`, the step derived from the verify
+  // profile's install-shaped command, then nothing. Each is set ALONE, and each
+  // adjacent pair is set IN CONFLICT — an ordering asserted only on the winners
+  // would pass for any ordering that happened to agree on the cases tried.
+  //
+  // Read off the COMPOSED SCRIPT, which is what the dispatched agents actually
+  // get, and off the receipt's `depsSetupSource`, which is what the operator
+  // reads. Both, because they are two different claims: what the brief says,
+  // and where it came from.
+
+  const FROM_ROW = 'npm ci --prefix from-row';
+  const FROM_FLAG = 'npm ci --prefix from-flag';
+  const FROM_CONFIG = 'npm ci --prefix from-config';
+  const FROM_VERIFY = 'npm ci --prefix tools/wave';
+
+  /** Rewrite the seeded config, optionally with an `engine.install` and/or install-shaped verify command. */
+  function rewriteConfig(
+    configPath: string,
+    opts: { install?: string; verifyInstalls?: boolean; cli?: string },
+  ): void {
+    const commands = opts.verifyInstalls === false
+      ? [{ command: 'vitest run --root tools/wave' }]
+      : [{ command: FROM_VERIFY }, { command: 'vitest run --root tools/wave' }];
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: {
+          cli: opts.cli ?? SOURCE_FORM_CLI,
+          ...(opts.install === undefined ? {} : { install: opts.install }),
+        },
+        verify: { profiles: [{ name: 'engine', appliesTo: ['tools/wave/**'], commands }] },
+      }),
+      'utf8',
+    );
+  }
+
+  /** The `ISSUES` array the composed script carries, parsed back out of it. */
+  function composedRows(script: string): Array<Record<string, unknown>> {
+    const opener = 'const ISSUES = ';
+    const at = script.indexOf(opener);
+    expect(at).toBeGreaterThan(-1);
+    const close = script.indexOf('\n]\n', at);
+    expect(close).toBeGreaterThan(at);
+    return JSON.parse(script.slice(at + opener.length, close + 2)) as Array<Record<string, unknown>>;
+  }
+
+  /** Compose with the given extra flags and hand back the row's step plus the receipt's source. */
+  async function composeAndReadStep(
+    spinePath: string,
+    configPath: string,
+    extraArgs: string[] = [],
+  ): Promise<{ depsSetup: string; source: string }> {
+    // Each compose reads its OWN receipt: the spies accumulate across calls, and
+    // a stale prefix would make `JSON.parse` read the previous run's answer.
+    stdout = '';
+    stderr = '';
+    const out = join(repoRoot, 'driver.js');
+    const code = await runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+      ...extraArgs,
+    ]);
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    const receipt = JSON.parse(stdout) as { rows: Array<{ depsSetupSource: string }> };
+    return {
+      depsSetup: String(composedRows(readFileSync(out, 'utf8'))[0].depsSetup),
+      source: receipt.rows[0].depsSetupSource,
+    };
+  }
+
+  it('EACH SOURCE ALONE — row metadata, the flag, engine.install, the verify profile, nothing', async () => {
+    const { id, spinePath, configPath } = await seed();
+    const rowMeta = JSON.stringify({ [id]: { depsSetup: FROM_ROW } });
+
+    // 1. the row's own metadata, alone
+    rewriteConfig(configPath, { verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath, ['--row-meta', rowMeta]))
+      .toEqual({ depsSetup: FROM_ROW, source: 'row-meta' });
+
+    // 2. the compose call's explicit flag, alone
+    rewriteConfig(configPath, { verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath, ['--deps-setup', FROM_FLAG]))
+      .toEqual({ depsSetup: FROM_FLAG, source: 'flag' });
+
+    // 3. engine.install, alone
+    rewriteConfig(configPath, { install: FROM_CONFIG, verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: FROM_CONFIG, source: 'engine.install' });
+
+    // 4. the verify profile's install-shaped command, alone
+    rewriteConfig(configPath, {});
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: FROM_VERIFY, source: 'verify' });
+
+    // 5. nothing at all — composes, and says so rather than confirming anything
+    rewriteConfig(configPath, { verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: '', source: 'none' });
+  });
+
+  it('EACH PAIR IN CONFLICT — the more specific source wins, at every adjacent level', async () => {
+    const { id, spinePath, configPath } = await seed();
+    const rowMeta = JSON.stringify({ [id]: { depsSetup: FROM_ROW } });
+
+    // row metadata BEATS the flag
+    rewriteConfig(configPath, { verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath, ['--row-meta', rowMeta, '--deps-setup', FROM_FLAG]))
+      .toEqual({ depsSetup: FROM_ROW, source: 'row-meta' });
+
+    // the flag BEATS engine.install
+    rewriteConfig(configPath, { install: FROM_CONFIG, verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath, ['--deps-setup', FROM_FLAG]))
+      .toEqual({ depsSetup: FROM_FLAG, source: 'flag' });
+
+    // engine.install BEATS the verify-derived step
+    rewriteConfig(configPath, { install: FROM_CONFIG });
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: FROM_CONFIG, source: 'engine.install' });
+
+    // and the verify-derived step BEATS nothing — the level that used to be the
+    // only non-flag source, still answering when no binding was authored
+    rewriteConfig(configPath, {});
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: FROM_VERIFY, source: 'verify' });
+
+    // …and all four at once still resolves to the most specific
+    rewriteConfig(configPath, { install: FROM_CONFIG });
+    expect(await composeAndReadStep(spinePath, configPath, ['--row-meta', rowMeta, '--deps-setup', FROM_FLAG]))
+      .toEqual({ depsSetup: FROM_ROW, source: 'row-meta' });
+  });
+
+  it('a BLANK at any level is not an answer — it falls through instead of manufacturing an empty step', async () => {
+    const { id, spinePath, configPath } = await seed();
+    rewriteConfig(configPath, { install: FROM_CONFIG, verifyInstalls: false });
+    expect(
+      await composeAndReadStep(spinePath, configPath, [
+        '--row-meta', JSON.stringify({ [id]: { depsSetup: '   ' } }),
+      ]),
+    ).toEqual({ depsSetup: FROM_CONFIG, source: 'engine.install' });
+  });
+
+  // ── the gitignored-binding refusal (issue #717) ──────────────────────────
+  //
+  // The honest deferral above is the right answer where the row can still DO
+  // its work. It is not the right answer where `engine.cli` itself resolves
+  // through a path this repo gitignores: a worktree carries tracked files only,
+  // so that binary is absent from every dispatched worktree, and the row could
+  // neither run its verify gate nor open its PR. That is a compose-time STOP.
+
+  /** Write (and commit) a `.gitignore` in the seeded repo. */
+  function gitignore(patterns: string[]): void {
+    writeFileSync(join(repoRoot, '.gitignore'), `${patterns.join('\n')}\n`, 'utf8');
+  }
+
+  it('POSITIVE CONTROL — refuses when engine.cli resolves through a gitignored path and NO source offers an install step', async () => {
+    const { spinePath, configPath } = await seed();
+    gitignore(['node_modules/']);
+    rewriteConfig(configPath, { cli: './node_modules/.bin/flotilla-engine', verifyInstalls: false });
+    const out = join(repoRoot, 'driver.js');
+    const code = await runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+    ]);
+    expect(code).toBe(1);
+    // The reason names the BINDING and the PATH it resolves through, plus the
+    // setup-time fix — either half alone leaves the reader guessing which one
+    // to change.
+    expect(stderr).toMatch(/engine\.cli/);
+    expect(stderr).toContain('./node_modules/.bin/flotilla-engine');
+    expect(stderr).toMatch(/gitignores/);
+    expect(stderr).toMatch(/engine\.install/);
+    expect(stderr).toMatch(/tracked files only/i);
+    // Nothing was written: the refusal is a STOP, not a warning beside an output.
+    expect(() => readFileSync(out, 'utf8')).toThrow();
+  });
+
+  it('NEGATIVE CONTROL — the SAME gitignored binding composes as soon as any install source answers', async () => {
+    const { id, spinePath, configPath } = await seed();
+    gitignore(['node_modules/']);
+
+    // engine.install answers
+    rewriteConfig(configPath, {
+      cli: './node_modules/.bin/flotilla-engine',
+      install: FROM_CONFIG,
+      verifyInstalls: false,
+    });
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: FROM_CONFIG, source: 'engine.install' });
+
+    // the flag answers
+    rewriteConfig(configPath, { cli: './node_modules/.bin/flotilla-engine', verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath, ['--deps-setup', FROM_FLAG]))
+      .toEqual({ depsSetup: FROM_FLAG, source: 'flag' });
+
+    // the row's metadata answers
+    expect(
+      await composeAndReadStep(spinePath, configPath, [
+        '--row-meta', JSON.stringify({ [id]: { depsSetup: FROM_ROW } }),
+      ]),
+    ).toEqual({ depsSetup: FROM_ROW, source: 'row-meta' });
+
+    // the verify profile answers
+    rewriteConfig(configPath, { cli: './node_modules/.bin/flotilla-engine' });
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: FROM_VERIFY, source: 'verify' });
+  });
+
+  it('NEGATIVE CONTROL — a binding on an UNIGNORED path composes with no install step at all', async () => {
+    const { spinePath, configPath } = await seed();
+    gitignore(['node_modules/']);
+    rewriteConfig(configPath, { cli: './scripts/engine.js', verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: '', source: 'none' });
+  });
+
+  // The discriminator is ABSENCE FROM A WORKTREE, not "a pattern matches the
+  // name". A TRACKED file arrives in a worktree checkout even when an ignore
+  // pattern would otherwise cover it, and `git check-ignore` is index-aware by
+  // default — so this case must compose, and it is the one that would break if
+  // the probe ever grew a `--no-index`.
+  it('NEGATIVE CONTROL — a TRACKED path under an ignored directory composes: it is present in a worktree', async () => {
+    const { spinePath, configPath } = await seed();
+    gitignore(['vendor/']);
+    mkdirSync(join(repoRoot, 'vendor'), { recursive: true });
+    writeFileSync(join(repoRoot, 'vendor', 'engine.js'), '// engine\n', 'utf8');
+    execFileSync('git', ['-C', repoRoot, 'add', '-f', 'vendor/engine.js']);
+    execFileSync('git', [
+      '-C', repoRoot,
+      '-c', 'user.email=t@example.invalid',
+      '-c', 'user.name=t',
+      'commit', '-q', '-m', 'track the binding',
+    ]);
+    rewriteConfig(configPath, { cli: './vendor/engine.js', verifyInstalls: false });
+    expect(await composeAndReadStep(spinePath, configPath))
+      .toEqual({ depsSetup: '', source: 'none' });
+  });
+
+  it('the refusal tests the ROW, not the repo: a gitignored binding with a step is a wholly ordinary compose', async () => {
+    const { spinePath, configPath } = await seed();
+    gitignore(['node_modules/']);
+    // Both an `engine.install` AND a verify-derived step available — the
+    // ordinary shape of the consumer this issue came from, which must stay a
+    // clean exit-0 compose rather than becoming collateral of the new gate.
+    rewriteConfig(configPath, { cli: './node_modules/.bin/flotilla-engine', install: FROM_CONFIG });
+    expect((await composeAndReadStep(spinePath, configPath)).source).toBe('engine.install');
   });
 });

@@ -367,6 +367,168 @@ describe('normalizeEngineCli — the typed refusal a caller can branch on (AC#2)
   });
 });
 
+// ── the install binding: `engine.install` (issue #717, ADR-0032 amendment) ───
+//
+// The command that MAKES the binary exist, beside the command that calls it.
+// A worktree carries tracked files only, so wherever `engine.cli` resolves
+// through a gitignored path — the ordinary case, a pinned local binary — the
+// install command is as much a setup-time binding as the invocation is. It was
+// previously recorded only in a setup REPORT and re-supplied by hand at every
+// compose, and the shape that failure took is exactly the one this key ends:
+// a consumer's dispatch briefs asserted "nothing gitignored here" while that
+// consumer's `engine.cli` sat under an ignored `node_modules/`.
+//
+// The rule is the SAME rule as `engine.cli`'s, applied through the same
+// implementation, so these specs mirror that block deliberately — the ACCEPT
+// path, the ABSENCE path (the additive guarantee), and the REJECT path with
+// its one-character negative control.
+
+/** Load a config bound to `install` and hand back the normalized value. */
+function loadEngineInstall(install: unknown): string | undefined {
+  return loadWithEngine({ install }).engine?.install;
+}
+
+describe('loadWaveConfig — engine.install: the ACCEPT path', () => {
+  it('accepts the ordinary Node install and hands it back verbatim', () => {
+    expect(loadEngineInstall('npm ci')).toBe('npm ci');
+  });
+
+  it('accepts a nested, directory-carrying install — the form Convention 13 requires', () => {
+    expect(loadEngineInstall('npm ci --prefix tools/wave')).toBe('npm ci --prefix tools/wave');
+  });
+
+  it('accepts a non-Node consumer install', () => {
+    expect(loadEngineInstall('composer install -d cms')).toBe('composer install -d cms');
+  });
+
+  it('trims surrounding whitespace, exactly as the cli binding does', () => {
+    expect(loadEngineInstall('  npm ci\t')).toBe('npm ci');
+  });
+
+  it('carries both bindings side by side without either disturbing the other', () => {
+    const cfg = loadWithEngine({
+      cli: './node_modules/.bin/flotilla-engine',
+      install: 'npm ci',
+    });
+    expect(cfg.engine?.cli).toBe('./node_modules/.bin/flotilla-engine');
+    expect(cfg.engine?.install).toBe('npm ci');
+  });
+});
+
+describe('loadWaveConfig — engine.install: the ABSENCE path stays valid (the additive guarantee)', () => {
+  it('a config with an engine.cli and NO install is valid, and install is undefined', () => {
+    const cfg = loadWithEngine({ cli: './node_modules/.bin/flotilla-engine' });
+    expect(cfg.engine?.cli).toBe('./node_modules/.bin/flotilla-engine');
+    expect(cfg.engine?.install).toBeUndefined();
+  });
+
+  it('a config with NO engine key at all still validates unchanged', () => {
+    const cfg = loadConfigFromString(JSON.stringify({ store: { kind: 'github' } }));
+    expect(cfg.engine).toBeUndefined();
+  });
+
+  // NEGATIVE CONTROL for the whole addition (wave-shared Convention 11): a real
+  // pre-#717 consumer config — store + verify + cleanup + an engine.cli, and no
+  // `install` anywhere — must parse to EXACTLY what it parsed to before the key
+  // existed. The expectation is written out in full rather than derived from the
+  // input, so a loader that silently defaulted `install` to something would fail
+  // here instead of quietly passing.
+  it('NEGATIVE CONTROL: an existing consumer config parses byte-identically to before the key existed', () => {
+    const authored = {
+      store: { kind: 'github' as const, repo: 'o/r' },
+      verify: {
+        profiles: [{ name: 'engine', appliesTo: ['tools/wave/**'], commands: [{ command: 'npm ci' }] }],
+      },
+      cleanup: { disposableNames: ['dist'] },
+      engine: { cli: './node_modules/.bin/flotilla-engine' },
+    };
+    expect(loadConfigFromString(JSON.stringify(authored))).toEqual(authored);
+  });
+});
+
+describe('loadWaveConfig — engine.install: the REJECT path names the rule', () => {
+  it('rejects an empty or whitespace-only install command', () => {
+    expect(() => loadEngineInstall('')).toThrow(/engine\.install/);
+    expect(() => loadEngineInstall('   ')).toThrow(/engine\.install.*non-empty/s);
+  });
+
+  it('rejects a non-string, naming the field and what it got', () => {
+    expect(() => loadEngineInstall(42)).toThrow(/engine\.install.*must be a command string/s);
+    expect(() => loadEngineInstall(['npm', 'ci'])).toThrow(/engine\.install.*an array/s);
+    expect(() => loadEngineInstall(null)).toThrow(/engine\.install.*null/s);
+  });
+
+  it.each([
+    ['command separator', 'npm ci; rm -rf /'],
+    ['pipe', 'npm ci | tee log'],
+    ['background', 'npm ci & sleep 1'],
+    ['command substitution', 'npm ci $(whoami)'],
+    ['variable expansion', 'npm ci --registry $NPM_REGISTRY'],
+    ['redirect', 'npm ci > out.txt'],
+    ['glob', 'npm ci packages/*'],
+    ['quote', "npm ci 'a b'"],
+    ['embedded newline', 'npm ci\nrm -rf /'],
+    ['invisible non-ASCII codepoint', 'npm ci\u2060'],
+    // The fused form Convention 13 forbids — refused here as a shell line, which
+    // is the same objection stated one tier earlier.
+    ['a fused cd (Convention 13)', 'cd tools/wave && npm ci'],
+    ['home-rooted path (machine-specific, un-allowlistable)', '~/bin/install.sh'],
+    ['leading-slash absolute path (machine-specific, un-allowlistable)', '/usr/local/bin/install.sh'],
+  ])('refuses %s', (_label, install) => {
+    expect(() => loadEngineInstall(install)).toThrow(/engine\.install/);
+  });
+
+  it('names the rule, not just the field — a reader learns WHY without opening the source', () => {
+    expect(() => loadEngineInstall('cd tools/wave && npm ci'))
+      .toThrow(/plain space-separated argv word list, not a shell line/);
+    expect(() => loadEngineInstall('/usr/local/bin/install.sh'))
+      .toThrow(/must be repo-relative \(ADR-0032\)/);
+  });
+
+  // NEGATIVE CONTROL (wave-shared Convention 11): two install commands differing
+  // in EXACTLY ONE character. A validator hardwired to throw fails the first
+  // assertion; one hardwired to pass fails the second.
+  it('NEGATIVE CONTROL: one character is the whole difference between accept and reject', () => {
+    expect(loadEngineInstall('npm ci --prefix tools/wave')).toBe('npm ci --prefix tools/wave');
+    expect(() => loadEngineInstall('npm ci --prefix tools/wave;')).toThrow(/engine\.install/);
+  });
+
+  // NEGATIVE CONTROL for the absolute-path half, on the same one-character
+  // principle the cli block uses: the leading "." is the whole difference.
+  it('NEGATIVE CONTROL: a leading slash is the whole difference for an install path too', () => {
+    expect(loadEngineInstall('./scripts/install.sh')).toBe('./scripts/install.sh');
+    expect(() => loadEngineInstall('/scripts/install.sh')).toThrow(/engine\.install/);
+  });
+
+  // The two bindings share ONE implementation, so this pins that sharing where
+  // it is observable: the same offending character, at the same index, produces
+  // the same explanation under each field's own name.
+  it('applies the SAME rule as engine.cli — same character, same index, each under its own field name', () => {
+    const cliErr = (() => {
+      try {
+        loadEngineCli('./bin/x; boom');
+      } catch (err) {
+        return err as Error;
+      }
+      throw new Error('expected a refusal');
+    })();
+    const installErr = (() => {
+      try {
+        loadEngineInstall('./bin/x; boom');
+      } catch (err) {
+        return err as Error;
+      }
+      throw new Error('expected a refusal');
+    })();
+    expect(cliErr.message).toContain('";"');
+    expect(installErr.message).toContain('";"');
+    expect(cliErr.message).toContain('index 7');
+    expect(installErr.message).toContain('index 7');
+    expect(cliErr.message).toContain('"engine.cli"');
+    expect(installErr.message).toContain('"engine.install"');
+  });
+});
+
 // ── the detached sweep's declarable containment roots: `cleanup.extraRoots` ──
 //
 // The config half of issue #451. `DetachedSweepOptions.extraRoots` documented

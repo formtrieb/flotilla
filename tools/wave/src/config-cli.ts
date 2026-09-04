@@ -4,7 +4,7 @@
  *
  * Store-INDEPENDENT: it calls loadWaveConfig (which validates `store`, `verify`
  * — including each command's ADR-0049 `needs` declaration against its closed set
- * of three — `cleanup` and the ADR-0032 `engine.cli` binding)
+ * of three — `cleanup` and the ADR-0032 `engine.cli` / `engine.install` bindings)
  * but never buildStore, so it validates a `github` config too — buildStore throws
  * the pre-P8 GitHub deferral, loadWaveConfig does not. This is how `wave-setup`
  * proves a freshly-written config loads (ADR-0016 skill-half grill 2026-06-18).
@@ -84,8 +84,19 @@ export function runConfig(args: string[]): number {
     const engineNote = config.engine?.cli
       ? `, engine.cli: ${config.engine.cli}`
       : '';
+    // issue #717 — report the install binding BESIDE the invocation binding,
+    // for the identical reason. An operator reading this line after `wave-setup`
+    // is asking "is this repo bound to the forms I think it is?"; the command
+    // that makes the binary exist is half of that answer wherever `engine.cli`
+    // resolves through a gitignored path, which is the ordinary case. Silent
+    // when absent, exactly as `engine.cli` is: absence is valid here, and
+    // whether it is acceptable is the composing skill's call — `compose-driver`
+    // is where an absent install step meets a gitignored binding and refuses.
+    const engineInstallNote = config.engine?.install
+      ? `, engine.install: ${config.engine.install}`
+      : '';
     process.stdout.write(
-      `ok: "${path}" is a valid wave config (store.kind=${config.store.kind}${verifyNote}${engineNote})\n`,
+      `ok: "${path}" is a valid wave config (store.kind=${config.store.kind}${verifyNote}${engineNote}${engineInstallNote})\n`,
     );
     return 0;
   } catch (err) {

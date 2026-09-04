@@ -262,11 +262,115 @@ const DEPS_SETUP_RE =
  * The first verify command that installs dependencies, or `''` when the profile
  * declares none. A worktree carries tracked files only, so this is the FIRST
  * command every Worker and Reviewer runs; the template's own `|| <fallback>`
- * renders the empty case as "nothing gitignored here".
+ * renders the empty case as a DEFERRAL — "no install step was recorded" — never
+ * as a confirmation that none is needed (issue #717).
+ *
+ * It is the FOURTH of five precedence levels, not the only source; see
+ * {@link resolveDepsSetup}.
  */
 export function depsSetupFrom(commands: readonly VerifyCommand[]): string {
   const hit = commands.find((c) => DEPS_SETUP_RE.test(c.command));
   return hit ? hit.command : '';
+}
+
+/**
+ * Where a row's dependency-install step came from — `'none'` when no source
+ * offered one, which is the state the composed brief must state as a deferral
+ * and the state the gitignored-binding refusal below tests for.
+ */
+type DepsSetupSource = 'row-meta' | 'flag' | 'engine.install' | 'verify' | 'none';
+
+interface DepsSetupResolution {
+  /** The command to run, or `''` when no source offered one. */
+  command: string;
+  source: DepsSetupSource;
+}
+
+/** A candidate counts as AVAILABLE only if it is a non-blank string. */
+function availableStep(value: string | undefined): string | null {
+  const trimmed = value?.trim() ?? '';
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * The install-step precedence, in one place (issue #717).
+ *
+ * Most specific first: **the row's own metadata** (`--row-meta`'s `depsSetup`,
+ * a per-row override a Coordinator reaches for when one row installs
+ * differently), then **the compose call's explicit flag** (`--deps-setup`, one
+ * answer for this whole compose), then **`engine.install`** (the consumer's
+ * standing setup-time binding, the level this issue adds), then **the step
+ * derived from the verify profile's install-shaped command** (a guess, and a
+ * good one, but still a derivation), then **nothing**.
+ *
+ * A blank at any level is NOT an answer. Before this ordering existed, an
+ * explicit `""` was indistinguishable from "no source at all", and the driver
+ * rendered both as a consumer CONFIRMATION that nothing was gitignored — the
+ * exact false assertion two Workers of one consumer's wave each had to discover
+ * for themselves. There is now no way to spell "confirmed: none needed",
+ * because that claim can only be made truthfully by measuring the repo, which
+ * the composer does itself (see {@link gitignoredBindingPath}).
+ */
+function resolveDepsSetup(input: {
+  rowMeta?: string;
+  flag?: string;
+  engineInstall?: string;
+  verify: readonly VerifyCommand[];
+}): DepsSetupResolution {
+  const rowMeta = availableStep(input.rowMeta);
+  if (rowMeta) return { command: rowMeta, source: 'row-meta' };
+  const flagValue = availableStep(input.flag);
+  if (flagValue) return { command: flagValue, source: 'flag' };
+  const engineInstall = availableStep(input.engineInstall);
+  if (engineInstall) return { command: engineInstall, source: 'engine.install' };
+  const derived = availableStep(depsSetupFrom(input.verify));
+  if (derived) return { command: derived, source: 'verify' };
+  return { command: '', source: 'none' };
+}
+
+/**
+ * The argv words of an `engine.cli` binding that name a FILE — the ones whose
+ * absence from a worktree makes the binding unresolvable there.
+ *
+ * A binding is a plain argv word list (`normalizeEngineCli`), so this is a
+ * split plus a shape test: a word containing `/` is a path, a bare word
+ * (`npm`, `node`) resolves through `PATH` and is not this gate's business.
+ * Both halves of the source form are covered — the `tsx` binary AND the
+ * `cli.ts` it runs — because either one being gitignored is equally fatal.
+ */
+function bindingPaths(engineCli: string): string[] {
+  return engineCli.split(/\s+/).filter((word) => word.includes('/'));
+}
+
+/**
+ * The first path in the `engine.cli` binding that THIS REPOSITORY gitignores,
+ * or `null` when none is.
+ *
+ * `git check-ignore` is index-aware by default, which is exactly the question
+ * being asked: a TRACKED file arrives in a worktree checkout even when an
+ * ignore pattern would otherwise match it, and `check-ignore` reports it as not
+ * ignored. So the answer this returns is "would this path be ABSENT from a
+ * fresh worktree", not merely "does a pattern match its name".
+ *
+ * Every failure mode answers `null`, deliberately. Exit 1 means nothing matched;
+ * exit 128 means git could not answer at all (not a repository, an unreadable
+ * path). Neither is grounds to refuse a compose: this gate exists to catch a
+ * binding KNOWN to be absent, never to stop a wave because a probe was
+ * inconclusive.
+ */
+function gitignoredBindingPath(repoRoot: string, engineCli: string): string | null {
+  const paths = bindingPaths(engineCli);
+  if (paths.length === 0) return null;
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'check-ignore', '--', ...paths], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const first = out.split('\n').map((line) => line.trim()).find((line) => line.length > 0);
+    return first ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -811,6 +915,18 @@ export async function runComposeDriver(
       return 1;
     }
 
+    // Asked at most ONCE per compose, and only if some row ends up with no
+    // install step at all: `engine.cli` is a config-level fact, so the answer
+    // cannot differ between rows, and a compose whose rows all carry an install
+    // step never shells out for it.
+    let ignoredBindingPath: string | null | undefined;
+
+    // Which precedence level actually answered, per row — receipt data, so an
+    // operator reads WHERE a row's install step came from instead of inferring
+    // it from the command string (a `verify`-derived step and an `engine.install`
+    // one are frequently the same bytes, and they are not the same claim).
+    const depsSourceByRow = new Map<string, DepsSetupSource>();
+
     const rows: DriverRow[] = [];
     for (const { row, branch, rowSlug } of roster) {
       const meta = rowMeta[row.id] ?? {};
@@ -819,6 +935,36 @@ export async function runComposeDriver(
       const verify = config.verify ? verifyCommands(view.files, config.verify) : [];
       const iteration = typeof row.iter === 'number' ? row.iter : Number(row.iter) || 1;
       const siblings = roster.filter((r) => r.row.id !== row.id).map((r) => r.branch);
+      const deps = resolveDepsSetup({
+        rowMeta: meta.depsSetup,
+        flag: globalDepsSetup,
+        engineInstall: config.engine?.install,
+        verify,
+      });
+
+      // The refusal (issue #717). A brief that renders no install step is
+      // HONEST — it says so — but honesty is not enough where the row's own
+      // termination step calls `engine.cli` and that binding resolves through a
+      // path the repo gitignores: the binary is absent from every dispatched
+      // worktree, so the row cannot open its PR no matter how carefully it
+      // reads. That is a compose-time STOP with a setup-time fix, not something
+      // to discover five hours in.
+      if (deps.source === 'none') {
+        if (ignoredBindingPath === undefined) {
+          ignoredBindingPath = gitignoredBindingPath(repoRoot, engineCli);
+        }
+        if (ignoredBindingPath !== null) {
+          throw new Error(
+            `compose-driver: row ${row.id} has no dependency-install step from any source ` +
+              "(--row-meta's depsSetup, --deps-setup, engine.install, the row's verify profile) — " +
+              `and this repo gitignores ${ignoredBindingPath}, which the configured engine.cli ` +
+              `binding (${engineCli}) resolves through. A worktree carries TRACKED FILES ONLY, so ` +
+              'that path is absent from every dispatched worktree and the row could neither run ' +
+              'its verify gate nor open its PR. Record the install command as `engine.install` in ' +
+              'the wave config (wave-setup writes it), or pass --deps-setup, then re-compose.',
+          );
+        }
+      }
 
       const composed: DriverRow = {
         id: row.id,
@@ -829,7 +975,7 @@ export async function runComposeDriver(
         model: meta.model ?? modelByRow.get(row.id) ?? modelForRisk(view.risk),
         anchorSha: anchor,
         coordinatorBranch,
-        depsSetup: meta.depsSetup ?? globalDepsSetup ?? depsSetupFrom(verify),
+        depsSetup: deps.command,
         issueSpec: composeIssueSpec({
           id: row.id,
           title: triage.title,
@@ -852,6 +998,7 @@ export async function runComposeDriver(
 
       assertDispatchableWorker(composed);
       assertRequiredRowFields({ ...composed, branch });
+      depsSourceByRow.set(row.id, deps.source);
       rows.push(composed);
     }
 
@@ -891,6 +1038,7 @@ export async function runComposeDriver(
         risk: r.risk,
         worker: r.worker,
         scopeGrants: (r.scopeGrants ?? []).length,
+        depsSetupSource: depsSourceByRow.get(r.id) ?? 'none',
       })),
     });
     return 0;

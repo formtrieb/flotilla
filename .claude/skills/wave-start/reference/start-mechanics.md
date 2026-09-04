@@ -337,22 +337,40 @@ fi
 #                       default and nothing needs passing.
 #     --reviewer-agent <name>        override the derived Stage-3 agentType
 #     --coordinator-branch <b>       default: the repo's current branch
-#     --deps-setup "<cmd>"           default: the first install command in the
-#                                    row's verify profile
+#     --deps-setup "<cmd>"           the SECOND of five precedence levels for
+#                                    the row's dependency-install step, below
+#                                    --row-meta's own depsSetup and above the
+#                                    config's `engine.install`, which in turn
+#                                    sits above the install command derived
+#                                    from the row's verify profile. Pass it
+#                                    only where this compose differs from what
+#                                    wave-setup recorded; the standing answer
+#                                    belongs in `engine.install`, not on this
+#                                    flag (ADR-0032 amendment 2026-09-04).
 #     --repo-root / --template / --reports-dir / --verdicts-dir
 #   exit 0 → ONE JSON receipt on stdout. READ IT — it is the dispatch record:
 #            { out, template, templateBytes, wave, anchor, reviewerAgent,
 #              reviewerAgentForm, pluginName, waveCli,
 #              rows: [{ id, slug, branch, model, iteration, risk, worker,
-#                       scopeGrants }] }
+#                       scopeGrants, depsSetupSource }] }
 #            Confirm the row set matches the DISPATCHABLE rows (both HELD_IDS
 #            and the HUMAN-HELD ids must be absent), the per-row branch matches
 #            the `spine set-branch` write of step 5, and `reviewerAgent` is the
 #            form that resolves where this wave runs.
+#            depsSetupSource names WHICH precedence level supplied the row's
+#            dependency-install step — row-meta | flag | engine.install |
+#            verify | none. A `none` here is not a failure: it means no source
+#            offered one and both briefs say so as a deferral. It IS worth a
+#            second look on a consumer whose dependency dir is gitignored, and
+#            it is exactly the case the exit-1 refusal below covers where the
+#            configured engine.cli itself sits under an ignored path.
 #   exit 1 → a compose refusal, already loud on stderr: an anchor that does not
 #            resolve, a human-gated or `foreground` row, a row with no recorded
-#            branch, a missing required row field, or an underivable Reviewer
-#            agent name. STOP and fix the named cause — never re-run past it.
+#            branch, a missing required row field, an underivable Reviewer
+#            agent name, or a row with NO install step from any source on a repo
+#            that gitignores the path `engine.cli` resolves through (fix at
+#            setup: record `engine.install`; ADR-0032 amendment 2026-09-04).
+#            STOP and fix the named cause — never re-run past it.
 #   exit 2 → usage, an unreadable spine/config, or a config with no `engine.cli`
 #            (a STOP: wave-setup has not finished in this repo, ADR-0032).
 #

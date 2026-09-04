@@ -151,6 +151,77 @@ describe('config validate — engine.cli (ADR-0032)', () => {
   });
 });
 
+// ── the install binding at the same seam (issue #717, ADR-0032 amendment) ────
+//
+// `engine.install` is reported BESIDE `engine.cli` for the identical reason the
+// invocation binding is reported at all: an operator running this line after
+// `wave-setup` is asking "is this repo bound to the forms I think it is?", and
+// where the invocation resolves through a gitignored path — the ordinary case —
+// the command that makes the binary exist is half of that answer. Reported, not
+// judged: whether an absent install step is acceptable is `compose-driver`'s
+// call, made against the repo's own gitignore rather than here.
+
+describe('config validate — engine.install (issue #717)', () => {
+  const INSTALLED_FORM = './node_modules/.bin/flotilla-engine';
+
+  it('exits 0 and echoes the install binding beside the cli binding, verbatim', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      engine: { cli: INSTALLED_FORM, install: 'npm ci --prefix tools/wave' },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toContain(`engine.cli: ${INSTALLED_FORM}`);
+    expect(stdoutBuf).toContain('engine.install: npm ci --prefix tools/wave');
+  });
+
+  it('reports an install binding even where no cli binding is set', () => {
+    const path = writeConfig({ store: { kind: 'github' }, engine: { install: 'npm ci' } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toContain('engine.install: npm ci');
+    expect(stdoutBuf).not.toMatch(/engine\.cli/);
+  });
+
+  it('exits 1 for a shell-line install command, naming the field and the rule', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      engine: { cli: INSTALLED_FORM, install: 'cd tools/wave && npm ci' },
+    });
+    expect(runConfig(['validate', path])).toBe(1);
+    expect(stderrBuf).toMatch(/engine\.install/);
+    expect(stderrBuf).toMatch(/plain space-separated argv word list/);
+    expect(stdoutBuf).toBe(''); // never both "ok" and an error
+  });
+
+  it('exits 1 for an absolute or home-rooted install command', () => {
+    for (const install of ['/usr/local/bin/install.sh', '~/bin/install.sh']) {
+      stdoutBuf = '';
+      stderrBuf = '';
+      const path = writeConfig({ store: { kind: 'github' }, engine: { install } });
+      expect(runConfig(['validate', path])).toBe(1);
+      expect(stderrBuf).toMatch(/engine\.install/);
+    }
+  });
+
+  // NEGATIVE CONTROL, two halves at once, exactly as the `needs` block below
+  // does it. (a) The exit code turns on the install VALUE alone. (b) A config
+  // WITHOUT the key prints today's line byte-for-byte — the additive guarantee,
+  // asserted on the whole string rather than on the absence of a substring.
+  it('NEGATIVE CONTROL: the exit code turns on the install value alone, and a config without the key prints today\'s line', () => {
+    const good = writeConfig({ store: { kind: 'github' }, engine: { cli: INSTALLED_FORM, install: 'npm ci' } });
+    const bad = writeConfig({ store: { kind: 'github' }, engine: { cli: INSTALLED_FORM, install: 'npm ci;' } });
+    expect(runConfig(['validate', good])).toBe(0);
+    expect(runConfig(['validate', bad])).toBe(1);
+
+    stdoutBuf = '';
+    const bare = writeConfig({ store: { kind: 'github' }, engine: { cli: INSTALLED_FORM } });
+    expect(runConfig(['validate', bare])).toBe(0);
+    expect(stdoutBuf).toBe(
+      `ok: "${bare}" is a valid wave config (store.kind=github, engine.cli: ${INSTALLED_FORM})\n`,
+    );
+    expect(stdoutBuf).not.toMatch(/engine\.install/);
+  });
+});
+
 // ── the declared capability requirement at the CLI seam (ADR-0049) ───────────
 //
 // `config validate` is where an operator finds out whether the `needs` they
