@@ -313,6 +313,12 @@ function extractIdentity(json: unknown): string | null {
  * addresses its update to. `number` is optional — a malformed list body may omit
  * it, and the URL alone is enough to REUSE (never open a duplicate); only the
  * body/title UPDATE needs the number.
+ *
+ * `body` and `title` are the two pieces of LIVE authored content it surfaces,
+ * and they are read for the same reason: a reuse that composes its new content
+ * has to be able to see what is already there. The body feeds the close-phrase
+ * guard; the title feeds a caller that would rather preserve the live one than
+ * mint a fresh one (`route-tuple`, whose default on reuse is now the live title).
  */
 export interface OpenPrRef {
   /** The PR's html URL. */
@@ -331,20 +337,33 @@ export interface OpenPrRef {
    * evidence and therefore never a finding. The guard refuses only on evidence.
    */
   body?: string;
+  /**
+   * The PR's CURRENT title, when the list response carried one — the one-line
+   * form of the same authored claim `body` carries at length.
+   *
+   * Three-valued exactly as `body` is, and for the same reason: `undefined` is
+   * "not readable here", never "the PR has no title". A caller preserving the
+   * live title therefore has to check for a STRING, not for truthiness — and an
+   * empty-string live title is evidence of a titleless PR, which is not a title
+   * worth preserving, so the one caller that does this (`route-tuple`) falls
+   * back to its own default there rather than writing `''` onto the PR.
+   */
+  title?: string;
 }
 
 /**
  * Query the host for an OPEN PR whose source branch is `branch`. Returns the
- * PR's `{ url, number?, body? }` on a hit, or `null` on a miss (no open PR, or a
- * non-200 query — a query failure is treated as "no known open PR" so the caller
- * proceeds to create; the create step has its own failure handling).
+ * PR's `{ url, number?, body?, title? }` on a hit, or `null` on a miss (no open
+ * PR, or a non-200 query — a query failure is treated as "no known open PR" so
+ * the caller proceeds to create; the create step has its own failure handling).
  *
  * This is the richer form behind {@link findOpenPr}: it additionally surfaces
  * the PR number so the reuse path can PATCH the open PR's title/body to the
  * passed values (the terminator's composition is the authoritative final render;
- * see {@link updateOpenPr}) instead of silently discarding them — and the PR's
+ * see {@link updateOpenPr}) instead of silently discarding them — the PR's
  * CURRENT body, which is the evidence {@link closePhraseLossReason} grades that
- * rewrite against.
+ * rewrite against, and the PR's CURRENT title, which is what a caller that means
+ * to PRESERVE the live title rather than overwrite it composes from.
  */
 export async function findOpenPrRef(
   host: Host,
@@ -401,7 +420,16 @@ export async function findOpenPr(
 //
 // So the guard is deliberately narrow — it protects the ONE property whose loss
 // is silent, and nothing else. Everything the reuse legitimately rewrites (the
-// verdict render, the summary, the title) stays last-writer-wins.
+// verdict render, the summary, the title) stays last-writer-wins over whatever
+// the caller HANDS OVER.
+//
+// What a caller chooses to hand over is a separate decision, and it is the
+// caller's. `OpenPrRef.title` exists so a caller can hand back the live title
+// rather than a freshly minted one: `route-tuple`'s reuse default is now the
+// live PR's own title, the same asymmetry-free rule its body already followed
+// (a Worker's own account of its change outranks a generated one, and a title
+// is that claim in one line). Nothing about the guard or the PATCH changes —
+// last-writer-wins is still exactly what happens to the value it is given.
 
 /**
  * The closing keywords a tracker acts on (`Closes`, `CLOSED`, `fix`, `Resolved`,
@@ -2568,9 +2596,10 @@ function bbHref(json: unknown): string | null {
 }
 
 /**
- * Pull `{ url, number?, body? }` from a Bitbucket PR object (`links.html.href` +
- * `id` + `description`). A non-string `description` (absent, or `null`) leaves
- * `body` ABSENT — "not readable", never a known-empty body.
+ * Pull `{ url, number?, body?, title? }` from a Bitbucket PR object
+ * (`links.html.href` + `id` + `description` + `title`). A non-string
+ * `description`/`title` (absent, or `null`) leaves that key ABSENT — "not
+ * readable", never a known-empty value.
  */
 function bbRef(json: unknown): OpenPrRef | null {
   const url = bbHref(json);
@@ -2578,7 +2607,8 @@ function bbRef(json: unknown): OpenPrRef | null {
   const obj = json as Record<string, unknown>;
   const id = obj.id;
   const base: OpenPrRef = typeof id === 'number' ? { url, number: id } : { url };
-  return typeof obj.description === 'string' ? { ...base, body: obj.description } : base;
+  const withBody = typeof obj.description === 'string' ? { ...base, body: obj.description } : base;
+  return typeof obj.title === 'string' ? { ...withBody, title: obj.title } : withBody;
 }
 
 // ─── GitHub API shape ────────────────────────────────────────────────────────
@@ -2622,11 +2652,14 @@ function ghHtmlUrl(json: unknown): string | null {
 }
 
 /**
- * Pull `{ url, number?, body? }` from a GitHub PR object (`html_url` + `number` +
- * `body`). GitHub sends `body: null` for an empty description — a non-string
- * leaves `body` ABSENT ("not readable"), which the guard treats as no evidence.
- * That is the safe direction: an empty live body carries no close phrase to
- * lose either way, so both readings allow the rewrite.
+ * Pull `{ url, number?, body?, title? }` from a GitHub PR object (`html_url` +
+ * `number` + `body` + `title`). GitHub sends `body: null` for an empty
+ * description — a non-string leaves `body` ABSENT ("not readable"), which the
+ * guard treats as no evidence. That is the safe direction: an empty live body
+ * carries no close phrase to lose either way, so both readings allow the
+ * rewrite. `title` follows the same rule for the same reason: absent means
+ * unreadable, so a caller preserving the live title falls back to its default
+ * rather than writing an invented one.
  */
 function ghRef(json: unknown): OpenPrRef | null {
   const url = ghHtmlUrl(json);
@@ -2634,7 +2667,8 @@ function ghRef(json: unknown): OpenPrRef | null {
   const obj = json as Record<string, unknown>;
   const number = obj.number;
   const base: OpenPrRef = typeof number === 'number' ? { url, number } : { url };
-  return typeof obj.body === 'string' ? { ...base, body: obj.body } : base;
+  const withBody = typeof obj.body === 'string' ? { ...base, body: obj.body } : base;
+  return typeof obj.title === 'string' ? { ...withBody, title: obj.title } : withBody;
 }
 
 // ─── Default network probe (real side-effect, isolated here) ─────────────────

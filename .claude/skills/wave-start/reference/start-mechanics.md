@@ -613,7 +613,10 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 #                                     changes-requested → re-dispatch cycle
 #                                     renders the LATEST iteration, never a stale one
 #     pr-create-or-reuse              find-before-create; a Worker-opened PR is
-#                                     REUSED and its own body kept as the summary
+#                                     REUSED, its own body kept as the summary and
+#                                     its own TITLE kept as the title (`--title`
+#                                     is the override); the step reports both
+#                                     provenances as summarySource / titleSource
 #     pr-status                       the host is asked AGAIN for the URL
 #     spine-row-state                 pr-created
 #     spine-row-pr                    the URL the re-query answered
@@ -621,13 +624,28 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 #
 #   $ANCHOR_SHA is the row's roster-bound anchor — the SAME value threaded into
 #   this row's Worker/Reviewer briefs as `issue.anchorSha` (workflow-driver.md).
-#   `--title` overrides the PR title; the default is the spine row's own title
-#   with bare tracker ids stripped. The body is composed as summary → rendered
-#   verdict section → store-kind close phrase, and on a REUSE the summary is the
-#   live PR body's own summary half — a Worker who opened the PR and wrote a
-#   substantive body keeps it, with the verdict placed beneath. A re-run appends
-#   no second verdict section. The close phrase is the only tracker id the title
-#   or body may name (Convention 4 / mention discipline).
+#   THE REUSE RULE, one sentence: on a reuse the BODY is re-written from the
+#   composed render and the TITLE is preserved unless `--title` is passed.
+#   The body is composed as summary → rendered verdict section → store-kind
+#   close phrase, and on a REUSE the summary is the live PR body's own summary
+#   half — a Worker who opened the PR and wrote a substantive body keeps it,
+#   with the verdict placed beneath. A re-run appends no second verdict section.
+#   The title follows the same principle by the same argument: a Worker's own
+#   account of its change outranks a generated one, and a title is that claim in
+#   one line — so the live PR's title survives byte-identically, and `--title`
+#   is the deliberate override for when the Coordinator means to rename the PR.
+#   On the CREATE path there is no live title, so the default is what it always
+#   was: the spine row's own title with bare tracker ids stripped. The result
+#   discloses which of the three it used — `titleSource: flag | live-pr | row`,
+#   at the top level and in the `pr-create-or-reuse` step, exactly as
+#   `summarySource` discloses the body's. The close phrase is the only tracker id
+#   the title or body may name (Convention 4 / mention discipline).
+#
+#   Why this is worth a paragraph: before it, one change carried THREE titles —
+#   the Worker's commit subject and the title it opened the PR with, the row
+#   title this verb wrote over it on reuse, and the Worker's again on the squash
+#   commit that landed (a single-commit PR takes its subject from the commit).
+#   Preserving the live title collapses all three back into one.
 #
 #   host-routed since the Bitbucket adapter landed (ADR-0023 amendment
 #   2026-08-10): GITHUB_TOKEN on a github remote, BITBUCKET_TOKEN +

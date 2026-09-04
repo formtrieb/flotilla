@@ -429,8 +429,14 @@ describe('route-tuple', () => {
       expect(posted.body.startsWith('Worker reports 4161/4161 green')).toBe(true);
       expect(posted.body).toContain('## Reviewer verdict');
       expect(posted.body.split('\n').at(-1)).toBe(`Closes #${id}`);
-      expect(step('pr-create-or-reuse')).toMatchObject({ summarySource: 'workerReportDigest' });
-      // The title is the spine row's title with bare ids stripped.
+      expect(step('pr-create-or-reuse')).toMatchObject({
+        summarySource: 'workerReportDigest',
+        // The NEGATIVE CONTROL for the preserve-on-reuse rule: with no live PR
+        // there is no live title, so the create path is exactly what it always
+        // was — the spine row's title with bare ids stripped.
+        titleSource: 'row',
+      });
+      expect(result()).toMatchObject({ titleSource: 'row' });
       expect(posted.title).toBe('Route one returned tuple in one call');
       expect(posted.title).not.toContain(id);
     });
@@ -470,6 +476,113 @@ describe('route-tuple', () => {
       // ONE find, ONE update — and the find is not paid for twice.
       expect(requests.map((r) => r.method)).toEqual(['GET', 'PATCH']);
       expect(result().prUrl).toBe(EXISTING_PR);
+      // This fixture's list response carries no `title`, which is "not readable
+      // here" rather than "no title": the row title stands in, and says so.
+      expect(step('pr-create-or-reuse')).toMatchObject({ titleSource: 'row' });
+    });
+
+    /**
+     * The asymmetry this row exists to close: the live BODY was preserved on
+     * reuse by acceptance criterion while the live TITLE was overwritten from
+     * the spine row in the same call, so one change wore three titles (the
+     * Worker's commit subject and PR title, this verb's row title, then the
+     * Worker's again on the squash commit).
+     *
+     * The live title and the row title are deliberately DIFFERENT here — an
+     * assertion against a fixture where they agree could not tell "preserved"
+     * from "coincidentally rewritten to the same string".
+     */
+    it('a reuse WITHOUT --title preserves the live PR title byte-identically', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      // Trailing whitespace on purpose: BYTE-identical means the host's own
+      // string goes back unaltered, not a re-derived or re-normalised one. A
+      // trim here would be a small silent edit of a Worker-authored title, and
+      // "small silent edit" is the whole failure class this row removes.
+      const workerTitle = 'The Worker\'s own one-line account of this change  ';
+      const workerBody = `Lifted create-or-reuse into the library.\n\nCloses #${id}`;
+      let patched: Record<string, string> = {};
+      const { http } = fakeHttp({
+        get: () => ({
+          status: 200,
+          json: [{ html_url: EXISTING_PR, number: 7, title: workerTitle, body: workerBody }],
+        }),
+        post: () => {
+          throw new Error('a create POST must never fire when an open PR exists');
+        },
+        patch: (_url, body) => {
+          patched = JSON.parse(body ?? '{}') as Record<string, string>;
+          return { status: 200, json: {} };
+        },
+      });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: EXISTING_PR, number: 7 }) }),
+      );
+
+      expect(code).toBe(0);
+      // The row title is a different string, and it is NOT what landed.
+      expect(workerTitle).not.toBe('Route one returned tuple in one call');
+      expect(patched.title).toBe(workerTitle);
+      expect(result()).toMatchObject({ title: workerTitle, titleSource: 'live-pr' });
+      expect(step('pr-create-or-reuse')).toMatchObject({ titleSource: 'live-pr' });
+      // The body is still re-written from the composed render — the two halves
+      // of the rule are preserve-title AND rewrite-body, not preserve-both.
+      expect(patched.body).toContain('## Reviewer verdict');
+      expect(patched.body.split('\n').at(-1)).toBe(`Closes #${id}`);
+    });
+
+    it('a reuse WITH --title takes the flag — the explicit override outranks the live title', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      const workerTitle = 'The Worker\'s own one-line account of this change';
+      const override = 'The title the Coordinator means to land';
+      let patched: Record<string, string> = {};
+      const { http } = fakeHttp({
+        get: () => ({
+          status: 200,
+          json: [
+            { html_url: EXISTING_PR, number: 7, title: workerTitle, body: `Live.\n\nCloses #${id}` },
+          ],
+        }),
+        patch: (_url, body) => {
+          patched = JSON.parse(body ?? '{}') as Record<string, string>;
+          return { status: 200, json: {} };
+        },
+      });
+      const code = await runRouteTuple(
+        argv(1, ['--title', override]),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: EXISTING_PR, number: 7 }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(patched.title).toBe(override);
+      expect(result()).toMatchObject({ title: override, titleSource: 'flag' });
+      expect(step('pr-create-or-reuse')).toMatchObject({ titleSource: 'flag' });
+    });
+
+    it('an EMPTY live title is not a title worth preserving — the row stands in, never ""', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      let patched: Record<string, string> = {};
+      const { http } = fakeHttp({
+        get: () => ({
+          status: 200,
+          json: [{ html_url: EXISTING_PR, number: 7, title: '   ', body: `Live.\n\nCloses #${id}` }],
+        }),
+        patch: (_url, body) => {
+          patched = JSON.parse(body ?? '{}') as Record<string, string>;
+          return { status: 200, json: {} };
+        },
+      });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: EXISTING_PR, number: 7 }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(patched.title).toBe('Route one returned tuple in one call');
+      expect(result()).toMatchObject({ titleSource: 'row' });
     });
 
     it('a public-API-change approve STOPs before any write — the G3 guard, end to end', async () => {
