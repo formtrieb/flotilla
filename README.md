@@ -1,4 +1,6 @@
-# flotilla
+![flotilla — branches leaving a blue trunk line, running in parallel, and landing back on it](docs/assets/flotilla-header.svg)
+
+<sub>The header is drawn from a real wave in a consumer repository: branches leave the blue trunk, run in parallel, and land back on it.</sub>
 
 [![npm](https://img.shields.io/npm/v/%40formtrieb%2Fflotilla-engine?label=npm)](https://www.npmjs.com/package/@formtrieb/flotilla-engine)
 [![Verify](https://github.com/formtrieb/flotilla/actions/workflows/verify.yml/badge.svg)](https://github.com/formtrieb/flotilla/actions/workflows/verify.yml)
