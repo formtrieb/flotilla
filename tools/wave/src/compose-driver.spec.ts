@@ -52,6 +52,7 @@ import {
   stripBareIds,
   type DriverRow,
 } from './compose-driver';
+import type { VerifyCommand } from './verify';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import { HUMAN_GATED_WORKER, renderSpine, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel } from './wave-md-rw';
 import { addDisclosureToSource, setDispositionInSource } from './spine-store';
@@ -620,6 +621,117 @@ describe('compose-driver — the derivations', () => {
   });
 });
 
+// ── a verify command's declared needs travel in the spec (ADR-0049) ──────────
+//
+// `needs` is the config half of "a dispatched agent never escalates": the gate
+// declares what it must reach, and the brief carries that declaration as DATA
+// beside the command — the way an ADR-0041 scope grant travels rather than being
+// re-derived at the far end. Both roles read the SAME embedded spec, which is
+// what puts it in front of the Reviewer too; the Reviewer re-runs these exact
+// commands and meets the identical wall.
+
+describe('composeIssueSpec — declared verify needs ride beside the command (ADR-0049)', () => {
+  const BASE = {
+    id: '709',
+    title: 'Ship the capability requirement',
+    body: 'Body text.\n\n## Acceptance criteria\n\n- [ ] it ships',
+    risk: 'public-API-change',
+    worker: 'background-heavy',
+    files: ['tools/wave/**'],
+  } as const;
+
+  /** The verify-gate tail of a composed spec — everything from its own heading on. */
+  function verifySection(spec: string): string {
+    const at = spec.indexOf('## Verify gate');
+    expect(at).toBeGreaterThan(-1);
+    return spec.slice(at);
+  }
+
+  it('renders each declared need as data, keyed by class', () => {
+    const spec = composeIssueSpec({
+      ...BASE,
+      verify: [
+        { command: 'npm ci --prefix tools/wave' },
+        {
+          command: 'xcodebuild test -scheme App',
+          needs: {
+            writes: ['~/Library/Developer/Xcode/DerivedData'],
+            network: ['developer.apple.com'],
+            host: true,
+          },
+        },
+      ],
+    });
+    const section = verifySection(spec);
+    // The undeclared command keeps its plain bullet — the declaration is per
+    // command, never a banner over the whole gate.
+    expect(section).toContain('- `npm ci --prefix tools/wave`\n');
+    expect(section).toContain('declared needs —');
+    expect(section).toContain('writes outside the worktree: `~/Library/Developer/Xcode/DerivedData`');
+    expect(section).toContain('network hosts: `developer.apple.com`');
+    expect(section).toContain('host: a capability that cannot be narrowed');
+  });
+
+  it('renders only the classes actually declared, and keeps the cwd note beside them', () => {
+    const spec = composeIssueSpec({
+      ...BASE,
+      verify: [{ command: 'vendor/bin/phpunit', cwd: 'cms', needs: { network: ['packagist.org'] } }],
+    });
+    const section = verifySection(spec);
+    expect(section).toContain('cwd `cms`');
+    expect(section).toContain('network hosts: `packagist.org`');
+    expect(section).not.toContain('writes outside the worktree');
+    expect(section).not.toContain('host: a capability');
+  });
+
+  it('states the rule beside the data — a declaration is not a grant', () => {
+    const spec = composeIssueSpec({ ...BASE, verify: [{ command: 'docker compose up', needs: { host: true } }] });
+    const section = verifySection(spec);
+    expect(section).toMatch(/A declaration is not a grant/);
+    expect(section).toMatch(/never re-run it with the\s+sandbox off/);
+    expect(section).toMatch(/never drop it silently/);
+    expect(section).toContain('ADR-0049');
+  });
+
+  // NEGATIVE CONTROL (wave-shared Convention 11), and the one this row's AC
+  // names explicitly: a config that declares NO needs anywhere must compose
+  // BYTE-IDENTICALLY to how it composed before the field existed. The expected
+  // string is written out in full rather than derived from the implementation —
+  // a spec that rebuilt its expectation with `renderVerifyCommand` would compare
+  // the code with itself and pass however the rendering drifted.
+  it('NEGATIVE CONTROL: a needs-free config composes byte-identically to today', () => {
+    const verify: VerifyCommand[] = [
+      { command: 'npm ci --prefix tools/wave' },
+      { command: 'vitest run --root tools/wave', cwd: 'tools/wave' },
+    ];
+    const spec = composeIssueSpec({ ...BASE, verify });
+
+    expect(verifySection(spec)).toBe(
+      [
+        "## Verify gate (from this consumer's wave.config.json verify — run ALL of them, " +
+          'regardless of which files you touched. Carry the directory IN each command, never `cd` first.)',
+        '- `npm ci --prefix tools/wave`',
+        '- `vitest run --root tools/wave`  (the profile declares cwd `tools/wave` — carry it IN the command, never `cd` first)',
+      ].join('\n'),
+    );
+    // Nothing from the new rendering leaked in — not the data, not the rule.
+    expect(spec).not.toContain('declared needs');
+    expect(spec).not.toContain('ADR-0049');
+
+    // POSITIVE CONTROL beside it, so "byte-identical" above is not the trivial
+    // result of a renderer that never renders: the SAME two commands, with one
+    // need added, compose to something strictly longer that still starts the
+    // same way.
+    const declared = composeIssueSpec({
+      ...BASE,
+      verify: [verify[0], { ...verify[1], needs: { host: true } }],
+    });
+    expect(declared).not.toBe(spec);
+    expect(declared.length).toBeGreaterThan(spec.length);
+    expect(declared).toContain('declared needs');
+  });
+});
+
 describe('compose-driver — the scope-grant projection reads the spine, never a hand-authored field (ADR-0041)', () => {
   function spineWithGrant(text: string): string {
     const base = renderSpine(
@@ -852,6 +964,74 @@ describe('compose-driver — the verb, end to end', () => {
     expect(brief).toContain('npm ci --prefix tools/wave');
     expect(brief).toContain('vitest run --root tools/wave');
     expect(brief).toContain(`Closes #${id}`);
+  });
+
+  // ADR-0049 AC2 — BOTH composed briefs render each verify command with its
+  // declared needs. They do so through one mechanism (the embedded issue spec is
+  // the same string in both), which is exactly why this is asserted on the
+  // RUNNING script rather than on `composeIssueSpec` alone: the claim is about
+  // what the two dispatched agents actually read.
+  it('both composed briefs carry each verify command WITH its declared needs, and the no-escalation clause', async () => {
+    const { id, spinePath, configPath } = await seed();
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: { cli: SOURCE_FORM_CLI },
+        verify: {
+          profiles: [
+            {
+              name: 'engine',
+              appliesTo: ['tools/wave/**'],
+              commands: [
+                { command: 'npm ci --prefix tools/wave' },
+                {
+                  command: 'vitest run --root tools/wave',
+                  needs: { writes: ['/var/tmp/flotilla-cache'], network: ['registry.npmjs.org'] },
+                },
+                { command: 'docker compose config', needs: { host: true } },
+              ],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    const out = join(repoRoot, 'driver.js');
+    expect(
+      await runComposeDriver([
+        '--spine', spinePath,
+        '--config', configPath,
+        '--repo-root', repoRoot,
+        '--anchor', anchor,
+        '--out', out,
+        '--reviewer-agent', 'flotilla:wave-reviewer',
+      ]),
+    ).toBe(0);
+
+    const { calls } = await runComposedDriver(readFileSync(out, 'utf8'));
+    const workerBrief = calls.find((c) => String(c.opts.label) === `worker:${id}`)?.brief ?? '';
+    const reviewerBrief = calls.find((c) => String(c.opts.label) === `review:${id}`)?.brief ?? '';
+    expect(workerBrief).not.toBe('');
+    expect(reviewerBrief).not.toBe('');
+
+    for (const brief of [workerBrief, reviewerBrief]) {
+      // the data, per command, beside the command
+      expect(brief).toContain('writes outside the worktree: `/var/tmp/flotilla-cache`');
+      expect(brief).toContain('network hosts: `registry.npmjs.org`');
+      expect(brief).toContain('host: a capability that cannot be narrowed');
+      // the undeclared command still renders plainly
+      expect(brief).toContain('- `npm ci --prefix tools/wave`\n');
+      // and the rule, in each role's own voice
+      expect(brief).toMatch(/never escalates? (?:its|your) own permissions/i);
+      expect(brief).toContain('ADR-0049');
+    }
+
+    // Role-specific halves: the Worker's retired retry path, the Reviewer's valve.
+    expect(workerBrief).toContain('retry-with-the-sandbox-off path is retired by name');
+    expect(workerBrief).toMatch(/report it as NOT RUN/);
+    expect(reviewerBrief).toContain('capability-gated');
+    expect(reviewerBrief).toMatch(/at most the Worker's rights/i);
   });
 
   it('NEGATIVE CONTROL — a fabricated anchor is refused before anything is written (the gate that used to sit host-side)', async () => {

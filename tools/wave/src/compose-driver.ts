@@ -248,11 +248,41 @@ export function depsSetupFrom(commands: readonly VerifyCommand[]): string {
   return hit ? hit.command : '';
 }
 
+/**
+ * Render one verify command's DECLARED NEEDS as data beside it (ADR-0049
+ * decision 5) — the same way a scope grant travels in the brief rather than
+ * being re-derived at the far end (ADR-0041).
+ *
+ * Both roles need it and for the same reason: the Reviewer independently re-runs
+ * these exact commands and meets the identical wall, so it must have the same
+ * data the Worker had. It is rendered as a fact about the command — what the
+ * command must reach — and never as an instruction to go and get it.
+ *
+ * `''` for a command with no declaration, which is what keeps a needs-free
+ * config composing byte-identically to how it did before the field existed.
+ */
+function renderVerifyNeeds(needs: VerifyCommand['needs']): string {
+  if (!needs) return '';
+  const parts: string[] = [];
+  if (needs.writes?.length) {
+    parts.push(`writes outside the worktree: ${needs.writes.map((p) => `\`${p}\``).join(', ')}`);
+  }
+  if (needs.network?.length) {
+    parts.push(`network hosts: ${needs.network.map((h) => `\`${h}\``).join(', ')}`);
+  }
+  if (needs.host) {
+    parts.push('host: a capability that cannot be narrowed to a path or a host — a daemon socket, a simulator, a device');
+  }
+  if (parts.length === 0) return '';
+  return `  (declared needs — ${parts.join('; ')})`;
+}
+
 /** Render one verify command for the embedded spec, directory carried in the command. */
 function renderVerifyCommand(cmd: VerifyCommand): string {
-  return cmd.cwd
+  const base = cmd.cwd
     ? `\`${cmd.command}\`  (the profile declares cwd \`${cmd.cwd}\` — carry it IN the command, never \`cd\` first)`
     : `\`${cmd.command}\``;
+  return `${base}${renderVerifyNeeds(cmd.needs)}`;
 }
 
 // ─── The embedded issue spec ──────────────────────────────────────────────────
@@ -303,6 +333,18 @@ export function composeIssueSpec(input: IssueSpecInput): string {
   }
   if (input.verify.length === 0) {
     parts.push('- (this consumer declares no verify profile matching this row\'s files)');
+  }
+  // The rule beside the data, and ONLY when there is data for it to be beside —
+  // so a consumer that declares no needs anywhere composes exactly the spec it
+  // composed before this field existed (ADR-0049).
+  if (input.verify.some((cmd) => renderVerifyNeeds(cmd.needs) !== '')) {
+    parts.push('');
+    parts.push(
+      'A command above carrying **declared needs** names what it must reach outside this worktree. ' +
+        'A declaration is not a grant: if the sandbox refuses that command anyway, the need is declared ' +
+        'but NOT provided. Report it as not run, with the refusal reason — never re-run it with the ' +
+        'sandbox off, never widen your own permissions, and never drop it silently (ADR-0049).',
+    );
   }
   return parts.join('\n');
 }
