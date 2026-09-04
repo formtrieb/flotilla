@@ -1987,6 +1987,110 @@ describe('listAgentWorktrees — toplevel-guarded orphan classification (FOR-59)
     expect(result[0].dirty).toBe(true);
     expect(result[0].dirtyAllJunk).toBe(false);
   });
+
+  // ── issue #718: `blockingPaths` names what kept a dirty worktree from being
+  //    disposable, so an operator never has to run `git status` by hand.
+
+  it('AC2 (issue #718) positive control — the consumer\'s exact shape: a harness-denied deletion (excluded, disposable) alongside untracked build residue (named) — blockingPaths.untracked carries the residue, blockingPaths.trackedDeleted stays empty', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_718-residue-plus-denied');
+    // A harness-denied deletion — on its own this is fully disposable (see the
+    // #142 tests above) and must contribute NOTHING to blockingPaths.
+    mkdirSync(join(worktreePath, '.claude', 'skills', 'wave-plan'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, '.claude', 'skills', 'wave-plan', 'SKILL.md'),
+      '# committed skill',
+      'utf-8',
+    );
+    realGit(['add', '.claude/skills/wave-plan/SKILL.md'], worktreePath);
+    realGit(['commit', '-q', '-m', 'track a skill'], worktreePath);
+    rmSync(join(worktreePath, '.claude', 'skills', 'wave-plan', 'SKILL.md'), { force: true });
+
+    // Untracked build residue — the consumer's own toolchain leftover, exactly
+    // the `node_modules/` shape the live finding reported. This module never
+    // guesses at these; `cleanup.disposableNames` is the consumer's own
+    // declaration, never consulted here (see the file-level "disposable set
+    // is DECLARABLE" doc section) — so this residue MUST be named as blocking.
+    mkdirSync(join(worktreePath, 'node_modules', 'some-pkg'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, 'node_modules', 'some-pkg', 'index.js'),
+      'module.exports = {};',
+      'utf-8',
+    );
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(false);
+    const bp = result[0].blockingPaths;
+    expect(bp).toBeDefined();
+    // The harness-denied deletion is disposable — it names NOTHING here. If
+    // this ever regresses to non-empty, the classifier's own #142 carve-out
+    // and this field have gone out of sync with each other.
+    expect(bp?.trackedDeleted).toEqual([]);
+    expect(bp?.trackedDeletedTotal).toBe(0);
+    // The untracked residue is what actually blocks — and is named.
+    expect(bp?.untracked).toEqual([expect.stringContaining('node_modules/')]);
+    expect(bp?.untrackedTotal).toBe(1);
+    expect(bp?.otherTracked).toEqual([]);
+    expect(bp?.truncated).toBe(false);
+    expect(bp?.summary).toContain('1 untracked path');
+    expect(bp?.summary).toContain('node_modules/');
+    expect(bp?.summary).not.toContain('tracked-deleted path');
+  });
+
+  it('AC2 (issue #718) negative control — a worktree dirtied ONLY by junk (dirtyAllJunk:true) names NOTHING — blockingPaths is absent, disposable as before', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_718-junk-only');
+    mkdirSync(join(worktreePath, '.claude'), { recursive: true });
+    writeFileSync(
+      join(worktreePath, '.claude', 'settings.local.json'),
+      '{"permissions":{}}',
+      'utf-8',
+    );
+    writeFileSync(join(worktreePath, '.DS_Store'), 'finder', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].dirty).toBe(true);
+    expect(result[0].dirtyAllJunk).toBe(true);
+    expect(result[0].blockingPaths).toBeUndefined();
+  });
+
+  it('AC2 (issue #718) — a genuine tracked MODIFICATION lands in blockingPaths.otherTracked, never silently dropped', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_718-other-tracked');
+    writeFileSync(join(worktreePath, 'src-file.ts'), 'export const x = 1;\n', 'utf-8');
+    realGit(['add', 'src-file.ts'], worktreePath);
+    realGit(['commit', '-q', '-m', 'track a source file'], worktreePath);
+    writeFileSync(join(worktreePath, 'src-file.ts'), 'export const x = 2;\n', 'utf-8');
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result[0].dirtyAllJunk).toBe(false);
+    const bp = result[0].blockingPaths;
+    expect(bp?.otherTracked).toEqual(['src-file.ts']);
+    expect(bp?.otherTrackedTotal).toBe(1);
+    expect(bp?.trackedDeleted).toEqual([]);
+    expect(bp?.untracked).toEqual([]);
+    expect(bp?.summary).toContain('1 other tracked change');
+  });
+
+  it('AC2 (issue #718) — each bucket is bounded with an overflow marker: 25 untracked residue paths report 20 named, total 25, truncated true', () => {
+    const { mainRoot, worktreePath } = makeConsumerWorktree('wf_718-overflow');
+    for (let i = 0; i < 25; i++) {
+      writeFileSync(join(worktreePath, `residue-${String(i).padStart(2, '0')}.tmp`), 'x', 'utf-8');
+    }
+
+    const result = listAgentWorktrees(mainRoot);
+
+    expect(result[0].dirtyAllJunk).toBe(false);
+    const bp = result[0].blockingPaths;
+    expect(bp?.untracked).toHaveLength(20);
+    expect(bp?.untrackedTotal).toBe(25);
+    expect(bp?.truncated).toBe(true);
+    expect(bp?.summary).toContain('25 untracked path');
+    expect(bp?.summary).toContain('…');
+  });
 });
 
 // ─── 13. planCleanup — orphan-dir routing + skip reasons (FOR-59) ────────────
