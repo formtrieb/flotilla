@@ -79,8 +79,15 @@
  *                     keeps its exact shape, validation and output.
  *   set-disposition   Set exactly one entry's disposition. The vocabulary is
  *                     exactly `resolved-in-slice | scope-extension | filed:<id>
- *                     | dropped:<reason>`; anything else (including `open`, the
- *                     capture default) is refused loud with NOTHING written.
+ *                     | dropped:<reason> | upstream:<ref>`; anything else
+ *                     (including `open`, the capture default) is refused loud
+ *                     with NOTHING written. `upstream:<ref>` is the fifth value
+ *                     (ADR-0027 Amendment 2026-09-04): the find was about the
+ *                     TOOLKIT, so it went to the toolkit's own tracker — a
+ *                     `<ref>` there is free-form (URL, bare number, phrase) and
+ *                     only a blank one is refused. The usage line renders from
+ *                     DISPOSITION_VOCABULARY, which the validator derives from
+ *                     the same lists, so this text can never drift from it.
  *   check-disclosures The fail-closed archive gate. Exits 0 iff no `open`
  *                     disclosure remains, non-zero otherwise — `wave-close`
  *                     reads the EXIT CODE, never this output's prose (ADR-0027

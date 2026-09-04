@@ -365,6 +365,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { validateIssue, validateIssueView, type DorResult } from './dor-gate';
 import { loadWaveConfig } from './wave-config';
+import { DISPOSITION_VOCABULARY } from './spine-store';
 import type { VerifyConfig } from './verify';
 import { detectDrift, type DriftResult } from './files-drift';
 import {
@@ -605,7 +606,7 @@ function printUsage(): void {
       '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures|human-gated|check-awaiting-human> <spine-path> [...args]   # per-op output — mostly JSON on reads; several write ops print nothing or a bare id/ref on success',
       '    spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>   # ADR-0027: capture at verdict-routing',
       '    spine add-disclosure <spine-path> --wave --source <worker|reviewer|coordinator> --text <t>   # ADR-0038: wave-scoped capture — no row, no iteration; the window runs to the archive',
-      '    spine set-disposition <spine-path> <disclosure-ref> <resolved-in-slice|scope-extension|filed:ID|dropped:REASON>',
+      `    spine set-disposition <spine-path> <disclosure-ref> <${DISPOSITION_VOCABULARY.replace(/ \| /g, '|')}>`,
       '    spine check-disclosures <spine-path>   # fail-closed archive gate: exit != 0 iff an `open` disclosure remains',
       // The ADR-0012 human-lane pair. Dispatched by spine-cli's own table like
       // every other spine op (issue #366 folded them out of this file's `spine`

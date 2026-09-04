@@ -196,6 +196,37 @@ to reading any settings/secret file to "check what's configured" (Boundary,
 Convention 8) — an operator-visible `gh` auth error is the correct outcome to
 surface, exactly as it is when `gh` fails for any other reason.
 
+### 5. Hand back the reference — filing upstream is what writes `upstream:<ref>`
+
+If the finding started life as a **wave disclosure** — a spine entry captured
+at verdict-routing or during a close phase — it is still sitting there `open`,
+and the wave cannot archive until it carries a disposition. The honest one is
+now `upstream:<ref>` (ADR-0027 Amendment 2026-09-04): *this gap was handed to
+the toolkit's own tracker*. Before that value existed, the only disposition
+that fit an upstream finding was `dropped:<reason>` — which reads in the
+consumer's own retro as **discarded**, when the finding was in fact filed and
+being worked on.
+
+**Filing here is what makes that value true**, so end the run by handing the
+reference back plainly:
+
+- **What goes in `<ref>`:** whatever lets a later reader find the upstream
+  item. The issue URL `gh` printed in step 4 is the best answer; a bare issue
+  number is fine; and when something has genuinely been reported but has no
+  number yet, a short honest phrase ("reported via the report skill, awaiting a
+  number") is accepted too. The engine validates only that the reference is
+  **not empty** — there is deliberately no required shape, because a consumer
+  cannot be expected to know the toolkit's id scheme.
+- **You do not run the disposition call.** This skill never shells
+  `{{wave-cli}}` (Boundary above) — the `spine set-disposition <wave-file>
+  <disclosure-ref> upstream:<ref>` call belongs to the wave's own close flow,
+  where it happens beside every other disposition. Say the value out loud in
+  your closing operator block — the URL, and that it is what the spine entry
+  should carry — so the Coordinator can record it without going hunting.
+- **No wave behind the finding?** Then there is nothing to disposition, and
+  step 4's URL is the whole result. This step is only for a finding that came
+  out of a wave.
+
 ## Common Mistakes
 
 - **Filing without rendering first, "because the finding is obviously right."**
@@ -224,6 +255,13 @@ surface, exactly as it is when `gh` fails for any other reason.
   with only verbatim evidence kept as captured.
 - **Using this for a finding about the consumer's own repo.** Wrong tracker
   entirely — this skill's one and only target is flotilla's own public repo.
+- **Filing upstream and then leaving the wave's spine entry as `dropped:`.**
+  That records a filed, live finding as discarded in this consumer's own retro.
+  `upstream:<ref>` is the value that says what actually happened — hand the
+  reference back (step 5) so the close flow can write it.
+- **Running `spine set-disposition` yourself to "finish the job".** That is a
+  `{{wave-cli}}` call, which this skill never makes (Boundary). Report the
+  reference; the wave's close flow writes it.
 
 ## Operator register (Convention 16)
 

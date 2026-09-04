@@ -14,9 +14,9 @@
 
 Read the **exit code only** — this gate never grep-parses the spine's `## Disclosures` table (the convention-coupled parse-back class, #141/#146 fixed that once already). Exit `0` → `disclosures: 0 open of N — archive gate CLEAR`, continue straight to the Guards below. **Non-zero exit → BLOCKED: do not archive**, regardless of how few rows are open or how late in the day it is.
 
-On a non-zero exit, the checked step is: **name every open disclosure the command printed, and give each one a disposition — chosen from exactly these four, no others accepted (not even `open` itself):**
+On a non-zero exit, the checked step is: **name every open disclosure the command printed, and give each one a disposition — chosen from exactly these five, no others accepted (not even `open` itself):**
 
-`resolved-in-slice | scope-extension | filed:<id> | dropped:<reason>`
+`resolved-in-slice | scope-extension | filed:<id> | dropped:<reason> | upstream:<ref>`
 
 Set each one through the engine, never by hand-editing the spine:
 
@@ -28,7 +28,7 @@ Then re-run `check-disclosures` — repeat until it reports `0 open`. Only then 
 
 ### Disposition defaults — which disposition to reach for (ADR-0027 Amendment 2026-07-31)
 
-**The gate above is untouched by these defaults.** It still checks existence only, and it still passes any of the four values. What follows is the *quality* half the gate deliberately does not enforce: the defaults that stop "every disclosure is durable" from silently becoming "every disclosure gets its own ticket". Left unchecked that is what it becomes — one wave closed 9 issues and filed 10 new ones, a 1:1 replacement rate, while the same day's bundled close turned 13 disclosures into 4 tickets.
+**The gate above is untouched by these defaults.** It still checks existence only, and it still passes any of the five values. What follows is the *quality* half the gate deliberately does not enforce: the defaults that stop "every disclosure is durable" from silently becoming "every disclosure gets its own ticket". Left unchecked that is what it becomes — one wave closed 9 issues and filed 10 new ones, a 1:1 replacement rate, while the same day's bundled close turned 13 disclosures into 4 tickets.
 
 **1. Triviality default — a disclosure earns its OWN ticket only when it names a mechanism defect with an observed consequence.** The predicate, not a class list:
 
@@ -41,7 +41,7 @@ The Coordinator may **promote** a bundle-default item to its own ticket on judgm
 
 **2. Bundles are thematic, never per-wave.** A thematic bundle — doc-reconciliation, HITL-gate follow-ups — has coherent Files, one Risk, one Worker, and decorates later into a **single grabbable row**. A per-wave hygiene bundle mixes whatever this particular wave happened to stir up: its Files scope becomes a conflict-map hub and fails "files-scope sound" structurally, trading a wave's worth of parallelism for a few minutes of close-time convenience. If the only thing the items share is the wave they came from, that is not a theme.
 
-**3. `filed:<id>` N:1 *is* the bundling mechanism — there is nothing else to learn.** Several disclosures carrying the **same** filed id **are** the bundle. There is no `bundled:` token, no bundle id, and no fifth disposition value; the four above remain the whole vocabulary. Give each item in the bundle the same `filed:<id>`:
+**3. `filed:<id>` N:1 *is* the bundling mechanism — there is nothing else to learn.** Several disclosures carrying the **same** filed id **are** the bundle. There is no `bundled:` token and no bundle id — bundling adds no vocabulary at all, and the five values above remain the whole vocabulary. Give each item in the bundle the same `filed:<id>`:
 
 ```bash
 {{wave-cli}} spine set-disposition <wave-file> <disclosure-ref-1> filed:<id>
@@ -76,6 +76,17 @@ The Coordinator may **promote** a bundle-default item to its own ticket on judgm
 `issue-store create` now **rejects** a bare input (no Header-Block) whose `bodySections` is absent, `[]`, or every entry's `markdown` is blank — a usage error (exit 2), before any write. Before #278, no such check existed anywhere: `classifyCreateInput` judged only the Header-Block group to decide bare vs. decorated and never looked at `bodySections`, so a bare `--input` that forgot the Gap/Provenance prose still filed successfully — silently, with an empty body. That is exactly how it happened: ten dispositions filed from one wave's disclosures all landed on the tracker with **0 body chars**; the text survived only because the spine was still archived, and triage had to reconstruct the Provenance section and Agent Brief from that archive by hand. #278 first added the rejection as a predicate applied at the CLI layer, outside the classifier; #309 then moved that same requirement into `classifyCreateInput` itself, so today the classifier — not the CLI — is the single owner of the whole bare/decorated invariant, body content included. Read the CLI's usage message on rejection — it names the fix (`bodySections`), not just the failure.
 
 *Considered and set aside:* a second guard where the close flow reads back the filed issue's body before recording `filed:<id>`. The reject-at-create guard above already makes an empty-body bare issue impossible to write in the first place, so a read-back would only re-detect a failure the write path can no longer produce; not worth the extra round trip unless a future gap proves this one insufficient.
+
+**`upstream:<ref>` — when the find is about the toolkit, not about this repo (ADR-0027 Amendment 2026-09-04).** Reach for it when the disclosed gap is a defect in **flotilla itself** — a skill that names an agent that no longer exists, a doc line the engine contradicts, a step wired to nothing — rather than in this repo's own code. The other four values all quietly assume the finding belongs to *this* tracker: `filed:<id>` would mint a bare issue here, where nobody can act on it, and `dropped:<reason>` records the entry as **discarded** when it was in fact handed upstream and is being worked on. That is the whole reason the value exists: it was observed twice in one measured consumer run, and both entries had to be dispositioned `dropped:` with a prose apology.
+
+- **What writes it.** File the finding upstream through the `report` skill first (it composes the house format, renders it, and files only on an explicit yes), then record the disposition with whatever reference that filing produced. `report` does not run `set-disposition` for you today — this call is yours:
+
+```bash
+{{wave-cli}} spine set-disposition <wave-file> <disclosure-ref> upstream:<ref>
+```
+
+- **What belongs in `<ref>`.** Anything that lets a later reader find the upstream item: the issue URL `report` printed, a bare number, or — when it has been reported but has no number yet — a short honest phrase. The engine validates only that the reference is **not empty**; there is deliberately no required shape, because a consumer cannot be expected to know the toolkit's id scheme. An empty or whitespace-only ref is refused loud, with the full vocabulary message and nothing written.
+- **This is a routing decision, not a quality one.** `upstream:` clears the archive gate exactly like the other four; the triviality predicate and the bundling rules above still apply on their own terms (they answer *what earns its own ticket*, this answers *whose tracker it lives on*). And if the finding is genuinely about **this** repo, it is not an upstream one — use `filed:<id>`.
 
 ## Awaiting-human gate — BEFORE the archive move, beside the disclosure gate
 
@@ -176,7 +187,7 @@ After archiving, print a close summary: wave slug, **which archive mode ran** (`
 - **Running the archive before the needs-attention phase.** Flag stuck rows first; archive last.
 - **Defaulting to one `filed:` ticket per disclosure.** The gate passes either way, which is exactly why the default matters: 1:1 filing turns a wave's disclosures into a wave's worth of new meta-work. Apply the triviality predicate — own ticket only for a mechanism defect with an observed consequence; everything else bundles.
 - **Filing a per-wave hygiene bundle.** "Everything this wave stirred up" is not a theme. Its Files scope becomes a conflict-map hub and fails files-scope soundness structurally. Bundle by theme, or file separately.
-- **Inventing a `bundled:` token or a bundle id.** The disposition vocabulary is exactly four values. Several disclosures sharing one `filed:<id>` *are* the bundle — N:1 is the whole mechanism.
+- **Inventing a `bundled:` token or a bundle id.** The disposition vocabulary is exactly the five values above. Several disclosures sharing one `filed:<id>` *are* the bundle — N:1 is the whole mechanism.
 - **Appending to an already-decorated bundle.** A bundle takes appends only while it is still bare. Once it carries Risk / Worker / Files it may already sit in a conflict map or under a claim, and widening its Files declaration is a silent cross-wave hazard. File a fresh bundle.
 - **Writing a causal diagnosis into a `filed:` body to "save the next agent time".** An unverified cause written at close time is faithfully implemented, because the ticket reads as settled. Author symptom + evidence + provenance; mark any hypothesis as one.
 - **Verifying a disclosure's premise before filing it.** That check belongs to `triage`, on the bare→ready transition, against current `main` — not to the close ceremony, which is the worst hour for the highest-judgment work.
