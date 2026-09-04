@@ -47,7 +47,7 @@ Present the drafted structure (the title + a one-line summary per section, or th
 
 ## 4. Publish and hand off
 
-Publish through the store's Document facet (`publishDocument`, *not* `issue-store create`), capture the printed opaque id, and verify the round-trip with `readDocument`. Exact commands and the JSON shape: [reference/filing-mechanics.md](reference/filing-mechanics.md).
+Publish through the store's Document facet (`issue-store publishDocument`, *not* `issue-store create`), capture the printed opaque id, and verify the round-trip via the `issue-store readDocument` facet. Exact commands and the JSON shape: [reference/filing-mechanics.md](reference/filing-mechanics.md).
 
 Then report the published PRD id + title and point the user at the downstream step: **run `to-issues` to slice this PRD into independently-grabbable, wave-eligible issues.**
 
@@ -59,7 +59,7 @@ The facet needs no project-style binding to work. On a store whose tracker scope
 
 ## Common Mistakes
 
-- **Publishing via `issue-store create`.** A PRD is a document — use `publishDocument`. `create` is the wave-slice contract and would demand Risk/Worker/Files a PRD has no business carrying. Equivalently: never treat the PRD as a wave slice — it carries no Header-Block, is never eligibility-stamped, and is never grabbed by a wave.
+- **Publishing via `issue-store create`.** A PRD is a document — use the `issue-store publishDocument` facet. `create` is the wave-slice contract and would demand Risk/Worker/Files a PRD has no business carrying. Equivalently: never treat the PRD as a wave slice — it carries no Header-Block, is never eligibility-stamped, and is never grabbed by a wave.
 - **Interviewing from scratch.** Synthesize what the conversation already settled; don't re-gather established requirements.
 - **Publishing unconfirmed.** Draft → confirm scope/structure → only then publish.
 - **Reconstructing the id.** Capture the printed opaque id; never derive it from the title or filingHint.
