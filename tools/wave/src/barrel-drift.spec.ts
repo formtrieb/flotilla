@@ -537,6 +537,38 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
       "Reconciles a WorkerReport's own `issue` field against the compose-time row id — pass-through, repair-with-a-notice, or refuse. Same single reason as renderSidecarBody directly above: route-tuple's recovery step must apply the identical rule `write-report` applies, and two copies of it is how the repair and the refusal drift apart.",
     Reconciled: 'The three-way result of reconcileReportIssue directly above — module-local for the same reason it is.',
   },
+  // ─── the Operator-ruled round (issue #684) ───────────────────────────────
+  //
+  // `verdictToEvent`, `VERDICT_VALUES` and `Verdict` ARE root-exported and stay
+  // so; `verdictToEvent` merely gained an optional 4th parameter (the ruling),
+  // which is additive and needs no barrel edit. What is new below is the RICHER
+  // entry point and the ruled round's vocabulary, and the same reading the
+  // `./route-tuple` block above states applies here: what a consumer holds is
+  // the `route-verdict` / `route-tuple` VERBS and the `ruled` object they print,
+  // not a TypeScript import path. The ruled round is a COORDINATOR act driven
+  // through those verbs — nothing outside this engine composes one.
+  //
+  // The honest caveat, stated the way the two blocks above state it:
+  // `src/index.ts` is outside this row's declared Files globs, and so is this
+  // file. Root-exporting the family would mint a six-symbol semver commitment
+  // no acceptance criterion asked for, and this row is already a
+  // `public-API-change` on the surface the ACs DO name — the CLI's `--ruling`
+  // flag. The trigger to revisit is a consumer that routes a verdict from ITS
+  // OWN code and needs the ruled half; `verdictToEvent`'s new 4th parameter
+  // already serves the consumer that only needs the event.
+  './verdict-to-event': {
+    verdictToRouting:
+      "The richer adapter: the same event `verdictToEvent` returns, plus — on an Operator-ruled above-cap round only — the cell it landed in and the ruling that admitted it. Its two call sites are route-cli's `route-verdict` runner and route-tuple's verdict phase, the two places a ruled round can be routed; a consumer reaches it as the JSON `ruled` object those verbs print.",
+    VerdictRouting:
+      'The result shape of verdictToRouting directly above — `{ event, ruled? }`. It rides out as plain JSON, which is the form a caller actually reads; the TYPE is only useful to code that imports the adapter.',
+    RULED_CELLS:
+      "The four distinct names an above-cap ruled round is recorded under. Exported so the spec pins the cell vocabulary the way `VERDICT_VALUES` and `WAVE_EVENTS` are pinned — as a list, not as four scattered string literals — and so route-tuple's `ruled.cell` cannot drift from it.",
+    RuledCell: 'The union RULED_CELLS derives — module-local for the same reason the const is.',
+    RuledRound:
+      "The audit half of a ruled round (`{ cell, ruling }`), threaded through route-tuple's step detail and its top-level result so the ruling is quotable from the verb's own output. JSON to every consumer.",
+    rulingViolation:
+      'Why a ruling text cannot admit an above-cap round, or undefined when it can — the gate that makes a bare token (`true`, `yes`, `ok`) impossible and so keeps the admission a stated REASON rather than a flag any script could pass. Exported so that gate is pinnable directly, on each of its three refusals, rather than only through the adapter that consumes it.',
+  },
   './host-pr-cli': {
     landingHostFor:
       "The one switch from a detected host to its LandingHost adapter. Its file-header comment has always said why it is one switch; it is exported now because `route-tuple` asks the host the same question `host-pr status` asks, and a second switch beside it is the drift that comment warns about. A consumer reaches this through the `host-pr` verb, or by constructing its own adapter — both of which are already root-exported surfaces.",

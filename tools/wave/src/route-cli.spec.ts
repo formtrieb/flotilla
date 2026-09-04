@@ -104,6 +104,121 @@ describe('route-verdict', () => {
   });
 });
 
+// ─── route-verdict --ruling: the Operator-ruled round (issue #684) ───────────
+//
+// The verb half of the adapter's ruled cell. The adapter's own spec owns the
+// mapping; what is asserted here is the CLI contract a Coordinator actually sees
+// — which exit code, which JSON, and (the one that matters) that the refusal a
+// missing ruling produces is the pre-existing one, verbatim, prefixed only by
+// the router's own `error: route-verdict: `.
+
+/** The stated reason, shaped like the ones the two live occurrences produced. */
+const RULING =
+  'Operator ruling 03:50 — the throwaway repository was deleted; re-dispatch the Reviewer only.';
+
+describe('route-verdict --ruling (the Operator-ruled round)', () => {
+  it('an above-cap approve WITH a ruling routes, and the printed result quotes the ruling', () => {
+    const out = captureStdout();
+    const code = runRouteVerdict([
+      '--verdict', 'approve',
+      '--iteration', '3',
+      '--risk', 'mechanical',
+      '--state', 'reviewing',
+      '--ruling', RULING,
+    ]);
+    out.restore();
+    expect(code).toBe(0);
+    expect(JSON.parse(out.lines())).toEqual({
+      event: 'reviewer-approve',
+      outcome: { type: 'transition', nextState: 'approved' },
+      ruled: { cell: 'reviewer-approve-ruled', ruling: RULING },
+    });
+  });
+
+  it('the ruled approve reaches the same next state an ordinary approve reaches — cap accounting untouched', () => {
+    const ruled = captureStdout();
+    runRouteVerdict([
+      '--verdict', 'approve', '--iteration', '3', '--risk', 'mechanical',
+      '--state', 'reviewing', '--ruling', RULING,
+    ]);
+    ruled.restore();
+    const ordinary = captureStdout();
+    runRouteVerdict([
+      '--verdict', 'approve', '--iteration', '1', '--risk', 'mechanical', '--state', 'reviewing',
+    ]);
+    ordinary.restore();
+    expect(JSON.parse(ruled.lines()).outcome).toEqual(JSON.parse(ordinary.lines()).outcome);
+  });
+
+  it('a ruled changes-requested lands on the cap-exhaustion STOP — it buys the row no further round', () => {
+    const out = captureStdout();
+    const code = runRouteVerdict([
+      '--verdict', 'changes-requested',
+      '--iteration', '3',
+      '--risk', 'isolated-refactor',
+      // The reviewer-phase state is verdict-keyed; a changes-requested routes
+      // from `re-dispatched` whatever its iteration, ruled or not.
+      '--state', 're-dispatched',
+      '--ruling', RULING,
+    ]);
+    out.restore();
+    expect(code).toBe(0);
+    expect(JSON.parse(out.lines())).toEqual({
+      event: 'reviewer-changes-requested-2nd',
+      outcome: { type: 'stop', reason: 're-dispatch-cap-exhausted', severity: 'error' },
+      ruled: { cell: 'reviewer-changes-requested-ruled', ruling: RULING },
+    });
+  });
+
+  it('WITHOUT a ruling, iteration 3 stays refused with the pre-existing message, byte for byte', () => {
+    let stderr = '';
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+    const code = runRouteVerdict([
+      '--verdict', 'approve', '--iteration', '3', '--risk', 'mechanical', '--state', 'reviewing',
+    ]);
+    err.mockRestore();
+    expect(code).toBe(1);
+    expect(stderr).toBe(
+      'error: route-verdict: verdictToEvent: iteration 3 is out of range. ' +
+        'Expected an integer in [1, 2] (re-dispatch cap = 1).\n',
+    );
+  });
+
+  it('a bare token is not a ruling — the round is refused, and the refusal says why', () => {
+    let stderr = '';
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+    const code = runRouteVerdict([
+      '--verdict', 'approve', '--iteration', '3', '--risk', 'mechanical',
+      '--state', 'reviewing', '--ruling', 'true',
+    ]);
+    err.mockRestore();
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/A ruled round is auditable only if it states WHY it exists/);
+  });
+
+  it('a --ruling with no value is a USAGE error, not a message about the iteration', () => {
+    let stderr = '';
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+    const code = runRouteVerdict([
+      '--verdict', 'approve', '--iteration', '3', '--risk', 'mechanical',
+      '--state', 'reviewing', '--ruling',
+    ]);
+    err.mockRestore();
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--ruling takes the Operator's reason as its value/);
+    expect(stderr).not.toMatch(/out of range/);
+  });
+});
+
 // ─── route-outcome ──────────────────────────────────────────────────────────
 
 describe('route-outcome', () => {

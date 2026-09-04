@@ -53,10 +53,22 @@ npx @formtrieb/flotilla-engine route-tuple \
   --verdict .flotilla/tmp/<slug>/verdict-<id>.json \
   --anchor "$(git rev-parse HEAD)" \
   --config wave.config.json \
-  [--title "<pr title>"] [--base main] [--remote <url>]
+  [--title "<pr title>"] [--base main] [--remote <url>] [--ruling "<operator reason>"]
 ```
 
 Read `disposition` for the answer. `pr-created` landed the pull request and the rung; `re-dispatched` wrote the spine's row state and iteration bump and nothing else; `stop` reports the halt with its reason and performs no write at all — flagging the row for a human is a separate, deliberate call. Every step reports `performed` or `performed-before`, so re-running the verb on the same tuple reuses the open pull request rather than opening a second one, appends no second verdict section to its body, and does not re-transition a rung that already reads `in-review`.
+
+### `--ruling` — the one round above the re-dispatch cap
+
+A second changes-requested exhausts the re-dispatch cap and halts the row. The documented recovery is an operator ruling: fix the world, then re-run the **review only**, outside the cap, with the row's iteration bumped so the round's records land under it. `--ruling "<the operator's own reason>"` is what admits that round — on `route-tuple` and on the single `route-verdict` verb alike — and it is the only thing that opens an iteration above the cap.
+
+```bash
+npx @formtrieb/flotilla-engine route-verdict \
+  --verdict approve --iteration 3 --risk mechanical --state reviewing \
+  --ruling "<why this round exists, as the operator stated it>"
+```
+
+The flag takes a stated reason rather than a switch: a blank value, a bare token, or anything under three words is refused, so a ruled round cannot be produced without saying why it exists. Without the flag, an above-cap iteration stays refused with the message it has always printed. Cap accounting is untouched — a ruled approval reaches the state an ordinary approval reaches, and a ruled changes-requested lands back on the same cap-exhaustion halt, so a further round takes a further ruling. On a ruled round the printed result carries a `ruled` object naming the routing cell and quoting the ruling, which is what makes the round auditable from the output alone.
 
 The CLI works with a plain, unmodified Node runtime — no setup step, no loader flag, nothing to install beyond the package itself. The shipped `flotilla-engine` binary brings its own TypeScript loader in-process before it does anything else, so this is true regardless of how the package was installed.
 

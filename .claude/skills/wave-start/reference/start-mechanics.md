@@ -632,6 +632,16 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 #   host-routed since the Bitbucket adapter landed (ADR-0023 amendment
 #   2026-08-10): GITHUB_TOKEN on a github remote, BITBUCKET_TOKEN +
 #   BITBUCKET_EMAIL on a bitbucket one; unknown hosts fail loud + typed.
+#
+#   --ruling "<the Operator's reason>" — ONLY on an Operator-ruled round: the
+#   Reviewer-only re-dispatch outside the cap, after a cap-exhaustion STOP the
+#   Operator has ruled on (SKILL.md step 8, exit 2). It is the one thing that
+#   admits an --iter above the cap; without it that --iter is refused, with the
+#   message it has always printed, and nothing is written. It is a stated REASON,
+#   not a switch: a blank or a bare token is refused too. Cap accounting is
+#   untouched — see the routing table in the shared routing reference. On a ruled
+#   round the result grows a `ruled` object (`{ cell, ruling }`) at the top level
+#   and in the `route-verdict` step; quote it in the closing report.
 
 # 7b. READ THE RESULT. `disposition` is the answer; `steps[]` names every step
 #     and what it returned, each marked `performed` or `performed-before`.
@@ -743,8 +753,13 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 | `route-verdict --verdict approve --iteration 1 --risk public-API-change --state reviewing` | `{"event":"reviewer-approve-public-api","outcome":{"type":"stop","reason":"public-api-approval-required","severity":"blocking"}}` |
 | `route-verdict --verdict changes-requested --iteration 1 --risk isolated-refactor --state reviewing` | `{"event":"reviewer-changes-requested-1st","outcome":{"type":"transition","nextState":"re-dispatched"}}` |
 | `route-verdict --verdict changes-requested --iteration 2 --risk isolated-refactor --state re-dispatched` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"}}` |
+| `route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing` (no ruling) | exit 1 — `iteration 3 is out of range. Expected an integer in [1, 2] (re-dispatch cap = 1).` |
+| `route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing --ruling "<reason>"` | `{"event":"reviewer-approve","outcome":{"type":"transition","nextState":"approved"},"ruled":{"cell":"reviewer-approve-ruled","ruling":"<reason>"}}` |
+| `route-verdict --verdict changes-requested --iteration 3 --risk mechanical --state re-dispatched --ruling "<reason>"` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"},"ruled":{"cell":"reviewer-changes-requested-ruled","ruling":"<reason>"}}` |
 
 The public-API `approve` STOPs (it never silently fast-paths to the auto-PR) and the 2nd `changes-requested` STOPs (the cap=1, enforced inside `transition()`) are the two load-bearing routes — verified against the live CLI.
+
+The last three rows are the **Operator-ruled round**: the documented Reviewer-only re-dispatch outside the cap, and the refusal that still stands without it. Note the pairing — the ruled `approve` reaches the state an ordinary `approve` reaches, and the ruled `changes-requested` reaches the cap-exhaustion STOP, so a ruled round never buys the row another one. Full table, and the shape of the ruling itself: `wave-shared/reference/routing-mechanics.md` §"The Operator-ruled round".
 
 ## `riskClass` for the verdict route
 
@@ -825,9 +840,9 @@ A `terminal-failure` row's eventual disposition is not always `abandoned` — st
 ### `route-outcome` / `route-verdict`
 | Code | Meaning |
 |---|---|
-| `0` | routed — JSON `{ event, outcome }` on stdout |
-| `1` | domain failure (`outcomeToEvent`/`verdictToEvent`/`transition` threw — bad outcome/verdict/risk/state) |
-| `2` | usage error (missing flag) |
+| `0` | routed — JSON `{ event, outcome }` on stdout, plus `ruled` on an Operator-ruled round |
+| `1` | domain failure (`outcomeToEvent`/`verdictToRouting`/`transition` threw — bad outcome/verdict/risk/state, an above-cap iteration with no ruling, or a ruling that states no reason) |
+| `2` | usage error (missing flag, or `--ruling` passed with no value) |
 
 ### `validate-report` / `validate-verdict`
 | Code | Meaning |
