@@ -268,6 +268,131 @@ function validateExtraRoots(value: unknown, label: string): void {
   }
 }
 
+// ─── verify.commands[].needs — the declared capability requirement (ADR-0049) ──
+
+/**
+ * The three declarable needs. **Closed**, and closed on purpose: each name is
+ * one sandbox dimension, and a fourth spelling is a config the skill tier has no
+ * translation for. A message that merely said "unknown key" would leave the
+ * author guessing at the vocabulary, so every refusal below carries
+ * {@link VERIFY_NEEDS_CLOSED_SET} verbatim.
+ */
+const VERIFY_NEEDS_KEYS = ['writes', 'network', 'host'] as const;
+
+/** The closed set, spelled out for the author of a refused config. */
+const VERIFY_NEEDS_CLOSED_SET =
+  'the declarable needs are exactly "writes" (a non-empty array of paths the command must write outside the worktree), ' +
+  '"network" (a non-empty array of hosts the command must reach) and "host" (literally true — the class that cannot be narrowed, such as a daemon socket, a simulator or a device)';
+
+/**
+ * Validate one verify command's `needs` declaration (ADR-0049 decision 2).
+ *
+ * The engine learns the **need**, never the harness knob that satisfies it — so
+ * everything this validator enforces is about the declaration's SHAPE, and
+ * nothing about whether the running harness can honour it. That second question
+ * is the skill tier's, measured at `wave-setup` time inside the sandbox.
+ *
+ * Two deliberate non-rules, both contrasts with {@link validateExtraRoots} one
+ * screen up:
+ *
+ * - **A `writes` path is not resolved, normalized, or home-rooted-refused.**
+ *   `extraRoots` refuses a leading `~` because the sweep resolves it against the
+ *   repo root and would create a literal `~` directory. Nothing here resolves
+ *   anything: these strings are handed to the skill tier, which writes them into
+ *   a harness's own sandbox block where `~` is an ordinary and often correct
+ *   spelling. Refusing it would refuse the common case.
+ * - **A `network` host is not parsed as a URL or a hostname.** The shape a given
+ *   harness accepts for an allowed domain is that harness's, not the engine's.
+ *
+ * What IS refused: an unknown key, a wrong value shape, and a declaration that
+ * declares nothing. The last one is the only judgment call here — `"needs": {}`
+ * is reachable only by writing it out, it is indistinguishable in effect from
+ * omitting the key, and the whole point of the field is that the declaration is
+ * the honest record. So it fails loudly with the closed set named rather than
+ * loading as a no-op an author would never see again.
+ *
+ * @param value The raw `needs` value, unvalidated.
+ * @param label How to name the offending field in a thrown message.
+ */
+function validateVerifyNeeds(value: unknown, label: string): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(
+      `${label} must be an object — ${VERIFY_NEEDS_CLOSED_SET} (ADR-0049)`,
+    );
+  }
+
+  const needs = value as Record<string, unknown>;
+  for (const key of Object.keys(needs)) {
+    if (!(VERIFY_NEEDS_KEYS as readonly string[]).includes(key)) {
+      throw new Error(
+        `${label} carries the unknown key ${JSON.stringify(key)} — ${VERIFY_NEEDS_CLOSED_SET} (ADR-0049)`,
+      );
+    }
+  }
+
+  const declared = VERIFY_NEEDS_KEYS.filter((k) => needs[k] !== undefined);
+  if (declared.length === 0) {
+    throw new Error(
+      `${label} declares nothing — ${VERIFY_NEEDS_CLOSED_SET} (ADR-0049). Omit "needs" entirely for a command that needs nothing beyond its own worktree.`,
+    );
+  }
+
+  for (const key of ['writes', 'network'] as const) {
+    const list: unknown = needs[key];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || list.length === 0) {
+      throw new Error(
+        `${label}.${key} must be a non-empty array of strings — ${VERIFY_NEEDS_CLOSED_SET} (ADR-0049)`,
+      );
+    }
+    for (let i = 0; i < list.length; i++) {
+      const entry: unknown = list[i];
+      if (typeof entry !== 'string' || entry.trim().length === 0) {
+        throw new Error(
+          `${label}.${key}[${i}] must be a non-empty string — ${VERIFY_NEEDS_CLOSED_SET} (ADR-0049)`,
+        );
+      }
+    }
+  }
+
+  if (needs.host !== undefined && needs.host !== true) {
+    throw new Error(
+      `${label}.host must be literally true (got ${JSON.stringify(needs.host)}) — ${VERIFY_NEEDS_CLOSED_SET} (ADR-0049). Absence is how a command declares no host need; there is no false.`,
+    );
+  }
+}
+
+/**
+ * Walk a validated-enough `verify.profiles` array and hold every command's
+ * `needs` to {@link validateVerifyNeeds}.
+ *
+ * Deliberately TOLERANT of everything else it walks past. A profile that is not
+ * an object, or whose `commands` is not an array, has always loaded without
+ * complaint — `verify`'s only pre-existing rule is that `profiles` is an array —
+ * and this row is additive by contract: the `wave.config` schema is a semver
+ * contract and no key here has ever been re-typed. Refusing a shape today's
+ * engine accepts would break an existing consumer config for a reason ADR-0049
+ * never asked for. So the walk skips what it cannot read and refuses only the
+ * new field.
+ */
+function validateVerifyProfileNeeds(profiles: readonly unknown[]): void {
+  for (let p = 0; p < profiles.length; p++) {
+    const profile: unknown = profiles[p];
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) continue;
+    const commands: unknown = (profile as { commands?: unknown }).commands;
+    if (!Array.isArray(commands)) continue;
+    for (let c = 0; c < commands.length; c++) {
+      const cmd: unknown = commands[c];
+      if (!cmd || typeof cmd !== 'object' || Array.isArray(cmd)) continue;
+      validateVerifyNeeds(
+        (cmd as { needs?: unknown }).needs,
+        `wave config "verify.profiles[${p}].commands[${c}].needs"`,
+      );
+    }
+  }
+}
+
 /**
  * The engine-invocation binding (ADR-0032) — the `engine` key of
  * `wave.config.json`.
@@ -480,6 +605,12 @@ export interface WaveConfig {
  * `store` object is missing/null, or if `store.kind` is not a known
  * discriminant, so the consumer never receives a config it cannot act on.
  *
+ * `verify.profiles[].commands[].needs` (ADR-0049) is validated here through
+ * {@link validateVerifyProfileNeeds}: the declarable needs are a CLOSED set of
+ * three, and an unknown key or a wrong value shape is refused with that set
+ * named. The type lives in `verify.ts`; the refusal lives here, exactly as the
+ * `verify.profiles` array rule already does.
+ *
  * `cleanup.disposableNames` (issue #115) is validated here too, through the
  * engine's own {@link normalizeDisposableNames} — the SAME rule the cleanup
  * module applies when the names reach it — so a glob or a path fails loud at
@@ -519,6 +650,14 @@ export function loadWaveConfig(path: string): WaveConfig {
     if (!verify || typeof verify !== 'object' || !Array.isArray((verify as { profiles?: unknown }).profiles)) {
       throw new Error('wave config "verify" must have a "profiles" array');
     }
+    // ADR-0049 — a verify command's declared capability requirement. Optional
+    // everywhere and validated as nothing when absent, so a config written
+    // before the field existed loads unchanged; a MALFORMED declaration fails
+    // HERE, at `config validate` time, on the same fail-loud-at-author-time
+    // principle the two cleanup keys below already follow. The alternative is
+    // the failure this field exists to end: a mismatch between what a gate
+    // needs and what the harness provides, surfacing five hours into a wave.
+    validateVerifyProfileNeeds((verify as { profiles: unknown[] }).profiles);
   }
 
   // issue #115 — the consumer-declared disposable set. Absent `cleanup` is the

@@ -150,3 +150,66 @@ describe('config validate — engine.cli (ADR-0032)', () => {
     expect(runConfig(['validate', bad])).toBe(1);
   });
 });
+
+// ── the declared capability requirement at the CLI seam (ADR-0049) ───────────
+//
+// `config validate` is where an operator finds out whether the `needs` they
+// declared at setup actually landed — and where a declaration the skill tier has
+// no translation for has to stop being invisible. The refusal itself is
+// `loadWaveConfig`'s; what this block pins is that it reaches the CLI as an
+// exit-1 with the closed set named, and that the reporting half is conditional.
+
+describe('config validate — verify command needs (ADR-0049)', () => {
+  /** A github config whose one verify profile carries `commands` verbatim. */
+  function writeWithCommands(commands: unknown[]): string {
+    return writeConfig({
+      store: { kind: 'github' },
+      verify: { profiles: [{ name: 'app', appliesTo: ['App/**'], commands }] },
+    });
+  }
+
+  it('exits 0 and reports the declared needs WITH their denominator', () => {
+    const path = writeWithCommands([
+      { command: 'npm ci' },
+      { command: 'xcodebuild test -scheme App', needs: { host: true } },
+    ]);
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toContain('1 of 2 verify command(s) declare a sandbox need');
+  });
+
+  it('exits 1 naming the field AND the closed set for an unknown needs key', () => {
+    const path = writeWithCommands([{ command: 'xcodebuild test', needs: { gpu: true } }]);
+    expect(runConfig(['validate', path])).toBe(1);
+    expect(stderrBuf).toMatch(/verify\.profiles\[0\]\.commands\[0\]\.needs/);
+    expect(stderrBuf).toMatch(/unknown key "gpu"/);
+    expect(stderrBuf).toMatch(/"writes".*"network".*"host"/s);
+    expect(stdoutBuf).toBe(''); // never both "ok" and an error
+  });
+
+  it('exits 1 for a wrong value shape, naming the closed set', () => {
+    const path = writeWithCommands([{ command: 'xcodebuild test', needs: { host: false } }]);
+    expect(runConfig(['validate', path])).toBe(1);
+    expect(stderrBuf).toMatch(/host must be literally true/);
+    expect(stderrBuf).toMatch(/"writes".*"network".*"host"/s);
+  });
+
+  // NEGATIVE CONTROL, two halves at once. (a) The exit code turns on the needs
+  // VALUE alone — same config, same profile count, 0 one way and 1 the other, so
+  // this gate cannot be one that always passes or always fails. (b) The report
+  // is silent when nothing is declared: today's line, unchanged, for a config
+  // written before the field existed.
+  it('NEGATIVE CONTROL: the exit code turns on the needs value alone, and a needs-free config prints today\'s line', () => {
+    const good = writeWithCommands([{ command: 'xcodebuild test', needs: { host: true } }]);
+    const bad = writeWithCommands([{ command: 'xcodebuild test', needs: { host: 'yes' } }]);
+    expect(runConfig(['validate', good])).toBe(0);
+    expect(runConfig(['validate', bad])).toBe(1);
+
+    stdoutBuf = '';
+    const bare = writeWithCommands([{ command: 'npm ci' }, { command: 'npm test' }]);
+    expect(runConfig(['validate', bare])).toBe(0);
+    expect(stdoutBuf).toBe(
+      `ok: "${bare}" is a valid wave config (store.kind=github, verify: 1 profile(s))\n`,
+    );
+    expect(stdoutBuf).not.toMatch(/needs|sandbox/);
+  });
+});

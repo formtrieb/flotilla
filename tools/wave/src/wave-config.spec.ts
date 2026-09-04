@@ -906,3 +906,157 @@ describe('engine.cli is reachable from the PACKAGE ROOT (AC#3)', () => {
     expect(() => loadEngineCli('./bin/engine; boom')).toThrow(EngineCliBindingErrorFromRoot);
   });
 });
+
+// ── verify.commands[].needs — the declared capability requirement (ADR-0049) ──
+//
+// The field is the config half of "a dispatched agent never escalates": a gate
+// that only runs with the sandbox widened DECLARES that, so setup can provide it
+// and both briefs can carry it as data. The refusals below are what stop a
+// declaration the skill tier has no translation for from loading silently — the
+// mismatch that surfaced five hours into one unattended wave.
+
+describe('loadWaveConfig — verify.commands[].needs is a CLOSED set of three (ADR-0049)', () => {
+  /** A github config whose single verify command carries `needs` verbatim. */
+  function loadWithNeeds(needs: unknown) {
+    return loadConfigFromString(
+      JSON.stringify({
+        store: { kind: 'github' },
+        verify: {
+          profiles: [
+            {
+              name: 'app',
+              appliesTo: ['App/**'],
+              commands: [{ command: 'xcodebuild test -scheme App', needs }],
+            },
+          ],
+        },
+      }),
+    );
+  }
+
+  function needsOf(cfg: ReturnType<typeof loadWithNeeds>) {
+    return cfg.verify?.profiles[0].commands[0].needs;
+  }
+
+  it('accepts all three keys together and hands them back verbatim', () => {
+    const cfg = loadWithNeeds({
+      writes: ['~/Library/Developer/Xcode/DerivedData', '/var/tmp/build-cache'],
+      network: ['developer.apple.com'],
+      host: true,
+    });
+    expect(needsOf(cfg)).toEqual({
+      writes: ['~/Library/Developer/Xcode/DerivedData', '/var/tmp/build-cache'],
+      network: ['developer.apple.com'],
+      host: true,
+    });
+  });
+
+  it('accepts each key on its own', () => {
+    expect(needsOf(loadWithNeeds({ writes: ['/var/tmp/cache'] }))).toEqual({
+      writes: ['/var/tmp/cache'],
+    });
+    expect(needsOf(loadWithNeeds({ network: ['registry.npmjs.org'] }))).toEqual({
+      network: ['registry.npmjs.org'],
+    });
+    expect(needsOf(loadWithNeeds({ host: true }))).toEqual({ host: true });
+  });
+
+  // A `~`-rooted write path is the ORDINARY case here and must NOT be refused —
+  // the contrast with `cleanup.extraRoots`, which refuses one because the sweep
+  // resolves it against the repo root. Nothing resolves these; the skill tier
+  // writes them into a harness's own sandbox block.
+  it('does NOT refuse a home-rooted writes path (unlike cleanup.extraRoots)', () => {
+    expect(() => loadWithNeeds({ writes: ['~/Library/Caches/thing'] })).not.toThrow();
+  });
+
+  it('refuses an unknown key, naming the closed set', () => {
+    expect(() => loadWithNeeds({ gpu: true })).toThrow(/unknown key "gpu"/);
+    expect(() => loadWithNeeds({ gpu: true })).toThrow(/"writes".*"network".*"host"/s);
+    // A near-miss spelling is the realistic authoring slip, and it is refused
+    // the same way rather than loading as a silently ignored extra key.
+    expect(() => loadWithNeeds({ writes: ['/tmp/x'], networks: ['a.example'] })).toThrow(
+      /unknown key "networks"/,
+    );
+  });
+
+  it('refuses a needs that is not an object', () => {
+    for (const bad of [true, 'host', 42, ['host'], null]) {
+      expect(() => loadWithNeeds(bad)).toThrow(/must be an object/);
+    }
+  });
+
+  it('refuses a needs that declares nothing', () => {
+    expect(() => loadWithNeeds({})).toThrow(/declares nothing/);
+    expect(() => loadWithNeeds({})).toThrow(/"writes".*"network".*"host"/s);
+  });
+
+  it('refuses a writes/network that is not a non-empty array of non-empty strings', () => {
+    expect(() => loadWithNeeds({ writes: '/var/tmp/cache' })).toThrow(
+      /writes must be a non-empty array/,
+    );
+    expect(() => loadWithNeeds({ writes: [] })).toThrow(/writes must be a non-empty array/);
+    expect(() => loadWithNeeds({ writes: ['/ok', 7] })).toThrow(
+      /writes\[1\] must be a non-empty string/,
+    );
+    expect(() => loadWithNeeds({ network: ['   '] })).toThrow(
+      /network\[0\] must be a non-empty string/,
+    );
+    expect(() => loadWithNeeds({ network: {} })).toThrow(/network must be a non-empty array/);
+  });
+
+  it('refuses a host that is not literally true — there is no false', () => {
+    expect(() => loadWithNeeds({ host: false })).toThrow(/host must be literally true/);
+    expect(() => loadWithNeeds({ host: 'yes' })).toThrow(/host must be literally true/);
+    expect(() => loadWithNeeds({ host: 1 })).toThrow(/host must be literally true/);
+  });
+
+  it('names the offending profile and command index, so a multi-profile config points at one place', () => {
+    const json = JSON.stringify({
+      store: { kind: 'github' },
+      verify: {
+        profiles: [
+          { name: 'a', appliesTo: ['a/**'], commands: [{ command: 'ok' }] },
+          {
+            name: 'b',
+            appliesTo: ['b/**'],
+            commands: [{ command: 'ok' }, { command: 'bad', needs: { nope: 1 } }],
+          },
+        ],
+      },
+    });
+    expect(() => loadConfigFromString(json)).toThrow(/verify\.profiles\[1\]\.commands\[1\]\.needs/);
+  });
+
+  // NEGATIVE CONTROL for the whole block: the field is ADDITIVE. A config
+  // written before it existed must keep loading, and the walk must refuse
+  // NOTHING it did not refuse yesterday — including the loose profile shapes
+  // `verify`'s only pre-existing rule ("profiles is an array") has always let
+  // through. A validator that tightened those would break a live consumer
+  // config for a reason ADR-0049 never asked for.
+  it('NEGATIVE CONTROL: no needs anywhere loads exactly as before, and loose shapes stay accepted', () => {
+    const cfg = loadConfigFromString(
+      JSON.stringify({
+        store: { kind: 'github' },
+        verify: {
+          profiles: [{ name: 'p', appliesTo: ['src/**'], commands: [{ command: 'echo hi' }] }],
+        },
+      }),
+    );
+    expect(cfg.verify?.profiles[0].commands[0]).toEqual({ command: 'echo hi' });
+    expect(cfg.verify?.profiles[0].commands[0].needs).toBeUndefined();
+
+    // Shapes the pre-existing engine accepted and this walk must keep accepting.
+    const loose: unknown[] = [
+      [],
+      ['oops'],
+      [{ name: 'p' }],
+      [{ commands: 'nope' }],
+      [{ commands: [null, 'x'] }],
+    ];
+    for (const profiles of loose) {
+      expect(() =>
+        loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, verify: { profiles } })),
+      ).not.toThrow();
+    }
+  });
+});
