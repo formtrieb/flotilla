@@ -122,7 +122,11 @@ import {
 } from './host-pr';
 import { createCredsFor, gitRemoteUrl, landingHostFor } from './host-pr-cli';
 import type { Risk } from './header-parser';
-import { reconcileReportIssue, renderSidecarBody } from './route-cli';
+import {
+  reconcileReportIssue,
+  renderMisnamedSidecarWarning,
+  renderSidecarBody,
+} from './route-cli';
 import {
   findMisnamedSidecars,
   readSidecars,
@@ -268,14 +272,16 @@ export function composePrBody(parts: PrBodyParts): string {
 /**
  * Where the PR title this verb writes came from — the title's `summarySource`.
  *
- * Module-local, like every other type in this file that only ever reaches a
- * consumer as a JSON string (`StepStatus`, `RouteTupleDisposition`): the value
- * is read off the printed result, never imported.
+ * Exported (issue #724), unlike `StepStatus` and `RouteTupleDisposition`, which
+ * stay module-local because they only ever reach a consumer as a JSON string.
+ * The difference is {@link resolveTitle}: the derivation itself is now a named
+ * export, so the union it returns has to be nameable beside it or the export is
+ * only half usable.
  */
-type TitleSource = 'flag' | 'live-pr' | 'row';
+export type TitleSource = 'flag' | 'live-pr' | 'row';
 
 /** The title the reuse/create writes, and the provenance the result discloses. */
-interface ResolvedTitle {
+export interface ResolvedTitle {
   title: string;
   titleSource: TitleSource;
 }
@@ -310,15 +316,23 @@ interface ResolvedTitle {
  * Pure: it decides, it never writes. `existing` is the find the caller already
  * paid for, so this costs no second query.
  *
- * **Module-local on purpose, unlike its two body-side neighbours.**
- * {@link workerSummaryFromBody} and {@link composePrBody} are exported so their
- * properties can be pinned without a whole run; this one is not, because every
- * cell it decides is observable in the printed result (`titleSource` plus the
- * title the host was handed), so the spec drives it end to end and no new
- * module export — nor the barrel-drift allowlist entry an export would need —
- * has to be minted for a rule the JSON already discloses.
+ * **Now exported, beside its two body-side neighbours (issue #724).** It shipped
+ * module-local on the reading that every cell it decides is observable in the
+ * printed result (`titleSource` plus the title the host was handed), so the spec
+ * could drive it end to end. That reading held for the OUTCOME and not for the
+ * RULE: the end-to-end route pins "a reuse with a live title preserves it", but
+ * only through a run that also finds a PR, reads a body, writes a sidecar and
+ * routes a verdict — so a change to the precedence LADDER itself is provable
+ * only at that cost, while {@link workerSummaryFromBody} and
+ * {@link composePrBody} — the two rules this one is deliberately symmetric with
+ * — are each pinnable in a line. Exporting it makes the symmetry real rather
+ * than only argued: one rule, three exported derivations, three directly
+ * pinnable properties.
+ *
+ * Pure and side-effect-free, so it is a safe thing to expose: it reads its
+ * inputs and returns a {@link ResolvedTitle}.
  */
-function resolveTitle(input: {
+export function resolveTitle(input: {
   args: string[];
   existing: OpenPrRef | null;
   rowTitle: string;
@@ -454,27 +468,26 @@ interface SidecarStepResult {
  * correctly-named file and walk past the leftover in silence: present to an
  * `ls`, absent to resume, and now also invisible at the step designed to see it.
  *
- * **The DETECTOR is shared; only the sentence is local.** The rule about what a
- * misnamed name is lives once, in `sidecar.ts` (`findMisnamedSidecars` over
- * `bareIssueIdViolation`) — the part that could drift is the part both callers
- * import. What differs is the label and the fact that this verb also carries the
- * finding structurally, in its `sidecar-check` step detail, because this verb's
- * output is a JSON result a Coordinator reads and a stderr line alone would
- * leave it out of the record.
+ * **The DETECTOR is shared, and so is the SENTENCE now (issue #724).** The rule
+ * about what a misnamed name is has always lived once, in `sidecar.ts`
+ * (`findMisnamedSidecars` over `bareIssueIdViolation`). The six-line warning was
+ * the half that did not: this verb carried a byte-for-byte copy of
+ * `route-cli.ts`'s, differing only in the label, which is exactly the shape that
+ * drifts once someone improves the remedy sentence in one place. Both callers
+ * now render through {@link renderMisnamedSidecarWarning}; `label` is the one
+ * thing that varies, because each verb speaks under its own name on stderr.
+ *
+ * What still differs is not the text but the CHANNEL: this verb also carries the
+ * finding structurally, in its `sidecar-check` step detail, because its output is
+ * a JSON result a Coordinator reads and a stderr line alone would leave the
+ * finding out of the record.
  *
  * Never deletes, for the same reason the write verbs never delete: a misnamed
  * sidecar may hold the only copy of a report, and a durability path does not
  * destroy data to tidy a directory.
  */
 function misnamedSidecarWarning(dir: string, m: MisnamedSidecar): string {
-  return (
-    `warning: route-tuple: MISNAMED SIDECAR ${JSON.stringify(join(dir, m.file))} — its\n` +
-    `  filename id ${JSON.stringify(m.filenameId)} ${m.reason}, so the reader resolves it for NO row\n` +
-    `  (it holds the record for ${JSON.stringify(m.resolvesAs)}, which would be filed as\n` +
-    `  ${JSON.stringify(`${m.resolvesAs}-${m.iter}.md`)}). A file like this is present to an \`ls\` and\n` +
-    '  absent to resume, and an existence probe cannot tell it from a missing one.\n' +
-    '  Confirm the correctly-named record holds the same content, then delete it.\n'
-  );
+  return renderMisnamedSidecarWarning('route-tuple', dir, m);
 }
 
 function loadSidecars(input: {

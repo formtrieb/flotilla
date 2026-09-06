@@ -76,6 +76,7 @@ import {
   bareIssueIdViolation,
   findMisnamedSidecars,
   normalizeIssueRef,
+  type MisnamedSidecar,
   type SidecarReader,
 } from './sidecar';
 import { transition, type IssueState } from './stop-condition-state-machine';
@@ -377,6 +378,43 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
 }
 
 /**
+ * One misnamed-sidecar finding as the `warning:` line every sweep prints — the
+ * SHARED renderer (issue #724).
+ *
+ * The rule about what a misnamed name IS has always had exactly one owner
+ * (`sidecar.ts`'s {@link findMisnamedSidecars} over `bareIssueIdViolation`); the
+ * SENTENCE about it did not. Two verbs sweep — `write-report`/`write-verdict`
+ * here, and `route-tuple`'s `sidecar-check` step, which is the recovery on the
+ * DISPATCH path — and each carried its own copy of these six lines, identical
+ * but for the label. That is precisely the shape that drifts: a later row
+ * improves the remedy sentence in one copy and the other verb keeps telling
+ * operators the old thing.
+ *
+ * `label` is the only thing that ever differed and the only thing that varies
+ * now — each verb speaks under its own name, because an operator reading stderr
+ * needs to know which invocation found the litter.
+ *
+ * Never deletes, and never fails anything: a misnamed sidecar may hold the only
+ * copy of a report, and destroying data to tidy a directory is the wrong trade
+ * for a durability path. This function only renders; the caller decides where
+ * the text goes.
+ */
+export function renderMisnamedSidecarWarning(
+  label: string,
+  dir: string,
+  m: MisnamedSidecar,
+): string {
+  return (
+    `warning: ${label}: MISNAMED SIDECAR ${JSON.stringify(join(dir, m.file))} — its\n` +
+    `  filename id ${JSON.stringify(m.filenameId)} ${m.reason}, so the reader resolves it for NO row\n` +
+    `  (it holds the record for ${JSON.stringify(m.resolvesAs)}, which would be filed as\n` +
+    `  ${JSON.stringify(`${m.resolvesAs}-${m.iter}.md`)}). A file like this is present to an \`ls\` and\n` +
+    '  absent to resume, and an existence probe cannot tell it from a missing one.\n' +
+    '  Confirm the correctly-named record holds the same content, then delete it.\n'
+  );
+}
+
+/**
  * Sweep `dir` for sidecars filed under a name the reader cannot resolve and say
  * so, loudly, naming the file and the id it should have been filed under. Never
  * fails the write: the record this invocation was asked to persist is already on
@@ -384,14 +422,7 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
  */
 function warnAboutMisnamedSidecars(dir: string, spec: WriteSidecarSpec): void {
   for (const m of findMisnamedSidecars(dir, spec.kind, fsSidecarReader)) {
-    process.stderr.write(
-      `warning: ${spec.label}: MISNAMED SIDECAR ${JSON.stringify(join(dir, m.file))} — its\n` +
-        `  filename id ${JSON.stringify(m.filenameId)} ${m.reason}, so the reader resolves it for NO row\n` +
-        `  (it holds the record for ${JSON.stringify(m.resolvesAs)}, which would be filed as\n` +
-        `  ${JSON.stringify(`${m.resolvesAs}-${m.iter}.md`)}). A file like this is present to an \`ls\` and\n` +
-        '  absent to resume, and an existence probe cannot tell it from a missing one.\n' +
-        '  Confirm the correctly-named record holds the same content, then delete it.\n',
-    );
+    process.stderr.write(renderMisnamedSidecarWarning(spec.label, dir, m));
   }
 }
 

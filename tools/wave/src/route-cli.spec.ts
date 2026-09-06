@@ -696,6 +696,60 @@ describe('write verbs — the routing-time recovery now catches a MISNAMED sidec
     expect(msg).toMatch(/"126-1\.md"/); // names where the record belongs
   });
 
+  // ── the EXACT text, byte for byte (issue #724) ────────────────────────────
+  //
+  // Every assertion above this one is a `toMatch` on a fragment, which is why
+  // the six-line warning could be copied verbatim into `route-tuple.ts` and then
+  // drift there — a regex on "MISNAMED SIDECAR" is green for a sentence that has
+  // lost half its remedy. This one pins the WHOLE string, so the shared renderer
+  // (`renderMisnamedSidecarWarning`, route-cli.ts) that both sweeps now call
+  // cannot change what either of them says without a spec going red. Its twin
+  // lives in route-tuple.spec.ts under the other label; the two literals are
+  // identical apart from that label, which is the property the shared renderer
+  // exists to keep true.
+  //
+  // Deliberately written as a LITERAL rather than assembled from the same
+  // helpers the implementation uses: an expectation built by calling the code
+  // under test asserts nothing.
+  it('renders the whole warning EXACTLY — the pin the shared renderer must not move (issue #724)', () => {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    mkdirSync(reportsDir, { recursive: true });
+    writeFileSync(
+      join(reportsDir, '#126-1.md'),
+      '# WorkerReport #126 iter 1\n\n```json\n' +
+        JSON.stringify({ ...writtenReport, issue: '#126' }, null, 2) +
+        '\n```\n',
+      'utf-8',
+    );
+    const payload = join(dir, 'p.json');
+    writeFileSync(payload, JSON.stringify({ ...writtenReport, issue: '126' }));
+    const chunks: string[] = [];
+    const err = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        chunks.push(typeof c === 'string' ? c : c.toString());
+        return true;
+      });
+    const out = captureStdout();
+    expect(runWriteReport([payload, '--dir', reportsDir, '--id', '126', '--iter', '1'])).toBe(0);
+    out.restore();
+    err.mockRestore();
+
+    // The litter path is the one part that cannot be a literal — it lives in a
+    // fresh mkdtemp dir — so it is spelled the way the renderer spells it.
+    const litter = JSON.stringify(join(reportsDir, '#126-1.md'));
+    const expected =
+      `warning: write-report: MISNAMED SIDECAR ${litter} — its\n` +
+      '  filename id "#126" contains "#" — an id must be filename-safe AND literally matchable, so it carries no whitespace, no "#", and no path character, so the reader resolves it for NO row\n' +
+      '  (it holds the record for "126", which would be filed as\n' +
+      '  "126-1.md"). A file like this is present to an `ls` and\n' +
+      '  absent to resume, and an existence probe cannot tell it from a missing one.\n' +
+      '  Confirm the correctly-named record holds the same content, then delete it.\n';
+    expect(chunks.filter((c) => c.startsWith('warning:'))).toEqual([expected]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('a clean reports dir produces no misnamed warning (the check is silent when there is nothing to say)', () => {
     const dir = tmp();
     const reportsDir = join(dir, 'reports');

@@ -1056,8 +1056,60 @@ const GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT = [
  */
 const CREATE_OR_REUSE_FAMILY_ADDED_AT_ROOT = ['createOrReusePr'].sort();
 
+/**
+ * The surface-hygiene promotions (issue #724) — SIX runtime names, none of them
+ * new behaviour and none of them a new decision.
+ *
+ * Every one already existed and was already called; what each lacked was a NAME
+ * a consumer could reach. They came here on one discriminator, applied
+ * symbol by symbol rather than family by family — the module already exports the
+ * neighbouring half of the same rule, so the half that stayed private made the
+ * rule only half nameable:
+ *
+ *  - `resolveTitle` — the PR-title precedence ladder, beside `composePrBody` and
+ *    `workerSummaryFromBody`, the two body-side rules it is deliberately
+ *    symmetric with and which were already exported so their properties could be
+ *    pinned in a line.
+ *  - `resolveDepsSetup` — the install-step precedence ladder, whose FOURTH and
+ *    weakest rung (`depsSetupFrom`, a derivation the ladder itself calls a
+ *    guess) was already exported while the three levels that outrank it were
+ *    not.
+ *  - `bindingPaths` + `gitignoredBindingPath` — the measurement that makes
+ *    "nothing needs installing" a truthful claim rather than a false
+ *    confirmation, and its pure half.
+ *  - `normalizeEngineInstall` — the `engine.install` argv rule, beside
+ *    `normalizeEngineCli`, which is root-exported for exactly the reason this
+ *    one now is: an authoring surface (`wave-setup`) needs the same rule the
+ *    loader will apply to what it wrote, and the alternative is a second
+ *    implementation that must never disagree.
+ *  - `renderMisnamedSidecarWarning` — the misnamed-sidecar sweep's SENTENCE, now
+ *    shared by the two verbs that sweep. Its DETECTOR (`findMisnamedSidecars`)
+ *    was already root-exported, so a consumer could find litter and then had
+ *    nothing to say about it.
+ *
+ * The SIX types that came with them — `VerifyCommandNeeds`, `BlockingPaths`,
+ * `TitleSource`, `ResolvedTitle`, `DepsSetupSource`, `DepsSetupResolution` — are
+ * erased at runtime and add nothing to the count below; `tsc --noEmit` plus
+ * barrel-drift.spec.ts's compiler-API check are their gate, exactly as they are
+ * for the goal family's and the create-or-reuse family's type halves above.
+ *
+ * Semver: ADDITIONS only, so minor (ADR-0035). Nothing was renamed, nothing
+ * narrowed, and the two shapes that were previously reachable only by indexing
+ * (`VerifyCommand['needs']`, `WorktreeEntry['blockingPaths']`) still resolve to
+ * exactly the declarations they always did.
+ */
+const SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT = [
+  'bindingPaths',
+  'gitignoredBindingPath',
+  'normalizeEngineInstall',
+  'renderMisnamedSidecarWarning',
+  'resolveDepsSetup',
+  'resolveTitle',
+].sort();
+
 const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   ROOT_RUNTIME_EXPORT_COUNT_BEFORE +
+  SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT.length +
   CREATE_OR_REUSE_FAMILY_ADDED_AT_ROOT.length +
   COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length +
   HUMAN_LANE_FAMILY_ADDED_AT_ROOT.length +
@@ -1606,6 +1658,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // The count alone is necessary but not sufficient: a stowaway arriving in
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT),
+    );
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(CREATE_OR_REUSE_FAMILY_ADDED_AT_ROOT),
     );

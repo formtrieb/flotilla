@@ -865,6 +865,24 @@ describe('route-tuple', () => {
       expect(stderr).toMatch(/MISNAMED SIDECAR/);
       expect(stderr).toContain(`#${id}-1.md`);
       expect(stderr).toMatch(/present to an `ls` and\n {2}absent to resume/);
+      // ── the EXACT text, byte for byte (issue #724) ──────────────────────────
+      //
+      // The twin of route-cli.spec.ts's pin, and identical to it apart from the
+      // label — which is the whole property the shared renderer
+      // (`renderMisnamedSidecarWarning`, route-cli.ts) exists to keep true. This
+      // verb used to carry its own verbatim copy of these six lines; the regex
+      // assertions above are green for a sentence that has lost half its remedy,
+      // which is exactly how two copies drift apart unnoticed.
+      //
+      // Written as a LITERAL, not assembled from the renderer under test.
+      expect(stderr).toContain(
+        `warning: route-tuple: MISNAMED SIDECAR ${JSON.stringify(join(reportsDir, `#${id}-1.md`))} — its\n` +
+          `  filename id ${JSON.stringify(`#${id}`)} contains "#" — an id must be filename-safe AND literally matchable, so it carries no whitespace, no "#", and no path character, so the reader resolves it for NO row\n` +
+          `  (it holds the record for ${JSON.stringify(id)}, which would be filed as\n` +
+          `  ${JSON.stringify(`${id}-1.md`)}). A file like this is present to an \`ls\` and\n` +
+          '  absent to resume, and an existence probe cannot tell it from a missing one.\n' +
+          '  Confirm the correctly-named record holds the same content, then delete it.\n',
+      );
       // Carried structurally too — this verb's output is a JSON result the
       // Coordinator reads at routing, and a stderr line alone would leave the
       // finding out of the record.

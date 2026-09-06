@@ -277,10 +277,15 @@ export function depsSetupFrom(commands: readonly VerifyCommand[]): string {
  * Where a row's dependency-install step came from — `'none'` when no source
  * offered one, which is the state the composed brief must state as a deferral
  * and the state the gitignored-binding refusal below tests for.
+ *
+ * Exported (issue #724) for the same reason {@link resolveDepsSetup} is: a
+ * precedence ladder whose rungs cannot be named is a ladder nothing outside this
+ * file can assert about.
  */
-type DepsSetupSource = 'row-meta' | 'flag' | 'engine.install' | 'verify' | 'none';
+export type DepsSetupSource = 'row-meta' | 'flag' | 'engine.install' | 'verify' | 'none';
 
-interface DepsSetupResolution {
+/** The command {@link resolveDepsSetup} picked, and which rung it came from. */
+export interface DepsSetupResolution {
   /** The command to run, or `''` when no source offered one. */
   command: string;
   source: DepsSetupSource;
@@ -310,8 +315,13 @@ function availableStep(value: string | undefined): string | null {
  * for themselves. There is now no way to spell "confirmed: none needed",
  * because that claim can only be made truthfully by measuring the repo, which
  * the composer does itself (see {@link gitignoredBindingPath}).
+ *
+ * Exported (issue #724) alongside {@link depsSetupFrom}, which is only its
+ * FOURTH rung: the derivation was nameable and the ladder that outranks it was
+ * not, so the one thing a reader could pin directly was the one level that is
+ * explicitly a guess. Pure — it picks, it never runs anything.
  */
-function resolveDepsSetup(input: {
+export function resolveDepsSetup(input: {
   rowMeta?: string;
   flag?: string;
   engineInstall?: string;
@@ -337,8 +347,13 @@ function resolveDepsSetup(input: {
  * (`npm`, `node`) resolves through `PATH` and is not this gate's business.
  * Both halves of the source form are covered — the `tsx` binary AND the
  * `cli.ts` it runs — because either one being gitignored is equally fatal.
+ *
+ * Exported (issue #724) so the split-plus-shape-test is pinnable on its own,
+ * without a `git check-ignore` and therefore without a repository: it is the
+ * pure half of {@link gitignoredBindingPath}, and the half whose answer a
+ * consumer auditing its own binding could legitimately want.
  */
-function bindingPaths(engineCli: string): string[] {
+export function bindingPaths(engineCli: string): string[] {
   return engineCli.split(/\s+/).filter((word) => word.includes('/'));
 }
 
@@ -357,8 +372,13 @@ function bindingPaths(engineCli: string): string[] {
  * path). Neither is grounds to refuse a compose: this gate exists to catch a
  * binding KNOWN to be absent, never to stop a wave because a probe was
  * inconclusive.
+ *
+ * Exported (issue #724): this is the measurement that makes "nothing needs
+ * installing" a truthful claim rather than a guess, and it is exactly the
+ * question a consumer wiring its own `engine.cli` wants to ask about its own
+ * repository before a wave discovers the answer for it.
  */
-function gitignoredBindingPath(repoRoot: string, engineCli: string): string | null {
+export function gitignoredBindingPath(repoRoot: string, engineCli: string): string | null {
   const paths = bindingPaths(engineCli);
   if (paths.length === 0) return null;
   try {
