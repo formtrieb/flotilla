@@ -686,16 +686,26 @@ export function normalizeEngineCli(
  * repo-relative prefixes and nothing else. An absolute or `~`-rooted install
  * command fails there exactly as an absolute `cli` would.
  *
- * Module-private, and a plain `Error` rather than a typed one, deliberately.
- * `engine.cli`'s typed refusal exists because a CONSUMER re-applies that rule
- * when it authors a binding of its own (hence the root re-export). Nothing
- * outside this engine authors an install command through the engine's API — it
- * is written by `wave-setup` into the config and read by `compose-driver` — so
- * this key follows the house style set by the config schema's other additive
- * keys (`verify.…needs`, `cleanup.disposableNames`, `cleanup.extraRoots`): fail
- * loud at `config validate` time with a message that names the rule.
+ * A plain `Error` rather than a typed one, deliberately, and that part is
+ * unchanged: `engine.cli`'s TYPED refusal exists because a consumer branches on
+ * the `failure` discriminant instead of string-matching a message, and nothing
+ * has yet asked to branch on this one. This key follows the house style set by
+ * the config schema's other additive keys (`verify.…needs`,
+ * `cleanup.disposableNames`, `cleanup.extraRoots`): fail loud at
+ * `config validate` time with a message that names the rule.
+ *
+ * **Exported (issue #724), unlike when it shipped.** It was introduced
+ * module-private on the reading that nothing outside this engine authors an
+ * install command through the engine's API — it is written by `wave-setup` into
+ * the config and read by `compose-driver`. `wave-setup` is precisely the caller
+ * that argument overlooks: an authoring surface that writes this key needs the
+ * SAME rule the loader will apply to what it wrote, and the alternative to
+ * exporting it is a second implementation of an argv-binding rule that must
+ * never disagree with this one — which is the exact reason
+ * {@link normalizeEngineCli} is root-exported beside it. Symmetric bindings,
+ * symmetric reach.
  */
-function normalizeEngineInstall(
+export function normalizeEngineInstall(
   value: unknown,
   label = 'wave config "engine.install"',
 ): string | undefined {

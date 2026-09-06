@@ -82,6 +82,21 @@ import {
   GoalMemberJoinError,
   PROJECT_BLOCKS_RELATION_TYPE,
   PROJECT_RELATION_ANCHOR_PAIR,
+  // ─── the surface-hygiene promotions (issue #724) ───────────────────────────
+  //
+  // Six VALUES that were module-private for a placement reason and are now root
+  // exports. They are named HERE, in the same import this file already uses as
+  // its load-time signal, for exactly the reason the block comment above states:
+  // if any of them regressed off the barrel this file would fail to load before
+  // a single `it` runs. The compiler-API check below is the enforcement in the
+  // other direction (a module export the barrel does NOT carry and the allowlist
+  // does not name); this import is the enforcement in this one.
+  renderMisnamedSidecarWarning,
+  resolveTitle,
+  resolveDepsSetup,
+  bindingPaths,
+  gitignoredBindingPath,
+  normalizeEngineInstall,
 } from './index';
 // The three TYPE-ONLY promotions this guard's own placement constraint had
 // deferred (see the "types this guard deferred" block below), plus the
@@ -114,6 +129,26 @@ import type {
   // already-exported interface is precisely the shape a count-based check
   // cannot see.
   LinearProject,
+  // ─── the surface-hygiene promotions (issue #724), type half ────────────────
+  //
+  // Six TYPES to the six values above. `VerifyCommandNeeds` and `BlockingPaths`
+  // are the two the issue is named for: each was reachable STRUCTURALLY (as
+  // `VerifyCommand['needs']` and `WorktreeEntry['blockingPaths']`) and nameable
+  // nowhere, which is the same reachable-but-not-nameable gap
+  // `UnaccountedWorktree` above was promoted to close. The other four are the
+  // vocabulary the promoted derivations return or are configured by; a function
+  // whose result cannot be annotated is only half exported.
+  //
+  // `typeof` cannot probe any of them — a type is erased before a single `it`
+  // runs — so this import IS their runtime-adjacent enforcement: `tsc --noEmit`
+  // fails if any regresses off the barrel, and the compiler-API check below
+  // fails if the module exports one the barrel does not carry.
+  VerifyCommandNeeds,
+  BlockingPaths,
+  TitleSource,
+  ResolvedTitle,
+  DepsSetupSource,
+  DepsSetupResolution,
 } from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
@@ -434,6 +469,19 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
   // rather than through the verb (a consumer-side dispatcher, or a second
   // harness driver); that row moves these onto the barrel and deletes this
   // block.
+  //
+  // UPDATE (issue #724 — the caveat's first half is resolved, the block stands).
+  // A row that DID own `index.ts` weighed it, and the answer was narrower than
+  // "promote the family": five symbols left this block for the barrel —
+  // `resolveDepsSetup`, `DepsSetupSource`, `DepsSetupResolution`,
+  // `bindingPaths`, `gitignoredBindingPath` — on one discriminator, which is why
+  // they are absent below rather than allowlisted. The install-step PRECEDENCE
+  // LADDER had its fourth and weakest rung (`depsSetupFrom`) already exported
+  // while the ladder that outranks it was unnameable, and the gitignored-binding
+  // MEASUREMENT is what makes "nothing needs installing" a truthful claim rather
+  // than a guess. Everything still listed below fails that discriminator: it has
+  // no already-exported neighbouring half, and the verb remains its consumer
+  // surface. The twenty-odd-symbol reading is unchanged.
   './compose-driver': {
     runComposeDriver:
       "The `compose-driver` verb's runner. Its one call site is cli.ts's async interception, exactly as runResume/runIssueStore are reached; a consumer drives it as a CLI subcommand and reads the JSON receipt.",
@@ -510,6 +558,19 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
   // as well would mint a ten-symbol semver commitment no acceptance criterion
   // asked for. The trigger to revisit is a consumer that routes a tuple from
   // ITS OWN code rather than through the verb.
+  //
+  // UPDATE (issue #724 — same shape as the `./compose-driver` update above).
+  // Three symbols left this block for the barrel: `resolveTitle` and its two
+  // result types (`ResolvedTitle`, `TitleSource`), which is why they are absent
+  // below rather than allowlisted. The discriminator is the one this block's own
+  // second paragraph already names: `workerSummaryFromBody` and `composePrBody`
+  // are exported precisely so their rules can be pinned in a line, and the title
+  // ladder is deliberately symmetric with them — the same "a Worker's account of
+  // its own change outranks a generated one" claim, one line instead of a body —
+  // yet it alone was provable only through a whole route. One rule, three
+  // exported derivations. Everything still listed below keeps its reading
+  // unchanged: the verb is the consumer surface, and the JSON is what a caller
+  // reads.
   './route-tuple': {
     runRouteTuple:
       "The `route-tuple` verb's runner. Its one call site is cli.ts's async interception, exactly as runComposeDriver/runHostPr are reached; a consumer drives it as a CLI subcommand and reads the one JSON result.",

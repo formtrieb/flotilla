@@ -638,6 +638,12 @@ function printUsage(): void {
       '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
       '  flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha> [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>] [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>] [--row-meta <json|path>]   # writes the Workflow driver script to --out; prints a JSON receipt',
       '  flotilla-engine route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--config <path>] [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>] [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]   # the whole post-return sequence for one row; prints one JSON result',
+      // The catalog used to list `[--title <text>]` with no semantics at all,
+      // while the verb's OWN usage text carried the preserve-on-reuse rule — so
+      // the one surface a stranger reaches first said the least about the one
+      // flag that silently renames somebody else's PR. Same wording as
+      // route-tuple's usage(), deliberately (issue #724).
+      '    --title <text> RENAMES the PR. Without it, a REUSE preserves the live PR title byte-identically (the Worker opened it and named its own change), exactly as the body preserves the live PR body; a CREATE falls back to the spine row title with bare tracker ids stripped. The result reports which of the three it used as `titleSource` (flag | live-pr | row).',
       '  flotilla-engine route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]   # prints JSON',
       '    --ruling "<the Operator\'s reason>" is the ONLY thing that admits an iteration ABOVE the re-dispatch cap — the Operator-ruled, Reviewer-only round. Without it an above-cap iteration stays refused; with it the result names the ruled cell and quotes the ruling. Accepted by route-tuple too, for the same round.',
       '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',

@@ -1128,17 +1128,21 @@ import * as nodePath from 'node:path';
  * (issue #718) — see {@link WorktreeEntry.blockingPaths} for the full
  * rationale behind the three buckets and the bound/overflow discipline.
  *
- * Deliberately NOT exported on its own: a root-only caller reads this shape
- * structurally, as the type of `WorktreeEntry.blockingPaths` (already
- * root-reachable — see {@link WorktreeEntry}), and does not need to import
- * it by name to annotate one. Exporting it would be a second, independent
- * change — widening the barrel (`tools/wave/src/index.ts`) — outside this
- * change's own declared Files glob; the same reachable-but-not-nameable gap
- * `UnaccountedWorktree` (worktree-cleanup.ts) once left for a later
- * `index.ts`-owning row is the precedent for doing that as its own move,
- * not folding it in here.
+ * It shipped module-private, reachable only as the type of
+ * `WorktreeEntry.blockingPaths`, for a PLACEMENT reason and not a design one:
+ * the row that introduced it owned neither the package-root barrel
+ * (`tools/wave/src/index.ts`) nor the drift guard (`barrel-drift.spec.ts`), and
+ * that guard fails ANY new module export whose barrel entry does not move in the
+ * same diff — so exporting it was not an in-glob move for that row, and it named
+ * `UnaccountedWorktree` as the precedent for doing the promotion later as its
+ * own change. This row (issue #724) owns the barrel and is that change.
+ *
+ * Strictly ADDITIVE (Minor, ADR-0035): the indexed spelling a caller reached for
+ * before — `NonNullable<WorktreeEntry['blockingPaths']>` — still resolves to
+ * exactly this declaration, so no existing annotation changes meaning and
+ * nothing on the value side moves at all.
  */
-interface BlockingPaths {
+export interface BlockingPaths {
   /** Bounded sample of tracked paths git reports missing (any `D` status code). */
   trackedDeleted: string[];
   /** Exact count `trackedDeleted` is a sample of. */

@@ -109,6 +109,19 @@ export {
 export {
   verifyCommands,
   type VerifyCommand,
+  // The declared capability requirement (ADR-0049), promoted from an anonymous
+  // shape on `VerifyCommand.needs` to a named type (issue #724). It shipped
+  // inline for a PLACEMENT reason — the ADR-0049 row owned neither this file nor
+  // barrel-drift.spec.ts, and the drift guard fails ANY new module export whose
+  // barrel entry does not move in the same diff — and its own doc comment told
+  // consumers to spell it `NonNullable<VerifyCommand['needs']>` until a row that
+  // owns the barrel could do the promotion. This is that row.
+  //
+  // Strictly ADDITIVE (Minor, ADR-0035): the indexed spelling still resolves to
+  // exactly this declaration (verify.spec.ts pins both directions with a
+  // compile-time assignability assertion), so no existing consumer annotation
+  // changes meaning and nothing on the value side moves at all.
+  type VerifyCommandNeeds,
   type VerifyProfile,
   type VerifyConfig,
 } from './verify';
@@ -586,6 +599,14 @@ export {
   // annotation changes meaning, and nothing on the value side moves at all.
   type UnaccountedWorktree,
   type UnaccountedWorktreeReport,
+  // The SAME shape one generation later, promoted for the same reason (issue
+  // #724): `WorktreeEntry.blockingPaths` — what kept a dirty, non-junk worktree
+  // from being disposable — was reachable structurally and not nameable, and its
+  // own doc comment named `UnaccountedWorktree` directly above as the precedent
+  // for promoting it in a row that owns this file. Also additive: the indexed
+  // spelling `NonNullable<WorktreeEntry['blockingPaths']>` still resolves to
+  // exactly this declaration.
+  type BlockingPaths,
   type ExecArgumentMeasurement,
   type CommandLineSizeAdvisory,
   type CommandLineSizeAdvisoryOptions,
@@ -749,6 +770,16 @@ export {
   // defect class this repo has had to close after the fact more than once
   // (issues #177, #184, #216).
   normalizeEngineCli,
+  // The install binding's half of that same rule (issue #717 → #724). It shipped
+  // module-private on the reading that nothing outside this engine authors an
+  // install command — but `wave-setup` is exactly that authoring surface, and an
+  // authoring surface needs the SAME rule the loader will apply to what it
+  // wrote. The alternative to exporting it is a second implementation of an
+  // argv-binding rule that must never disagree with this one, which is precisely
+  // why `normalizeEngineCli` above is root-exported. Symmetric bindings,
+  // symmetric reach. (It throws a plain `Error`, not the typed
+  // `EngineCliBindingError` — nothing has asked to branch on this one yet.)
+  normalizeEngineInstall,
   EngineCliBindingError,
   type EngineConfig,
   type EngineCliBindingFailure,
@@ -1332,4 +1363,56 @@ export {
   runValidateVerdict,
   runWriteReport,
   runWriteVerdict,
+  // The misnamed-sidecar sweep's SENTENCE, in one place (issue #724). The rule
+  // about what a misnamed name IS has always had one owner (`findMisnamedSidecars`
+  // in sidecar.ts, already root-exported); the six-line `warning:` that reports
+  // one did not — `route-tuple`'s sweep carried a byte-for-byte copy differing
+  // only in the label, which is the shape that drifts the moment someone improves
+  // the remedy sentence in one of them. Both engine callers now render through
+  // this, and it is root-exported because the DETECTOR already is: a consumer
+  // that sweeps its own sidecar directory could reach `findMisnamedSidecars` and
+  // then had nothing to say about what it found.
+  renderMisnamedSidecarWarning,
 } from './route-cli';
+
+// ─── the two CLI-edge derivations a spec could not pin directly (issue #724) ──
+//
+// barrel-drift.spec.ts's `./compose-driver` and `./route-tuple` blocks argue —
+// and the argument still stands for the rest of both families — that what a
+// CONSUMER holds is the VERB and the JSON receipt it prints, not a TypeScript
+// import path. Both blocks then close with the same honest caveat: `index.ts`
+// was outside those rows' declared Files globs, so root-export parity was not an
+// option to weigh even had the reasoning come out the other way. This row owns
+// the barrel and weighs it, and the answer is narrower than "promote the
+// families": only the symbols where the module ALREADY exports the neighbouring
+// half of the same rule move here, because a half-nameable rule is the actual
+// defect.
+//
+//   - `resolveTitle` + `TitleSource` + `ResolvedTitle` — the PR-title precedence
+//     ladder. `workerSummaryFromBody` and `composePrBody`, the two body-side
+//     rules this one is deliberately symmetric with, are each pinnable in a line
+//     while this one was provable only through a whole route that also finds a
+//     PR, reads a body, writes a sidecar and routes a verdict.
+//   - `resolveDepsSetup` + `DepsSetupSource` + `DepsSetupResolution` — the
+//     install-step precedence ladder, whose FOURTH rung (`depsSetupFrom`) was
+//     already exported. The one level a reader could pin directly was the one
+//     level that is explicitly a guess.
+//   - `bindingPaths` + `gitignoredBindingPath` — the measurement that makes
+//     "nothing needs installing" a truthful claim instead of a false
+//     confirmation, and the pure half of it.
+//
+// Additive (Minor, ADR-0035): every one of these is a new name for an existing
+// declaration; no signature and no behaviour moves.
+export {
+  resolveTitle,
+  type ResolvedTitle,
+  type TitleSource,
+} from './route-tuple';
+
+export {
+  resolveDepsSetup,
+  bindingPaths,
+  gitignoredBindingPath,
+  type DepsSetupResolution,
+  type DepsSetupSource,
+} from './compose-driver';
