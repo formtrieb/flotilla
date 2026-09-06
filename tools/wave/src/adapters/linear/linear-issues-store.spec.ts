@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { LinearIssuesStore, DEFAULT_LINEAR_STATES, LinearTransitionVerifyError } from './linear-issues-store';
 import { InMemoryLinearApi, linearConformanceHooks } from './linear-api-fake';
-import type { LinearStateType } from './linear-api';
+import type { LinearIssue, LinearStateType } from './linear-api';
 import { GoalMemberJoinError, GoalMemberKindError } from '../issue-store';
 import type { CreateInput } from '../issue-store';
 import { parseBody } from '../body-codec';
@@ -75,22 +75,111 @@ describe('LinearIssuesStore — Linear-specific mapping (ADR-0020)', () => {
     expect((await store.read(id)).status).toBe('in-flight');
   });
 
-  // ── verify-after-write (consumer KW-F2, FOR-64) ──────────────────────────
+  // ── verify-after-write (consumer KW-F2, FOR-64; bounded retry, issue #726) ──
+  //
+  // The guard reads the state back after `setState` reports success. Two
+  // failure modes meet at that read, and the whole point of this block is that
+  // the tests below hold them apart:
+  //
+  //   - a genuinely DROPPED write — the state never arrives, no matter how
+  //     often or how late you look. `simulateDroppedStateWrite` injects it.
+  //   - a LAGGING READ — the write landed, but Linear's read side answers with
+  //     the pre-write snapshot for a moment. `LaggingReadLinearApi` injects it.
+  //     This is the mode that aborted a consumer's wave dispatch mid-roster on
+  //     a row that was fine, because a single immediate read cannot tell it
+  //     from the first.
+  //
+  // Every test here injects `sleep`, so the suite RECORDS the guard's pauses
+  // instead of living through them — a spec that really slept for the window
+  // would be measuring the clock, not the code, and would put the bound beyond
+  // reach of a falsifying assertion.
+
+  /** The bounds this block pins — the guard's two named constants, read off the thrown error and the recorded pauses. */
+  const EXPECTED_ATTEMPTS = 4;
+  const EXPECTED_DELAY_MS = 500;
+  const EXPECTED_WINDOW_MS = 1500; // (attempts − 1) gaps × delay
+
+  /**
+   * A store whose verify-after-write pause is recorded rather than taken, plus
+   * the list of requested pauses — the injection seam that makes both bounds
+   * observable: `waits.length` is (attempts − 1) and every entry is the delay.
+   */
+  function storeWithRecordedSleep(injected: InMemoryLinearApi = api): {
+    store: LinearIssuesStore;
+    waits: number[];
+  } {
+    const waits: number[] = [];
+    return {
+      store: new LinearIssuesStore({
+        api: injected,
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      }),
+      waits,
+    };
+  }
+
+  /**
+   * Models the suspected Linear read-after-write lag: `setState` genuinely
+   * lands, but the next `staleReads` read-backs answer with the complete
+   * PRE-WRITE snapshot (state name, category and `updatedAt` together — a
+   * lagging replica, not a hand-patched name). Deliberately NOT a dropped
+   * write: `super.setState` really writes, so a test that resolves here has
+   * proved the guard tolerated a slow read rather than that it stopped
+   * checking.
+   */
+  class LaggingReadLinearApi extends InMemoryLinearApi {
+    /** How many further read-backs still answer with the pre-write snapshot. */
+    staleReads = 0;
+    /** Read-backs served since the write (the "never re-writes" counter's partner). */
+    reads = 0;
+    /** `setState` calls — pinned at 1 across a whole retry window: the guard re-READS, never re-WRITES. */
+    writes = 0;
+    private preWrite: LinearIssue | undefined;
+
+    override async setState(identifier: string, stateName: string): Promise<void> {
+      this.preWrite = await super.getIssue(identifier);
+      this.writes += 1;
+      await super.setState(identifier, stateName);
+    }
+
+    override async getIssue(identifier: string): Promise<LinearIssue> {
+      this.reads += 1;
+      if (this.staleReads > 0 && this.preWrite?.identifier === identifier) {
+        this.staleReads -= 1;
+        return this.preWrite;
+      }
+      return super.getIssue(identifier);
+    }
+  }
+
+  /** The lagging fake, plus an `addComment` that always rejects — for the best-effort disclosure test. */
+  class NoCommentsLinearApi extends LaggingReadLinearApi {
+    override async addComment(): Promise<void> {
+      throw new Error('comment write rejected');
+    }
+  }
+
+  const VERIFY_RETRY_MARKER = '<!-- wave-transition-verify-retry -->';
+
   it('transition() throws a named LinearTransitionVerifyError when setState reports success but silently drops the write', async () => {
-    const id = await store.create(baseInput());
+    const { store: guarded } = storeWithRecordedSleep();
+    const id = await guarded.create(baseInput());
     api.simulateDroppedStateWrite(id);
-    await expect(store.transition(id, 'in-flight')).rejects.toThrow(LinearTransitionVerifyError);
+    await expect(guarded.transition(id, 'in-flight')).rejects.toThrow(LinearTransitionVerifyError);
     // the fake genuinely dropped the write — the issue never actually moved.
     expect((await api.getIssue(id)).stateName).not.toBe(DEFAULT_LINEAR_STATES.inFlight);
   });
 
   it('the LinearTransitionVerifyError carries the issue id, expected state, and the (unmoved) actual state', async () => {
-    const id = await store.create(baseInput());
+    const { store: guarded } = storeWithRecordedSleep();
+    const id = await guarded.create(baseInput());
     const before = (await api.getIssue(id)).stateName;
     api.simulateDroppedStateWrite(id);
     let thrown: unknown;
     try {
-      await store.transition(id, 'in-flight');
+      await guarded.transition(id, 'in-flight');
     } catch (err) {
       thrown = err;
     }
@@ -102,11 +191,116 @@ describe('LinearIssuesStore — Linear-specific mapping (ADR-0020)', () => {
   });
 
   it('after a dropped-write failure is surfaced, a retried transition (drop budget spent) succeeds and is verified normally', async () => {
-    const id = await store.create(baseInput());
+    const { store: guarded } = storeWithRecordedSleep();
+    const id = await guarded.create(baseInput());
     api.simulateDroppedStateWrite(id); // drops exactly the next call
-    await expect(store.transition(id, 'in-flight')).rejects.toThrow(LinearTransitionVerifyError);
-    await store.transition(id, 'in-flight'); // retry — no more drops queued
+    await expect(guarded.transition(id, 'in-flight')).rejects.toThrow(LinearTransitionVerifyError);
+    await guarded.transition(id, 'in-flight'); // retry — no more drops queued
     expect((await api.getIssue(id)).stateName).toBe(DEFAULT_LINEAR_STATES.inFlight);
+  });
+
+  // ── the intended case: a stale first read, then the new state (issue #726) ──
+  it('a first read-back showing the OLD state followed by a later one showing the new state resolves without throwing', async () => {
+    const lagging = new LaggingReadLinearApi();
+    const { store: guarded } = storeWithRecordedSleep(lagging);
+    const id = await guarded.create(baseInput());
+    lagging.staleReads = 1; // the first read-back races the write and loses
+    await expect(guarded.transition(id, 'in-flight')).resolves.toBeUndefined();
+    expect((await lagging.getIssue(id)).stateName).toBe(DEFAULT_LINEAR_STATES.inFlight);
+  });
+
+  it('the window tolerates a lag right up to the LAST attempt — stale on every read but the final one still resolves', async () => {
+    const lagging = new LaggingReadLinearApi();
+    const { store: guarded, waits } = storeWithRecordedSleep(lagging);
+    const id = await guarded.create(baseInput());
+    lagging.staleReads = EXPECTED_ATTEMPTS - 1; // only read-back #4 sees the truth
+    await expect(guarded.transition(id, 'in-flight')).resolves.toBeUndefined();
+    // and it used the whole window to get there: (attempts − 1) pauses.
+    expect(waits).toEqual([EXPECTED_DELAY_MS, EXPECTED_DELAY_MS, EXPECTED_DELAY_MS]);
+    expect(waits.reduce((a, b) => a + b, 0)).toBe(EXPECTED_WINDOW_MS);
+  });
+
+  it('the retry re-READS and never re-WRITES — one setState survives a whole window of stale reads', async () => {
+    const lagging = new LaggingReadLinearApi();
+    const { store: guarded } = storeWithRecordedSleep(lagging);
+    const id = await guarded.create(baseInput());
+    lagging.writes = 0;
+    lagging.staleReads = 2;
+    await guarded.transition(id, 'in-flight');
+    expect(lagging.writes).toBe(1); // never a second mutation to paper over a drop
+  });
+
+  // ── the guard still fires: a state that never moves (issue #726) ──
+  it('a state that never changes across EVERY attempt still throws the verify error', async () => {
+    const lagging = new LaggingReadLinearApi();
+    const { store: guarded, waits } = storeWithRecordedSleep(lagging);
+    const id = await guarded.create(baseInput());
+    lagging.reads = 0;
+    lagging.staleReads = Number.MAX_SAFE_INTEGER; // the read side never catches up
+    await expect(guarded.transition(id, 'in-flight')).rejects.toThrow(LinearTransitionVerifyError);
+    // exactly the bounded number of read-backs, and not one more.
+    expect(lagging.reads).toBe(EXPECTED_ATTEMPTS);
+    expect(waits).toHaveLength(EXPECTED_ATTEMPTS - 1);
+  });
+
+  it('the thrown message and the error state the attempt count and the elapsed bound, so a later reader can tell a race from a dropped write', async () => {
+    const { store: guarded } = storeWithRecordedSleep();
+    const id = await guarded.create(baseInput());
+    api.simulateDroppedStateWrite(id);
+    let thrown: unknown;
+    try {
+      await guarded.transition(id, 'in-flight');
+    } catch (err) {
+      thrown = err;
+    }
+    const e = thrown as LinearTransitionVerifyError;
+    expect(e.attempts).toBe(EXPECTED_ATTEMPTS);
+    expect(e.windowMs).toBe(EXPECTED_WINDOW_MS);
+    expect(e.message).toContain(`${EXPECTED_ATTEMPTS} read-back(s) over ${EXPECTED_WINDOW_MS}ms`);
+    // and it no longer claims the read was immediate — that phrasing was the
+    // false-positive report the consumer got on a write that had landed.
+    expect(e.message).not.toContain('immediately');
+  });
+
+  it('the error keeps its pre-#726 three-argument construction — a consumer building it by hand still gets a coherent message', () => {
+    const e = new LinearTransitionVerifyError('EX-9', 'In Progress', 'Todo');
+    expect(e.attempts).toBe(EXPECTED_ATTEMPTS);
+    expect(e.windowMs).toBe(EXPECTED_WINDOW_MS);
+    expect(e.message).toContain('EX-9');
+  });
+
+  // ── the retry is observable, not silent (issue #726) ──
+  it('a transition that resolved only after a retry posts the marker advisory this store uses for non-fatal observations', async () => {
+    const lagging = new LaggingReadLinearApi();
+    const { store: guarded } = storeWithRecordedSleep(lagging);
+    const id = await guarded.create(baseInput());
+    lagging.staleReads = 2;
+    await guarded.transition(id, 'in-flight');
+    const bodies = (await lagging.getComments(id)).map((c) => c.body);
+    const advisory = bodies.find((b) => b.includes(VERIFY_RETRY_MARKER));
+    expect(advisory).toBeDefined();
+    expect(advisory).toContain(DEFAULT_LINEAR_STATES.inFlight); // which state it verified
+    expect(advisory).toContain('read-back 3'); // which attempt finally saw it
+  });
+
+  it('a transition verified on the FIRST read posts nothing — the disclosure is the exception, never the routine', async () => {
+    const lagging = new LaggingReadLinearApi();
+    const { store: guarded, waits } = storeWithRecordedSleep(lagging);
+    const id = await guarded.create(baseInput());
+    await guarded.transition(id, 'in-flight'); // staleReads stays 0
+    expect(waits).toEqual([]); // the happy path pays no pause at all
+    const bodies = (await lagging.getComments(id)).map((c) => c.body);
+    expect(bodies.some((b) => b.includes(VERIFY_RETRY_MARKER))).toBe(false);
+  });
+
+  it('the disclosure is best-effort — a rejected comment write never fails a transition that verified', async () => {
+    const rejecting = new NoCommentsLinearApi();
+    const { store: guarded } = storeWithRecordedSleep(rejecting);
+    const id = await guarded.create(baseInput());
+    rejecting.staleReads = 1; // forces the advisory attempt, which then rejects
+    await expect(guarded.transition(id, 'in-flight')).resolves.toBeUndefined();
+    // the state write — the authoritative one — stands regardless.
+    expect((await rejecting.getIssue(id)).stateName).toBe(DEFAULT_LINEAR_STATES.inFlight);
   });
 
   it('the happy path is unaffected — a normal transition still sets the mapped state with no error', async () => {
