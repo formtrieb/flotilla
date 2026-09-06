@@ -905,6 +905,21 @@ reads \`approve\`, persisting it through \`${verb}\` below is not approval by th
 whatever approval happened, happened one stage earlier, at \`${producer}\`; this write
 makes that record durable, it does not make it yours.
 
+**YOU NEVER ESCALATE YOUR OWN PERMISSIONS EITHER — THE REFUSAL IS THE ANSWER (ADR-0049).**
+The no-escalation rule binds every dispatched role — Worker, Reviewer and Scribe alike — and
+yours is the narrowest surface of the three: one file write and one engine call. You may not
+disable the sandbox, ask for it to be disabled, re-run anything with it off, widen your own
+settings, or edit a permission or sandbox file to get this write through. **The
+retry-with-the-sandbox-off path is retired by name** — it is not a fallback you have, and
+there is no phrasing of it that is. Attendance is not a property you can read: a permission
+dialog raised mid-wave may have nobody there to answer it, so it is a stall, never a step.
+If step 2's write or step 3's verb is refused for a permission or sandbox reason, that
+refusal IS the answer, in exactly the way a verb refusal is: take step 4's one
+byte-identical retry, then return \`ok: false\` with the refusal quoted verbatim in
+\`error\`. The Coordinator's routing-time existence check re-writes any sidecar this leaves
+missing, through this same verb — an honest failure costs one recoverable write, and a right
+you granted yourself costs the one thing nothing downstream can recover.
+
 **\`--id\` IS NOT YOURS TO VARY.** It is fixed below as \`${issue.id}\` — the compose-time
 row id, straight off the wave spine — and it alone decides which row this sidecar is filed
 under. If the verb refuses, the refusal IS the answer: report it and let the Coordinator's

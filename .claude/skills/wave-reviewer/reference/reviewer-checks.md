@@ -66,6 +66,15 @@ git show "refs/review/$ROW" -- <relevant file>
 ```
 Set `gitStateSane` true iff all four hold.
 
+**Reading the pull request itself goes through the engine seam, never a raw `gh`.** The Closed-by sub-check reads the Worker *report*; when you need the pull request — its state, its url, or whether its body really carries the close phrase — ask the code host the way every other station does, through `host-pr` ([Convention 7](../../wave-shared/reference/convention-07-host-landing-seam.md)), invoked through the consumer's configured engine CLI:
+
+```bash
+{{wave-cli}} host-pr status --branch wave/<id>-<slug>
+# → { state: open|merged|closed-unmerged|none, url? }   — `none` is a valid answer, not a failure
+```
+
+`gh pr view` is not a shorter route to the same fact: `gh`'s credentials are sandbox-denied and its TLS stack has fought the proxy in every live run, so the raw read is a refusal at best and an unreviewed second credential path at worst. Live occurrences, one week apart: one Reviewer confirmed a PR body's close phrase through `gh pr view` and got an answer; another was refused by the sandbox proxy and — correctly — did not escalate. Both should have asked the engine. If the seam itself is refused for a permission reason, that is Check 3's `capability-gated` valve, never a licence to fall back to the raw CLI.
+
 ## Check 3 — per-AC verification
 One `acVerification` row per AC: `{ ac, met, evidence }` where `met ∈ met|partial|not-met|deferred` and `evidence` is `file:line` / `commit-sha` / "deferred per marker". Ticked-without-evidence → `changes-requested`; `partial` without a deferred marker → `questions-blocking`.
 

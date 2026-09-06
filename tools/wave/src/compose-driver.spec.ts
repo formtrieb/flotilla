@@ -1215,6 +1215,108 @@ describe('compose-driver — the verb, end to end', () => {
     expect(reviewerBrief).toMatch(/at most the Worker's rights/i);
   });
 
+  // ADR-0049 decision 1 — the no-escalation rule binds EVERY dispatched role:
+  // Worker, Reviewer AND Scribe. The shipped driver carried it in two briefs;
+  // the Scribe's, added here, is the third.
+  //
+  // ## Why this test exists beside the one above, instead of inside it
+  //
+  // The assertion above is the clause-PRESENCE check, and it had a measured
+  // blind spot: `/never escalates? (its|your) own permissions/` matches the
+  // clause HEADLINE, so re-wording the clause BODY — the four acts it actually
+  // forbids — left it green, and only a re-worded headline went red. A clause
+  // whose prohibitions can be rewritten under a stable headline is a clause no
+  // guard is holding.
+  //
+  // So this test pins the BODY. `NO_ESCALATION_ACTS` is the enumeration all
+  // three briefs share verbatim; each act is asserted separately and named in
+  // the failure message, so a red says which brief lost which prohibition
+  // rather than "a long string differs". The role-specific halves below are
+  // pinned the same way, because "the Reviewer runs at most the Worker's
+  // rights" and "the Worker reports the gate as NOT RUN" are the two sentences
+  // that turn the rule from a slogan into an instruction.
+  //
+  // Briefs are whitespace-NORMALIZED before matching, deliberately: the clause
+  // is a wrapped template literal, so re-wrapping a line is not re-wording it
+  // and must not go red. Re-wording IS what goes red — which is the property
+  // this test was falsified against (a body act re-spelled in the template,
+  // observed failing, restored).
+  it('all THREE composed briefs carry the no-escalation clause — headline AND body, per role (ADR-0049 decision 1)', async () => {
+    const { id, spinePath, configPath } = await seed();
+    const out = join(repoRoot, 'driver.js');
+    expect(
+      await runComposeDriver([
+        '--spine', spinePath,
+        '--config', configPath,
+        '--repo-root', repoRoot,
+        '--anchor', anchor,
+        '--out', out,
+        '--reviewer-agent', 'flotilla:wave-reviewer',
+      ]),
+    ).toBe(0);
+
+    const { calls } = await runComposedDriver(readFileSync(out, 'utf8'));
+    const flat = (label: string): string =>
+      (calls.find((c) => String(c.opts.label) === label)?.brief ?? '').replace(/\s+/g, ' ');
+
+    const briefs: Array<[string, string]> = [
+      ['worker', flat(`worker:${id}`)],
+      ['reviewer', flat(`review:${id}`)],
+      ['scribe', flat(`scribe-report:${id}`)],
+    ];
+
+    // The four acts the clause forbids, spelled the way every brief spells them.
+    // These are BODY text, not the headline: re-wording any one of them here is
+    // what this test exists to catch.
+    const NO_ESCALATION_ACTS = [
+      'disable the sandbox',
+      'ask for it to be disabled',
+      're-run anything with it off',
+      'widen your own settings',
+    ];
+
+    for (const [role, brief] of briefs) {
+      expect(brief, `${role} brief was not composed`).not.toBe('');
+      // headline (the check that already existed) …
+      expect(brief, `${role} brief: no-escalation HEADLINE missing`).toMatch(
+        /never escalates? (?:its|your) own permissions/i,
+      );
+      expect(brief, `${role} brief: ADR-0049 citation missing`).toContain('ADR-0049');
+      // … and the body, act by act (the half that used to be unguarded).
+      for (const act of NO_ESCALATION_ACTS) {
+        expect(brief, `${role} brief: clause BODY lost the prohibition "${act}"`).toContain(act);
+      }
+    }
+
+    const [, workerBrief] = briefs[0];
+    const [, reviewerBrief] = briefs[1];
+    const [, scribeBrief] = briefs[2];
+
+    // Role-specific body, each the sentence that makes the rule actionable in
+    // that role's own vocabulary.
+    expect(workerBrief, 'worker brief: the retired retry path is no longer named').toContain(
+      'retry-with-the-sandbox-off path is retired by name',
+    );
+    expect(workerBrief, 'worker brief: the NOT-RUN reporting instruction is gone').toContain(
+      'report it as NOT RUN',
+    );
+    expect(reviewerBrief, 'reviewer brief: the fourth deferred-valve trigger is gone').toContain(
+      'capability-gated',
+    );
+    expect(reviewerBrief, "reviewer brief: the at-most-the-Worker's-rights ceiling is gone").toMatch(
+      /at most the Worker's rights/i,
+    );
+    expect(scribeBrief, 'scribe brief: the every-role roster is gone').toContain(
+      'Worker, Reviewer and Scribe alike',
+    );
+    expect(scribeBrief, 'scribe brief: the retired retry path is no longer named').toContain(
+      'retry-with-the-sandbox-off path is retired by name',
+    );
+    expect(scribeBrief, 'scribe brief: the refusal-is-the-answer instruction is gone').toContain(
+      "take step 4's one byte-identical retry",
+    );
+  });
+
   it('NEGATIVE CONTROL — a fabricated anchor is refused before anything is written (the gate that used to sit host-side)', async () => {
     const { spinePath, configPath } = await seed();
     const out = join(repoRoot, 'driver.js');
@@ -1568,5 +1670,129 @@ describe('compose-driver — the verb, end to end', () => {
     // clean exit-0 compose rather than becoming collateral of the new gate.
     rewriteConfig(configPath, { cli: './node_modules/.bin/flotilla-engine', install: FROM_CONFIG });
     expect((await composeAndReadStep(spinePath, configPath)).source).toBe('engine.install');
+  });
+});
+
+// ─── the deferred valve's trigger list reads FOUR wherever this row governs ───
+//
+// ADR-0049 gave the Reviewer's deferred valve a fourth trigger, `capability-gated`,
+// beside merge-, prod- and human-gated. The corpus states that list in several
+// places; the row that landed the decision updated the copies inside its own
+// declared files and left two others reading THREE. Nothing went red, because
+// nothing was looking. This is the check that looks.
+//
+// ## Bounded on purpose
+//
+// The population below is exactly the set of files the follow-through row
+// declares — not the whole corpus. A corpus-wide sweep is a larger, separate
+// change, and a check that quietly grows its own scope is a check nobody can
+// land. A three-trigger copy found OUTSIDE this list is a disclosure to file,
+// never a reason to widen this constant in passing.
+//
+// ## The predicate is a WINDOW, not a line
+//
+// Three shapes state the list, and a line-based rule would miss two of them: a
+// wrapped prose sentence (the driver's reviewer brief splits its enumeration
+// across two source lines), a markdown table where each trigger owns a row
+// (`reviewer-checks.md`), and a parenthetical inside a decision record. So each
+// file's text is whitespace-normalized and every occurrence of `merge-gated`
+// must have `capability-gated` within WINDOW characters on either side. The
+// table passes because its four rows sit inside one window; a stale
+// three-trigger sentence cannot, because nothing near it names the fourth.
+//
+// ## No exemption marker, and none may be added
+//
+// ADR-0043: the checked text never carries its own exemption. ADR-0049's own
+// quotation of the pre-decision three-trigger list passes this check because the
+// sentence carrying the quotation now names the fourth as the thing that record
+// adds — the fix lived in the prose, not in a skip-list here.
+describe("the deferred valve's trigger list — no three-trigger copy survives in this row's files", () => {
+  const REPO_ROOT = join(__dirname, '../../..');
+
+  /** This row's declared files — the bounded population, stated once. */
+  const GOVERNED = [
+    'tools/wave/driver/wave-start-inflight.js',
+    '.claude/agents/wave-reviewer.md',
+    '.claude/skills/wave-reviewer/SKILL.md',
+    '.claude/skills/wave-reviewer/reference/reviewer-checks.md',
+    '.claude/skills/wave-shared/reference/convention-07-host-landing-seam.md',
+    'docs/adr/0004-ac-ground-truth-is-the-reviewer-verdict.md',
+    'docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md',
+  ];
+
+  /**
+   * Files that must still CARRY a trigger-list statement. A file dropping out of
+   * this set is as much a finding as a stale copy in it: silence reads green.
+   * `convention-07` is deliberately absent — it states the host seam, not the
+   * valve, and must never be asked for a trigger list.
+   */
+  const STATEMENT_BEARING = [
+    'tools/wave/driver/wave-start-inflight.js',
+    '.claude/agents/wave-reviewer.md',
+    '.claude/skills/wave-reviewer/SKILL.md',
+    '.claude/skills/wave-reviewer/reference/reviewer-checks.md',
+    'docs/adr/0004-ac-ground-truth-is-the-reviewer-verdict.md',
+    'docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md',
+  ];
+
+  /**
+   * Half-width of the window, in normalized characters. Sized against the widest
+   * legitimate statement in the population: `reviewer-checks.md`'s four-row
+   * table, where `merge-gated` and `capability-gated` sit three rows apart, and
+   * ADR-0004's parenthetical, which carries a full ADR filename between the two.
+   */
+  const WINDOW = 400;
+
+  /** Does `capability-gated` sit within WINDOW of the `merge-gated` at `at`? */
+  function fourTriggered(text: string, at: number): boolean {
+    return text.slice(Math.max(0, at - WINDOW), at + WINDOW).includes('capability-gated');
+  }
+
+  it('every trigger-list statement names capability-gated beside merge-gated', () => {
+    const stale: string[] = [];
+    const bearing: string[] = [];
+    let statements = 0;
+
+    for (const rel of GOVERNED) {
+      const text = readFileSync(join(REPO_ROOT, rel), 'utf8').replace(/\s+/g, ' ');
+      let hit = text.indexOf('merge-gated');
+      if (hit !== -1) bearing.push(rel);
+      while (hit !== -1) {
+        statements += 1;
+        if (!fourTriggered(text, hit)) {
+          stale.push(rel + ': …' + text.slice(Math.max(0, hit - 90), hit + 130) + '…');
+        }
+        hit = text.indexOf('merge-gated', hit + 'merge-gated'.length);
+      }
+    }
+
+    expect(
+      stale,
+      'a three-trigger copy of the deferred valve is still shipping — ADR-0049 added ' +
+        '`capability-gated` as the fourth:\n  ' +
+        stale.join('\n  '),
+    ).toEqual([]);
+
+    // Population floor — a listing that silently stopped finding statements (a
+    // renamed file, a moved reference dir, a rewritten paragraph) would
+    // otherwise be green for the wrong reason. Six statements ship today.
+    expect(
+      statements,
+      'the trigger-list population shrank — is every GOVERNED file still where it says?',
+    ).toBeGreaterThanOrEqual(6);
+    for (const rel of STATEMENT_BEARING) {
+      expect(bearing, rel + " no longer states the valve's trigger list at all").toContain(rel);
+    }
+  });
+
+  it('NEGATIVE CONTROL — the window rule sees a seeded three-trigger sentence', () => {
+    // The same predicate over a fixture rather than the corpus: proof it can
+    // tell a four-trigger statement from a three-trigger one, so the green above
+    // is a result and not an artifact of a check that cannot fail.
+    const four =
+      'an outcome unreachable — merge-gated, prod-gated, human-gated, capability-gated — is deferred';
+    const three = 'an outcome unreachable — merge-gated, prod-gated, human-gated — is deferred';
+    expect(fourTriggered(four, four.indexOf('merge-gated'))).toBe(true);
+    expect(fourTriggered(three, three.indexOf('merge-gated'))).toBe(false);
   });
 });
