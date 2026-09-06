@@ -120,30 +120,88 @@ const CLOSED_PROJECT_STATUS = new Set<LinearProjectStatusType>(['completed', 'ca
 const CLAIMED_PROJECT_STATUS = new Set<LinearProjectStatusType>(['started', 'paused']);
 
 /**
+ * How many read-backs the verify-after-write guard takes before it declares a
+ * `setState` dropped (issue #726). NOT one: the guard's original single,
+ * immediate read cannot tell a genuinely dropped write from Linear's own
+ * read-after-write lag, and a consumer wave-start dispatch was aborted
+ * mid-roster by exactly that confusion — the guard threw on the fourth of
+ * four rows, a read seconds later showed the new state, and the retry was a
+ * no-op that confirmed it. Bounded, never open-ended: the guard exists to
+ * make a real silent drop LOUD, and a retry loop with no ceiling would
+ * quietly re-acquire the silence it was built to break.
+ */
+const VERIFY_READ_BACK_ATTEMPTS = 4;
+
+/**
+ * The pause between two read-backs of the verify-after-write guard
+ * (issue #726). Times {@link VERIFY_READ_BACK_ATTEMPTS} − 1 gaps, this is the
+ * whole window the guard is willing to wait for Linear's read side to catch
+ * up ({@link VERIFY_READ_BACK_WINDOW_MS}). Sized against the observed
+ * incident, where the very next command in the same shell already read the
+ * new state: a window of a second and a half absorbs that lag without
+ * stretching a genuinely-dropped write's failure report into something a
+ * dispatch would notice.
+ */
+const VERIFY_READ_BACK_DELAY_MS = 500;
+
+/**
+ * The elapsed bound the guard reports and the tests pin: the total time
+ * spanned by the gaps between {@link VERIFY_READ_BACK_ATTEMPTS} read-backs
+ * (the first one is immediate, so there are `attempts − 1` gaps).
+ */
+const VERIFY_READ_BACK_WINDOW_MS =
+  (VERIFY_READ_BACK_ATTEMPTS - 1) * VERIFY_READ_BACK_DELAY_MS;
+
+/** The real delay used in production — replaceable via `LinearIssuesStoreOptions.sleep` (test seam). */
+const realSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * Thrown by {@link LinearIssuesStore.transition} when a `setState` call
- * reported success but an immediate read-back shows a DIFFERENT state
- * (consumer KW-F2, live retro 2026-07-21): on the first Linear consumer wave,
- * three consecutive `transition()` calls each got `success: true` back from
- * Linear, yet the issue's own stateHistory shows no state change for ~50
- * minutes — the coarse rung silently lied to every human and to
- * `listClaimed`-based planning until a human noticed before the engine did.
- * Root cause never reproduced; eventual consistency at Linear's write/read
- * edge is the leading suspicion (three identical `success:true` responses
- * make an adapter-side bug unlikely). This guard makes the whole failure
- * class visible AT THE WRITE SITE instead of leaving it to a human: one extra
- * read per transition, thrown loud with the issue id and both state names so
- * the caller can retry or flag rather than silently drift.
+ * reported success but EVERY read-back across the guard's bounded retry
+ * window still shows a DIFFERENT state (consumer KW-F2, live retro
+ * 2026-07-21): on the first Linear consumer wave, three consecutive
+ * `transition()` calls each got `success: true` back from Linear, yet the
+ * issue's own stateHistory shows no state change for ~50 minutes — the coarse
+ * rung silently lied to every human and to `listClaimed`-based planning until
+ * a human noticed before the engine did. Root cause never reproduced;
+ * eventual consistency at Linear's write/read edge is the leading suspicion
+ * (three identical `success:true` responses make an adapter-side bug
+ * unlikely). This guard makes the whole failure class visible AT THE WRITE
+ * SITE instead of leaving it to a human: a few extra reads per transition,
+ * thrown loud with the issue id and both state names so the caller can retry
+ * or flag rather than silently drift.
+ *
+ * **Why the message names the attempt count and the elapsed bound
+ * (issue #726).** The same suspected eventual consistency that motivates the
+ * guard is also what once made it fire on a write that HAD landed, aborting a
+ * wave dispatch mid-roster: the guard's read raced Linear's read side and
+ * lost. The retry window is the fix; naming its two bounds in the message is
+ * how a later reader — who has only this string, in a dispatch log, hours
+ * later — can tell the two apart. "Still `Todo` after 4 read-backs over
+ * 1500ms" is evidence of a dropped write in a way "still `Todo` on one
+ * immediate read" never was.
  */
 export class LinearTransitionVerifyError extends Error {
   constructor(
     readonly issueId: string,
     readonly expectedState: string,
     readonly actualState: string,
+    /**
+     * How many read-backs were taken before giving up, and the window they
+     * spanned. OPTIONAL with the guard's own bounds as defaults, deliberately:
+     * this class is exported from the package root, so a consumer that
+     * constructs it with the original three arguments — the shape that existed
+     * before issue #726 — still compiles and still gets a coherent message.
+     */
+    readonly attempts: number = VERIFY_READ_BACK_ATTEMPTS,
+    readonly windowMs: number = VERIFY_READ_BACK_WINDOW_MS,
   ) {
     super(
       `LinearIssuesStore.transition(${issueId}): setState("${expectedState}") reported ` +
-        `success, but reading the issue back immediately shows state "${actualState}" — ` +
-        'the write was silently dropped (verify-after-write guard, consumer KW-F2).',
+        `success, but ${attempts} read-back(s) over ${windowMs}ms still show state ` +
+        `"${actualState}" — the write was silently dropped, not merely slow to read ` +
+        'back (verify-after-write guard, consumer KW-F2).',
     );
     this.name = 'LinearTransitionVerifyError';
   }
@@ -206,6 +264,25 @@ export interface LinearIssuesStoreOptions {
   states?: Partial<LinearStateMap>;
   /** Schema category → existing consumer label name (e.g. `{bug:'Bug'}`, ADR-0020). */
   categoryLabels?: Record<string, string>;
+  /**
+   * The delay the transition verify-after-write guard waits between two
+   * read-backs (issue #726) — a pure TEST SEAM, defaulting to a real
+   * `setTimeout`. Injected so the suite can pin the guard's retry bounds by
+   * RECORDING the requested pauses instead of living through them: a spec that
+   * genuinely slept for the window would be measuring the clock, and the bound
+   * it "pins" would be unfalsifiable in any reasonable test runtime.
+   *
+   * Deliberately the ONLY new knob here. The retry bounds themselves stay
+   * module-private named constants rather than config: this options type is a
+   * published contract (semver), the incident that motivated the window is a
+   * property of Linear's own read side rather than of any one consumer's
+   * workspace, and a per-consumer bound would make the failure report ("4
+   * read-backs over 1500ms") mean something different in every repo that
+   * quotes it. A caller that needs the bounds reads them off
+   * {@link LinearTransitionVerifyError.attempts} / `.windowMs`, which the guard
+   * stamps onto every rejection it throws.
+   */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class LinearIssuesStore implements IssueStore {
@@ -215,6 +292,8 @@ export class LinearIssuesStore implements IssueStore {
   private readonly triageSchema: TriageSchema;
   private readonly states: LinearStateMap;
   private readonly categoryLabels: Record<string, string>;
+  /** The verify-after-write guard's pause between read-backs (issue #726) — real `setTimeout` unless injected. */
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(opts: LinearIssuesStoreOptions) {
     this.api = opts.api;
@@ -222,6 +301,7 @@ export class LinearIssuesStore implements IssueStore {
     this.triageSchema = opts.triageSchema ?? DEFAULT_TRIAGE_SCHEMA;
     this.states = { ...DEFAULT_LINEAR_STATES, ...opts.states };
     this.categoryLabels = opts.categoryLabels ?? {};
+    this.sleep = opts.sleep ?? realSleep;
   }
 
   async create(input: CreateInput): Promise<string> {
@@ -494,12 +574,74 @@ export class LinearIssuesStore implements IssueStore {
     // Verify-after-write (consumer KW-F2, live retro 2026-07-21): a
     // success-reported `setState` can silently drop the write (see
     // {@link LinearTransitionVerifyError} for the incident this guards
-    // against). One extra read per flip makes the entire failure class
-    // visible at the write site — the skill-side read-backs used as a
+    // against). Reading the state back at the write site makes the entire
+    // failure class visible there — the skill-side read-backs used as a
     // stopgap during that wave saw zero further incidents once this landed.
-    const actual = (await this.api.getIssue(id)).stateName;
-    if (actual !== expected) {
-      throw new LinearTransitionVerifyError(id, expected, actual);
+    //
+    // BOUNDED RETRY, not one immediate read (issue #726). The single read this
+    // loop replaces could not tell a dropped write from Linear's own
+    // read-after-write lag, and it lost that race in the field: a consumer's
+    // `wave-start` dispatch flip aborted mid-roster on a transition that HAD
+    // landed — the very next command read the new state, and the retry was a
+    // no-op. The cost of that false positive is asymmetric and structural: the
+    // dispatch flip writes the spine row first and the tracker rung second, so
+    // an abort here manufactures exactly the torn state the write-ahead
+    // ordering exists to make recoverable, and unattended it reads as a hard
+    // failure on a row that was fine. A retry is not a weakening of the guard:
+    // it re-READS, and never re-WRITES, so a genuinely dropped write can never
+    // be papered over by a second mutation — the state simply never arrives,
+    // every attempt sees the old value, and the guard still throws.
+    let actual = '';
+    for (let attempt = 1; attempt <= VERIFY_READ_BACK_ATTEMPTS; attempt += 1) {
+      // The first read stays immediate — the happy path pays nothing, which is
+      // what keeps this affordable on every flip of every wave.
+      if (attempt > 1) await this.sleep(VERIFY_READ_BACK_DELAY_MS);
+      actual = (await this.api.getIssue(id)).stateName;
+      if (actual === expected) {
+        if (attempt > 1) await this.discloseVerifyRetry(id, expected, attempt);
+        return;
+      }
+    }
+    throw new LinearTransitionVerifyError(
+      id,
+      expected,
+      actual,
+      VERIFY_READ_BACK_ATTEMPTS,
+      VERIFY_READ_BACK_WINDOW_MS,
+    );
+  }
+
+  /**
+   * Disclose a transition that only verified on a LATER read-back (issue
+   * #726) — the loop above resolved, so nothing is wrong and nothing is
+   * thrown, but the fact that this workspace's read side lagged the write is
+   * precisely the evidence the next investigation will want, and a retry that
+   * left no trace would make the whole failure class invisible again from the
+   * other side.
+   *
+   * A marker comment on the issue, because that is how this store already
+   * surfaces a non-fatal observation — the same shape as the opt-in
+   * done-state fallback advisory (FOR-13) and the needs-attention payload
+   * (ADR-0006): an HTML marker a later reader (or a grep) can find, then
+   * plain prose. The engine has no logger seam, so the tracker IS the log.
+   *
+   * Best-effort, in the ADR-0004 / `mirrorBlockedBy` class: the transition it
+   * annotates has already been verified as landed, so a rejected `addComment`
+   * must never turn a successful flip into a thrown one. Only posted on a
+   * retry — a first-read success writes nothing at all.
+   */
+  private async discloseVerifyRetry(
+    id: string,
+    expected: string,
+    attempt: number,
+  ): Promise<void> {
+    try {
+      await this.api.addComment(
+        id,
+        renderVerifyRetryAdvisory(expected, attempt, (attempt - 1) * VERIFY_READ_BACK_DELAY_MS),
+      );
+    } catch {
+      // swallow — see the doc above: the state write is the authoritative one.
     }
   }
 
@@ -1500,6 +1642,38 @@ function renderDoneStateFallbackAdvisory(prUrl: string, doneState: string): stri
       'mode.** This transition was forced by the opt-in `doneState` fallback ' +
       'config instead; if this workspace gains the integration later, unset ' +
       'the mapping so `done` goes back to being fully derived.',
+  ];
+  return lines.join('\n');
+}
+
+/**
+ * Render the advisory posted when a transition verified only on a LATER
+ * read-back (issue #726) — the observable trace of a read-after-write lag
+ * that the bounded retry window absorbed. Deliberately NOT alarming: nothing
+ * failed, the state is where the caller asked for it, and the comment exists
+ * so that "this workspace's reads lag its writes" is a fact somebody can
+ * find rather than a silence. If these accumulate on a workspace, the window
+ * is the thing to re-measure; if none ever appear, the guard's original
+ * single immediate read was sufficient there all along.
+ */
+function renderVerifyRetryAdvisory(
+  expectedState: string,
+  attempt: number,
+  waitedMs: number,
+): string {
+  const lines = [
+    '<!-- wave-transition-verify-retry -->',
+    `ℹ️ **Transition to "${expectedState}" verified on read-back ${attempt}** ` +
+      `(after ~${waitedMs}ms).`,
+    '',
+    'The state write reported success but the first read-back still showed the ' +
+      'old state — Linear\'s read side lagged its write side. The verify-after-write ' +
+      'guard retried within its bounded window and the state was confirmed, so the ' +
+      'transition is landed and nothing here needs action.',
+    '',
+    'Recorded because a retried verification is otherwise invisible: this note is ' +
+      'the evidence that distinguishes a slow read from a genuinely dropped write ' +
+      '(consumer KW-F2).',
   ];
   return lines.join('\n');
 }
