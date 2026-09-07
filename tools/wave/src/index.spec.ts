@@ -706,6 +706,35 @@ const WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT = [
 ];
 
 /**
+ * The VALUE half of the REVIEW-REF sweep (issue #732) — worktree-cleanup.ts's
+ * fifth population, and the first that is not a path: the `refs/review/<id>`,
+ * `refs/review/sib/<id>` and `refs/sib/<id>` refs a Reviewer fetches a branch
+ * tip into, which no pass in the module previously reached at all. Sorted, as
+ * the probe sorts.
+ *
+ * Its own family rather than an append to the reconciliation list above, for the
+ * reason that list's own doc comment gives: that constant records what issue
+ * #376 decided at ITS anchor, and folding a later sweep into it would rewrite
+ * that decision into one it never made.
+ *
+ * Six names — the list → plan → execute trio, the one-shot convenience, the
+ * default git seam, and the namespace constant the operator-facing close phase
+ * cites. The TYPE half (`ReviewRef`, `ReviewRefOps`, `ReviewRefSweepPlan`,
+ * `ReviewRefSweepResult`, `ReviewRefListing`, `ReviewRefSweepOptions`,
+ * `ReviewRefNamespace`, `ReviewRefSkipReason`) is erased at runtime and
+ * therefore invisible to this enumeration; it is pinned by `tsc --noEmit`
+ * through worktree-cleanup.spec.ts's own root-import block instead.
+ */
+const REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT = [
+  'REVIEW_REF_NAMESPACE_PREFIXES',
+  'defaultReviewRefOps',
+  'executeReviewRefSweep',
+  'listReviewRefs',
+  'planReviewRefSweep',
+  'sweepReviewRefs',
+];
+
+/**
  * The `wave-md-rw` names the root re-exported BEFORE issue #323, recorded the
  * same way and for the same reason as the worktree-cleanup baseline above:
  * `wave-md-rw` exports far more than the barrel re-exports (every targeted
@@ -1115,6 +1144,7 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   HUMAN_LANE_FAMILY_ADDED_AT_ROOT.length +
   MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT.length +
   WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT.length +
+  REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT.length +
   WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT.length +
   BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length +
   WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length +
@@ -1276,6 +1306,8 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
         // The second reconciliation wave (issue #376) — see that constant's
         // own doc comment.
         ...WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT,
+        // The review-ref sweep (issue #732) — likewise its own recorded family.
+        ...REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT,
       ].sort(),
     );
 
@@ -1285,6 +1317,7 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
         ...COMMAND_LINE_FAMILY_ADDED_AT_ROOT,
         ...MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT,
         ...WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT,
+        ...REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT,
       ].sort(),
     );
   });

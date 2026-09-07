@@ -86,6 +86,23 @@
  *                    forces exit 1 (issue #417), the same as every other
  *                    incomplete outcome above — it used to reach the JSON and
  *                    no exit code at all.
+ *                    --orphans finally carries the REVIEW-REF sweep (issue
+ *                    #732), under `orphans.reviewRefs`: the refs a Reviewer
+ *                    fetches a branch tip into — refs/review/<id>,
+ *                    refs/review/sib/<id> and refs/sib/<id> — which outlive the
+ *                    worktree, the local branch and the remote branch alike, and
+ *                    which no other pass here reaches (187 had accumulated in one
+ *                    shared .git before a human swept them by hand). ONE plan
+ *                    object again: a plan under --dry-run, a full result on the
+ *                    real run. Scoped by the LIVE ROW IDS read off the same
+ *                    --wave spine the branch filter comes from — a ref belonging
+ *                    to a live row is never deleted (`live-row`), a ref name that
+ *                    does not yield exactly one row-id segment is never guessed
+ *                    at (`unresolvable-row`), and without a spine the sweep FAILS
+ *                    CLOSED and removes nothing at all (`live-rows-unknown`).
+ *                    Everything else is deleted and counted; a delete that FAILS
+ *                    forces exit 1 like every other incomplete outcome, while the
+ *                    three refusals never do.
  *
  *                    --detached (issue #238) adds the THIRD population: git-
  *                    REGISTERED worktrees under the worktrees root whose HEAD is
@@ -213,7 +230,11 @@
  *   0 — success (nothing to remove, or all selected removed cleanly). The
  *       worktreeCount advisory NEVER affects this — it is advisory by design.
  *   1 — completed with per-worktree removal errors (registered GC, --detached
- *       sweep, or --orphans sweep)
+ *       sweep, or --orphans sweep), a failed Scribe-payload removal
+ *       (orphans.scratch.errors, issue #417), or a failed review-ref delete
+ *       (orphans.reviewRefs.errors, issue #732). The review-ref sweep's three
+ *       REFUSALS — live-row, unresolvable-row, live-rows-unknown — never affect
+ *       this: a refusal is accounting, not an unfinished attempt.
  *   2 — usage / unexpected error
  *
  * verdict-acked (FOR-17 — the dead --acked wire, ADR-0004) — the single-owner
@@ -430,6 +451,16 @@ import {
   // together — a `worktreeCount` printed alone is the model that sent an
   // operator sweeping worktrees for a megabyte-of-argv failure.
   checkCommandLineSizeAdvisory,
+  // The review-ref sweep (issue #732) — imported as its list → plan → execute
+  // TRIO for the same reason the Scribe-scratch and detached sweeps above are,
+  // and never as the one-shot `sweepReviewRefs`: a one-shot's plan is not
+  // observable from outside, and this verb's `--dry-run` branch returns before
+  // any execute, so an unpreviewable population would be one a dry run is silent
+  // on rather than clean on. The one-shot stays the programmatic form and rides
+  // the package-root barrel for out-of-tree callers.
+  listReviewRefs,
+  planReviewRefSweep,
+  executeReviewRefSweep,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
@@ -1169,6 +1200,55 @@ function resolveBranchFilter(
 }
 
 /**
+ * Derive the LIVE ROW IDS for `worktree-cleanup`'s review-ref sweep (issue
+ * #732) from `--wave <spine-path>`, or `undefined` when no spine was supplied.
+ *
+ * The refs this feeds are keyed by ROW ID, not by branch name, so the branch set
+ * {@link resolveBranchFilter} returns cannot answer the question: a Reviewer
+ * fetches `origin <branch>` into `refs/review/<id>`, and the id is the spine's
+ * own row key. `requireBranchesByIssueId(readSpine(...))` is keyed by exactly
+ * that key, verbatim and unparsed (a row id is OPAQUE, ADR-0001), so the map's
+ * KEYS are the answer where its VALUES are the branch filter's.
+ *
+ * It reads the spine a second time rather than widening `resolveBranchFilter`'s
+ * return shape, deliberately: that function's ONE job is to narrow the cleanup
+ * scope and its fail-closed contract is load-bearing (issue #141 — an empty
+ * filter used to mean "clean every worktree in the repo, including a sibling
+ * wave's"). Reading twice costs one small file parse; re-plumbing a
+ * safety-critical function to carry a second, unrelated payload does not.
+ *
+ * FAIL CLOSED, same as its sibling. Any outcome that leaves no id — no `--wave`
+ * at all, an unreadable spine, a reader that yields nothing — returns
+ * `undefined`, which the sweep reads as "the live wave is unknown" and answers
+ * by removing NOTHING (every ref skipped `live-rows-unknown`). It never throws:
+ * a spine that is genuinely broken has already been refused by
+ * `resolveBranchFilter`, which runs first and turns it into an exit-2 usage
+ * error; there is no path on which this function is the one to discover it, and
+ * a second throw here could only ever turn one message into two.
+ */
+function resolveLiveRowIds(
+  args: string[],
+  repoRoot: string,
+): string[] | undefined {
+  let waveSpinePath: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--wave' && i + 1 < args.length) {
+      waveSpinePath = args[i + 1];
+      i++;
+    }
+  }
+  if (waveSpinePath === null) return undefined;
+
+  try {
+    const source = readFileSync(resolve(repoRoot, waveSpinePath), 'utf-8');
+    const ids = Object.keys(requireBranchesByIssueId(readSpine(source)));
+    return ids.length > 0 ? ids : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Run the `worktree-cleanup` subcommand — a thin router to the worktree-cleanup
  * deep module (#57). Lists agent worktrees, plans the clean-only removal set,
  * and (unless `--dry-run`) executes it. All git side-effects live in the module
@@ -1489,6 +1569,35 @@ function runWorktreeCleanup(args: string[]): number {
       ? planScribeScratchSweep(listScribeScratchEntries(repoRoot))
       : null;
 
+    // The review-ref sweep (issue #732) rides the SAME `--orphans` flag and
+    // reports under the SAME `orphans` key as the scratch sweep, and its plan is
+    // computed HERE, above the `--dry-run` branch, for exactly that sweep's
+    // reason: preview and execution must share ONE plan object rather than two
+    // calls that happen to agree.
+    //
+    // A FIFTH population, and the first that is not a path at all: the
+    // `refs/review/<id>`, `refs/review/sib/<id>` and `refs/sib/<id>` refs a
+    // Reviewer fetches a branch tip into. They outlive the worktree (removed
+    // above), the local branch (swept below) and the remote branch (deleted by
+    // the merge), and no pass in this verb previously reached a ref namespace at
+    // all — 187 of them had accumulated in one shared `.git` before a human swept
+    // them by hand with `git update-ref -d`.
+    //
+    // Scoped by `liveRowIds`, derived from the SAME `--wave` spine the branch
+    // filter is derived from — see `resolveLiveRowIds` for why the ids come from
+    // the spine's KEYS rather than from the branch names. Absent a spine the set
+    // is undefined and the sweep FAILS CLOSED: it removes nothing and reports
+    // every ref skipped `live-rows-unknown`, which is the only honest answer when
+    // this run cannot tell its own wave's refs from a sibling wave's.
+    //
+    // Read BEFORE any removal, harmlessly: ref namespaces are disjoint by
+    // construction from every worktrees root and from the scratch directory, so
+    // nothing this verb removes can change what this listing saw.
+    const liveRowIds = orphans ? resolveLiveRowIds(args, repoRoot) : undefined;
+    const reviewRefPlan = orphans
+      ? planReviewRefSweep(listReviewRefs({ repoRoot }), liveRowIds)
+      : null;
+
     // Detached-HEAD scratchpad sweep (issue #238), gated on `--detached`. A
     // THIRD population, disjoint from neither of the two above by construction:
     // these worktrees ARE registered (so `listOrphanDirs` cannot see them) and
@@ -1559,6 +1668,13 @@ function runWorktreeCleanup(args: string[]): number {
     // nothing. Every population computed above is folded in here, in one place,
     // so a future population that forgets to join this union shows up as a
     // WRONGLY-unaccounted entry (loud) rather than as a silently-missing one.
+    //
+    // `reviewRefPlan` is the one population above that is deliberately NOT
+    // folded in, and its absence is a decision rather than the oversight this
+    // comment warns about: the reconciliation reconciles `git worktree list`'s
+    // COUNT against the worktree PATHS this run enumerated, and a ref has no
+    // path and is not a worktree. Joining it would add names to a set whose
+    // whole meaning is "registered worktrees nothing here claimed".
     const accountedPaths = [
       ...worktrees.map((wt) => wt.path),
       ...(orphanPlan !== null
@@ -1685,6 +1801,15 @@ function runWorktreeCleanup(args: string[]): number {
                     // and found nothing" stay as distinguishable in the preview
                     // as they already are in the result.
                     ...(scratchPlan !== null ? { scratch: scratchPlan } : {}),
+                    // The SAME `reviewRefPlan` object the real run hands to
+                    // `executeReviewRefSweep` (issue #732), carried WHOLE —
+                    // `namespaces` and `liveRowIds` included, so a preview that
+                    // selects nothing says WHY: because the namespaces held no
+                    // ref, because every ref belongs to a live row, or because
+                    // no spine named the live rows at all (`liveRowIds: null`).
+                    ...(reviewRefPlan !== null
+                      ? { reviewRefs: reviewRefPlan }
+                      : {}),
                   },
                 }
               : {}),
@@ -1745,6 +1870,19 @@ function runWorktreeCleanup(args: string[]): number {
     // sweep under its own key.
     const scratchResult =
       scratchPlan !== null ? executeScribeScratchSweep(scratchPlan) : null;
+
+    // Execute EXACTLY the `reviewRefPlan` object the `--dry-run` branch prints
+    // (issue #732). `repoRoot` IS passed, unlike the two calls above: a ref has
+    // no absolute path for the plan entry to carry, so the deleting seam has to
+    // be pointed at the repository whose `.git` holds it. Reported under
+    // `orphans.reviewRefs` — additive to the orphan-DIRECTORY numbers and never
+    // merged into them, the same reasoning that keeps `orphans.scratch` and
+    // `detached` under their own keys: a `live-row` refusal read as an
+    // orphan-directory skip would be actively misleading.
+    const reviewRefResult =
+      reviewRefPlan !== null
+        ? executeReviewRefSweep(reviewRefPlan, { repoRoot })
+        : null;
 
     // Execute EXACTLY the `detachedPlan` object the `--dry-run` branch above
     // prints — same `executeCleanup` as every other removal path, so the
@@ -1822,6 +1960,14 @@ function runWorktreeCleanup(args: string[]): number {
                 orphans: {
                   ...orphanResult,
                   ...(scratchResult !== null ? { scratch: scratchResult } : {}),
+                  // The review-ref sweep's own whole result (issue #732) —
+                  // `removed` / `skipped`-with-reason / `errors`, plus the
+                  // `namespaces` it looked under and the `liveRowIds` it spared.
+                  // A reader can tell what was found, what was removed, and what
+                  // was left and why, without re-deriving any of it.
+                  ...(reviewRefResult !== null
+                    ? { reviewRefs: reviewRefResult }
+                    : {}),
                 },
               }
             : {}),
@@ -1878,12 +2024,24 @@ function runWorktreeCleanup(args: string[]): number {
     // ADR-0035 an additive report key is one thing and a new failure condition
     // on a shipped exit contract is another. Same standing as `worktreeCount`
     // and `commandLine`: reported loudly, never fatal.
+    //
+    // `orphans.reviewRefs.errors` joins the list on the same reading (issue
+    // #732): a ref this run selected and then failed to delete is exactly as
+    // incomplete an outcome as a directory it failed to remove. This is not a
+    // change to the shipped exit contract in the sense ADR-0035 guards — the
+    // pass is new, so no run that exits 0 today can start exiting 1 because of
+    // it, and its REFUSALS (`live-row`, `unresolvable-row`,
+    // `live-rows-unknown`) are deliberately NOT terms here: a refusal is
+    // something this sweep decided not to do, never something it tried and did
+    // not finish, and the standing rule (ADR-0042, and `unaccounted` directly
+    // above) is that accounting is reported loudly and never made fatal.
     const anyFailure =
       result.errors.length > 0 ||
       result.deregisteredNotDeleted.length > 0 ||
       result.erroredStillListed.length > 0 ||
       (orphanResult !== null && orphanResult.errors.length > 0) ||
       (scratchResult !== null && scratchResult.errors.length > 0) ||
+      (reviewRefResult !== null && reviewRefResult.errors.length > 0) ||
       (detachedResult !== null &&
         (detachedResult.errors.length > 0 ||
           detachedResult.deregisteredNotDeleted.length > 0 ||

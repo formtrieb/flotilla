@@ -4389,6 +4389,403 @@ function collectLiveWorktreeBasenames(
   return basenames;
 }
 
+// ─── Review-ref sweep (issue #732 — the namespaces Reviewers fetch into) ─────
+//
+// A FIFTH population, and the first one that is not a path at all. Every sweep
+// above answers "what is still on disk"; this one answers "what is still in the
+// shared `.git`".
+//
+// The Reviewer never reads `FETCH_HEAD` — a single ref shared by the whole
+// checkout, which a concurrent sibling Reviewer's own fetch can overwrite
+// between the fetch and the read (a live occurrence handed back a plausible,
+// wrong two-file diff with no error). The fix was a STABLE NAMED ref per row:
+// `git fetch origin <branch>:refs/review/<id>` for the branch under review, and
+// `refs/review/sib/<id>` for each sibling tip the merge-tree prediction reads.
+// A Worker running that same sibling prediction for itself has also been
+// observed reaching for a third, ad-hoc namespace, `refs/sib/<id>`.
+//
+// Those refs are exactly as durable as the fix required them to be, and nothing
+// has ever removed them. They outlive the worktree (removed at close), the local
+// branch (swept by the orphan-branch pass above) and the remote branch (deleted
+// by the merge) — no pass in this module reaches a ref namespace at all. The
+// measured accumulation at one wave's close: 187 refs under the three
+// namespaces, the oldest rows from six weeks earlier, swept by hand with
+// `git update-ref -d`. A person reaching for a plumbing ref-delete command is
+// the finding; the refs themselves are harmless individually and unbounded
+// collectively, and a stale `refs/review/<id>` left from an earlier wave is
+// precisely what a later Reviewer's own fetch silently overwrites or, on a
+// name clash with a directory/file conflict, trips over.
+//
+// THE SWEEP OWES ACCOUNTING, NEVER REMOVAL (ADR-0042). Three refusals, each
+// with its own named reason on the entry rather than a silent drop:
+//
+//   - `unresolvable-row` — the ref name does not yield exactly one row-id
+//     segment. A row id is OPAQUE (ADR-0001): this module matches it, never
+//     parses it, so a ref carrying more (or fewer) segments than the three
+//     documented shapes is something whose owner cannot be named — and an
+//     unreadable name is never an argument for deletion.
+//   - `live-rows-unknown` — the caller did not say which rows are live. FAIL
+//     CLOSED, the same rule the `worktree-cleanup` branch scoping already
+//     lives by: an unscoped answer here would sweep a sibling wave's refs
+//     mid-review, so an unknown live set removes NOTHING and says so.
+//   - `live-row` — the ref belongs to a row in the live wave. Its Reviewer may
+//     still be reading it; a re-dispatch may still be about to.
+//
+// Everything else — a ref whose row is resolvable and is not in the live wave —
+// is removed and counted.
+
+/**
+ * The ref-name prefixes this sweep enumerates (issue #732), passed verbatim to
+ * `git for-each-ref`. `refs/review` covers BOTH the branch-under-review
+ * namespace and the `refs/review/sib/` sibling namespace nested inside it;
+ * `refs/sib` is the separate, flat namespace a Worker's own sibling prediction
+ * has been observed fetching into.
+ *
+ * Exported because it is the authority the operator-facing close phase cites —
+ * the same reason {@link SCRIBE_SCRATCH_RELATIVE_DIR} and
+ * {@link WORKTREE_COUNT_ADVISORY_THRESHOLD} are exported: a consumer that wants
+ * to state the swept namespaces, or check a ref of its own against them, must be
+ * able to read them rather than transcribe them.
+ */
+export const REVIEW_REF_NAMESPACE_PREFIXES: readonly string[] = [
+  'refs/review',
+  'refs/sib',
+];
+
+/**
+ * Which of the three namespaces a listed ref sits in (issue #732). Reported per
+ * entry so a reader can tell a branch-under-review ref from a sibling-tip ref
+ * without re-parsing the name.
+ */
+export type ReviewRefNamespace = 'review' | 'review-sib' | 'sib';
+
+/** Machine-readable cause a review-ref skip is tagged with (issue #732). */
+export type ReviewRefSkipReason =
+  | 'live-row'
+  | 'unresolvable-row'
+  | 'live-rows-unknown';
+
+/** One ref found under {@link REVIEW_REF_NAMESPACE_PREFIXES} (issue #732). */
+export interface ReviewRef {
+  /** The full ref name, exactly as git printed it (e.g. `refs/review/732`). */
+  ref: string;
+  /** Which namespace it sits in. */
+  namespace: ReviewRefNamespace;
+  /**
+   * The row id the ref name carries, or `null` when the name does not yield
+   * exactly one id segment. `null` is never guessed at — it routes the entry to
+   * a `unresolvable-row` skip.
+   */
+  rowId: string | null;
+  /**
+   * Present only on a SKIPPED entry: the machine-readable skip cause. Absent on
+   * a selected/removed entry.
+   */
+  reason?: ReviewRefSkipReason;
+}
+
+/** What {@link listReviewRefs} found, and where it looked (issue #732). */
+export interface ReviewRefListing {
+  /** The ref-name prefixes this listing enumerated — carried so "swept nothing" names its own scope. */
+  namespaces: string[];
+  /** Every ref found under those prefixes, classified. */
+  refs: ReviewRef[];
+}
+
+/** The review-ref sweep plan — what is deleted, what is left and why (issue #732). */
+export interface ReviewRefSweepPlan {
+  /** Carried through from the listing verbatim. */
+  namespaces: string[];
+  /**
+   * The live wave's row ids the plan was computed against, sorted — or `null`
+   * when the caller declared none, in which case NOTHING is selected and every
+   * ref is skipped `live-rows-unknown`.
+   */
+  liveRowIds: string[] | null;
+  /** Refs selected for deletion (resolvable row, not in the live wave). */
+  selected: ReviewRef[];
+  /** Refs skipped, each carrying a `reason`. */
+  skipped: ReviewRef[];
+}
+
+/** Result of executing a review-ref sweep (issue #732). */
+export interface ReviewRefSweepResult {
+  /** Carried through from the plan verbatim. */
+  namespaces: string[];
+  /** Carried through from the plan verbatim — `null` means the live set was undeclared. */
+  liveRowIds: string[] | null;
+  /** Refs successfully deleted. */
+  removed: ReviewRef[];
+  /** Refs left in place — each carries a `reason`. */
+  skipped: ReviewRef[];
+  /**
+   * Deletion failures, collected per ref and never swallowed. A non-empty list
+   * is an INCOMPLETE OUTCOME and the `worktree-cleanup` CLI folds it into its
+   * non-zero exit verdict, exactly as it folds in the orphan-directory and
+   * Scribe-scratch removal errors beside it.
+   */
+  errors: Array<{ ref: string; message: string }>;
+}
+
+/**
+ * Injectable git seam for the review-ref sweep (issue #732), mirroring the
+ * {@link OrphanBranchSweepOps} pattern. Both halves are injected — the LISTING
+ * as well as the DELETION — because a sweep whose listing is hard-wired to a
+ * real repository can only be tested by building one, and the test then measures
+ * git rather than this module's classification and refusal rules.
+ */
+export interface ReviewRefOps {
+  /**
+   * Every ref currently under {@link REVIEW_REF_NAMESPACE_PREFIXES}, as full
+   * ref names. Order is not significant; the sweep preserves whatever it gets.
+   */
+  listRefs(): string[];
+  /**
+   * Delete one ref by full name. MUST THROW on failure — deliberately unlike
+   * {@link BranchHygieneOps.deleteBranch}, whose contract is an idempotent
+   * swallow. A branch delete is best-effort hygiene riding on a removal that
+   * already happened; a ref delete IS this sweep's whole work, so a failure that
+   * returned quietly would leave the ref on disk while the result reported it
+   * removed. Throwing is what lets {@link executeReviewRefSweep} put it in
+   * `errors`.
+   */
+  deleteRef(ref: string): void;
+}
+
+/** Options for the review-ref sweep (issue #732). */
+export interface ReviewRefSweepOptions {
+  /** Absolute repo root the git calls run against. Defaults to `process.cwd()`. */
+  repoRoot?: string;
+  /**
+   * The row ids of the LIVE wave — the refs this sweep must never touch.
+   *
+   * Undefined, or empty, means the caller could not say, and the sweep then
+   * removes NOTHING (every ref is skipped `live-rows-unknown`). That is the
+   * deliberate fail-closed reading, and empty is folded into it on purpose: "I
+   * know the live wave and it has zero rows" is not a state a real caller
+   * reaches — the CLI derives this set from a spine whose branch scoping already
+   * refuses to resolve to nothing — while the cost of reading an accidentally
+   * empty set as "sweep everything" is a sibling wave's Reviewer losing the ref
+   * it is mid-diff against.
+   */
+  liveRowIds?: readonly string[];
+  /** Injectable git seam. Defaults to {@link defaultReviewRefOps}. */
+  ops?: ReviewRefOps;
+}
+
+/**
+ * Classify ONE ref name into its namespace and row id, or `null` when the name
+ * sits under none of {@link REVIEW_REF_NAMESPACE_PREFIXES} at all (not this
+ * sweep's population — never listed, never a skip entry, the same way
+ * {@link listScribeScratchEntries} never descends into a subdirectory).
+ *
+ * The three recognized shapes, and nothing else:
+ *   - `refs/review/<id>`     → `review`
+ *   - `refs/review/sib/<id>` → `review-sib`
+ *   - `refs/sib/<id>`        → `sib`
+ *
+ * `<id>` must be EXACTLY ONE path segment. A row id is opaque (ADR-0001) and is
+ * therefore never parsed, only delimited — so a name carrying extra segments
+ * (`refs/review/a/b`) or none at all (`refs/sib/`) yields `rowId: null` rather
+ * than a guess at which part of it is the id.
+ *
+ * `refs/review/sib` with NO further segment resolves as `review` / `rowId: 'sib'`
+ * — a row whose id is literally `sib`. That reading is unambiguous rather than
+ * merely convenient: git's own directory/file ref rule makes `refs/review/sib`
+ * and `refs/review/sib/<id>` mutually exclusive in one repository, so the flat
+ * form can only ever have been created as a row's own ref.
+ */
+function classifyReviewRef(ref: string): ReviewRef | null {
+  const isSingleSegment = (s: string): boolean => s.length > 0 && !s.includes('/');
+
+  if (ref.startsWith('refs/review/')) {
+    const rest = ref.slice('refs/review/'.length);
+    if (rest.startsWith('sib/')) {
+      const id = rest.slice('sib/'.length);
+      return {
+        ref,
+        namespace: 'review-sib',
+        rowId: isSingleSegment(id) ? id : null,
+      };
+    }
+    return { ref, namespace: 'review', rowId: isSingleSegment(rest) ? rest : null };
+  }
+
+  if (ref.startsWith('refs/sib/')) {
+    const id = ref.slice('refs/sib/'.length);
+    return { ref, namespace: 'sib', rowId: isSingleSegment(id) ? id : null };
+  }
+
+  return null;
+}
+
+/**
+ * List every ref under the three review/sibling namespaces, classified
+ * (issue #732). Read-only: {@link ReviewRefOps.deleteRef} is never called here.
+ *
+ * A repository where no Reviewer has ever fetched has no such refs at all, and
+ * an empty listing is the legitimate answer to that — not an error. The
+ * namespaces are carried on the listing so "found nothing" names the scope it
+ * found nothing in.
+ */
+export function listReviewRefs(
+  opts: ReviewRefSweepOptions = {},
+): ReviewRefListing {
+  const ops = opts.ops ?? defaultReviewRefOps(opts.repoRoot ?? process.cwd());
+  const refs: ReviewRef[] = [];
+  for (const name of ops.listRefs()) {
+    const classified = classifyReviewRef(name);
+    if (classified !== null) refs.push(classified);
+  }
+  return { namespaces: [...REVIEW_REF_NAMESPACE_PREFIXES], refs };
+}
+
+/**
+ * Build the review-ref sweep plan (issue #732) with ZERO mutating calls. The
+ * per-ref rule ordering, and why it is this order:
+ *
+ *   1. `rowId === null` → skipped `unresolvable-row`. Checked FIRST because it
+ *      is the ref's OWN property and holds whatever the caller declared; a ref
+ *      nobody can attribute is left in place under every scoping.
+ *   2. No live set declared → skipped `live-rows-unknown` (fail closed).
+ *   3. Row is in the live set → skipped `live-row`.
+ *   4. Otherwise → selected for deletion.
+ */
+export function planReviewRefSweep(
+  listing: ReviewRefListing,
+  liveRowIds?: readonly string[],
+): ReviewRefSweepPlan {
+  const live = new Set(liveRowIds ?? []);
+  const known = live.size > 0;
+
+  const selected: ReviewRef[] = [];
+  const skipped: ReviewRef[] = [];
+
+  for (const entry of listing.refs) {
+    if (entry.rowId === null) {
+      skipped.push({ ...entry, reason: 'unresolvable-row' });
+      continue;
+    }
+    if (!known) {
+      skipped.push({ ...entry, reason: 'live-rows-unknown' });
+      continue;
+    }
+    if (live.has(entry.rowId)) {
+      skipped.push({ ...entry, reason: 'live-row' });
+      continue;
+    }
+    selected.push(entry);
+  }
+
+  return {
+    namespaces: listing.namespaces,
+    liveRowIds: known ? [...live].sort() : null,
+    selected,
+    skipped,
+  };
+}
+
+/**
+ * Execute an already-computed {@link ReviewRefSweepPlan}: delete each selected
+ * ref through the SAME {@link ReviewRefOps} seam (so a caller that built the
+ * plan with a test double executes against that identical double). A dry run
+ * simply never calls this.
+ *
+ * A per-ref failure is collected in `errors` and never dropped — the whole
+ * reason {@link ReviewRefOps.deleteRef} is contracted to throw rather than to
+ * swallow the way the branch-hygiene delete does.
+ */
+export function executeReviewRefSweep(
+  plan: ReviewRefSweepPlan,
+  opts: ReviewRefSweepOptions = {},
+): ReviewRefSweepResult {
+  const ops = opts.ops ?? defaultReviewRefOps(opts.repoRoot ?? process.cwd());
+
+  const removed: ReviewRef[] = [];
+  const errors: Array<{ ref: string; message: string }> = [];
+
+  for (const entry of plan.selected) {
+    try {
+      ops.deleteRef(entry.ref);
+      removed.push(entry);
+    } catch (err) {
+      errors.push({ ref: entry.ref, message: describeError(err) });
+    }
+  }
+
+  return {
+    namespaces: plan.namespaces,
+    liveRowIds: plan.liveRowIds,
+    removed,
+    skipped: plan.skipped,
+    errors,
+  };
+}
+
+/**
+ * High-level review-ref convenience: list → plan → execute in one call
+ * (issue #732), mirroring {@link sweepScribeScratch} and
+ * {@link sweepOrphanBranches}. The {@link ReviewRefOps} seam is resolved EXACTLY
+ * once and shared by all three steps, so the plan that is executed is the plan
+ * that was listed.
+ *
+ * Idempotent: a re-run after everything eligible is swept finds no selectable
+ * ref and returns empty `removed`/`errors`.
+ */
+export function sweepReviewRefs(
+  opts: ReviewRefSweepOptions = {},
+): ReviewRefSweepResult {
+  const ops = opts.ops ?? defaultReviewRefOps(opts.repoRoot ?? process.cwd());
+  const listing = listReviewRefs({ ops });
+  const plan = planReviewRefSweep(listing, opts.liveRowIds);
+  return executeReviewRefSweep(plan, { ops });
+}
+
+/**
+ * Default {@link ReviewRefOps} backed by real git.
+ *
+ * The listing goes through `shellGit`, whose contract is to return stdout (and
+ * `''` on any failure) rather than to throw — correct here: a repository with no
+ * such refs and a `for-each-ref` that could not run are both "nothing to sweep",
+ * and neither is an outcome that should remove anything.
+ *
+ * The delete does NOT go through `shellGit`. It spawns directly so a non-zero
+ * exit becomes a THROW carrying the ref name and git's own message, which is
+ * what {@link executeReviewRefSweep} turns into an `errors` entry. Swallowing it
+ * — the shape {@link BranchHygieneOps.deleteBranch} deliberately uses for
+ * best-effort branch hygiene — would report a ref as removed while it is still
+ * in `.git`.
+ */
+export function defaultReviewRefOps(repoRoot: string): ReviewRefOps {
+  return {
+    listRefs(): string[] {
+      const raw = shellGit(
+        ['for-each-ref', '--format=%(refname)', ...REVIEW_REF_NAMESPACE_PREFIXES],
+        repoRoot,
+      );
+      return raw
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+    },
+    deleteRef(ref: string): void {
+      try {
+        execFileSync('git', ['update-ref', '-d', ref], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          timeout: 15_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        throw new Error(
+          `git update-ref -d ${ref} failed: ${describeError(err)}`,
+          { cause: err },
+        );
+      }
+    },
+  };
+}
+
 // ─── Crash-cleanup before redispatch (FOR-10) ───────────────────────────────
 
 /**

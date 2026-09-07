@@ -213,6 +213,15 @@ import {
   type OrphanBranchSweepPlan,
   type UnaccountedWorktree,
   type UnaccountedWorktreeReport,
+  // The review-ref sweep (issue #732).
+  REVIEW_REF_NAMESPACE_PREFIXES,
+  listReviewRefs,
+  planReviewRefSweep,
+  executeReviewRefSweep,
+  sweepReviewRefs,
+  defaultReviewRefOps,
+  type ReviewRefOps,
+  type ReviewRefSweepPlan,
 } from './worktree-cleanup';
 // The SAME five names, imported through the PACKAGE ROOT rather than the module
 // file directly — proves the barrel actually re-exports the detached-sweep trio,
@@ -237,6 +246,24 @@ import {
   // assertion in section 30b-i below is the other.
   type UnaccountedWorktree as UnaccountedWorktreeFromRoot,
   type UnaccountedWorktreeReport as UnaccountedWorktreeReportFromRoot,
+  // The review-ref sweep's root surface (issue #732) — same convention: the
+  // VALUES are compared by identity in section 37 below, and the TYPES being
+  // importable at all is what `tsc --noEmit` proves, since a type has nothing
+  // left to probe at runtime.
+  REVIEW_REF_NAMESPACE_PREFIXES as REVIEW_REF_NAMESPACE_PREFIXES_FROM_ROOT,
+  listReviewRefs as listReviewRefsFromRoot,
+  planReviewRefSweep as planReviewRefSweepFromRoot,
+  executeReviewRefSweep as executeReviewRefSweepFromRoot,
+  sweepReviewRefs as sweepReviewRefsFromRoot,
+  defaultReviewRefOps as defaultReviewRefOpsFromRoot,
+  type ReviewRefOps as ReviewRefOpsFromRoot,
+  type ReviewRefNamespace as ReviewRefNamespaceFromRoot,
+  type ReviewRefSkipReason as ReviewRefSkipReasonFromRoot,
+  type ReviewRef as ReviewRefFromRoot,
+  type ReviewRefListing as ReviewRefListingFromRoot,
+  type ReviewRefSweepPlan as ReviewRefSweepPlanFromRoot,
+  type ReviewRefSweepResult as ReviewRefSweepResultFromRoot,
+  type ReviewRefSweepOptions as ReviewRefSweepOptionsFromRoot,
 } from './index';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -8282,5 +8309,553 @@ describe('erroredStillListed names its survivors (issue #560)', () => {
     expect(deregistered.deregisteredNotDeleted).toHaveLength(1);
     expect(deregistered.deregisteredNotDeleted[0].survivors).toBeUndefined();
     expect(deregistered.erroredStillListed).toHaveLength(0);
+  });
+});
+
+// ─── 37. The review-ref sweep — a population with no path at all (#732) ──────
+//
+// Every other sweep in this file answers "what is still on disk". This one
+// answers "what is still in the shared `.git`": the `refs/review/<id>`,
+// `refs/review/sib/<id>` and `refs/sib/<id>` refs a Reviewer fetches a branch
+// tip into so it never has to read the checkout-wide `FETCH_HEAD`. They outlive
+// the worktree, the local branch and the remote branch alike, and no pass here
+// reached a ref namespace at all — 187 had accumulated in one shared `.git`
+// before a human swept them by hand with `git update-ref -d`.
+//
+// The seam is injected on BOTH halves — the listing as well as the deletion —
+// so these tests measure the classification and the three refusals rather than
+// measuring git. Section 37e then runs the whole thing against a REAL
+// repository with REAL refs, so the outcome is proven too and not only the rule.
+
+/** A `ReviewRefOps` double that lists a fixed set and records every delete. */
+function fakeReviewRefOps(
+  refs: string[],
+  failOn: ReadonlySet<string> = new Set(),
+): ReviewRefOps & { deleted: string[] } {
+  const deleted: string[] = [];
+  return {
+    deleted,
+    listRefs: () => [...refs],
+    deleteRef: (ref: string): void => {
+      if (failOn.has(ref)) {
+        throw new Error(`error: cannot lock ref '${ref}'`);
+      }
+      deleted.push(ref);
+    },
+  };
+}
+
+describe('review-ref sweep — listing + classification (issue #732)', () => {
+  it('classifies all three namespaces and delimits the row id in each', () => {
+    const listing = listReviewRefs({
+      ops: fakeReviewRefOps([
+        'refs/review/732',
+        'refs/review/sib/724',
+        'refs/sib/717',
+      ]),
+    });
+
+    expect(
+      listing.refs.map((r) => [r.ref, r.namespace, r.rowId]),
+    ).toEqual([
+      ['refs/review/732', 'review', '732'],
+      ['refs/review/sib/724', 'review-sib', '724'],
+      ['refs/sib/717', 'sib', '717'],
+    ]);
+  });
+
+  it('carries the enumerated namespaces on the listing — "found nothing" names its own scope', () => {
+    const listing = listReviewRefs({ ops: fakeReviewRefOps([]) });
+
+    expect(listing.refs).toEqual([]);
+    expect(listing.namespaces).toEqual([...REVIEW_REF_NAMESPACE_PREFIXES]);
+    expect(listing.namespaces).toEqual(['refs/review', 'refs/sib']);
+  });
+
+  it('an opaque row id is carried VERBATIM — dashes, letters, a tracker prefix are never parsed', () => {
+    const listing = listReviewRefs({
+      ops: fakeReviewRefOps([
+        'refs/review/FOR-432',
+        'refs/review/sib/abc-def-12',
+        'refs/sib/724.2',
+      ]),
+    });
+
+    expect(listing.refs.map((r) => r.rowId)).toEqual([
+      'FOR-432',
+      'abc-def-12',
+      '724.2',
+    ]);
+  });
+
+  it('a name that does not yield exactly ONE id segment resolves to rowId: null — never a guess', () => {
+    const listing = listReviewRefs({
+      ops: fakeReviewRefOps([
+        'refs/review/a/b', // two segments after the prefix, and not the sib shape
+        'refs/review/sib/a/b', // two segments after the sib prefix
+        'refs/sib/', // no id at all
+        'refs/review/sib/', // the sib prefix with no id
+      ]),
+    });
+
+    expect(listing.refs.map((r) => r.rowId)).toEqual([null, null, null, null]);
+    expect(listing.refs.map((r) => r.namespace)).toEqual([
+      'review',
+      'review-sib',
+      'sib',
+      'review-sib',
+    ]);
+  });
+
+  it('`refs/review/sib` with no further segment reads as a row whose id is literally "sib" — git\'s D/F rule makes that unambiguous', () => {
+    const listing = listReviewRefs({ ops: fakeReviewRefOps(['refs/review/sib']) });
+
+    expect(listing.refs).toEqual([
+      { ref: 'refs/review/sib', namespace: 'review', rowId: 'sib' },
+    ]);
+  });
+
+  it('a ref under NO review namespace is not this population and is never listed', () => {
+    const listing = listReviewRefs({
+      ops: fakeReviewRefOps([
+        'refs/heads/main',
+        'refs/remotes/origin/main',
+        'refs/tags/v2.4.0',
+        'refs/reviewers/732', // shares a prefix but not a path segment
+        'refs/review', // the namespace itself, no id
+        'refs/siblings/732',
+      ]),
+    });
+
+    expect(listing.refs).toEqual([]);
+  });
+
+  it('the listing NEVER deletes — the read half touches no ref', () => {
+    const ops = fakeReviewRefOps(['refs/review/732', 'refs/sib/717']);
+
+    listReviewRefs({ ops });
+
+    expect(ops.deleted).toEqual([]);
+  });
+});
+
+describe('review-ref sweep — the plan and its three refusals (issue #732)', () => {
+  function planFor(refs: string[], liveRowIds?: readonly string[]): ReviewRefSweepPlan {
+    return planReviewRefSweep(listReviewRefs({ ops: fakeReviewRefOps(refs) }), liveRowIds);
+  }
+
+  it('a ref belonging to a LIVE row is never selected — it is skipped `live-row`', () => {
+    const plan = planFor(['refs/review/732', 'refs/review/sib/732', 'refs/sib/732'], [
+      '732',
+    ]);
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/732', 'live-row'],
+      ['refs/review/sib/732', 'live-row'],
+      ['refs/sib/732', 'live-row'],
+    ]);
+    expect(plan.liveRowIds).toEqual(['732']);
+  });
+
+  it('a ref belonging to NO live row is selected — all three namespaces alike', () => {
+    const plan = planFor(
+      ['refs/review/601', 'refs/review/sib/598', 'refs/sib/514'],
+      ['732', '724'],
+    );
+
+    expect(plan.selected.map((r) => r.ref)).toEqual([
+      'refs/review/601',
+      'refs/review/sib/598',
+      'refs/sib/514',
+    ]);
+    expect(plan.skipped).toEqual([]);
+    expect(plan.liveRowIds).toEqual(['724', '732']); // sorted, deduplicated
+  });
+
+  it('BOTH directions in ONE plan — the live row is spared and the stale row is selected', () => {
+    const plan = planFor(['refs/review/732', 'refs/review/601'], ['732']);
+
+    expect(plan.selected.map((r) => r.ref)).toEqual(['refs/review/601']);
+    expect(plan.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/732', 'live-row'],
+    ]);
+  });
+
+  it('an UNRESOLVABLE ref is skipped `unresolvable-row` and left in place, even when a live set IS declared', () => {
+    const plan = planFor(['refs/review/a/b', 'refs/sib/'], ['732']);
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/a/b', 'unresolvable-row'],
+      ['refs/sib/', 'unresolvable-row'],
+    ]);
+  });
+
+  it('with NO live set declared the sweep FAILS CLOSED — nothing selected, every ref `live-rows-unknown`, liveRowIds null', () => {
+    const plan = planFor(['refs/review/601', 'refs/sib/514']);
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((r) => r.reason)).toEqual([
+      'live-rows-unknown',
+      'live-rows-unknown',
+    ]);
+    expect(plan.liveRowIds).toBeNull();
+  });
+
+  it('an EMPTY live set reads the same way — "zero live rows" is never taken as licence to sweep everything', () => {
+    const plan = planFor(['refs/review/601'], []);
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped[0].reason).toBe('live-rows-unknown');
+    expect(plan.liveRowIds).toBeNull();
+  });
+
+  it('`unresolvable-row` outranks `live-rows-unknown` — the ref\'s own property is reported, not the scoping', () => {
+    const plan = planFor(['refs/review/a/b', 'refs/review/601']);
+
+    expect(plan.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/a/b', 'unresolvable-row'],
+      ['refs/review/601', 'live-rows-unknown'],
+    ]);
+  });
+
+  it('the plan is PURE — building it deletes nothing', () => {
+    const ops = fakeReviewRefOps(['refs/review/601', 'refs/sib/514']);
+
+    const plan = planReviewRefSweep(listReviewRefs({ ops }), ['732']);
+
+    expect(plan.selected).toHaveLength(2);
+    expect(ops.deleted).toEqual([]);
+  });
+});
+
+describe('review-ref sweep — execution, counting and error collection (issue #732)', () => {
+  it('deletes exactly the selected refs and counts them in `removed`', () => {
+    const ops = fakeReviewRefOps(['refs/review/601', 'refs/review/732']);
+    const plan = planReviewRefSweep(listReviewRefs({ ops }), ['732']);
+
+    const result = executeReviewRefSweep(plan, { ops });
+
+    expect(ops.deleted).toEqual(['refs/review/601']);
+    expect(result.removed.map((r) => r.ref)).toEqual(['refs/review/601']);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('NEVER calls deleteRef for a skipped ref — the live-row refusal is mechanical, not merely reported', () => {
+    const ops = fakeReviewRefOps([
+      'refs/review/732',
+      'refs/review/sib/732',
+      'refs/review/a/b',
+    ]);
+    const plan = planReviewRefSweep(listReviewRefs({ ops }), ['732']);
+
+    const result = executeReviewRefSweep(plan, { ops });
+
+    expect(ops.deleted).toEqual([]);
+    expect(result.removed).toEqual([]);
+    expect(result.skipped).toHaveLength(3);
+  });
+
+  it('a deletion failure is COLLECTED in `errors`, never swallowed, and never counted as removed', () => {
+    const ops = fakeReviewRefOps(
+      ['refs/review/601', 'refs/sib/514'],
+      new Set(['refs/review/601']),
+    );
+    const plan = planReviewRefSweep(listReviewRefs({ ops }), ['732']);
+
+    const result = executeReviewRefSweep(plan, { ops });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].ref).toBe('refs/review/601');
+    expect(result.errors[0].message).toContain('cannot lock ref');
+    expect(result.removed.map((r) => r.ref)).toEqual(['refs/sib/514']);
+  });
+
+  it('one failure never aborts the pass — every remaining selected ref is still attempted', () => {
+    const ops = fakeReviewRefOps(
+      ['refs/review/601', 'refs/review/598', 'refs/sib/514'],
+      new Set(['refs/review/598']),
+    );
+    const plan = planReviewRefSweep(listReviewRefs({ ops }), ['732']);
+
+    const result = executeReviewRefSweep(plan, { ops });
+
+    expect(ops.deleted).toEqual(['refs/review/601', 'refs/sib/514']);
+    expect(result.errors.map((e) => e.ref)).toEqual(['refs/review/598']);
+  });
+
+  it('the result carries `namespaces` and `liveRowIds` through from the plan verbatim', () => {
+    const ops = fakeReviewRefOps(['refs/review/601']);
+    const plan = planReviewRefSweep(listReviewRefs({ ops }), ['732', '724']);
+
+    const result = executeReviewRefSweep(plan, { ops });
+
+    expect(result.namespaces).toEqual([...REVIEW_REF_NAMESPACE_PREFIXES]);
+    expect(result.liveRowIds).toEqual(['724', '732']);
+  });
+
+  it('sweepReviewRefs resolves the seam ONCE and runs list → plan → execute against that same double', () => {
+    const ops = fakeReviewRefOps(['refs/review/601', 'refs/review/732']);
+
+    const result = sweepReviewRefs({ ops, liveRowIds: ['732'] });
+
+    expect(ops.deleted).toEqual(['refs/review/601']);
+    expect(result.removed.map((r) => r.ref)).toEqual(['refs/review/601']);
+    expect(result.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/732', 'live-row'],
+    ]);
+  });
+
+  it('sweepReviewRefs without a live set removes nothing at all', () => {
+    const ops = fakeReviewRefOps(['refs/review/601', 'refs/sib/514']);
+
+    const result = sweepReviewRefs({ ops });
+
+    expect(ops.deleted).toEqual([]);
+    expect(result.removed).toEqual([]);
+    expect(result.liveRowIds).toBeNull();
+  });
+});
+
+describe('defaultReviewRefOps — real-git command shape (issue #732)', () => {
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+  });
+
+  it('listRefs invokes `git for-each-ref --format=%(refname) refs/review refs/sib` and parses the newline-split names', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'for-each-ref') {
+        return 'refs/review/601\nrefs/review/sib/598\nrefs/sib/514\n';
+      }
+      return '';
+    });
+
+    expect(defaultReviewRefOps('/repo').listRefs()).toEqual([
+      'refs/review/601',
+      'refs/review/sib/598',
+      'refs/sib/514',
+    ]);
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['for-each-ref', '--format=%(refname)', 'refs/review', 'refs/sib'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+
+  it('listRefs answers EMPTY when git cannot run at all — an unreadable namespace removes nothing', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error('fatal: not a git repository');
+    });
+
+    expect(defaultReviewRefOps('/repo').listRefs()).toEqual([]);
+  });
+
+  it('deleteRef invokes `git update-ref -d <ref>`', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+
+    defaultReviewRefOps('/repo').deleteRef('refs/review/601');
+
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['update-ref', '-d', 'refs/review/601'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+
+  it('deleteRef THROWS on a git failure — deliberately unlike the idempotent branch delete beside it', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error("error: cannot lock ref 'refs/review/601'");
+    });
+
+    expect(() => defaultReviewRefOps('/repo').deleteRef('refs/review/601')).toThrow(
+      /refs\/review\/601/,
+    );
+  });
+});
+
+// ─── 37e. The review-ref sweep against a REAL repository ─────────────────────
+//
+// The rule is proved above against an injected seam; this proves the OUTCOME.
+// Real `git update-ref` writes, real `git for-each-ref` reads, real deletes —
+// so "the live row's ref survives" and "the stale row's ref is gone" are
+// filesystem facts about a `.git` directory, not agreements between two doubles.
+describe('review-ref sweep — real git end-to-end (issue #732)', () => {
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as string;
+  }
+
+  /** A repo with one commit and the named refs pointed at it. */
+  function makeRepoWithRefs(refs: string[]): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-732-')));
+    tempRoots.push(root);
+    realGit(['init', '-q'], root);
+    realGit(['config', 'user.email', 'test@example.com'], root);
+    realGit(['config', 'user.name', 'Test'], root);
+    realGit(['commit', '-q', '--allow-empty', '-m', 'init'], root);
+    realGit(['branch', '-M', 'main'], root); // deterministic head ref name
+    const head = realGit(['rev-parse', 'HEAD'], root).trim();
+    for (const ref of refs) realGit(['update-ref', ref, head], root);
+    return root;
+  }
+
+  function reviewRefsOnDisk(root: string): string[] {
+    return realGit(
+      ['for-each-ref', '--format=%(refname)', 'refs/review', 'refs/sib'],
+      root,
+    )
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+      .sort();
+  }
+
+  it('removes every stale row\'s ref across all three namespaces and leaves the LIVE row\'s refs on disk', () => {
+    const root = makeRepoWithRefs([
+      'refs/review/732', // live row, branch under review
+      'refs/review/sib/732', // live row, sibling tip
+      'refs/sib/732', // live row, worker's own sibling namespace
+      'refs/review/601', // long-landed row
+      'refs/review/sib/598', // long-landed row
+      'refs/sib/514', // long-landed row
+    ]);
+    expect(reviewRefsOnDisk(root)).toHaveLength(6);
+
+    const result = sweepReviewRefs({ repoRoot: root, liveRowIds: ['732'] });
+
+    expect(result.removed.map((r) => r.ref).sort()).toEqual([
+      'refs/review/601',
+      'refs/review/sib/598',
+      'refs/sib/514',
+    ]);
+    expect(result.errors).toEqual([]);
+    expect(reviewRefsOnDisk(root)).toEqual([
+      'refs/review/732',
+      'refs/review/sib/732',
+      'refs/sib/732',
+    ]);
+  });
+
+  it('NEGATIVE CONTROL — the same fixture with NO live set declared removes nothing at all', () => {
+    const root = makeRepoWithRefs([
+      'refs/review/732',
+      'refs/review/601',
+      'refs/sib/514',
+    ]);
+    const before = reviewRefsOnDisk(root);
+
+    const result = sweepReviewRefs({ repoRoot: root });
+
+    expect(result.removed).toEqual([]);
+    expect(result.skipped.map((r) => r.reason)).toEqual([
+      'live-rows-unknown',
+      'live-rows-unknown',
+      'live-rows-unknown',
+    ]);
+    expect(reviewRefsOnDisk(root)).toEqual(before);
+  });
+
+  it('leaves every other ref namespace strictly alone — heads and tags are not this population', () => {
+    const root = makeRepoWithRefs(['refs/review/601']);
+    realGit(['branch', 'wave/732-keep'], root);
+    realGit(['tag', 'v0.0.1'], root);
+
+    sweepReviewRefs({ repoRoot: root, liveRowIds: ['732'] });
+
+    expect(reviewRefsOnDisk(root)).toEqual([]);
+    expect(
+      realGit(['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/tags'], root)
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0)
+        .sort(),
+    ).toEqual(['refs/heads/main', 'refs/heads/wave/732-keep', 'refs/tags/v0.0.1']);
+  });
+
+  it('is idempotent — a second run after the sweep removes nothing more and errors on nothing', () => {
+    const root = makeRepoWithRefs(['refs/review/601', 'refs/review/732']);
+
+    const first = sweepReviewRefs({ repoRoot: root, liveRowIds: ['732'] });
+    expect(first.removed.map((r) => r.ref)).toEqual(['refs/review/601']);
+
+    const second = sweepReviewRefs({ repoRoot: root, liveRowIds: ['732'] });
+    expect(second.removed).toEqual([]);
+    expect(second.errors).toEqual([]);
+    expect(reviewRefsOnDisk(root)).toEqual(['refs/review/732']);
+  });
+});
+
+describe('the review-ref sweep surface is reachable from the package root (issue #732)', () => {
+  it('every root-imported binding is the very same export, not a lookalike', () => {
+    expect(REVIEW_REF_NAMESPACE_PREFIXES_FROM_ROOT).toBe(REVIEW_REF_NAMESPACE_PREFIXES);
+    expect(listReviewRefsFromRoot).toBe(listReviewRefs);
+    expect(planReviewRefSweepFromRoot).toBe(planReviewRefSweep);
+    expect(executeReviewRefSweepFromRoot).toBe(executeReviewRefSweep);
+    expect(sweepReviewRefsFromRoot).toBe(sweepReviewRefs);
+    expect(defaultReviewRefOpsFromRoot).toBe(defaultReviewRefOps);
+  });
+
+  it('a root-only import can type the seam, the options, the plan and every reported entry', () => {
+    const deleted: string[] = [];
+    const ops: ReviewRefOpsFromRoot = {
+      listRefs: () => ['refs/review/601', 'refs/review/732'],
+      deleteRef: (ref) => {
+        deleted.push(ref);
+      },
+    };
+    const opts: ReviewRefSweepOptionsFromRoot = { ops, liveRowIds: ['732'] };
+
+    const listing: ReviewRefListingFromRoot = listReviewRefsFromRoot(opts);
+    const plan: ReviewRefSweepPlanFromRoot = planReviewRefSweepFromRoot(
+      listing,
+      opts.liveRowIds,
+    );
+    const result: ReviewRefSweepResultFromRoot = executeReviewRefSweepFromRoot(plan, {
+      ops,
+    });
+
+    const removedEntry: ReviewRefFromRoot = result.removed[0];
+    const namespace: ReviewRefNamespaceFromRoot = removedEntry.namespace;
+    const reason: ReviewRefSkipReasonFromRoot | undefined = result.skipped[0]?.reason;
+
+    expect(deleted).toEqual(['refs/review/601']);
+    expect(namespace).toBe('review');
+    expect(reason).toBe('live-row');
   });
 });
