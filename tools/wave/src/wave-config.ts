@@ -452,6 +452,34 @@ export interface EngineConfig {
    * gate. Absent is valid and means "this consumer recorded no install step" —
    * a DEFERRAL the composed brief states as such, never a confirmation that
    * none is needed.
+   *
+   * **Its DIRECTORY ARGUMENT wants to be repo-relative too, and for a second,
+   * unrelated reason (issue #725).** `npm ci --prefix <dir>` exits `EUSAGE`
+   * with `Missing: <basename>@<version> from lock file` — naming a package that
+   * appears in neither the manifest nor the lockfile — whenever that prefix
+   * path resolves THROUGH A SYMLINK. The package manager compares
+   * `normalize(prefix)` against the prefix's realpath and, when they differ,
+   * builds the install tree's root as a LINK at a `../../..`-shaped location
+   * the lockfile has no entry for; the name it reports for that root comes from
+   * the prefix DIRECTORY'S BASENAME, never from the manifest's `name` — which
+   * is why the message reads as a corrupt lockfile when nothing is wrong with
+   * it. A repo-relative prefix cannot reach that state, because it is resolved
+   * against the process's working directory, which is always the physical path;
+   * an absolute one reached through a symlinked scratch or temp root (`/tmp` ->
+   * `/private/tmp`) can, and did — the failure that produced this issue.
+   *
+   * Measured beside it, so the tempting substitute is named rather than
+   * discovered: no `npm ci` flag rescues the symlinked form, and `npm install`
+   * only survives it by never running the lockfile-vs-manifest comparison at
+   * all — it trades the lockfile-exact guarantee away instead of satisfying it.
+   * So the answer is the repo-relative prefix, not a different verb.
+   *
+   * The engine does NOT yet refuse an absolute path in an ARGUMENT position:
+   * {@link normalizeEngineInstall} rejects a leading `/` at index 0 of the whole
+   * binding, which catches `/usr/local/bin/install.sh` but not
+   * `npm ci --prefix /abs/tools/wave`. Widening that check would newly refuse a
+   * config that validates today, so it is a deliberate follow-up rather than a
+   * silent behaviour change smuggled in beside a documentation fix.
    */
   install?: string;
 }
@@ -704,6 +732,13 @@ export function normalizeEngineCli(
  * never disagree with this one — which is the exact reason
  * {@link normalizeEngineCli} is root-exported beside it. Symmetric bindings,
  * symmetric reach.
+ *
+ * **The stated example is repo-relative in BOTH positions, and that is load-
+ * bearing (issue #725).** It is the shape a refused author is told to use, so
+ * it is the shape that gets copied. `npm ci --prefix tools/wave` is immune to
+ * the symlinked-prefix EUSAGE failure documented on {@link EngineConfig.install};
+ * `npm ci --prefix /abs/tools/wave` would still pass this validator today and is
+ * exactly the form that breaks. Do not "clarify" the example by absolutising it.
  */
 export function normalizeEngineInstall(
   value: unknown,

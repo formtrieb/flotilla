@@ -902,6 +902,82 @@ describe('compose-driver — an absent install step reads as a deferral, never a
   });
 });
 
+// ── the install line's own rule rides with it (issue #725) ───────────────────
+//
+// `npm ci --prefix <dir>` exits EUSAGE with `Missing: <basename>@<version> from
+// lock file` — naming a package that does not exist — whenever the prefix path
+// resolves THROUGH A SYMLINK. Reproduced deliberately in this row's dispatch:
+// the SAME directory, reached as `/tmp/claude-501/…/tools/wave` (the macOS
+// `/tmp` -> `/private/tmp` symlink) fails, and reached as
+// `/private/tmp/claude-501/…/tools/wave` succeeds. The mechanism is npm's own
+// `normalize(path) === realpath(path)` branch in `@npmcli/arborist`
+// load-actual.js: when they differ the ideal tree's root is built as a LINK at
+// a `../../..`-shaped location the lockfile has no entry for, and the name it
+// is reported under comes from `@npmcli/name-from-folder` — the prefix
+// DIRECTORY'S BASENAME — never the manifest's `name`.
+//
+// The install line is the FIRST command every dispatched agent runs, and it is
+// rendered into THREE workspace-setup blocks. These pins hold the rule at all
+// three, from ONE shared constant in the template, so the sites cannot drift
+// apart the way a re-typed clause does.
+describe('compose-driver — the install line carries the rule that keeps it working (issue #725)', () => {
+  /** The instruction. */
+  const RULE_HEADLINE = 'keep any directory it carries REPO-RELATIVE, and never re-render it as an absolute path';
+  /** The mechanism, so a Worker that hits the message recognises it. */
+  const RULE_SYMPTOM = 'Missing: <basename>@<version> from lock file';
+  const RULE_MECHANISM = "reads the root package's name from the prefix DIRECTORY'S BASENAME instead of from the manifest";
+  /** The substitute that must NOT be reached for — it drops the guarantee. */
+  const RULE_SUBSTITUTE = 'do NOT switch `ci` to `install` to get past it';
+
+  const rows = [
+    row({ id: '42', slug: 'first' }),
+    row({ id: '43', slug: 'second', iteration: 2, siblingBranches: 'wave/42-first' }),
+  ];
+  const script = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows });
+
+  it('renders the rule at ALL THREE workspace-setup sites, beside the install line itself', async () => {
+    const { calls } = await runComposedDriver(script);
+    const briefFor = (label: string) => calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+
+    const iter1 = briefFor('worker:42');
+    const redispatch = briefFor('worker:43');
+    const reviewer = briefFor('review:42');
+
+    // Guard the fixture before the claim: three DIFFERENT blocks, not one
+    // block counted three times.
+    expect(redispatch).toContain('## Workspace setup (do first) — RE-DISPATCH');
+    expect(iter1).not.toContain('RE-DISPATCH');
+    expect(reviewer).toContain('re-run the verify commands below without installing first');
+
+    for (const brief of [iter1, redispatch, reviewer]) {
+      expect(brief).not.toBe('');
+      // The rule sits with the command it governs, not in some distant section.
+      expect(brief).toContain('npm ci --prefix tools/wave');
+      expect(brief).toContain(RULE_HEADLINE);
+      expect(brief).toContain(RULE_SYMPTOM);
+      expect(brief).toContain(RULE_MECHANISM);
+      expect(brief).toContain(RULE_SUBSTITUTE);
+    }
+  });
+
+  it('the rule is ONE constant in the template, so the three sites cannot drift apart', () => {
+    // Authored once…
+    const authored = TEMPLATE.match(/keep any directory it carries REPO-RELATIVE/g) ?? [];
+    expect(authored).toHaveLength(1);
+    // …and interpolated three times.
+    const rendered = TEMPLATE.match(/\$\{INSTALL_FORM_RULE\}/g) ?? [];
+    expect(rendered).toHaveLength(3);
+  });
+
+  it('the placeholder a Coordinator fills says REPO-RELATIVE too, not only the rendered brief', () => {
+    // The clause is worth nothing if the value it governs is composed absolute
+    // in the first place — so the compose-time comment carries the rule as well.
+    const placeholder = TEMPLATE.match(/^\s*depsSetup: '[^']*'/m)?.[0] ?? '';
+    expect(placeholder).not.toBe('');
+    expect(placeholder).toContain('REPO-RELATIVE');
+  });
+});
+
 // ── inherited work-in-progress in a REUSED worktree (issue #731) ─────────────
 //
 // `isolation: 'worktree'` asks for a worktree; it does not promise a FRESH one.
