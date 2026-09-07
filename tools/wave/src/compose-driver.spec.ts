@@ -902,6 +902,218 @@ describe('compose-driver — an absent install step reads as a deferral, never a
   });
 });
 
+// ── inherited work-in-progress in a REUSED worktree (issue #731) ─────────────
+//
+// `isolation: 'worktree'` asks for a worktree; it does not promise a FRESH one.
+// When the harness RETRIES a dispatch it re-runs the agent in the same checkout
+// the previous attempt was already working in, so a first-iteration Worker can
+// arrive to uncommitted edits, untracked new files and an already-created wave
+// branch — all its own, one attempt earlier, and none of it reported anywhere.
+//
+// The setup was never SILENT about the anchor: it already prescribed a hard
+// reset and then asserted a clean tree and a matching head. What it had no
+// instruction for is the two dead ends that shape actually hits — a reset
+// REFUSED (the harness write-deny is scoped per tool surface, so a shell reset
+// that must unlink a tracked path under the agent-configuration directory is
+// refused where a file-editing tool writing the same path is not), and a wave
+// branch that already exists, which a plain `checkout -b` errors on outright.
+//
+// These pins read the RENDERED brief, because what has to carry a clause is
+// what reaches the agent, not what sits in the template. Each clause gets a
+// HEADLINE pin and a BODY pin, and the negative control at the end re-words a
+// body while leaving its headline byte-intact — the failure mode a
+// headline-only spec cannot see, and the one the sibling row shipped with.
+
+describe('compose-driver — the iteration-1 setup instructs a Worker that inherited work-in-progress (issue #731)', () => {
+  /** Headlines: what a skimming reader sees. Bodies: what the clause actually says. */
+  const WIP_HEADLINE = 'INHERITED WORK-IN-PROGRESS — two honest options, and DISCARDING IS THE DEFAULT.';
+  const DISCARD_HEADLINE = '**Discard it — the default, and what the reset below already does.**';
+  const DISCARD_BODY = /Take this unless\s+you have positively decided otherwise/;
+  const ADOPT_HEADLINE = '**Adopt it — permitted ONLY behind a recorded line-by-line review.**';
+  const ADOPT_BODY = /read EVERY inherited line against EVERY acceptance criterion in\s+the task spec below/;
+  const ADOPT_RECORD = /record it under `judgmentCalls` \(mirrored\s+in `reviewerFocusItems`\)/;
+  const REFUSAL_HEADLINE = '**IF THE RESET IS REFUSED, the two asserts above have a branch to take';
+  const REFUSAL_BODY = /write-deny is\s+scoped PER TOOL SURFACE/;
+  const REFUSAL_BLOCKED = /STOP and report `blocked`, naming the residual paths/;
+  const RETRY_NOT_REDISPATCH = /A harness\s+retry is NOT a re-dispatch:/;
+  const RETRY_REANCHORS =
+    /a retried FIRST iteration re-anchors to the wave anchor SHA exactly as a\s+first attempt does/;
+
+  /** One iteration-1 row and one re-dispatch row, from ONE composed script. */
+  const rows = [
+    row({ id: '42', slug: 'first' }),
+    row({ id: '43', slug: 'second', iteration: 2, siblingBranches: 'wave/42-first' }),
+  ];
+  const script = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows });
+
+  /**
+   * The two Worker briefs, with the fixture guarded before any claim rests on
+   * it (the same stance the deps-fallback block above takes): these really are
+   * the two DIFFERENT workspace-setup blocks, not the same one twice.
+   */
+  async function workerBriefs(from = script): Promise<{ iter1: string; redispatch: string }> {
+    const { calls } = await runComposedDriver(from);
+    const briefAt = (label: string) =>
+      calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+    const iter1 = briefAt('worker:42');
+    const redispatch = briefAt('worker:43');
+    expect(iter1).not.toBe('');
+    expect(redispatch).toContain('## Workspace setup (do first) — RE-DISPATCH');
+    expect(iter1).not.toContain('RE-DISPATCH');
+    return { iter1, redispatch };
+  }
+
+  /**
+   * The driver-side rationale comment that records the harness-retry fact, with
+   * its `//` prefixes and its wrapping normalised away so a pin can read it as
+   * prose rather than as a particular line break. Fails loud when the note is
+   * gone, rather than degrading to an empty scan.
+   */
+  function retryNote(template: string): string {
+    const start = template.indexOf('// A HARNESS RETRY CAN REUSE THE WORKTREE');
+    if (start < 0) {
+      throw new Error('the driver-side harness-retry note is gone from the template');
+    }
+    const end = template.indexOf('const WORKSPACE_SETUP_ITER1', start);
+    if (end < 0) {
+      throw new Error('WORKSPACE_SETUP_ITER1 no longer follows the harness-retry note');
+    }
+    return template
+      .slice(start, end)
+      .split('\n')
+      .map((line) => line.replace(/^\/\/ ?/, ''))
+      .join(' ')
+      .replace(/\s+/g, ' ');
+  }
+
+  it('names BOTH options for inherited work-in-progress, with discarding stated as the default', async () => {
+    const { iter1 } = await workerBriefs();
+    expect(iter1).toContain(WIP_HEADLINE);
+    expect(iter1).toContain(DISCARD_HEADLINE);
+    expect(iter1).toMatch(DISCARD_BODY);
+    expect(iter1).toContain(ADOPT_HEADLINE);
+  });
+
+  it('gates adoption on a recorded line-by-line review against every acceptance criterion', async () => {
+    const { iter1 } = await workerBriefs();
+    expect(iter1).toMatch(ADOPT_BODY);
+    expect(iter1).toMatch(ADOPT_RECORD);
+    expect(iter1).toContain('No record, no adoption.');
+  });
+
+  it('accounts for the untracked leftover the reset does NOT remove, and names git clean as a dead end', async () => {
+    const { iter1 } = await workerBriefs();
+    // `git reset --hard` discards tracked edits and leaves untracked files
+    // standing, so the clean-tree assert would otherwise contradict itself on
+    // exactly the shape the live occurrence had (a new spec file, uncommitted).
+    expect(iter1).toMatch(/An UNTRACKED leftover survives `git reset --hard`/);
+    expect(iter1).toMatch(/path you leave standing is ADOPTED and owes the recorded review/);
+    // `git clean` is not on the measured AFK command surface (wave-setup's
+    // allowlist scaffold), so prescribing it would stall the row on a
+    // permission prompt with nobody there to answer it.
+    expect(iter1).toMatch(/\*\*Do not reach for\s+`git clean`\*\*/);
+  });
+
+  it('gives the clean-tree assert a branch to take when the reset is REFUSED, instead of leaving it a dead end', async () => {
+    const { iter1 } = await workerBriefs();
+    expect(iter1).toContain(REFUSAL_HEADLINE);
+    expect(iter1).toMatch(REFUSAL_BODY);
+    // The remedy is the other side of the same per-tool-surface asymmetry…
+    expect(iter1).toMatch(/Restore each surviving tracked path to its anchor content with your FILE-EDITING/);
+    // …and it terminates: recovered, or an honest `blocked` — never "carry on".
+    expect(iter1).toMatch(REFUSAL_BLOCKED);
+    // It is a capability refusal, so clause 12's floor governs it: no retry
+    // with the sandbox off, and no asking for the sandbox to be turned off.
+    expect(iter1).toMatch(/you may not re-run it with the sandbox off/);
+  });
+
+  it('handles a wave branch that already exists at the anchor without failing on branch creation', async () => {
+    const { iter1 } = await workerBriefs();
+    const branch = branchFor('42', 'first');
+    // The plain create still leads, so the ordinary path is unchanged…
+    expect(iter1).toContain(`3. \`git checkout -b ${branch}\``);
+    // …and the already-exists failure now has an instruction instead of a stop,
+    // landing on the SAME branch name (the one the Coordinator routes by) at
+    // the anchor, tracking-free.
+    expect(iter1).toContain(`a branch named '${branch}' already exists`);
+    expect(iter1).toContain(`git checkout -B ${branch} ${rows[0].anchorSha}`);
+    expect(iter1).toMatch(/never `git checkout -B <branch> origin\/<branch>`/);
+  });
+
+  it('keeps the harness-retry case and the re-dispatch case distinguishable — a retried FIRST iteration still re-anchors', async () => {
+    const { iter1, redispatch } = await workerBriefs();
+
+    // Iteration 1, retried: the retry is named, and the re-anchor is restated
+    // as holding THROUGH it — this is the pin the conflation would break.
+    expect(iter1).toMatch(RETRY_NOT_REDISPATCH);
+    expect(iter1).toMatch(RETRY_REANCHORS);
+    expect(iter1).toContain(`git reset --hard ${rows[0].anchorSha}`);
+    expect(iter1).toContain(`git rev-parse HEAD          # MUST equal ${rows[0].anchorSha}`);
+
+    // Iteration ≥ 2: the opposite instruction, unchanged by this row, and none
+    // of the iteration-1 clauses leaked into it.
+    expect(redispatch).toMatch(/do not re-anchor to\s+the wave anchor SHA and branch fresh/);
+    expect(redispatch).not.toContain(WIP_HEADLINE);
+    expect(redispatch).not.toContain(REFUSAL_HEADLINE);
+    expect(redispatch).not.toMatch(RETRY_REANCHORS);
+  });
+
+  it('records the harness-retry fact driver-side, as the note the brief clause is written around', () => {
+    const note = retryNote(TEMPLATE);
+    expect(note).toContain('A HARNESS RETRY CAN REUSE THE WORKTREE');
+    expect(note).toContain(
+      're-runs the agent in the SAME checkout the previous attempt was already working in',
+    );
+    expect(note).toContain('A harness retry is NOT a re-dispatch');
+    // The note carries the reason the two must not merge, not just the fact.
+    expect(note).toContain('let a retried Worker skip the re-anchor');
+  });
+
+  it('NEGATIVE CONTROL — retryNote fails loud when the driver-side note is gone, rather than scanning nothing', () => {
+    expect(() => retryNote('// nothing here\n')).toThrow(
+      /driver-side harness-retry note is gone from the template/,
+    );
+  });
+
+  it('NEGATIVE CONTROL — re-wording a clause BODY while its HEADLINE stays byte-intact fails these pins (Convention 11)', async () => {
+    // A clause-presence spec that pins only headlines passes a diff that keeps
+    // the bold line and guts everything under it — which is how a clause stops
+    // instructing anyone while still reading as present. Both probes below
+    // leave the headline byte-identical on purpose.
+
+    // Probe A — the adoption gate: the criterion-by-criterion review, the
+    // measurement, the gate and the record all replaced by "use your judgment",
+    // which is precisely the state this row exists to end.
+    const guttedAdopt = TEMPLATE.replace(
+      /(\*\*Adopt it — permitted ONLY behind a recorded line-by-line review\.\*\*)[\s\S]*?No record, no adoption\./,
+      '$1 Use your judgment.',
+    );
+    expect(guttedAdopt).not.toEqual(TEMPLATE); // the replace actually matched
+    expect(guttedAdopt).toContain(ADOPT_HEADLINE); // …and the headline survived it
+    const adoptBriefs = await workerBriefs(
+      composeDriverScript({ template: guttedAdopt, ...CONSTANTS, rows }),
+    );
+    expect(adoptBriefs.iter1).toContain(ADOPT_HEADLINE); // a headline-only pin still passes
+    expect(adoptBriefs.iter1).not.toMatch(ADOPT_BODY); // the body pins fire
+    expect(adoptBriefs.iter1).not.toMatch(ADOPT_RECORD);
+
+    // Probe B — the refused-reset branch: same shape, different clause, so the
+    // demonstration is not a property of one lucky regex.
+    const guttedRefusal = TEMPLATE.replace(
+      /The harness's write-deny is\n   scoped PER TOOL SURFACE[\s\S]*?refusal verbatim\./,
+      'Deal with it.',
+    );
+    expect(guttedRefusal).not.toEqual(TEMPLATE); // the replace actually matched
+    expect(guttedRefusal).toContain(REFUSAL_HEADLINE); // …and the headline survived it
+    const refusalBriefs = await workerBriefs(
+      composeDriverScript({ template: guttedRefusal, ...CONSTANTS, rows }),
+    );
+    expect(refusalBriefs.iter1).toContain(REFUSAL_HEADLINE); // headline-only pin still passes
+    expect(refusalBriefs.iter1).not.toMatch(REFUSAL_BODY); // the body pins fire
+    expect(refusalBriefs.iter1).not.toMatch(REFUSAL_BLOCKED);
+  });
+});
+
 describe('compose-driver — the scope-grant projection reads the spine, never a hand-authored field (ADR-0041)', () => {
   function spineWithGrant(text: string): string {
     const base = renderSpine(
