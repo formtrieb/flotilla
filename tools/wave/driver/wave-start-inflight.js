@@ -344,7 +344,12 @@ const ISSUES = [
     // isolation guard that can reject a fused command as too complex to
     // verify). Prefer the installer's own directory flag, which is also the
     // form that survives a cwd reset between an agent's Bash calls.
-    depsSetup: '<consumer dependency-install command, directory carried BY the command, e.g. "npm ci --prefix <depsDir>" / "composer install -d <depsDir>">',
+    // AND KEEP THAT DIRECTORY REPO-RELATIVE (issue #725): an absolute prefix
+    // whose path resolves through a symlink makes `npm ci` exit EUSAGE with
+    // `Missing: <basename>@<version> from lock file` — see INSTALL_FORM_RULE
+    // below, which is rendered into all three workspace-setup blocks beside
+    // whatever this resolves to.
+    depsSetup: '<consumer dependency-install command, directory carried BY the command and REPO-RELATIVE, e.g. "npm ci --prefix <depsDir>" / "composer install -d <depsDir>">',
     // The FULL issue spec embedded verbatim — title, body, acceptance criteria,
     // declared Files globs, risk. NOT a tracker id/path: the store config that
     // would resolve one may itself be gitignored and absent from this worktree.
@@ -506,6 +511,42 @@ ISSUES.forEach(assertNotHumanGated)
 //
 // Its checkout target reads the derived `issue.branch` (FOR-139) rather than
 // re-interpolating the branch shape inline.
+
+// ── The install line's own rule, rendered beside it (issue #725) ─────────────
+//
+// `depsSetup` is rendered verbatim into THREE workspace-setup blocks (two
+// Worker, one Reviewer), so the one rule that keeps it working is rendered from
+// ONE constant into all three rather than re-typed per site.
+//
+// The measured failure it prevents: `npm ci --prefix <dir>` exits EUSAGE with
+// `Missing: <basename>@<version> from lock file` — naming a package that does
+// not exist — whenever the prefix path resolves THROUGH A SYMLINK. npm compares
+// `path.normalize(prefix)` against the prefix's realpath (`@npmcli/arborist`
+// load-actual.js) and, when they differ, builds the ideal tree's root as a LINK
+// keyed at a `../../..`-shaped location the lockfile has no entry for; the name
+// it reports comes from `@npmcli/name-from-folder`, i.e. the prefix DIRECTORY'S
+// BASENAME, never the manifest's `name`. A repo-relative prefix cannot reach
+// that state — npm resolves it against `process.cwd()`, which getcwd() always
+// returns physically — while an absolute one reached through a symlinked
+// scratch or temp root (`/tmp` -> `/private/tmp`) does, and did.
+//
+// Measured beside it, so the brief can forbid the tempting substitute by name:
+// no `npm ci` flag rescues the symlinked form (`--install-links`,
+// `--install-strategy=nested`, `--legacy-peer-deps`, `--omit=dev` all still
+// fail), and `npm install` "survives" only because it never runs the
+// lockfile-vs-manifest comparison at all — it trades the guarantee away rather
+// than satisfying it.
+const INSTALL_FORM_RULE =
+  "**Run that line exactly as written — keep any directory it carries REPO-RELATIVE, and never re-render it as an absolute path.** " +
+  "A lockfile-exact install that takes a directory (`npm ci --prefix <dir>`) exits `EUSAGE` with " +
+  '`Missing: <basename>@<version> from lock file` whenever that prefix resolves THROUGH A SYMLINK: the package manager then reads the ' +
+  "root package's name from the prefix DIRECTORY'S BASENAME instead of from the manifest, so the message accuses a package that does " +
+  'not exist and reads as a corrupt lockfile when nothing is wrong with it. A repo-relative prefix cannot reach that state — it is ' +
+  'resolved against the process\'s own working directory, which is always the physical path — whereas an absolute one can, and a ' +
+  'scratch or temp root is commonly reached through a symlink (`/tmp` -> `/private/tmp`). If the install fails that way anyway, ' +
+  'report it: do NOT switch `ci` to `install` to get past it, which only passes because it never compares the lockfile against the ' +
+  'manifest at all.';
+
 const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 1. \`pwd\` — confirm you are in a worktree (not the parent path). **This is the one cwd
    check you need and the only one you can have:** your cwd is reset to this same dispatch
@@ -601,7 +642,8 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    Termination step 3) has nothing to resolve either — without this step first:
    \`\`\`bash
    ${issue.depsSetup || '# no install step was recorded for this consumer — verify this worktree can run the verify gate and the engine CLI before the first engine call'}
-   \`\`\``
+   \`\`\`
+   ${INSTALL_FORM_RULE}`
 
 // The iteration≥2 (re-dispatch) workspace setup (W26-F1, §Re-dispatch above):
 // the wave branch ALREADY EXISTS, carrying the iteration-1 commits — this
@@ -648,7 +690,8 @@ const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) —
    Termination step 3) has nothing to resolve either — without this step first:
    \`\`\`bash
    ${issue.depsSetup || '# no install step was recorded for this consumer — verify this worktree can run the verify gate and the engine CLI before the first engine call'}
-   \`\`\``
+   \`\`\`
+   ${INSTALL_FORM_RULE}`
 
 function workerBrief(issue) {
   const workspaceSetup = issue.iteration > 1
@@ -831,6 +874,8 @@ re-run the verify commands below without installing first:
 \`\`\`bash
 ${issue.depsSetup || '# no install step was recorded for this consumer — verify this worktree can run the verify gate and the engine CLI before the first engine call'}
 \`\`\`
+
+${INSTALL_FORM_RULE}
 
 **ONE BASH CALL PER STEP** (wave-shared Convention 13) — it binds you exactly as it binds the Worker, and this install is the first place it bites. Never fuse a setup step onto the command that matters (\`cd X && <command>\`) into one compound Bash call. Two unrelated mechanisms break on that shape, with opposite signatures: **the permission gate** splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY subcommand to match a rule independently — so an allowlisted verify command carries only itself past the gate, never the \`cd\` in front of it, and a dialog mid-dispatch has nobody to answer it; and **the worktree-isolation guard** can REJECT a fused command as too complex to verify that it stays inside your worktree — no dialog, nothing run. A refusal is about the command's SHAPE, not about the check: re-issue it as separate calls. **NEVER drop a verify command or a floor check because its fused form was refused** — reporting a check as run when it was skipped is the exact failure this clause exists to stop, and it is yours to avoid as well as to catch in the Worker's evidence. Your cwd is reset to your dispatch root before every one of your Bash calls, so one \`pwd\` characterizes all of them and a preceding \`cd\` characterizes none: carry the directory in the command where a flag exists (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`) rather than trusting a \`cd\` to reach the next call. **A bare newline joining two statements in one call is the same shape as \`&&\`, just quieter — and most refusals are not fusion at all:** \`case\`/\`esac\` has been observed refused standing entirely alone, and so has any command naming a **shell variable** — an \`if\`-guard on one, or a lone \`test -n "$VAR"\` — whether the variable was set in an earlier Bash call or in the same one. Shell state does not survive between your Bash calls either, so a value must be re-queried in the call that needs it rather than carried. Before re-deriving a split by hand, check the "Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch" section in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\` for what was actually verified — entry 1's evidence arc records three remedies that looked right and could not run. When reviewing a Worker's evidence for THIS convention, treat a Worker's own citation of that catalog as legitimate rather than a shortcut — including a Worker reporting it COULD NOT verify a working form for a cataloged shape (the catalog's own heredoc-spec-append entry is exactly that outcome, honestly reported rather than guessed). **And check what the Worker's PR evidence rests on:** its Termination step now confirms the PR with a \`host-pr status --branch\` re-query, so a report whose \`prUrl\` traces back to a shell-variable capture is following a recipe the brief no longer carries.
 

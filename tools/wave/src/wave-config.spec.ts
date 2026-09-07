@@ -3,8 +3,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  readFileSync,
+} from 'node:fs';
+import { basename, join, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 // The compiler API, for the DECLARATION-level half of the `store.goal` shape
 // check below — the same tool and the same reason barrel-drift.spec.ts reaches
@@ -526,6 +534,119 @@ describe('loadWaveConfig — engine.install: the REJECT path names the rule', ()
     expect(installErr.message).toContain('index 7');
     expect(cliErr.message).toContain('"engine.cli"');
     expect(installErr.message).toContain('"engine.install"');
+  });
+});
+
+// ── the stated example is the shape that gets copied (issue #725) ────────────
+//
+// A refused author is handed an example and copies it, so the example is the
+// install form this schema actually ships. It has to be repo-relative in BOTH
+// positions — the verb AND its directory argument — because of a failure that
+// has nothing to do with the allowlist rule the block above pins.
+//
+// The failure, reproduced deliberately in this row's dispatch on npm 11.17.0:
+// `npm ci --prefix <dir>` exits EUSAGE with
+// `Missing: <basename>@<version> from lock file`, naming a package that is in
+// neither the manifest nor the lockfile, whenever <dir>'s path resolves THROUGH
+// A SYMLINK. Positive and negative control on the SAME directory —
+// `/tmp/claude-501/…/tools/wave` (macOS `/tmp` -> `/private/tmp`) fails;
+// `/private/tmp/claude-501/…/tools/wave` succeeds. npm's own machinery, probed
+// in the same dispatch, prints the reason: the ideal tree's root comes back as
+// a `Link` at location `"../../../../../../../tmp/claude-501/…/tools/wave"`
+// while the lockfile's root sits at `""`, and the name reported for it is
+// `wave` — the directory basename — while `pkg.name` on the very same node is
+// `@formtrieb/flotilla-engine`.
+//
+// A repo-relative prefix cannot reach that state: it is resolved against the
+// process's working directory, which the OS always reports physically.
+describe('engine.install — the example the schema hands a refused author is symlink-safe (issue #725)', () => {
+  /** The example, read out of a refusal rather than restated here. */
+  function statedExample(): string {
+    try {
+      loadEngineInstall('npm ci; boom');
+    } catch (err) {
+      const m = /Use a repo-relative command such as "([^"]+)"/.exec((err as Error).message);
+      if (m) return m[1];
+    }
+    throw new Error('expected a refusal quoting the stated example');
+  }
+
+  it('every word of the stated example is repo-relative — no absolute and no home-rooted path', () => {
+    const example = statedExample();
+    expect(example).toBe('npm ci --prefix tools/wave');
+    for (const word of example.split(' ')) {
+      expect(word.startsWith('/')).toBe(false);
+      expect(word.startsWith('~')).toBe(false);
+    }
+  });
+
+  it('the stated example still validates — the shape offered is a shape that is accepted', () => {
+    expect(loadEngineInstall(statedExample())).toBe('npm ci --prefix tools/wave');
+  });
+
+  // The known gap, pinned as behaviour rather than left to be rediscovered.
+  // The leading-slash rule is checked at index 0 of the WHOLE binding, so an
+  // absolute path in an ARGUMENT position passes today. Widening it would newly
+  // refuse a config that validates now — a public-API change, deliberately not
+  // smuggled in here. This pin makes the gap visible and any future closing of
+  // it a conscious edit of this file.
+  it('KNOWN GAP: an absolute path in an ARGUMENT position is still accepted today', () => {
+    expect(loadEngineInstall('npm ci --prefix /abs/tools/wave')).toBe('npm ci --prefix /abs/tools/wave');
+    // …while the same absolute path at index 0 is refused, which is the rule
+    // that exists — the contrast is the whole point of the pin.
+    expect(() => loadEngineInstall('/abs/tools/wave/install.sh')).toThrow(/must be repo-relative/);
+  });
+});
+
+// ── the mechanism the repo-relative rule rests on, pinned hermetically ───────
+//
+// npm decides "is this install root a plain node or a LINK?" with one
+// comparison — `path.normalize(prefix) === realpath(prefix)`
+// (`@npmcli/arborist` load-actual.js). Everything downstream of the EUSAGE
+// failure follows from that branch, and the name it reports comes from the
+// prefix directory's basename rather than the manifest.
+//
+// This pins BOTH halves of that mechanism with nothing but `node:fs` and
+// `node:path` — no npm subprocess, no network, no registry cache — so the
+// property the install form rests on is re-checked on every run, on every
+// platform the suite runs on, rather than only in the dispatch that found it.
+describe('the symlinked-prefix mechanism the install form avoids (issue #725)', () => {
+  it('reproduces the divergence a symlinked prefix creates, and its absence for the direct path', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'flotilla-725-')));
+    const real = join(root, 'real', 'tools', 'wave');
+    mkdirSync(real, { recursive: true });
+    writeFileSync(join(real, 'package.json'), JSON.stringify({ name: '@scope/engine', version: '2.4.0' }));
+
+    // The reproducing condition, constructed rather than inherited from the
+    // host: a second path to the SAME directory, through a symlink.
+    symlinkSync(join(root, 'real'), join(root, 'link'), 'dir');
+    const viaLink = join(root, 'link', 'tools', 'wave');
+
+    // Same directory, both ways.
+    expect(realpathSync(viaLink)).toBe(realpathSync(real));
+
+    // POSITIVE: the symlinked spelling fails npm's root-node test…
+    expect(normalize(viaLink) === realpathSync(viaLink)).toBe(false);
+    // …NEGATIVE: the direct spelling passes it.
+    expect(normalize(real) === realpathSync(real)).toBe(true);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('the name such a failure reports is the directory basename, not the manifest name', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'flotilla-725-')));
+    const dir = join(root, 'tools', 'wave');
+    mkdirSync(dir, { recursive: true });
+    const manifest = { name: '@formtrieb/flotilla-engine', version: '2.4.0' };
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
+
+    // What the EUSAGE line said: `Missing: wave@2.4.0 from lock file`. The
+    // version is the manifest's; the NAME is the folder's — which is why the
+    // message accuses a package that exists nowhere in the project.
+    expect(`${basename(dir)}@${manifest.version}`).toBe('wave@2.4.0');
+    expect(basename(dir)).not.toBe(manifest.name);
+
+    rmSync(root, { recursive: true, force: true });
   });
 });
 
