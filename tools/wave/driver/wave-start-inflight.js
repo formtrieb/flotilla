@@ -479,10 +479,33 @@ function assertNotHumanGated(issue) {
 }
 ISSUES.forEach(assertNotHumanGated)
 
-// The iteration-1 (default) workspace setup — unchanged from before the
-// re-dispatch teardown/tracking-free-checkout fix (W26-F1) except for its
-// checkout target, which now reads the derived `issue.branch` (FOR-139)
-// rather than re-interpolating `wave/${issue.id}-${issue.slug}` inline.
+// The iteration-1 (default) workspace setup.
+//
+// A HARNESS RETRY CAN REUSE THE WORKTREE — the driver-side note step 2 of this
+// brief is written around. `agent()` with `isolation: 'worktree'` is a request
+// for a worktree, not a promise of a FRESH one: when the harness retries a
+// dispatch it re-runs the agent in the SAME checkout the previous attempt was
+// already working in. The retried Worker can therefore arrive to uncommitted
+// edits, untracked new files, and an already-created wave branch — all of it
+// produced by itself one attempt earlier, and none of it reported anywhere,
+// because the earlier attempt's WorkerReport never reached the Coordinator.
+// Live occurrence (row 716, disclosure 716.1): a Worker found three declared
+// files edited and a new spec file written, uncommitted, on a wave branch still
+// sitting at the wave anchor. It chose well — it reviewed every inherited line
+// against every acceptance criterion, re-ran the measurement, and ran the full
+// verify gate before touching anything — but the brief gave it nothing to
+// choose BY, so the outcome rested on one agent's judgment.
+//
+// A harness retry is NOT a re-dispatch, and the two setups stay
+// distinguishable on purpose: iteration >= 2 is a Coordinator decision that
+// KEEPS the branch's committed work (WORKSPACE_SETUP_REDISPATCH below, which
+// says RE-DISPATCH in its own heading and forbids re-anchoring), whereas a
+// retried FIRST iteration re-anchors to the wave anchor exactly as a first
+// attempt does. Conflating them would let a retried Worker skip the re-anchor
+// and build on a base nobody chose — a worse failure than the one step 2 fixes.
+//
+// Its checkout target reads the derived `issue.branch` (FOR-139) rather than
+// re-interpolating the branch shape inline.
 const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 1. \`pwd\` — confirm you are in a worktree (not the parent path). **This is the one cwd
    check you need and the only one you can have:** your cwd is reset to this same dispatch
@@ -492,14 +515,83 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    can SET: a \`cd\` in one call is invisible in the next (wave-shared Convention 13,
    §Splitting is not always a preceding \`cd\`), so never issue one to set up a later step,
    and never fuse one onto the command that matters.
-2. Anchor to the wave anchor SHA:
+2. Anchor to the wave anchor SHA — and read \`git status --porcelain\` BEFORE you reset,
+   because **this worktree may already carry work of your own.** A harness retry re-runs
+   you in the SAME worktree your earlier attempt was working in, so you can arrive to
+   uncommitted edits, untracked new files, or an already-created wave branch. **A harness
+   retry is NOT a re-dispatch:** a re-dispatch is iteration ≥ 2, announces itself in its own
+   heading, and tells you to keep the branch's committed work. This heading announces no
+   such thing, so a retried FIRST iteration re-anchors to the wave anchor SHA exactly as a
+   first attempt does — the steps below are the whole instruction either way.
+
+   **INHERITED WORK-IN-PROGRESS — two honest options, and DISCARDING IS THE DEFAULT.**
+   - **Discard it — the default, and what the reset below already does.** Take this unless
+     you have positively decided otherwise. Your earlier attempt's report never reached the
+     Coordinator: nothing downstream knows that work exists, nothing has reviewed it, and
+     no acceptance criterion is resting on it. Redoing it from the anchor costs some work
+     and buys a base you can account for line by line.
+   - **Adopt it — permitted ONLY behind a recorded line-by-line review.** Before you keep a
+     single inherited line: read EVERY inherited line against EVERY acceptance criterion in
+     the task spec below, re-run any measurement that work rests on, and run the FULL
+     verify gate before touching anything. Then record it under \`judgmentCalls\` (mirrored
+     in \`reviewerFocusItems\`) — what you inherited, which acceptance criterion each
+     inherited hunk serves, and what the gate printed. Inherited work kept without that
+     review is, to every reader downstream, indistinguishable from work you invented; the
+     record is the only thing that tells the two apart. No record, no adoption.
    \`\`\`bash
    git fetch origin ${issue.coordinatorBranch} 2>&1 | tail -3
+   git status --porcelain      # READ THIS FIRST — every line here is inherited WIP
    git reset --hard ${issue.anchorSha}
    git status --porcelain      # MUST be empty
    git rev-parse HEAD          # MUST equal ${issue.anchorSha}
    \`\`\`
+   An UNTRACKED leftover survives \`git reset --hard\`, and a \`??\` line is the one thing
+   that second \`git status\` may still print — only once you have decided it above: a path
+   your own work will rewrite anyway is discarded the moment your file write lands on it; a
+   path you leave standing is ADOPTED and owes the recorded review. **Do not reach for
+   \`git clean\`** — it is not on the measured AFK command surface, so it hits the
+   permission gate with nobody there to answer it (policy clause 11, mechanism (a)).
+   Anything else on that line — a tracked path still reported as modified, added or deleted
+   — means the reset did not fully apply: take the refusal branch immediately below.
+
+   **IF THE RESET IS REFUSED, the two asserts above have a branch to take — do not skip
+   them, and do not carry on as though the anchor held.** The harness's write-deny is
+   scoped PER TOOL SURFACE, so a shell \`git reset --hard\` that has to unlink or rewrite a
+   tracked path under the agent-configuration directory can be refused where your
+   file-editing tool writing that SAME path is not. It is a capability refusal (policy
+   clause 12): you may not re-run it with the sandbox off, and you may not ask for the
+   sandbox to be turned off. Do this instead, in order:
+   1. Re-read \`git status --porcelain\` to see what actually survived, and keep the
+      refusal's own text — you will quote it.
+   2. Restore each surviving tracked path to its anchor content with your FILE-EDITING
+      tool, reading the anchor's own copy of it first (\`git show ${issue.anchorSha}:<path>\`,
+      where your permission surface carries that read; if the read is ITSELF refused for a
+      permission reason, report that under policy clause 12 and stop at \`blocked\` rather
+      than guessing at the content). That is the same per-tool-surface asymmetry the
+      refusal came from, used in the direction that works.
+   3. Re-run both asserts. Clean, and \`HEAD\` equal to \`${issue.anchorSha}\` → continue.
+      Still not → STOP and report \`blocked\`, naming the residual paths and quoting the
+      refusal verbatim.
+   Disclose the episode under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) either
+   way, the recovered case included — a worktree that needed hand-restoring is a fact the
+   Reviewer's diff base rests on.
 3. \`git checkout -b ${issue.branch}\`
+   **If that fails with \`a branch named '${issue.branch}' already exists\`, your own
+   earlier attempt created it and the harness handed it back to you on the retry.** That is
+   not an error to report, and it is not a reason to invent a second branch name — the
+   Coordinator routes this row by that one name. Land on it AT THE ANCHOR with a
+   tracking-free form (never \`git checkout -B <branch> origin/<branch>\`, which writes
+   upstream-tracking into the MAIN repo's shared \`.git/config\` — sandbox-write-denied for
+   a worktree-isolated agent, and it half-applies and strands the switch):
+   \`\`\`bash
+   git checkout -B ${issue.branch} ${issue.anchorSha}
+   git rev-parse HEAD          # MUST equal ${issue.anchorSha}
+   \`\`\`
+   That form re-points the branch at the anchor, so a commit your earlier attempt had
+   already made goes with it — step 2's default, applied to the branch instead of to the
+   working tree. Keeping such a commit is ADOPTION and owes the same recorded line-by-line
+   review; if you decided that way, switch with a plain \`git checkout ${issue.branch}\`
+   instead and say so in the record.
 4. Install dependencies. A worktree checkout carries **tracked files only** — if
    this consumer's dependency directory is gitignored (the ordinary case for a
    lockfile-managed tree), it is **absent here, not merely un-installed**, and
