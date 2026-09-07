@@ -691,6 +691,47 @@ export {
   type BranchHygieneOps,
 } from './worktree-cleanup';
 
+// The REVIEW-REF sweep (issue #732) — the module's fifth population and the
+// first that is not a path: the `refs/review/<id>`, `refs/review/sib/<id>` and
+// `refs/sib/<id>` refs a Reviewer fetches a branch tip into, which outlive the
+// worktree, the local branch and the remote branch alike and which no pass in
+// this module previously reached. 187 of them had accumulated in one shared
+// `.git` before a human swept them by hand with `git update-ref -d`.
+//
+// Shipped WHOLE, the same rule the four sweeps above ship by — list
+// (`listReviewRefs`), plan (`planReviewRefSweep`), execute
+// (`executeReviewRefSweep`), the one-shot convenience (`sweepReviewRefs`) and
+// the default git seam (`defaultReviewRefOps`) a consumer overrides or reuses.
+// A root-only consumer that could only reach the one-shot could not preview,
+// which is precisely the dry-run gap issue #148 closed for the orphan-BRANCH
+// sweep after a real run deleted six branches with no preceding preview.
+//
+// `REVIEW_REF_NAMESPACE_PREFIXES` rides along for the reason
+// `SCRIBE_SCRATCH_RELATIVE_DIR` and `WORKTREE_COUNT_ADVISORY_THRESHOLD` do: it
+// is the authority the operator-facing close phase cites, and a consumer that
+// wants to state the swept namespaces — or test a ref of its own against them —
+// must be able to READ them rather than transcribe them into a copy that drifts.
+//
+// Every result/plan/options/ops/skip-reason type rides along too, so a root-only
+// caller can annotate its own call site instead of spelling
+// `ReturnType<typeof planReviewRefSweep>` by hand.
+export {
+  REVIEW_REF_NAMESPACE_PREFIXES,
+  listReviewRefs,
+  planReviewRefSweep,
+  executeReviewRefSweep,
+  sweepReviewRefs,
+  defaultReviewRefOps,
+  type ReviewRefNamespace,
+  type ReviewRefSkipReason,
+  type ReviewRef,
+  type ReviewRefListing,
+  type ReviewRefSweepPlan,
+  type ReviewRefSweepResult,
+  type ReviewRefOps,
+  type ReviewRefSweepOptions,
+} from './worktree-cleanup';
+
 export {
   detectDrift,
   deriveProjectScopes,
