@@ -1175,6 +1175,7 @@ describe('validateIssue — verify-profile-coverage advisory (gate 8)', () => {
       // The profile that DID match is named ('web'); the one that never matched
       // anything on this row ('android') is not claimed as a match.
       expect(gate8?.reason).toMatch(/\bweb\b/);
+      expect(gate8?.reason).not.toMatch(/\bandroid\b/);
       // States the covered/inspection-only split explicitly.
       expect(gate8?.reason).toMatch(/verify-backed only for the covered files/);
       expect(gate8?.reason).toMatch(/inspection-only/);
