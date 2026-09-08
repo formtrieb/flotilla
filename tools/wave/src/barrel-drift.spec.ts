@@ -97,6 +97,19 @@ import {
   bindingPaths,
   gitignoredBindingPath,
   normalizeEngineInstall,
+  // ─── the composed-driver sweep (issue #748) ───────────────────────────────
+  //
+  // The module's SIXTH population, named here for the same load-time reason
+  // every value above is: if any of these regressed off the barrel, this file
+  // would fail to load before a single `it` runs. The constant is the single
+  // authority both wave locations are derived from, so it is as much a part of
+  // the shipped surface as the five functions beside it.
+  listComposedDriverDirs,
+  planComposedDriverSweep,
+  executeComposedDriverSweep,
+  sweepComposedDrivers,
+  defaultComposedDriverRemover,
+  WAVE_ARCHIVE_RELATIVE_DIR,
 } from './index';
 // The three TYPE-ONLY promotions this guard's own placement constraint had
 // deferred (see the "types this guard deferred" block below), plus the
@@ -149,6 +162,21 @@ import type {
   ResolvedTitle,
   DepsSetupSource,
   DepsSetupResolution,
+  // ─── the composed-driver + deferred-branch types (issue #748) ─────────────
+  //
+  // The type half of the sixth population, plus the two accounting types that
+  // ship WITHOUT a value of their own: `DeferredBranch`/`DeferredBranchReason`
+  // are the orphan-branch sweep's new additive key, and `ReviewRefPlanOptions`
+  // is the options object `planReviewRefSweep`'s new third parameter takes. A
+  // caller that cannot NAME an options type cannot annotate the object it
+  // passes — the same reachable-but-not-nameable gap the block above closes,
+  // met here in the diff that creates it rather than one release later.
+  ComposedDriverSweepPlan,
+  ComposedDriverSkipReason,
+  ComposedDriverFinishedRoute,
+  DeferredBranch,
+  DeferredBranchReason,
+  ReviewRefPlanOptions,
 } from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
@@ -1056,5 +1084,62 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     // cleanly but behaves like the module's own function.
     expect(extractConflictMapIssueId('.scratch/my-wave/issues/042-thing.md')).toBe('my-wave#042');
     expect(extractMergeOrderIssueId('.scratch/my-wave/issues/042-thing.md')).toBe('my-wave#042');
+  });
+});
+
+// ─── the SIXTH population's family, enumerated at the root (issue #748) ──────
+//
+// The guard above is DYNAMIC — it compares every module export against the
+// barrel by symbol identity — so this block adds nothing to its coverage. What
+// it adds is the AC4 half: the names resolve BY NAME, AT RUNTIME, from the
+// package root, which is the surface an installed-form consumer actually meets
+// and the one every prior gap in this file was invisible from inside the repo.
+describe('barrel-drift — the composed-driver sweep + deferred-branch family resolve from the package root (issue #748)', () => {
+  it('every value in the family imports as itself, not undefined', () => {
+    expect(typeof listComposedDriverDirs).toBe('function');
+    expect(typeof planComposedDriverSweep).toBe('function');
+    expect(typeof executeComposedDriverSweep).toBe('function');
+    expect(typeof sweepComposedDrivers).toBe('function');
+    expect(typeof defaultComposedDriverRemover).toBe('function');
+    expect(typeof WAVE_ARCHIVE_RELATIVE_DIR).toBe('string');
+  });
+
+  it('the archive constant carries its MEASURED value, spelled as a literal rather than quoted back to itself', () => {
+    // A root-surface assertion that compares the constant to the constant
+    // cannot fail. The literal is what pins it to the location the close
+    // ceremony's archive step actually writes to — and both halves of it are
+    // load-bearing, since this module derives the ACTIVE spine directory from
+    // its dirname and the archive subdirectory from its basename.
+    expect(WAVE_ARCHIVE_RELATIVE_DIR).toBe('.flotilla/waves/_archive');
+  });
+
+  it("the family BEHAVES like the module's own bindings — a plan of an absent scratch root is a legitimate, empty no-op", () => {
+    const listing = listComposedDriverDirs(mkdtempSync(join(tmpdir(), 'barrel-748-')), {});
+    expect(listing.present).toBe(false);
+    const plan: ComposedDriverSweepPlan = planComposedDriverSweep(listing);
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it('the new TYPES annotate from the root, keeping their literal member types rather than widening to string', () => {
+    // The compile-time half, in this file's own "types this guard deferred"
+    // shape: the annotations resolve only while these really cross the barrel,
+    // and `tsc --noEmit` is the assertion. The literal unions are load-bearing
+    // — a consumer that could annotate `reason` as a bare `string` would be
+    // free to invent a refusal this sweep never emits.
+    const deferred: DeferredBranch = {
+      branch: 'wave/748-held',
+      worktreePath: '/repo/.claude/worktrees/wf_1',
+      reason: 'checked-out-in-worktree',
+    };
+    const reason: DeferredBranchReason = deferred.reason;
+    expect(reason).toBe('checked-out-in-worktree');
+
+    const skip: ComposedDriverSkipReason = 'unknown-wave';
+    const route: ComposedDriverFinishedRoute = 'spine-archived';
+    expect([skip, route]).toEqual(['unknown-wave', 'spine-archived']);
+
+    const planOptions: ReviewRefPlanOptions = { liveRowsDeclared: true };
+    expect(planOptions.liveRowsDeclared).toBe(true);
   });
 });

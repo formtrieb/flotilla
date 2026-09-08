@@ -1453,6 +1453,13 @@ export interface WorktreeEntry {
      * This module only ever NAMES the commands — it never runs them itself;
      * the sandbox-disabled privilege escalation stays a deliberate, manual,
      * human step (out of scope for this module by design).
+     *
+     * A THIRD entry rides behind those two (issue #748): re-run the same
+     * sweep call. It is not a second recovery step — it is the step that
+     * makes the recovery COUNT, because the orphan-branch sweep fires on
+     * "worktree gone" and the two commands above are what make that true.
+     * See {@link exhaustedManualRecovery} for why it is spelled as an inert
+     * `#` line rather than as a reconstructed invocation.
      */
     commands: string[];
   };
@@ -1906,7 +1913,6 @@ export function parseWorktreeList(
  * When `branchFilter` is absent (the default), behaviour is byte-identical to
  * the original single-argument form — all clean agent worktrees are selected.
  *
- * @param worktrees Parsed agent worktrees from {@link listAgentWorktrees}.
  * A dirty worktree has a SECOND route to disposability (issue #621, ADR-0042
  * Amendment decision 7) — see {@link isPhysicallyExhausted} and the file-level
  * "the delete exhausts its permissions" doc section. It is asked only for a
@@ -2207,9 +2213,40 @@ function exhaustedManualRecovery(
     commands: [
       `git worktree remove --force ${shellQuoteSingle(worktreePath)}`,
       'git worktree prune',
+      RE_RUN_THE_SWEEP_LINE,
     ],
   };
 }
+
+/**
+ * The THIRD `manualRecovery.commands` entry (issue #748) — the step that makes
+ * the two above COUNT.
+ *
+ * WHY IT EXISTS. Branch hygiene fires on exactly two signals, and one of them
+ * is *worktree gone*. On a sandboxed harness every worktree of a wave lands in
+ * `erroredStillListed` and SURVIVES the call, so the very first sweep's branch
+ * list comes back EMPTY — and a close that reads that empty list as "clean"
+ * walks away leaving every wave branch and every `worktree-wf_*` sibling behind.
+ * Measured at one close: run 1 deleted **zero** branches; the prescribed manual
+ * recovery removed six worktrees; an identical run 2 then deleted **twelve**.
+ * The real sequence is sweep → recover → sweep, and its silence was the defect.
+ *
+ * WHY A MESSAGE LINE AND NOT A RECONSTRUCTED INVOCATION. This function is pure
+ * string assembly inside the ENGINE, and the engine has no invocation to spell:
+ * `executeCleanup` is reached from a programmatic `cleanAgentWorktrees` call as
+ * readily as from the CLI, and even at the CLI the argv it could see
+ * (`<node> <tsx> …/cli.ts worktree-cleanup …`) is NOT the command an operator
+ * typed — the consumer's own `engine.cli` binding and its env prefix are gone
+ * by then. Every other entry in this array is contracted copy-pasteable and
+ * correct; a fourth that reproduced a command nobody ran is exactly the "small
+ * untruth an operator copy-pastes past" the field's own doc warns about. So the
+ * line is shaped as a shell COMMENT: pasted with the other two it is inert,
+ * read on its own it names the step and the reason.
+ */
+const RE_RUN_THE_SWEEP_LINE =
+  '# then re-run the SAME worktree-cleanup call (--orphans included) — branch ' +
+  'hygiene fires only on "worktree gone", so this worktree\'s own branches are ' +
+  'swept only once the two commands above have actually removed it';
 
 /**
  * Execute a cleanup: invoke the remover for each selected-clean worktree,
@@ -3273,6 +3310,435 @@ export function defaultScratchRemover(): ScratchRemover {
   };
 }
 
+// ─── The COMPOSED-DRIVER sweep — the other half of the same location (issue #748) ─
+//
+// The Scribe scratch sweep directly above answers for the FILES `.flotilla/tmp/`
+// holds. This one answers for its DIRECTORIES, and it exists because the file
+// sweep's own refusal is correct and its consequence was not.
+//
+// THE SHAPE. `wave-start` composes one Workflow driver script per dispatch and
+// writes it INSIDE the repo, under `<scratch root>/<slug>/` — deliberately, and
+// the reason is not incidental: the harness's Workflow tool can only start from
+// a script file the session is already allowed to read, so a path outside the
+// working directory would need an explicit read grant, while a path under the
+// gitignored scratch root needs nothing. Both wave-start references say so, and
+// both promise the file is swept at close.
+//
+// THE GAP. It was not. The Scribe sweep's allowlist is on the NAME and it only
+// ever removes a FILE matching the payload shape; a subdirectory is reported
+// `not-a-scribe-payload` and left exactly where it is. That classification is
+// RIGHT — a `<slug>/` directory is not a Scribe payload — and the consequence
+// was that composed drivers accumulated one subdirectory per wave, swept by
+// nothing at all. Measured at one close: twelve payloads removed, and the one
+// subdirectory holding that wave's three composed driver scripts skipped. The
+// two references promising the sweep were, until this pass, simply untrue.
+//
+// THE RULE, and why it is not "delete the directory the file sweep skipped".
+// A composed driver is residue only once its wave is FINISHED — while a wave is
+// in flight the harness is still reading that exact file, and a re-dispatch
+// composes into the same directory. So the population is swept under the SAME
+// terminality rule the review-ref sweep uses (ADR-0042 Amendment 2026-09-08,
+// decisions 10 and 11), asked per directory:
+//
+//   · the caller declared this slug's wave TERMINAL — every row of the `--wave`
+//     spine has reached a terminal state → REMOVE.
+//   · this slug's spine sits in the ARCHIVE location wave-close's archive phase
+//     moves a finished spine into → REMOVE. An archived spine is a closed wave
+//     by construction; that is what archiving means.
+//   · a spine for this slug exists and neither of the above holds → SKIP
+//     `live-wave`. Another wave is running, or this one is not finished.
+//   · no spine matches this slug anywhere → SKIP `unknown-wave`. REPORTED,
+//     NEVER TOUCHED — the sweep owes accounting, never removal (ADR-0042). A
+//     directory whose owner cannot be named is exactly the case where deletion
+//     is least defensible, and "I could not find its spine" is not evidence
+//     that nothing needs it.
+//
+// Its own key, never merged into the Scribe payload numbers, for the reason
+// every sibling population here keeps its own: an `unknown-wave` refusal read
+// as a `not-a-scribe-payload` refusal would be actively misleading. And the
+// `<slug>/` directory keeps appearing in the Scribe sweep's own `skipped` list
+// as well — that entry is still true, and removing it would change a shipped
+// reason vocabulary for no gain.
+
+/**
+ * The location wave-close's archive phase moves a finished wave's spine into,
+ * repo-relative (issue #748).
+ *
+ * Exported for the reason {@link SCRIBE_SCRATCH_RELATIVE_DIR} is: the sweep and
+ * the ceremony that creates the location must agree BY CONSTRUCTION rather than
+ * by two hand-kept spellings. It is also the whole of what this module needs to
+ * know about wave storage — the ACTIVE spine directory is its `dirname` and the
+ * archive subdirectory its `basename`, so a caller that relocates one relocates
+ * both consistently (see {@link ComposedDriverSweepOptions.wavesDir}).
+ */
+export const WAVE_ARCHIVE_RELATIVE_DIR = '.flotilla/waves/_archive';
+
+/** Machine-readable cause a composed-driver skip is tagged with (issue #748). */
+export type ComposedDriverSkipReason = 'live-wave' | 'unknown-wave';
+
+/**
+ * One `<slug>/` DIRECTORY found directly inside the Scribe scratch directory
+ * (issue #748) — a wave's composed Workflow driver script(s), and whatever else
+ * that wave's dispatch wrote beside them.
+ */
+export interface ComposedDriverDir {
+  /** Absolute path to the directory. */
+  path: string;
+  /**
+   * Its own basename, read as the wave slug the composer named it for. Matched
+   * against spine filenames LITERALLY and never parsed — a slug is as opaque
+   * here as a row id is everywhere else in this module.
+   */
+  slug: string;
+  /**
+   * How this directory's wave was resolved. `wave-terminal` and `spine-archived`
+   * are the two sweepable routes; `null` on a skipped entry, whose `reason`
+   * says which refusal fired.
+   */
+  finishedBy: ComposedDriverFinishedRoute | null;
+  /** Present only on a skipped entry (`finishedBy: null`). */
+  reason?: ComposedDriverSkipReason;
+}
+
+/**
+ * Which of the two routes made a {@link ComposedDriverDir} sweepable
+ * (issue #748). Named per entry rather than collapsed into a boolean because
+ * the two carry different evidence: `wave-terminal` is the caller's own read of
+ * the spine it was scoped by, `spine-archived` is this module's own filesystem
+ * observation of a spine that has already been moved.
+ */
+export type ComposedDriverFinishedRoute = 'wave-terminal' | 'spine-archived';
+
+/** What {@link listComposedDriverDirs} found, and where it looked (issue #748). */
+export interface ComposedDriverListing {
+  /** Absolute path of the scratch directory this listing looked in. */
+  dir: string;
+  /**
+   * Whether that directory exists and is readable. `false` → `dirs` is empty
+   * because there was nothing to read, NOT because it held no subdirectory —
+   * the same "did not look" / "looked and found nothing" split
+   * {@link ScratchListing.present} keeps.
+   */
+  present: boolean;
+  /** Absolute path of the waves directory the spine probes ran against. */
+  wavesDir: string;
+  /** Every subdirectory directly inside the scratch directory, classified. */
+  dirs: ComposedDriverDir[];
+}
+
+/** The composed-driver sweep plan (issue #748). */
+export interface ComposedDriverSweepPlan {
+  /** Absolute path of the scratch directory the plan was computed from. */
+  dir: string;
+  /** Whether that directory existed at plan time — carried through verbatim. */
+  present: boolean;
+  /** Absolute path of the waves directory — carried through verbatim. */
+  wavesDir: string;
+  /** Directories selected for removal (their wave is terminal or archived). */
+  selected: ComposedDriverDir[];
+  /** Directories skipped, each carrying a `reason`. */
+  skipped: ComposedDriverDir[];
+}
+
+/** Result of executing a composed-driver sweep (issue #748). */
+export interface ComposedDriverSweepResult {
+  /** Absolute path of the scratch directory that was swept. */
+  dir: string;
+  /** Whether that directory existed — an absent directory is a legitimate no-op. */
+  present: boolean;
+  /** Absolute path of the waves directory the plan resolved against. */
+  wavesDir: string;
+  /** Directories successfully removed. */
+  removed: ComposedDriverDir[];
+  /** Directories skipped (never removed) — each carries a `reason`. */
+  skipped: ComposedDriverDir[];
+  /**
+   * Errors encountered during removal — including the verify-after-write case
+   * where the remover reported success but the directory is STILL on disk, the
+   * same discipline {@link executeScribeScratchSweep} and
+   * {@link executeOrphanSweep} both apply.
+   *
+   * A non-empty list is an INCOMPLETE OUTCOME the `worktree-cleanup` CLI folds
+   * into its non-zero exit verdict, beside `orphans.scratch.errors`. That is
+   * not a change to the shipped exit contract in the sense ADR-0035 guards:
+   * this pass is new, so no run that exits 0 today can start exiting 1 because
+   * of it, and its REFUSALS (`live-wave`, `unknown-wave`) are deliberately not
+   * terms in that verdict — a refusal is something the sweep decided not to do,
+   * never something it tried and did not finish.
+   */
+  errors: Array<{ path: string; message: string }>;
+}
+
+/**
+ * Physical-removal seam for one composed-driver directory (issue #748).
+ *
+ * Its own seam rather than a reuse of {@link ScratchRemover}, for exactly the
+ * reason {@link OrphanSweepOptions.scratchRemover} is its own option: that one
+ * removes a single FILE and its default is deliberately non-recursive, this one
+ * removes a DIRECTORY and must be. A test that fakes one must not silently fake
+ * the other.
+ */
+export interface ComposedDriverRemover {
+  /** Physically delete one composed-driver directory by absolute path. Throws on failure. */
+  remove(dirPath: string): void;
+}
+
+/** Options for the composed-driver sweep (issue #748). */
+export interface ComposedDriverSweepOptions {
+  /**
+   * Absolute repo root the scratch and waves directories resolve under.
+   * Defaults to `process.cwd()` for the standalone entry points.
+   */
+  repoRoot?: string;
+  /** Repo-relative scratch dir override. Defaults to {@link SCRIBE_SCRATCH_RELATIVE_DIR}. */
+  scratchDir?: string;
+  /**
+   * The directory holding this consumer's wave spines — absolute, or relative
+   * to `repoRoot`. Defaults to the `dirname` of
+   * {@link WAVE_ARCHIVE_RELATIVE_DIR}, and the archive location is always
+   * `<wavesDir>/<basename of WAVE_ARCHIVE_RELATIVE_DIR>` so the two can never
+   * be pointed at unrelated places.
+   *
+   * The CLI passes the directory of the `--wave` spine it was handed, which is
+   * what makes a standalone run and a close agree about where spines live even
+   * in a consumer that keeps them somewhere else.
+   */
+  wavesDir?: string;
+  /**
+   * Slugs whose wave the CALLER has determined is terminal — every row of its
+   * spine in a terminal state. The engine does not read a spine itself: row
+   * states are the spine reader's vocabulary, not this module's, and a sweep
+   * that parsed them here would own a second, drifting copy of it.
+   *
+   * Ordinarily this holds at most the ONE slug the run was scoped by (the
+   * `--wave` spine). Every other slug is resolved from the filesystem alone —
+   * archived, live, or unknown.
+   */
+  terminalSlugs?: Iterable<string>;
+  /**
+   * Consumer-declared disposable directory/file names (issue #115) — the same
+   * option, with the same union-never-replace semantics, as
+   * {@link OrphanSweepOptions.disposableNames}. It reaches the DEFAULT remover
+   * only (its ENOTEMPTY junk purge); an injected `remover` is used exactly as
+   * given, because the caller supplying the seam owns its allowlist.
+   */
+  disposableNames?: readonly string[];
+  /** Injectable removal seam. Defaults to {@link defaultComposedDriverRemover}. */
+  remover?: ComposedDriverRemover;
+  /**
+   * Injectable on-disk existence probe (verify-after-write) — mirrors
+   * {@link ScratchSweepOptions.pathExists}. Called AFTER a remover reports
+   * success; `true` means the directory is still present (recorded as an error,
+   * never as a silent success). Defaults to `fs.existsSync`.
+   */
+  pathExists?: (path: string) => boolean;
+  /**
+   * Injectable spine-presence probe, used for the two filesystem routes
+   * (`<wavesDir>/<slug>.md` and `<archive>/<slug>.md`). Defaults to
+   * `fs.existsSync`. Separate from {@link pathExists} above on purpose: that
+   * one answers "did the removal actually happen", this one answers "does this
+   * wave still exist", and a spec that fakes one must not silently fake the
+   * other.
+   */
+  spineExists?: (path: string) => boolean;
+}
+
+/** Absolute waves directory + its archive subdirectory, from the options. */
+function resolveWavesDirs(
+  repoRoot: string,
+  wavesDir: string | undefined,
+): { wavesAbs: string; archiveAbs: string } {
+  const wavesAbs = nodePath.resolve(
+    repoRoot,
+    wavesDir ?? nodePath.dirname(WAVE_ARCHIVE_RELATIVE_DIR),
+  );
+  return {
+    wavesAbs,
+    archiveAbs: nodePath.join(wavesAbs, nodePath.basename(WAVE_ARCHIVE_RELATIVE_DIR)),
+  };
+}
+
+/**
+ * List every SUBDIRECTORY directly inside the Scribe scratch directory and
+ * classify each against the terminal-or-archived rule (issue #748) — the
+ * section comment above states the four outcomes and why each is what it is.
+ *
+ * Never recursive: the composer writes one directory per wave slug at the top
+ * level, so anything deeper belongs to that wave and travels with it.
+ *
+ * Read-only. An absent/unreadable scratch directory is a legitimate answer
+ * (`present: false`, no entries), not an error.
+ */
+export function listComposedDriverDirs(
+  repoRoot = process.cwd(),
+  opts: {
+    scratchDir?: string;
+    wavesDir?: string;
+    terminalSlugs?: Iterable<string>;
+    spineExists?: (path: string) => boolean;
+  } = {},
+): ComposedDriverListing {
+  const dir = nodePath.resolve(
+    repoRoot,
+    opts.scratchDir ?? SCRIBE_SCRATCH_RELATIVE_DIR,
+  );
+  const { wavesAbs, archiveAbs } = resolveWavesDirs(repoRoot, opts.wavesDir);
+  const terminal = new Set(opts.terminalSlugs ?? []);
+  const spineExists = opts.spineExists ?? existsSync;
+
+  let raw: Dirent[];
+  try {
+    raw = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return { dir, present: false, wavesDir: wavesAbs, dirs: [] };
+  }
+
+  const dirs: ComposedDriverDir[] = [];
+  for (const entry of raw) {
+    if (!entry.isDirectory()) continue; // a FILE here is the Scribe sweep's population.
+    const slug = entry.name;
+    const path = nodePath.join(dir, slug);
+
+    // Route 1 — the caller read this slug's spine and every row of it is
+    // terminal. Asked FIRST because it is the only route that can be true
+    // while the spine is still in its ACTIVE location: the close sweeps at
+    // phase 3 and archives at phase 6, so at sweep time the wave being closed
+    // is terminal and not yet archived.
+    if (terminal.has(slug)) {
+      dirs.push({ path, slug, finishedBy: 'wave-terminal' });
+      continue;
+    }
+    // Route 2 — the spine has already been archived, which is what a closed
+    // wave looks like from every later run.
+    if (spineExists(nodePath.join(archiveAbs, `${slug}.md`))) {
+      dirs.push({ path, slug, finishedBy: 'spine-archived' });
+      continue;
+    }
+    // A spine exists and neither route fired → some wave still owns this.
+    if (spineExists(nodePath.join(wavesAbs, `${slug}.md`))) {
+      dirs.push({ path, slug, finishedBy: null, reason: 'live-wave' });
+      continue;
+    }
+    // Nothing anywhere answers for this directory. Reported, never touched.
+    dirs.push({ path, slug, finishedBy: null, reason: 'unknown-wave' });
+  }
+
+  return { dir, present: true, wavesDir: wavesAbs, dirs };
+}
+
+/**
+ * Build the composed-driver sweep plan (issue #748) with ZERO mutating calls.
+ *
+ * Pure partition: the classification is the LISTING's work (it is the part that
+ * needs the filesystem), so this function only sorts the classified entries
+ * into the two buckets — exactly the split {@link planScribeScratchSweep} and
+ * {@link planOrphanSweep} both use.
+ */
+export function planComposedDriverSweep(
+  listing: ComposedDriverListing,
+): ComposedDriverSweepPlan {
+  const selected: ComposedDriverDir[] = [];
+  const skipped: ComposedDriverDir[] = [];
+  for (const entry of listing.dirs) {
+    if (entry.finishedBy !== null) {
+      selected.push(entry);
+    } else {
+      skipped.push(entry);
+    }
+  }
+  return {
+    dir: listing.dir,
+    present: listing.present,
+    wavesDir: listing.wavesDir,
+    selected,
+    skipped,
+  };
+}
+
+/**
+ * Execute a composed-driver sweep: physically remove each selected directory
+ * (a dry run simply never calls this). The remover is invoked ONLY for
+ * `selected` entries. A per-item failure — a throw, OR a directory still
+ * present after the remover reported success (verify-after-write) — is
+ * collected in `errors` and never silently dropped.
+ */
+export function executeComposedDriverSweep(
+  plan: ComposedDriverSweepPlan,
+  opts: ComposedDriverSweepOptions = {},
+): ComposedDriverSweepResult {
+  const remover = opts.remover ?? defaultComposedDriverRemover(opts.disposableNames);
+  const pathExists = opts.pathExists ?? existsSync;
+
+  const removed: ComposedDriverDir[] = [];
+  const errors: Array<{ path: string; message: string }> = [];
+
+  for (const entry of plan.selected) {
+    try {
+      remover.remove(entry.path);
+      if (pathExists(nodePath.resolve(entry.path))) {
+        errors.push({
+          path: entry.path,
+          message: `composed-driver directory still present after removal: ${entry.path}`,
+        });
+        continue;
+      }
+      removed.push(entry);
+    } catch (err) {
+      errors.push({ path: entry.path, message: describeError(err) });
+    }
+  }
+
+  return {
+    dir: plan.dir,
+    present: plan.present,
+    wavesDir: plan.wavesDir,
+    removed,
+    skipped: plan.skipped,
+    errors,
+  };
+}
+
+/**
+ * High-level composed-driver convenience: list → plan → execute in one call
+ * (issue #748), mirroring {@link sweepScribeScratch}. The CLI does NOT use this
+ * one-shot — it splits the three steps so `--dry-run` can preview the exact
+ * plan the real run executes, which is the issue #377 discipline this
+ * population is held to from its first line.
+ */
+export function sweepComposedDrivers(
+  opts: ComposedDriverSweepOptions = {},
+): ComposedDriverSweepResult {
+  const listing = listComposedDriverDirs(opts.repoRoot ?? process.cwd(), {
+    scratchDir: opts.scratchDir,
+    wavesDir: opts.wavesDir,
+    terminalSlugs: opts.terminalSlugs,
+    spineExists: opts.spineExists,
+  });
+  return executeComposedDriverSweep(planComposedDriverSweep(listing), opts);
+}
+
+/**
+ * Default {@link ComposedDriverRemover} — a recursive directory delete through
+ * the SAME {@link physicallyDeleteWithJunkPurge} the orphan-directory remover
+ * uses, so the ENOTEMPTY junk-purge retry (a Finder drop landing between the
+ * listing and the delete) is inherited rather than reimplemented.
+ *
+ * Recursive is correct here and would be wrong one level up: a selected entry
+ * is always a DIRECTORY (the classifier requires `isDirectory()`) holding a
+ * finished wave's composed scripts, whereas a selected Scribe entry is always a
+ * single file.
+ */
+export function defaultComposedDriverRemover(
+  disposableNames?: readonly string[],
+): ComposedDriverRemover {
+  const declared = toDisposableSet(disposableNames);
+  return {
+    remove(dirPath: string): void {
+      physicallyDeleteWithJunkPurge(nodePath.resolve(dirPath), declared);
+    },
+  };
+}
+
 // ─── Detached-HEAD scratchpad sweep (issue #238 — the E2BIG population) ───────
 //
 // A FOURTH class, and the one every earlier sweep structurally cannot see. The
@@ -4293,6 +4759,71 @@ export interface OrphanBranchSweepResult {
    * per-removal path.
    */
   branchHygieneSkipped: BranchHygieneSkip[];
+  /**
+   * Branches this sweep DEFERRED rather than skipped (issue #748) — see
+   * {@link DeferredBranch} for the distinction and for the measurement that
+   * made the silence a defect. ADDITIVE (ADR-0035): `branchHygieneSkipped`
+   * above keeps its exact reason vocabulary, and a deferred branch never
+   * appears in it.
+   */
+  branchHygieneDeferred: DeferredBranch[];
+}
+
+/**
+ * Machine-readable cause a {@link DeferredBranch} entry is tagged with
+ * (issue #748). Its own vocabulary, deliberately NOT a widening of
+ * {@link BranchHygieneSkipReason}: the two answer different questions, and
+ * ADR-0042's amendment settled that deferral is a new key rather than a new
+ * reason on the old one.
+ */
+export type DeferredBranchReason = 'checked-out-in-worktree';
+
+/**
+ * One branch the orphan-branch sweep would otherwise have decided about, held
+ * back because a still-registered worktree has it checked out (issue #748,
+ * ADR-0042 Amendment 2026-09-08 decision 9).
+ *
+ * DEFERRED, NOT SKIPPED, and the word is the whole point. A skip is a verdict —
+ * the sweep looked, decided not to act, and will decide the same way next time
+ * (`branch-probe-failed` is that shape). This is not a verdict: the branch's
+ * ONLY obstruction is a worktree that is about to be removed, and the very next
+ * run after that removal will select it. The two must not share a vocabulary,
+ * because an operator reading "skipped" stops looking.
+ *
+ * WHAT IT COSTS TO LEAVE THIS SILENT — measured, not hypothesised. On a
+ * sandboxed harness every worktree of a wave survives the removal call
+ * (`erroredStillListed`), so the safety floor below spared every branch those
+ * worktrees held and the first run's `branchesDeleted` came back EMPTY. The
+ * prescribed manual recovery then removed six worktrees, and an IDENTICAL
+ * second call deleted TWELVE branches — six `wave/*` and six `worktree-wf_*`
+ * siblings. Nothing in the first run's numbers said any of that was pending.
+ * Structurally the sequence is three steps, and it always was; the report now
+ * says so (the third {@link exhaustedManualRecovery} command is the other half
+ * of the same fix).
+ *
+ * WHAT IS DELIBERATELY NOT ASKED. The remote-ref probe is not run for a
+ * deferred branch, and the `worktree-wf_*` liveness question is not either.
+ * Both would be answered against a state that is about to change — the whole
+ * reason the branch is deferred — and the `wave/*` probe is a NETWORK call this
+ * sweep has no reason to spend on a branch it is not going to touch. So the
+ * entry claims only what it can support: this branch is in a shape this sweep
+ * sweeps, and a live worktree is holding it. Whether the run after the removal
+ * SELECTS it is that run's question, answered with fresh evidence.
+ */
+export interface DeferredBranch {
+  /** The local branch name, exactly as `git for-each-ref` printed it. */
+  branch: string;
+  /**
+   * Absolute path of the registered worktree holding the branch, or `null`
+   * when the injected {@link OrphanBranchSweepOps} did not name one (the
+   * optional `checkedOutWorktreePaths` method is absent — an older test double,
+   * never the default ops). `null` is "this seam could not say", never "no
+   * worktree": the branch is in `branchHygieneDeferred` precisely because
+   * {@link OrphanBranchSweepOps.listCheckedOutBranches} named it.
+   */
+  worktreePath: string | null;
+  /** Why it was deferred. */
+  reason: DeferredBranchReason;
 }
 
 /**
@@ -4317,6 +4848,21 @@ export interface OrphanBranchSweepOps {
    * queried fresh, same contract as {@link BranchHygieneOps.listCheckedOutBranches}.
    */
   listCheckedOutBranches(): Set<string>;
+  /**
+   * OPTIONAL (issue #748) — branch name → absolute path of the registered
+   * worktree that has it checked out, for the same population
+   * {@link listCheckedOutBranches} returns as a bare set. Read ONLY to name
+   * the `worktreePath` of a {@link DeferredBranch}; it never decides anything,
+   * so an implementation that omits it loses the path and nothing else (the
+   * entry then carries `worktreePath: null`).
+   *
+   * Optional rather than required on purpose: this interface is a seam
+   * consumers implement, and a new REQUIRED member would break every existing
+   * implementation for a field that only decorates a report. The default ops
+   * supply it from the SAME `git worktree list --porcelain` read that answers
+   * {@link listCheckedOutBranches}, so the two can never disagree there.
+   */
+  checkedOutWorktreePaths?(): ReadonlyMap<string, string>;
   /**
    * Basenames of every LIVE worktree — registered in `git worktree list`
    * (its `worktree` path basenames) UNION the directory names present on disk
@@ -4363,6 +4909,14 @@ export interface OrphanBranchSweepPlan {
   toDelete: string[];
   /** Same shape/meaning as {@link OrphanBranchSweepResult.branchHygieneSkipped}. */
   branchHygieneSkipped: BranchHygieneSkip[];
+  /**
+   * Same shape/meaning as {@link OrphanBranchSweepResult.branchHygieneDeferred}
+   * (issue #748) — carried on the PLAN as well as the result so `--dry-run`
+   * previews the deferral, not only the deletions. A preview that named the
+   * empty branch list without naming what it was waiting on is precisely the
+   * reading that cost twelve branches.
+   */
+  branchHygieneDeferred: DeferredBranch[];
 }
 
 /**
@@ -4374,7 +4928,12 @@ export interface OrphanBranchSweepPlan {
  *
  * For every local branch, in order:
  *   1. Safety floor — the current branch and any branch checked out in a live
- *      worktree are skipped outright (never probed, never planned).
+ *      worktree are skipped outright (never probed, never planned). A branch
+ *      held by a live WORKTREE that also carries one of the two swept shapes
+ *      is additionally RECORDED as deferred (issue #748) — still never probed
+ *      and never planned, but no longer silent; see {@link DeferredBranch}.
+ *      The primary checkout's current branch is not deferred: nothing about
+ *      this sweep will ever delete it, so there is nothing pending to report.
  *   2. A `worktree-wf_*` branch is planned for deletion iff its worktree
  *      (basename = the branch name minus the `worktree-` prefix) is neither
  *      registered nor on disk — otherwise the worktree is still live and the
@@ -4391,15 +4950,35 @@ function computeOrphanBranchSweepPlan(ops: OrphanBranchSweepOps): OrphanBranchSw
   const checkedOut = ops.listCheckedOutBranches();
   const liveWorktreeBasenames = ops.listLiveWorktreeBasenames();
 
+  // issue #748 — the paths behind `checkedOut`, when the seam can name them.
+  // Read ONCE, beside the set it decorates, so both answers come from the same
+  // moment of the same `git worktree list` read in the default ops.
+  const checkedOutPaths = ops.checkedOutWorktreePaths?.() ?? new Map<string, string>();
+
   const toDelete: string[] = [];
   const branchHygieneSkipped: BranchHygieneSkip[] = [];
+  const branchHygieneDeferred: DeferredBranch[] = [];
 
   for (const branch of localBranches) {
     // Safety floor (rule c, made explicit): the current branch is structurally
     // undeletable, and a branch checked out in ANY live worktree is never
     // touched — neither is even probed.
     if (current !== null && branch === current) continue;
-    if (checkedOut.has(branch)) continue;
+    if (checkedOut.has(branch)) {
+      // …but no longer SILENTLY (issue #748). A branch in one of the two swept
+      // shapes is deferred, not dropped: the worktree holding it is the whole
+      // obstruction, and the run after that worktree is gone is the run that
+      // decides. A branch in neither shape is not this sweep's population at
+      // all and stays as untouched — and as unreported — as it always was.
+      if (/^worktree-wf_/.test(branch) || branch.startsWith('wave/')) {
+        branchHygieneDeferred.push({
+          branch,
+          worktreePath: checkedOutPaths.get(branch) ?? null,
+          reason: 'checked-out-in-worktree',
+        });
+      }
+      continue;
+    }
 
     // Signal 2 — harness worktree base branch (worktree-wf_* naming) whose
     // worktree is gone. Restricted to the `wf_` Workflow-driver shape (the
@@ -4437,7 +5016,7 @@ function computeOrphanBranchSweepPlan(ops: OrphanBranchSweepOps): OrphanBranchSw
     // Matches neither signal → never touched.
   }
 
-  return { toDelete, branchHygieneSkipped };
+  return { toDelete, branchHygieneSkipped, branchHygieneDeferred };
 }
 
 /**
@@ -4477,7 +5056,16 @@ export function executeOrphanBranchSweep(
     ops.deleteBranch(branch);
     branchesDeleted.push(branch);
   }
-  return { branchesDeleted, branchHygieneSkipped: plan.branchHygieneSkipped };
+  return {
+    branchesDeleted,
+    branchHygieneSkipped: plan.branchHygieneSkipped,
+    // Carried through from the plan verbatim (issue #748) — never recomputed
+    // here. Executing the plan deletes branches; it cannot change which
+    // worktrees are registered, so a deferral the plan recorded is exactly as
+    // true afterwards, and a second derivation could only ever disagree with
+    // the plan the caller previewed.
+    branchHygieneDeferred: plan.branchHygieneDeferred,
+  };
 }
 
 /**
@@ -4541,6 +5129,9 @@ export function defaultOrphanBranchSweepOps(
       return out.length > 0 ? out : null;
     },
     listCheckedOutBranches: hygiene.listCheckedOutBranches,
+    checkedOutWorktreePaths(): ReadonlyMap<string, string> {
+      return collectCheckedOutWorktreePaths(repoRoot);
+    },
     listLiveWorktreeBasenames(): Set<string> {
       return collectLiveWorktreeBasenames(repoRoot, markers);
     },
@@ -4558,6 +5149,41 @@ export function defaultOrphanBranchSweepOps(
  * on disk. Including extra (unrelated) basenames only ever makes the sweep MORE
  * conservative — it can only ever protect a branch, never delete one wrongly.
  */
+/**
+ * Branch name → absolute worktree path, for every branch checked out in a
+ * registered worktree (issue #748) — the path half of the set
+ * {@link BranchHygieneOps.listCheckedOutBranches} returns.
+ *
+ * Read from the SAME `git worktree list --porcelain` output the set is read
+ * from, and parsed the same way (`worktree <path>` opens each record, `branch
+ * refs/heads/<b>` names its branch), so the two answers cannot describe two
+ * different moments. A record with no `branch` line (a detached HEAD)
+ * contributes nothing — there is no branch to key it by.
+ *
+ * A branch checked out in two worktrees is not a state git permits, so the last
+ * writer wins is a distinction without a difference here.
+ */
+function collectCheckedOutWorktreePaths(repoRoot: string): ReadonlyMap<string, string> {
+  const raw = shellGit(['worktree', 'list', '--porcelain'], repoRoot);
+  const byBranch = new Map<string, string>();
+  let currentPath: string | null = null;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('worktree ')) {
+      currentPath = trimmed.slice('worktree '.length).trim();
+      continue;
+    }
+    if (trimmed.startsWith('branch ') && currentPath !== null) {
+      const branch = trimmed
+        .slice('branch '.length)
+        .replace(/^refs\/heads\//, '')
+        .trim();
+      if (branch.length > 0) byBranch.set(branch, currentPath);
+    }
+  }
+  return byBranch;
+}
+
 function collectLiveWorktreeBasenames(
   repoRoot: string,
   markers: string[],
@@ -4696,6 +5322,13 @@ export interface ReviewRefSweepPlan {
    * The live wave's row ids the plan was computed against, sorted — or `null`
    * when the caller declared none, in which case NOTHING is selected and every
    * ref is skipped `live-rows-unknown`.
+   *
+   * Three readings, and they are distinct (issue #748): a NON-EMPTY array is a
+   * live wave whose rows are spared; `null` is "the live wave was never
+   * declared" and nothing was removed; an EMPTY array is a wave that was
+   * declared and has no live row left — a TERMINAL wave, whose own refs this
+   * run therefore swept. The field reflects the derivation, so a reader never
+   * has to infer which of the three happened from the skip reasons.
    */
   liveRowIds: string[] | null;
   /** Refs selected for deletion (resolvable row, not in the live wave). */
@@ -4765,8 +5398,56 @@ export interface ReviewRefSweepOptions {
    * it is mid-diff against.
    */
   liveRowIds?: readonly string[];
+  /**
+   * See {@link ReviewRefPlanOptions.liveRowsDeclared} (issue #748) — the flag
+   * that lets a caller declare an EMPTY live set and mean it, which is what a
+   * TERMINAL wave has. Carried here so the one-shot {@link sweepReviewRefs}
+   * can express the same thing the plan/execute split can.
+   */
+  liveRowsDeclared?: boolean;
   /** Injectable git seam. Defaults to {@link defaultReviewRefOps}. */
   ops?: ReviewRefOps;
+}
+
+/**
+ * Options for {@link planReviewRefSweep} (issue #748, ADR-0042 Amendment
+ * 2026-09-08 decision 10) — the one thing the `liveRowIds` argument alone
+ * cannot express.
+ *
+ * THE PROBLEM. `liveRowIds` folds EMPTY into UNDECLARED on purpose: an
+ * accidentally-empty set read as "sweep everything" costs a sibling wave's
+ * Reviewer the ref it is mid-diff against, so empty fails closed. But a wave
+ * whose every row has reached a terminal state (`pr-created`, `approved`,
+ * `failed`, `abandoned`, `parked`) has a live set that is *legitimately* empty,
+ * and it is exactly the wave whose refs should now go: at its own close, every
+ * one of its ten refs was skipped `live-row` and none was removed, because
+ * every ref a wave produces belongs to one of its own rows. They became
+ * sweepable only at the NEXT wave's close — a one-wave lag, on refs a later
+ * Reviewer's own fetch silently overwrites.
+ *
+ * THE RULE, and why it is wave-level. Liveness is a property of the WAVE, never
+ * of the row. A per-row rule — "a row that reached its terminal state stops
+ * counting as live" — was rejected in the record for a concrete reason: a
+ * sibling row that finishes first would have its `refs/sib/<id>` swept out from
+ * under a Worker still running the merge-tree prediction against it. So either
+ * every row of the wave is terminal and the whole wave's refs go, or none of
+ * them does.
+ */
+export interface ReviewRefPlanOptions {
+  /**
+   * `true` when the caller has genuinely DERIVED the live set and is standing
+   * behind it even though it is empty — i.e. it read a spine and every row of
+   * that spine is terminal. The plan then treats the live set as KNOWN: nothing
+   * is skipped `live-rows-unknown`, and every ref with a resolvable row id is
+   * selected.
+   *
+   * Absent or `false` keeps the pre-existing reading EXACTLY: an empty (or
+   * omitted) `liveRowIds` means "the caller could not say", the sweep removes
+   * nothing, and every ref is skipped `live-rows-unknown`. That is still the
+   * default, and it is still what a caller with no spine gets — a run that
+   * cannot name its own wave has no business deciding another wave's refs.
+   */
+  liveRowsDeclared?: boolean;
 }
 
 /**
@@ -4846,13 +5527,21 @@ export function listReviewRefs(
  *   2. No live set declared → skipped `live-rows-unknown` (fail closed).
  *   3. Row is in the live set → skipped `live-row`.
  *   4. Otherwise → selected for deletion.
+ *
+ * A TERMINAL wave takes rule 4 for its own refs, and that is the one behaviour
+ * change issue #748 makes here: its caller declares an EMPTY live set through
+ * {@link ReviewRefPlanOptions.liveRowsDeclared}, so rule 2 does not fire and
+ * rule 3 has nothing to match. See that option's doc for why empty-and-meant-it
+ * needs a flag of its own, and why the rule is wave-level rather than per-row.
+ * Every other caller reaches this function exactly as before.
  */
 export function planReviewRefSweep(
   listing: ReviewRefListing,
   liveRowIds?: readonly string[],
+  opts: ReviewRefPlanOptions = {},
 ): ReviewRefSweepPlan {
   const live = new Set(liveRowIds ?? []);
-  const known = live.size > 0;
+  const known = live.size > 0 || opts.liveRowsDeclared === true;
 
   const selected: ReviewRef[] = [];
   const skipped: ReviewRef[] = [];
@@ -4933,7 +5622,9 @@ export function sweepReviewRefs(
 ): ReviewRefSweepResult {
   const ops = opts.ops ?? defaultReviewRefOps(opts.repoRoot ?? process.cwd());
   const listing = listReviewRefs({ ops });
-  const plan = planReviewRefSweep(listing, opts.liveRowIds);
+  const plan = planReviewRefSweep(listing, opts.liveRowIds, {
+    liveRowsDeclared: opts.liveRowsDeclared,
+  });
   return executeReviewRefSweep(plan, { ops });
 }
 

@@ -730,6 +730,66 @@ export {
   type ReviewRefSweepResult,
   type ReviewRefOps,
   type ReviewRefSweepOptions,
+  // The terminal-wave rule's one new surface (issue #748, ADR-0042 Amendment
+  // 2026-09-08 decision 10). `planReviewRefSweep` gained an optional third
+  // parameter, and a root-only caller that cannot NAME its type cannot annotate
+  // the object it passes — the same nameability gap `UnaccountedWorktree` and
+  // `BlockingPaths` were promoted to close, met here in the same diff that
+  // creates it rather than one release later.
+  type ReviewRefPlanOptions,
+} from './worktree-cleanup';
+
+// The COMPOSED-DRIVER sweep (issue #748) — the SIXTH population, and the other
+// half of the location the Scribe scratch sweep already owns. That sweep's
+// allowlist is on the payload NAME and it only ever removes a FILE, so the
+// per-wave `<slug>/` directory `wave-start` composes its Workflow driver into
+// was reported `not-a-scribe-payload` and left standing, wave after wave, swept
+// by nothing. The classification was right; the consequence was the gap.
+//
+// Shipped WHOLE, the rule every sweep in this module ships by — list
+// (`listComposedDriverDirs`), plan (`planComposedDriverSweep`), execute
+// (`executeComposedDriverSweep`), the one-shot convenience
+// (`sweepComposedDrivers`) and the default removal seam
+// (`defaultComposedDriverRemover`). The split is what gives a consumer the same
+// dry-run parity the CLI itself relies on: the one-shot's plan is not
+// observable from outside, and a preview that cannot be shared with the run is
+// exactly the gap issue #148 closed for the orphan-BRANCH sweep after a real
+// run deleted six branches with no preceding preview.
+//
+// `WAVE_ARCHIVE_RELATIVE_DIR` rides along for the reason
+// `SCRIBE_SCRATCH_RELATIVE_DIR` and `REVIEW_REF_NAMESPACE_PREFIXES` do: it is
+// the authority the operator-facing close phases cite, and it is the single
+// constant this module derives BOTH wave locations from (the active spine
+// directory is its dirname, the archive subdirectory its basename) — a
+// consumer that wants to state or relocate them must be able to read it rather
+// than transcribe a copy that drifts.
+export {
+  WAVE_ARCHIVE_RELATIVE_DIR,
+  listComposedDriverDirs,
+  planComposedDriverSweep,
+  executeComposedDriverSweep,
+  sweepComposedDrivers,
+  defaultComposedDriverRemover,
+  type ComposedDriverSkipReason,
+  type ComposedDriverFinishedRoute,
+  type ComposedDriverDir,
+  type ComposedDriverListing,
+  type ComposedDriverSweepPlan,
+  type ComposedDriverSweepResult,
+  type ComposedDriverRemover,
+  type ComposedDriverSweepOptions,
+} from './worktree-cleanup';
+
+// The DEFERRED-BRANCH pair (issue #748, ADR-0042 Amendment decision 9) — the
+// orphan-branch sweep's new additive accounting key. A branch it would decide
+// about but that a still-registered worktree holds is now named rather than
+// dropped at the safety floor, because branch hygiene fires on "worktree gone"
+// and a close that read the resulting empty branch list as clean left twelve
+// branches behind. `branchHygieneSkipped`'s own reason vocabulary is untouched:
+// deferral is a separate key with a separate vocabulary, deliberately.
+export {
+  type DeferredBranch,
+  type DeferredBranchReason,
 } from './worktree-cleanup';
 
 export {

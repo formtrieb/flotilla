@@ -735,6 +735,46 @@ const REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT = [
 ];
 
 /**
+ * The VALUE half of the COMPOSED-DRIVER sweep (issue #748) — worktree-cleanup.ts's
+ * SIXTH population, and the DIRECTORY half of the scratch root whose FILES the
+ * Scribe sweep already owned. That sweep's allowlist is on the payload name and
+ * only ever removes a file, so the per-wave `<slug>/` directory `wave-start`
+ * composes its Workflow driver into was reported `not-a-scribe-payload` and
+ * swept by nothing at all — one directory per wave, while two wave-start
+ * references promised it was swept at close. Sorted, as the probe sorts.
+ *
+ * Its own family rather than an append to either list above, for the reason
+ * those lists' own doc comments give: each records what ITS issue decided at
+ * ITS anchor, and folding a later sweep into one would rewrite that decision
+ * into one it never made.
+ *
+ * Six names — the list → plan → execute trio, the one-shot convenience, the
+ * default removal seam, and `WAVE_ARCHIVE_RELATIVE_DIR`, the single constant
+ * this module derives BOTH wave locations from (the active spine directory is
+ * its dirname, the archive subdirectory its basename). That constant rides
+ * along for the reason `SCRIBE_SCRATCH_RELATIVE_DIR` and
+ * `REVIEW_REF_NAMESPACE_PREFIXES` do: it is the authority the operator-facing
+ * close phases cite, and a transcribed copy drifts.
+ *
+ * The TYPE half (`ComposedDriverDir`, `ComposedDriverListing`,
+ * `ComposedDriverSweepPlan`, `ComposedDriverSweepResult`,
+ * `ComposedDriverRemover`, `ComposedDriverSweepOptions`,
+ * `ComposedDriverSkipReason`, `ComposedDriverFinishedRoute`, plus the
+ * deferred-branch pair `DeferredBranch`/`DeferredBranchReason` and
+ * `ReviewRefPlanOptions`) is erased at runtime and therefore invisible to this
+ * enumeration; barrel-drift.spec.ts's own identity comparison and its root
+ * import block pin those instead.
+ */
+const COMPOSED_DRIVER_SWEEP_FAMILY_ADDED_AT_ROOT = [
+  'WAVE_ARCHIVE_RELATIVE_DIR',
+  'defaultComposedDriverRemover',
+  'executeComposedDriverSweep',
+  'listComposedDriverDirs',
+  'planComposedDriverSweep',
+  'sweepComposedDrivers',
+];
+
+/**
  * The `wave-md-rw` names the root re-exported BEFORE issue #323, recorded the
  * same way and for the same reason as the worktree-cleanup baseline above:
  * `wave-md-rw` exports far more than the barrel re-exports (every targeted
@@ -1145,6 +1185,7 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT.length +
   WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT.length +
   REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT.length +
+  COMPOSED_DRIVER_SWEEP_FAMILY_ADDED_AT_ROOT.length +
   WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT.length +
   BARREL_DRIFT_RECONCILIATION_REMAINDER_ADDED_AT_ROOT.length +
   WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length +
@@ -1308,6 +1349,9 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
         ...WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT,
         // The review-ref sweep (issue #732) — likewise its own recorded family.
         ...REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT,
+        // The composed-driver sweep (issue #748) — the sixth population, and
+        // its own recorded family for the same reason.
+        ...COMPOSED_DRIVER_SWEEP_FAMILY_ADDED_AT_ROOT,
       ].sort(),
     );
 
@@ -1318,6 +1362,7 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
         ...MAX_ARG_STRLEN_TERM_ADDED_AT_ROOT,
         ...WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT,
         ...REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT,
+        ...COMPOSED_DRIVER_SWEEP_FAMILY_ADDED_AT_ROOT,
       ].sort(),
     );
   });
