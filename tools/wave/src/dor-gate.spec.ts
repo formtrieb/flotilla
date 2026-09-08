@@ -15,6 +15,7 @@ import {
   validateIssueView,
   acFilesCoverageCheck,
   extractAcBody,
+  type BlockerResolution,
   type DorResult,
   type GateResult,
 } from './dor-gate';
@@ -1373,7 +1374,7 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
     // working-tree gates defer (no checkout present)
     expect(gate(result, 'files-glob-valid').status).toBe('deferred');
     expect(gate(result, 'literal-files-exist').status).toBe('deferred');
-    // cross-issue gate defers on a bare id in M1 (re-home is P2a)
+    // cross-issue gate defers when the caller supplied no blocker reading
     expect(gate(result, 'blocked-by-chain-resolves').status).toBe('deferred');
   });
 
@@ -1462,7 +1463,8 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
 
     expect(gate(result, 'files-glob-valid').status).toBe('pass');
     expect(gate(result, 'literal-files-exist').status).toBe('pass');
-    // cross-issue gate still defers even with a checkout — it is not working-tree
+    // cross-issue gate still defers even with a checkout — it is not a
+    // working-tree gate, and `repoRoot` is not its capability (issue #750)
     expect(gate(result, 'blocked-by-chain-resolves').status).toBe('deferred');
   });
 
@@ -1504,6 +1506,146 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
     expect(result.gates.some((g) => g.status === 'deferred')).toBe(true);
     expect(result.gates.some((g) => g.status === 'fail')).toBe(false);
     expect(result.overall).toBe('PASS');
+  });
+});
+
+// ─── Gate 5 — the cross-issue gate, re-homed onto a caller capability ────────
+//
+// The defect (issue #750): on the structured path this gate was PUSHED as
+// `deferred` with a fixed reason before any input was looked at, so a row whose
+// declared blocker was still open sailed through the readiness check and the
+// hold that exists precisely for that case never fired.
+//
+// These cases drive the PURE gate — the CLI wiring that actually reads a tracker
+// lives in cli.spec.ts. Four answers are pinned here, and the third and fourth
+// are the ones that carry the defect: an open blocker must FAIL, and a ref
+// nobody could resolve must DEFER rather than counterfeit a pass.
+
+const BLOCKED_GATE = 'blocked-by-chain-resolves';
+
+describe('Gate 5 — blocked-by-chain-resolves on the structured path', () => {
+  it('defers with the no-capability reason when no blocker reading is supplied', () => {
+    // AC1 — the pure-function form is unchanged for every existing caller. The
+    // view DECLARES a blocker here, which is the sharper case: even with refs on
+    // the row, a caller that supplied no resolution gets the deferral, never a
+    // guess.
+    const result = validateIssueView(buildView({ blockedBy: [{ issue: 41 }] }));
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('deferred');
+    expect(gate(result, BLOCKED_GATE).reason).toMatch(
+      /no blocked-by resolution reached this check/i,
+    );
+    expect(result.overall).toBe('PASS');
+  });
+
+  it('passes a row declaring no blockers once the capability is present', () => {
+    // An EMPTY array is a capability, not an absence: the gate branches on
+    // presence, so `Blocked by: none` + `[]` is the answer the file path
+    // already gives (`pass`), not another deferral.
+    const result = validateIssueView(buildView({ blockedBy: 'none' }), {
+      blockerResolutions: [],
+    });
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('pass');
+  });
+
+  it('passes when every declared blocker resolved CLOSED', () => {
+    const result = validateIssueView(
+      buildView({ blockedBy: [{ issue: 41 }, { issue: 7 }] }),
+      {
+        blockerResolutions: [
+          { ref: { issue: 41 }, state: 'closed' },
+          { ref: { issue: 7 }, state: 'closed' },
+        ],
+      },
+    );
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('pass');
+    expect(result.overall).toBe('PASS');
+  });
+
+  it('FAILS, and names the offending refs, when a declared blocker is still open', () => {
+    // The whole point of the row: a still-open dependency holds the wave row.
+    const result = validateIssueView(
+      buildView({ blockedBy: [{ issue: 41 }, { issue: 7 }] }),
+      {
+        blockerResolutions: [
+          { ref: { issue: 41 }, state: 'open' },
+          { ref: { issue: 7 }, state: 'closed' },
+        ],
+      },
+    );
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('fail');
+    // AC4 — the reason names the ref, so the operator acts without re-deriving it.
+    expect(gate(result, BLOCKED_GATE).reason).toContain('#41');
+    expect(gate(result, BLOCKED_GATE).reason).not.toContain('#7');
+    // A `fail` on any gate is what flips the whole result.
+    expect(result.overall).toBe('FAIL');
+  });
+
+  it('DEFERS with the stated reason when a ref cannot be resolved at all', () => {
+    // AC3 — not `pass`, not `fail`. No-evidence never counterfeits a clear
+    // answer (the `closed-unknown` discipline, W2-F1c).
+    const result = validateIssueView(
+      buildView({ blockedBy: [{ slug: 'other', issue: 5 }] }),
+      {
+        blockerResolutions: [
+          {
+            ref: { slug: 'other', issue: 5 },
+            state: 'unresolvable',
+            reason: 'names a different slug than this row',
+          },
+        ],
+      },
+    );
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('deferred');
+    expect(gate(result, BLOCKED_GATE).reason).toContain('other#5');
+    expect(gate(result, BLOCKED_GATE).reason).toContain('different slug');
+    expect(result.overall).toBe('PASS');
+  });
+
+  it('treats a declared ref with NO supplied resolution as unresolvable, never as clear', () => {
+    // A caller that resolved only some of the refs must not be able to buy a
+    // `pass` with the ones it omitted.
+    const result = validateIssueView(
+      buildView({ blockedBy: [{ issue: 41 }, { issue: 7 }] }),
+      { blockerResolutions: [{ ref: { issue: 41 }, state: 'closed' }] },
+    );
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('deferred');
+    expect(gate(result, BLOCKED_GATE).reason).toContain('#7');
+  });
+
+  it('FAILS rather than defers when one ref is open and another is unresolvable, disclosing both', () => {
+    // Positive evidence that the row is blocked does not stop being true because
+    // a SECOND ref could not be reached — but the unreachable one is still named.
+    const resolutions: BlockerResolution[] = [
+      { ref: { issue: 41 }, state: 'open' },
+      { ref: { slug: 'other', issue: 5 }, state: 'unresolvable', reason: 'cross-repo' },
+    ];
+    const result = validateIssueView(
+      buildView({ blockedBy: [{ issue: 41 }, { slug: 'other', issue: 5 }] }),
+      { blockerResolutions: resolutions },
+    );
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('fail');
+    expect(gate(result, BLOCKED_GATE).reason).toContain('#41');
+    expect(gate(result, BLOCKED_GATE).reason).toContain('other#5');
+    expect(gate(result, BLOCKED_GATE).reason).toContain('cross-repo');
+  });
+
+  it('matches resolutions to declared refs by slug#issue identity, not by position', () => {
+    // `#5` and `other#5` are different issues; a slug-blind match would let the
+    // resolved one answer for the unresolved one.
+    const result = validateIssueView(
+      buildView({ blockedBy: [{ slug: 'other', issue: 5 }] }),
+      { blockerResolutions: [{ ref: { issue: 5 }, state: 'closed' }] },
+    );
+
+    expect(gate(result, BLOCKED_GATE).status).toBe('deferred');
+    expect(gate(result, BLOCKED_GATE).reason).toContain('other#5');
   });
 });
 

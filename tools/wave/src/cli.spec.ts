@@ -5067,14 +5067,21 @@ describe('dor --id <id> (store-backed, non-file)', () => {
     expect(stdoutBuf).toMatch(new RegExp(`^PASS\\s+${id}`, 'm'));
   });
 
-  it('renders the working-tree + cross-issue gates as deferred', async () => {
+  it('renders the working-tree gates as deferred, and RUNS the cross-issue gate', async () => {
     const store = tmpStore();
     const id = await store.create(DOR_INPUT);
 
     await runDorById(['--id', id], store);
 
     expect(stdoutBuf).toMatch(/deferred\s+files-glob-valid/);
-    expect(stdoutBuf).toMatch(/deferred\s+blocked-by-chain-resolves/);
+    // The FLIP (issue #750): this assertion read `deferred` until Gate 5 was
+    // re-homed onto the store this entry point already holds. `DOR_INPUT`
+    // declares `blockedBy: 'none'`, so the gate now answers `pass` — a row with
+    // nothing declared is not held. The working-tree gate above still defers:
+    // it keys off `--repo-root`, which this call does not pass, and Gate 5 no
+    // longer rides along with it.
+    expect(stdoutBuf).toMatch(/pass\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/deferred\s+blocked-by-chain-resolves/);
   });
 
   it('exits 1 when a content gate fails (worker outside the configured vocab)', async () => {
@@ -5134,8 +5141,118 @@ describe('dor --id <id> (store-backed, non-file)', () => {
     // With a checkout present, files-glob-valid no longer defers — it runs
     // (pass/warn/fail), so the "deferred files-glob-valid" line must be absent.
     expect(stdoutBuf).not.toMatch(/deferred\s+files-glob-valid/);
-    // The cross-issue gate still defers (it needs other issues, not a checkout).
+    // The FLIP (issue #750), second of the two: the cross-issue gate is not a
+    // working-tree gate and never keyed off `--repo-root` — it now runs because
+    // this entry point resolves the row's declared refs through the store, and
+    // this row declares none, so it passes.
+    expect(stdoutBuf).toMatch(/pass\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/deferred\s+blocked-by-chain-resolves/);
+  });
+});
+
+// ─── Gate 5 (blocked-by-chain-resolves) threading — issue #750 ───────────────
+//
+// The defect: `runDorById` pushed the cross-issue gate as `deferred` with a
+// fixed reason before any input was looked at, so a row whose declared blocker
+// was still OPEN passed the readiness check and the hold that exists precisely
+// for that case never fired — nine of twelve archived consumer waves resolved
+// this by hand.
+//
+// These specs drive the REAL `dor --id` entry point against a LOCAL store
+// (`MarkdownFsStore` on a fresh $TMPDIR repo) and a hand-built fake — never a
+// live tracker — so the WIRING is what is under test, not just the pure gate
+// dor-gate.spec.ts already exercises. dor-gate.spec.ts owns the gate's own
+// four answers; this block owns "does the CLI actually read the tracker".
+
+/** A blocked row for `tmpStore()`, declaring the refs the case needs. */
+function blockedInput(blockedBy: CreateInput['blockedBy']): CreateInput {
+  return { ...DOR_INPUT, title: 'Blocked row', filingHint: 'blocked-row', blockedBy };
+}
+
+describe('dor --id <id> — Gate 5 resolves declared blockers through the store', () => {
+  it('FAILS the gate (exit 1) when a declared blocker is still open', async () => {
+    const store = tmpStore();
+    const blocker = await store.create(DOR_INPUT); // `…#01`, left open
+    const blocked = await store.create(blockedInput([{ issue: 1 }]));
+
+    const code = await runDorById(['--id', blocked], store);
+
+    expect(code).toBe(1);
+    expect(stdoutBuf).toMatch(/fail\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).toMatch(/#1\b/); // the reason names the offending ref
+    expect(stdoutBuf).toMatch(new RegExp(`^FAIL\\s+${blocked}`, 'm'));
+    // the blocker itself is untouched by the probe
+    expect((await store.readClosing(blocker)).state).toBe('open');
+  });
+
+  it('passes the gate (exit 0) once that same blocker is closed', async () => {
+    const store = tmpStore();
+    const blocker = await store.create(DOR_INPUT);
+    const blocked = await store.create(blockedInput([{ issue: 1 }]));
+    await store.close(blocker, 'https://example.test/pr/1', []);
+
+    const code = await runDorById(['--id', blocked], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/pass\s+blocked-by-chain-resolves/);
+  });
+
+  it('DEFERS (never passes) when a declared ref cannot be resolved at all', async () => {
+    const store = tmpStore();
+    // Same-slug, but no such issue exists: the closing probe throws, which is
+    // exactly the no-evidence arm.
+    const blocked = await store.create(blockedInput([{ issue: 99 }]));
+
+    const code = await runDorById(['--id', blocked], store);
+
+    expect(code).toBe(0); // a deferral never flips overall to FAIL
     expect(stdoutBuf).toMatch(/deferred\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/pass\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).toMatch(/#99/);
+  });
+
+  it('DEFERS a ref naming a different slug rather than answering about its own tree', async () => {
+    // `MarkdownFsStore.locate` ignores the slug part of an id entirely, so
+    // probing `elsewhere#1` here would answer about THIS store's `#1` — the
+    // silently-wrong answer the store-blind slug rule exists to refuse.
+    const store = tmpStore();
+    await store.create(DOR_INPUT); // this tree's `#01`, open — must NOT be consulted
+    const blocked = await store.create(blockedInput([{ slug: 'elsewhere', issue: 1 }]));
+
+    const code = await runDorById(['--id', blocked], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/deferred\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).toMatch(/elsewhere#1/);
+    expect(stdoutBuf).toMatch(/different slug/);
+  });
+
+  it('defers rather than crashing when the store cannot invert its own id', async () => {
+    // A store whose `parseRef` throws on the id in hand has no way to address a
+    // sibling; that is a missing capability, not a gate failure.
+    const store = {
+      read: async (id: string): Promise<IssueView> => ({
+        id,
+        risk: 'mechanical',
+        worker: 'background',
+        files: ['src/foo.ts'],
+        blockedBy: [{ issue: 41 }],
+        acceptanceCriteria: [{ text: 'x', checked: false }],
+        status: 'available',
+      }),
+      parseRef: () => {
+        throw new Error('not an invertible id');
+      },
+      readClosing: async () => {
+        throw new Error('readClosing must not be reached');
+      },
+    } as unknown as IssueStore;
+
+    const code = await runDorById(['--id', 'prd-sentinel'], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/deferred\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).toMatch(/not an invertible id/);
   });
 });
 

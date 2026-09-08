@@ -437,7 +437,12 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, join, basename, dirname } from 'node:path';
-import { validateIssue, validateIssueView, type DorResult } from './dor-gate';
+import {
+  validateIssue,
+  validateIssueView,
+  type BlockerResolution,
+  type DorResult,
+} from './dor-gate';
 import { loadWaveConfig } from './wave-config';
 import { DISPOSITION_VOCABULARY } from './spine-store';
 import type { VerifyConfig } from './verify';
@@ -538,6 +543,7 @@ import { runResume } from './resume-cli';
 import { runComposeDriver } from './compose-driver';
 import { runRouteTuple } from './route-tuple';
 import type { IssueStore } from './adapters/issue-store';
+import type { IssueRef } from './contract';
 import { readSidecars, type SidecarReader } from './sidecar';
 import { metAcIndexes, renderVerdictSection } from './reviewer-verdict-schema';
 
@@ -890,6 +896,20 @@ export async function runDorById(
     }
   }
 
+  // Gate 5 (the cross-issue gate) is threaded as a CAPABILITY, issue #750: the
+  // store is in hand right here — `store.read(id)` above already used it — so
+  // this entry point resolves the row's declared `Blocked by:` refs and hands
+  // the OUTCOMES to the gate. The gate itself stays synchronous and store-blind;
+  // see `resolveDeclaredBlockers` for what "resolve" means and where it stops.
+  // The exemplar id is the one the STORE reports on the view, not the one the
+  // operator typed: a store that canonicalizes an id on read must be addressed
+  // in its own rendering.
+  const blockerResolutions = await resolveDeclaredBlockers(
+    store,
+    view.id,
+    view.blockedBy,
+  );
+
   // Gate 9 (the staleness advisory) is threaded by the CONTRACT, not by an
   // option: the `since` it measures from rides on `IssueView.trackerUpdatedAt`,
   // which `store.read(id)` above already populated (or deliberately left absent,
@@ -898,9 +918,145 @@ export async function runDorById(
   const result = validateIssueView(view, {
     ...(repoRoot !== undefined ? { repoRoot } : {}),
     ...(verify !== undefined ? { verify } : {}),
+    blockerResolutions,
   });
   process.stdout.write(renderResult(id, result) + '\n');
   return result.overall === 'FAIL' ? 1 : 0;
+}
+
+/**
+ * Read the row's declared `Blocked by:` refs against the tracker — the
+ * capability `dor --id` hands to DoR Gate 5 (issue #750).
+ *
+ * **The seam is the closing probe, not the plain issue read.** `readClosing` is
+ * already on the `IssueStore` contract, already conformance-tested in all three
+ * stores, answers exactly open-versus-closed from native state plus closing-PR
+ * evidence, and throws on an unknown id — which is precisely the `unresolvable`
+ * arm. It also does NOT require the blocker to carry a planning Header-Block,
+ * where `read()` does: an undecorated but open blocker stays resolvable here,
+ * and a bare row can therefore still hold a wave row back. The per-store private
+ * `unresolvedBlockers` helper the Goal frontier uses was deliberately NOT
+ * promoted to the contract for this — that would be a public-API addition across
+ * three implementations plus the conformance suite, for an answer the contract
+ * can already give.
+ *
+ * **Every state below is evidence-shaped.** `open` and `closed` are read; every
+ * other outcome is `unresolvable`, never a silent pass. The three closed states
+ * (`merged`, `closed-unmerged`, `closed-unknown`) all mean the blocker is no
+ * longer in the way of THIS row — the gate asks whether the dependency is still
+ * open, not how it ended — so they collapse to `closed` here. That collapse is
+ * this call's business and nobody else's: `readClosing`'s four-way distinction
+ * stays intact for the resume/close done-reconcile that needs it.
+ *
+ * **Addressing a ref, without parsing an opaque id (ADR-0001).** `readClosing`
+ * takes an id; `blockedBy` carries `IssueRef`s. The contract ships the
+ * `id → IssueRef` inversion (`parseRef`) and deliberately no forward direction,
+ * so this resolver never asserts an id shape. It derives a CANDIDATE id from the
+ * row's OWN id — the store's own exemplar — by swapping the trailing decimal run
+ * for the ref's number, and then submits that candidate to the store's own
+ * `parseRef` for a veto. Both the exemplar and the veto are the store's; the
+ * only thing this code contributes is a proposal, and a proposal the store
+ * refuses becomes `unresolvable` → the gate `defer`s. A wrong id can therefore
+ * cost evidence, never invent it.
+ *
+ * **A ref naming a DIFFERENT slug is `unresolvable` by rule.** `IssueRef.slug`
+ * is undefined for a same-slug ref and set for a cross-slug one; a ref whose
+ * slug differs from the row's own is another repo's / another team's / another
+ * tree's issue. Some stores could address it (Linear resolves a cross-TEAM
+ * identifier) and some structurally cannot (GitHub is repo-scoped;
+ * `MarkdownFsStore.locate` ignores the slug part of an id entirely and would
+ * answer about ITS OWN tree's issue of the same number — a silently wrong
+ * answer). A store-blind caller cannot tell those apart, so it declines for all
+ * of them. That costs a Linear consumer a resolvable cross-team blocker, and it
+ * costs it as a `deferred` — the conservative direction, and the only one that
+ * cannot manufacture a `pass`.
+ */
+async function resolveDeclaredBlockers(
+  store: IssueStore,
+  ownId: string,
+  blockedBy: 'none' | IssueRef[],
+): Promise<BlockerResolution[]> {
+  // `none` needs no store call at all: nothing is declared, so nothing is read.
+  // An EMPTY array is still a capability (the gate branches on presence, not
+  // length) and is exactly what a `Blocked by: none` row should hand over.
+  if (blockedBy === 'none') return [];
+
+  let own: IssueRef | undefined;
+  let ownError: string | undefined;
+  try {
+    own = store.parseRef(ownId);
+  } catch (err) {
+    ownError = `this store could not invert its own id "${ownId}": ${(err as Error).message}`;
+  }
+
+  const out: BlockerResolution[] = [];
+  for (const ref of blockedBy) {
+    if (own === undefined) {
+      out.push({ ref, state: 'unresolvable', reason: ownError });
+      continue;
+    }
+    if (ref.slug !== undefined && ref.slug !== own.slug) {
+      out.push({
+        ref,
+        state: 'unresolvable',
+        reason: 'names a different slug than this row — outside what a store-blind lookup can address',
+      });
+      continue;
+    }
+    const candidate = candidateIdFor(ownId, own, ref, store);
+    if (candidate === null) {
+      out.push({
+        ref,
+        state: 'unresolvable',
+        reason: `this store's id format does not render ${ref.issue} from the row's own id "${ownId}"`,
+      });
+      continue;
+    }
+    try {
+      const closing = await store.readClosing(candidate);
+      out.push({ ref, state: closing.state === 'open' ? 'open' : 'closed' });
+    } catch (err) {
+      out.push({
+        ref,
+        state: 'unresolvable',
+        reason: `reading "${candidate}" failed: ${(err as Error).message}`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The store-format-blind candidate id for `ref`, derived from the row's own id
+ * and vetoed by the store's own `parseRef`; `null` when no candidate survives.
+ *
+ * Two checks, both on the STORE's answers rather than on an assumed shape:
+ *
+ *  1. the row's own id must END in the decimal rendering of its own issue number
+ *     (`parseRef(ownId).issue`) — the exemplar self-check. It holds for all three
+ *     shipped id shapes (`"750"`, `"FOR-480"`, `"<slug>#05"`), and a store whose
+ *     ids do not work that way fails it here and gets a `deferred` rather than a
+ *     wrong lookup.
+ *  2. the candidate must invert back through `parseRef` to the very ref asked
+ *     for. This is where a bad proposal dies.
+ */
+function candidateIdFor(
+  ownId: string,
+  own: IssueRef,
+  ref: IssueRef,
+  store: IssueStore,
+): string | null {
+  const trailing = /\d+$/.exec(ownId);
+  if (trailing === null || Number(trailing[0]) !== own.issue) return null;
+  const candidate =
+    ownId.slice(0, ownId.length - trailing[0].length) + String(ref.issue);
+  try {
+    const round = store.parseRef(candidate);
+    if (round.issue !== ref.issue || round.slug !== own.slug) return null;
+  } catch {
+    return null;
+  }
+  return candidate;
 }
 
 /** Render a DriftResult to stdout as human-readable text + JSON. */

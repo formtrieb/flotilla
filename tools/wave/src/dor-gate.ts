@@ -40,10 +40,19 @@
  *   - {@link validateIssue} — the file path: re-parses a raw markdown `source`.
  *   - {@link validateIssueView} — the non-file (`dor --id`) path: runs over a
  *     structured, store-agnostic `IssueView`. Store-blind — it branches only on
- *     the capabilities present (`repoRoot`), so the gates fall into three classes:
- *     **self-content** (run anywhere), **working-tree** (run iff a checkout is
- *     given, else `'deferred'`), and **cross-issue** (`blocked-by`, `'deferred'`
- *     on a bare id in M1 — re-homed onto the IssueStore in P2a).
+ *     the capabilities present (`repoRoot`, `blockerResolutions`), so the gates
+ *     fall into three classes: **self-content** (run anywhere), **working-tree**
+ *     (run iff a checkout is given, else `'deferred'`), and **cross-issue**
+ *     (`blocked-by`, run iff the caller supplied its reading of the row's
+ *     declared refs, else `'deferred'`).
+ *
+ * The cross-issue gate's re-home (issue #750) kept the store on the CALLER's
+ * side of the seam: the entrypoint that already holds an `IssueStore` resolves
+ * each declared ref through the closing probe and hands the OUTCOMES in as
+ * {@link BlockerResolution}s. This module therefore stays synchronous and
+ * tracker-blind — threading a store or an async resolver into it would have made
+ * the pure gate async for every caller and coupled the engine to the tracker,
+ * which ADR-0014's store-blind contract forbids.
  *
  * A *malformed* `Blocked by:` (non-empty, not `none`, no parseable ref — e.g. the
  * human-readable `FOR-23` where the wire form is `FOR#23`) never reaches Gate 5
@@ -207,6 +216,36 @@ function fileMtimeIso(issuePath: string): string | undefined {
   }
 }
 
+/**
+ * How ONE declared `Blocked by:` ref was read against the tracker — the
+ * capability that turns Gate 5 on for the structured entrypoint (issue #750).
+ *
+ * **Three states, and the third is the point.** `open` and `closed` are the two
+ * answers a resolution actually carries evidence for. `unresolvable` is the
+ * no-evidence arm: the ref names something this caller could not address at all
+ * (cross-repo / cross-tracker, deleted, renumbered, rate-limited, refused). It
+ * exists so that "I could not find out" can never counterfeit "nothing blocks
+ * this row" — the same `closed-unknown` discipline (W2-F1c) the Goal frontier
+ * already applies to its own blocker reading, expressed here as a third answer
+ * rather than a lenient pass.
+ *
+ * Produced by the caller that HOLDS the store (the `dor --id` CLI entry point),
+ * never by this module: the gate stays synchronous and store-blind, exactly as
+ * ADR-0014's store-blind contract requires.
+ */
+export interface BlockerResolution {
+  /** The declared ref this resolution answers for. Matched against `IssueView.blockedBy` by `slug#issue` identity. */
+  ref: IssueRef;
+  /** `open`/`closed` carry positive evidence; `unresolvable` is the honest no-evidence arm. */
+  state: 'open' | 'closed' | 'unresolvable';
+  /**
+   * Why the ref could not be resolved. Carried verbatim into the gate's
+   * `deferred` reason on the `unresolvable` arm, so an operator reads WHICH ref
+   * and WHY without re-deriving either. Ignored on the other two states.
+   */
+  reason?: string;
+}
+
 /** Options for the structured (non-file) entrypoint {@link validateIssueView}. */
 export interface ValidateViewOptions {
   /** Enum vocabulary for the Gate-1 schema-membership check. Defaults to {@link DEFAULT_WAVE_SCHEMA}. */
@@ -222,20 +261,46 @@ export interface ValidateViewOptions {
    * for the absent-vs-zero-profiles distinction (AC4).
    */
   verify?: VerifyConfig;
+  /**
+   * The caller's reading of the row's declared `Blocked by:` refs — the
+   * capability that turns Gate 5 on (issue #750). Additive and OPTIONAL, and
+   * its absence is load-bearing in exactly the way `repoRoot`'s is: absent, the
+   * gate `defer`s with {@link DEFER_CROSS_ISSUE} precisely as it did before this
+   * field existed, so every pre-existing caller of this pure function is
+   * unchanged. Present — INCLUDING as an empty array, which is the shape a row
+   * declaring `Blocked by: none` produces — the gate runs.
+   *
+   * The gate branches on PRESENCE, never on length: `[]` from a caller that did
+   * consult the tracker is a capability, and `undefined` from a caller that
+   * never could is not. Threading a store or an async resolver in here instead
+   * was refused by this module's own contract — it would make the gate async for
+   * every caller and couple the engine to the tracker.
+   */
+  blockerResolutions?: readonly BlockerResolution[];
 }
 
 const DEFER_NO_WORKTREE =
   'No repo checkout in this context — runs at wave-create, where a worktree exists.';
+/**
+ * Gate 5's no-capability deferral. Reached when the caller supplied no
+ * {@link ValidateViewOptions.blockerResolutions} at all — the pure-function form
+ * used by every caller that holds no store. (Before issue #750 this was the
+ * gate's ONLY answer on the structured path, promising a re-home that had never
+ * happened; the re-home is now the presence branch above it.)
+ */
 const DEFER_CROSS_ISSUE =
-  'Cross-issue gate — resolving blocked-by on a bare id needs an IssueStore membership lookup (re-homed in P2a, ADR-0001).';
+  'Cross-issue gate — no blocked-by resolution reached this check. It runs on the store-backed form (`dor --id`), which resolves each declared ref through the closing probe (ADR-0005).';
 
 /**
  * Definition-of-Ready over a structured {@link IssueView} — the non-file
  * entrypoint (`dor --id`, ADR-0014). Store-blind: it branches only on the
- * capabilities present (`repoRoot`), never on the issue's tracker of origin.
+ * capabilities present (`repoRoot`, `blockerResolutions`), never on the issue's
+ * tracker of origin.
  *
- * Self-content gates run on the view's fields; working-tree gates `defer`
- * unless a `repoRoot` is supplied; the cross-issue gate `defer`s in M1.
+ * Self-content gates run on the view's fields; working-tree gates `defer` unless
+ * a `repoRoot` is supplied; the cross-issue gate `defer`s unless the caller
+ * supplied its reading of the row's declared blockers
+ * ({@link ValidateViewOptions.blockerResolutions}).
  */
 export function validateIssueView(
   view: IssueView,
@@ -273,12 +338,11 @@ export function validateIssueView(
   // Gate 4 — Risk consistent with file count (warn-only) — helper reused verbatim
   gates.push(checkRiskFileCount({ risk: view.risk, files: view.files }));
 
-  // Gate 5 — cross-issue gate: deferred on a bare id in M1 (re-home is P2a)
-  gates.push({
-    name: 'blocked-by-chain-resolves',
-    status: 'deferred',
-    reason: DEFER_CROSS_ISSUE,
-  });
+  // Gate 5 — cross-issue gate: capability-conditional on the caller's blocker
+  // reading, exactly as gates 2/7 are on `repoRoot` (issue #750).
+  gates.push(
+    checkBlockedByChainView(view.blockedBy, opts.blockerResolutions),
+  );
 
   // Gate 6 — AC bodies do not mention uncovered file paths (warn-only).
   // The coverage check wants raw bullet prose; rebuild it from the structured
@@ -529,6 +593,87 @@ function issueExists(
 
 function formatRef(ref: IssueRef): string {
   return ref.slug ? `${ref.slug}#${ref.issue}` : `#${ref.issue}`;
+}
+
+/**
+ * Gate 5 on the STRUCTURED path (issue #750) — the store-backed sibling of
+ * {@link checkBlockedByChain}, and the answer to a gate that was pushed as
+ * `deferred` with a fixed reason before any input was looked at, so a row whose
+ * declared blocker was still open passed the readiness check.
+ *
+ * Capability-conditional, and the branch is on PRESENCE (`undefined` vs an
+ * array), never on length — see {@link ValidateViewOptions.blockerResolutions}.
+ * The answers, in the order they are decided:
+ *
+ *  - no resolutions supplied → `deferred` ({@link DEFER_CROSS_ISSUE}), the
+ *    pre-#750 behaviour, unchanged for every caller that holds no store.
+ *  - `Blocked by: none` → `pass`, matching what the file path already does.
+ *  - at least one declared ref read as still OPEN → `fail`, NAMING the offending
+ *    refs so the operator can act without re-deriving them.
+ *  - otherwise, at least one ref `unresolvable` → `deferred`, carrying each
+ *    ref's own reason. Never a `pass`: no-evidence must not counterfeit a clear
+ *    answer (the `closed-unknown` discipline, W2-F1c).
+ *  - every declared ref read CLOSED → `pass`.
+ *
+ * **`fail` outranks `deferred` when both are present**, deliberately: a ref
+ * positively read as open is evidence the row is blocked, and that evidence does
+ * not stop being true because a SECOND ref could not be reached. The unreachable
+ * ones are still named in the same reason, so the deferral is disclosed rather
+ * than swallowed by the failure.
+ *
+ * A declared ref with NO matching resolution is treated as `unresolvable` rather
+ * than silently skipped — a caller that resolved only some of the refs must not
+ * be able to buy a `pass` with the ones it omitted.
+ */
+function checkBlockedByChainView(
+  blockedBy: 'none' | IssueRef[],
+  resolutions: readonly BlockerResolution[] | undefined,
+): GateResult {
+  const name = 'blocked-by-chain-resolves';
+  if (resolutions === undefined) {
+    return { name, status: 'deferred', reason: DEFER_CROSS_ISSUE };
+  }
+  if (blockedBy === 'none') return { name, status: 'pass' };
+
+  const byRef = new Map(resolutions.map((r) => [formatRef(r.ref), r]));
+  const open: string[] = [];
+  const unresolvable: string[] = [];
+
+  for (const ref of blockedBy) {
+    const label = formatRef(ref);
+    const resolution = byRef.get(label);
+    if (resolution === undefined) {
+      unresolvable.push(`${label} (no resolution was supplied for this ref)`);
+      continue;
+    }
+    if (resolution.state === 'open') {
+      open.push(label);
+    } else if (resolution.state === 'unresolvable') {
+      unresolvable.push(
+        resolution.reason ? `${label} (${resolution.reason})` : label,
+      );
+    }
+  }
+
+  if (open.length > 0) {
+    const also =
+      unresolvable.length > 0
+        ? ` Additionally unresolved (no evidence either way): ${unresolvable.join('; ')}.`
+        : '';
+    return {
+      name,
+      status: 'fail',
+      reason: `Blocked by issue(s) still open: ${open.join(', ')}.${also}`,
+    };
+  }
+  if (unresolvable.length > 0) {
+    return {
+      name,
+      status: 'deferred',
+      reason: `Blocked-by reference(s) could not be resolved, so this gate has no evidence either way: ${unresolvable.join('; ')}.`,
+    };
+  }
+  return { name, status: 'pass' };
 }
 
 // ─── Gate 6: AC bodies do not mention uncovered file paths (warn-only) ────────

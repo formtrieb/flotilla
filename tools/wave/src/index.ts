@@ -168,6 +168,12 @@ export {
   // `validateIssueView` and the types below, nothing accidental riding along.
   validateIssueView,
   type ValidateViewOptions,
+  // Gate 5's re-home (issue #750): the caller-supplied reading of a row's
+  // declared `Blocked by:` refs that turns the cross-issue gate on. A
+  // store-backed consumer building `ValidateViewOptions.blockerResolutions` by
+  // hand needs this shape by name from the package root — the installed-form
+  // reachability the barrel-drift guard exists to keep honest.
+  type BlockerResolution,
 } from './dor-gate';
 
 export {
