@@ -1036,6 +1036,103 @@
  * delete aborted early, ordinary deletable content still present) and asserts
  * it reports its survivors while keeping today's TRANSIENT reading.
  *
+ * ── the delete EXHAUSTS its permissions before anything judges what is left,
+ *    and a tree it exhausted stays this sweep's own (issue #621 — ADR-0042
+ *    Amendment 2026-09-08, decisions 6 and 7) ─────────────────────────────────
+ *
+ * THE READING #560 SHIPPED ITS INSTRUMENT FOR ARRIVED, and it is the fourth
+ * negative in this class. Six clean Worker worktrees at one close, each
+ * `erroredStillListed` with `survivors.total` 1724 EXACT,
+ * `exclusivelyDenied: false`, the twenty-path sample carrying `CHANGELOG.md`,
+ * `LICENSE` and the issue templates beside the harness-denied `.claude/agents`
+ * and `.vscode`; a consumer had read the same shape on 2.3.0 three days
+ * earlier (433 survivors, `exclusivelyDenied: false`, a CLEAN worktree). The
+ * ambiguity the #560 record could not settle from its own transcript — were
+ * the measured paths the DELETED set or the REFUSED set? — is settled: they
+ * are the tree that was never reached.
+ *
+ * The predicate was never wrong. It was asked of the wrong tree. Phase 1 of
+ * {@link physicallyDeleteGitLast} was a loop over the worktree's top-level
+ * entries and the FIRST refusal ended it; in every measured run the loop
+ * reached `.claude` — which holds the denied `agents/` — before most of the
+ * tree, so the delete stopped after a handful of files with the whole tree
+ * standing. Under that order `exclusivelyDenied` is STRUCTURALLY unreachable
+ * on a first attempt, and run 2's EXHAUSTED was reached by the OLDEST signal,
+ * not by the residue probe: run 1's few deletions all fell under harness-listed
+ * paths, so run 2 classified the tree `dirtyAllJunk`, took the force route,
+ * failed, and read EXHAUSTED via `forceEligible`. The #542 probe has no live
+ * occurrence on record at all. Three fixes (#528, #542, #560) each read
+ * evidence that comes into existence only AS A RESULT OF the first failure.
+ *
+ * TWO changes close it, and neither touches the three EXHAUSTED signals'
+ * definitions:
+ *
+ *   6. **The delete exhausts its permissions before it judges.** Phase 1 is now
+ *      a best-effort pass ({@link attemptDeleteExhaustively}): every entry is
+ *      attempted and, inside a subtree whose own whole-tree delete was refused,
+ *      every entry still reachable; refusals are collected
+ *      ({@link DeletionRefusal}) and the walk continues; the aggregate
+ *      ({@link refusalError}) is thrown at the END, carrying the refusals'
+ *      shared errno when they agree on one. `.git` stays phase 2 and is
+ *      therefore never reached when anything was refused — FOR-86's ordering
+ *      and FOR-34's "git is never told to forget a worktree we could not
+ *      delete" both hold byte-for-byte. What stands afterwards IS the survivor
+ *      set: the refused set and nothing else, so run 1 reads EXHAUSTED with
+ *      `manualRecovery` on the same input run 2 needed until now, and the third
+ *      signal can finally fire on the shape it was built for.
+ *
+ *      The "more doomed work before reporting" objection does not survive the
+ *      measurement: the deletable content is deleted either way — by the engine
+ *      now, or seconds later by the Operator's hand step — so the pass only
+ *      moves WHO deletes it, and buys the reading plus the evidence. The
+ *      TRANSIENT case improves with it: a Finder-dropped `.DS_Store` is then
+ *      the only survivor, and the junk purge clears it.
+ *
+ *   7. **A physically exhausted tree is this sweep's own on every later run.**
+ *      After decision 6 the worktree is dirty in git's eyes — every ordinary
+ *      tracked file the pass DID delete is a ` D` line — and `planCleanup`'s
+ *      `dirty && !dirtyAllJunk` rule would skip it `dirty` with 1,700 blocking
+ *      paths, on a tree this engine itself gutted. {@link planCleanup} gains a
+ *      SECOND route to disposability ({@link isPhysicallyExhausted}): a dirty
+ *      worktree whose PHYSICAL survivors are exclusively harness-denied — the
+ *      same {@link walkSurvivorSet}, asked at plan time — is selected,
+ *      {@link WorktreeEntry.physicallyExhausted}, and force-eligible, so a
+ *      re-run re-reads EXHAUSTED with the same commands. Idempotent, with no
+ *      state anywhere outside the tree. REJECTED alternatives, so they are not
+ *      re-litigated: a marker file written by run 1 (state that lies the moment
+ *      anyone writes into the directory), and simply accepting the `dirty` skip.
+ *
+ * ALSO REJECTED, and named because each looks like the obvious fix: saying
+ * honestly that a second run is required (cheap, but every close becomes
+ * sweep → sweep → recovery → sweep and the reading is still one run late);
+ * re-classifying inside the same run after the failed attempt (run 2 pulled
+ * into run 1 — it depends on run 1 having deleted SOMETHING under `.claude/`
+ * first, which the delete order happens to do today and nothing guarantees);
+ * deregistering after exhaustion so branch hygiene can run in the same pass
+ * (breaks FOR-34 and turns a registered, recoverable remainder into an orphan
+ * directory whose recovery is the documented `rm -rf` fallback); and an
+ * errno-based shortcut, which is #528 again.
+ *
+ * ── FALSIFICATION — the measurement this amendment owes ──
+ *
+ * Stated BEFORE it is taken, on the flip history this section sits at the end
+ * of (#528 → #542 → #560 → #621). The first close on a sandboxed harness after
+ * this lands is the live read.
+ *
+ * POSITIVE CONTROL: each Worker worktree reads `erroredStillListed` on **run
+ * 1** with `manualRecovery` present, `survivors.exclusivelyDenied: true` and a
+ * **single-digit `survivors.total`**.
+ *
+ * NEGATIVE CONTROLS: a worktree with no harness-denied content still reads
+ * `removed`; a worktree with a modified tracked file (or an untracked file
+ * outside the junk allowlist) is still skipped `dirty`; the transient-race
+ * regression specs stay green.
+ *
+ * **A run 1 that reads TRANSIENT again, or a survivor set that still carries
+ * ordinary content, FALSIFIES decision 6 and reopens ADR-0042** — and the next
+ * release's notes say so rather than carrying an "unproven" line forward,
+ * which is what issue #621 asked of 1.5.0's.
+ *
  * ── a repo-internal location with no lifecycle at all (issue #355) ────────────
  *
  * Every population above is a WORKTREE, and every one of them accumulated
@@ -1273,6 +1370,26 @@ export interface WorktreeEntry {
    * `parseWorktreeList` alone.
    */
   blockingPaths?: BlockingPaths;
+  /**
+   * Present (`true`) only on an entry `planCleanup` SELECTED via its second
+   * route to disposability (issue #621, ADR-0042 Amendment decision 7): the
+   * worktree is dirty and NOT `dirtyAllJunk`, but everything physically left
+   * inside it is harness-denied — the shape this engine's own exhaustive
+   * delete (decision 6) leaves behind, where the ordinary tracked files it
+   * DID remove are exactly the ` D` lines that make git call the tree dirty.
+   *
+   * It names WHY such an entry was selected, and `executeCleanup` reads it as
+   * a third input to the same `force` verdict `dirtyAllJunk`/`orphanAllJunk`
+   * already feed — the entry was classified disposable before the attempt, so
+   * the scoped `--force` fallback (issue #304) applies to it exactly as it
+   * does to the other two routes, and the EXHAUSTED reading it produces is the
+   * `forceEligible` one.
+   *
+   * Absent on every other entry — a plainly-clean selection, a skip, a bare
+   * `parseWorktreeList`/`listAgentWorktrees` result before `planCleanup` has
+   * run. ADDITIVE (ADR-0035): no existing key changes meaning.
+   */
+  physicallyExhausted?: boolean;
   /**
    * Present only on an entry `planCleanup` places into
    * `CleanupPlan.skipped` / `CleanupResult.skipped` (FOR-59) — names the
@@ -1790,16 +1907,29 @@ export function parseWorktreeList(
  * the original single-argument form — all clean agent worktrees are selected.
  *
  * @param worktrees Parsed agent worktrees from {@link listAgentWorktrees}.
+ * A dirty worktree has a SECOND route to disposability (issue #621, ADR-0042
+ * Amendment decision 7) — see {@link isPhysicallyExhausted} and the file-level
+ * "the delete exhausts its permissions" doc section. It is asked only for a
+ * worktree the `dirtyAllJunk` route already refused, so it can never make an
+ * entry LESS disposable than before, and it is the last question asked.
+ *
+ * @param worktrees Parsed agent worktrees from {@link listAgentWorktrees}.
  * @param branchFilter Optional set of branch names to restrict selection to.
  *   A worktree whose branch is NOT in the set is silently excluded from
  *   `selected` (it is neither selected nor placed in `skipped`). A worktree
  *   with `branch: null` (detached HEAD) is always excluded when a filter is
  *   active (there is nothing to match against).
+ * @param opts Injection seam for the physical-exhaustion probe — see
+ *   {@link PlanCleanupOptions}. Absent (the default) uses the real filesystem
+ *   walk, which answers `false` for every path that is not a readable
+ *   directory, so a caller passing hand-built fixtures is unaffected.
  */
 export function planCleanup(
   worktrees: WorktreeEntry[],
   branchFilter?: Set<string>,
+  opts: PlanCleanupOptions = {},
 ): CleanupPlan {
+  const physicallyExhausted = opts.physicallyExhausted ?? isPhysicallyExhausted;
   const selected: WorktreeEntry[] = [];
   const skipped: WorktreeEntry[] = [];
 
@@ -1845,13 +1975,68 @@ export function planCleanup(
     // it, so the harness's own injected files made every worktree it had run
     // in permanently unremovable. Absent `dirtyAllJunk` keeps the old answer.
     if (wt.dirty && !wt.dirtyAllJunk) {
-      skipped.push({ ...wt, reason: 'dirty' });
+      // issue #621 (ADR-0042 Amendment decision 7) — the SECOND route to
+      // disposability, asked only once the `git status`-driven one above has
+      // already refused: is everything PHYSICALLY left in this worktree
+      // harness-denied? A tree this engine's own exhaustive delete already
+      // gutted (decision 6) reads dirty to git — every ordinary tracked file
+      // it managed to remove is a ` D` line — and would otherwise be skipped
+      // `dirty` with hundreds of blocking paths, on a tree with nothing left
+      // to lose. Re-reading it as disposable is what makes the EXHAUSTED
+      // reading survive a second call, with no state kept outside the tree
+      // itself.
+      if (physicallyExhausted(wt.path)) {
+        selected.push({ ...wt, physicallyExhausted: true });
+      } else {
+        skipped.push({ ...wt, reason: 'dirty' });
+      }
     } else {
       selected.push(wt);
     }
   }
 
   return { selected, skipped };
+}
+
+/**
+ * Injection seam for {@link planCleanup}'s physical-exhaustion probe (issue
+ * #621). Module-private for exactly the reason {@link BlockingPaths} shipped
+ * module-private (see its own doc comment): the barrel is a separate surface
+ * with its own drift guard, and nothing outside this module needs to NAME the
+ * type to pass an object literal. Promote it the day a consumer does.
+ */
+interface PlanCleanupOptions {
+  /**
+   * Answers {@link isPhysicallyExhausted}'s question for one worktree path.
+   * Injected by the spec so the plan-time route can be pinned without a
+   * filesystem; absent in production.
+   */
+  physicallyExhausted?: (worktreePath: string) => boolean;
+}
+
+/**
+ * Is EVERYTHING physically left in this worktree harness-denied (issue #621,
+ * ADR-0042 Amendment decision 7)?
+ *
+ * This is the SAME walk {@link walkSurvivorSet} performs after a failed
+ * removal, asked at plan time instead — deliberately the same function and not
+ * a second predicate, so the plan-time answer and the post-attempt verdict can
+ * never disagree about what "denied" means.
+ *
+ * `false` for an inconclusive walk (a path that is not a readable directory —
+ * `walkSurvivorSet` returns `null`), which is the safe direction and keeps
+ * every hand-built fixture entry unaffected: "we could not look" is never
+ * evidence that there is nothing to lose.
+ *
+ * The guard against real work is the walk's own: ONE ordinary file, or ONE
+ * unreadable subdirectory, falsifies it immediately. A worktree carrying
+ * genuine uncommitted work carries it ON DISK, so it can never read exhausted
+ * — a modified tracked file and an untracked non-junk file are both physically
+ * present, and both stop the walk at their first occurrence.
+ */
+function isPhysicallyExhausted(worktreePath: string): boolean {
+  const scan = walkSurvivorSet(nodePath.resolve(worktreePath));
+  return scan !== null && scan.exclusivelyDenied;
 }
 
 /**
@@ -1989,12 +2174,14 @@ function shellQuoteSingle(value: string): string {
  * @param wasClassifiedDisposable Which of the two EXHAUSTED signals fired
  *   (issue #528 — see the file-level "the classification flip" doc section):
  *   `true` for the original #483 route (`dirtyAllJunk`/`orphanAllJunk`, this
- *   entry already excused by `planCleanup` before the attempt ran); `false`
- *   for the new #528 route (a PLAINLY clean worktree whose own removal
- *   attempt failed deterministically). The message must not claim the first
- *   route for an entry that only ever reached the second — an operator
- *   copy-pasting past a small untruth is exactly the failure mode this field
- *   exists to prevent.
+ *   entry already excused by `planCleanup` before the attempt ran — issue #621
+ *   adds `physicallyExhausted` to that same set, another way `planCleanup`
+ *   classified the content disposable up front, so the wording holds for it
+ *   unchanged); `false` for the new #528 route (a PLAINLY clean worktree whose
+ *   own removal attempt failed deterministically). The message must not claim
+ *   the first route for an entry that only ever reached the second — an
+ *   operator copy-pasting past a small untruth is exactly the failure mode
+ *   this field exists to prevent.
  */
 function exhaustedManualRecovery(
   worktreePath: string,
@@ -2070,7 +2257,16 @@ export function executeCleanup(
     // at all (planCleanup's dirty-skip already excluded it), so `force` can
     // never be computed `true` for one — see the file-level "the classifier's
     // own fallback, scoped" doc section for the full amendment.
-    const forceEligible = Boolean(wt.dirtyAllJunk || wt.orphanAllJunk);
+    //
+    // issue #621 adds `physicallyExhausted` as a THIRD selection route feeding
+    // the same verdict, not a new meaning for it: the signal is still "did
+    // `planCleanup` select this entry BECAUSE it classified the content
+    // disposable", and decision 7's route is one more way it did. A plainly
+    // clean selection still computes `false`, and a genuinely-dirty, non-junk,
+    // non-exhausted worktree still never reaches this loop at all.
+    const forceEligible = Boolean(
+      wt.dirtyAllJunk || wt.orphanAllJunk || wt.physicallyExhausted,
+    );
     let attempt = attemptWorktreeRemoval(wt.path, remover, pathExists, stillListed, forceEligible);
     let retried = false;
 
@@ -5455,18 +5651,40 @@ function runWithEnotemptyRetry(
  * live incident this closes). Splits the removal into ordered phases so an
  * interruption during phase 1 can never have touched `.git` yet:
  *
- *   1. Every top-level entry EXCEPT `.git`, each via the same
- *      ENOTEMPTY-junk-purge-retry contract {@link physicallyDeleteWithJunkPurge}
- *      already uses (see {@link runWithEnotemptyRetry}) — a whole-tree
- *      allowlisted-junk purge scoped at `abs`, never at the individual entry,
- *      so a race anywhere under the directory is still caught exactly as
- *      before.
+ *   1. Every top-level entry EXCEPT `.git`, EXHAUSTIVELY — see
+ *      {@link attemptDeleteExhaustively} and the paragraph below — wrapped in
+ *      the same ENOTEMPTY-junk-purge-retry contract
+ *      {@link physicallyDeleteWithJunkPurge} already uses (see
+ *      {@link runWithEnotemptyRetry}) — a whole-tree allowlisted-junk purge
+ *      scoped at `abs`, never at the individual entry, so a race anywhere
+ *      under the directory is still caught exactly as before.
  *   2. `.git` itself, LAST — a plain worktree gitfile, never a directory in
  *      this context, so its removal is a single atomic unlink: it either
  *      fully succeeds or is left untouched, never partially deleted.
  *   3. The now-empty parent directory (via {@link physicallyDeleteWithJunkPurge},
  *      protecting against a fresh race dropping debris into the directory the
  *      instant it goes empty — the exact FOR-45 shape, one level up).
+ *
+ * ── phase 1 EXHAUSTS its permissions before anything judges what is left
+ *    (issue #621, ADR-0042 Amendment decision 6) ──
+ *
+ * Phase 1 used to be a bare `for` loop of whole-subtree `rmSync` calls, and
+ * the FIRST refusal ended it. What stood afterwards was therefore an ABORTED
+ * tree, not a refused set: on a full worktree the survivors still held
+ * ordinary deletable content, so every predicate asking "is what survived
+ * exclusively harness-denied?" was structurally unable to fire on its first
+ * run (see the file-level "the delete exhausts its permissions" doc section
+ * for the measurement). Phase 1 now attempts EVERY top-level entry and, inside
+ * a subtree whose own whole-tree delete was refused, every entry it can still
+ * reach; refusals are COLLECTED and the walk continues. What stands when it
+ * finishes is the refused set and nothing else.
+ *
+ * The contract the rest of the module depends on is unchanged: if anything was
+ * refused, phase 1 still THROWS ({@link refusalError}, carrying the refusals'
+ * shared errno when they agree on one), so `.git` is never reached and the
+ * attempt classifies through the same `errors`/`erroredStillListed` path as
+ * before. The exhaustive pass only changes WHAT is on disk when that
+ * classification runs — and therefore what the classifier can see.
  *
  * A directory that doesn't exist at all (already fully removed) is a no-op,
  * mirroring `rmSync`'s own `force: true` idempotence.
@@ -5501,13 +5719,24 @@ function physicallyDeleteGitLast(
 
   const nonGitEntries = entries.filter((e) => e.name !== '.git');
 
-  // Phase 1 — everything except `.git`.
+  // Phase 1 — everything except `.git`, EXHAUSTIVELY (issue #621, ADR-0042
+  // Amendment decision 6): every entry is attempted, refusals are collected,
+  // the walk continues. The throw at the end keeps the pre-#621 contract —
+  // `.git` is never reached and the attempt still classifies through the
+  // unchanged `errors`/`erroredStillListed` path.
   runWithEnotemptyRetry(
     abs,
     () => {
+      const refusals: DeletionRefusal[] = [];
       for (const entry of nonGitEntries) {
-        rmSync(nodePath.join(abs, entry.name), { recursive: true, force: true });
+        attemptDeleteExhaustively(
+          abs,
+          nodePath.join(abs, entry.name),
+          entry.isDirectory(),
+          refusals,
+        );
       }
+      if (refusals.length > 0) throw refusalError(abs, refusals);
     },
     declared,
   );
@@ -5522,6 +5751,136 @@ function physicallyDeleteGitLast(
 
   // Phase 3 — the now-empty parent directory itself.
   physicallyDeleteWithJunkPurge(abs, declared);
+}
+
+/**
+ * ONE entry {@link physicallyDeleteGitLast}'s exhaustive phase 1 attempted and
+ * was refused (issue #621). The thrown error is kept WHOLE rather than reduced
+ * to a message, because its errno is what {@link runWithEnotemptyRetry} and
+ * {@link attemptWorktreeRemoval} both read afterwards — see
+ * {@link refusalError}.
+ */
+interface DeletionRefusal {
+  /** Path relative to the worktree root, `/`-separated — never absolute. */
+  relPath: string;
+  /** Whatever the refusing call threw. */
+  error: unknown;
+}
+
+/**
+ * How many refused paths {@link refusalError}'s message NAMES before it stops
+ * and leaves the rest to its own count. Same bounded-sample discipline as
+ * {@link SURVIVOR_PATHS_LIMIT} / {@link BLOCKING_PATHS_LIMIT}: an error message
+ * must never grow with the size of the tree that produced it.
+ */
+const PHASE_ONE_REFUSAL_LIMIT = 20;
+
+/** The `code` of a Node errno exception, or `undefined` for anything else. */
+function errnoCodeOf(err: unknown): string | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/**
+ * Build the ONE error the exhaustive phase 1 throws for a whole set of
+ * refusals (issue #621).
+ *
+ * The errno is the load-bearing part, and it is deliberately propagated rather
+ * than invented: two downstream tests read it, and both must see exactly what
+ * a single-refusal delete would have reported.
+ *   • {@link runWithEnotemptyRetry}'s `isEnotempty` — whether to purge the
+ *     allowlisted junk and re-attempt once (the FOR-45/FOR-84 transient race).
+ *   • {@link attemptWorktreeRemoval}'s `enotempty` — the issue #528 EXHAUSTED
+ *     signal, and the gate on the issue #542 residue probe.
+ *
+ * So the aggregate carries the refusals' errno when they ALL agree on one, and
+ * carries none at all when they do not. A mixed set is not the one recognized
+ * transient race — reading it as ENOTEMPTY would claim a race that is not
+ * there, while carrying no code reads as "not that race", which is the safe
+ * direction and is exactly what a mixed set is.
+ *
+ * The message names the first refusal's own error verbatim (via
+ * {@link describeError}, so a non-ASCII path still renders correctly — FOR-45)
+ * plus a bounded list of the refused paths.
+ */
+function refusalError(root: string, refusals: DeletionRefusal[]): NodeJS.ErrnoException {
+  const shown = refusals.slice(0, PHASE_ONE_REFUSAL_LIMIT).map((r) => r.relPath);
+  const names = shown.join(', ') + (shown.length < refusals.length ? ', …' : '');
+  const err = new Error(
+    `worktree removal exhausted its permissions at ${root} and was refused ` +
+      `${refusals.length} entr${refusals.length === 1 ? 'y' : 'ies'} (${names}); ` +
+      `first refusal: ${describeError(refusals[0].error)}`,
+  ) as NodeJS.ErrnoException;
+  const codes = new Set(refusals.map((r) => errnoCodeOf(r.error)));
+  const only = codes.size === 1 ? [...codes][0] : undefined;
+  if (only !== undefined) err.code = only;
+  return err;
+}
+
+/**
+ * Delete `target` best-effort, descending into a subtree whose own whole-tree
+ * delete was refused, and RECORDING every terminal refusal instead of
+ * propagating the first one (issue #621, ADR-0042 Amendment decision 6).
+ *
+ * `rmSync`'s recursive walk stops at the first entry it is refused, so a
+ * subtree that holds one denied leaf can still hold any number of entries this
+ * process is perfectly able to delete. Descending is what turns the survivor
+ * set from "an aborted tree" into "the refused set".
+ *
+ * Two boundaries:
+ *
+ *   • `isRealDirectory` comes from the caller's own {@link Dirent}, which is
+ *     `lstat`-shaped: a SYMLINK to a directory reads `false` and is therefore
+ *     never descended into. A refused symlink unlink must never become a walk
+ *     over whatever it points at — that target is outside the worktree, and
+ *     nothing here is licensed to delete outside it. (The same reason
+ *     {@link walkSurvivorSet} tests `entry.isDirectory()` rather than stat-ing
+ *     the path.)
+ *   • After the reachable children are gone, the directory itself is attempted
+ *     ONCE more: an emptied directory is very often removable when the
+ *     whole-subtree call was not. Only that second refusal is recorded, because
+ *     it is the one that describes what actually remains.
+ */
+function attemptDeleteExhaustively(
+  root: string,
+  target: string,
+  isRealDirectory: boolean,
+  refusals: DeletionRefusal[],
+): void {
+  const relPath = nodePath.relative(root, target).split(nodePath.sep).join('/');
+  try {
+    rmSync(target, { recursive: true, force: true });
+    return;
+  } catch (err) {
+    if (!isRealDirectory) {
+      // A file (or a symlink) we were refused: this is where the walk
+      // terminates, there is nothing underneath to reach.
+      refusals.push({ relPath, error: err });
+      return;
+    }
+    let children: Dirent[];
+    try {
+      children = readdirSync(target, { withFileTypes: true });
+    } catch {
+      // A directory we may not even enumerate — refused, and un-descendable.
+      refusals.push({ relPath, error: err });
+      return;
+    }
+    for (const child of children) {
+      attemptDeleteExhaustively(
+        root,
+        nodePath.join(target, child.name),
+        child.isDirectory(),
+        refusals,
+      );
+    }
+    try {
+      rmSync(target, { recursive: true, force: true });
+    } catch (afterChildren) {
+      refusals.push({ relPath, error: afterChildren });
+    }
+  }
 }
 
 /**
