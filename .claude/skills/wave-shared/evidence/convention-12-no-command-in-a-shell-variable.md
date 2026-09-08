@@ -57,3 +57,51 @@ Every site below used to capture in one Bash call and guard in a later one, thro
 
 With that correction applied, the census reads: every remaining `VAR=$(…)` across `.claude/skills/` is either inside a single self-contained call, one of the deliberate non-guards below, or `start-mechanics`' `WSTATE`, whose `$([ … ] && echo a || echo b)` form cannot produce an empty value — and every `$VAR` *use* in the mechanics files resolves to either an operator-held constant its preamble declares or a literal path. Re-run both halves before adding a row to this ledger.
 
+### The invocation-form corollary — the 2026-09-08 measurement behind it
+
+The rule this evidence supports, stated in full in `reference/convention-12-no-command-in-a-shell-variable.md` ("The invocation-form corollary"):
+
+> **A host CLI call is written as a top-level simple command** — a step in a `;` or `&&` chain, one per Bash call. **A loop body, a command substitution `$(…)`, a subshell, or a `bash <file>` script is where the sandbox exemption stops.**
+
+#### The measurement — six forms, four controls, one Coordinator session
+
+flotilla's own repo, 2026-09-08, all forms minutes apart in one session, sandbox on unless noted:
+
+| Form | Result |
+|---|---|
+| `gh issue view` ×4, top-level `;` chain | 4/4 pass |
+| the same four ids inside a `for` loop | 0/4 — `tls: failed to verify certificate: x509: OSStatus -26276` |
+| **one** `gh` call inside a **single-iteration** `for` loop | fail |
+| `gh` inside `$(…)` | fail |
+| `gh` inside a subshell + pipe | fail |
+| `curl https://api.github.com/rate_limit` inside the same loop form | HTTP 200 |
+| `git ls-remote` over HTTPS inside the same loop form | pass (only a `failed to store: 100001` keychain-**write** warning) |
+| the failing nested `gh` form, **sandbox off** | **pass** |
+
+**What each control retires, in order.**
+
+1. **Not the iteration count, and not the rate limit.** A single-iteration loop carrying one call fails. The trigger is the shell construct, not repetition — which is what makes this a *form* finding rather than a throttling one.
+2. **Not the loop keyword.** Command substitution and a subshell fail identically. The trigger is `gh` running as a child of a nested shell context rather than as the invocation's top-level simple command.
+3. **Not the network, and not TLS interception in general.** `curl` and `git`-over-HTTPS pass in the identical nested form, against the same host.
+4. **The sandbox is the layer.** The identical nested form passes with the sandbox off. Whatever lets a top-level `gh` reach macOS trust evaluation does not reach a process spawned from a nested shell context. `curl`, `git` and Node's `fetch` being unaffected is part of the same measurement — an observation from rows 6 and 7 of the table, never an inference from the error text.
+
+**A correction about the status code, recorded rather than quietly edited away.** An earlier revision of this note asserted that `OSStatus -26276` is `errSecInternalComponent`. **It is not.** Apple's shipped `SecBase.h` defines `errSecInternalComponent = -2070`, and the literal `26276` occurs nowhere in the macOS SDK at all — its nearest *documented* neighbours are `errSecNotSigner = -26267` and `errSecDecode = -26275`. The number places the failure in the Security framework's error range and licenses nothing further, so **no constant is named for it** — guessing a second one would repeat the defect, and a mechanism story assembled around a misidentified constant is exactly how the first version went wrong. The finding survives the retraction intact because control 4 above is a *control arm*, not a deduction: the sandbox-off run passes, and that is what names the layer. Caught in review of this very slice; the retraction is left standing in all four artifacts so a reader who saw the first version can see the claim withdrawn rather than vanished.
+
+**Deliberately not diagnosed:** which harness component computes the exemption (the permission classifier's parse of the command text, or the seatbelt profile's Mach-service rules). That is a Claude Code question, not a flotilla one, and the rule does not wait on it.
+
+**Provenance.** Consolidation pass of the MoplaDS consumer analysis (2026-09-06), findings F-3.7d / F-3.7e, verified against `main` f453e97 (2.4.0) by a verifier/refuter pair which reduced the claim from "mechanism" to "observation", then extended by the live measurement at a1cf49f and re-triaged against `main` 6c1b736. That probe **superseded** the 20×3 repeat-count measurement the finding originally asked for: the original design carried no `curl`/`git` control and no sandbox-off arm, so it would have reproduced the form-dependence at sixty calls without ever identifying the layer. More calls would not have been more evidence.
+
+#### The tension this rule has to live with
+
+**This convention's own guard hook sends an operator into a nested context.** `conv12-guard.cjs`'s refusal message teaches, as its third remedy, *"for a loop or multi-step logic, write a script file and run it via `bash <file>`"* — and Convention 13's Catalog entry 1 reaches the same shape independently, as the fifth station that finally beats the worktree-isolation guard. That remedy is **not withdrawn**: it solves the problem it was written for, because the expansion then lives inside the executed file rather than in the tool-call text the guards match.
+
+The convention's own forms stay safe inside such a script for a reason that is architectural rather than lucky: they route host calls through the **engine CLI**, whose host access is Node's `fetch` and argv-form `git` — both on the passing side of control 3 — and the rest of what they run (`git rev-parse`, `jq`, `grep`) routes no trust evaluation through Security.framework either. The hazard is a raw `gh` an operator puts inside such a script, not the script.
+
+#### Exposed, and not
+
+- **Exposed:** hand-written operator or agent bash calling `gh` directly from any nested context.
+- **Exposed, consumer-configured:** an ADR-0029 `<VAR>_CMD` lookup pointed at a keychain-backed helper — the engine runs it through `/bin/sh -c`, a nested context by construction. The `git` control's `failed to store: 100001` is the same keychain wall seen from the write side.
+- **Not exposed:** every wave verb and the engine itself (GitHub over Node's `fetch`; the landing seam and the API factory over argv-form `git`), and therefore a headless Coordinator looping rows through the engine CLI. `tools/wave/src/no-gh-shellout-guard.spec.ts` holds that property in place — it fails if any engine source spawns `gh`, names the `fetch` and `git` seams in its refusal, and deliberately scopes itself to the engine's sources rather than to operator bash.
+
+The architectural consequence is recorded as an evidence note on ADR-0015, the decision that had already moved `triage` off raw `gh` for tracker-agnosticism reasons and turns out to have bought an operational property as well.
+

@@ -122,6 +122,39 @@ Getting this backwards turns the guard into a false-alarm generator, which is ho
 
 The guard goes one level up, on the capture that proves the verb *ran*: `ACKED_JSON` (the JSON `verdict-acked` printed). Empty there means the engine call did not execute, and deriving `ACKED=""` from nothing would tick nothing while looking exactly like a legitimate empty ack.
 
+### The invocation-form corollary — a host CLI call is a TOP-LEVEL SIMPLE COMMAND, and a nested shell context is where the sandbox exemption stops
+
+Both halves above are about what a *value* does when a shell touches it. This third rule is about what a *command* does when a shell nests it, and it is the same class of surprise: a form that is correct everywhere else is inert here, for a reason nothing in the command's own text discloses.
+
+> **A host CLI call is written as a top-level simple command** — a step in a `;` or `&&` chain, one per Bash call. **A loop body, a command substitution `$(…)`, a subshell, or a `bash <file>` script is where the sandbox exemption stops.**
+
+**Measured, this repo, one Coordinator session, 2026-09-08 — six forms with four controls.** Under the Claude Code sandbox on macOS, `gh` fails in every nested form with `tls: failed to verify certificate: x509: OSStatus -26276`, and passes at top level: four `gh issue view` calls in a top-level `;` chain → 4/4 pass; the same four ids in a `for` loop → 0/4; **one** call in a **single-iteration** loop → fail; inside `$(…)` → fail; inside a subshell → fail. The four controls narrow it: the single-iteration failure retires "too many calls"; `curl` (HTTP 200) and `git ls-remote` over HTTPS (pass) in the identical nested form retire "the network" and "TLS interception in general"; and the same failing form with the **sandbox off** passes, which is what names the layer. Whatever lets a top-level `gh` reach macOS trust evaluation does not reach a process spawned from a nested shell context, and `curl`, `git` and Node's `fetch` are *observed* untouched in the identical nested form rather than deduced to be. The form-by-form table is in the evidence sidecar; the architectural consequence is the evidence note on [ADR-0015](../../../../docs/adr/0015-triage-is-a-tracker-agnostic-triage-facet.md).
+
+**A correction about the status code, recorded rather than quietly edited away.** An earlier revision of this section asserted that `OSStatus -26276` is `errSecInternalComponent`. **It is not.** Apple's shipped `SecBase.h` defines `errSecInternalComponent = -2070`, and the literal `26276` occurs nowhere in the macOS SDK at all — its nearest *documented* neighbours are `errSecNotSigner = -26267` and `errSecDecode = -26275`. The number places the failure in the Security framework's error range and licenses nothing further, so **do not name a constant for it** — guessing a second one would repeat the defect. The rule above is untouched by the retraction, because it never rested on the constant's name: it rests on the sandbox-off control arm.
+
+#### The tension with this convention's own workaround — named, because it is real
+
+**This convention's own guard hook sends you into a nested context.** `conv12-guard.cjs`'s refusal message teaches three remedies, and the third is *"for a loop or multi-step logic, write a script file and run it via `bash <file>`"* — which is precisely a nested shell context. [Convention 13](convention-13-one-bash-call-per-step.md)'s Catalog entry 1 arrives at the same shape from the other direction, as the fifth station that finally beats the worktree-isolation guard.
+
+**That remedy is still correct, and it is not being withdrawn.** It solves what it was written for: the interpolation happens inside the executed file, so the tool-call text the hook and the isolation guard match carries no expansion at all. The caveat is narrower than the remedy — it is about **one command family**, not about the shape:
+
+- **The convention's own forms stay safe inside `bash <file>`** because every host call they make goes through the **engine CLI** (`wave_cli() { … }` → `host-pr status`, `spine set-row-state`, `issue-store close`, `verdict-acked`). The engine reaches its host through Node's `fetch` and through argv-form `git`, and both are on the passing side of the controls above. Same for the other commands these recipes run: `git rev-parse`, `jq`, `grep`. None of them routes trust evaluation through Security.framework.
+- **What is unsafe there is a raw `gh` an operator puts inside such a script.** The script did not create the hazard; the `gh` did. Route it through an engine verb, or keep it as a top-level simple command in its own Bash call.
+
+#### Who is exposed and who is not
+
+| | |
+|---|---|
+| **Exposed** | Hand-written **operator or agent bash** that calls `gh` directly from any nested context — a loop over ids, a `$(gh …)` capture, a subshell, a script run with `bash <file>`. |
+| **Exposed (consumer-configured)** | A `<VAR>_CMD` credential-lookup command (ADR-0029) pointed at a keychain-backed helper: the engine runs it through the platform shell (`/bin/sh -c`), which is a nested context by construction. This is why the `git` control above still printed `failed to store: 100001` — a keychain **write**, denied, harmlessly. |
+| **Not exposed** | **Every wave verb**, and the engine as a whole: the GitHub adapter reaches the API through Node's `fetch`, and the landing seam and the API factory shell out only to `git`. A headless Coordinator looping over rows through the engine CLI is making exactly those two kinds of call, so the loop is not a hazard for it. `tools/wave/src/no-gh-shellout-guard.spec.ts` is what keeps that true: it fails if any engine source spawns `gh`, and its refusal names the two sanctioned seams. Its scope is the engine's own sources — it deliberately does **not** police operator or consumer bash, which is why that half is this rule and not a test. |
+
+#### What to do instead
+
+1. **Prefer the engine verb.** `host-pr create|arm|merge|status`, `issue-store …`, `route-tuple` — the reason those verbs exist is that they take the host off the bash surface entirely. This is the same move [ADR-0015](../../../../docs/adr/0015-triage-is-a-tracker-agnostic-triage-facet.md) already made for `triage`, now with an operational payoff it did not know it was buying.
+2. **If a raw `gh` is genuinely the only way**, write it as a top-level simple command, one per Bash call, in a `;`/`&&` chain — never in a loop head or body, never inside `$(…)`, never in a script you then execute. Iterate by issuing N flat calls, not by writing one loop.
+3. **Never reach for the sandbox switch.** A dispatched agent may not disable the sandbox, ask for it to be disabled, or re-run anything with it off ([ADR-0049](../../../../docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md)); the sandbox-off arm above is a *measurement control* run by the operator who owns that decision, never a remedy on offer to a role. A refusal is reported, not escalated.
+
 ### The severity precedent
 
 Why this is rated as the fifth occurrence rather than a fresh, low-severity one — a repeat of a known finding is not rated on its own cost, because a recurrence rate *is* severity — and the four-wave rating table behind that rule (history: `../evidence/convention-12-no-command-in-a-shell-variable.md`, read via the sibling-path read when actually wanted, ADR-0040).
