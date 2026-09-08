@@ -674,3 +674,194 @@ describe('skill-clause-drift — the rollout corrections (the human is not "the 
     ).toThrow(/no closing/);
   });
 });
+
+// ─── the deferred valve's trigger list reads FOUR wherever this row governs ───
+//
+// Moved here from compose-driver.spec.ts (issue #741): this is a prose-over-corpus
+// guard exactly like the ones above it, not a driver-composition concern — it
+// reads repo-relative paths off the same idiom the sibling guards in this file
+// use, and only ever landed in compose-driver.spec.ts because that file was
+// inside the follow-through row's declared scope and this one was not.
+//
+// ADR-0049 gave the Reviewer's deferred valve a fourth trigger, `capability-gated`,
+// beside merge-, prod- and human-gated. The corpus states that list in several
+// places; the row that landed the decision updated the copies inside its own
+// declared files and left two others reading THREE. Nothing went red, because
+// nothing was looking. This is the check that looks.
+//
+// ## Bounded on purpose
+//
+// The population below is exactly the set of files the follow-through row
+// declares — not the whole corpus. A corpus-wide sweep is a larger, separate
+// change, and a check that quietly grows its own scope is a check nobody can
+// land. A three-trigger copy found OUTSIDE this list is a disclosure to file,
+// never a reason to widen this constant in passing.
+//
+// ## The predicate is a WINDOW, not a line
+//
+// Three shapes state the list, and a line-based rule would miss two of them: a
+// wrapped prose sentence (the driver's reviewer brief splits its enumeration
+// across two source lines), a markdown table where each trigger owns a row
+// (`reviewer-checks.md`), and a parenthetical inside a decision record. So each
+// file's text is whitespace-normalized and every occurrence of the list's
+// OPENER must have `capability-gated` within WINDOW characters on either side.
+// The table passes because its four rows sit inside one window; a stale
+// three-trigger sentence cannot, because nothing near it names the fourth.
+//
+// ## issue #741 — the elided spelling was a blind spot of the class this check
+// exists to close
+//
+// The predicate used to key on the literal token `merge-gated` alone, so a
+// statement written with the shared-trailing-word elision English allows —
+// "merge-, prod- and human-gated" — never matched it at all: no hit, no window
+// check, no failure, whatever the statement actually went on to say. One such
+// elided statement already ships in the governed population (ADR-0049 §4 itself,
+// stating the very decision that added the fourth trigger) and reads four
+// correctly today only because `capability-gated` happens to sit right beside
+// it in the same sentence — the OLD check was never the thing confirming that,
+// because it never saw the sentence at all. A future three-trigger REGRESSION
+// written in the elided form would have passed this check silently, which is
+// exactly the shape the check exists to catch. `OPENER` below closes it: the
+// spelled form (`merge-gated`) and the elided form (`merge-`[, `prod-`] and
+// `human-gated`) are now the same kind of statement, scored by the identical
+// window rule. Both branches anchor on the literal word `merge-`, matched by
+// name against this corpus's own fixed vocabulary — never a bare `\w+-` chain,
+// which would fire on unrelated hyphenated prose.
+//
+// ## No exemption marker, and none may be added
+//
+// ADR-0043: the checked text never carries its own exemption. ADR-0049's own
+// quotation of the pre-decision three-trigger list passes this check because the
+// sentence carrying the quotation now names the fourth as the thing that record
+// adds — the fix lived in the prose, not in a skip-list here.
+describe("the deferred valve's trigger list — no three-trigger copy survives in this row's files", () => {
+  /** This row's declared files — the bounded population, stated once. */
+  const GOVERNED = [
+    'tools/wave/driver/wave-start-inflight.js',
+    '.claude/agents/wave-reviewer.md',
+    '.claude/skills/wave-reviewer/SKILL.md',
+    '.claude/skills/wave-reviewer/reference/reviewer-checks.md',
+    '.claude/skills/wave-shared/reference/convention-07-host-landing-seam.md',
+    'docs/adr/0004-ac-ground-truth-is-the-reviewer-verdict.md',
+    'docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md',
+  ];
+
+  /**
+   * Files that must still CARRY a trigger-list statement. A file dropping out of
+   * this set is as much a finding as a stale copy in it: silence reads green.
+   * `convention-07` is deliberately absent — it states the host seam, not the
+   * valve, and must never be asked for a trigger list.
+   */
+  const STATEMENT_BEARING = [
+    'tools/wave/driver/wave-start-inflight.js',
+    '.claude/agents/wave-reviewer.md',
+    '.claude/skills/wave-reviewer/SKILL.md',
+    '.claude/skills/wave-reviewer/reference/reviewer-checks.md',
+    'docs/adr/0004-ac-ground-truth-is-the-reviewer-verdict.md',
+    'docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md',
+  ];
+
+  /**
+   * Half-width of the window, in normalized characters. Sized against the widest
+   * legitimate statement in the population: `reviewer-checks.md`'s four-row
+   * table, where `merge-gated` and `capability-gated` sit three rows apart, and
+   * ADR-0004's parenthetical, which carries a full ADR filename between the two.
+   */
+  const WINDOW = 400;
+
+  /**
+   * The list's OPENER, both spellings. The first alternative is the spelled
+   * form, unchanged from before issue #741. The second is the ELIDED form —
+   * "merge-, prod- and human-gated" — the shape ADR-0049 §4 itself uses and the
+   * one the old, `merge-gated`-only predicate could never see. Anchoring both
+   * alternatives on `merge-` means a sentence naming only ONE gate —
+   * `capability-gated` on its own, say — never matches either branch and is
+   * correctly not a "statement" at all.
+   */
+  const OPENER = /merge-gated\b|merge-,?\s*prod-,?\s*(?:and\s+)?human-gated\b/g;
+
+  /** Does `capability-gated` sit within WINDOW of the opener match at `at`? */
+  function fourTriggered(text: string, at: number): boolean {
+    return text.slice(Math.max(0, at - WINDOW), at + WINDOW).includes('capability-gated');
+  }
+
+  it('every trigger-list statement — spelled or elided — names capability-gated beside it', () => {
+    const stale: string[] = [];
+    const bearing: string[] = [];
+    let statements = 0;
+
+    for (const rel of GOVERNED) {
+      const text = readFileSync(join(REPO_ROOT, rel), 'utf-8').replace(/\s+/g, ' ');
+      const matches = [...text.matchAll(OPENER)];
+      if (matches.length > 0) bearing.push(rel);
+      for (const m of matches) {
+        statements += 1;
+        if (!fourTriggered(text, m.index!)) {
+          stale.push(rel + ': …' + text.slice(Math.max(0, m.index! - 90), m.index! + 130) + '…');
+        }
+      }
+    }
+
+    expect(
+      stale,
+      'a three-trigger copy of the deferred valve is still shipping — ADR-0049 added ' +
+        '`capability-gated` as the fourth:\n  ' +
+        stale.join('\n  '),
+    ).toEqual([]);
+
+    // Population floor — a listing that silently stopped finding statements (a
+    // renamed file, a moved reference dir, a rewritten paragraph) would
+    // otherwise be green for the wrong reason. Seven statements ship today: the
+    // six spelled statements this check always saw, plus the one elided
+    // statement (ADR-0049 §4) issue #741 taught it to see too — raised from the
+    // pre-#741 floor of six.
+    expect(
+      statements,
+      'the trigger-list population shrank — is every GOVERNED file still where it says?',
+    ).toBeGreaterThanOrEqual(7);
+    for (const rel of STATEMENT_BEARING) {
+      expect(bearing, rel + " no longer states the valve's trigger list at all").toContain(rel);
+    }
+  });
+
+  it('NEGATIVE CONTROL — the window rule sees a seeded three-trigger sentence, spelled form (unchanged by issue #741)', () => {
+    // The same predicate over a fixture rather than the corpus: proof it can
+    // tell a four-trigger statement from a three-trigger one, so the green above
+    // is a result and not an artifact of a check that cannot fail.
+    const four =
+      'an outcome unreachable — merge-gated, prod-gated, human-gated, capability-gated — is deferred';
+    const three = 'an outcome unreachable — merge-gated, prod-gated, human-gated — is deferred';
+    expect(fourTriggered(four, four.indexOf('merge-gated'))).toBe(true);
+    expect(fourTriggered(three, three.indexOf('merge-gated'))).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL (issue #741) — a seeded three-trigger sentence in the ELIDED spelling fails the predicate; the fourth trigger passes it', () => {
+    // The exact shape the check used to be blind to: no "merge-gated" token
+    // anywhere in this sentence at all, only the shared-suffix elision.
+    const threeElided = 'an outcome unreachable — merge-, prod- and human-gated — is deferred';
+    const fourElided =
+      'an outcome unreachable — merge-, prod- and human-gated, capability-gated — is deferred';
+
+    const threeMatch = [...threeElided.matchAll(OPENER)];
+    const fourMatch = [...fourElided.matchAll(OPENER)];
+    expect(threeMatch, 'the elided form must still be RECOGNISED as a statement').toHaveLength(1);
+    expect(fourMatch).toHaveLength(1);
+
+    expect(fourTriggered(threeElided, threeMatch[0].index!)).toBe(false);
+    expect(fourTriggered(fourElided, fourMatch[0].index!)).toBe(true);
+  });
+
+  it('prose that names a single gate, with no trigger list at all, is not a statement', () => {
+    // `capability-gated` and `human-gated` both ship ALONE, many times, all over
+    // this corpus (e.g. ADR-0049's own "Skills" bullet names `capability-gated`
+    // as "the fourth trigger" with no list beside it at all) — none of it is a
+    // claim about the whole valve, and the check must not manufacture a
+    // "statement" out of a single name. Anchoring both OPENER branches on
+    // `merge-` is what buys this: neither branch can match text that never
+    // mentions `merge-` at all.
+    const soloCapability = "the Reviewer contract names `capability-gated` as the valve's fourth trigger.";
+    const soloHuman = 'this row is `human-gated` until someone signs off.';
+    expect([...soloCapability.matchAll(OPENER)]).toHaveLength(0);
+    expect([...soloHuman.matchAll(OPENER)]).toHaveLength(0);
+  });
+});
