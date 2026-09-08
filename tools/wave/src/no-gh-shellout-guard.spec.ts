@@ -13,9 +13,19 @@
  * general: a single-iteration loop fails (not repetition), `curl` and
  * `git`-over-HTTPS pass in the identical nested form (not the network), and
  * the failing form passes with the sandbox off (the sandbox is the layer).
- * `OSStatus -26276` is `errSecInternalComponent` — the Security.framework
- * failure a Go binary reports when trust evaluation is unavailable. The full
- * six-form / four-control measurement is recorded in
+ *
+ * The status code is deliberately NOT identified beyond its text. An earlier
+ * revision of this comment asserted `OSStatus -26276` was
+ * `errSecInternalComponent`; that is FALSE — Apple's shipped `SecBase.h`
+ * defines `errSecInternalComponent = -2070`, and the literal `26276` occurs
+ * nowhere in the macOS SDK at all (nearest documented neighbours:
+ * `errSecNotSigner = -26267`, `errSecDecode = -26275`). The number places the
+ * failure in the Security framework's error range and licenses nothing
+ * further, so no constant is named for it — guessing a second one would
+ * repeat the defect. Nothing here depends on the retraction: the conclusion
+ * rests on the sandbox-off control arm, and `curl`, `git` and Node's `fetch`
+ * are OBSERVED unaffected in the identical nested form rather than argued to
+ * be. The full six-form / four-control measurement is recorded in
  * `docs/adr/0015-triage-is-a-tracker-agnostic-triage-facet.md`'s evidence
  * note, and the operator-facing invocation-form rule in
  * `.claude/skills/wave-shared/reference/convention-12-no-command-in-a-shell-variable.md`.
@@ -24,9 +34,9 @@
  * engine reaches its host through exactly two seams:
  *
  *   - **Node's `fetch`** — `adapters/github/github-http.ts` (`defaultGitHubHttp`)
- *     and `adapters/linear/linear-http.ts`. Node's `fetch` uses Node's own CA
- *     bundle and never routes trust evaluation through Security.framework, so
- *     it is unaffected in every context.
+ *     and `adapters/linear/linear-http.ts`. Node's `fetch` verifies against
+ *     Node's own bundled CA store rather than reaching trust evaluation by the
+ *     path `gh` uses, and was unaffected across the measurement.
  *   - **`git`, spawned argv-form** — the landing seam, the API factory,
  *     `files-drift`, `merge-order`, `worktree-cleanup`, `dor-gate`, `ff-guard`,
  *     `compose-driver`, `markdown-fs-store`. Measured passing inside the same
@@ -145,8 +155,20 @@ const COMPILER_OPTIONS = compilerOptions();
  * back as the `unknown` symbol — so the guard would match zero call sites and
  * pass, silently, for the worst possible reason. Pinning the host's current
  * directory to `tools/wave` makes both programs resolve the same way no matter
- * where the process was started; the non-vacuity test below is the tripwire
- * that would catch a regression here.
+ * where the process was started.
+ *
+ * **The tripwire for a regression here is the PERMANENT CONTROLS block at the
+ * bottom of this file, not the non-vacuity test.** Measured, by deleting this
+ * very line and running the spec: seven of the eight control tests fail
+ * (`expected +0 to be 1`) — the fixture-read control, all four POSITIVE
+ * controls, the four-planted-spawns count, and the DYNAMIC control — while the
+ * non-vacuity test stays GREEN, because it counts globbed files and call sites
+ * in the REAL program rather than resolved spawner symbols in the control
+ * fixture. The NEGATIVE control ("the sanctioned `git` seam is not flagged")
+ * also stays green, and vacuously so: nothing is flagged when nothing
+ * resolves, which is precisely why a negative control can never be the
+ * tripwire. Credit the assertions that actually fire, so a future reader
+ * trusting this comment looks at the guard that would really catch them.
  */
 function createHost(virtual?: { path: string; text: string }): ts.CompilerHost {
   const host = ts.createCompilerHost(COMPILER_OPTIONS, true);
@@ -497,11 +519,12 @@ const REFUSAL =
  * is `git`, and everything else goes over `fetch`.
  */
 const SANCTIONED_PROGRAMS: Record<string, string> = {
-  git: 'The local-repo seam. `git` does not route TLS trust evaluation through ' +
-    'Security.framework, so it is unaffected by the sandboxed-`gh` failure — measured ' +
-    'passing over HTTPS inside the identical nested form that fails `gh` (only a ' +
-    'harmless `failed to store: 100001` keychain-WRITE warning). Used argv-form ' +
-    'everywhere: no shell, no quoting hazard, no command line to nest.',
+  git: 'The local-repo seam. `git` is unaffected by the sandboxed-`gh` failure as a ' +
+    'MEASURED fact, not an inferred one — it passed over HTTPS inside the identical ' +
+    'nested form that fails `gh` (only a harmless `failed to store: 100001` ' +
+    'keychain-WRITE warning). No mechanism is claimed for why; see this file\'s header ' +
+    'on the retracted status-code identification. Used argv-form everywhere: no shell, ' +
+    'no quoting hazard, no command line to nest.',
 };
 
 /**
