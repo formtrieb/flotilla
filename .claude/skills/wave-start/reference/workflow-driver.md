@@ -204,7 +204,19 @@ read by the engine; this one is read by the harness, and the Workflow tool can
 only start from a script file the session is already allowed to read — a path
 outside the working directory would first need `/add-dir` or a Read allow rule.
 Inside the repo, nothing needs adding, and `worktree-cleanup` sweeps the file
-at close with the rest of `.flotilla/tmp/`.
+at close with the rest of `.flotilla/tmp/` — **under a stated rule, and not
+before this wave is finished** (issue #748). The `--orphans` pass reports this
+directory under its own `orphans.drivers` key and removes it on exactly two
+routes: the `--wave` spine's **every** row is terminal (`pr-created`,
+`approved`, `failed`, `abandoned`, `parked`), or that spine already sits in the
+archive location wave-close's archive phase moves it to. Otherwise it is
+reported and left alone — `live-wave` while a spine for the slug exists and is
+not finished (the harness may be reading this very file), `unknown-wave` when no
+spine answers for it at all. That gating is the point rather than a caveat: the
+driver is read by the harness for the whole life of the dispatch, so a sweep
+that removed it on presence alone would pull the script out from under a running
+wave. [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md#the-composed-drivers--the-directory-half-of-the-same-location--orphansdrivers-issue-748)
+owns the reading guide for the key.
 
 **Every value the old currency checklist policed is now filled from a source.**
 The repo root and the two absolute sidecar dirs come from `--repo-root` (or the

@@ -321,7 +321,12 @@ fi
   --out "$REPO/.flotilla/tmp/$SLUG/driver.js" \
   --row-meta '{"<id>":{"reviewerHints":["..."],"note":"..."}}'
 #   --out sits INSIDE the repo, deliberately — under the Scribe's gitignored
-#   .flotilla/tmp/ (wave-setup ignores it; worktree-cleanup sweeps it at close),
+#   .flotilla/tmp/ (wave-setup ignores it; worktree-cleanup's --orphans pass
+#   sweeps the whole <slug>/ directory at close, reported under its own
+#   `orphans.drivers` key, and ONLY once this wave is finished: every spine row
+#   terminal, or the spine already archived. While the wave runs it reads
+#   `live-wave` and is left strictly alone — the harness is still reading this
+#   file. issue #748; wave-close phase 3 owns the reading guide),
 #   NOT in the /tmp scratch dir the other files of this run use. The difference:
 #   those files are read by the engine, this one is read by the HARNESS — the
 #   Workflow tool can only start from a script file the session is already

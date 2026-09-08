@@ -6702,3 +6702,376 @@ describe('version subcommand routing (ADR-0032)', () => {
     expect((JSON.parse(stdoutBuf) as { outcome: string }).outcome).toBe('mismatch');
   });
 });
+
+// ─── Form 8c-quater: worktree-cleanup — a TERMINAL wave sweeps its OWN
+//             residue (issue #748, ADR-0042 Amendment decisions 9–11) ────────
+//
+// EXTENDS the review-ref wiring block above rather than replacing it. That
+// block pins the plan SHAPE against a spine whose single row is `dispatched` —
+// a NON-terminal wave — and it stays green here byte-for-byte, which is the
+// point: the liveness RULE this block adds must not move the reading of a wave
+// that is still running.
+//
+// Three cases, and the middle one is the pre-existing behaviour:
+//   · every row terminal   → the wave's OWN refs go, across all three
+//                            namespaces, and `liveRowIds` reads `[]`.
+//   · any row non-terminal → every ref of the wave is spared `live-row`, and
+//                            `liveRowIds` names them.
+//   · no --wave at all     → nothing is removed (`live-rows-unknown`,
+//                            `liveRowIds: null`) — the fail-closed floor.
+//
+// Beside them: the composed-driver population (`orphans.drivers`) under the
+// same terminality rule, and the deferred-branch accounting the orphan-branch
+// sweep now prints.
+describe('worktree-cleanup subcommand — a terminal wave sweeps its own refs and its own composed drivers (issue #748)', () => {
+  let repo: string;
+
+  const LIVE_REVIEW_REF = 'refs/review/131';
+  const LIVE_SIB_REF = 'refs/review/sib/131';
+  const LIVE_FLAT_SIB_REF = 'refs/sib/131';
+  const OTHER_WAVE_REF = 'refs/review/999';
+  const OWN_REFS = [LIVE_REVIEW_REF, LIVE_SIB_REF, LIVE_FLAT_SIB_REF];
+
+  const SLUG = '2026-09-08-terminal-wave';
+
+  /**
+   * Drive every git subcommand `worktree-cleanup --orphans` issues. Routed by
+   * subcommand + format flag, so the review-ref LISTING is never confused with
+   * the orphan-BRANCH listing that rides the same `for-each-ref` verb —
+   * the same routing discipline the review-ref wiring block above uses.
+   *
+   * `heldBranch`, when given, makes `git worktree list --porcelain` report one
+   * registered worktree holding that branch: the input the deferred-branch
+   * accounting is computed from.
+   */
+  function driveGit(opts: { heldBranch?: string; localBranches?: string[] } = {}): void {
+    // Deliberately OUTSIDE the agent worktrees root: this fixture is about the
+    // branch a registered worktree HOLDS, not about the registered-GC
+    // population, and a path under `.claude/worktrees/wf_*` would additionally
+    // enter `listAgentWorktrees` and be planned for removal here.
+    const wtPath = join(repo, 'checkouts', 'held-1');
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'for-each-ref' && cmdArgs[1] === '--format=%(refname)') {
+        return [...OWN_REFS, OTHER_WAVE_REF].join('\n') + '\n';
+      }
+      if (cmdArgs[0] === 'for-each-ref' && cmdArgs[1] === '--format=%(refname:short)') {
+        return (opts.localBranches ?? []).join('\n') + '\n';
+      }
+      if (cmdArgs[0] === 'worktree' && cmdArgs[1] === 'list') {
+        if (opts.heldBranch === undefined) return '';
+        return [`worktree ${wtPath}`, 'HEAD ' + 'a'.repeat(40), `branch refs/heads/${opts.heldBranch}`, ''].join('\n');
+      }
+      if (cmdArgs[0] === 'symbolic-ref') return 'main\n';
+      return '';
+    });
+  }
+
+  /** The absolute path a `driveGit({ heldBranch })` worktree is reported at. */
+  function heldWorktreePath(): string {
+    return join(repo, 'checkouts', 'held-1');
+  }
+
+  /**
+   * Write a spine for `SLUG` whose single row carries `state`, into the repo's
+   * own waves directory — so the CLI derives BOTH the review-ref scope and the
+   * composed-driver waves directory from the path it was handed.
+   */
+  function writeSpine(state: string): string {
+    const wavesDir = join(repo, '.flotilla', 'waves');
+    mkdirSync(wavesDir, { recursive: true });
+    const path = join(wavesDir, `${SLUG}.md`);
+    writeFileSync(
+      path,
+      [
+        `# Wave ${SLUG}`,
+        '',
+        '**Status:** in-flight',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        `| 131 | Alpha | background | mechanical | universal | — | ${state} | 1 | — |`,
+        '',
+        '## Resume-Metadata',
+        '',
+        '```yaml',
+        'dispatch-log:',
+        '  - "131 → agent wf_aaa (sonnet) branch wave/131-alpha"',
+        '```',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    return path;
+  }
+
+  /** Plant `<repo>/.flotilla/tmp/<slug>/driver.js`, as compose-driver writes it. */
+  function plantDriverDir(slug: string): string {
+    const dir = join(repo, '.flotilla', 'tmp', slug);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'driver.js'), '// composed driver\n', 'utf-8');
+    return dir;
+  }
+
+  interface CleanupJson {
+    orphans?: {
+      reviewRefs?: {
+        liveRowIds: string[] | null;
+        selected?: Array<{ ref: string }>;
+        removed?: Array<{ ref: string }>;
+        skipped: Array<{ ref: string; reason: string }>;
+      };
+      drivers?: {
+        present: boolean;
+        wavesDir: string;
+        selected?: Array<{ slug: string; finishedBy: string | null }>;
+        removed?: Array<{ slug: string }>;
+        skipped: Array<{ slug: string; reason: string }>;
+      };
+    };
+    orphanBranches?: {
+      toDelete: string[];
+      branchHygieneDeferred: Array<{
+        branch: string;
+        worktreePath: string | null;
+        reason: string;
+      }>;
+    };
+    branchHygieneDeferred?: Array<{
+      branch: string;
+      worktreePath: string | null;
+      reason: string;
+    }>;
+  }
+
+  beforeEach(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'wave-cli-748-')));
+    writeFileSync(join(repo, 'package.json'), '{"name":"cli-748"}', 'utf-8');
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('CASE 1 — every row TERMINAL: the wave\'s own refs are removed across all three namespaces, and liveRowIds reads []', () => {
+    driveGit();
+    const spine = writeSpine('pr-created');
+    const code = main(['worktree-cleanup', repo, '--orphans', '--wave', spine]);
+    expect(code).toBe(0);
+    const rr = (JSON.parse(stdoutBuf) as CleanupJson).orphans?.reviewRefs;
+    expect(rr, 'orphans.reviewRefs missing').toBeDefined();
+    // Declared, and legitimately empty — the reading `null` could not express.
+    expect(rr!.liveRowIds).toEqual([]);
+    expect(rr!.removed!.map((r) => r.ref).sort()).toEqual(
+      [...OWN_REFS, OTHER_WAVE_REF].sort(),
+    );
+    expect(rr!.skipped).toEqual([]);
+    for (const ref of OWN_REFS) {
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        ['update-ref', '-d', ref],
+        expect.objectContaining({ cwd: repo }),
+      );
+    }
+  });
+
+  it('CASE 1 — PROVE THE CHECK CAN FAIL (Convention 11): the SAME spine with the SAME refs, under the pre-#748 row-membership rule, spares every one of them', () => {
+    // The old rule is reproduced exactly by leaving the row NON-terminal: the
+    // wave's rows are then the live set, which is what "membership, not
+    // terminality" always computed — for every wave, at every close. Under it
+    // the three refs the case above deletes are all skipped `live-row`, which
+    // is the failing state of CASE 1's assertion.
+    driveGit();
+    const spine = writeSpine('dispatched');
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const rr = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.reviewRefs!;
+    expect(rr.removed!.map((r) => r.ref)).toEqual([OTHER_WAVE_REF]);
+    expect(() => {
+      expect(rr.removed!.map((r) => r.ref).sort()).toEqual(
+        [...OWN_REFS, OTHER_WAVE_REF].sort(),
+      );
+    }).toThrow();
+  });
+
+  it('CASE 2 — ANY row non-terminal: every ref of the wave is spared live-row, exactly as before, and liveRowIds names them', () => {
+    driveGit();
+    const spine = writeSpine('reviewing');
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const rr = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.reviewRefs!;
+    expect(rr.liveRowIds).toEqual(['131']);
+    for (const ref of OWN_REFS) {
+      expect(rr.skipped.find((s) => s.ref === ref)?.reason).toBe('live-row');
+    }
+    expect(execFileSync).not.toHaveBeenCalledWith(
+      'git',
+      ['update-ref', '-d', LIVE_REVIEW_REF],
+      expect.anything(),
+    );
+  });
+
+  it('CASE 3 — no --wave at all: nothing is removed, every ref reads live-rows-unknown, and liveRowIds is null', () => {
+    driveGit();
+    expect(main(['worktree-cleanup', repo, '--orphans'])).toBe(0);
+    const rr = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.reviewRefs!;
+    expect(rr.liveRowIds).toBeNull();
+    expect(rr.removed).toEqual([]);
+    expect(rr.skipped.map((s) => s.reason)).toEqual([
+      'live-rows-unknown',
+      'live-rows-unknown',
+      'live-rows-unknown',
+      'live-rows-unknown',
+    ]);
+  });
+
+  it('the composed-driver population rides the SAME terminality rule under orphans.drivers — removed when terminal, live-wave when not, unknown-wave when no spine answers', () => {
+    driveGit();
+    const ownDir = plantDriverDir(SLUG);
+    const strangerDir = plantDriverDir('2026-01-01-nobody');
+    const spine = writeSpine('approved');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const drivers = (JSON.parse(stdoutBuf) as CleanupJson).orphans?.drivers;
+    expect(drivers, 'orphans.drivers missing from the real-run CLI JSON').toBeDefined();
+    expect(drivers!.present).toBe(true);
+    // The waves directory is derived from the --wave path the caller passed,
+    // never from a second, independently-defaulted guess.
+    expect(drivers!.wavesDir).toBe(join(repo, '.flotilla', 'waves'));
+    expect(drivers!.removed!.map((d) => d.slug)).toEqual([SLUG]);
+    expect(existsSync(ownDir)).toBe(false);
+    // `unknown-wave` is accounting, never removal.
+    expect(drivers!.skipped).toEqual([
+      { path: strangerDir, slug: '2026-01-01-nobody', finishedBy: null, reason: 'unknown-wave' },
+    ]);
+    expect(existsSync(strangerDir)).toBe(true);
+  });
+
+  it('PROVE THE CHECK CAN FAIL (Convention 11): the same driver directory with a NON-terminal spine reads live-wave and survives', () => {
+    driveGit();
+    const ownDir = plantDriverDir(SLUG);
+    const spine = writeSpine('verdict-in');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const drivers = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.drivers!;
+    expect(drivers.removed).toEqual([]);
+    expect(drivers.skipped.map((d) => d.reason)).toEqual(['live-wave']);
+    expect(existsSync(ownDir)).toBe(true);
+    // …and that is the failing state of the previous test's own assertion.
+    expect(() => {
+      expect(drivers.removed!.map((d) => d.slug)).toEqual([SLUG]);
+    }).toThrow();
+  });
+
+  it('an ARCHIVED spine is enough on its own — no --wave declaration needed for a wave that already closed', () => {
+    driveGit();
+    const oldDir = plantDriverDir('2026-08-30-closed');
+    mkdirSync(join(repo, '.flotilla', 'waves', '_archive'), { recursive: true });
+    writeFileSync(
+      join(repo, '.flotilla', 'waves', '_archive', '2026-08-30-closed.md'),
+      '# archived\n',
+      'utf-8',
+    );
+
+    expect(main(['worktree-cleanup', repo, '--orphans'])).toBe(0);
+    const drivers = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.drivers!;
+    expect(drivers.removed!.map((d) => d.slug)).toEqual(['2026-08-30-closed']);
+    expect(existsSync(oldDir)).toBe(false);
+  });
+
+  it('--dry-run previews the IDENTICAL plan the real run executes, and removes nothing (the issue #377 discipline)', () => {
+    driveGit();
+    const ownDir = plantDriverDir(SLUG);
+    plantDriverDir('2026-01-01-nobody');
+    const spine = writeSpine('failed');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run', '--wave', spine])).toBe(0);
+    const preview = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.drivers!;
+    expect(preview.selected!.map((d) => d.slug)).toEqual([SLUG]);
+    expect(preview.selected![0].finishedBy).toBe('wave-terminal');
+    expect(preview.skipped.map((d) => d.reason)).toEqual(['unknown-wave']);
+    // A preview removes nothing.
+    expect(existsSync(ownDir)).toBe(true);
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const real = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.drivers!;
+    // The SAME plan: the preview's `selected` and the run's `removed` are the
+    // same entries, and the refusals are identical.
+    expect(real.removed).toEqual(preview.selected);
+    expect(real.skipped).toEqual(preview.skipped);
+    expect(existsSync(ownDir)).toBe(false);
+  });
+
+  it('the deferred-branch accounting reaches BOTH shapes: branchHygieneDeferred on the real run, and inside orphanBranches on the preview', () => {
+    const HELD = 'wave/131-alpha';
+    driveGit({ heldBranch: HELD, localBranches: ['main', HELD] });
+    const spine = writeSpine('pr-created');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const real = JSON.parse(stdoutBuf) as CleanupJson;
+    expect(real.branchHygieneDeferred).toEqual([
+      { branch: HELD, worktreePath: heldWorktreePath(), reason: 'checked-out-in-worktree' },
+    ]);
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run', '--wave', spine])).toBe(0);
+    const preview = JSON.parse(stdoutBuf) as CleanupJson;
+    expect(preview.orphanBranches!.toDelete).toEqual([]);
+    expect(preview.orphanBranches!.branchHygieneDeferred).toEqual([
+      { branch: HELD, worktreePath: heldWorktreePath(), reason: 'checked-out-in-worktree' },
+    ]);
+  });
+
+  it('PROVE THE CHECK CAN FAIL (Convention 11): with NO worktree holding the branch there is nothing to defer — the empty list is the honest reading, and it is the one an unfixed safety floor gives for BOTH cases', () => {
+    const HELD = 'wave/131-alpha';
+    driveGit({ localBranches: ['main', HELD] });
+    const spine = writeSpine('pr-created');
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as CleanupJson;
+    expect(parsed.branchHygieneDeferred).toEqual([]);
+    // The pre-#748 code produced this SAME empty list while a worktree WAS
+    // holding the branch — which is exactly why the previous test's assertion
+    // is falsifiable rather than tautological.
+    expect(() => {
+      expect(parsed.branchHygieneDeferred).toEqual([
+        { branch: HELD, worktreePath: heldWorktreePath(), reason: 'checked-out-in-worktree' },
+      ]);
+    }).toThrow();
+  });
+
+  it('a composed-driver removal FAILURE forces exit 1, while both refusals never do', () => {
+    driveGit();
+    const dir = plantDriverDir(SLUG);
+    const spine = writeSpine('abandoned');
+    // Deny write on the scratch ROOT so the child directory cannot be unlinked
+    // — a real permission refusal, the same technique issue #417's own fixture
+    // uses rather than mocking node:fs.
+    chmodSync(join(repo, '.flotilla', 'tmp'), 0o500);
+    try {
+      const code = main(['worktree-cleanup', repo, '--orphans', '--wave', spine]);
+      const drivers = (JSON.parse(stdoutBuf) as CleanupJson).orphans!.drivers!;
+      expect(drivers.removed).toEqual([]);
+      expect(code).toBe(1);
+    } finally {
+      chmodSync(join(repo, '.flotilla', 'tmp'), 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('WITHOUT --orphans neither shape carries orphans.drivers, and the scratch root is never read for this population', () => {
+    driveGit();
+    const ownDir = plantDriverDir(SLUG);
+    const spine = writeSpine('parked');
+    expect(main(['worktree-cleanup', repo, '--wave', spine])).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as Record<string, unknown>;
+    expect('orphans' in parsed).toBe(false);
+    expect(existsSync(ownDir)).toBe(true);
+  });
+});

@@ -69,11 +69,21 @@
  *                    branches whose worktree is no longer registered or on disk.
  *                    Those deletions/skips fold into branchesDeleted /
  *                    branchHygieneSkipped. The current branch and any checked-out
- *                    branch are never deleted. `--dry-run` now previews this
+ *                    branch are never deleted — but a branch in one of those two
+ *                    swept shapes that a still-REGISTERED worktree holds is now
+ *                    named under branchHygieneDeferred (issue #748) instead of
+ *                    dropped silently at the safety floor: branch hygiene fires
+ *                    on "worktree gone", so on a sandboxed harness the first
+ *                    run's branch list is empty and the branches are PENDING,
+ *                    not absent (measured: run 1 deleted none, the prescribed
+ *                    manual recovery removed six worktrees, an identical run 2
+ *                    deleted twelve). Accounting only, never a term in the exit
+ *                    verdict. `--dry-run` now previews this
  *                    branch plan too, under `orphanBranches` (issue #148) — the
  *                    same `planOrphanBranchSweep` the real run executes, so a
  *                    preview that reports nothing selected is no longer followed
- *                    by a real run that deletes branches it never showed.
+ *                    by a real run that deletes branches it never showed — and
+ *                    that preview carries the deferrals beside the deletions.
  *                    --orphans further carries the Scribe scratch sweep (issue
  *                    #355) of `.flotilla/tmp` payload files, under
  *                    `orphans.scratch` — a plan under --dry-run, a full result
@@ -102,7 +112,30 @@
  *                    CLOSED and removes nothing at all (`live-rows-unknown`).
  *                    Everything else is deleted and counted; a delete that FAILS
  *                    forces exit 1 like every other incomplete outcome, while the
- *                    three refusals never do.
+ *                    three refusals never do. A wave whose EVERY row is terminal
+ *                    (pr-created | approved | failed | abandoned | parked) now
+ *                    sweeps its OWN refs at its own close (issue #748): before
+ *                    it, every ref a wave produced belonged to one of its own
+ *                    rows, so all of them read `live-row` and became sweepable
+ *                    only at the NEXT wave's close. The verdict is WAVE-level,
+ *                    never per-row — a per-row rule would sweep a finished
+ *                    sibling's refs/sib ref from under a still-dispatched Worker
+ *                    — and `liveRowIds` reports which of the three derivations
+ *                    ran: the row ids on a live wave, [] on a terminal one, null
+ *                    when no spine declared it.
+ *                    --orphans lastly carries the COMPOSED-DRIVER sweep (issue
+ *                    #748) under `orphans.drivers`: the per-wave `<slug>/`
+ *                    DIRECTORY compose-driver writes its Workflow script into,
+ *                    inside the same `.flotilla/tmp` root whose FILES the Scribe
+ *                    sweep owns. That sweep's allowlist is on the payload name
+ *                    and only ever removes a file, so the directory was reported
+ *                    `not-a-scribe-payload` and swept by nothing, one per wave.
+ *                    ONE plan object again. A directory goes only when its wave
+ *                    is finished — the --wave spine terminal, or its spine
+ *                    already in the archive location — and is otherwise skipped
+ *                    `live-wave` or, when no spine answers for it at all,
+ *                    `unknown-wave` (reported, never touched). A removal that
+ *                    FAILS forces exit 1; both refusals never do.
  *
  *                    --detached (issue #238) adds the THIRD population: git-
  *                    REGISTERED worktrees under the worktrees root whose HEAD is
@@ -231,10 +264,14 @@
  *       worktreeCount advisory NEVER affects this — it is advisory by design.
  *   1 — completed with per-worktree removal errors (registered GC, --detached
  *       sweep, or --orphans sweep), a failed Scribe-payload removal
- *       (orphans.scratch.errors, issue #417), or a failed review-ref delete
- *       (orphans.reviewRefs.errors, issue #732). The review-ref sweep's three
- *       REFUSALS — live-row, unresolvable-row, live-rows-unknown — never affect
- *       this: a refusal is accounting, not an unfinished attempt.
+ *       (orphans.scratch.errors, issue #417), a failed review-ref delete
+ *       (orphans.reviewRefs.errors, issue #732), or a failed composed-driver
+ *       directory removal (orphans.drivers.errors, issue #748). Every REFUSAL
+ *       in this verb is accounting rather than an unfinished attempt and none
+ *       of them affects this: the review-ref sweep's live-row,
+ *       unresolvable-row and live-rows-unknown; the composed-driver sweep's
+ *       live-wave and unknown-wave; and branchHygieneDeferred, which names
+ *       branches a live worktree is holding for the next run.
  *   2 — usage / unexpected error
  *
  * verdict-acked (FOR-17 — the dead --acked wire, ADR-0004) — the single-owner
@@ -399,7 +436,7 @@
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, basename, dirname } from 'node:path';
 import { validateIssue, validateIssueView, type DorResult } from './dor-gate';
 import { loadWaveConfig } from './wave-config';
 import { DISPOSITION_VOCABULARY } from './spine-store';
@@ -461,6 +498,14 @@ import {
   listReviewRefs,
   planReviewRefSweep,
   executeReviewRefSweep,
+  // The composed-driver sweep (issue #748) — imported as the same list → plan
+  // → execute trio, for the identical reason, and never as the one-shot
+  // `sweepComposedDrivers`. This population is held to the issue #377 discipline
+  // from its first line: ONE plan object, computed above the `--dry-run` branch,
+  // printed by the preview and executed verbatim by the real run.
+  listComposedDriverDirs,
+  planComposedDriverSweep,
+  executeComposedDriverSweep,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById } from './conflict-map-cli';
 import { runCrossWave } from './cross-wave-cli';
@@ -1200,8 +1245,10 @@ function resolveBranchFilter(
 }
 
 /**
- * Derive the LIVE ROW IDS for `worktree-cleanup`'s review-ref sweep (issue
- * #732) from `--wave <spine-path>`, or `undefined` when no spine was supplied.
+ * Read everything `worktree-cleanup` can learn about the wave it was scoped by
+ * from `--wave <spine-path>` (issue #732 for the row ids, issue #748 for the
+ * terminality verdict, the slug and the waves directory) — or the fail-closed
+ * {@link UNDECLARED_WAVE_SCOPE} when no spine was supplied.
  *
  * The refs this feeds are keyed by ROW ID, not by branch name, so the branch set
  * {@link resolveBranchFilter} returns cannot answer the question: a Reviewer
@@ -1217,19 +1264,26 @@ function resolveBranchFilter(
  * wave's"). Reading twice costs one small file parse; re-plumbing a
  * safety-critical function to carry a second, unrelated payload does not.
  *
- * FAIL CLOSED, same as its sibling. Any outcome that leaves no id — no `--wave`
- * at all, an unreadable spine, a reader that yields nothing — returns
- * `undefined`, which the sweep reads as "the live wave is unknown" and answers
- * by removing NOTHING (every ref skipped `live-rows-unknown`). It never throws:
- * a spine that is genuinely broken has already been refused by
- * `resolveBranchFilter`, which runs first and turns it into an exit-2 usage
- * error; there is no path on which this function is the one to discover it, and
- * a second throw here could only ever turn one message into two.
+ * THE TERMINAL WAVE (issue #748). A wave every row of which has finished is
+ * still a DECLARED wave — it simply has no live row left, so its own refs and
+ * its own composed drivers are residue and this run may sweep them. Until now
+ * it could not: every ref a wave produces belongs to one of its own rows, so at
+ * its own close all ten were skipped `live-row` and became sweepable only at
+ * the NEXT wave's close. The verdict is WAVE-level, never per-row — see
+ * {@link TERMINAL_ROW_STATES} and the sweep's own `liveRowsDeclared` doc.
+ *
+ * FAIL CLOSED, same as its sibling, and in exactly the same direction as
+ * before. Any outcome that leaves no id — no `--wave` at all, an unreadable
+ * spine, a reader that yields nothing — returns `declared: false`, which the
+ * sweeps read as "the live wave is unknown" and answer by removing NOTHING
+ * (every ref skipped `live-rows-unknown`; every driver directory `unknown-wave`
+ * or `live-wave`). It never throws: a spine that is genuinely broken has
+ * already been refused by `resolveBranchFilter`, which runs first and turns it
+ * into an exit-2 usage error; there is no path on which this function is the
+ * one to discover it, and a second throw here could only ever turn one message
+ * into two.
  */
-function resolveLiveRowIds(
-  args: string[],
-  repoRoot: string,
-): string[] | undefined {
+function resolveLiveWaveScope(args: string[], repoRoot: string): LiveWaveScope {
   let waveSpinePath: string | null = null;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--wave' && i + 1 < args.length) {
@@ -1237,16 +1291,96 @@ function resolveLiveRowIds(
       i++;
     }
   }
-  if (waveSpinePath === null) return undefined;
+  if (waveSpinePath === null) return UNDECLARED_WAVE_SCOPE;
 
+  const absSpine = resolve(repoRoot, waveSpinePath);
   try {
-    const source = readFileSync(resolve(repoRoot, waveSpinePath), 'utf-8');
-    const ids = Object.keys(requireBranchesByIssueId(readSpine(source)));
-    return ids.length > 0 ? ids : undefined;
+    const spine = readSpine(readFileSync(absSpine, 'utf-8'));
+    const ids = Object.keys(requireBranchesByIssueId(spine));
+    if (ids.length === 0) return UNDECLARED_WAVE_SCOPE;
+    // WAVE-level terminality, never per-row (ADR-0042 Amendment decision 10).
+    // A per-row rule would sweep a finished sibling's `refs/sib/<id>` out from
+    // under a Worker still running the merge-tree prediction against it, so the
+    // question is asked of the whole Plan-Table at once: either every row has
+    // reached a terminal state and the wave's residue is sweepable, or none of
+    // it is.
+    const terminal =
+      spine.planTable.length > 0 &&
+      spine.planTable.every((row) => TERMINAL_ROW_STATES.has(row.state));
+    return {
+      declared: true,
+      terminal,
+      liveRowIds: terminal ? [] : ids,
+      slug: basename(absSpine, '.md'),
+      wavesDir: dirname(absSpine),
+    };
   } catch {
-    return undefined;
+    return UNDECLARED_WAVE_SCOPE;
   }
 }
+
+/**
+ * What `worktree-cleanup` could learn about the wave it was scoped by
+ * (issue #748) — the input BOTH the review-ref sweep and the composed-driver
+ * sweep read, derived once from the `--wave` spine.
+ */
+interface LiveWaveScope {
+  /**
+   * `true` when a `--wave` spine was read and its rows resolved. `false` is the
+   * fail-closed state: no spine, an unreadable one, or a reader that yielded
+   * nothing.
+   */
+  declared: boolean;
+  /** `true` when EVERY Plan-Table row of that spine is in a terminal state. */
+  terminal: boolean;
+  /**
+   * The rows this run must not touch: every row id on a live wave, and the
+   * EMPTY list on a terminal one (declared, and legitimately empty — see
+   * `ReviewRefPlanOptions.liveRowsDeclared`).
+   */
+  liveRowIds: string[];
+  /** The spine's own slug (its filename without `.md`), or `null` when undeclared. */
+  slug: string | null;
+  /**
+   * Absolute directory the spine was read from, or `null` when undeclared. It
+   * is where the composed-driver sweep looks for OTHER waves' spines and for
+   * the archive location beside them — derived from the path the caller
+   * actually passed rather than from a second, independently-defaulted guess,
+   * so a standalone run and a close ceremony agree even in a consumer that
+   * keeps its spines somewhere other than the default.
+   */
+  wavesDir: string | null;
+}
+
+/** The fail-closed answer: nothing declared, nothing terminal, nothing spared. */
+const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
+  declared: false,
+  terminal: false,
+  liveRowIds: [],
+  slug: null,
+  wavesDir: null,
+};
+
+/**
+ * The Plan-Table row states that mean a row is FINISHED — it will not dispatch
+ * again, and nothing is still reading its worktree, its branch or its refs
+ * (ADR-0042 Amendment 2026-09-08, decision 10; ADR-0022 for `parked`, whose
+ * claim is released at park time).
+ *
+ * The same five the resume reconciliation treats as terminal, spelled here
+ * rather than shared because the spine reader exports the full `ROW_STATES`
+ * vocabulary and not this partition of it. A row state added to that vocabulary
+ * without being weighed here reads as NON-terminal — which is the safe
+ * direction: an unrecognized state keeps the whole wave live and its residue
+ * spared.
+ */
+const TERMINAL_ROW_STATES = new Set<string>([
+  'pr-created',
+  'approved',
+  'failed',
+  'abandoned',
+  'parked',
+]);
 
 /**
  * Run the `worktree-cleanup` subcommand — a thin router to the worktree-cleanup
@@ -1382,6 +1516,31 @@ function resolveLiveRowIds(
  * read `orphans.errors` (orphan DIRECTORIES only) and never the sweep's own
  * list one level down. `--dry-run` is unaffected — a plan has no `errors`.
  *
+ * `--orphans` ALSO carries the composed-driver sweep (issue #748) under
+ * `orphans.drivers`, on both shapes and under the same one-plan discipline: the
+ * `ComposedDriverSweepPlan` (`dir`, `present`, `wavesDir`, `selected`,
+ * `skipped`) under `--dry-run`, the `ComposedDriverSweepResult` (`removed`,
+ * `skipped`, `errors` beside those three) on the real run. It is the DIRECTORY
+ * half of the location `orphans.scratch` already owns the FILES of: the Scribe
+ * allowlist is on the payload name and only ever removes a file, so the
+ * per-wave `<slug>/` directory `compose-driver` writes its Workflow script into
+ * was reported `not-a-scribe-payload` and swept by nothing, one directory per
+ * wave. A directory is removed only when its wave is finished — the `--wave`
+ * spine's every row terminal, or its spine already in the archive location —
+ * and is otherwise skipped `live-wave` (a spine exists and is not finished) or
+ * `unknown-wave` (no spine answers for it: reported, never touched). A
+ * non-empty `orphans.drivers.errors` drives exit 1 on the same reading as its
+ * scratch sibling.
+ *
+ * `branchHygieneDeferred` rides beside `branchesDeleted`/`branchHygieneSkipped`
+ * on the real run, and inside `orphanBranches` on the preview (issue #748): the
+ * branches this sweep would decide about but that a still-registered worktree
+ * holds. Branch hygiene fires on "worktree gone", so on a sandboxed harness —
+ * where every worktree survives the removal call — the first run's branch list
+ * is EMPTY and, until this key, nothing said twelve branches were pending
+ * behind it rather than absent. Accounting only: it is never a term in the exit
+ * verdict, exactly as `unaccounted` is not.
+ *
  * `worktreeCount` (issue #238) is printed on BOTH shapes, unconditionally and
  * with no flag to remember: `{ count, threshold, level, advisory }` straight
  * from `checkWorktreeCountAdvisory`, with `advisory` carrying the engine's
@@ -1457,8 +1616,10 @@ function resolveLiveRowIds(
  *   1 — a removal error, a deregistered-but-not-deleted directory, an
  *       errored-yet-still-listed worktree (FOR-73) — from the registered GC OR
  *       (issue #238) from the `--detached` sweep, which rides the same three
- *       classes — an orphan-sweep removal error, or (issue #417) a
- *       Scribe-scratch payload-removal error under `orphans.scratch.errors`
+ *       classes — an orphan-sweep removal error, (issue #417) a
+ *       Scribe-scratch payload-removal error under `orphans.scratch.errors`,
+ *       or (issue #748) a composed-driver directory-removal error under
+ *       `orphans.drivers.errors`
  *   2 — usage / unexpected error
  */
 function runWorktreeCleanup(args: string[]): number {
@@ -1593,9 +1754,56 @@ function runWorktreeCleanup(args: string[]): number {
     // Read BEFORE any removal, harmlessly: ref namespaces are disjoint by
     // construction from every worktrees root and from the scratch directory, so
     // nothing this verb removes can change what this listing saw.
-    const liveRowIds = orphans ? resolveLiveRowIds(args, repoRoot) : undefined;
+    // ONE read of the `--wave` spine, feeding BOTH scoped populations (issue
+    // #748): the review-ref sweep below and the composed-driver sweep beside
+    // it. Reading it once is not merely thrift — the two must agree about
+    // whether this wave is finished, and two independent reads could disagree
+    // if the spine were rewritten between them.
+    const waveScope = orphans ? resolveLiveWaveScope(args, repoRoot) : UNDECLARED_WAVE_SCOPE;
     const reviewRefPlan = orphans
-      ? planReviewRefSweep(listReviewRefs({ repoRoot }), liveRowIds)
+      ? planReviewRefSweep(
+          listReviewRefs({ repoRoot }),
+          waveScope.declared ? waveScope.liveRowIds : undefined,
+          // A TERMINAL wave declares an EMPTY live set and means it, which is
+          // the one thing the id list alone cannot say (an accidentally-empty
+          // list must keep failing closed). On a LIVE wave this flag is `true`
+          // as well and changes nothing — the non-empty id list already made
+          // the set known.
+          { liveRowsDeclared: waveScope.declared },
+        )
+      : null;
+
+    // The composed-driver sweep (issue #748) — the SIXTH population, and the
+    // other half of the scratch directory the Scribe sweep above already owns.
+    // That sweep removes only FILES matching the payload name, so the per-wave
+    // `<slug>/` directory `compose-driver` writes its Workflow script into was
+    // reported `not-a-scribe-payload` and left standing, one directory per
+    // wave, swept by nothing — while both wave-start references promised it was
+    // swept at close.
+    //
+    // Computed HERE, above the `--dry-run` branch, for the issue #377 reason
+    // its file-sweeping sibling is: ONE plan object, printed by the preview and
+    // executed verbatim by the real run, so the two cannot disagree.
+    //
+    // `wavesDir` comes from the `--wave` path the caller actually passed, so a
+    // standalone run and a close ceremony agree about where spines live even in
+    // a consumer that keeps them somewhere other than the engine's default; the
+    // archive location the sweep reads is derived from that same directory.
+    // `terminalSlugs` carries at most the ONE slug this run was scoped by —
+    // every other directory is resolved from the filesystem alone (archived →
+    // removed, a live spine → `live-wave`, no spine at all → `unknown-wave`,
+    // reported and never touched).
+    //
+    // Read BEFORE any removal, and harmlessly: the scratch root is disjoint by
+    // construction from every worktrees root this verb sweeps.
+    const driverPlan = orphans
+      ? planComposedDriverSweep(
+          listComposedDriverDirs(repoRoot, {
+            wavesDir: waveScope.wavesDir ?? undefined,
+            terminalSlugs:
+              waveScope.terminal && waveScope.slug !== null ? [waveScope.slug] : [],
+          }),
+        )
       : null;
 
     // Detached-HEAD scratchpad sweep (issue #238), gated on `--detached`. A
@@ -1675,6 +1883,15 @@ function runWorktreeCleanup(args: string[]): number {
     // COUNT against the worktree PATHS this run enumerated, and a ref has no
     // path and is not a worktree. Joining it would add names to a set whose
     // whole meaning is "registered worktrees nothing here claimed".
+    //
+    // `driverPlan` is not folded in either, and for the OTHER reason: its
+    // entries are paths, but they are the SAME paths `scratchPlan` already
+    // contributes. A `<slug>/` directory is enumerated by both populations —
+    // the Scribe sweep reports it `not-a-scribe-payload` (correctly: it is not
+    // a payload) and the driver sweep decides about it — so joining it here
+    // would list every one of them twice in a set whose only job is to be a
+    // union. Nothing is missing from the accounting; the same path is simply
+    // declared once rather than twice (issue #748).
     const accountedPaths = [
       ...worktrees.map((wt) => wt.path),
       ...(orphanPlan !== null
@@ -1810,6 +2027,14 @@ function runWorktreeCleanup(args: string[]): number {
                     ...(reviewRefPlan !== null
                       ? { reviewRefs: reviewRefPlan }
                       : {}),
+                    // The SAME `driverPlan` object the real run hands to
+                    // `executeComposedDriverSweep` (issue #748), carried WHOLE
+                    // — `dir`, `present` and `wavesDir` included, so a preview
+                    // that selects nothing says WHY: because the scratch root
+                    // held no per-wave directory, because every one of them
+                    // belongs to a wave that is still live, or because no spine
+                    // under `wavesDir` answers for them at all.
+                    ...(driverPlan !== null ? { drivers: driverPlan } : {}),
                   },
                 }
               : {}),
@@ -1829,6 +2054,12 @@ function runWorktreeCleanup(args: string[]): number {
                   orphanBranches: {
                     toDelete: orphanBranchPlan.toDelete,
                     branchHygieneSkipped: orphanBranchPlan.branchHygieneSkipped,
+                    // Issue #748 — what this sweep is WAITING on, previewed
+                    // beside what it would delete. An empty `toDelete` on a
+                    // sandboxed harness is the ordinary first reading, and
+                    // without this key nothing said the branches were pending
+                    // rather than absent.
+                    branchHygieneDeferred: orphanBranchPlan.branchHygieneDeferred,
                   },
                 }
               : {}),
@@ -1884,6 +2115,16 @@ function runWorktreeCleanup(args: string[]): number {
         ? executeReviewRefSweep(reviewRefPlan, { repoRoot })
         : null;
 
+    // Execute EXACTLY the `driverPlan` object the `--dry-run` branch prints
+    // (issue #748). `disposableNames` is threaded so the default remover's
+    // ENOTEMPTY junk purge honours the consumer's own declaration, exactly as
+    // the registered GC and the orphan-directory sweep above do; no `repoRoot`
+    // is needed, because a plan entry already carries its absolute path.
+    const driverResult =
+      driverPlan !== null
+        ? executeComposedDriverSweep(driverPlan, { disposableNames })
+        : null;
+
     // Execute EXACTLY the `detachedPlan` object the `--dry-run` branch above
     // prints — same `executeCleanup` as every other removal path, so the
     // bounded retry, the incomplete-removal classification and local-branch
@@ -1930,6 +2171,17 @@ function runWorktreeCleanup(args: string[]): number {
       ...(detachedResult?.branchHygieneSkipped ?? []),
       ...(orphanBranchResult?.branchHygieneSkipped ?? []),
     ];
+    // Issue #748 — the third member of that same family, folded the same way.
+    // Only the standalone orphan-BRANCH sweep can produce a deferral (the
+    // per-removal hygiene inside `executeCleanup` runs after a removal that
+    // already succeeded, so no worktree is holding the branch by then), which
+    // is why this list has exactly one source where the two above have three.
+    // It is spelled as a fold anyway rather than as a direct read, so a future
+    // second producer joins here instead of growing a parallel key nobody
+    // reads — the reasoning the pair above already carries.
+    const branchHygieneDeferred = [
+      ...(orphanBranchResult?.branchHygieneDeferred ?? []),
+    ];
 
     // Print the FULL cleanup summary (FOR-67 — W15 finding: branchesDeleted /
     // branchHygieneSkipped were computed by the engine but never surfaced at
@@ -1950,6 +2202,7 @@ function runWorktreeCleanup(args: string[]): number {
           erroredStillListed: result.erroredStillListed,
           branchesDeleted,
           branchHygieneSkipped,
+          branchHygieneDeferred,
           // The orphan-DIRECTORY result plus the Scribe scratch sweep's own
           // whole result under `orphans.scratch` (issue #377) — the same key,
           // in the same place, that `executeOrphanSweep`'s internal fold used to
@@ -1968,6 +2221,15 @@ function runWorktreeCleanup(args: string[]): number {
                   ...(reviewRefResult !== null
                     ? { reviewRefs: reviewRefResult }
                     : {}),
+                  // The composed-driver sweep's own whole result (issue #748)
+                  // — `removed` / `skipped`-with-reason / `errors`, plus the
+                  // `dir`, `present` and `wavesDir` it resolved against. Under
+                  // its own key rather than merged into the Scribe payload
+                  // numbers beside it, for the same reason every sibling
+                  // population here keeps one: an `unknown-wave` refusal read
+                  // as a `not-a-scribe-payload` refusal would be actively
+                  // misleading.
+                  ...(driverResult !== null ? { drivers: driverResult } : {}),
                 },
               }
             : {}),
@@ -2042,6 +2304,15 @@ function runWorktreeCleanup(args: string[]): number {
       (orphanResult !== null && orphanResult.errors.length > 0) ||
       (scratchResult !== null && scratchResult.errors.length > 0) ||
       (reviewRefResult !== null && reviewRefResult.errors.length > 0) ||
+      // `orphans.drivers.errors` joins on the identical reading (issue #748): a
+      // per-wave scratch directory this run selected and then failed to remove
+      // is exactly as incomplete an outcome as a directory or a payload it
+      // failed to remove. Not a change to the shipped exit contract in the
+      // sense ADR-0035 guards — the pass is new, so no run that exits 0 today
+      // can start exiting 1 because of it — and its REFUSALS (`live-wave`,
+      // `unknown-wave`) are deliberately NOT terms here, exactly as the
+      // review-ref refusals above are not.
+      (driverResult !== null && driverResult.errors.length > 0) ||
       (detachedResult !== null &&
         (detachedResult.errors.length > 0 ||
           detachedResult.deregisteredNotDeleted.length > 0 ||

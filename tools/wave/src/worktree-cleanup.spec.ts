@@ -222,6 +222,16 @@ import {
   defaultReviewRefOps,
   type ReviewRefOps,
   type ReviewRefSweepPlan,
+  // The composed-driver sweep + the deferred-branch accounting (issue #748).
+  WAVE_ARCHIVE_RELATIVE_DIR,
+  listComposedDriverDirs,
+  planComposedDriverSweep,
+  executeComposedDriverSweep,
+  sweepComposedDrivers,
+  defaultComposedDriverRemover,
+  type ComposedDriverDir,
+  type ComposedDriverRemover,
+  type ComposedDriverSweepPlan,
 } from './worktree-cleanup';
 // The SAME five names, imported through the PACKAGE ROOT rather than the module
 // file directly — proves the barrel actually re-exports the detached-sweep trio,
@@ -3833,6 +3843,13 @@ describe('planOrphanBranchSweep / executeOrphanBranchSweep — the previewable s
       branchHygieneSkipped: [
         { branch: 'wave/FOR-142-flaky', reason: 'branch-probe-failed', detail: 'x' },
       ],
+      branchHygieneDeferred: [
+        {
+          branch: 'wave/FOR-142-held',
+          worktreePath: '/repo/.claude/worktrees/wf_held',
+          reason: 'checked-out-in-worktree',
+        },
+      ],
     };
 
     const result = executeOrphanBranchSweep(plan, { ops });
@@ -3842,13 +3859,21 @@ describe('planOrphanBranchSweep / executeOrphanBranchSweep — the previewable s
     expect(deleteSpy).toHaveBeenCalledWith('worktree-wf_orphan-2');
     expect(result.branchesDeleted).toEqual(['wave/FOR-142-a', 'worktree-wf_orphan-2']);
     expect(result.branchHygieneSkipped).toBe(plan.branchHygieneSkipped);
+    // Issue #748 — the deferral rides through the SAME way the skips do:
+    // carried, never recomputed. Executing a plan deletes branches; it cannot
+    // change which worktrees are registered.
+    expect(result.branchHygieneDeferred).toBe(plan.branchHygieneDeferred);
   });
 
   it('an EMPTY plan (nothing eligible) deletes nothing — idempotent no-op', () => {
     const { ops, deleteSpy } = fakeOps();
-    const result = executeOrphanBranchSweep({ toDelete: [], branchHygieneSkipped: [] }, { ops });
+    const result = executeOrphanBranchSweep(
+      { toDelete: [], branchHygieneSkipped: [], branchHygieneDeferred: [] },
+      { ops },
+    );
     expect(deleteSpy).not.toHaveBeenCalled();
     expect(result.branchesDeleted).toEqual([]);
+    expect(result.branchHygieneDeferred).toEqual([]);
   });
 
   it('the preview IS the outcome: planOrphanBranchSweep then executeOrphanBranchSweep deletes exactly what sweepOrphanBranches would, given the same scenario', () => {
@@ -7277,6 +7302,22 @@ describe('the --orphans close path reaches the Scribe scratch dir (issue #355)',
 // the ordinary TRANSIENT one within the same `erroredStillListed` bucket:
 // `forceEligible` (`dirtyAllJunk || orphanAllJunk`). This section pins the
 // additive `WorktreeEntry.manualRecovery` surface built from it.
+
+/**
+ * The THIRD `manualRecovery.commands` entry (issue #748), spelled as a LITERAL
+ * here rather than imported from the module.
+ *
+ * A spec that quotes the production constant back to itself cannot fail — it
+ * asserts only that the module equals itself — and this array is a
+ * copy-pasteable operator artifact whose exact bytes are the contract. Spelling
+ * it out is what makes a silent reword of the recovery sequence show up as a
+ * red test rather than as a quietly-updated expectation.
+ */
+const RE_RUN_LINE =
+  '# then re-run the SAME worktree-cleanup call (--orphans included) — branch ' +
+  'hygiene fires only on "worktree gone", so this worktree\'s own branches are ' +
+  'swept only once the two commands above have actually removed it';
+
 describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed reading (issue #483)', () => {
   const NOOP_PAUSE = () => {};
 
@@ -7344,9 +7385,14 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
     expect(entry.manualRecovery).toBeDefined();
     expect(entry.manualRecovery?.message).toMatch(/cannot succeed/i);
     expect(entry.manualRecovery?.message).toMatch(/deterministic/i);
+    // THREE entries since issue #748: the two-command sandbox-off recovery, and
+    // the re-run line that makes it count — branch hygiene fires on "worktree
+    // gone", so the branches this worktree holds are swept only by a call that
+    // comes AFTER it is actually gone.
     expect(entry.manualRecovery?.commands).toEqual([
       `git worktree remove --force '${AGENT_PATH_A}'`,
       'git worktree prune',
+      RE_RUN_LINE,
     ]);
   });
 
@@ -7371,6 +7417,7 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
     expect(result.erroredStillListed[0].manualRecovery?.commands).toEqual([
       `git worktree remove --force '${AGENT_PATH_A}'`,
       'git worktree prune',
+      RE_RUN_LINE,
     ]);
   });
 
@@ -7396,7 +7443,11 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
 
     expect(result.erroredStillListed).toHaveLength(1);
     const commands = result.erroredStillListed[0].manualRecovery?.commands ?? [];
-    expect(commands).toEqual([`git worktree remove --force '${spacedPath}'`, 'git worktree prune']);
+    expect(commands).toEqual([
+      `git worktree remove --force '${spacedPath}'`,
+      'git worktree prune',
+      RE_RUN_LINE,
+    ]);
 
     // Prove the check can fail (Convention 11): the UNQUOTED bare form this
     // spec exists to rule out — the pre-fix shape — parses on a POSIX shell
@@ -7465,6 +7516,7 @@ describe('executeCleanup — the EXHAUSTED vs TRANSIENT erroredStillListed readi
     expect(entry.manualRecovery?.commands).toEqual([
       `git worktree remove --force '${AGENT_PATH_A}'`,
       'git worktree prune',
+      RE_RUN_LINE,
     ]);
   });
 
@@ -7841,6 +7893,7 @@ describe('executeCleanup — the errno alone cannot carry the denial (issue #542
     expect(entry.manualRecovery?.commands).toEqual([
       `git worktree remove --force '${root}'`,
       'git worktree prune',
+      RE_RUN_LINE,
     ]);
   });
 
@@ -8927,6 +8980,474 @@ describe('review-ref sweep — real git end-to-end (issue #732)', () => {
     expect(second.removed).toEqual([]);
     expect(second.errors).toEqual([]);
     expect(reviewRefsOnDisk(root)).toEqual(['refs/review/732']);
+  });
+});
+
+// ─── 40. The orphan-branch sweep NAMES what it defers (issue #748, ADR-0042
+//     Amendment 2026-09-08 decision 9) ──────────────────────────────────────
+//
+// The measurement this section exists for. Branch hygiene fires on two signals,
+// one of which is *worktree gone*. On a sandboxed harness every worktree lands
+// in `erroredStillListed` and SURVIVES the call, so the safety floor spared
+// every branch those worktrees held and the first run's branch list came back
+// EMPTY. The prescribed manual recovery then removed six worktrees, and an
+// IDENTICAL second call deleted TWELVE branches. Nothing in run 1's numbers
+// said any of that was pending — an empty list read exactly like a clean one.
+//
+// Deferred is a NEW key, never a widening of `branchHygieneSkipped`'s reason
+// vocabulary: a skip is a verdict this sweep will repeat, a deferral is a
+// decision it has not made yet.
+
+describe('the orphan-branch sweep names the branches it DEFERS (issue #748)', () => {
+  /**
+   * An ops double whose checked-out set is the whole point: `held` names the
+   * branches a live worktree has, and `heldPaths` the worktree each one is in.
+   * Every other method answers "nothing" so the deferral is the only thing
+   * these tests can be measuring.
+   */
+  function deferOps(
+    localBranches: string[],
+    held: string[],
+    heldPaths: Record<string, string> = {},
+    opts: { withPaths?: boolean } = {},
+  ): OrphanBranchSweepOps & { probed: string[]; deleted: string[] } {
+    const probed: string[] = [];
+    const deleted: string[] = [];
+    const base: OrphanBranchSweepOps & { probed: string[]; deleted: string[] } = {
+      probed,
+      deleted,
+      listLocalBranches: () => [...localBranches],
+      currentBranch: () => 'main',
+      listCheckedOutBranches: () => new Set(held),
+      listLiveWorktreeBasenames: () => new Set<string>(),
+      probeRemoteRef: (b: string): RemoteRefProbeResult => {
+        probed.push(b);
+        return { status: 'gone' };
+      },
+      deleteBranch: (b: string): void => {
+        deleted.push(b);
+      },
+    };
+    if (opts.withPaths !== false) {
+      base.checkedOutWorktreePaths = (): ReadonlyMap<string, string> =>
+        new Map(Object.entries(heldPaths));
+    }
+    return base;
+  }
+
+  const WT_A = '/repo/.claude/worktrees/wf_748aaa-1';
+  const WT_B = '/repo/.claude/worktrees/wf_748bbb-2';
+
+  it('a wave/* branch AND a worktree-wf_* branch held by a live worktree are DEFERRED with branch, worktree path and reason — not silently dropped', () => {
+    const ops = deferOps(
+      ['main', 'wave/748-held', 'worktree-wf_748aaa-1', 'feature/unrelated'],
+      ['wave/748-held', 'worktree-wf_748aaa-1', 'feature/unrelated'],
+      {
+        'wave/748-held': WT_A,
+        'worktree-wf_748aaa-1': WT_A,
+        'feature/unrelated': WT_B,
+      },
+    );
+
+    const plan = planOrphanBranchSweep({ ops });
+
+    expect(plan.toDelete).toEqual([]);
+    expect(plan.branchHygieneSkipped).toEqual([]);
+    expect(plan.branchHygieneDeferred).toEqual([
+      { branch: 'wave/748-held', worktreePath: WT_A, reason: 'checked-out-in-worktree' },
+      {
+        branch: 'worktree-wf_748aaa-1',
+        worktreePath: WT_A,
+        reason: 'checked-out-in-worktree',
+      },
+    ]);
+
+    // The safety floor is UNCHANGED: nothing was probed, nothing was deleted.
+    // Deferral is accounting; it grants this sweep no new reach whatsoever.
+    expect(ops.probed).toEqual([]);
+    expect(ops.deleted).toEqual([]);
+  });
+
+  it('PROVE THE CHECK CAN FAIL (Convention 11): the pre-#748 behaviour — a silent `continue` at the safety floor — leaves the list empty, which is exactly what this assertion rejects', () => {
+    // The falsification is run against the SHAPE the fix removed, reproduced
+    // here as a plan built the old way (drop the branch and record nothing).
+    // If `branchHygieneDeferred` were still that, the expectation below is the
+    // one that goes red — and the empty list is not a hypothetical: it is the
+    // exact reading a live close produced while twelve branches waited behind
+    // it.
+    const preFixPlan: OrphanBranchSweepPlan = {
+      toDelete: [],
+      branchHygieneSkipped: [],
+      branchHygieneDeferred: [], // ← the silent drop
+    };
+    expect(() => {
+      expect(preFixPlan.branchHygieneDeferred).toEqual([
+        { branch: 'wave/748-held', worktreePath: WT_A, reason: 'checked-out-in-worktree' },
+      ]);
+    }).toThrow();
+
+    // …and the fixed code produces exactly what the pre-fix shape could not.
+    const ops = deferOps(['wave/748-held'], ['wave/748-held'], {
+      'wave/748-held': WT_A,
+    });
+    expect(planOrphanBranchSweep({ ops }).branchHygieneDeferred).toEqual([
+      { branch: 'wave/748-held', worktreePath: WT_A, reason: 'checked-out-in-worktree' },
+    ]);
+  });
+
+  it('the PRIMARY checkout\'s current branch is never deferred — nothing about this sweep is pending on it', () => {
+    // `main` is the current branch and is also (as git reports it) checked out.
+    // A deferral would promise a later run will delete it, which is false.
+    const ops = deferOps(['main', 'wave/748-held'], ['main', 'wave/748-held'], {
+      main: '/repo',
+      'wave/748-held': WT_A,
+    });
+    const plan = planOrphanBranchSweep({ ops });
+    expect(plan.branchHygieneDeferred.map((d) => d.branch)).toEqual(['wave/748-held']);
+  });
+
+  it('a branch in NEITHER swept shape is not deferred either — it is not this sweep\'s population at all', () => {
+    const ops = deferOps(
+      ['main', 'feature/x', 'worktree-plain'],
+      ['feature/x', 'worktree-plain'],
+      { 'feature/x': WT_A, 'worktree-plain': WT_B },
+    );
+    // `worktree-plain` carries no `wf_`, so it is outside the harness-branch
+    // restriction the sweep already applies — deferring it would promise a
+    // deletion that will never come.
+    expect(planOrphanBranchSweep({ ops }).branchHygieneDeferred).toEqual([]);
+  });
+
+  it('an ops double WITHOUT the optional path method still defers — the path reads null, never a guess', () => {
+    const ops = deferOps(['wave/748-held'], ['wave/748-held'], {}, { withPaths: false });
+    expect(ops.checkedOutWorktreePaths).toBeUndefined();
+    expect(planOrphanBranchSweep({ ops }).branchHygieneDeferred).toEqual([
+      { branch: 'wave/748-held', worktreePath: null, reason: 'checked-out-in-worktree' },
+    ]);
+  });
+
+  it('sweepOrphanBranches carries the deferral onto the executed RESULT, and executing changes nothing about it', () => {
+    const ops = deferOps(
+      ['wave/748-held', 'wave/748-gone'],
+      ['wave/748-held'],
+      { 'wave/748-held': WT_A },
+    );
+    const result = sweepOrphanBranches({ ops });
+    expect(result.branchesDeleted).toEqual(['wave/748-gone']);
+    expect(result.branchHygieneDeferred).toEqual([
+      { branch: 'wave/748-held', worktreePath: WT_A, reason: 'checked-out-in-worktree' },
+    ]);
+  });
+
+  it('the three-step sequence, end to end: run 1 defers and deletes nothing, the worktree goes away, run 2 deletes', () => {
+    // The live shape, in miniature. Run 1: the worktree is registered, so the
+    // branch is deferred. Run 2 (after the manual recovery): the same ops with
+    // an empty checked-out set, and the branch is gone.
+    const held = deferOps(['wave/748-row'], ['wave/748-row'], { 'wave/748-row': WT_A });
+    const runOne = sweepOrphanBranches({ ops: held });
+    expect(runOne.branchesDeleted).toEqual([]);
+    expect(runOne.branchHygieneDeferred).toHaveLength(1);
+
+    const freed = deferOps(['wave/748-row'], [], {});
+    const runTwo = sweepOrphanBranches({ ops: freed });
+    expect(runTwo.branchesDeleted).toEqual(['wave/748-row']);
+    expect(runTwo.branchHygieneDeferred).toEqual([]);
+  });
+});
+
+// ─── 41. The composed-driver sweep — the DIRECTORY half of the scratch root
+//     (issue #748, ADR-0042 Amendment decision 11) ──────────────────────────
+//
+// The Scribe sweep's allowlist is on the payload NAME and it only ever removes
+// a FILE, so the per-wave `<slug>/` directory `compose-driver` writes its
+// Workflow script into was reported `not-a-scribe-payload` and left standing —
+// one directory per wave, swept by nothing, while two wave-start references
+// promised it was swept at close. The classification was right; the consequence
+// was the gap.
+
+describe('the composed-driver sweep — listing + classification (issue #748)', () => {
+  let repo: string;
+  let scratch: string;
+  let waves: string;
+  let archive: string;
+
+  beforeEach(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-748-drivers-')));
+    scratch = join(repo, SCRIBE_SCRATCH_RELATIVE_DIR);
+    waves = join(repo, WAVE_ARCHIVE_RELATIVE_DIR, '..');
+    archive = join(repo, WAVE_ARCHIVE_RELATIVE_DIR);
+    mkdirSync(scratch, { recursive: true });
+    mkdirSync(archive, { recursive: true });
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  /** Plant `<scratch>/<slug>/driver.js`, the shape compose-driver writes. */
+  function plantDriverDir(slug: string): string {
+    const dir = join(scratch, slug);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'driver.js'), '// composed driver\n', 'utf-8');
+    return dir;
+  }
+
+  it('the FOUR outcomes, from one listing: terminal → removed, archived → removed, a live spine → live-wave, no spine → unknown-wave', () => {
+    const terminalDir = plantDriverDir('2026-09-08-terminal');
+    const archivedDir = plantDriverDir('2026-09-01-archived');
+    const liveDir = plantDriverDir('2026-09-09-live');
+    const orphanDir = plantDriverDir('2026-08-01-nobody');
+    writeFileSync(join(archive, '2026-09-01-archived.md'), '# archived\n', 'utf-8');
+    writeFileSync(join(waves, '2026-09-08-terminal.md'), '# terminal\n', 'utf-8');
+    writeFileSync(join(waves, '2026-09-09-live.md'), '# live\n', 'utf-8');
+
+    const listing = listComposedDriverDirs(repo, {
+      terminalSlugs: ['2026-09-08-terminal'],
+    });
+    const plan = planComposedDriverSweep(listing);
+
+    expect(listing.present).toBe(true);
+    expect(plan.selected.map((d) => d.path).sort()).toEqual(
+      [terminalDir, archivedDir].sort(),
+    );
+    const byPath = new Map(listing.dirs.map((d) => [d.path, d]));
+    expect(byPath.get(terminalDir)?.finishedBy).toBe('wave-terminal');
+    expect(byPath.get(archivedDir)?.finishedBy).toBe('spine-archived');
+    expect(byPath.get(liveDir)?.reason).toBe('live-wave');
+    expect(byPath.get(orphanDir)?.reason).toBe('unknown-wave');
+    // A skipped entry never claims a sweepable route, and a selected one never
+    // carries a refusal.
+    expect(byPath.get(liveDir)?.finishedBy).toBeNull();
+    expect(byPath.get(terminalDir)?.reason).toBeUndefined();
+  });
+
+  it('PROVE THE CHECK CAN FAIL (Convention 11): drop the terminal declaration and the terminal wave\'s own directory reads live-wave instead — never removed', () => {
+    const terminalDir = plantDriverDir('2026-09-08-terminal');
+    writeFileSync(join(waves, '2026-09-08-terminal.md'), '# terminal\n', 'utf-8');
+
+    // Positive control — declared terminal, selected.
+    const declared = planComposedDriverSweep(
+      listComposedDriverDirs(repo, { terminalSlugs: ['2026-09-08-terminal'] }),
+    );
+    expect(declared.selected.map((d) => d.path)).toEqual([terminalDir]);
+
+    // Negative control — the SAME tree, the declaration withheld. The spine is
+    // still sitting in the active location, so the wave reads live and the
+    // directory is spared. This is the assertion a regression that removed on
+    // spine-presence alone would fail.
+    const withheld = planComposedDriverSweep(listComposedDriverDirs(repo, {}));
+    expect(withheld.selected).toEqual([]);
+    expect(withheld.skipped.map((d) => d.reason)).toEqual(['live-wave']);
+  });
+
+  it('a FILE in the scratch root is not this population — the Scribe sweep owns it, and this listing never sees it', () => {
+    writeFileSync(join(scratch, 'report-748-1.json'), '{}', 'utf-8');
+    writeFileSync(join(scratch, 'operator-notes.md'), 'notes\n', 'utf-8');
+    plantDriverDir('2026-09-08-terminal');
+
+    const listing = listComposedDriverDirs(repo, {
+      terminalSlugs: ['2026-09-08-terminal'],
+    });
+    expect(listing.dirs.map((d) => d.slug)).toEqual(['2026-09-08-terminal']);
+
+    // …and the Scribe sweep still reports the DIRECTORY as its own refusal,
+    // unchanged. The two populations overlap on that one entry deliberately:
+    // rewriting `not-a-scribe-payload` would change a shipped reason vocabulary
+    // for no gain.
+    const scribe = planScribeScratchSweep(listScribeScratchEntries(repo));
+    expect(scribe.selected.map((e) => e.path)).toEqual([
+      join(scratch, 'report-748-1.json'),
+    ]);
+    expect(scribe.skipped.map((e) => e.reason)).toEqual([
+      'not-a-scribe-payload',
+      'not-a-scribe-payload',
+    ]);
+  });
+
+  it('an ABSENT scratch root is present:false with no entries — "did not look" stays distinguishable from "looked and found nothing"', () => {
+    rmSync(scratch, { recursive: true, force: true });
+    const listing = listComposedDriverDirs(repo, {});
+    expect(listing.present).toBe(false);
+    expect(listing.dirs).toEqual([]);
+
+    mkdirSync(scratch, { recursive: true });
+    const empty = listComposedDriverDirs(repo, {});
+    expect(empty.present).toBe(true);
+    expect(empty.dirs).toEqual([]);
+  });
+
+  it('a CALLER-SUPPLIED wavesDir is where both spine probes look — the archive is always its own subdirectory', () => {
+    const elsewhere = join(repo, 'ops', 'waves');
+    mkdirSync(join(elsewhere, '_archive'), { recursive: true });
+    const dir = plantDriverDir('2026-09-05-relocated');
+    writeFileSync(join(elsewhere, '_archive', '2026-09-05-relocated.md'), '#\n', 'utf-8');
+
+    // Against the DEFAULT waves dir this slug has no spine anywhere → the
+    // conservative refusal.
+    expect(planComposedDriverSweep(listComposedDriverDirs(repo, {})).skipped[0].reason).toBe(
+      'unknown-wave',
+    );
+    // Pointed at the consumer's own directory, the archived spine is found.
+    const relocated = planComposedDriverSweep(
+      listComposedDriverDirs(repo, { wavesDir: elsewhere }),
+    );
+    expect(relocated.wavesDir).toBe(elsewhere);
+    expect(relocated.selected.map((d) => d.path)).toEqual([dir]);
+  });
+
+  it('sweepComposedDrivers removes the finished waves\' directories from DISK and leaves every refusal exactly where it is', () => {
+    const terminalDir = plantDriverDir('2026-09-08-terminal');
+    const orphanDir = plantDriverDir('2026-08-01-nobody');
+    writeFileSync(join(waves, '2026-09-08-terminal.md'), '# terminal\n', 'utf-8');
+
+    const result = sweepComposedDrivers({
+      repoRoot: repo,
+      terminalSlugs: ['2026-09-08-terminal'],
+    });
+
+    expect(result.removed.map((d) => d.path)).toEqual([terminalDir]);
+    expect(existsSync(terminalDir)).toBe(false);
+    expect(result.skipped.map((d) => d.reason)).toEqual(['unknown-wave']);
+    expect(existsSync(orphanDir)).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('a removal that FAILS lands in errors, and a remover that lies (reports success, leaves the directory) is caught by the verify-after-write probe', () => {
+    plantDriverDir('a-fails');
+    plantDriverDir('b-lies');
+    writeFileSync(join(archive, 'a-fails.md'), '#\n', 'utf-8');
+    writeFileSync(join(archive, 'b-lies.md'), '#\n', 'utf-8');
+
+    const lyingRemover: ComposedDriverRemover = {
+      remove(dirPath: string): void {
+        if (dirPath.endsWith('a-fails')) throw new Error('EACCES: permission denied');
+        // b-lies: returns cleanly and deletes nothing.
+      },
+    };
+
+    const listing = listComposedDriverDirs(repo, {});
+    const result = executeComposedDriverSweep(planComposedDriverSweep(listing), {
+      remover: lyingRemover,
+    });
+
+    expect(result.removed).toEqual([]);
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors.map((e) => e.message).join('\n')).toMatch(/permission denied/);
+    expect(result.errors.map((e) => e.message).join('\n')).toMatch(
+      /still present after removal/,
+    );
+  });
+
+  it('the DEFAULT remover deletes the whole subtree — a composed driver directory is never a single file', () => {
+    const dir = plantDriverDir('2026-09-08-nested');
+    mkdirSync(join(dir, 'deep', 'deeper'), { recursive: true });
+    writeFileSync(join(dir, 'deep', 'deeper', 'x.js'), 'x\n', 'utf-8');
+    defaultComposedDriverRemover().remove(dir);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('is idempotent: a second sweep after everything eligible is gone removes nothing more and errors on nothing', () => {
+    plantDriverDir('2026-09-08-terminal');
+    writeFileSync(join(waves, '2026-09-08-terminal.md'), '# terminal\n', 'utf-8');
+    const first = sweepComposedDrivers({
+      repoRoot: repo,
+      terminalSlugs: ['2026-09-08-terminal'],
+    });
+    expect(first.removed).toHaveLength(1);
+    const second = sweepComposedDrivers({
+      repoRoot: repo,
+      terminalSlugs: ['2026-09-08-terminal'],
+    });
+    expect(second.removed).toEqual([]);
+    expect(second.errors).toEqual([]);
+  });
+
+  it('the plan a dry run would print IS the plan the run executes — one object, shared', () => {
+    plantDriverDir('2026-09-08-terminal');
+    plantDriverDir('2026-08-01-nobody');
+    writeFileSync(join(waves, '2026-09-08-terminal.md'), '# terminal\n', 'utf-8');
+
+    const plan: ComposedDriverSweepPlan = planComposedDriverSweep(
+      listComposedDriverDirs(repo, { terminalSlugs: ['2026-09-08-terminal'] }),
+    );
+    const previewed: ComposedDriverDir[] = plan.selected;
+    const result = executeComposedDriverSweep(plan);
+    // Not merely "the same paths" — the same entry objects, which is what makes
+    // preview/execute disagreement structurally impossible rather than merely
+    // unobserved.
+    expect(result.removed).toEqual(previewed);
+  });
+});
+
+// ─── 42. A TERMINAL wave's own refs are not live (issue #748, ADR-0042
+//     Amendment decision 10) ────────────────────────────────────────────────
+//
+// Every ref a wave produces belongs to one of its own rows, so at its own close
+// all ten were skipped `live-row` and none was removed. They became sweepable
+// only at the NEXT wave's close — a one-wave lag, on refs a later Reviewer's own
+// fetch silently overwrites. The engine half of the fix is one flag: a caller
+// that has DERIVED an empty live set can say so, where an accidentally-empty one
+// must keep failing closed.
+
+describe('the review-ref plan distinguishes a declared-EMPTY live set from an undeclared one (issue #748)', () => {
+  const REFS = ['refs/review/1', 'refs/review/sib/2', 'refs/sib/3', 'refs/review/a/b'];
+
+  it('a TERMINAL wave declares an empty live set and every resolvable ref is selected across all three namespaces', () => {
+    const plan = planReviewRefSweep(listReviewRefs({ ops: fakeReviewRefOps(REFS) }), [], {
+      liveRowsDeclared: true,
+    });
+    expect(plan.liveRowIds).toEqual([]);
+    expect(plan.selected.map((r) => r.ref).sort()).toEqual(
+      ['refs/review/1', 'refs/review/sib/2', 'refs/sib/3'].sort(),
+    );
+    // The unresolvable ref is STILL refused — terminality never overrides the
+    // rule that an unattributable name is left in place.
+    expect(plan.skipped).toEqual([
+      expect.objectContaining({ ref: 'refs/review/a/b', reason: 'unresolvable-row' }),
+    ]);
+  });
+
+  it('PROVE THE CHECK CAN FAIL (Convention 11): the SAME empty list WITHOUT the declaration keeps failing closed — nothing selected, every ref live-rows-unknown', () => {
+    // This is the pre-#748 reading of an empty set, and it must survive
+    // unchanged: it is what protects a run that genuinely could not say.
+    const plan = planReviewRefSweep(listReviewRefs({ ops: fakeReviewRefOps(REFS) }), []);
+    expect(plan.liveRowIds).toBeNull();
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((r) => r.reason).sort()).toEqual(
+      ['live-rows-unknown', 'live-rows-unknown', 'live-rows-unknown', 'unresolvable-row'].sort(),
+    );
+  });
+
+  it('a LIVE wave is untouched by the flag — a non-empty list already made the set known, and its rows are still spared', () => {
+    const withFlag = planReviewRefSweep(
+      listReviewRefs({ ops: fakeReviewRefOps(REFS) }),
+      ['1'],
+      { liveRowsDeclared: true },
+    );
+    const without = planReviewRefSweep(listReviewRefs({ ops: fakeReviewRefOps(REFS) }), ['1']);
+    expect(withFlag).toEqual(without);
+    expect(withFlag.liveRowIds).toEqual(['1']);
+    expect(withFlag.skipped).toContainEqual(
+      expect.objectContaining({ ref: 'refs/review/1', reason: 'live-row' }),
+    );
+  });
+
+  it('sweepReviewRefs carries the declaration through the one-shot — a terminal wave actually deletes its own refs', () => {
+    const ops = fakeReviewRefOps(REFS);
+    const result = sweepReviewRefs({ ops, liveRowIds: [], liveRowsDeclared: true });
+    expect(result.liveRowIds).toEqual([]);
+    expect(ops.deleted.sort()).toEqual(
+      ['refs/review/1', 'refs/review/sib/2', 'refs/sib/3'].sort(),
+    );
+
+    // And the same one-shot WITHOUT the declaration deletes nothing at all.
+    const closed = fakeReviewRefOps(REFS);
+    sweepReviewRefs({ ops: closed, liveRowIds: [] });
+    expect(closed.deleted).toEqual([]);
   });
 });
 
