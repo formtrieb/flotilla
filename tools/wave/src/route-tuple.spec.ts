@@ -35,6 +35,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   composePrBody,
+  resolveTitle,
   reviewerStateForVerdict,
   runRouteTuple,
   workerStateForIteration,
@@ -46,6 +47,7 @@ import { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import type { IssueStore } from './adapters/issue-store';
+import { stripBareIds } from './compose-driver';
 import { renderSidecarBody } from './route-cli';
 import { renderSpine, setRowState, upsertDispatchLogEntry } from './wave-md-rw';
 import type {
@@ -355,6 +357,84 @@ describe('route-tuple', () => {
       });
       expect(body.split('\n').at(-1)).toBe('Closes #681');
       expect(body.indexOf('Summary.')).toBeLessThan(body.indexOf('## Reviewer verdict'));
+    });
+  });
+
+  // ── resolveTitle: the three-way precedence, pinned directly (issue #743) ───
+  //
+  // Everywhere else in this file the precedence is only OBSERVABLE through the
+  // full `runRouteTuple` sequence — real host I/O, a real spine, a real
+  // sidecar pair — which pins the OUTCOME of each cell but pays for it with the
+  // whole apparatus around it. `resolveTitle` is exported precisely so the
+  // RULE itself is pinnable in isolation (see its own doc comment), and until
+  // this row nothing did: a swap in the precedence ladder was only ever caught
+  // as a side effect of an end-to-end assertion elsewhere, never named as the
+  // thing under test. These four pin exactly the three cells the catalog line
+  // and route-tuple's own usage text both describe, plus the fact that the
+  // result always NAMES which cell fired.
+  describe('resolveTitle — the three-way precedence the catalog and usage text both describe', () => {
+    const ROW_TITLE = 'Route one returned tuple in one call';
+    const ID = '743';
+
+    it('the flag RENAMES — --title wins even over a present, non-empty live title', () => {
+      const result = resolveTitle({
+        args: ['--title', 'The Coordinator means to rename this'],
+        existing: { url: EXISTING_PR, title: 'The Worker\'s own live title' },
+        rowTitle: ROW_TITLE,
+        id: ID,
+      });
+      expect(result).toEqual({
+        title: 'The Coordinator means to rename this',
+        titleSource: 'flag',
+      });
+    });
+
+    it('a REUSE without --title preserves the live PR title BYTE-IDENTICALLY — no trim, no strip', () => {
+      // Trailing whitespace on purpose, exactly as the end-to-end sibling test
+      // above does: byte-identical means untouched, not re-normalised.
+      const liveTitle = 'The Worker\'s own one-line account of this change  ';
+      const result = resolveTitle({
+        args: [],
+        existing: { url: EXISTING_PR, title: liveTitle },
+        rowTitle: ROW_TITLE,
+        id: ID,
+      });
+      expect(result).toEqual({ title: liveTitle, titleSource: 'live-pr' });
+    });
+
+    it('a CREATE without --title falls back to the row title with bare tracker ids stripped', () => {
+      const rowTitleWithId = `Fix the flaky thing (#${ID})`;
+      const result = resolveTitle({
+        args: [],
+        existing: null,
+        rowTitle: rowTitleWithId,
+        id: ID,
+      });
+      const expectedTitle = stripBareIds(rowTitleWithId, ID);
+      // The fixture is only a meaningful pin if the strip actually changes
+      // something — otherwise "falls back to the stripped row title" and
+      // "falls back to the row title, unstripped" would look identical here.
+      expect(expectedTitle).not.toBe(rowTitleWithId);
+      expect(expectedTitle).not.toContain(ID);
+      expect(result).toEqual({ title: expectedTitle, titleSource: 'row' });
+    });
+
+    it('the result NAMES which of the three cells fired, for all three', () => {
+      expect(
+        resolveTitle({ args: ['--title', 'x'], existing: null, rowTitle: ROW_TITLE, id: ID })
+          .titleSource,
+      ).toBe('flag');
+      expect(
+        resolveTitle({
+          args: [],
+          existing: { url: EXISTING_PR, title: 'y' },
+          rowTitle: ROW_TITLE,
+          id: ID,
+        }).titleSource,
+      ).toBe('live-pr');
+      expect(
+        resolveTitle({ args: [], existing: null, rowTitle: ROW_TITLE, id: ID }).titleSource,
+      ).toBe('row');
     });
   });
 

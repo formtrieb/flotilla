@@ -47,6 +47,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, mainAsync, runDorById, findRepoRoot } from './cli';
+// Imported ONLY to reach `route-tuple`'s own usage() text (issue #743's
+// catalog/usage agreement check below) — a bare `runRouteTuple([])` hits its
+// first missing-flag check and writes that text to stderr, exactly the way
+// route-tuple.spec.ts's own "usage and preconditions" block already drives it.
+import { runRouteTuple } from './route-tuple';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import type { CreateInput, IssueStore } from './adapters/issue-store';
 import type { IssueView } from './contract';
@@ -358,6 +363,66 @@ describe('no-args invocation', () => {
   it('writes nothing to stdout', () => {
     main([]);
     expect(stdoutBuf).toBe('');
+  });
+});
+
+// ─── The route-tuple `--title` catalog line agrees with route-tuple's OWN
+//             usage text (issue #743) ────────────────────────────────────────
+//
+// The gap: the top-level catalog (this file's `printUsage`) states the
+// `--title` flag's three-way precedence in its own line, and route-tuple.ts's
+// own `usage()` states the identical rule in its own words — two independent
+// copies of one fact, and nothing before this asserted they agreed. A later
+// edit to either side (a re-worded precedence, a re-ordered `titleSource`
+// vocabulary) would drift silently; only a human reading both surfaces side
+// by side caught it the one time it mattered (issue #724).
+//
+// The two surfaces are not byte-identical top to bottom — the catalog line is
+// a `--title <text> …` flag-signature bullet, the usage text folds the same
+// clause into `--title renames the PR.` prose — so this pins the one fragment
+// that IS meant to be the same fact stated twice: the precedence rule and the
+// `titleSource` vocabulary, from "Without it, a REUSE preserves…" to the
+// closing "(flag | live-pr | row).". Extracting that fragment independently
+// from each REAL source (never a third hand-copied string) and asserting
+// equality is what makes this bidirectional: a change to either side's
+// wording of that fragment breaks the equality, regardless of which side
+// moved.
+describe('printUsage — the route-tuple `--title` catalog line agrees with route-tuple\'s own usage text (issue #743)', () => {
+  const FRAGMENT_START = 'Without it, a REUSE preserves the live PR title';
+  const FRAGMENT_END = '(flag | live-pr | row).';
+
+  /**
+   * The shared precedence-rule fragment, whitespace-normalized (both sources
+   * wrap the same prose across different line lengths, so a raw substring
+   * compare would fail on line breaks alone rather than on a real disagreement).
+   */
+  function titleFlagFragment(text: string): string {
+    const start = text.indexOf(FRAGMENT_START);
+    expect(start, `fragment start ${JSON.stringify(FRAGMENT_START)} not found in:\n${text}`).toBeGreaterThanOrEqual(0);
+    const fromStart = text.slice(start);
+    const endAt = fromStart.indexOf(FRAGMENT_END);
+    expect(endAt, `fragment end ${JSON.stringify(FRAGMENT_END)} not found in:\n${fromStart}`).toBeGreaterThanOrEqual(0);
+    return fromStart
+      .slice(0, endAt + FRAGMENT_END.length)
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  it('states the identical precedence rule and titleSource vocabulary — asserted from both directions', async () => {
+    const catalogCode = main([]);
+    expect(catalogCode).toBe(2);
+    const catalogFragment = titleFlagFragment(stderrBuf);
+
+    stderrBuf = ''; // the same global stderr spy captures the next call too
+    const verbCode = await runRouteTuple([], {});
+    expect(verbCode).toBe(2);
+    const verbFragment = titleFlagFragment(stderrBuf);
+
+    // Two directions, not one opaque equality: each fragment must contain the
+    // other, which together are exactly as strong as equality and fail
+    // independently readably depending on which side actually drifted.
+    expect(catalogFragment, 'catalog no longer contains the verb\'s own wording').toContain(verbFragment);
+    expect(verbFragment, 'the verb\'s usage text no longer contains the catalog\'s own wording').toContain(catalogFragment);
   });
 });
 
@@ -2746,6 +2811,221 @@ describe('worktree-cleanup subcommand — --orphans folds the orphaned-branch sw
       .mocked(execFileSync)
       .mock.calls.some((c) => Array.isArray(c[1]) && (c[1] as string[])[0] === 'for-each-ref');
     expect(forEachRefCalled).toBe(false);
+  });
+});
+
+// ─── Form 8c-ter: worktree-cleanup — the REVIEW-REF sweep's CLI wiring
+//             (issue #732, unguarded until #743) ─────────────────────────────
+//
+// The gap this closes: the review-ref sweep (`listReviewRefs` /
+// `planReviewRefSweep` / `executeReviewRefSweep`, worktree-cleanup.ts) is
+// reachable only through THIS verb's `--orphans` flag, and — unlike every
+// sibling population above (the orphan directories, the Scribe scratch sweep,
+// the orphan-branch sweep) — nothing in this suite ever drove it through the
+// CLI at all. The Reviewer that landed #732 closed the gap for that one
+// landing with its own ad-hoc end-to-end probe against a throwaway repository
+// with planted refs, but that probe was never committed, so the wiring has
+// been unguarded from the next change onward.
+//
+// Same fixture shape as the orphan-branch block above: every git subcommand
+// this verb issues is driven through the module-level `execFileSync` mock,
+// routed by subcommand + format flag so the review-ref LISTING
+// (`for-each-ref --format=%(refname) refs/review refs/sib`) is never confused
+// with the orphan-branch LISTING (`for-each-ref --format=%(refname:short)
+// refs/heads/`) that rides the same flag. `--wave <spine>` supplies the live
+// row ids the sweep is scoped against (row 131), exactly as the FOR-141 block
+// above supplies them for branch scoping — the same spine answers both
+// questions because `resolveLiveRowIds` reads the identical Plan-Table.
+describe('worktree-cleanup subcommand — the review-ref sweep rides --orphans under its own `orphans.reviewRefs` key (issue #732 wiring)', () => {
+  let repo: string;
+
+  // One live row (131), and five refs spanning every classification the
+  // sweep can produce: a live-row skip, one selected ref per namespace (all
+  // three), and an unresolvable-row skip (an extra path segment).
+  const LIVE_REF = 'refs/review/131';
+  const DEAD_REVIEW_REF = 'refs/review/999';
+  const DEAD_REVIEW_SIB_REF = 'refs/review/sib/998';
+  const DEAD_FLAT_SIB_REF = 'refs/sib/997';
+  const UNRESOLVABLE_REF = 'refs/review/a/b';
+
+  /**
+   * Drive every git subcommand `worktree-cleanup --orphans` issues:
+   *   - `for-each-ref --format=%(refname) …`       → the five review/sib refs
+   *   - `for-each-ref --format=%(refname:short) …` → no local branches (the
+   *     orphan-BRANCH sweep's own listing — kept empty so it contributes
+   *     nothing and cannot be mistaken for this sweep's population)
+   *   - `update-ref -d <ref>`                        → succeeds, unless
+   *     `failRef` names the one ref this run should fail to delete
+   *   - everything else (`worktree list`, `symbolic-ref`, `ls-remote`, …)   → ''
+   */
+  function driveReviewRefGit(failRef?: string): void {
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'for-each-ref' && cmdArgs[1] === '--format=%(refname)') {
+        return (
+          [LIVE_REF, DEAD_REVIEW_REF, DEAD_REVIEW_SIB_REF, DEAD_FLAT_SIB_REF, UNRESOLVABLE_REF].join(
+            '\n',
+          ) + '\n'
+        );
+      }
+      if (cmdArgs[0] === 'update-ref' && cmdArgs[1] === '-d') {
+        if (failRef !== undefined && cmdArgs[2] === failRef) {
+          throw new Error(`simulated ref-delete failure for ${failRef}`);
+        }
+        return '';
+      }
+      return '';
+    });
+  }
+
+  /** A tracker-backed spine (FOR-141 shape) whose one row (131) is the live wave. */
+  function writeLiveRowSpine(): string {
+    const path = join(repo, 'WAVE.md');
+    writeFileSync(
+      path,
+      [
+        '# Wave 2026-09-07 — review-ref wiring',
+        '',
+        '**Status:** in-flight',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| 131 | Alpha | background | mechanical | universal | — | dispatched | 1 | — |',
+        '',
+        '## Resume-Metadata',
+        '',
+        '```yaml',
+        'dispatch-log:',
+        '  - "131 → agent wf_aaa (sonnet) branch wave/131-alpha"',
+        '```',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    return path;
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'wave-cli-732-wiring-'));
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('AC3 — --orphans --dry-run names the review-ref PLAN under orphans.reviewRefs: selected refs, and why every skip was skipped', () => {
+    driveReviewRefGit();
+    const spine = writeLiveRowSpine();
+    const code = main(['worktree-cleanup', repo, '--orphans', '--dry-run', '--wave', spine]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      dryRun: boolean;
+      orphans: {
+        reviewRefs?: {
+          namespaces: string[];
+          liveRowIds: string[] | null;
+          selected: Array<{ ref: string }>;
+          skipped: Array<{ ref: string; reason: string }>;
+        };
+      };
+    };
+    const rr = parsed.orphans.reviewRefs;
+    expect(rr, 'orphans.reviewRefs missing from the --dry-run CLI JSON').toBeDefined();
+    expect([...rr!.namespaces].sort()).toEqual(['refs/review', 'refs/sib'].sort());
+    expect(rr!.liveRowIds).toEqual(['131']);
+    expect(rr!.selected.map((r) => r.ref).sort()).toEqual(
+      [DEAD_REVIEW_REF, DEAD_REVIEW_SIB_REF, DEAD_FLAT_SIB_REF].sort(),
+    );
+    expect(rr!.skipped.find((s) => s.ref === LIVE_REF)?.reason).toBe('live-row');
+    expect(rr!.skipped.find((s) => s.ref === UNRESOLVABLE_REF)?.reason).toBe('unresolvable-row');
+    // A dry run previews the plan; it never deletes a ref.
+    const updateRefCalled = vi
+      .mocked(execFileSync)
+      .mock.calls.some((c) => Array.isArray(c[1]) && (c[1] as string[])[0] === 'update-ref');
+    expect(updateRefCalled).toBe(false);
+  });
+
+  it('AC4 — the real run executes EXACTLY that plan: counts + errors under the SAME orphans.reviewRefs key, additive to (never merged into) the orphan-directory numbers', () => {
+    driveReviewRefGit();
+    const spine = writeLiveRowSpine();
+    const code = main(['worktree-cleanup', repo, '--orphans', '--wave', spine]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as {
+      orphans: {
+        removed: unknown[];
+        errors: unknown[];
+        reviewRefs?: {
+          removed: Array<{ ref: string }>;
+          skipped: Array<{ ref: string; reason: string }>;
+          errors: unknown[];
+        };
+      };
+    };
+    const rr = parsed.orphans.reviewRefs;
+    expect(rr, 'orphans.reviewRefs missing from the real-run CLI JSON').toBeDefined();
+    expect(rr!.removed.map((r) => r.ref).sort()).toEqual(
+      [DEAD_REVIEW_REF, DEAD_REVIEW_SIB_REF, DEAD_FLAT_SIB_REF].sort(),
+    );
+    expect(rr!.skipped.find((s) => s.ref === LIVE_REF)?.reason).toBe('live-row');
+    expect(rr!.errors).toEqual([]);
+    // Additive, never merged: this fixture plants no orphan DIRECTORY at all,
+    // so the orphan-directory numbers stay empty — the three removed refs
+    // above never leak into `orphans.removed`.
+    expect(parsed.orphans.removed).toEqual([]);
+    expect(parsed.orphans.errors).toEqual([]);
+    // The deletions actually went through `git update-ref -d`, one call per
+    // selected ref, and never for the live-row ref.
+    for (const ref of [DEAD_REVIEW_REF, DEAD_REVIEW_SIB_REF, DEAD_FLAT_SIB_REF]) {
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        ['update-ref', '-d', ref],
+        expect.objectContaining({ cwd: repo }),
+      );
+    }
+    expect(execFileSync).not.toHaveBeenCalledWith(
+      'git',
+      ['update-ref', '-d', LIVE_REF],
+      expect.anything(),
+    );
+  });
+
+  it('a review-ref delete failure lands in orphans.reviewRefs.errors (never the orphan-directory errors) and forces a non-zero exit', () => {
+    driveReviewRefGit(DEAD_REVIEW_REF);
+    const spine = writeLiveRowSpine();
+    const code = main(['worktree-cleanup', repo, '--orphans', '--wave', spine]);
+    const parsed = JSON.parse(stdoutBuf) as {
+      orphans: { errors: unknown[]; reviewRefs?: { errors: Array<{ ref: string; message: string }> } };
+    };
+    expect(parsed.orphans.reviewRefs?.errors).toEqual([
+      { ref: DEAD_REVIEW_REF, message: expect.stringContaining('simulated ref-delete failure') },
+    ]);
+    expect(parsed.orphans.errors).toEqual([]);
+    expect(code).toBe(1);
+  });
+
+  it('WITHOUT --orphans neither shape carries `orphans` at all, and the review-ref listing is never issued', () => {
+    driveReviewRefGit();
+    const code = main(['worktree-cleanup', repo, '--wave', writeLiveRowSpine()]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as Record<string, unknown>;
+    expect('orphans' in parsed).toBe(false);
+    const reviewListingCalled = vi
+      .mocked(execFileSync)
+      .mock.calls.some(
+        (c) =>
+          Array.isArray(c[1]) &&
+          (c[1] as string[])[0] === 'for-each-ref' &&
+          (c[1] as string[])[1] === '--format=%(refname)',
+      );
+    expect(reviewListingCalled).toBe(false);
   });
 });
 
