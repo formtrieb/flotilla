@@ -1913,7 +1913,6 @@ export function parseWorktreeList(
  * When `branchFilter` is absent (the default), behaviour is byte-identical to
  * the original single-argument form — all clean agent worktrees are selected.
  *
- * @param worktrees Parsed agent worktrees from {@link listAgentWorktrees}.
  * A dirty worktree has a SECOND route to disposability (issue #621, ADR-0042
  * Amendment decision 7) — see {@link isPhysicallyExhausted} and the file-level
  * "the delete exhausts its permissions" doc section. It is asked only for a

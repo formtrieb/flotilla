@@ -10048,6 +10048,10 @@ describe('a gutted tree re-reads EXHAUSTED on the next run, real git/fs (issue #
     expect(entry.manualRecovery?.commands).toEqual([
       `git worktree remove --force '${worktreePath}'`,
       'git worktree prune',
+      // Third line since #748 (ADR-0042 Amendment decision 9): the re-run
+      // message, inert as a shell comment — reconciled here at landing, because
+      // this test and that line landed from two rows of one serial lane.
+      RE_RUN_LINE,
     ]);
     // Selected via a disposability route, so the message is the one that says
     // so — `forceEligible` fired, and it fired because of decision 7.
