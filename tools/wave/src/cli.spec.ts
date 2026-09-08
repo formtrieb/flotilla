@@ -3061,11 +3061,18 @@ describe('worktree-cleanup — the erroredStillListed survivor evidence rides bo
 
     expect(entry.path).toBe(worktreePath);
     expect(entry.survivors).toBeDefined();
-    expect(entry.survivors?.paths).toEqual(['README.md', 'src/index.ts']);
+    // The REFUSED set, not an aborted tree (issue #621, ADR-0042 Amendment
+    // decision 6): phase 1 now attempts every entry, so `src/index.ts` — which
+    // sits in a writable subdirectory and was therefore always deletable — is
+    // gone, and what survives is exactly what this fixture's permission bits
+    // refuse: the two entries that would have to be unlinked from the
+    // write-denied worktree directory itself. Before that change the delete
+    // aborted at its first refusal and `src/index.ts` was never reached.
+    expect(entry.survivors?.paths).toEqual(['README.md', 'src']);
     expect(entry.survivors?.total).toBe(2);
     // Ordinary deletable content survived, so the verdict is honestly `false`
-    // — the first-attempt shape ADR-0042 records, reaching an operator's
-    // terminal for the first time instead of being dropped inside the engine.
+    // — this obstruction is a permission bit on the directory, not the harness
+    // deny list, and the TRANSIENT reading is the correct one for it.
     expect(entry.survivors?.exclusivelyDenied).toBe(false);
     // The worktree's own `.git` is excluded from the named set exactly as it is
     // from the verdict (expected FOR-86 scaffolding, evidence of nothing).
