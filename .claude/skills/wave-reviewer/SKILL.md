@@ -9,7 +9,7 @@ The Wave Reviewer is the **agent** (`.claude/agents/wave-reviewer.md`) `wave-sta
 
 ## When it runs
 
-- Automatically, per row, inside the `wave-start` Workflow script (`agent({ agentType: 'wave-reviewer', schema: REVIEWER_VERDICT_SCHEMA })`).
+- Automatically, per row, inside the `wave-start` Workflow script (`agent({ agentType: REVIEWER_AGENT, schema: REVIEWER_VERDICT_SCHEMA })`) — `REVIEWER_AGENT` is never spelled by hand. It is the compose-time constant the engine's `compose-driver` derives for the form this wave is actually running in: the bare agent-definition name in source form, `<plugin>:<agent>` once installed, or the `--reviewer-agent` override when the Coordinator names it outright.
 - **Universal dispatch** — every row, regardless of Risk. Risk is reported (and routed on downstream), never a gate on whether the Reviewer runs (ADR-0016: the reviewer is uniform — there is no per-Risk brief profile, unlike the Ur).
 - You rarely invoke it by hand. Reach for this skill to understand a verdict, or to run the same checks manually on a stuck branch.
 
@@ -67,7 +67,7 @@ The Wave Reviewer is the **agent** (`.claude/agents/wave-reviewer.md`) `wave-sta
 
 ## Related
 
-This skill is documentation-only for the Reviewer role and does not itself load `wave-shared` by name — it carries no such reference to namespace. The by-name composition finding (whether an unscoped skill load resolves under an installed plugin) lives in [`wave-shared`'s own note](../wave-shared/SKILL.md). The sibling namespacing question for *this* skill is the Reviewer's `agentType: 'wave-reviewer'` dispatch value used in the Workflow driver (`wave-start/reference/workflow-driver.md`). The evidence there is narrower than it first looks: the first clean-room consumer run (`docs/retros/2026-07-27-plugin-consumer-w1.md`, finding DA-F3) shows the plugin-namespaced `agentType: 'flotilla:wave-reviewer'` resolving — but that spelling was set *preemptively*, because the harness's agent list showed it registered that way, not because the bare form was tried and found to fail. DA-F3 is explicit that only the prefixed form's success is demonstrated; a bare-form failure was never observed. Treat "requires the plugin-namespaced form" as the reasoned inference it is, not a confirmed failure mode — and note that the driver file sits outside this slice's declared Files scope regardless.
+This skill is documentation-only for the Reviewer role. It reads no sibling itself — `wave-shared`'s schemas and conventions reach the Reviewer through `wave-start`'s own sibling-path read (`../wave-shared/SKILL.md` plus every file under `../wave-shared/reference/`, resolved against `wave-start`'s base directory, no skill invocation, no namespace to guess — ADR-0040), never through a load line in this file. The one namespacing question that *is* this skill's own is dispatch, not skill-load: the `agentType` string the Workflow driver passes to `agent({ ... })`. That value is never spelled by hand, here or anywhere else — it is the compose-time `REVIEWER_AGENT` constant the engine's `compose-driver` derives per distribution form (bare agent-definition name in source form, `<plugin>:<agent>` once installed, or the `--reviewer-agent` override) and fills into the driver script the harness runs. [`wave-start/reference/workflow-driver.md`](../wave-start/reference/workflow-driver.md) is where the constant is filled.
 
 ## Operator register (Convention 16)
 

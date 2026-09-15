@@ -7,7 +7,7 @@ description: Use when a running wave was interrupted part-way — a crash, a clo
 
 Reconstruct a wave's state after a Coordinator kill and resume it. The pure reconciler (`resume()`) reads three durable homes — the **spine** (WAL authority), the **live agent worktrees**, and the **on-disk sidecars** (reports/verdicts) — and returns a per-row `adopt`/`redispatch`/`keep`/`needs-attention` decision + a coarse rung. The `{{wave-cli}} resume` subverb then **crash-cleans every `redispatch` row** — unlocks + removes any stale worktree still checked out on that row's branch and deletes the stale branch itself — before printing, so a re-dispatch never collides with leftover debris from a crashed attempt (FOR-10; a dirty crashed worktree is never destroyed silently — see step 4). The skill then applies a **4th, skill-only input the pure reconciler cannot reach**: a PR-merge done-reconcile — a row whose PR merged during the kill is landed `done` via the existing `issue-store close` verb, **ticking the reviewer-met ACs it carries** (`--acked`, derived per-row from the FINAL Reviewer verdict via the engine's `verdict-acked` verb, FOR-17 — the same wire `wave-close` uses; on a no-integration `states.doneState` workspace this fires the FOR-13 fallback), and a closed-unmerged PR is flagged `needs-attention`. It idempotently re-projects the coarse ledger onto the tracker — and does **all of this BEFORE any re-dispatch**.
 
-Load **wave-shared** by name first — it owns the auth-preflight / atomic-spine conventions this skill obeys (every tracker write goes through the engine seam, never raw `gh`).
+Read [`../wave-shared/SKILL.md`](../wave-shared/SKILL.md) and every file under [`../wave-shared/reference/`](../wave-shared/reference/) first, resolved against this skill's own base directory — no skill invocation, no namespace to guess (ADR-0040) — it owns the auth-preflight / atomic-spine conventions this skill obeys (every tracker write goes through the engine seam, never raw `gh`).
 
 Your job is the **judgment** — deriving the sidecar dirs, ordering the reconcile-before-dispatch, the done-reconcile decision, and turning corrupt/orphan sidecars into the right flag. The CLI plumbing (exact invocations, the `ResumeResult` shape, exit codes, the `resume` subverb's flags) lives in [reference/resume-mechanics.md](reference/resume-mechanics.md). You never read the tracker INTO the reconstruction (the tracker claims are healed FROM it — one-way, ADR-0002).
 
@@ -33,7 +33,7 @@ This ordering is **the** load-bearing invariant of the skill. Do them in this or
 
 ### 1. Load wave-shared + read the spine (WAL authority)
 
-Load **wave-shared** first (auth-preflight + atomic-spine conventions). Then read the spine: `{{wave-cli}} spine read <spine-path>`. This establishes the row set + each row's last-flushed fine state. The spine path is `.flotilla/waves/<slug>.md`.
+Read `../wave-shared/SKILL.md` and every file under `../wave-shared/reference/`, resolved against this skill's own base directory (auth-preflight + atomic-spine conventions). Then read the spine: `{{wave-cli}} spine read <spine-path>`. This establishes the row set + each row's last-flushed fine state. The spine path is `.flotilla/waves/<slug>.md`.
 
 ### 2. Derive the sidecar dirs BY CONVENTION
 

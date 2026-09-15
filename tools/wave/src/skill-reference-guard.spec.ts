@@ -240,11 +240,6 @@ const CITATION_PLACEMENT_LEGACY: ReadonlyArray<{ file: string; seeded: number; w
     seeded: 1,
     why: 'The done-reconcile probe names the ADR that owns the evidence hierarchy mid-sentence; rewording touches load-bearing probe prose, so it waits for a row that is already in there.',
   },
-  {
-    file: '.claude/skills/wave-reviewer/SKILL.md',
-    seeded: 1,
-    why: 'The "Related" section is a narrative provenance paragraph about a clean-room finding; it wants a provenance heading, which is a structural edit rather than a placement one.',
-  },
 ];
 
 /** Population floors. A guard that stops matching is green for the wrong
