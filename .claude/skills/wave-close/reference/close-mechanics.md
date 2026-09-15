@@ -36,6 +36,8 @@ Read every `{{wave-cli}}` below as that one string: `{{wave-cli}} <verb> …` fo
 
 `host-pr create` (find-before-create PR opening, ADR-0023 decision 3) is also a shipped verb, but it is not in this table: it rides the **Worker terminator**, not wave-close — this skill only ever calls the four **landing/probe** verbs above (`arm`/`merge`/`status`/`preflight`).
 
+A row's public-surface behaviour heads-up is written independently of every verb above — directly onto the affected tracker issue as a fixed `## Heads-up` section heading at the same wave-close disposition step, the carrier `docs/RELEASING.md`'s Upgrading-checklist rule reads at the next release cut.
+
 ## Exit codes
 
 | Command | 0 | 1 | 2 |

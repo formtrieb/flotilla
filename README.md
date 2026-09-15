@@ -8,7 +8,7 @@
 
 > **Portable, Claude-Code-native wave-orchestration toolkit.** Plan a batch of independently-grabbable issues, dispatch parallel AFK agents in isolated worktrees, review each with a schema-validated verdict, land via PRs — with cross-wave **conflict/parallelism reasoning** as the universal core.
 
-**Stable.** The orchestration has been driving flotilla's own development across fifty-plus live waves, and runs in installed form — plugin plus published engine — in independent consumer repos beyond this one, operated by more than one person. Three surfaces are semver contracts: the engine's package-root export surface, the `wave.config.json` schema (both since 1.0.0), and the CLI's output surface (since 1.1.0). [CHANGELOG.md](CHANGELOG.md) names what each release added and what remains unproven.
+**Stable.** The orchestration has been driving flotilla's own development across fifty-plus live waves, and runs in installed form — plugin plus published engine — in independent consumer repos beyond this one, operated by more than one person. Three surfaces are semver contracts: the engine's package-root export surface, the `wave.config.json` schema (both since 1.0.0), and the CLI's output surface (since 1.1.0). [CHANGELOG.md](CHANGELOG.md) names what each release added and what remains unproven. An existing install moving to a new release should read that release's entry for its `### Upgrading` section, the per-release checklist of exactly what changed.
 
 ## What flotilla is
 

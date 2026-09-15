@@ -9,6 +9,70 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [Unreleased]
+
+### Upgrading
+
+- **Plugin/marketplace update:** none — no change to `.claude-plugin/plugin.json` or
+  `.claude-plugin/marketplace.json` beyond the version bump itself.
+- **Engine dependency pin** (vendored-form re-copy equivalent): none.
+- **Config keys added or changed:** none.
+- **Hook re-copy:** none.
+- **Allowlist parity:** none.
+- **Behaviour heads-ups** — seven, carried by hand from the wave rows that made them
+  (the heads-up carrier this release is the first to have — see
+  [docs/RELEASING.md](docs/RELEASING.md)):
+  1. **`worktree-cleanup` run 1 now reads EXHAUSTED on a harness-denied tree**
+     (issue #621). The physical delete exhausts its permissions before the survivor
+     set is judged, so `manualRecovery` is present on the *first* run instead of the
+     second. If you scripted around `manualRecovery` appearing only on a retry,
+     expect it as early as the first call.
+  2. **A physically exhausted tree is now selected, not skipped** (issue #621). A
+     dirty worktree whose surviving content is exclusively harness-denied is
+     disposable at plan time (`WorktreeEntry.physicallyExhausted`, additive). If you
+     treated every `skipped` entry as never-disposable, some of them are selected
+     now.
+  3. **A second call on an already-gutted tree now exits 1** (issue #621). It used
+     to land in `skipped` (reason `dirty`, not a failure term) and exit 0 while the
+     worktree stayed stuck; it now lands in `erroredStillListed` and exits 1. If a CI
+     wrapper read exit 0 as "nothing to do" on a re-run, it now sees exit 1 and
+     `manualRecovery` instead.
+  4. **A terminal wave's own close now removes its review refs and composed-driver
+     directory** (issue #748). Previously every ref a wave produced read `live-row`
+     at its own close and became sweepable only at the *next* wave's close, and a
+     `<slug>/` scratch directory was never swept at all. If you inspected those refs
+     or that directory after your own wave's close, they are gone at that close now
+     instead of surviving to the next one.
+  5. **`manualRecovery.commands` on an EXHAUSTED `erroredStillListed` entry now has
+     three entries instead of two** (issue #748). The third is an inert shell
+     comment naming the re-run rule. If you asserted the array's length or exact
+     contents, that assertion breaks.
+  6. **The store-backed readiness check (`dor --id`) can now fail where it used to
+     defer** (issue #750, PR #774). It used to push the cross-issue gate to
+     `deferred` unconditionally; it now resolves each declared blocker — no
+     blockers, or all closed, passes; at least one resolvable and still-open
+     *fails*; a ref that cannot be resolved at all still defers. Anything scripted
+     around `dor --id`'s exit code on a row that declares blockers needs a look — it
+     may now exit 1 where it exited 0.
+  7. **That same readiness check now makes network calls, and fails open to
+     `deferred`** (issue #750, PR #774). Resolution issues one closing-probe call per
+     declared ref; any failure (rate limit, timeout, refusal) degrades to
+     unresolvable and therefore `deferred`. If you assumed `dor --id` touches no
+     network, expect one probe call per declared blocker on a hosted tracker — and
+     note that a transiently unreachable tracker silently turns a hold back off
+     rather than surfacing an error.
+- **Implementer heads-ups:** additive surface only, nothing renamed or removed, an
+  out-of-tree implementer compiles unchanged. From issues #621/#748: six new
+  package-root values (`WAVE_ARCHIVE_RELATIVE_DIR`, `listComposedDriverDirs`,
+  `planComposedDriverSweep`, `executeComposedDriverSweep`, `sweepComposedDrivers`,
+  `defaultComposedDriverRemover`) and eleven new types, barrel-enumerated;
+  `OrphanBranchSweepPlan`/`Result` gain `branchHygieneDeferred`;
+  `OrphanBranchSweepOps` gains an optional `checkedOutWorktreePaths?()`;
+  `ReviewRefSweepOptions` gains an optional `liveRowsDeclared`; `planReviewRefSweep`
+  gains an optional third parameter. From issue #750 (PR #774): one optional field on
+  the readiness gate's options object and one new exported type, both re-exported
+  from the package barrel.
+
 ## [2.4.0] — 2026-09-04
 
 **The release the consumers wrote.** Three repositories ran their first waves on 2.3.0
