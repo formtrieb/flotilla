@@ -592,8 +592,13 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    path you leave standing is ADOPTED and owes the recorded review. **Do not reach for
    \`git clean\`** — it is not on the measured AFK command surface, so it hits the
    permission gate with nobody there to answer it (policy clause 11, mechanism (a)).
-   Anything else on that line — a tracked path still reported as modified, added or deleted
-   — means the reset did not fully apply: take the refusal branch immediately below.
+   **Its absence is a RULING, not a gap (Operator, 2026-09-16):** a prefix-matched grant
+   cannot be confined to the agent's OWN worktree, so any \`git clean\` entry would reach
+   every sibling's live checkout — the same reason \`git worktree remove\`/\`prune\` are
+   withheld. Account for the leftover as above; do not ask for the entry.
+   Anything else that second \`git status\` prints — a tracked path still reported as
+   modified, added or deleted — means the reset did not fully apply: take the refusal
+   branch immediately below.
 
    **IF THE RESET IS REFUSED, the two asserts above have a branch to take — do not skip
    them, and do not carry on as though the anchor held.** The harness's write-deny is
@@ -605,11 +610,16 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    1. Re-read \`git status --porcelain\` to see what actually survived, and keep the
       refusal's own text — you will quote it.
    2. Restore each surviving tracked path to its anchor content with your FILE-EDITING
-      tool, reading the anchor's own copy of it first (\`git show ${issue.anchorSha}:<path>\`,
-      where your permission surface carries that read; if the read is ITSELF refused for a
-      permission reason, report that under policy clause 12 and stop at \`blocked\` rather
-      than guessing at the content). That is the same per-tool-surface asymmetry the
-      refusal came from, used in the direction that works.
+      tool, reading the anchor's own copy of it first.
+      **The source for that read is \`git show ${issue.anchorSha}:<path>\` — prescribed, not hedged.**
+      It is on the measured AFK command surface for exactly this remedy: wave-setup's
+      allowlist scaffold carries \`Bash(git show:*)\` as a prefix match (Operator ruling
+      2026-09-16, the command form measured exit 0 under a dispatched agent's sandbox), so
+      the read itself does not stall on a permission prompt. Feed what it prints back
+      through the file-editing tool — that is the same per-tool-surface asymmetry the
+      refusal came from, used in the direction that works. If that read is ITSELF refused
+      for a permission reason, report it under policy clause 12 and stop at \`blocked\`
+      rather than guessing at the content.
    3. Re-run both asserts. Clean, and \`HEAD\` equal to \`${issue.anchorSha}\` → continue.
       Still not → STOP and report \`blocked\`, naming the residual paths and quoting the
       refusal verbatim.
