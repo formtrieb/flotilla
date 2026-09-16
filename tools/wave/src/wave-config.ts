@@ -516,12 +516,19 @@ export interface EngineConfig {
    * all — it trades the lockfile-exact guarantee away instead of satisfying it.
    * So the answer is the repo-relative prefix, not a different verb.
    *
-   * The engine does NOT yet refuse an absolute path in an ARGUMENT position:
-   * {@link normalizeEngineInstall} rejects a leading `/` at index 0 of the whole
-   * binding, which catches `/usr/local/bin/install.sh` but not
-   * `npm ci --prefix /abs/tools/wave`. Widening that check would newly refuse a
-   * config that validates today, so it is a deliberate follow-up rather than a
-   * silent behaviour change smuggled in beside a documentation fix.
+   * The engine does NOT refuse an absolute path in an ARGUMENT position, and
+   * that is a RULING rather than an unclosed gap: {@link normalizeEngineInstall}
+   * rejects a leading `/` at index 0 of the whole binding, which catches
+   * `/usr/local/bin/install.sh` but not `npm ci --prefix /abs/tools/wave`.
+   * Widening the validator would newly refuse a config that validates today — a
+   * major at blast radius zero, and on the removal list of the vocabulary grill
+   * rather than in a row that only meant to make the spelling visible.
+   *
+   * What the spelling gets instead is a WARNING: `config validate` names an
+   * absolute path in either binding's argument position, on stderr, with the
+   * exit code untouched (issue #761, folding #746). The rule the validator
+   * enforces is exactly the rule it enforced before; what changed is that the
+   * form it cannot see is no longer silent.
    */
   install?: string;
 }
@@ -779,8 +786,11 @@ export function normalizeEngineCli(
  * bearing (issue #725).** It is the shape a refused author is told to use, so
  * it is the shape that gets copied. `npm ci --prefix tools/wave` is immune to
  * the symlinked-prefix EUSAGE failure documented on {@link EngineConfig.install};
- * `npm ci --prefix /abs/tools/wave` would still pass this validator today and is
- * exactly the form that breaks. Do not "clarify" the example by absolutising it.
+ * `npm ci --prefix /abs/tools/wave` still passes this validator — deliberately,
+ * because refusing it is a major — and is exactly the form that breaks. Do not
+ * "clarify" the example by absolutising it, and do not close the
+ * argument-position hole here: `config validate` WARNS about that spelling
+ * (issue #761), which is the enforcement tier the ruling puts it in.
  */
 export function normalizeEngineInstall(
   value: unknown,
@@ -836,7 +846,19 @@ export interface WaveConfig {
  * deliberately does NOT validate: its refusal ladder is store-side, for the
  * reason spelled out above {@link MarkdownStoreConfig}. The key survives the
  * load verbatim, which is exactly what `readGoalContainer` (cli-store.ts) then
- * re-checks.
+ * re-checks — and, since issue #761, what the store-preflight's own
+ * `goalBinding` reading exercises at setup time rather than at the first goal op.
+ *
+ * **What this function does NOT grade, and why that is now visible rather than
+ * silent (issue #761).** It validates the discriminants it needs to construct a
+ * store and the four keys above, and reads past everything else: an unknown key
+ * in any block, a `goal`/`states`/`categoryLabels` that is not an object, an
+ * `eligibility` that is not an array, a profile that is not a profile. Every one
+ * of those used to validate `ok` and surface at the first runtime use, or never.
+ * They are reported now — as WARNINGS, by `config validate` (`config-cli.ts`),
+ * never as refusals here: `wave.config.json` is a semver contract (ADR-0035) and
+ * a new refusal on a config that validates today is a major at blast radius
+ * zero. This function's refusals are exactly the refusals it had.
  */
 export function loadWaveConfig(path: string): WaveConfig {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;

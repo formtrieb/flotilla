@@ -2,7 +2,7 @@
  * wave-config.spec.ts — TDD spec for the minimal store-selection config slice.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   mkdirSync,
   mkdtempSync,
@@ -66,10 +66,47 @@ import {
   type LinearStateMapConfig as LinearStateMapConfigFromRoot,
 } from './index';
 
+// `config validate`'s runner, reached from the LOADER's own spec — deliberately,
+// and worth stating rather than leaving to look like a stray (issue #761).
+//
+// The non-fatal findings this file asserts on below (an unknown key, a wrong
+// shape, an absolute path in an argument position) are WARNINGS the loader
+// itself does not emit: `loadWaveConfig` returns a `WaveConfig` and cannot grow
+// a second return value, and a collector exported from `wave-config.ts` for the
+// runner to import would fail `barrel-drift.spec.ts` unless `index.ts` moved in
+// the same diff — outside this row's declared Files globs. So the collector
+// lives beside its one consumer and this file reaches it through that consumer.
+// The claims stay the loader's: what the schema declares, and what a config that
+// declares it is told.
+import { runConfig } from './config-cli';
+
 function loadConfigFromString(json: string) {
   const p = join(mkdtempSync(join(tmpdir(), 'wc-')), 'wave.config.json');
   writeFileSync(p, json, 'utf8');
   return loadWaveConfig(p);
+}
+
+/** `config validate` over one raw config value: its exit code, its warnings, its ok line. */
+function validateRaw(raw: unknown): { code: number; warnings: string[]; stdout: string } {
+  const p = join(mkdtempSync(join(tmpdir(), 'wc-warn-')), 'wave.config.json');
+  writeFileSync(p, JSON.stringify(raw), 'utf8');
+  let out = '';
+  let err = '';
+  const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((c: unknown) => {
+    out += String(c);
+    return true;
+  }) as typeof process.stdout.write);
+  const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((c: unknown) => {
+    err += String(c);
+    return true;
+  }) as typeof process.stderr.write);
+  try {
+    const code = runConfig(['validate', p]);
+    return { code, warnings: err.split('\n').filter((l) => l.startsWith('warning: ')), stdout: out };
+  } finally {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+  }
 }
 
 /** Load a github-store config carrying the given raw `engine` value. */
@@ -595,17 +632,46 @@ describe('engine.install — the example the schema hands a refused author is sy
     expect(loadEngineInstall(statedExample())).toBe('npm ci --prefix tools/wave');
   });
 
-  // The known gap, pinned as behaviour rather than left to be rediscovered.
-  // The leading-slash rule is checked at index 0 of the WHOLE binding, so an
-  // absolute path in an ARGUMENT position passes today. Widening it would newly
-  // refuse a config that validates now — a public-API change, deliberately not
-  // smuggled in here. This pin makes the gap visible and any future closing of
-  // it a conscious edit of this file.
-  it('KNOWN GAP: an absolute path in an ARGUMENT position is still accepted today', () => {
+  // What used to be a KNOWN GAP pin (issue #746, folded into #761) is now a
+  // real assertion, and the two halves are the whole of the ruling.
+  //
+  // The gap was: the leading-slash rule is a POSITION check at index 0 of the
+  // WHOLE binding, so `npm ci --prefix /abs/tools/wave` — the exact spelling
+  // that made a lockfile-exact install accuse a package that does not exist —
+  // validated. Widening the VALIDATOR to refuse it would newly reject a config
+  // that validates today: a major at blast radius zero, on the vocabulary
+  // grill's removal list rather than in this row.
+  //
+  // So the acceptance is UNCHANGED and deliberately re-asserted here (half one),
+  // and the spelling is now NAMED by a warning (half two). A pin that only said
+  // "still accepted" is exactly what let the gap stay silent.
+  it('an absolute path in an ARGUMENT position is still ACCEPTED — the validator is untouched', () => {
     expect(loadEngineInstall('npm ci --prefix /abs/tools/wave')).toBe('npm ci --prefix /abs/tools/wave');
     // …while the same absolute path at index 0 is refused, which is the rule
-    // that exists — the contrast is the whole point of the pin.
+    // that exists — the contrast is the whole point.
     expect(() => loadEngineInstall('/abs/tools/wave/install.sh')).toThrow(/must be repo-relative/);
+  });
+
+  it('…and `config validate` now NAMES that spelling as a warning, without refusing it', () => {
+    const argumentForm = validateRaw({
+      store: { kind: 'github' },
+      engine: { install: 'npm ci --prefix /abs/tools/wave' },
+    });
+    expect(argumentForm.code).toBe(0); // a warning, never a refusal
+    expect(argumentForm.warnings).toHaveLength(1);
+    expect(argumentForm.warnings[0]).toContain('"/abs/tools/wave"');
+    expect(argumentForm.warnings[0]).toContain('ARGUMENT');
+    expect(argumentForm.stdout).toContain('engine.install: npm ci --prefix /abs/tools/wave');
+
+    // NEGATIVE CONTROL, on the SAME binding differing only in that one word:
+    // the repo-relative prefix — the shape the refusal itself offers — is
+    // silent. A warning that fired on both would be no warning at all.
+    const repoRelative = validateRaw({
+      store: { kind: 'github' },
+      engine: { install: statedExample() },
+    });
+    expect(repoRelative.code).toBe(0);
+    expect(repoRelative.warnings).toEqual([]);
   });
 });
 
@@ -1547,6 +1613,149 @@ describe('loadWaveConfig — verify.commands[].needs is a CLOSED set of three (A
       expect(() =>
         loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, verify: { profiles } })),
       ).not.toThrow();
+    }
+  });
+});
+
+// ── the unknown-key warning's key tables ARE these declarations (issue #761) ─
+//
+// The warning that names a typo'd key has to know which keys are not typos, and
+// that list is the schema's own — every `interface` in `wave-config.ts` plus the
+// three in `verify.ts`. It is restated in `config-cli.ts` (a new EXPORTED
+// collector here would fail `barrel-drift.spec.ts`, whose repair lives outside
+// this row's globs — see the import note at the top of this file), so the two
+// can drift: a key added to an interface below would be reported as a typo by
+// the warning above it, which is the worst possible failure mode for a check
+// whose whole job is telling an author what is real.
+//
+// This block closes that WITHOUT a hand-kept third list, by reading the
+// declarations themselves with the TypeScript compiler API — the same tool and
+// the same reason the `store.goal` declaration check above reaches for it — and
+// driving a real `config validate` from them:
+//
+//   (a) the fixture below must declare EXACTLY the keys each interface declares
+//       (so a new key on an interface fails HERE, naming the interface), and
+//   (b) that fixture must validate with no unknown-key warning (so the tables in
+//       `config-cli.ts` must have learned it too).
+//
+// A key added in one place and not the other cannot be green in both.
+
+describe('the unknown-key warning knows exactly the keys the schema declares (issue #761)', () => {
+  const WAVE_CONFIG_SRC = join(__dirname, 'wave-config.ts');
+  const VERIFY_SRC = join(__dirname, 'verify.ts');
+
+  /** The property names one interface declares, read off the module's own source. */
+  function declaredKeys(file: string, interfaceName: string): string[] {
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(file, 'utf8'),
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+    const names: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node) && node.name.text === interfaceName) {
+        for (const member of node.members) {
+          if (ts.isPropertySignature(member) && ts.isIdentifier(member.name)) {
+            names.push(member.name.text);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return names.sort();
+  }
+
+  /** Every block of a config, fully populated with declared keys only. */
+  const GOAL = { container: 'milestone' };
+  const STATES = {
+    queued: 'Todo',
+    inFlight: 'In Progress',
+    inReview: 'In Review',
+    unclaimTarget: 'Backlog',
+    unplanned: 'Canceled',
+    doneState: 'Done',
+  };
+  const VERIFY = {
+    profiles: [
+      {
+        name: 'p',
+        appliesTo: ['src/**'],
+        commands: [{ cwd: 'tools/wave', command: 'npm ci', needs: { host: true } }],
+      },
+    ],
+  };
+  const CLEANUP = { disposableNames: ['target'], extraRoots: ['/scratch'] };
+  const ENGINE = { cli: './node_modules/.bin/flotilla-engine', install: 'npm ci --prefix tools/wave' };
+  const STORES = {
+    markdown: { kind: 'markdown', repoRoot: '/x', slug: 's', eligibility: ['ready-for-agent'], goal: { container: 'goal-file' } },
+    github: { kind: 'github', eligibility: ['ready-for-agent'], goal: GOAL },
+    linear: {
+      kind: 'linear',
+      team: 'EX',
+      project: 'P',
+      eligibility: ['ready-for-agent'],
+      states: STATES,
+      categoryLabels: { bug: 'Bug' },
+      goal: { container: 'project' },
+    },
+  } as const;
+
+  /** The fully-declared config for one store kind — every block, every key. */
+  function fullConfig(kind: keyof typeof STORES): Record<string, unknown> {
+    return { store: STORES[kind], verify: VERIFY, cleanup: CLEANUP, engine: ENGINE };
+  }
+
+  it.each([
+    ['WaveConfig', WAVE_CONFIG_SRC, Object.keys(fullConfig('github'))],
+    ['MarkdownStoreConfig', WAVE_CONFIG_SRC, Object.keys(STORES.markdown)],
+    ['GitHubStoreConfig', WAVE_CONFIG_SRC, Object.keys(STORES.github)],
+    ['LinearStoreConfig', WAVE_CONFIG_SRC, Object.keys(STORES.linear)],
+    ['StoreGoalConfig', WAVE_CONFIG_SRC, Object.keys(GOAL)],
+    ['LinearStateMapConfig', WAVE_CONFIG_SRC, Object.keys(STATES)],
+    ['CleanupConfig', WAVE_CONFIG_SRC, Object.keys(CLEANUP)],
+    ['EngineConfig', WAVE_CONFIG_SRC, Object.keys(ENGINE)],
+    ['VerifyConfig', VERIFY_SRC, Object.keys(VERIFY)],
+    ['VerifyProfile', VERIFY_SRC, Object.keys(VERIFY.profiles[0])],
+    ['VerifyCommand', VERIFY_SRC, Object.keys(VERIFY.profiles[0].commands[0])],
+  ])('%s: the fixture below declares exactly the keys the interface does', (name, file, fixtureKeys) => {
+    expect(declaredKeys(file, name)).toEqual([...fixtureKeys].sort());
+  });
+
+  it('the extractor really reads the source — an interface that is not there reports nothing', () => {
+    // A reader that returned the same answer whatever it was asked would make
+    // every assertion above green for the wrong reason.
+    expect(declaredKeys(WAVE_CONFIG_SRC, 'NoSuchInterfaceHere')).toEqual([]);
+    expect(declaredKeys(WAVE_CONFIG_SRC, 'EngineConfig')).not.toEqual([]);
+  });
+
+  it.each(['markdown', 'github', 'linear'] as const)(
+    'a fully-declared %s config draws NO unknown-key warning — the tables learned every one of them',
+    (kind) => {
+      const { code, warnings } = validateRaw(fullConfig(kind));
+      expect(code).toBe(0);
+      expect(warnings.filter((w) => w.includes('unknown key'))).toEqual([]);
+    },
+  );
+
+  it('POSITIVE CONTROL: one undeclared key added to the SAME fixture is named, in each block', () => {
+    // The pair that makes the silence above mean something. Same config, one
+    // extra key per block, and every one of them is reported — so "no warning"
+    // above is a reading of the config rather than a walk that never fires.
+    const base = fullConfig('linear');
+    const withTypos = {
+      ...base,
+      unknownTop: 1,
+      store: { ...STORES.linear, eligibilty: [], goal: { container: 'project', containerr: 'x' }, states: { ...STATES, queuedd: 'Todo' } },
+      cleanup: { ...CLEANUP, disposableNamez: [] },
+      engine: { ...ENGINE, instal: 'npm ci' },
+    };
+    const { code, warnings } = validateRaw(withTypos);
+    expect(code).toBe(0); // still never a refusal
+    const named = warnings.join('\n');
+    for (const typo of ['unknownTop', 'eligibilty', 'containerr', 'queuedd', 'disposableNamez', 'instal']) {
+      expect(named, `expected the walk to name ${typo}`).toContain(`"${typo}"`);
     }
   });
 });

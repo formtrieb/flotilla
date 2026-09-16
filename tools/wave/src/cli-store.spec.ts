@@ -36,7 +36,12 @@ import { RealGitHubApi, GitHubApiError } from './adapters/github/real-github-api
 import { FakeGitHubHttp } from './adapters/github/github-http-fake';
 import type { GitHubHttpRequest, GitHubHttpResponse } from './adapters/github/github-http';
 import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
-import type { IssueStore } from './adapters/issue-store';
+import {
+  GOAL_CONTAINERS,
+  GoalBindingError,
+  type IssueStore,
+  type GoalContainer,
+} from './adapters/issue-store';
 // TYPE-ONLY, through the PACKAGE ROOT. Erased at compile time, so it loads no
 // module and cannot disturb the `vi.mock` + `await import` ordering the rest of
 // this file depends on — while still proving the named `store.goal` shape
@@ -1540,5 +1545,207 @@ describe('resolveGoalContainer — the argv-facing spelling', () => {
       store: { kind: 'markdown', repoRoot, slug: '2026-08-15-nogoal' },
     });
     expect(resolveGoalContainer(['--config', path])).toBeUndefined();
+  });
+});
+
+// ── the goal binding, exercised at PREFLIGHT time (issue #761, ADR-0044) ─────
+//
+// Before this, `store.goal.container` was read at the CLI edge only — by the
+// seven `goal-*` ops — so a Linear config that declared none, a typo'd role, an
+// invented role and a role the store does not ship were all indistinguishable
+// from a healthy config until the first goal op ran. `config validate` said
+// `ok`; the preflight never looked. The reading below is where they stop being
+// invisible.
+//
+// ADVISORY, NEVER `fail`. The refusal is the trap here twice over: a Linear
+// consumer that declares no container is the ordinary, supported case
+// (ADR-0044 decision 4), so failing the preflight on it would turn every such
+// consumer's exit 0 into an exit 1 — a behaviour change no acceptance criterion
+// asked for and the one this row is forbidden to make.
+
+describe('preflightStore — the goal binding is exercised, not left to the first goal op (issue #761)', () => {
+  /** A markdown store over a fresh scratch root — the one kind that needs a real tree. */
+  function markdownStore(): IssueStore {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-goalpf-'));
+    mkdirSync(join(repoRoot, '.scratch'), { recursive: true });
+    return new MarkdownFsStore({ repoRoot, slug: '2026-09-16-goalpf' });
+  }
+
+  it('reports the resolved role when the binding resolves — github and markdown default, linear declares', async () => {
+    const github = await preflightStore(
+      { store: { kind: 'github' } },
+      new GitHubIssuesStore({ api: new InMemoryGitHubApi() }),
+    );
+    expect(github.goalBinding?.status).toBe('pass');
+    expect(github.goalBinding?.container).toBe('milestone');
+    expect(github.goalBinding?.detail).toContain('defaults to "milestone"');
+
+    const linear = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', goal: { container: 'project' } } },
+      new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+    );
+    expect(linear.goalBinding?.status).toBe('pass');
+    expect(linear.goalBinding?.container).toBe('project');
+  });
+
+  it('a Linear config with NO goal.container is reported UNBOUND — the case the issue title names', async () => {
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX' } },
+      new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+    );
+    expect(report.goalBinding?.status).toBe('advisory');
+    expect(report.goalBinding?.failure).toBe('unbound');
+    // The refusal a goal verb would have thrown LATER, quoted verbatim — same
+    // sentence, earlier reader.
+    expect(report.goalBinding?.detail).toContain('store.goal.container');
+    expect(report.goalBinding?.detail).toContain('project | initiative');
+  });
+
+  it('a typo\'d role is reported unknown-container, with the author\'s own bytes echoed', async () => {
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', goal: { container: 'not-a-real-container' } } } as never,
+      new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+    );
+    expect(report.goalBinding?.status).toBe('advisory');
+    expect(report.goalBinding?.failure).toBe('unknown-container');
+    expect(report.goalBinding?.configured).toBe('not-a-real-container');
+  });
+
+  it('a REAL role this store does not ship is reported unrealized-container', async () => {
+    const report = await preflightStore(
+      { store: { kind: 'github', goal: { container: 'project' } } },
+      new GitHubIssuesStore({ api: new InMemoryGitHubApi() }),
+    );
+    expect(report.goalBinding?.status).toBe('advisory');
+    expect(report.goalBinding?.failure).toBe('unrealized-container');
+    expect(report.goalBinding?.configured).toBe('project');
+  });
+
+  it('a non-object `store.goal` is reported rather than read past', async () => {
+    const report = await preflightStore(
+      { store: { kind: 'github', goal: 'milestone' } } as never,
+      new GitHubIssuesStore({ api: new InMemoryGitHubApi() }),
+    );
+    expect(report.goalBinding?.status).toBe('advisory');
+    expect(report.goalBinding?.detail).toContain('"store.goal" must be an object');
+  });
+
+  it('costs no tracker call — it is computed for a store that implements nothing at all', async () => {
+    // The markdown arm of the pre-existing check-name suite passes `{} as
+    // IssueStore`; this reading has to survive that, which is the structural
+    // statement that it reads CONFIG and never the store. A `listGoals` probe
+    // would throw here — and on a real Linear workspace would be an N+1 listing.
+    const report = await preflightStore(
+      { store: { kind: 'markdown', repoRoot: '/tmp/x', slug: 's' } },
+      {} as IssueStore,
+    );
+    expect(report.goalBinding?.status).toBe('pass');
+    expect(report.goalBinding?.container).toBe('goal-file');
+  });
+
+  it('NEGATIVE CONTROL: an unusable binding moves neither `ok` nor the verb exit code', async () => {
+    // Both halves on ONE pair of configs differing only in the binding. Half
+    // one: the healthy config and the unbound one agree on `ok`.
+    const api = new InMemoryLinearApi();
+    const healthy = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', goal: { container: 'project' } } },
+      new LinearIssuesStore({ api }),
+    );
+    const unbound = await preflightStore(
+      { store: { kind: 'linear', team: 'EX' } },
+      new LinearIssuesStore({ api }),
+    );
+    expect(healthy.goalBinding?.status).toBe('pass');
+    expect(unbound.goalBinding?.status).toBe('advisory');
+    expect(healthy.ok).toBe(true);
+    expect(unbound.ok).toBe(true);
+    // Half two: `ok` is still computed from `checks` ALONE — no check row was
+    // added, so an advisory binding cannot reach it even by accident.
+    expect(unbound.checks.some((c) => c.status === 'fail')).toBe(false);
+
+    // …and through the verb, which is where an exit code could actually change.
+    const dir = mkdtempSync(join(tmpdir(), 'cli-store-goalpf-'));
+    const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+    let printed = '';
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((c: unknown) => {
+      printed += String(c);
+      return true;
+    }) as typeof process.stdout.write);
+    let code: number;
+    try {
+      code = await runStorePreflight(
+        ['preflight', '--config', path],
+        new LinearIssuesStore({ api }),
+      );
+    } finally {
+      outSpy.mockRestore();
+    }
+    expect(code).toBe(0);
+    expect(JSON.parse(printed).goalBinding.failure).toBe('unbound');
+  });
+
+  // ─── the copy this reading rests on, held to the stores themselves ─────────
+  //
+  // `STORE_GOAL_BINDINGS` (cli-store.ts) restates each store's own
+  // `GOAL_CONTAINERS_REALIZED` / `DEFAULT_GOAL_CONTAINER`, because those are
+  // module-private in the three adapters. A second copy of a fact is the drift
+  // class this repo closes systematically, and this matrix is how THIS one is
+  // closed: for every (store kind × role) pair, plus the nothing-declared case,
+  // the preflight's verdict must agree with what the real store does when a goal
+  // verb is actually called. A store that starts realizing a new role, drops a
+  // default, or renames one turns this red rather than leaving the table quietly
+  // wrong.
+  //
+  // `listGoals` is the goal verb used because it is the only READ-ONLY one that
+  // takes no id — it is a matrix probe here, over in-memory fakes, and
+  // deliberately NOT what the preflight itself runs (see `goalBindingReading`).
+
+  const MATRIX_ROLES: readonly (GoalContainer | undefined)[] = [undefined, ...GOAL_CONTAINERS];
+
+  it('matrix: the preflight verdict agrees with the real store for every (kind × role) pair', async () => {
+    const kinds = ['github', 'linear', 'markdown'] as const;
+    const pairs: string[] = [];
+    for (const kind of kinds) {
+      for (const role of MATRIX_ROLES) {
+        const store: IssueStore =
+          kind === 'github'
+            ? new GitHubIssuesStore({ api: new InMemoryGitHubApi() })
+            : kind === 'linear'
+              ? new LinearIssuesStore({ api: new InMemoryLinearApi() })
+              : markdownStore();
+        const config = {
+          store: {
+            kind,
+            ...(kind === 'linear' ? { team: 'EX' } : {}),
+            ...(kind === 'markdown' ? { repoRoot: '/tmp/x', slug: 's' } : {}),
+            ...(role === undefined ? {} : { goal: { container: role } }),
+          },
+        } as never;
+
+        const report = await preflightStore(config, store);
+
+        let storeRefused = false;
+        try {
+          await store.listGoals(role);
+        } catch (err) {
+          storeRefused = err instanceof GoalBindingError;
+        }
+
+        pairs.push(
+          `${kind}/${role ?? '<none>'}: preflight=${report.goalBinding?.status} store=${storeRefused ? 'refuses' : 'resolves'}`,
+        );
+        expect(
+          report.goalBinding?.status === 'advisory',
+          `${kind} × ${role ?? '<none declared>'}`,
+        ).toBe(storeRefused);
+      }
+    }
+    // A matrix that probed nothing would pass every assertion above. Five roles
+    // (the four containers plus the nothing-declared case) across three kinds.
+    expect(pairs).toHaveLength(15);
+    // …and it is not uniform in either direction — both verdicts really occur,
+    // so the agreement above is agreement about something.
+    expect(pairs.some((p) => p.includes('preflight=pass'))).toBe(true);
+    expect(pairs.some((p) => p.includes('preflight=advisory'))).toBe(true);
   });
 });
