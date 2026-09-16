@@ -932,7 +932,7 @@ describe('validateIssue — literal-files-exist advisory (gate 7)', () => {
   });
 });
 
-// ─── Gate 8: verify-profile-coverage advisory check (FOR-127) ────────────────
+// ─── Gate 8: verify-profile-coverage advisory check (#127) ────────────────
 
 describe('validateIssue — verify-profile-coverage advisory (gate 8)', () => {
   it('defers when no verify config is supplied to this call (capability gap, not a claim about the row)', () => {

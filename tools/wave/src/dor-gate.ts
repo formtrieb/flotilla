@@ -24,7 +24,7 @@
  *      `appliesTo` (advisory warn-only) — see {@link checkVerifyProfileCoverage}.
  *      A row whose files match no profile is not wrong (some work has no
  *      automated gate) but it must be *stated*, not silently equivalent to a
- *      fully verify-backed approve (FOR-127).
+ *      fully verify-backed approve (#127).
  *   9. The **staleness advisory**: has the repo's default branch touched any of
  *      the row's declared `Files:` since the tracker last recorded a change to
  *      the row? — see {@link checkFilesTouchedSinceTrackerUpdate}. Advisory
@@ -1049,7 +1049,7 @@ function resolveDeclaredFiles(
 /**
  * Gate 8 — a row whose declared `Files:` intersect no configured verify
  * profile's `appliesTo` currently lands `approve` with nothing compiled or
- * tested (the defect this gate exists to surface — see issue FOR-127). This is
+ * tested (the defect this gate exists to surface — see issue #127). This is
  * cheap to detect: the declared files are known at DoR time and the verify
  * profiles' `appliesTo` globs are in the config; reusing {@link verifyCommands}
  * — the EXACT selection logic the Worker/Reviewer verify re-run will use —
@@ -1095,7 +1095,7 @@ function resolveDeclaredFiles(
  *   - otherwise: expand the row's declared files (same policy as Gate 2), then
  *     — three outcomes, pinned by the spec:
  *       - NO file matches any profile     → `'warn'`, the pre-existing text
- *         unchanged (byte-identical — this is the FOR-127 case this gate was
+ *         unchanged (byte-identical — this is the #127 case this gate was
  *         first built for, not touched by #711).
  *       - EVERY file matches some profile → `'pass'`, no reason (byte-identical
  *         to the pre-#711 full-coverage text — the negative control).
@@ -1123,7 +1123,7 @@ function checkVerifyProfileCoverage(
   const commands = verifyCommands(resolved, verify);
   if (commands.length === 0) {
     // No declared file matches any profile — the fully-uncovered case this
-    // gate was originally built for (FOR-127). Text unchanged by #711.
+    // gate was originally built for (#127). Text unchanged by #711.
     const profileNames = verify.profiles.map((p) => p.name).join(', ');
     return {
       name,

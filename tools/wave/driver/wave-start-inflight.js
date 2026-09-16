@@ -271,6 +271,18 @@ const REVIEWER_AGENT = '<agent name — bare in the source form, <plugin>:<agent
 
 const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('\n')
 
+// Render one value as a POSIX shell SINGLE-QUOTED word (issue #776, folded into
+// the pointer-truth row). A double-quoted `--title "<title>"` is what the Worker
+// brief used to print, and inside double quotes the shell still expands
+// backticks, `$(…)` and `$NAME` — so a PR title that legitimately begins with a
+// backtick-quoted token (`` `spine set-branch` honours … ``) ran COMMAND
+// SUBSTITUTION on the way to the host, live. Single quotes suppress every
+// expansion there is; the only character they cannot carry is a single quote
+// itself, which closes the run, emits an escaped `\'`, and reopens — the
+// canonical `'\''` idiom. The row data is untouched: `issue.prTitle` stays the
+// plain title and the quoting happens HERE, where the shell line is rendered.
+const sq = (value) => `'${String(value).replace(/'/g, "'\\''")}'`
+
 // Renders a row's granted scope extensions (ADR-0041) — a projection of this
 // row's scope-extension disclosures in the spine, never authored by hand
 // (§Per-row data, "The recompose-refetch rule" above). Absent or empty alike
@@ -321,8 +333,16 @@ const ISSUES = [
     risk: 'mechanical',            // mechanical | isolated-refactor | cross-feature-refactor | public-API-change
     iteration: 1,
     // Binds BOTH the Worker (Stage 1) and the Reviewer (Stage 3, ADR-0007
-    // Amendment 2026-07-31) — one Risk-derived tier for the whole row.
-    model: 'sonnet',               // 'opus' for cross-feature-refactor / public-API-change, else 'sonnet'
+    // Amendment 2026-07-31) — one tier for the whole row, bound to ONE concrete
+    // model. The concrete id is the CONSUMER's, never the engine's: compose-driver
+    // echoes the model the Coordinator recorded for this row with
+    // `spine set-branch --model` (or this row's `--row-meta` `model` override) and
+    // REFUSES the compose when neither exists, naming the row's Risk-derived tier
+    // (`heavy` for cross-feature-refactor / public-API-change, `standard`
+    // otherwise) and that remedy. No model id is spelled anywhere in the engine or
+    // in this template — a brand literal in a durable artefact is exactly what
+    // ADR-0012 (Amendment 2026-09-16) retired.
+    model: '<the concrete model recorded for this row — consumer-owned, never spelled here>',
     anchorSha: '<COORDINATOR_HEAD_SHA>',   // git rev-parse HEAD at dispatch time — the wave anchor
     coordinatorBranch: 'feat/<slug>',
     // The consumer's own dependency-install command(s), resolved by
@@ -816,7 +836,7 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
    # earlier call left you in it. Do not prefix a cd; there is nothing to set up.
    ${WAVE_CLI} host-pr create \\
      --branch ${issue.branch} \\
-     --title "${issue.prTitle}" \\
+     --title ${sq(issue.prTitle)} \\
      --body-file .flotilla/tmp/pr-body-${issue.id}.md
    # exit 0 → stdout is one JSON object; its .url (outcome: created | reused) is your prUrl.
    #
@@ -839,6 +859,8 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
    #     report blocked with the printed .reason — never let step 4's re-query
    #     of that same URL read as success for a rewrite that never happened.
    \`\`\`
+   **RUN THAT \`--title\` LINE EXACTLY AS PRINTED, AND NEVER RE-QUOTE THE TITLE.** It is already rendered as a SINGLE-QUOTED shell word, with any single quote inside the title written as the \`'\\''\` idiom, so whatever the title contains — a backtick, a double quote, a \`$\` — reaches the host verbatim. Do not swap those single quotes for double quotes, do not add a second layer of quoting, and do not retype the title from the PR-body file: inside DOUBLE quotes the shell still expands backticks, \`\$(…)\` and \`\$NAME\`, and a title that legitimately opens with a backtick-quoted token ran command substitution on its way to the host, live. If the line looks odd to you, that is the escaping doing its job.
+
    \`--body-file\` and \`--body\` are alternatives: exactly one of them, never both and never neither, or the verb exits 2 naming both flags. The verb reads GITHUB_TOKEN from your env and never prints it.
 
    Run that command **bare** — no \`|\`, no \`$( )\`, no assignment. Its JSON lands in your tool output, where you can read it; you do not need it in a shell variable, and step 4 explains why you must not put it in one.
@@ -921,7 +943,7 @@ ${INSTALL_FORM_RULE}
 
 **ONE BASH CALL PER STEP** (wave-shared Convention 13) — it binds you exactly as it binds the Worker, and this install is the first place it bites. Never fuse a setup step onto the command that matters (\`cd X && <command>\`) into one compound Bash call. Two unrelated mechanisms break on that shape, with opposite signatures: **the permission gate** splits a command on \`&&\`/\`||\`/\`;\`/\`|\`/\`&\`/newlines and requires EVERY subcommand to match a rule independently — so an allowlisted verify command carries only itself past the gate, never the \`cd\` in front of it, and a dialog mid-dispatch has nobody to answer it; and **the worktree-isolation guard** can REJECT a fused command as too complex to verify that it stays inside your worktree — no dialog, nothing run. A refusal is about the command's SHAPE, not about the check: re-issue it as separate calls. **NEVER drop a verify command or a floor check because its fused form was refused** — reporting a check as run when it was skipped is the exact failure this clause exists to stop, and it is yours to avoid as well as to catch in the Worker's evidence. Your cwd is reset to your dispatch root before every one of your Bash calls, so one \`pwd\` characterizes all of them and a preceding \`cd\` characterizes none: carry the directory in the command where a flag exists (\`npm ci --prefix <dir>\`, \`git -C <dir> …\`, \`--root\`/\`--cwd\`) rather than trusting a \`cd\` to reach the next call. **A bare newline joining two statements in one call is the same shape as \`&&\`, just quieter — and most refusals are not fusion at all:** \`case\`/\`esac\` has been observed refused standing entirely alone, and so has any command naming a **shell variable** — an \`if\`-guard on one, or a lone \`test -n "$VAR"\` — whether the variable was set in an earlier Bash call or in the same one. Shell state does not survive between your Bash calls either, so a value must be re-queried in the call that needs it rather than carried. Before re-deriving a split by hand, check the "Catalog — three shapes named in one wave's disclosure, live-reproduced in this dispatch" section in \`wave-shared/reference/convention-13-one-bash-call-per-step.md\` for what was actually verified — entry 1's evidence arc records three remedies that looked right and could not run. When reviewing a Worker's evidence for THIS convention, treat a Worker's own citation of that catalog as legitimate rather than a shortcut — including a Worker reporting it COULD NOT verify a working form for a cataloged shape (the catalog's own heredoc-spec-append entry is exactly that outcome, honestly reported rather than guessed). **And check what the Worker's PR evidence rests on:** its Termination step now confirms the PR with a \`host-pr status --branch\` re-query, so a report whose \`prUrl\` traces back to a shell-variable capture is following a recipe the brief no longer carries.
 
-**SECRET-SAFE** (wave-shared Convention 8): never echo any environment variable's VALUE — not even with fallback syntax like \${VAR:-no}. Never run whole-environment dumps (\`printenv\`, \`env\`, bare \`set\`). Never read a gitignored settings/secret file (e.g. \`cat .claude/settings.local.json\`, any \`.env\`-class file) — not even "to check config". Tool output must never contain a secret. **YOU DO NOT PROBE, EITHER** (wave-shared Convention 8's isolated-role rule): you never check whether a credential is set — sanctioned presence-test form or not. The Coordinator's own value-free credential-probe preflight already proved every configured credential resolves, once, before this row was dispatched, so there is nothing left here for you to check. **This is a policy rule, not a guard-driven one — say so precisely, per the measured posture (wave-shared Convention 13's Catalog entry 1):** unlike the Worker, whose \`agent()\` call sets \`isolation: 'worktree'\` explicitly (Stage 1), your own \`agent()\` call carries no \`isolation\` key at all (Stage 3) — the worktree-isolation guard's command-complexity refusal is established from the Worker's dispatch, not from yours. That sanctioned form (\`[ -n "$VAR" ] && echo set\`) is exactly the command the guard has rejected outright, live, when a Worker ran it (policy clause 11 above) — but that refusal is not established for your own dispatch, so the reason you skip this check is the policy rule itself, never a guard you are relying on to reject the form here. Nothing in your own review touches a credential regardless: you never call \`host-pr\` and never read a secret.
+**SECRET-SAFE** (wave-shared Convention 8): never echo any environment variable's VALUE — not even with fallback syntax like \${VAR:-no}. Never run whole-environment dumps (\`printenv\`, \`env\`, bare \`set\`). Never read a gitignored settings/secret file (e.g. \`cat .claude/settings.local.json\`, any \`.env\`-class file) — not even "to check config". Tool output must never contain a secret. **YOU DO NOT PROBE, EITHER** (wave-shared Convention 8's isolated-role rule): you never check whether a credential is set — sanctioned presence-test form or not. The Coordinator's own value-free credential-probe preflight already proved every configured credential resolves, once, before this row was dispatched, so there is nothing left here for you to check. **This is a policy rule, not a guard-driven one — say so precisely, per the measured posture (wave-shared Convention 13's Catalog entry 1):** unlike the Worker, whose \`agent()\` call sets \`isolation: 'worktree'\` explicitly (Stage 1), your own \`agent()\` call carries no \`isolation\` key at all (Stage 3) — the worktree-isolation guard's command-complexity refusal is established from the Worker's dispatch, not from yours. That sanctioned form (\`[ -n "$VAR" ] && echo set\`) is exactly the command the guard has rejected outright, live, when a Worker ran it — the \`\$VAR\`-expansion shape the **ONE BASH CALL PER STEP** rule directly above (wave-shared Convention 13) names — but that refusal is not established for your own dispatch, so the reason you skip this check is the policy rule itself, never a guard you are relying on to reject the form here. Nothing in your own review touches a credential regardless: you never call \`host-pr\` and never read a secret.
 
 ## Original issue spec (embedded — not a tracker reference)
 The store config that would resolve a tracker id may itself be gitignored and
