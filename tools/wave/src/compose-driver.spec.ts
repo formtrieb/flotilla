@@ -377,8 +377,14 @@ describe('compose-driver — a composed driver runs under the Workflow-tool cont
     const { calls } = await runComposedDriver(script);
     const brief = calls.find((c) => c.opts.label === 'scribe-report:42')!.brief;
     expect(brief).toContain(`\`${CONSTANTS.repoRoot}\``);
-    expect(brief).toContain(`--dir "${CONSTANTS.reportsDir}"`);
-    expect(brief).toContain(`"${CONSTANTS.repoRoot}/.flotilla/tmp/report-42-1.json"`);
+    // ADR-0051 decisions 5 and 6: the Scribe call spells the payload file and
+    // the sidecar directory with this verb's CANONICAL flags — never `--dir`,
+    // never the leading positional, both of which the engine still accepts as
+    // silent aliases. `shipped-invocation-guard.spec.ts` holds the same line
+    // against the aggregated Verb contracts; this one pins the COMPOSED text.
+    expect(brief).toContain(
+      `write-report --report-file "${CONSTANTS.repoRoot}/.flotilla/tmp/report-42-1.json" --reports-dir "${CONSTANTS.reportsDir}" --id 42 --iter 1`,
+    );
     expect(brief).toContain('"outcome":"done"');
   });
 

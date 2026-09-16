@@ -164,7 +164,8 @@ const SCRIBE_RESULT_SCHEMA = {
 // typographic en-dash (this repo's own worktree path) — the unquoted form
 // fails outright (`No such file or directory`) on the retired `cd` and on any
 // path argument built from it alike; the quoted form succeeds. That is why the
-// payload path below is quoted too, not only the sidecar `--dir`.
+// payload path below is quoted too, not only the sidecar `--reports-dir` /
+// `--verdicts-dir`.
 const REPO_ROOT = '<absolute repo root, e.g. "/abs/path/to/flotilla">'
 // WAVE_CLI IS FILLED FROM THE CONSUMER'S CONFIGURED BINDING — `engine.cli` in
 // its `wave.config.json`, read once at compose time and pasted here verbatim.
@@ -248,10 +249,10 @@ const WAVE_CLI = 'NODE_USE_ENV_PROXY=1 <engine.cli from wave.config.json, verbat
 // no `cd` anywhere in its brief for that cwd to have been moved by: the Scribe
 // OBSERVES its cwd once and never sets it (§The Scribe's cwd, above). Absolute
 // is what makes these two dirs indifferent to the observation's outcome — a
-// cwd mismatch is a finding to report, never a reason `--dir` resolves
-// somewhere else. Like REPO_ROOT, both are interpolated SHELL-QUOTED wherever
-// they reach a brief (the Scribe's `--dir "${dir}"` call, below) for the same
-// reason.
+// cwd mismatch is a finding to report, never a reason the sidecar directory
+// flag resolves somewhere else. Like REPO_ROOT, both are interpolated
+// SHELL-QUOTED wherever they reach a brief (the Scribe's `--reports-dir` /
+// `--verdicts-dir "${dir}"` call, below) for the same reason.
 const REPORTS_DIR = '<absolute .flotilla/waves/<slug>/reports>'
 const VERDICTS_DIR = '<absolute .flotilla/waves/<slug>/verdicts>'
 
@@ -1078,6 +1079,29 @@ verdict, branchReviewed, riskClass, workerReportDigest, acVerification[], review
 function scribeBrief(kind, issue, iter, payload) {
   const dir = kind === 'report' ? REPORTS_DIR : VERDICTS_DIR
   const verb = kind === 'report' ? 'write-report' : 'write-verdict'
+  // The payload file lives on the write verb's `--<thing>-file` flag and the
+  // sidecar directory on its `--<thing>s-dir` flag — the CANONICAL spellings of
+  // ADR-0051 decisions 5 and 6. `--dir` and the leading positional both still
+  // resolve in the engine (they are the verb's silent aliases), but a shipped
+  // invocation spells the canonical form: the skill-side pin
+  // (`shipped-invocation-guard.spec.ts`) resolves every invocation this script
+  // composes against the router's aggregated Verb contracts and fails on an
+  // alias. Both flags differ per KIND, so the whole call is composed per kind
+  // rather than assembled from a shared `${verb}` — which also keeps each
+  // spelling a literal the pin can read out of this file statically.
+  //
+  // The payload path is spelled out in BOTH branches rather than hoisted into a
+  // shared const, and that is the shell-quoting invariant rather than an
+  // oversight: the drift spec asserts that every REPO_ROOT path interpolation
+  // in this file is immediately preceded by a `"` (the DA-F2 regression — this
+  // repo's own checkout path carries a space and a typographic en-dash, and an
+  // unquoted interpolation breaks on it silently). Hoisting the path into a JS
+  // const would be an unquoted occurrence even though every SHELL position it
+  // reaches is quoted, so it stays inside the quotes the invariant can see.
+  const writeCall =
+    kind === 'report'
+      ? `${WAVE_CLI} write-report --report-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --reports-dir "${dir}" --id ${issue.id} --iter ${iter}`
+      : `${WAVE_CLI} write-verdict --verdict-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --verdicts-dir "${dir}" --id ${issue.id} --iter ${iter}`
   // The producing agent's OWN pipeline label — Stage 1 (`worker:<id>`) for a
   // report, Stage 3 (`review:<id>`) for a verdict — always the stage
   // immediately before this Scribe's own in the SAME pipeline() fan-out
@@ -1172,7 +1196,7 @@ normalizes that one itself and tells you it did.)
    characters live — this repo's own checkout path carries both a space and a
    typographic en-dash — and an unquoted path argument breaks on one; every shell
    position this path reaches therefore keeps its quotes, the payload file no less than
-   the sidecar \`--dir\`. Prefer your file-writing TOOL over a shell heredoc: it takes
+   the sidecar directory flag. Prefer your file-writing TOOL over a shell heredoc: it takes
    the path directly — WITHOUT those quotes, which are the shell spelling and not part
    of the filename — creates the parent directory, and involves no shell at all, which
    also sidesteps the heredoc-to-file-with-braces shape Convention 13's Catalog records
@@ -1206,11 +1230,11 @@ normalizes that one itself and tells you it did.)
 ${JSON.stringify(payload)}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
-   ${WAVE_CLI} ${verb} "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --dir "${dir}" --id ${issue.id} --iter ${iter}
+   ${writeCall}
    (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, or a payload naming a DIFFERENT row than --id; exit 2 → usage/unreadable, or a --id that is not a bare id)
    Every path in that command is absolute and shell-quoted; nothing in it depends on a
    previous call having moved you anywhere.
-4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same --dir, same --iter. If it fails again, report the failure; never vary an argument to buy a zero.
+4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same sidecar directory, same --iter. If it fails again, report the failure; never vary an argument to buy a zero.
 Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure — and the step-1 cwd mismatch too, if there was one>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim, plus a \`cwd-mismatch:\` line if step 1 found one — a normalized decoration, a misnamed leftover in the sidecar dir, or a write made from the wrong cwd is a finding the Coordinator's routing step must not lose, and an exit-0 run is exactly where it would otherwise be dropped> }.`
 }
 

@@ -32,7 +32,7 @@ Convention 4 governs *closing* the issue; this governs *informing the merge deci
 Hand path:
 
 ```bash
-{{wave-cli}} render-verdict <verdictsDir> <id> --anchor <sha>
+{{wave-cli}} render-verdict --verdicts-dir <verdictsDir> --id <id> --anchor <sha>
 ```
 
 The single-owner render mechanism, when to call it in the terminator sequence, the guarded hand-run shell form (and why its empty-output check is inline, never split across calls), and the sidecar/PR/tracker responsibility split all live in `../evidence/convention-04-store-kind-close-phrase.md`.
