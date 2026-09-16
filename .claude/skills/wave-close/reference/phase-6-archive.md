@@ -4,8 +4,6 @@
 
 **Before running the gate below: any Coordinator find from phases 1–5 that is not yet a spine entry? Capture it now** — `{{wave-cli}} spine add-disclosure <wave-file> <row-id> --iter <n> --source coordinator --text "<the gap>"`, or `--wave` in place of `<row-id> --iter <n>` when no row owns it — because the archive move at the bottom of this file closes the capture window for good (ADR-0038). This is a backstop, not the rule: the rule is capture at discovery, in the phase where the find surfaced (wave-close SKILL.md body). The gate itself cannot help here — it forces a disposition onto what was recorded and can never force capture.
 
-A public-surface behaviour heads-up is a different capture than a disclosure: write it directly onto the affected tracker issue under a fixed `## Heads-up` section heading at this same disposition step, the carrier `docs/RELEASING.md`'s Upgrading-checklist rule reads at the next release cut, so the Coordinator writes it now instead of the release step having to reconstruct it later.
-
 ## Disclosure gate — BEFORE the archive move (ADR-0027)
 
 **Run this first, every time, before either Guard below.** It is a mechanical existence check, not a judgment call:
