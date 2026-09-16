@@ -36,6 +36,8 @@ Fix in dieser Wave: `anyOf` entfernt; die `prUrl`-Invariante lebt jetzt im Worke
 
 Jeder `gh`-Aufruf gegen die GitHub-API scheiterte an `Post "https://api.github.com/graphql": tls: failed to verify certificate: x509: OSStatus -26276` — der bekannte P-6/w2-F4-Proxy-TLS-Bruch. Die Engine-`host-pr`-Verbs (FOR-26) umgingen das über raw-`fetch` + `NODE_USE_ENV_PROXY=1`. Aber die aktuelle `wave-close`-Skill beschreibt das Landing noch als „P8/`gh`/manuell" und kennt die FOR-26-Verbs nicht — sie ist **stale gegen die tatsächlich verfügbare Engine-Fähigkeit**. Der Coordinator mergte manuell via `host-pr merge --branch <b> --method squash` (pro Branch).
 
+> **Korrektur (2026-09-16):** Die Bezeichnung „Proxy-TLS-Bruch" (und die P-6/w2-F4-Zuordnung dahinter) ist zurückgezogen — nicht messbar belegt. Eine kontrollierte Messung (2026-09-08) lässt `curl`/`git` identisch verschachtelt durch denselben Host/Proxy erfolgreich laufen und verschwindet mit sandbox-off — das nennt die eigentliche Ebene: die Sandbox, nicht der Proxy. Gemessener Befund: [ADR-0015](../adr/0015-triage-is-a-tracker-agnostic-triage-facet.md), Abschnitt „Evidence note 2026-09-08".
+
 → **FOR-27** (bereits gefiled: `wave-close --auto` Partial-Arm-Phase, blockedBy FOR-26 — jetzt frei) würde das automatisieren und die Skill-Prosa auf die FOR-26-Verbs umstellen. Bestätigt Priorität.
 
 **W5-F3 — Die `merge → pull → reconcile`-Reihenfolge (W4-F1) ist auf diesem Consumer sandbox-blockiert.**

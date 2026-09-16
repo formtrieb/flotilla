@@ -4,9 +4,10 @@
  *
  * The whole host boundary, exposed as ONE narrow CLI surface. Why a CLI verb at
  * all: a Workflow driver cannot import the engine, and `gh` left the host path
- * entirely (sandbox-denied creds + keychain/proxy TLS failures, live-proven in
- * runs 1 and 3) — so the permission classifier gets one auditable verb instead
- * of a broad `gh pr create` / `gh pr merge` bash rule. `create` is the staged
+ * entirely (sandbox-denied creds + TLS failing under the sandbox, live-proven
+ * in runs 1 and 3, mechanism unmeasured beyond that — ADR-0015) — so the
+ * permission classifier gets one auditable verb instead of a broad
+ * `gh pr create` / `gh pr merge` bash rule. `create` is the staged
  * second half of ADR-0023 ("every host write goes through the engine host
  * seam"): it retires the Worker terminator's last `gh pr create`.
  *

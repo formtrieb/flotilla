@@ -136,6 +136,11 @@ Format je Punkt: **Symptom → Ursache → Vorschlag**.
 - **Vorschlag:** Der P8-Auto-Merge-Pfad muss die Token-Auswahl bewusst treffen (Token mit Merge-Recht) und darf
   nicht blind `gh pr merge` (GraphQL) nutzen, wenn REST der stabilere Pfad ist. Als Precondition in `wave-setup`
   prüfen: „kann der konfigurierte Token tatsächlich mergen?"
+- **Korrektur (2026-09-16):** Die Zuordnung „Keychain-TLS" für `x509: OSStatus -26276` ist zurückgezogen — nicht
+  messbar belegt. Eine kontrollierte Messung (2026-09-08) lässt `curl`/`git` identisch verschachtelt durch
+  denselben Host/Proxy erfolgreich laufen und verschwindet mit sandbox-off — das nennt die eigentliche Ebene: die
+  Sandbox, nicht die Keychain. Gemessener Befund: [ADR-0015](../adr/0015-triage-is-a-tracker-agnostic-triage-facet.md),
+  Abschnitt „Evidence note 2026-09-08".
 
 #### P-7 — Linear-„Done" nicht erreichbar (Integration fehlt); `read-closing` bleibt `open`
 - **Symptom:** Nach dem Merge blieben alle drei Issues in Linear **`in-review`**. `read-closing` gab `{"state":"open"}`

@@ -42,6 +42,8 @@ Dieser Lauf lief **ohne** FOR-5s Dispatch-Log (FOR-5 wurde ja gerade erst gebaut
 
 **F8 — Umgebung: Sandbox-TLS + FS-Restriktionen.** `gh pr merge` scheiterte am Sandbox-Proxy-Cert (`OSStatus -26276`); der `ff`-Merge an der `.claude/skills/`-Schreibsperre (halb-applizierter Working-Tree, per `reset --hard origin/main` bereinigt). Beide mit sandbox-off gelöst. Reiht sich in **FOR-12** (proxy-sandbox-doc) ein und gehört ins Coordinator-Runbook. Nicht flotillas Schuld, aber flotilla-relevant.
 
+> **Korrektur (2026-09-16):** Die Zuordnung „Sandbox-Proxy-Cert" für `OSStatus -26276` ist zurückgezogen — nicht messbar belegt. Eine kontrollierte Messung (2026-09-08) lässt `curl`/`git` identisch verschachtelt durch denselben Host/Proxy erfolgreich laufen; ein Proxy-Zertifikat, das `gh` bräche, hätte auch sie gebrochen. Der Fehler verschwindet mit sandbox-off — das nennt die eigentliche Ebene: die Sandbox, nicht der Proxy. Gemessener Befund: [ADR-0015](../adr/0015-triage-is-a-tracker-agnostic-triage-facet.md), Abschnitt „Evidence note 2026-09-08".
+
 ## 3. Funde → Tickets
 
 | Fund | Schwere | Status |
