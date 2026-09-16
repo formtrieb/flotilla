@@ -19,7 +19,7 @@ Reading the configured value is only half an instruction. The other half is **ho
 wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }
 
 # --state is verdict-keyed, not iteration-keyed (wave-start/reference/start-mechanics.md "Verified routing outputs") — reviewing is correct for this approve/iteration-1 cell, not a fixed value for every call. `route-tuple` derives it for you; this single verb does not.
-wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing
+wave_cli route-verdict --verdict approve --iter 1 --risk mechanical --state reviewing
 ```
 
 `"$@"` is the one expansion that preserves argument boundaries in **every** shell, which is exactly why a function survives where a variable does not. Read every `{{wave-cli}}` in the tables below as that function — and read a **list** the same way: iterate a real array (`for x in "${IDS[@]}"`), never a bare `$LIST` in a `for` head.
@@ -108,7 +108,7 @@ Three properties of that table are the point, and each is pinned by a spec:
 - **The reason is in the output.** `ruled` carries `{ cell, ruling }` — on `route-verdict`'s printed JSON, and on `route-tuple`'s both in the `route-verdict` step and at the top level. Quote it from there in the closing report rather than reconstructing it from memory.
 
 ```bash
-wave_cli route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing \
+wave_cli route-verdict --verdict approve --iter 3 --risk mechanical --state reviewing \
   --ruling "Operator ruling 03:50 — the throwaway repository was deleted; re-dispatch the Reviewer only."
 ```
 

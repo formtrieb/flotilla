@@ -181,14 +181,16 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * `--report`→`--report-file`, and each positional twin gains its flag name
  * outright (`verdict-acked <dir> <id>` → `verdict-acked --verdicts-dir <dir>
  * --id <id>`). Only `--iteration`→`--iter` shortens. Measured over this
- * population, net: **158,779 B → 159,008 B (+229 B)**.
+ * population, net: **158,779 B → 158,998 B (+219 B)**.
  *
- * The raise is not optional here: the ADR-0050 ratchet row that set the previous
- * value left 221 B of headroom, and this diff spends 229 — the measure crosses
- * the old ceiling. The step is one full KB rather than the 229 B measured
- * because the constant sits on a whole-KB boundary by rule (asserted below) and
- * a kilobyte is the finest step that boundary admits; 160,000 is the next one up
- * from the new rounded measure.
+ * Why raise at all, when +219 still fits: the ADR-0050 ratchet row that set the
+ * previous value left 221 B of headroom, so this diff spends all but **2 B** of
+ * it. A ceiling two bytes from red is not a budget, it is a tripwire on the next
+ * sentence anyone writes in `wave-shared/`, and it would fire on a diff that has
+ * nothing to do with this rewrite. The step is one full KB rather than the 219 B
+ * measured because the constant sits on a whole-KB boundary by rule (asserted
+ * below) and a kilobyte is the finest step that boundary admits; 160,000 is the
+ * next one up from the new rounded measure, and leaves 1,002 B.
  *
  * Previously: this was the ratchet row's number (ADR-0050's last), which lowered
  * the constant to that wave's landed result instead of leaving the bytes alone —
@@ -207,12 +209,18 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 160_000;
  * diff that causes the growth, as the ratchet requires — the same cause as the
  * constant above, over the wider population (the standing load plus the step
  * load, `evidence/` excluded). Measured over this population:
- * **1,217,102 B → 1,217,655 B (+553 B)**. One full KB again, for the same reason
+ * **1,217,102 B → 1,217,645 B (+543 B)**. One full KB again, for the same reason
  * the number above moves by one: the whole-KB boundary admits no finer step.
- * Unlike the standing load, this measure still fits under its old ceiling
- * (1,217,655 < 1,218,000); the constant moves with its sibling so the two stay
- * one diff's growth apart rather than one of them sitting 345 B from red while
- * the same rewrite that caused the growth is still landing.
+ *
+ * Here the raise is load-bearing outright, and the reason is a SIBLING row, not
+ * this one. Read alone, +543 still fits (1,217,645 < 1,218,000). But this
+ * population is shared, and row #762 — `wave-setup` scaffolding both guard hooks
+ * — landed on `main` after this branch was cut, adding **792 B** to the same
+ * files (`wave-setup/SKILL.md` +46, `wave-setup/reference/setup-mechanics.md`
+ * +746). The number CI measures is the merge of the two: 1,217,102 + 543 + 792 =
+ * **1,218,437 B**, which is over the old 1,218,000 and under the new 1,219,000
+ * with 563 B to spare. A ceiling has to hold at the merge, not only on the
+ * branch that raises it.
  *
  * Previously: this was the ratchet row's number (ADR-0050's last) — 1,217,102 B
  * measured on `main` after every other row of the wave (#806–#814) had landed,

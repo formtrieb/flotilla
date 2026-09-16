@@ -54,9 +54,14 @@ import { flagContractForToken, type VerbContract } from './verb-contract';
  * ## What is NOT an invocation — and why that is a rule rather than a hatch
  *
  * The marker is also used to REFER to the binding rather than to call it, and
- * both shapes have to keep working. Three structural rules separate them, each
+ * both shapes have to keep working. Four structural rules separate them, each
  * chosen because it describes what the text IS, not which file it sits in:
  *
+ * - **A marker out of COMMAND POSITION** ({@link isCommandPosition}) — a word
+ *   character on either side of it. `wave_cli()` is the binding's own
+ *   definition and the shape prose cites it by (`` `wave_cli()` is a shell
+ *   function ``); it is the binding NAMED, and reading it as a call would
+ *   resolve `()` as a verb.
  * - **A bare mention.** `` `{{wave-cli}}` `` inside an inline code span with
  *   nothing after it — the corpus's own convention for naming the binding in
  *   prose ("read every `{{wave-cli}}` below as that one string"). Nothing
@@ -107,11 +112,22 @@ const MARKDOWN_ROOTS = ['.claude/skills', '.claude/agents'] as const;
 const DRIVER_DIR = 'tools/wave/driver';
 
 /**
- * The two spellings of "the engine binding, resolved" that a shipped file can
- * carry: the markdown template token, and the driver script's compose-time
- * constant. Both stand in the same place — immediately before a verb.
+ * The three spellings of "the engine binding, resolved" that a shipped file can
+ * carry: the markdown template token, the driver script's compose-time constant,
+ * and the **shell-function form** the corpus actually types in a `bash` fence
+ * (`wave_cli() { NODE_USE_ENV_PROXY=1 <engine.cli> "$@"; }`, Convention 12 half
+ * one — a binding lives in a function, never in a variable). All three stand in
+ * the same place: immediately before a verb.
+ *
+ * The function form was missing when this guard first landed, and the review
+ * that caught it is the argument for naming all three here rather than one
+ * "canonical" spelling: two `route-verdict --iteration` calls sat in
+ * `wave-shared/reference/routing-mechanics.md` — the file that TEACHES the
+ * binding — and the guard read straight past them, because they were spelled
+ * `wave_cli route-verdict …` and not `{{wave-cli}} route-verdict …`. A pin that
+ * reads one of a corpus's three spellings is green for the wrong reason.
  */
-const INVOCATION_MARKERS = ['{{wave-cli}}', '${WAVE_CLI}'] as const;
+const INVOCATION_MARKERS = ['{{wave-cli}}', '${WAVE_CLI}', 'wave_cli'] as const;
 
 /** The verb groups: a group token plus an op token address one contract. */
 const VERB_GROUPS = ['host-pr', 'issue-store', 'spine', 'config'] as const;
@@ -231,6 +247,34 @@ export function tokenizeInvocation(segment: string): string[] {
 }
 
 /**
+ * True when the marker at `at` stands in COMMAND position — the only place an
+ * invocation can start.
+ *
+ * Both sides are a word boundary, and each side answers a real shape the corpus
+ * carries:
+ *
+ * - **After.** A marker that runs straight into another character NAMES the
+ *   binding rather than calling it. `wave_cli()` is the function's own
+ *   definition (`wave_cli() { … "$@"; }`) and the shape every prose citation of
+ *   it uses (`` `wave_cli()` is a shell function ``); `` `{{wave-cli}}` `` with
+ *   the code span closing straight after it is the corpus's bare mention. Read
+ *   as calls, the first would resolve `()` as a verb and the second nothing at
+ *   all — two invented failures on text that spells no invocation.
+ * - **Before.** A marker preceded by a word character is part of a longer
+ *   identifier, not the binding. `$(wave_cli …)` and `` `wave_cli …` `` are
+ *   calls; a hypothetical `my_wave_cli` is a different name.
+ *
+ * This is a rule about what the TEXT IS, in the same family as the schematic-verb
+ * and elision rules above — deliberately not a file-or-line exemption table.
+ */
+function isCommandPosition(line: string, at: number, marker: string): boolean {
+  const before = line[at - 1];
+  const after = line[at + marker.length];
+  if (before !== undefined && /[A-Za-z0-9_]/.test(before)) return false;
+  return after === undefined || after === ' ' || after === '\t';
+}
+
+/**
  * Every invocation in `source`.
  *
  * An occurrence inside an inline code span ends at the span's closing backtick;
@@ -246,6 +290,10 @@ export function extractInvocations(file: string, source: string): FoundInvocatio
     for (const marker of INVOCATION_MARKERS) {
       let at = line.indexOf(marker);
       while (at !== -1) {
+        if (!isCommandPosition(line, at, marker)) {
+          at = line.indexOf(marker, at + marker.length);
+          continue;
+        }
         const before = line.slice(0, at);
         const insideCodeSpan = (before.match(/`/g) ?? []).length % 2 === 1;
         let segment = line.slice(at + marker.length);
@@ -554,6 +602,35 @@ describe('NEGATIVE CONTROLS — the guard is shown red on each of its rules', ()
     expect(violations[0].message).toContain('--verdicts-dir --id');
   });
 
+  it('CONTROL 6 — the same alias in the `wave_cli` FUNCTION form fails, on every line that carries it', () => {
+    // The shape iteration 1 of this guard read straight past, reproduced as its
+    // own control so a marker dropped from INVOCATION_MARKERS can never again be
+    // green. The fence is the corpus's real one: the binding is DEFINED on one
+    // line and CALLED on the next, and only the call is an invocation.
+    const planted = [
+      '```bash',
+      'wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }',
+      '',
+      'wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing',
+      'wave_cli route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing \\',
+      '  --ruling "Operator ruling — re-dispatch the Reviewer only."',
+      '```',
+    ].join('\n');
+    const violations = judge('.claude/skills/wave-shared/reference/routing-mechanics.md', planted);
+    // BOTH calls are reported, not just the first: the review that forced this
+    // marker found one plant reported while two real ones sat in the same file.
+    expect(violations.length).toBe(2);
+    expect(violations.map((v) => v.rule)).toEqual(['alias', 'alias']);
+    expect(violations.map((v) => v.line)).toEqual([4, 5]);
+    for (const violation of violations) {
+      expect(violation.file).toBe('.claude/skills/wave-shared/reference/routing-mechanics.md');
+      expect(violation.message).toContain('`route-verdict --iteration` is an ALIAS');
+      expect(violation.message).toContain('write `--iter`');
+    }
+    // The DEFINITION line above them is not an invocation and contributes nothing.
+    expect(judge('.claude/skills/planted/SKILL.md', `${planted.split('\n')[1]}\n`)).toEqual([]);
+  });
+
   it('CONTROL 5 — an unknown TOP-LEVEL verb fails, and the failure teaches the two rewrites', () => {
     const violations = judge('.claude/skills/planted/SKILL.md', '{{wave-cli}} route-tupple --spine "$SPINE"\n');
     expect(violations.length).toBe(1);
@@ -578,6 +655,21 @@ describe('POSITIVE CONTROLS — what must keep passing', () => {
     // The live bug `scanArgs()` was written for: `args.includes('--wave')` read
     // a disclosure's free-prose `--text` as a mode switch.
     expect(judge('{{wave-cli}} spine add-disclosure "$SPINE" "$ID" --iter 1 --source worker --text "--wave and --dir are aliases"\n')).toEqual([]);
+  });
+
+  it('the `wave_cli` FUNCTION form is read as a call — and its definition and citations are not', () => {
+    // Read as calls (the whole point of the third marker).
+    expect(judge('wave_cli route-verdict --verdict approve --iter 1 --risk mechanical --state reviewing\n')).toEqual([]);
+    expect(judge('wave_cli spine set-row-state "$SPINE" "$ID" pr-created\n')).toEqual([]);
+    expect(judge('ACKED_JSON=$(wave_cli verdict-acked --verdicts-dir "$VERDICTS" --id "$ID")\n')).toEqual([]);
+    // NOT read as calls: the binding named rather than called. Out of command
+    // position on the right (`(` follows) or on the left (a word character
+    // precedes) — `isCommandPosition`, the fourth not-an-invocation rule.
+    expect(judge('wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }\n')).toEqual([]);
+    expect(judge('# The shape: wave_cli() { NODE_USE_ENV_PROXY=1 <engine.cli, verbatim> "$@"; }\n')).toEqual([]);
+    expect(judge('**Bind it in the same Bash call.** `wave_cli()` is a shell function, and a shell function is session state.\n')).toEqual([]);
+    expect(judge('Bind a function instead (`wave_cli() { … "$@"; }`) and iterate a real array\n')).toEqual([]);
+    expect(judge('a longer identifier such as my_wave_cli route-verdict --iteration 1 is a different name\n')).toEqual([]);
   });
 
   it('a bare mention, a schematic verb, a schematic op and an elision are not invocations', () => {
