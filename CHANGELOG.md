@@ -9,19 +9,51 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
-## [Unreleased]
+## [2.5.0] — 2026-09-16
+
+**The release that checks before it judges.** Four waves since 2.4.0 — twenty rows,
+twenty-two pull requests, nineteen rows approved at their first iteration and the
+twentieth sent back once by a Reviewer who falsified the Coordinator's own triage claim
+against the shipped SDK header — and every line below replaces a verdict that was being
+reached before the evidence was in. The cleanup judged an aborted tree and read
+`TRANSIENT` on a first run that was structurally unable to say `EXHAUSTED`; the readiness
+gate deferred the cross-issue question before looking at a single declared blocker; the
+Linear guard declared a write dropped after one immediate read; the release notes carried
+no upgrade checklist and had already lost two heads-ups; an error code was attributed to
+three different causes across the corpus without one measurement behind any of them.
+Minor: eighteen values and twenty-six types join the package root, four behaviours change
+for the same input and each is named under Upgrading below, nothing is removed and no
+existing export moves.
 
 ### Upgrading
 
-- **Plugin/marketplace update:** none — no change to `.claude-plugin/plugin.json` or
-  `.claude-plugin/marketplace.json` beyond the version bump itself.
-- **Engine dependency pin** (vendored-form re-copy equivalent): none.
-- **Config keys added or changed:** none.
-- **Hook re-copy:** none.
-- **Allowlist parity:** none.
-- **Behaviour heads-ups** — seven, carried by hand from the wave rows that made them
-  (the heads-up carrier this release is the first to have — see
-  [docs/RELEASING.md](docs/RELEASING.md)):
+The first release entry to carry this section — the seven items
+[docs/RELEASING.md](docs/RELEASING.md) prescribes, in its order, each answered. Items
+1–5 are read from the diff since `v2.4.0`; items 6 and 7 from the `## Heads-up` sections
+the waves wrote onto their carrier issue (#757) and the one ruling that predates the
+carrier (#726), plus the package-root export ledger.
+
+- **Plugin/marketplace update:** the plugin manifest moves to 2.5.0 and nothing else in
+  it changes; the marketplace listing is byte-identical to 2.4.0. Update the installed
+  plugin to 2.5.0.
+- **Engine dependency pin** (vendored-form re-copy equivalent): `@formtrieb/flotilla-engine`
+  moves from 2.4.0 to 2.5.0 — bump the pin (the `store-preflight --expect` lockstep
+  advisory reads the pair). A vendor-copy consumer re-copies `tools/wave/` at this tag;
+  that is the equivalent action, not a variant of the install phrasing.
+- **Config keys added or changed:** none. `WaveConfig` has no new or changed key; the
+  only movement under it is documentation on `engine.install` (its directory argument
+  wants to be repo-relative — see Fixed) and the export of its validator.
+- **Hook re-copy:** none — `hooks/` is unchanged since 2.4.0.
+- **Allowlist parity:** one entry. The tracked permission-allowlist scaffold `wave-setup`
+  writes gains `"Bash(git show:*)"` (issue #744): the Worker brief's refused-reset remedy
+  now prescribes `git show <anchorSha>:<path>` as the source of a file-tool restore, and
+  without the entry that read stalls an unattended row on a permission prompt. A consumer
+  whose tracked `.claude/settings.json` mirrors the scaffold adds that one line
+  (`permissions.allow`); the scaffold guard counts sixteen entries now. `git clean` is
+  the scaffold's second deliberate absence — no prefix of it can be confined to the
+  agent's own worktree — so do not add one when a dispatched agent asks.
+- **Behaviour heads-ups** — eight, each a changed outcome for an unchanged input, every
+  one ruled minor under ADR-0035 with the heads-up as the condition:
   1. **`worktree-cleanup` run 1 now reads EXHAUSTED on a harness-denied tree**
      (issue #621). The physical delete exhausts its permissions before the survivor
      set is judged, so `manualRecovery` is present on the *first* run instead of the
@@ -61,17 +93,386 @@ is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
      network, expect one probe call per declared blocker on a hosted tracker — and
      note that a transiently unreachable tracker silently turns a hold back off
      rather than surfacing an error.
-- **Implementer heads-ups:** additive surface only, nothing renamed or removed, an
-  out-of-tree implementer compiles unchanged. From issues #621/#748: six new
-  package-root values (`WAVE_ARCHIVE_RELATIVE_DIR`, `listComposedDriverDirs`,
-  `planComposedDriverSweep`, `executeComposedDriverSweep`, `sweepComposedDrivers`,
-  `defaultComposedDriverRemover`) and eleven new types, barrel-enumerated;
-  `OrphanBranchSweepPlan`/`Result` gain `branchHygieneDeferred`;
-  `OrphanBranchSweepOps` gains an optional `checkedOutWorktreePaths?()`;
-  `ReviewRefSweepOptions` gains an optional `liveRowsDeclared`; `planReviewRefSweep`
-  gains an optional third parameter. From issue #750 (PR #774): one optional field on
-  the readiness gate's options object and one new exported type, both re-exported
-  from the package barrel.
+  8. **The Linear store's verify-after-write guard re-reads before it declares a
+     write dropped** (issue #726, PR #735 — the ruling the carrier rule names as its
+     second lost occurrence, carried here by hand). The claim transition used to
+     throw after one immediate read-back that still showed the old state; it now
+     takes up to four read-backs 500 ms apart and throws only when every one still
+     shows it. Three consequences on a Linear store: a genuinely dropped write now
+     costs four reads and about a second and a half before it throws where it threw
+     at once (the happy path is unchanged — the first read is still immediate); the
+     thrown message changed shape and now states the attempt count and the elapsed
+     bound (`4 read-back(s) over 1500ms still show state …`), so anything matching
+     the old "reading the issue back immediately shows state" wording needs
+     updating; and a transition that verified only on a retry is no longer silent —
+     the store posts an advisory comment on the issue (marker
+     `<!-- wave-transition-verify-retry -->`, failures to post swallowed) so a
+     workspace whose reads lag its writes leaves evidence.
+- **Implementer heads-ups:** additive surface only — nothing renamed, nothing removed,
+  the package barrel's diff since `v2.4.0` is additions only, and an out-of-tree
+  implementer compiles unchanged. Eighteen new package-root values and twenty-six new
+  types, all barrel-enumerated and pinned by the export ledger:
+  - from issue #732, the review-ref sweep: `REVIEW_REF_NAMESPACE_PREFIXES`,
+    `listReviewRefs`, `planReviewRefSweep`, `executeReviewRefSweep`, `sweepReviewRefs`,
+    `defaultReviewRefOps`, and the types `ReviewRefNamespace`, `ReviewRefSkipReason`,
+    `ReviewRef`, `ReviewRefListing`, `ReviewRefSweepPlan`, `ReviewRefSweepResult`,
+    `ReviewRefOps`, `ReviewRefSweepOptions`;
+  - from issue #748, the composed-driver sweep and the deferred-branch accounting:
+    `WAVE_ARCHIVE_RELATIVE_DIR`, `listComposedDriverDirs`, `planComposedDriverSweep`,
+    `executeComposedDriverSweep`, `sweepComposedDrivers`, `defaultComposedDriverRemover`,
+    and the types `ComposedDriverSkipReason`, `ComposedDriverFinishedRoute`,
+    `ComposedDriverDir`, `ComposedDriverListing`, `ComposedDriverSweepPlan`,
+    `ComposedDriverSweepResult`, `ComposedDriverRemover`, `ComposedDriverSweepOptions`,
+    `DeferredBranch`, `DeferredBranchReason`, `ReviewRefPlanOptions`;
+  - from issue #724, the twelve promotions: `normalizeEngineInstall`,
+    `renderMisnamedSidecarWarning`, `resolveTitle`, `resolveDepsSetup`, `bindingPaths`,
+    `gitignoredBindingPath`, and the types `VerifyCommandNeeds`, `BlockingPaths`,
+    `ResolvedTitle`, `TitleSource`, `DepsSetupResolution`, `DepsSetupSource` — each a
+    new name for an existing declaration, the indexed spellings
+    (`NonNullable<VerifyCommand['needs']>`, `NonNullable<WorktreeEntry['blockingPaths']>`)
+    still resolving to the same declaration;
+  - from issue #750: the type `BlockerResolution`.
+  Optional fields, all additive: `WorktreeEntry.physicallyExhausted` (#621);
+  `OrphanBranchSweepPlan`/`Result.branchHygieneDeferred`,
+  `OrphanBranchSweepOps.checkedOutWorktreePaths?()` (an optional member, so an existing
+  implementation of the seam still compiles and yields `worktreePath: null`),
+  `liveRowsDeclared` on both `ReviewRefSweepOptions` and the new `ReviewRefPlanOptions`
+  (`planReviewRefSweep`'s optional third parameter; two arguments behave byte-identically
+  to before) (#748); `ValidateViewOptions.blockerResolutions` (#750);
+  `LinearIssuesStoreOptions.sleep` — a test seam for the retry pause; and two optional,
+  defaulted constructor parameters on `LinearTransitionVerifyError` (`attempts`,
+  `windowMs`), stamped as readonly fields, so a caller constructing it with the original
+  three arguments still compiles (#726). The retry bounds themselves stay module-private:
+  a caller that needs them reads them off the thrown error. On the CLI's JSON,
+  `worktree-cleanup --orphans` gains `orphans.reviewRefs` (#732) and `orphans.drivers`
+  (#748), `branchHygieneDeferred` sits beside `branchesDeleted` (#748), and `dor --id`'s
+  cross-issue line can now read `pass` or `fail` (#750).
+
+### Added
+
+- **The cleanup exhausts its permissions before it judges** (issue #621,
+  [ADR-0042 Amendment 2026-09-08](docs/adr/0042-the-sweep-owes-accounting-for-what-it-could-not-do.md)
+  decisions 6 and 7). Phase 1 of the physical delete was a loop that the first refusal
+  ended, so what stood afterwards was an *aborted tree*, never the *refused set*, and the
+  "every survivor is harness-denied" verdict could not fire on a first run — three earlier
+  fixes in this class each read evidence that exists only as a result of the first
+  failure, and each was falsified on its first live read. The delete now attempts every
+  top-level entry and, inside a refused subtree, every entry it can still reach; refusals
+  are collected and thrown once as an aggregate carrying the shared errno when they agree
+  on one; `.git` stays last and stays untouched when anything was refused; a symlink is
+  never descended. What stands when the pass finishes *is* the survivor set, so run 1
+  reads EXHAUSTED with `manualRecovery` on the input run 2 used to need. And an exhausted
+  tree stays the sweep's own: a dirty worktree whose physical survivors are exclusively
+  harness-denied is a second route to disposability at plan time, asked with the same walk
+  the verdict uses, so the engine's own deletions cannot turn the worktree into a
+  `dirty`-skip on the next run.
+- **The sweep names what it defers, a terminal wave sweeps its own residue, and composed
+  drivers are a population** (issue #748, decisions 9–11). A `wave/*` or
+  `worktree-wf_*` branch a still-registered worktree holds is reported under
+  `branchHygieneDeferred` (`branch`, `worktreePath`, `reason: 'checked-out-in-worktree'`)
+  instead of silently dropped at the safety floor — the three-step sequence
+  (sweep → manual removal → sweep) was always structural; the defect was that an empty
+  branch list read exactly like a clean one, and it left twelve branches behind at one
+  close. When the `--wave` spine's every row is terminal (`pr-created`, `approved`,
+  `failed`, `abandoned`, `parked`) the wave's own refs are removed across all three
+  namespaces — wave-level, never per-row, because a sibling that finishes first must not
+  have its `refs/sib/<id>` swept out from under a Worker still predicting against it. And
+  the per-wave `<slug>/` directory `wave-start` composes its driver into — reported
+  `not-a-scribe-payload` and left standing, wave after wave, while two references promised
+  it was swept — is a sixth sweep population under `orphans.drivers`, removed on either of
+  two routes (`wave-terminal`, `spine-archived`) and refused on two (`live-wave`,
+  `unknown-wave` — reported, never touched). `WAVE_ARCHIVE_RELATIVE_DIR` is the one new
+  constant, and the single one both wave locations derive from.
+- **The review-ref namespaces are swept** (issue #732). `refs/review/<id>`,
+  `refs/review/sib/<id>` and `refs/sib/<id>` — the refs a Reviewer fetches a branch tip
+  into — outlive the worktree, the local branch and the remote branch alike, and no pass
+  reached them: 187 had accumulated in one shared `.git` since early August before a human
+  swept them by hand. `worktree-cleanup --orphans` now lists, plans and removes them,
+  shipped whole as list → plan → execute plus the one-shot and the injectable git seam.
+  A ref belonging to a row of the `--wave` spine is spared `live-row`; a name that does
+  not yield exactly one row id is left `unresolvable-row`; without a spine the pass
+  removes nothing and reports `live-rows-unknown` — fail-closed, because the alternative
+  deletes a sibling wave's refs out from under its Reviewer mid-diff. Deletion failures
+  are collected under `orphans.reviewRefs.errors` and exit 1.
+- **The store-backed readiness gate resolves declared blockers** (issue #750, PR #774).
+  `dor --id` — the form `wave-create` and `wave-start` use — answered the cross-issue gate
+  with a fixed `deferred` before it looked at anything; the "P2a re-home" ADR-0014
+  promised never happened, and nine of twelve consumer waves resolved the question by
+  hand. It now resolves each declared `Blocked by:` ref through the closing probe already
+  on the store contract: no blockers or all closed passes, an open one fails naming the
+  offending refs, an unresolvable one (cross-repo, cross-slug, unreadable, or an id shape
+  the store cannot invert) defers — no evidence never counterfeits a clear answer. The
+  pure gate function stays synchronous and store-blind: the CLI entry point that already
+  holds the store resolves, and the outcome arrives as an optional field it branches on
+  exactly as it already branches on a repo root. Recorded at the landing stop: the
+  candidate-id derivation does parse one id forward, against ADR-0001's letter; the
+  Operator ruled it acceptable as a single guarded self-check with a fail-safe null exit,
+  and the reviewer drove that exit itself.
+- **The Linear verify-after-write guard retries within a bounded window** (issue #726,
+  PR #735) — a consumer's field report filed through the `report` skill: the guard aborted
+  a wave dispatch mid-roster on a write that had landed, because its single immediate
+  read-back raced Linear's own read-after-write lag, and the abort manufactured exactly
+  the torn spine-written/rung-not state the write-ahead ordering exists to recover from.
+  Bounded, never open-ended — a retry loop with no ceiling would quietly re-acquire the
+  silence the guard was built to break — with both bounds pinned by tests that record the
+  requested pauses instead of living through them. Confirmed at triage from the code: the
+  claim transition is the only Linear write verb with a read-back guard at all.
+- **The Worker brief handles what a harness retry leaves behind, a refused reset, and a
+  half-applied re-dispatch checkout.** A retry re-runs a dispatched agent in the *same*
+  worktree its earlier attempt was already working in — `isolation: 'worktree'` requests
+  a worktree, not a fresh one — so the iteration-1 setup now reads the status before the
+  reset and names the two honest options for inherited work-in-progress, discarding as
+  the default and adoption only behind a recorded line-by-line review against every
+  acceptance criterion (issue #731); it accounts for the untracked leftover a hard reset
+  does not remove instead of contradicting its own "must be empty"; it gives the refused
+  reset a branch — restore each surviving tracked path through the file-editing surface,
+  sourcing the anchor's copy with `git show <anchorSha>:<path>` now that the read is
+  allowlisted (issue #744), and STOP at `blocked` if the tree still does not hold; and a
+  wave branch that already exists is taken over at the anchor with a tracking-free
+  `checkout -B`. The re-dispatch setup gains the matching clause for a checkout the
+  harness write-deny half-applied — `Operation not permitted` per denied path, then a
+  reported-successful branch switch with those working copies silently kept at their
+  pre-checkout content, which the checkout's own asserts read as clean and the
+  corpus-scanning guards then validate as if committed (issue #778): compare every
+  declared path against the branch tip, restore through the file tool, re-assert,
+  never stage through the object store (the guards read the working tree, not the
+  index). Every clause is a capability refusal under the no-escalation rule: no retry
+  with the sandbox off, no request for one.
+- **Twelve package-root promotions** (issue #724). The barrel names what was reachable
+  structurally but not nameable — `VerifyCommand.needs` and `WorktreeEntry.blockingPaths`
+  as `VerifyCommandNeeds` and `BlockingPaths`, the PR-title precedence ladder
+  (`resolveTitle`), the install-step ladder (`resolveDepsSetup`), the gitignored-binding
+  measurement (`bindingPaths`, `gitignoredBindingPath`), the install binding's validator
+  beside its `cli` twin (`normalizeEngineInstall`), and the misnamed-sidecar warning's
+  one renderer beside its already-exported detector. Twelve rather than the ten the issue
+  named — the two result types ride along — ruled at the landing stop on the discriminator
+  applied symbol by symbol: a symbol moves only where the module already exports the
+  neighbouring half of the same rule.
+- **A guard that keeps the engine free of `gh`, and the rule for the sandboxed `gh`
+  failure** (issue #749). Measured with controls: `gh` fails with x509 in *any* nested
+  shell context under the sandbox — a loop, a `$( )`, a subshell, a script file — and
+  passes as a plain top-level call; `curl`, `git` over HTTPS and Node's `fetch` pass in
+  the identical nested form, and the sandbox-off arm passes the identical failing `gh`
+  form. The sandbox is the layer; the mechanism is unmeasured and the corpus now says so
+  (see Fixed). The engine is structurally immune because no module spawns `gh`, and a
+  spec-only guard keeps that true with positive and negative controls; convention 12
+  carries the operator rule with its evidence sidecar; ADR-0015 carries the measurement.
+- **Every release from this one carries an `### Upgrading` checklist** (issue #757) —
+  the section above. Seven items, always in that order, every one answered explicitly;
+  the behaviour heads-ups reach it through a fixed `## Heads-up` section on a tracker
+  issue that the Coordinator writes at disposition and the release step reads, instead of
+  through a spine that is archived the moment the wave closes. `README.md` and
+  `docs/ONBOARDING.md` each point an existing install at the entry's Upgrading section in
+  one sentence.
+- **Three guard rows for surfaces the last wave shipped unguarded** (issues #741, #742,
+  #743). The trigger-list corpus check moves to the prose-guard spec and now sees the
+  elided spelling (`merge-, prod- and human-gated`) it exists to catch — one such statement
+  already shipped in ADR-0049 §4 and read four triggers only by accident of adjacency; the
+  partial-coverage advisory is pinned not to name a profile that matched nothing; the
+  `route-tuple --title` catalog line and the verb's own usage text are asserted to carry
+  the same precedence rule, and the review-ref sweep is driven through the CLI under test
+  rather than only through a Reviewer's throwaway probe.
+
+### Fixed
+
+- **`npm ci --prefix` must be repo-relative — a symlinked prefix makes npm accuse a package
+  that does not exist** (issue #725). `EUSAGE Missing: wave@<version> from lock file` —
+  `wave` being the directory's basename, not the package's name — had hit dispatched
+  agents since 1.0.1 and was reported only now; it fired once in twenty dispatches on
+  2.4.0, in a Reviewer's own worktree. Reproduced deliberately with a positive and a
+  negative control on the same directory differing only in the path's spelling, and read
+  out of npm's arborist: an absolute prefix that resolves through a symlink
+  (`/tmp` → `/private/tmp`) makes the install tree's root a *link* at a location the
+  lockfile has no entry for, named from the folder. A relative prefix cannot reach that
+  state, so the composed install line and the brief now spell it repo-relative. The form
+  is narrowed, not replaced: no `npm ci` flag rescues the symlinked spelling, and
+  `npm install` survives it only by never running the lockfile comparison — trading away
+  the guarantee instead of satisfying it. `normalizeEngineInstall` still validates the
+  absolute argument form (widening it would refuse a config that validates today); the
+  gap is pinned in a test and folded into #761.
+- **ADR-0049 follow-through** (issue #723): the Scribe brief carries the no-escalation
+  clause too; the deferred valve reads four triggers in every remaining copy; the
+  clause-presence spec bites on the clause *body*, not only its headline — a diff that
+  keeps the bold line and deletes the instruction under it now fails; the Reviewer reads a
+  PR's state through the engine's `host-pr status`, never through raw `gh`; and ADR-0049
+  gains the amendment line for the harness fact the first live exercise found: a
+  file-editing tool and a shell call carry different write rights on the same tracked
+  path, so the write-deny is scoped per tool surface, not per path.
+- **`verify.ts` no longer contains a NUL byte** (issue #724). The de-duplication key's
+  separator was a control character that made the file diff as binary; it is a
+  length-prefixed printable separator now, pinned by a whole-file control-character scan
+  and by a collision case where a command itself contains the separator.
+- **`wave-resume` step 5 levels with `wave-close` phase 4a** (issue #752). The two copies
+  of the self-repair pull had drifted: the resume's pre-pull check knew two of the
+  harness's three write-denied path classes (not `.claude/agents/`), named neither face of
+  a half-applied pull, and prescribed `reset --hard origin/main` — which walks into the
+  same denied unlink a second time. It now states both faces, the three-step recovery in
+  phase 4a's order, and names the sandbox-toggle actor as the operator or the unsandboxed
+  runner, never the skill's own agent (ADR-0009); a drift spec holds the two copies to the
+  byte-identical pattern in both directions.
+- **ADR-0040 follow-ups** (issue #537). `${CLAUDE_SKILL_DIR}` — the harness-documented
+  per-skill anchor, never on the table when the sibling-path read was decided — is
+  evaluated in a dated amendment and named as the remedy the still-outstanding clean-room
+  probe decides; the plugin-root option's stale rejection reason is corrected against the
+  fetched documentation. `wave-reviewer`'s "Related" note no longer argues that the
+  Reviewer's dispatch name is a reasoned inference: it is `compose-driver`'s
+  `REVIEWER_AGENT`, derived once per wave per distribution form and filled into the
+  driver, never hand-spelled. `wave-resume`'s two leftover "load by name" lines read the
+  sibling path like every other back-half skill.
+- **`files-drift` is named honestly** (issue #754). CLAUDE.md, the charter, `to-issues`,
+  ADR-0028, ADR-0041 and the driver template called it the runtime guarantor of a row's
+  declared globs; no skill, agent definition or driver ever invokes it. The guard that
+  actually holds a Worker inside its globs is the Reviewer's hand-run
+  diff-against-declared-globs check, and every sentence now says so; `files-drift`
+  computes the same arithmetic for a markdown issue file and is called by nothing. Whether
+  to wire it or retire it is the #707 grill's question, deliberately not this row's.
+- **The x509 attribution is retracted across the corpus** (issue #779, and issue #749's
+  own second round). ADR-0023, ADR-0005, the charter, four retros, four skill files and
+  five further carriers — one of them the sentence that rendered into every Worker's own
+  termination brief — explained the sandboxed `gh` failure as the keychain and the proxy's
+  interception certificate; the 2026-09-08 measurement's own controls (`curl` and
+  `git ls-remote` through the identical proxy, same session, both green) contradict both.
+  Retracted, never reassigned: no changed sentence names a new cause, retros keep their
+  text with a dated correction beside it, the decision itself (`gh` leaves every
+  host-write path) stands on its independent reasons. The same discipline caught the first
+  round of #749 naming `-26276` as `errSecInternalComponent`: that constant is `-2070`,
+  the literal appears nowhere in the macOS SDK, and no replacement is guessed.
+- **ADR-0042 Amendment 2026-09-08** (PR #765, Coordinator-direct) records decisions 6–11
+  with the falsification condition stated *before* the live read, and CONTEXT.md gains
+  **Terminal wave** beside a post-exhaustion **Survivor set** and a **Manual recovery**
+  that names its owner. Decision 8 is the one a consumer feels: the sandbox-off step
+  belongs to whoever runs unsandboxed — the Operator interactively, the runner script
+  around a headless pulse — never an agent, and a pulse reports it as *hygiene owed*.
+- **`dor-gate`'s cross-issue deferral text** no longer promises a re-home that never
+  happened; it names the store-backed form that now performs it (issue #750).
+
+### Changed
+
+- **Four behaviours change for the same input — the heads-ups.** Run 1 of the cleanup
+  reads EXHAUSTED and a re-run over a gutted tree exits 1 (issue #621); a terminal wave's
+  close removes its own refs and driver directory and the recovery block has a third line
+  (issue #748); `dor --id` can fail, and it makes one probe call per declared blocker
+  (issue #750); the Linear verify error's message states its bounds and a dropped write
+  costs four reads before it throws (issue #726). Each is stated once, with what a
+  dependent consumer does, under Upgrading above rather than a second time here.
+- **`planCleanup` is no longer pure** (issue #621). The default probe touches the
+  filesystem — asked only for an entry the junk route already refused, asked last, and an
+  inconclusive walk answers `false` — so every hand-built fixture is unaffected, which the
+  suite confirms.
+- **`liveRowIds` has three readings now, not two** (issue #748): a non-empty list (live
+  wave, rows spared), `[]` (terminal wave, own refs swept), `null` (never declared,
+  nothing removed). An accidentally empty set still fails closed; only a *declared* empty
+  set sweeps.
+- **The implementer heads-up is real this time.** 2.4.0's barrel was byte-identical to
+  2.3.0; this one adds eighteen values and twenty-six types (Upgrading, item 7) and
+  widens seven option or result shapes with optional members. Additions only — the
+  barrel's diff since `v2.4.0` contains no removed line.
+
+### Proven since 2.4.0
+
+- **The exhaust-then-judge falsification condition, read live twice** (issue #773). The
+  baseline at the anchor, engine still pre-fix: five Worker worktrees, each
+  `erroredStillListed` with `survivors.total` 1724 exact, `exclusivelyDenied: false`,
+  ordinary content in the sample, no `manualRecovery`, an empty branch list. The first
+  close after #621 and #748 landed: run 1 EXHAUSTED with `manualRecovery` on both of that
+  wave's worktrees, two survivors (`.claude/agents`, `.vscode`), `exclusivelyDenied: true`,
+  deferred branches named. The 2026-09-16 close read the same on seven. Decision 6 stands;
+  ADR-0042 stays closed.
+- **Decisions 10 and 11 in their first live read.** At the 2026-09-08 close the terminal
+  wave's own nine review refs were removed (`reviewRefs.live: []`) and both composed-driver
+  directories fell — the previous wave's `finishedBy: spine-archived`, its own
+  `wave-terminal`; `branchHygieneDeferred: []`. At the close before that, the fresh review-ref
+  sweep had correctly spared all ten of its own wave's refs as `live-row` — the one-wave lag
+  the amendment then removed.
+- **The `--prefix` failure reproduced under control.** Once in twenty dispatched agents on
+  2.4.0 — deliberately unshielded so the measurement could arrive — then a constructed
+  positive/negative pair on one directory, then the mechanism read out of npm's source
+  with arborist instrumented. Four earlier operator-shell attempts to reproduce it had all
+  succeeded, which is what the symlinked-spelling finding explains.
+- **The preserved reuse title, against a real host** — 2.4.0's open item. Every
+  `route-tuple` reuse since reported `titleSource: live-pr`, and no PR carried a second
+  title; one squash inherited a raw ticket title precisely because the verb no longer
+  rewrote what the Worker set.
+- **The no-escalation clause, under a half-applied checkout and a refused reset.** A
+  re-dispatched Worker whose `checkout -B` the harness half-applied probed the deny
+  value-free, routed through the git object store, verified the staged delta, and neither
+  disabled the sandbox nor asked for it (issue #778 was filed from that disclosure). A
+  Worker whose reset was refused on four skill paths restored them through the
+  file-editing tool from `git show <anchor>:<path>` — the exact read #744 prescribes,
+  working live one round before its own PR merged.
+- **The partial-coverage advisory earned its keep.** The one defect a Reviewer found in
+  the blocker-truth wave — the Coordinator's own misidentification of `-26276` — sat in
+  the single inspection-only file of its row, exactly where the advisory said to look, and
+  the Reviewer falsified it against Apple's shipped `SecBase.h` rather than recalling it.
+- **The public-API pairing advisory, checked rather than believed.** Two
+  reconciled-merge verifies (a scratch worktree on the moved `main`, the pending row merged
+  `--no-ff`, the full gates) found no rework; one semantic collision — #621's two-entry
+  recovery assertion against #748's third line — was textually clean, predicted by Worker
+  and Reviewer both, and fixed at rebase.
+- **The `report` skill carried a consumer's finding upstream in the house format**
+  (issue #726): provenance, reproduction, a hypothesis marked not verified, and one open
+  question the triage pass answered from the code. It landed as a row with its facts
+  intact.
+- **The checklist's motivating hop is real.** One consumer's move onto 2.4.0 touched
+  exactly the surfaces the checklist enumerates — marketplace ref, plugin update, engine
+  pin, the two config keys 2.4.0 introduced, the hook re-copy, an allowlist-parity commit —
+  worked out from the CHANGELOG and from error messages. That hop is why this entry opens
+  with an Upgrading section.
+
+### Unsettled by construction, and what is not yet proven
+
+The list is 2.4.0's, re-read against the four waves since, plus what this release adds.
+
+- **This checklist is its own first instance — `verify`: the first consumer hop onto
+  2.5.0.** The section above was composed by the procedure it describes, and the fold of
+  `## [Unreleased]` into a versioned entry happened for the first time; whether a hop is
+  actually driven from it rather than from errors is the consumer's reading, not ours.
+- **The Linear retry window has no live read — `verify`: the next Linear consumer wave's
+  dispatch flip.** Every wave since 2.4.0 ran on the GitHub store; neither the retry nor
+  the advisory comment has fired outside the suite.
+- **The readiness gate's fail arm has not held a live row — `verify`: the first decorated
+  row with an open declared blocker.** No row filed since declares one the store can
+  resolve — nothing writes `Blocked by` after filing (#622) — so the arm has run under
+  test and under a Reviewer's probe only; the pass-with-no-blockers arm ran on every row
+  of the last wave.
+- **The `capability-gated` path still has not run end-to-end.** Four more waves, every
+  verify command ran, none refused for a capability reason.
+- **Whether a project-tracked `sandbox` block widens a dispatched agent's own sandbox is
+  still open by construction — `verify`: the first consumer setup that runs the new
+  interview's live gate.** Unchanged since 2.4.0.
+- **The ruled Reviewer-only cell above cap still has no live round.** Two public-API
+  landing stops and one Reviewer-only recovery round at the *same* iteration occurred;
+  none was above cap.
+- **The half-applied re-dispatch clause (#778) has had no re-dispatch since it landed, and
+  the inherited-work-in-progress default (#731) has had no harness retry since.** Both
+  were built from a live occurrence; neither has a live occurrence *after*.
+- **The `${CLAUDE_SKILL_DIR}` clean-room probe is still outstanding** (ADR-0040): the
+  amendment names the remedy, and no load line switches until the probe decides.
+- **The sandboxed `gh` mechanism is unmeasured by design.** The corpus now says so instead
+  of naming a cause; the guard keeps the engine immune; the rule keeps `gh` out of nested
+  shell contexts. A measurement that names the mechanism would be a new finding, not a
+  retraction of this one.
+- **`files-drift`, run or retire** — the #707 grill's question; until it is answered the
+  verb is live, correct, and invoked by nothing.
+- **Headless is designed, not built; Bitbucket's `arm` and `merge`, the Linear attachment
+  upsert, the `prUrl` notice's forwarding, the team-key casing and the health-less mirror
+  publish — unchanged since their last entries.**
+- **Filed from the four closes, open:** the model tier read off a branch slug that
+  contains the word `model` (#767), the terminal-row-state partition in three copies with
+  an unpinned `parked` literal (#772), an acceptance criterion about a PR body being
+  structurally unverifiable by a Reviewer that may not call the host (#777), the
+  candidate-id derivation's null arm shipping without a spec (#780), `compose-driver`'s
+  `siblingBranches` naming only the rows of the same round so a wave run in rounds hides
+  its already-PR-created siblings from the merge-tree denominator (#791), a fresh dispatch
+  worktree starting at `origin/main` rather than the wave anchor — so landing sibling PRs
+  mid-wave forces every later-round Worker into a refused reset across harness-denied
+  skill files, with the auto-mode classifier refusing the file-tool remedy
+  non-deterministically (#792) — and an opt-in heads-up capture at disposition, decided at
+  `wave-setup` and never a prescribed release procedure (#786). Beside them the
+  hygiene pass that opens the next milestone: no engine verb answers `--help` (#758),
+  three shapes of missing-file error (#759), `annotate`'s replace-versus-append usage
+  (#760), `config validate`'s blind spots (#761), and `conv12-guard` reaching consumers
+  unscaffolded with no re-copy step written anywhere (#762).
 
 ## [2.4.0] — 2026-09-04
 
