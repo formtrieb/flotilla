@@ -18,7 +18,7 @@ No engine change and no return-schema change: the agent-boundary schemas (Worker
 - **Reviewer re-resolves the tracker at review time** (rejected) — reintroduces the dependency the embedded-spec design deliberately removed: the store config that resolves a tracker id may be gitignored and absent from a review worktree. The design is load-bearing; the fix must not undo it.
 - **Runtime injection into sealed rows** (rejected) — having agent briefs read the spine at run time breaks fan-out sealing and the tracked-files-only worktree contract, an architecture rebuild for a case whose fallback (honest-caveat re-derivation) demonstrably works.
 - **Conditional re-fetch** (rejected) — see Decision 1; the condition *is* the failure mode.
-- **Riding the grant in `reviewerHints`** (rejected) — advisory freeform that never reaches the Worker, competes with ordinary hints for weight, and makes nothing mechanically checkable: the Reviewer's files-drift reasoning needs paths as data.
+- **Riding the grant in `reviewerHints`** (rejected) — advisory freeform that never reaches the Worker, competes with ordinary hints for weight, and makes nothing mechanically checkable: the Reviewer's files-drift reasoning needs paths as data. *(2026-09-16 amendment: that reasoning is the Reviewer's own hand-run diff-against-declared-globs check, not the `files-drift` verb — no skill, agent definition, or driver calls it; issue #754.)*
 
 ## Consequences
 

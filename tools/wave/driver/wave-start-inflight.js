@@ -898,8 +898,8 @@ was forced: that judgment was already made when the grant was recorded
 exists to remove. A change AT a granted path but serving a DIFFERENT purpose
 than the stated reason is still reportable — the grant covers the reason, not
 the path unconditionally. A change at a path with NO grant listed above is
-reviewed exactly as before this row ever had one: an ordinary files-drift
-check, Convention 9's wiring-disclosure duty included.
+reviewed exactly as before this row ever had one: the Reviewer's own ordinary
+diff-against-declared-globs check, Convention 9's wiring-disclosure duty included.
 
 ## Worker Report digest
 Outcome: ${report.outcome}
