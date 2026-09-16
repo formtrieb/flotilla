@@ -2,7 +2,7 @@
 
 flotilla installs. The skills come as a Claude Code plugin, the engine from the public npm registry, and neither requires you to copy anything into your repo. Vendor-copy — the path every consumer used before `0.1.0-beta.0` — still works and is documented at the bottom as a fallback, but it is no longer the way in.
 
-For current release status — what's stable, what's proven, what changed release to release — see [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md). This document covers adoption mechanics only. An install already adopted that is moving to a new release should read that release's CHANGELOG entry for its `### Upgrading` section, the per-release checklist of exactly what changed.
+For current release status — what's stable, what's proven, what changed release to release — see [README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md). This document covers adoption mechanics only.
 
 ## What you install
 

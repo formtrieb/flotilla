@@ -52,19 +52,12 @@ before doing anything else.** Do not tag first and discover this afterwards.
 
 2. **Bump both manifests** to the new version in a single commit, and land it through a
    PR like any other change. `main` is protected; the release commit is not an exception.
-   The PR's body must reference no issue with a closing keyword — see
-   [The bump PR must not close anything early](#the-bump-pr-must-not-close-anything-early)
-   below before opening it.
 
 3. **Update `CHANGELOG.md`** in that same PR. The entry describes what a consumer gets,
-   including what is not yet proven — see the existing entry for the tone. This step also
-   produces the entry's `### Upgrading` section, the per-release consumer checklist — see
-   [The Upgrading checklist](#the-upgrading-checklist) below for the template and where
-   each item's answer comes from. If an `## [Unreleased]` section sits at the top (design
-   that landed ahead of a release — the headless records were the first), fold its lines
-   into the new version's entry, including its `### Upgrading` subsection, which moves
-   into the versioned entry along with everything else; the section survives the cut,
-   only the `## [Unreleased]` heading itself does not.
+   including what is not yet proven — see the existing entry for the tone. If an
+   `## [Unreleased]` section sits at the top (design that landed ahead of a release —
+   the headless records were the first), fold its lines into the new version's entry;
+   the Unreleased heading never survives a cut.
 
 4. **Create the annotated tag** on the merge commit, and push it:
 
@@ -119,110 +112,6 @@ before doing anything else.** Do not tag first and discover this afterwards.
    If the release resolves an issue that also wants a verification hop in a real
    consumer repo — anything the CHANGELOG listed as not yet proven — run it before
    closing, and record the evidence on the issue.
-
-## The bump PR must not close anything early
-
-The version-bump pull request (step 2) must reference the release's ship member and
-any release-resolved issue **without a closing keyword** (`Closes`, `Fixes`,
-`Resolves`, …) anywhere in its body. The code host closes on a closing keyword at
-**merge** time — before the publish step (step 5) has even run — so a merge followed
-by a failed publish leaves the ship member reading closed while the version is not on
-the registry. That is exactly the early-close ADR-0005 keeps out of a wave row,
-reached here through the release route instead, because the release route assumed a
-bump PR references nothing.
-
-**It has already happened once.** The 2.2.0 bump PR (#687) described its own step 7
-as "close #655", and the host parsed that as a closing keyword: the issue closed one
-second after the merge and ten minutes before `release.yml` ran. The 2.3.0 bump (#701)
-avoided the same mistake by hand — nothing in this procedure told it to, until now.
-
-**Operator check, before merging the bump PR:**
-
-```bash
-gh pr view <n> --json closingIssuesReferences
-```
-
-This must print an empty list (`[]`). Anything else means the body carries a closing
-keyword somewhere; merging as-is will close that issue early. Edit the body — name the
-issue in prose, never with `Closes`/`Fixes`/`Resolves` — and re-run the check before
-merging.
-
-**This is a human check, not an engine one — today.** The engine's `host-pr status`
-verb does not report closing references: it reports `state`, `url`, `number`,
-`mergeability`, the head SHA and the base ref, nothing about what a PR's body would
-close on merge. Teaching the engine to read `closingIssuesReferences` (or an
-equivalent) would be a separate row with its own declared Files; this procedure makes
-no claim that the engine already performs this check.
-
-## The Upgrading checklist
-
-Every versioned CHANGELOG entry carries a `### Upgrading` section — the per-release
-consumer checklist that replaces reverse-engineering a hop from error messages, which
-is exactly how the 2.4.0 hop of one consumer was worked out (marketplace ref, plugin
-update, engine devDependency, two new config keys, the hook re-copy, an allowlist-
-parity commit). Seven items, always in this order, and every one of them answered
-explicitly — write "none" when nothing is owed; never omit an item:
-
-1. **Plugin/marketplace update** — did the plugin manifest or the marketplace listing
-   change? Source: the diff since the last tag on `.claude-plugin/plugin.json` and
-   `.claude-plugin/marketplace.json`.
-2. **Engine dependency pin** (with the vendored-form re-copy equivalent) — did the
-   pinned `@formtrieb/flotilla-engine` version move? Source: the diff since the last
-   tag on `tools/wave/package.json`'s version. A vendor-copy consumer's equivalent
-   action is a re-copy of `tools/wave/`; state that explicitly rather than assuming the
-   npm-install phrasing covers it.
-3. **Config keys added or changed** — did `wave.config.json`'s schema gain or change a
-   key? Source: the diff since the last tag on the `WaveConfig` type and its readers.
-4. **Hook re-copy** — did a shipped hook change? Source: the diff since the last tag on
-   `hooks/`. Guards reach a consumer only by copy (`hooks/echo-guard.cjs:244-248` states
-   why), so a changed hook is never picked up on its own — re-copying it is the item.
-5. **Allowlist parity** — did the tracked permission-allowlist scaffold `wave-setup`
-   writes change? Source: the diff since the last tag on that scaffold.
-6. **Behaviour heads-ups** — any ruling that a change is minor but carries a
-   consumer-facing heads-up. Source: the heads-up carrier (below), never a diff.
-7. **Implementer heads-ups** — additive surface (new exports, new optional fields) an
-   out-of-tree implementer may want to know about even though nothing broke. Source:
-   the export ledger — the package-root export drift spec and its allowlist.
-
-Items 1–5 are a diff read against the previous tag; a version-only hop with no such
-diff answers all five "none" rather than omitting them — the answer is still owed, it
-is just uniformly negative. Items 6 and 7 come from carriers that accumulate
-independently of any one file's history, not from a diff at all.
-
-### The heads-up carrier
-
-A ruling that a wave's change is minor but carries a consumer-facing behaviour
-heads-up needs a carrier into the release notes, or it is lost the moment the spine
-that recorded it is archived. That loss has already happened twice — the 2.4.0
-title-preservation heads-up, and the Linear retry-bound ruling (#726) — which meets
-the ADR-0034 promotion trigger: a second occurrence of the same shape licenses
-spending on structure instead of another retro sentence. The structure fixed below
-**is** the promotion; no further prose is owed beyond this rule.
-
-**The default — (c) issue-carries-heads-up, written at disposition.** The ruling lives
-on a tracker issue under a fixed `## Heads-up` section heading, written by the
-Coordinator at the wave-close disposition step, not reconstructed here. The release
-step, when composing a version's `### Upgrading` section, reads that heading off every
-issue closed since the last tag, plus the pending release's own checklist or
-ship-member issue, and carries each one found as a separate item under "Behaviour
-heads-ups" or "Implementer heads-ups" above.
-
-Two alternatives were weighed and displaced, one reason each, named here rather than
-re-litigated at the next grill:
-
-- **(a) disposition-writes-Unreleased** — the wave's own disposition step writes the
-  ruling directly into this CHANGELOG's `## [Unreleased]` section instead. Displaced
-  because it puts a release-facing file write inside every wave's disposition step,
-  whether or not that wave precedes a release, and a file two waves touch at once is a
-  merge conflict this repo does not otherwise have.
-- **(b) release-reads-archived-spines** — the release step reads every wave's archived
-  spine since the last cut instead of a tracker issue. Displaced because a spine's
-  durability is a per-consumer choice (a `.flotilla/` directory may be gitignored — see
-  `.claude/skills/wave-close/reference/phase-6-archive.md`'s Durability consequence),
-  so the release step's source would not reliably exist at all.
-
-The Operator may substitute (a) or (b) before dispatching a wave; if so, this rule
-names that carrier instead of the fixed-heading issue section above.
 
 ## If step 5 fails
 
