@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { resume, type ResumeInputs } from './resume';
+// The partition under test in the final block, and the vocabulary it partitions.
+import { ROW_STATES, TERMINAL_ROW_STATES } from './wave-md-rw';
 import { spineStoreFromSource } from './spine-store';
 import type { WorktreeEntry } from './worktree-cleanup';
 import type { SidecarIndex, ReportHit, VerdictHit } from './sidecar';
@@ -190,5 +192,47 @@ describe('resume() — per-row reconciliation decision table', () => {
     const r = run([{ id: '02', state: 'dispatched' }], [wt('02')], sidecars({}));
     expect(rowOf(r, '02').branch).toBe('wave-orch/02-thing');
     expect(rowOf(r, '02').worktree?.path).toContain('agent-02');
+  });
+});
+
+// ─── the terminal partition is the SHARED one (issue #772) ───────────────────
+//
+// resume's `TERMINAL` set is module-private, so it cannot be compared to the
+// exported constant by identity from here. What CAN be asserted is the property
+// that made sharing worth doing: every member of the shared partition behaves as
+// terminal in a real reconciliation, and every non-member does not. A resume
+// that quietly re-spelled its own five would drift from the sweeps' five and
+// this block would see it the first time either list moved.
+describe('resume treats exactly TERMINAL_ROW_STATES as terminal (issue #772)', () => {
+  it('every member of the shared partition reconstructs unchanged and decides keep', () => {
+    for (const state of TERMINAL_ROW_STATES) {
+      const r = run([{ id: '20', state }], [], sidecars({}));
+      expect(rowOf(r, '20').reconstructedState, state).toBe(state);
+      expect(rowOf(r, '20').decision, state).toBe('keep');
+      expect(r.fatals, state).toEqual([]);
+    }
+  });
+
+  it('every member holds terminal even against a leftover worktree AND a stale sidecar', () => {
+    // The two inputs that move a NON-terminal row: a worktree makes it `adopt`,
+    // a report sidecar reconstructs it forward to `report-in`. Neither may move
+    // a terminal row — the ADR-0022 no-work-carryover promise for `parked`, and
+    // the never-downgrade rule for the other four.
+    for (const state of TERMINAL_ROW_STATES) {
+      const r = run([{ id: '21', state }], [wt('21')], sidecars({ reports: { '21': 1 } }));
+      expect(rowOf(r, '21').reconstructedState, state).toBe(state);
+      expect(rowOf(r, '21').decision, state).toBe('keep');
+    }
+  });
+
+  it('and the complement really does move — the non-terminal six are not keep', () => {
+    // Non-vacuity. Without this the block above would be green against a
+    // `TERMINAL` set that swallowed the whole vocabulary.
+    const nonTerminal = ROW_STATES.filter((s) => !TERMINAL_ROW_STATES.has(s));
+    expect(nonTerminal).toHaveLength(6);
+    for (const state of nonTerminal) {
+      const r = run([{ id: '22', state }], [wt('22')], sidecars({}));
+      expect(rowOf(r, '22').decision, state).not.toBe('keep');
+    }
   });
 });

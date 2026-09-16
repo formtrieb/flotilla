@@ -16,7 +16,7 @@
  */
 
 import type { Spine } from './wave-md-rw';
-import { branchesByIssueId } from './wave-md-rw';
+import { branchesByIssueId, TERMINAL_ROW_STATES } from './wave-md-rw';
 import type { WorktreeEntry } from './worktree-cleanup';
 import { ISSUE_STATES, type IssueState } from './stop-condition-state-machine';
 import { coarse } from './coarse-projection';
@@ -71,8 +71,16 @@ const ISSUE_STATE_SET = new Set<string>(ISSUE_STATES);
  * `failed → parked` row must never be adopted (no work-carryover promise — a
  * future wave starts fresh from its own anchor), and it must not fall through to
  * the orphan branch, which would raise needs-attention on a deliberate decision.
+ *
+ * The SET itself is no longer spelled here: it is the spine reader's exported
+ * `TERMINAL_ROW_STATES`, the one owner of this partition (issue #772). The local
+ * name stays because the reasoning above is resume's own, and because the
+ * annotation is a live drift check — `RowState` and `IssueState` are the two
+ * hand-mirrored halves of one vocabulary (pinned at runtime by
+ * wave-md-rw.spec.ts's parity guard), so a member that stopped being a legal
+ * `IssueState` would fail `tsc` on this line.
  */
-const TERMINAL = new Set<IssueState>(['approved', 'pr-created', 'failed', 'abandoned', 'parked']);
+const TERMINAL: ReadonlySet<IssueState> = TERMINAL_ROW_STATES;
 /** "Spawn may never have landed" states where a redispatch is safe. */
 const PRE_LANDING = new Set<IssueState>(['planned', 'dispatched', 're-dispatched']);
 

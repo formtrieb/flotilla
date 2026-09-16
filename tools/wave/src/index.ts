@@ -256,6 +256,12 @@ export {
   branchesByIssueId,
   renderSpine,
   ROW_STATES,
+  // The TERMINAL partition of that same vocabulary (issue #772). Root-reachable
+  // beside `ROW_STATES` for the reason the human lane below is: an out-of-tree
+  // caller that could name the vocabulary but not this partition of it would
+  // re-derive the five literals by hand — which is exactly the three-copy drift
+  // the promotion removed, reproduced one layer further out.
+  TERMINAL_ROW_STATES,
   // The human lane (ADR-0012). Root-reachable as a FAMILY, and deliberately so:
   // the constant alone would let an out-of-tree caller name the token while
   // re-deriving the predicate by hand, which is the divergence the whole gate

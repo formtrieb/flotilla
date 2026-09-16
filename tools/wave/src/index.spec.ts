@@ -155,6 +155,7 @@ import {
   renderSpine as renderSpineFromRoot,
   setRowState as setRowStateFromRoot,
   ROW_STATES as ROW_STATES_FROM_ROOT,
+  TERMINAL_ROW_STATES as TERMINAL_ROW_STATES_FROM_ROOT,
   type PlanTableRow as PlanTableRowFromRoot,
   type RowState as RowStateFromRoot,
   type Spine as SpineFromRoot,
@@ -819,6 +820,28 @@ const WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT = [
 ];
 
 /**
+ * The TERMINAL-partition promotion (issue #772) — ONE runtime name, and the
+ * singleton is the claim rather than an accident of bookkeeping.
+ *
+ * `TERMINAL_ROW_STATES` is not new behaviour anywhere: it is the five-state
+ * partition of `ROW_STATES` that three consumers already applied, each from its
+ * own copy — resume's reconciliation set, the CLI's terminal-wave verdict, and
+ * the `wave-close` load-gate prose. What the root gains is the NAME for a
+ * partition it could previously only re-derive, which is the same reason the
+ * human-lane family above crosses the barrel as a family: a caller that can name
+ * the vocabulary but not this partition of it writes the fourth copy.
+ *
+ * Its type half is nothing at all — the constant annotates as
+ * `ReadonlySet<RowState>` and `RowState` was already root-reachable (it is in
+ * the export block's type list, and is asserted through the barrel below), so
+ * this promotion adds exactly one name to the arithmetic and no erased ones.
+ *
+ * Semver: an ADDITION, so minor (ADR-0035). `ROW_STATES` keeps its eleven
+ * members and their order, nothing was renamed, and nothing narrowed.
+ */
+const TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT = ['TERMINAL_ROW_STATES'];
+
+/**
  * How many runtime names the package root carried before this slice, recorded
  * the same way. This is the widest net in the file: it catches a stowaway from
  * ANY module, including one that has nothing to do with worktree-cleanup.
@@ -1191,7 +1214,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   WAVE_SCOPED_DISCLOSURE_FAMILY_ADDED_AT_ROOT.length +
   GOAL_FACET_FAMILY_ADDED_AT_ROOT.length +
   GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT.length +
-  GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT.length;
+  GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT.length +
+  TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1708,7 +1732,11 @@ describe('the human lane at the root — runtime enumeration (issue #323)', () =
       (name) => !WAVE_MD_RW_NAMES_AT_ROOT_BEFORE.includes(name),
     );
     expect(added).toEqual(
-      [...HUMAN_LANE_FAMILY_ADDED_AT_ROOT, ...WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT].sort(),
+      [
+        ...HUMAN_LANE_FAMILY_ADDED_AT_ROOT,
+        ...WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT,
+        ...TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT,
+      ].sort(),
     );
 
     expect(after).toEqual(
@@ -1716,6 +1744,7 @@ describe('the human lane at the root — runtime enumeration (issue #323)', () =
         ...WAVE_MD_RW_NAMES_AT_ROOT_BEFORE,
         ...HUMAN_LANE_FAMILY_ADDED_AT_ROOT,
         ...WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT,
+        ...TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT,
       ].sort(),
     );
   });
@@ -1736,6 +1765,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // The count alone is necessary but not sufficient: a stowaway arriving in
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT),
+    );
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT),
     );
@@ -1782,5 +1814,62 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // …and it does not over-match the verbs the facet DOES ship.
     expect(forbidden.test('computeGoalFrontier')).toBe(false);
     expect(forbidden.test('classifyGoalMember')).toBe(false);
+  });
+});
+
+// ─── issue #772 — the TERMINAL partition of ROW_STATES reaches the root ───────
+//
+// A promotion, not a new behaviour: the five-state partition already existed in
+// three hand-typed copies (resume, the CLI's terminal-wave verdict, the
+// wave-close prose). What is new at the ROOT is the NAME, and the reason it has
+// to cross the barrel is the reason the human-lane family does — a consumer that
+// can reach `ROW_STATES` but not this partition of it writes the fourth copy,
+// and the copy that motivated this row was the one that silently accepted a
+// typo'd `parked`.
+describe('the TERMINAL row-state partition is reachable from the PACKAGE ROOT (issue #772)', () => {
+  it('re-exports the same binding, not a lookalike Set with the same members', () => {
+    // Identity, not equality. A barrel that rebuilt the set from its own
+    // literals would satisfy every membership assertion below and still be a
+    // fourth copy.
+    expect(TERMINAL_ROW_STATES_FROM_ROOT).toBe(waveMdRwNamespace.TERMINAL_ROW_STATES);
+  });
+
+  it('carries exactly the five terminal states, and every one is a member of the root ROW_STATES', () => {
+    expect([...TERMINAL_ROW_STATES_FROM_ROOT].sort()).toEqual(
+      ['abandoned', 'approved', 'failed', 'parked', 'pr-created'].sort(),
+    );
+    for (const state of TERMINAL_ROW_STATES_FROM_ROOT) {
+      expect(ROW_STATES_FROM_ROOT).toContain(state);
+    }
+  });
+
+  it('leaves ROW_STATES itself untouched — eleven members, same order, across the barrel', () => {
+    // The public-API half of this row's claim, asserted where a consumer meets
+    // it: the partition was ADDED beside the vocabulary, never carved out of it.
+    expect([...ROW_STATES_FROM_ROOT]).toEqual([
+      'planned',
+      'dispatched',
+      'report-in',
+      'reviewing',
+      'verdict-in',
+      're-dispatched',
+      'approved',
+      'pr-created',
+      'failed',
+      'abandoned',
+      'parked',
+    ]);
+    expect(ROW_STATES_FROM_ROOT).toHaveLength(11);
+  });
+
+  it('annotates as the root RowState type, so a consumer iterates it without widening to string', () => {
+    // The compile-time half, in this file's usual shape: `tsc --noEmit` is the
+    // assertion, and the runtime lines only prove a real value flowed through
+    // the named annotation.
+    const states: RowStateFromRoot[] = [...TERMINAL_ROW_STATES_FROM_ROOT];
+    expect(states).toContain('parked');
+    // @ts-expect-error — a literal outside ROW_STATES is rejected by the type
+    // gate at the ROOT surface too, not only inside the engine.
+    expect(TERMINAL_ROW_STATES_FROM_ROOT.has('parkd')).toBe(false);
   });
 });

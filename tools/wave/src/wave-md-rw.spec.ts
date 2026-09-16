@@ -13,6 +13,7 @@ import {
   branchesByIssueId,
   requireBranchesByIssueId,
   ROW_STATES,
+  TERMINAL_ROW_STATES,
   setFrontmatterStatus,
   SPINE_STATUSES,
   HUMAN_GATED_WORKER,
@@ -1667,5 +1668,75 @@ describe('dispatch-log model parsing stays clear of a `model`-shaped branch slug
     const entry = spine.dispatchLog.find((e) => e.id === '131');
     expect(entry?.model).toBeNull();
     expect(entry?.branch).toBe('wave/131-alpha');
+  });
+});
+
+// ─── TERMINAL_ROW_STATES — the partition, with one owner (issue #772) ─────────
+//
+// The five terminal states used to be spelled three times: resume's
+// reconciliation set (typed `Set<IssueState>`), the CLI's terminal-wave verdict
+// (an untyped `Set<string>`), and the wave-close load-gate prose. The untyped
+// copy is what made this a defect rather than a tidiness complaint — a Reviewer
+// replaced its `parked` with a typo and the entire suite stayed green, because
+// only four of the five were reachable through any `--orphans` path.
+//
+// This block pins the partition where it now lives. The membership assertions
+// are the runtime half; the `@ts-expect-error` line is the half that would have
+// caught the original probe, and it is checked by `tsc --noEmit`, not by vitest
+// — if the literal it rejects ever became assignable, tsc reports the directive
+// as unused and the type gate fails.
+describe('TERMINAL_ROW_STATES — the terminal partition of ROW_STATES (issue #772)', () => {
+  it('is exactly the five terminal states, and nothing else', () => {
+    expect([...TERMINAL_ROW_STATES].sort()).toEqual(
+      ['abandoned', 'approved', 'failed', 'parked', 'pr-created'].sort(),
+    );
+    expect(TERMINAL_ROW_STATES.size).toBe(5);
+  });
+
+  it('every member is a member of ROW_STATES — a partition, never a parallel vocabulary', () => {
+    for (const state of TERMINAL_ROW_STATES) {
+      expect(ROW_STATES).toContain(state);
+    }
+  });
+
+  it('leaves the NON-terminal six out, which is the half the sweeps actually branch on', () => {
+    // Stated as the complement rather than as a second literal list: this is
+    // what `worktree-cleanup --orphans` reads to decide a wave is still live,
+    // and a member that leaked in here would spare nothing and sweep a running
+    // wave's refs.
+    const nonTerminal = ROW_STATES.filter((s) => !TERMINAL_ROW_STATES.has(s));
+    expect([...nonTerminal]).toEqual([
+      'planned',
+      'dispatched',
+      'report-in',
+      'reviewing',
+      'verdict-in',
+      're-dispatched',
+    ]);
+  });
+
+  it('carries parked — the member a typo hid from every existing test', () => {
+    // The Reviewer's own probe, turned into a shipped line. `parked` is the one
+    // terminal state with no branch and no PR behind it (ADR-0022), so nothing
+    // else in the suite happened to exercise it through the sweeps.
+    expect(TERMINAL_ROW_STATES.has('parked')).toBe(true);
+  });
+
+  it('rejects a literal outside ROW_STATES at the TYPE gate', () => {
+    // `tsc --noEmit` is the assertion on the next line; at runtime the call is
+    // merely a `false`. This is the protection the CLI's `Set<string>` copy did
+    // not have, and its absence is what let the typo survive a full green run.
+    // @ts-expect-error — 'parkd' is not a RowState.
+    expect(TERMINAL_ROW_STATES.has('parkd')).toBe(false);
+  });
+
+  it('names only states the state machine also carries — the mirror holds for the partition too', () => {
+    // The parity guard above pins `ROW_STATES` against `ISSUE_STATES` as whole
+    // lists. This asks the narrower question the partition's consumers depend
+    // on: resume reconciles `IssueState`s against this very Set, so a member
+    // the state machine dropped would make that reconciliation unroutable.
+    for (const state of TERMINAL_ROW_STATES) {
+      expect(ISSUE_STATES).toContain(state);
+    }
   });
 });
