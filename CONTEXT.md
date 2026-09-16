@@ -278,6 +278,20 @@ _Avoid_: dev mode (implies a runtime toggle — the binding is static, tracked c
 A *prose reference* stated in both its in-repo form and its installed form, so whichever context is live, the reader picks the one that resolves — retained for by-name recommendations addressed to a human (slash commands). Agent-side cross-skill loading is outside its scope entirely: that is a sibling-path read against the loading skill's own base directory, one spelling in every context (ADR-0040). Prose only: an *invocation* is never dual-form — the engine invocation is a single setup-time binding (`engine.cli`, ADR-0032) that fails loud, never a chained alternative.
 _Avoid_: fallback (the resolving form is chosen by reading context, and invocations never chain at runtime), alias.
 
+### Reading classes
+
+**Standing load**:
+What a skill reads *before acting*, on every run, whatever step follows — the invoked skill's own `SKILL.md`, `wave-shared/SKILL.md`, and every file under `wave-shared/reference/`, loaded whole so a `Convention <n>` citation always resolves (ADR-0028). It is the per-wave fixed cost, and the class the corpus shape rule governs: a rule with a structural **Enforcement Tier** appears here only in its residual form, a rule on a prose rung in full — its prose *is* the enforcement (ADR-0050). Measured in bytes and pinned by the guard: lowered freely, raised only in a diff that says so.
+_Avoid_: tier (three senses already), the loader (names the instruction, not the class), always-loaded set (fine in prose, not the term).
+
+**Step load**:
+What a procedure step names at the point it is needed — a mechanics file, a phase file, the driver reference — read then, never as a precondition of the run. The pointer is the only entry: a file no step names is unreachable by design. `wave-close`'s phase files and every `*-mechanics.md` are step load; with the standing load, it forms everything a run can read, the second pinned measure (ADR-0050).
+_Avoid_: on-demand (implies the reader decides — the step decides), optional (mandatory at its step).
+
+**Evidence (reading class)**:
+What no skill reads at runtime — a convention's or a skill's `evidence/` sibling, `docs/adr/`, `docs/retros/`, CHARTER — reached only when the reason behind a rule is actually wanted, by a human or on a pointer deliberately followed. Every `docs/` citation in a skill is this class: a pointer to *why*, never a dependency on *what*; a skill that needs a document's content at runtime pulls that content into its own `reference/`. The only place text may go without raising a pinned measure (ADR-0050).
+_Avoid_: provenance (the project-lineage section above, and every issue body's `## Provenance` section — where a finding came from, not a reading class), documentation (too broad), background reading.
+
 ### Provenance
 
 **Ur**:
@@ -320,6 +334,7 @@ _Avoid_: consumer mode (not a mode — the register is the default, the source-f
 - The **Echo-Guard** is defense-in-depth *over* the auth anchors, never one of them: the tracked settings-deny entries own the gitignored-file-read vector, the **Lookup-Command** indirection owns the direct-execution vector (ADR-0029), and the guard covers only what a command's own text reveals.
 - The **Sweep** accounts for every registered worktree: an incomplete removal carries its **Survivor set** — judged only after the delete has exhausted its permissions — and, when exhausted, **Manual recovery**; a worktree outside every **Containment root** is reported **Unaccounted** — removal of both belongs to the **Operator**, never to a more forceful sweep, and never to an agent (ADR-0042, Amendment 2026-09-08; ADR-0049). A wave's own review refs and composed drivers are live until it is a **Terminal wave**; from then on its own close sweeps them (ADR-0042 Amendment 2026-09-08).
 - A **Citation** must resolve against its **Resolution anchor**; a **Subject path** is exempted guard-side in a named, self-policing class — the checked text never carries its own exemption (ADR-0043).
+- A rule's **Enforcement Tier** decides the reading class of its prose: structural rung → residual form in the **Standing load**, prose rung → full text there; what a structure now carries lives in **Evidence**. **Step load** is reached only through the step that names it. The **Standing load** and the loaded corpus (standing + step) are pinned measures — a **Promotion**'s prose walk-back lowers them, growth raises them only in a diff that says so (ADR-0050).
 
 ## Flagged ambiguities
 
@@ -328,6 +343,7 @@ _Avoid_: consumer mode (not a mode — the register is the default, the source-f
 - **"tier"** is overloaded: the model tier (Worker/Reviewer routing, the abstract `-heavy` marker — ADR-0007/0012) vs the **Enforcement Tier** (which rung enforces a rule — ADR-0034). **Resolved:** unqualified "tier" keeps meaning the model tier everywhere in wave routing; the doctrine concept is always written out as **Enforcement Tier**.
 - **"human"** is overloaded across two pipeline stages with **opposite** wave outcomes. **Resolved (ADR-0015):** `ready-for-human` (triage eligibility axis) = *not* wave work, a human handles it entirely outside flotilla, never enters a wave; `HITL-required` (Worker axis, ADR-0012) = wave work that *does* enter a wave, merely human-gated. The separating test is "does the wave system track/surface this work at all?". A `public-API-change` is `ready-for-agent` + `background-heavy` (AFK-implementable, landing-gated), **never** `ready-for-human`.
 - **"deferred"** is overloaded across three moments. **Resolved (ADR-0049):** the **Deferred (gate outcome)** sense is the DoR's — a check whose data source is absent *before* dispatch; the AC sense (`acVerification[].met = deferred`) is the **Reviewer**'s — an outcome unreachable from the review environment. A verify command withheld for a missing **Capability requirement** is deliberately *not* a third sense: the gate itself gets no status of its own; the acceptance criteria it would have backed take the AC sense, with `capability-gated` as the valve's fourth trigger beside merge-, prod- and human-gated.
+- **"tier"** gained a third neighbour with the reading classes. **Resolved (ADR-0050):** a reading class is never called a tier — **Standing load**, **Step load**, **Evidence** say *when* a file is read; **Enforcement Tier** says *where* a rule is enforced. **"evidence"** likewise: the reading class is written **Evidence (reading class)** where the Reviewer's general sense ("evidence before assertions") could be read instead, and "provenance position" in ADR-0034 means the Evidence class.
 
 ## Example dialogue
 

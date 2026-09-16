@@ -36,3 +36,12 @@ By 2026-07-28 the dominant planning constraint was a 7-row clique: `#81 · #116 
 
 - **Per-phase mechanics files** (`mechanics-4a.md`, …) (rejected) — kills the clique but doubles the file count and keeps every duplicate alive.
 - **Accept the serialization** (rejected) — keeps the double-maintenance: every phase-content issue declares two files, and the stale-prose class (two roofs drifting apart) recurs indefinitely.
+
+## Amendment (2026-09-16) — the phase directory leaves the load-everything pattern; `evidence/` is per skill
+
+Stage 2 gave `wave-close` the same loader line as `wave-shared` — "load every file in that directory, not a subset picked by name" — on the same ground: a "phase N" citation should resolve without an index. Measured in the #714 / FOR-370 grill ([ADR-0050](0050-the-loaded-corpus-is-a-pinned-measure-and-a-rules-enforcement-tier-decides-its-reading-class.md)): the phase directory is 181 KB and its largest file (`phase-3-worktree-cleanup.md`, 65 KB) is the fastest-growing file in the corpus, read whole at every close; nothing outside `wave-close` cites a phase except by pointer (wave-resume's link to phase 3, the engine's stderr naming phase 6); and the six steps in `wave-close/SKILL.md` do not name their phase files at all — the mapping runs on the number alone.
+
+- **The load-everything pattern stays where it buys citation resolution for a *rule set* — `wave-shared/reference/`, the standing load.** It leaves `wave-close/reference/`: phases run in sequence, each phase's file is needed exactly at its step, so each step names its file (step load, ADR-0050) and `close-mechanics.md` — the cross-phase exit-code tables and commands — is named once in step 1. A forward citation to phase 6 from phase 3 resolves when phase 6 is reached; the counter-plus-one-liner register this ADR rejected an index for is a `wave-shared` device and was never needed for phases.
+- **`evidence/` generalizes from "a convention's history" to "a skill's history."** The sibling `reference/` never reaches (the 2026-08-13 loader amendment) may now sit beside any skill's `reference/` — `wave-start/evidence/`, `wave-close/evidence/`, `wave-setup/evidence/` first — reached by the same sibling-path read (ADR-0040), and it is the only destination a mechanics walk-back may use.
+
+The split decision, the stable-loader rule for `wave-shared/SKILL.md`, and the deliberately-unsplit driver reference are unchanged.
