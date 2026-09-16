@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { runSpine } from './spine-cli';
+import { join, resolve } from 'node:path';
+import { runSpine, SPINE_CONTRACTS } from './spine-cli';
 // The router, imported to pin that its `spine` case is the ONE dispatch path
 // this module's ops now flow through (issue #77).
 import { main } from './cli';
@@ -681,6 +681,421 @@ _(none yet)_
       expect(readSpine(source).planTable).toHaveLength(1);
       expect(readDisclosures(source)).toEqual([]);
     });
+  });
+});
+
+// ─── `--json` receipts on the seven silent writes (ADR-0051 decision 7) ───────
+//
+// Seven ops write and say nothing: set-row-state, set-row-iter, set-row-pr,
+// set-branch, set-status, set-disposition, replace-closed-by. The Coordinator
+// runs them in every routing step and every close and read their success from
+// the exit code alone. With `--json` each now prints exactly one receipt of
+// WHAT IT WROTE — never a re-read of the spine.
+//
+// Every shape below is CONTRACT FROM LANDING (ADR-0035): these assertions are
+// the pin, so a later change to a key name or a value is a spec failure rather
+// than a silent break of a Coordinator that parses them.
+
+describe('spine-cli — `--json` receipts on the silent writes (ADR-0051 decision 7)', () => {
+  let stdoutOut = '';
+  let stderrOut = '';
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stdoutOut = '';
+    stderrOut = '';
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: unknown) => {
+      stdoutOut += String(c);
+      return true;
+    });
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderrOut += String(c);
+      return true;
+    });
+  });
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  /** Run one op and hand back everything an operator can observe. */
+  function run(args: string[]): { code: number; stdout: string; stderr: string } {
+    stdoutOut = '';
+    stderrOut = '';
+    const code = runSpine(args);
+    return { code, stdout: stdoutOut, stderr: stderrOut };
+  }
+
+  /** The single JSON object an op printed, parsed. Fails loud on anything else. */
+  function receiptOf(out: string): Record<string, unknown> {
+    expect(out.endsWith('\n'), 'a receipt is one JSON object plus a newline').toBe(true);
+    return JSON.parse(out) as Record<string, unknown>;
+  }
+
+  // ── The seven shapes, one test each ──────────────────────────────────────
+
+  it('set-row-state prints { op, spine, id, written: { state } }', () => {
+    const path = writeTmpSpine();
+    const { code, stdout } = run(['set-row-state', path, ROW_ID, NEW_STATE, '--json']);
+    expect(code).toBe(0);
+    expect(receiptOf(stdout)).toEqual({
+      op: 'set-row-state',
+      spine: resolve(path),
+      id: ROW_ID,
+      written: { state: NEW_STATE },
+    });
+    // …and the write it reports genuinely landed.
+    expect(readSpine(readFileSync(path, 'utf-8')).planTable[0].state).toBe(NEW_STATE);
+  });
+
+  it('set-row-iter prints { op, spine, id, written: { iter } } — the number, not the argv string', () => {
+    const path = writeTmpSpine();
+    const { code, stdout } = run(['set-row-iter', path, ROW_ID, '2', '--json']);
+    expect(code).toBe(0);
+    expect(receiptOf(stdout)).toEqual({
+      op: 'set-row-iter',
+      spine: resolve(path),
+      id: ROW_ID,
+      written: { iter: 2 },
+    });
+    expect(readSpine(readFileSync(path, 'utf-8')).planTable[0].iter).toBe(2);
+  });
+
+  it('set-row-pr prints the cell AS WRITTEN — a preserved title included, never a re-parse', () => {
+    // The acceptance criterion this row was written for. A PR cell carries a
+    // rendered link AND the row's own title; a receipt that re-read the spine
+    // would report the parser's idea of that cell instead of the caller's.
+    const path = writeTmpSpine();
+    const CELL = '[#42](https://github.com/formtrieb/flotilla/pull/42) — the row\'s own title';
+    const { code, stdout } = run(['set-row-pr', path, ROW_ID, CELL, '--json']);
+    expect(code).toBe(0);
+    expect(receiptOf(stdout)).toEqual({
+      op: 'set-row-pr',
+      spine: resolve(path),
+      id: ROW_ID,
+      written: { pr: CELL },
+    });
+    // The receipt's own value, read back off the SPINE LINE the op wrote: the
+    // two agree, which is what makes "as written" a claim and not a slogan.
+    expect(readSpine(readFileSync(path, 'utf-8')).planTable[0].prCell).toBe(CELL);
+  });
+
+  it('the PR receipt is the CALLER\'s own string, even where the spine\'s BYTES differ from it', () => {
+    // A PR cell carries a row title, which is free text off the tracker, so it
+    // can hold a literal `|`. The byte-preserving writer escapes that to the
+    // fullwidth `｜` before it can split the markdown row. The receipt reports
+    // what the CALLER handed over — the `|` the Coordinator can compare against
+    // its own argv — and not the spine's bytes.
+    const path = writeTmpSpine();
+    const CELL = '[#42](https://example.test/pull/42) — a title | with a pipe';
+    const { code, stdout } = run(['set-row-pr', path, ROW_ID, CELL, '--json']);
+    expect(code).toBe(0);
+    expect(receiptOf(stdout).written).toEqual({ pr: CELL });
+
+    // The spine's own bytes, for contrast: escaped, and NOT what the receipt says.
+    const raw = readFileSync(path, 'utf-8');
+    expect(raw).toContain('— a title ｜ with a pipe');
+    expect(raw).not.toContain('— a title | with a pipe');
+    // The reader is the writer's inverse for a pipe, so a PARSED read-back
+    // happens to agree with the receipt on this input.
+    expect(readSpine(raw).planTable[0].prCell).toBe(CELL);
+
+    // One input where it does NOT agree, and therefore the one that tells a
+    // receipt from a re-parse by value: a PADDED cell. The writer keeps the
+    // caller's spaces inside the cell; the reader trims every cell it parses.
+    // The receipt still says what the caller wrote.
+    const padded = writeTmpSpine();
+    const PADDED_CELL = '  pr 42 landed  ';
+    expect(run(['set-row-pr', padded, ROW_ID, PADDED_CELL, '--json']).code).toBe(0);
+    expect(receiptOf(stdoutOut).written).toEqual({ pr: PADDED_CELL });
+    expect(readSpine(readFileSync(padded, 'utf-8')).planTable[0].prCell).toBe('pr 42 landed');
+  });
+
+  it('a receipt costs NO extra read of the spine — the write is not re-read to describe itself', () => {
+    // The pin for "what was written, never a re-read of the spine", made
+    // mechanically rather than by comparing two strings that a lossless
+    // round-trip keeps equal. `createSpineStore` reads the file exactly once at
+    // construction; a receipt built by re-reading (or by `store.reload()`)
+    // would make it twice. The injected SpineIo counts.
+    const source = FIXTURE;
+    const reads: string[] = [];
+    const writes: string[] = [];
+    const io = {
+      read: (p: string) => {
+        reads.push(p);
+        return source;
+      },
+      write: (p: string) => {
+        writes.push(p);
+      },
+    };
+    stdoutOut = '';
+    expect(runSpine(['set-row-pr', 'WAVE.md', ROW_ID, '#42', '--json'], io)).toBe(0);
+    expect(reads).toEqual(['WAVE.md']);
+    expect(writes).toEqual(['WAVE.md']);
+    expect(receiptOf(stdoutOut).written).toEqual({ pr: '#42' });
+
+    // The same for the one op that bypasses the store entirely (`set-row-iter`
+    // writes through wave-md-rw directly): one read, one write, one receipt.
+    reads.length = 0;
+    writes.length = 0;
+    stdoutOut = '';
+    expect(runSpine(['set-row-iter', 'WAVE.md', ROW_ID, '3', '--json'], io)).toBe(0);
+    expect(reads).toEqual(['WAVE.md']);
+    expect(writes).toEqual(['WAVE.md']);
+    expect(receiptOf(stdoutOut).written).toEqual({ iter: 3 });
+  });
+
+  it('set-branch prints { branch }, and { branch, model } only when --model was passed', () => {
+    const bare = writeTmpSpine();
+    expect(run(['set-branch', bare, ROW_ID, 'wave/01-thing', '--json']).stdout).toBe(
+      JSON.stringify(
+        { op: 'set-branch', spine: resolve(bare), id: ROW_ID, written: { branch: 'wave/01-thing' } },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const withModel = writeTmpSpine();
+    const { code, stdout } = run([
+      'set-branch', withModel, ROW_ID, 'wave/01-thing', '--model', 'claude-opus-4-8', '--json',
+    ]);
+    expect(code).toBe(0);
+    expect(receiptOf(stdout)).toEqual({
+      op: 'set-branch',
+      spine: resolve(withModel),
+      id: ROW_ID,
+      written: { branch: 'wave/01-thing', model: 'claude-opus-4-8' },
+    });
+    // No `model` KEY at all on the bare call — not `model: null`, which would be
+    // a claim about a dispatch-log line that call never wrote.
+    expect(
+      Object.keys(
+        (receiptOf(run(['set-branch', writeTmpSpine(), ROW_ID, 'b', '--json']).stdout)
+          .written) as Record<string, unknown>,
+      ),
+    ).toEqual(['branch']);
+  });
+
+  it('set-status prints { op, spine, written: { status } } and carries NO id (frontmatter, not a row)', () => {
+    const path = writeTmpSpine();
+    const { code, stdout } = run(['set-status', path, 'ready', '--json']);
+    expect(code).toBe(0);
+    const receipt = receiptOf(stdout);
+    expect(receipt).toEqual({
+      op: 'set-status',
+      spine: resolve(path),
+      written: { status: 'ready' },
+    });
+    expect('id' in receipt).toBe(false);
+    expect(readSpine(readFileSync(path, 'utf-8')).frontmatter.status).toBe('ready');
+  });
+
+  it('set-disposition prints { op, spine, written: { ref, disposition } }', () => {
+    const path = writeTmpSpine();
+    runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+    const { code, stdout } = run(['set-disposition', path, '01.1', 'filed:#158', '--json']);
+    expect(code).toBe(0);
+    expect(receiptOf(stdout)).toEqual({
+      op: 'set-disposition',
+      spine: resolve(path),
+      written: { ref: '01.1', disposition: 'filed:#158' },
+    });
+    expect(readFileSync(path, 'utf-8')).toContain('| 01.1 | 01 | 1 | worker | filed:#158 | gap A |');
+  });
+
+  it('replace-closed-by prints { op, spine, written: { bodyBytes } } — the section\'s size, in UTF-8 bytes', () => {
+    const path = writeTmpSpine();
+    const dir = mkdtempSync(join(tmpdir(), 'spine-cli-receipt-body-'));
+    const bodyFile = join(dir, 'closed-by.md');
+    // Multi-line, and with a non-ASCII character, so a byte count and a
+    // code-unit count genuinely differ (`—` is 3 bytes, 1 code unit).
+    const body = 'Closed by PR #42 — merged 2026-09-16.\nRow 01 landed.';
+    writeFileSync(bodyFile, body, 'utf-8');
+
+    const { code, stdout } = run(['replace-closed-by', path, bodyFile, '--json']);
+    expect(code).toBe(0);
+    expect(receiptOf(stdout)).toEqual({
+      op: 'replace-closed-by',
+      spine: resolve(path),
+      written: { bodyBytes: Buffer.byteLength(body, 'utf-8') },
+    });
+    // Non-vacuity: the pin above would also pass on a code-unit count if the
+    // body were pure ASCII. It is not.
+    expect(Buffer.byteLength(body, 'utf-8')).not.toBe(body.length);
+    expect(readFileSync(path, 'utf-8')).toContain('Closed by PR #42 — merged 2026-09-16.');
+  });
+
+  // ── The negative controls ────────────────────────────────────────────────
+
+  it('WITHOUT --json every one of the seven prints nothing at all — byte-identical to before', () => {
+    // The default-output pin. Each op is run on its own fresh spine, in the
+    // spelling the skills actually use, and stdout is compared to the empty
+    // string — not merely "no JSON".
+    const bodyDir = mkdtempSync(join(tmpdir(), 'spine-cli-silent-body-'));
+    const bodyFile = join(bodyDir, 'closed-by.md');
+    writeFileSync(bodyFile, 'Closed by PR #42.', 'utf-8');
+
+    const calls: readonly (readonly string[])[] = [
+      ['set-row-state', '@', ROW_ID, NEW_STATE],
+      ['set-row-iter', '@', ROW_ID, '2'],
+      ['set-row-pr', '@', ROW_ID, '#42'],
+      ['set-branch', '@', ROW_ID, 'wave/01-thing'],
+      ['set-branch', '@', ROW_ID, 'wave/01-thing', '--model', 'claude-opus-4-8'],
+      ['set-status', '@', 'ready'],
+      ['replace-closed-by', '@', bodyFile],
+    ];
+
+    for (const call of calls) {
+      const path = writeTmpSpine();
+      const { code, stdout } = run(call.map((a) => (a === '@' ? path : a)));
+      expect(code, `\`${call[0]}\` no longer exits 0`).toBe(0);
+      expect(stdout, `\`${call[0]}\` printed something without --json`).toBe('');
+    }
+
+    // set-disposition needs a disclosure to address, so it gets its own spine.
+    const path = writeTmpSpine();
+    runSpine(['add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'gap A']);
+    const { code, stdout } = run(['set-disposition', path, '01.1', 'scope-extension']);
+    expect(code).toBe(0);
+    expect(stdout).toBe('');
+  });
+
+  it('a REFUSED write prints no receipt, even with --json — usage 2 and domain 1 alike', () => {
+    const path = writeTmpSpine();
+    const before = readFileSync(path, 'utf-8');
+
+    // Usage 2 — the state token is refused at the CLI boundary.
+    const badState = run(['set-row-state', path, ROW_ID, 'not-a-real-state', '--json']);
+    expect(badState.code).toBe(2);
+    expect(badState.stdout).toBe('');
+
+    // Domain 1 — the row id is unknown, so the mutator throws before the flush.
+    const badRow = run(['set-row-state', path, '99', NEW_STATE, '--json']);
+    expect(badRow.code).toBe(1);
+    expect(badRow.stdout).toBe('');
+
+    // The same, one op along: a refused disposition is exit 1 and silent.
+    const badDisposition = run(['set-disposition', path, '01.1', 'sorted-it-out', '--json']);
+    expect(badDisposition.code).toBe(1);
+    expect(badDisposition.stdout).toBe('');
+
+    // Nothing was written by any of the three.
+    expect(readFileSync(path, 'utf-8')).toBe(before);
+  });
+
+  it('exit codes are unchanged by --json — the flag adds stdout and nothing else', () => {
+    // Pairwise: the same call with and without the flag, on its own spine.
+    const cases: readonly (readonly [string[], number])[] = [
+      [['set-row-state', '@', ROW_ID, NEW_STATE], 0],
+      [['set-row-state', '@', ROW_ID, 'not-a-real-state'], 2],
+      [['set-row-state', '@', '99', NEW_STATE], 1],
+      [['set-row-iter', '@', ROW_ID, '2'], 0],
+      [['set-row-iter', '@', ROW_ID, 'two'], 2],
+      [['set-row-iter', '@', '99', '2'], 1],
+      [['set-status', '@', 'ready'], 0],
+      [['set-status', '@', 'reddy'], 2],
+      [['set-branch', '@', ROW_ID], 2],
+    ];
+    for (const [call, expected] of cases) {
+      const bare = run(call.map((a) => (a === '@' ? writeTmpSpine() : a)));
+      const json = run([...call.map((a) => (a === '@' ? writeTmpSpine() : a)), '--json']);
+      expect(bare.code, `\`${call.join(' ')}\` changed exit code`).toBe(expected);
+      expect(json.code, `\`${call.join(' ')} --json\` changed exit code`).toBe(expected);
+    }
+  });
+
+  it('a `--text` whose VALUE is "--json" is prose — the receipt switch reads flags, not data', () => {
+    // The same class the `--wave` step-over closes: disclosure text is free
+    // prose lifted from an agent's report, so the parser must step over it.
+    const path = writeTmpSpine();
+    const { code, stdout } = run([
+      'add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', '--json',
+    ]);
+    expect(code).toBe(0);
+    // `add-disclosure` prints its minted ref (it was never one of the seven),
+    // and nothing else — no receipt was switched on by the text.
+    expect(stdout).toBe('01.1\n');
+    expect(readFileSync(path, 'utf-8')).toContain('| 01.1 | 01 | 1 | worker | open | --json |');
+  });
+
+  it('the receipt reaches an operator through the ROUTER too (Convention 9 wiring)', () => {
+    // `main(['spine', …])` is the spelling the skills use; the router forwards
+    // argv verbatim, and this is the assertion that says so for `--json`.
+    const viaRouterPath = writeTmpSpine();
+    stdoutOut = '';
+    expect(main(['spine', 'set-row-state', viaRouterPath, ROW_ID, NEW_STATE, '--json'])).toBe(0);
+    const viaRouter = stdoutOut;
+
+    const directPath = writeTmpSpine();
+    const direct = run(['set-row-state', directPath, ROW_ID, NEW_STATE, '--json']);
+
+    expect(JSON.parse(viaRouter)).toEqual({
+      ...(JSON.parse(direct.stdout) as Record<string, unknown>),
+      spine: resolve(viaRouterPath),
+    });
+  });
+
+  // ── The advertised shape ─────────────────────────────────────────────────
+
+  it('every one of the seven NAMES its receipt shape in its own usage line (`--help`)', () => {
+    const expected: Readonly<Record<string, string>> = {
+      'set-row-state': '{ op, spine, id, written: { state } }',
+      'set-row-iter': '{ op, spine, id, written: { iter } }',
+      'set-row-pr': '{ op, spine, id, written: { pr } }',
+      'set-branch': '{ op, spine, id, written: { branch, model? } }',
+      'set-status': '{ op, spine, written: { status } }',
+      'set-disposition': '{ op, spine, written: { ref, disposition } }',
+      'replace-closed-by': '{ op, spine, written: { bodyBytes } }',
+    };
+    for (const [op, shape] of Object.entries(expected)) {
+      const { code, stdout } = run([op, '--help']);
+      expect(code, `\`spine ${op} --help\` did not exit 0`).toBe(0);
+      expect(stdout, `\`spine ${op}\` does not name its receipt shape`).toContain(shape);
+      expect(stdout).toContain('--json');
+      // And it says what the DEFAULT still is, on the same surface.
+      expect(stdout).toContain('prints nothing');
+    }
+  });
+
+  it('an op with no receipt keeps its one-line usage — the second line is not blanket text', () => {
+    // `read` is a product, `check-disclosures` a gate, `add-disclosure` already
+    // prints its ref: none of the three is a silent write, and none may
+    // advertise a receipt it does not emit.
+    for (const op of ['read', 'check-disclosures', 'add-disclosure']) {
+      const { stdout } = run([op, '--help']);
+      expect(stdout, `\`spine ${op}\` advertises a receipt it does not print`).not.toContain(
+        'one receipt on stdout',
+      );
+    }
+  });
+
+  it('the seven ops that advertise a receipt are exactly the seven that print one', () => {
+    // Derived from the contracts at RUNTIME, never transcribed: an op added to
+    // the receipt table without a receipt (or the reverse) fails here by name.
+    const advertised = Object.entries(SPINE_CONTRACTS)
+      .filter(([, c]) => c.usage.some((l) => l.includes('one receipt on stdout')))
+      .map(([op]) => op)
+      .sort();
+    expect(advertised).toEqual(
+      [
+        'replace-closed-by',
+        'set-branch',
+        'set-disposition',
+        'set-row-iter',
+        'set-row-pr',
+        'set-row-state',
+        'set-status',
+      ].sort(),
+    );
+    // Every advertised op declares the `silent-write` output class — the class
+    // ADR-0051 row V1 introduced and this row gives meaning to.
+    for (const op of advertised) {
+      expect(SPINE_CONTRACTS[op].output, `\`spine ${op}\` is not a silent write`).toBe(
+        'silent-write',
+      );
+    }
   });
 });
 

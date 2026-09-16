@@ -123,6 +123,41 @@
  * through another front end. Only shape errors argv alone can show (a missing
  * flag, a non-integer `--iter`) are caught at this boundary as usage 2.
  *
+ * ── `--json` receipts on the silent writes (ADR-0051 decision 7) ─────────────
+ *
+ * SEVEN ops write and say nothing: `set-row-state`, `set-row-iter`,
+ * `set-row-pr`, `set-branch`, `set-status`, `set-disposition` and
+ * `replace-closed-by`. The Coordinator runs them in every routing step and
+ * every close, and until now read their success from the exit code alone.
+ *
+ * With `--json` — router-global since ADR-0051 decision 7 — each prints exactly
+ * ONE receipt on stdout, AFTER the write has landed:
+ *
+ *   { "op": "set-row-pr", "spine": "<abs spine path>", "id": "01",
+ *     "written": { "pr": "[#42](https://…) — the row's own title" } }
+ *
+ * `op` is the op token exactly as {@link SPINE_OP_ARGS} spells it — the same
+ * vocabulary the usage block and the unknown-op message advertise — because the
+ * `spine` half of `spine set-row-pr` would only re-say what the sibling `spine`
+ * KEY (the path) already names.
+ *
+ * `written` carries WHAT THIS CALL WROTE — the argv value it handed the store —
+ * never a re-read of the spine. A re-parse would report the PARSER's idea of the
+ * cell rather than the caller's, and those two differ exactly where a receipt
+ * earns its keep (a PR cell whose title the writer preserved).
+ *
+ * Default output is unchanged: without `--json` all seven still print NOTHING,
+ * pinned byte-identically in spine-cli.spec.ts. Exit codes are untouched, and a
+ * refused write — a bad state token (2), an unknown row id or a refused
+ * disposition (1) — prints no receipt at all: the receipt follows the flush, so
+ * it can only ever describe a write that landed.
+ *
+ * `create` is a silent write too and is deliberately NOT one of the seven: it
+ * renders a WHOLE new spine rather than one cell, so `written` would have no
+ * cell to carry. `add-disclosure` was never silent — it prints the ref it
+ * minted (which is why `--json` leaves it alone here); the remaining ops are
+ * readers, and the prose ones get their `--json` in their own row.
+ *
  * Exit codes:
  *   0 — success (for `check-disclosures`: the archive gate is clear)
  *   1 — domain failure: a spine mutator threw (bad row id, missing section,
@@ -218,6 +253,76 @@ const SPINE_OP_ARGS: Readonly<Record<string, string>> = {
 
 /** The op names, derived from {@link SPINE_OP_ARGS} — never a second copy. */
 const SPINE_OPS: readonly string[] = Object.keys(SPINE_OP_ARGS);
+
+/**
+ * THE receipt vocabulary of this runner: the `--json` shape each SILENT-WRITE op
+ * prints, written the way the usage surface spells it (ADR-0051 decision 7).
+ *
+ * ONE table, two readers — {@link SPINE_CONTRACTS} renders each op's `--json`
+ * usage line from it, and {@link printReceipt} is the only thing that builds a
+ * receipt — for the same reason {@link SPINE_OP_ARGS} exists one table up: an
+ * advertised shape and an emitted shape maintained separately are two
+ * vocabularies that can disagree, and the emitted one is the half a Coordinator
+ * cannot see until it has already made the call.
+ *
+ * The keys ARE the seven silent writes. Every other op is absent on purpose:
+ * `create` renders a whole spine rather than a cell, `add-disclosure` already
+ * prints the ref it minted, and the rest are readers (see this file's header).
+ */
+const RECEIPT_SHAPES: Readonly<Record<string, string>> = {
+  'set-row-state': '{ op, spine, id, written: { state } }',
+  'set-row-iter': '{ op, spine, id, written: { iter } }',
+  'set-row-pr': '{ op, spine, id, written: { pr } }',
+  // `model` appears only when `--model` was passed: the receipt states what was
+  // written, and a `"model": null` on a call that wrote no model would be a
+  // claim about the spine this op never made.
+  'set-branch': '{ op, spine, id, written: { branch, model? } }',
+  'set-status': '{ op, spine, written: { status } }',
+  'set-disposition': '{ op, spine, written: { ref, disposition } }',
+  // The `## Closed-by` body is a whole SECTION (multi-line, arbitrarily long),
+  // so the receipt carries its size rather than echoing it back at the caller
+  // who just supplied it.
+  'replace-closed-by': '{ op, spine, written: { bodyBytes } }',
+};
+
+/**
+ * One `--json` receipt: what a silent write put into the spine.
+ *
+ * `id` is present exactly on the four ops that address a Plan-Table ROW;
+ * `set-status` (frontmatter), `set-disposition` (a disclosure ref) and
+ * `replace-closed-by` (a section) address no row and carry none.
+ */
+interface SpineWriteReceipt {
+  readonly op: string;
+  readonly spine: string;
+  readonly id?: string;
+  readonly written: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Print one receipt for a write that has ALREADY landed.
+ *
+ * The key order is the order {@link SpineWriteReceipt} declares (`op`, `spine`,
+ * `id`, `written`) — `JSON.stringify` preserves insertion order, and a receipt
+ * a human skims in a routing log is easier to read when every op's receipt
+ * opens the same way.
+ *
+ * The path is resolved, matching the `spine` field `human-gated` already emits:
+ * a receipt that names a relative path is ambiguous the moment it is read
+ * anywhere but the cwd that produced it.
+ */
+function printReceipt(
+  op: string,
+  spinePath: string,
+  written: Readonly<Record<string, unknown>>,
+  id?: string,
+): void {
+  const receipt: SpineWriteReceipt =
+    id === undefined
+      ? { op, spine: resolve(spinePath), written }
+      : { op, spine: resolve(spinePath), id, written };
+  printJson(receipt);
+}
 
 function printUsage(): void {
   process.stderr.write(
@@ -325,6 +430,13 @@ function fixed(count: number): PositionalArity {
  * The spine group's contracts, keyed by op — the shapes above joined to the
  * usage line {@link SPINE_OP_ARGS} already owned.
  *
+ * A silent-write op's usage carries a SECOND line, rendered from
+ * {@link RECEIPT_SHAPES}: the receipt `--json` prints, and the statement that
+ * without the flag it prints nothing. That line is what `spine <op> --help` and
+ * every refusal for that op show, so the shape is advertised at exactly the
+ * moment an operator is looking for it — and it is rendered, never transcribed,
+ * so it cannot drift from the receipt {@link printReceipt} actually emits.
+ *
  * Root-exported (and collected by `cli.ts`'s aggregate reader) so the skill-side
  * pin and the later Catalog read ONE thing.
  */
@@ -335,7 +447,15 @@ export const SPINE_CONTRACTS: Readonly<Record<string, VerbContract>> =
       {
         verb: `spine ${op}`,
         ...SPINE_OP_SHAPES[op],
-        usage: [`usage: spine ${op} ${SPINE_OP_ARGS[op]}`],
+        usage: [
+          `usage: spine ${op} ${SPINE_OP_ARGS[op]}`,
+          ...(RECEIPT_SHAPES[op] === undefined
+            ? []
+            : [
+                `  --json: one receipt on stdout, after the write lands — ${RECEIPT_SHAPES[op]}`,
+                '          without it this op prints nothing, exactly as before.',
+              ]),
+        ],
       },
     ]),
   );
@@ -563,6 +683,12 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
   // now performed for every op by one reader).
   const positionals = positionalsOf(contract, opArgs);
 
+  // The router-global `--json` (ADR-0051 decision 7) is, on a silent-write op,
+  // the switch between "nothing on stdout" and one receipt. Read through the
+  // contract like every other flag, so a `--text "--json"` disclosure body stays
+  // prose and can never be mistaken for the mode switch.
+  const wantsReceipt = hasFlag(contract, opArgs, 'json');
+
   // `create` renders a NEW spine — there is no existing file to load, so it
   // cannot use the shared createSpineStore(path) path below.
   if (op === 'create') {
@@ -638,6 +764,9 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     try {
       const next = setRowIter(io.read(path), id, iter);
       io.write(path, next);
+      // AFTER the write, like every other receipt in this runner: a throw above
+      // leaves exit 1 with nothing on stdout.
+      if (wantsReceipt) printReceipt(op, path, { iter }, id);
       return 0;
     } catch (err) {
       process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
@@ -697,6 +826,12 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
   // AFTER the flush succeeds, so stdout never advertises a ref that never landed.
   let createdRef: string | null = null;
 
+  // The `--json` receipt of a silent write, composed from the ARGV the case
+  // below hands the store and printed — like `createdRef` — only after the flush
+  // returns. Composed unconditionally (it is a two-field object either way) and
+  // emitted only under `--json`, so the default output stays byte-identical.
+  let receipt: { written: Record<string, unknown>; id?: string } | null = null;
+
   switch (op) {
     case 'read': {
       apply = (store) => process.stdout.write(store.source() + '\n');
@@ -720,6 +855,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
         return 2;
       }
       apply = (store) => store.setRowState(id, state as RowState);
+      receipt = { id, written: { state } };
       break;
     }
 
@@ -731,6 +867,11 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
         return 2;
       }
       apply = (store) => store.setRowPrCell(id, prCell);
+      // The cell AS WRITTEN — the caller's own string, not a re-parse of the
+      // row afterwards. A PR cell routinely carries a rendered link plus the
+      // row's title, and a parser's idea of that cell is precisely what a
+      // receipt must not substitute for what the caller handed over.
+      receipt = { id, written: { pr: prCell } };
       break;
     }
 
@@ -750,6 +891,11 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
         return 2;
       }
       apply = (store) => store.replaceClosedByBlock(body);
+      // The SECTION is the unit here, and it is multi-line by construction (the
+      // body lives in a file precisely so it can carry newlines), so the receipt
+      // states its size rather than echoing the whole block back at the caller
+      // who supplied it. Bytes, not code units: the body is UTF-8 on disk.
+      receipt = { written: { bodyBytes: Buffer.byteLength(body, 'utf-8') } };
       break;
     }
 
@@ -776,6 +922,9 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
         store.upsertDispatchLogEntry(id, branch);
         if (model) store.upsertDispatchLogModel(id, model);
       };
+      // `model` only when one was written — see RECEIPT_SHAPES: a null would be
+      // a claim about a dispatch-log line this call never touched.
+      receipt = { id, written: model ? { branch, model } : { branch } };
       break;
     }
 
@@ -792,6 +941,8 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
         return 2;
       }
       apply = (store) => store.setFrontmatterStatus(status);
+      // Frontmatter, not a row — no `id` (RECEIPT_SHAPES says so too).
+      receipt = { written: { status } };
       break;
     }
 
@@ -878,6 +1029,10 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       // The vocabulary check lives in the store and throws → exit 1 with the
       // spine untouched (the throw happens before flush).
       apply = (store) => store.setDisposition(ref, disposition);
+      // Addressed by disclosure-REF, which is `<row-id>.<n>` or `wave.<n>`;
+      // splitting a row id back out of it would be a parse, so the receipt
+      // reports the ref it was given and carries no `id`.
+      receipt = { written: { ref, disposition } };
       break;
     }
 
@@ -896,6 +1051,10 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     // `read` is non-mutating; flushing it is a harmless byte-identical no-op.
     if (op !== 'read') store.flush();
     if (createdRef) process.stdout.write(createdRef + '\n');
+    // The receipt is the LAST thing this path does: a mutator that threw, or a
+    // flush that failed, has already left through the catch below with exit 1
+    // and an empty stdout.
+    if (wantsReceipt && receipt) printReceipt(op, path, receipt.written, receipt.id);
     return 0;
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
