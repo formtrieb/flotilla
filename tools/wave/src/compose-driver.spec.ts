@@ -1190,6 +1190,128 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
   });
 });
 
+// ─── #778 — the RE-DISPATCH checkout can HALF-APPLY under the harness write-
+// deny ───────────────────────────────────────────────────────────────────────
+//
+// `WORKSPACE_SETUP_REDISPATCH`'s own checkout (`git checkout -B <branch>
+// FETCH_HEAD`) can be refused PER PATH by the same harness write-deny the
+// #731 suite above exercises against `git reset --hard` — the skills corpus
+// (`.claude/skills/`) is the measured case. The branch switch is still
+// reported successful: `HEAD` lands correctly while the denied working
+// copies silently keep their pre-checkout content, and the checkout's own
+// asserts (status empty, HEAD matching) can both read clean on exactly that
+// state. This is deliberately a DIFFERENT case from every #731 clause (those
+// are iteration-1's `git reset --hard` refusal and the harness-retry
+// re-anchor) and from #745 (a harness retry OF an already-re-dispatched
+// worktree, ruled with no clause) — it is the re-dispatch CHECKOUT OPERATION
+// itself half-applying. Same evidence discipline as the #731 suite: a
+// HEADLINE pin and a BODY pin, read over the RENDERED brief, with a negative
+// control that re-words the body while leaving the headline byte-intact.
+
+describe('compose-driver — the re-dispatch checkout can half-apply under the harness write-deny (issue #778)', () => {
+  const HALFAPPLY_HEADLINE =
+    "**IF THE CHECKOUT HALF-APPLIES UNDER THE HARNESS WRITE-DENY, HEAD LANDING IS NOT PROOF THE WORKING TREE FOLLOWED IT — and this is NOT the harness-retry-of-a-re-dispatch case (that one is #745's, ruled with no clause).**";
+  const HALFAPPLY_BODY =
+    /prints `Operation not permitted` for each such path and still reports the branch switch as successful/;
+  const HALFAPPLY_WHY_ORDER =
+    /this repo's own corpus-scanning guards read the WORKING TREE, never the index/;
+  const HALFAPPLY_NOT_OBJECT_STORE =
+    /Staging the correct content through the git object store[\s\S]*is not the path/;
+  const HALFAPPLY_BLOCKED =
+    /STOP and report `blocked`, naming the residual paths and quoting the refusal verbatim/;
+  const HALFAPPLY_CAPABILITY =
+    /you may not re-run the checkout with the sandbox off, and you may not ask for the sandbox to be turned off/;
+
+  /** One iteration-1 row and one re-dispatch row, from ONE composed script. */
+  const rows778 = [
+    row({ id: '42', slug: 'first' }),
+    row({ id: '43', slug: 'second', iteration: 2, siblingBranches: 'wave/42-first' }),
+  ];
+  const script778 = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows: rows778 });
+
+  async function workerBriefs778(from = script778): Promise<{ iter1: string; redispatch: string }> {
+    const { calls } = await runComposedDriver(from);
+    const briefAt = (label: string) =>
+      calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+    const iter1 = briefAt('worker:42');
+    const redispatch = briefAt('worker:43');
+    expect(iter1).not.toBe('');
+    expect(redispatch).toContain('## Workspace setup (do first) — RE-DISPATCH');
+    return { iter1, redispatch };
+  }
+
+  it('gives the re-dispatch checkout a branch to take when it half-applies under the harness write-deny', async () => {
+    const { redispatch } = await workerBriefs778();
+    expect(redispatch).toContain(HALFAPPLY_HEADLINE);
+    expect(redispatch).toMatch(HALFAPPLY_BODY);
+    expect(redispatch).toMatch(HALFAPPLY_NOT_OBJECT_STORE);
+    expect(redispatch).toMatch(HALFAPPLY_BLOCKED);
+    expect(redispatch).toMatch(HALFAPPLY_CAPABILITY);
+  });
+
+  it('states the refusal is a capability refusal and names staging through the git object store as not the path', async () => {
+    const { redispatch } = await workerBriefs778();
+    expect(redispatch).toMatch(HALFAPPLY_CAPABILITY);
+    expect(redispatch).toMatch(HALFAPPLY_NOT_OBJECT_STORE);
+  });
+
+  it('orders the restore-and-re-assert before the install step and before any verify command, and says why', async () => {
+    const { redispatch } = await workerBriefs778();
+    expect(redispatch).toMatch(HALFAPPLY_WHY_ORDER);
+    const clauseAt = redispatch.indexOf(HALFAPPLY_HEADLINE);
+    const installAt = redispatch.indexOf('3. Install dependencies.');
+    expect(clauseAt).toBeGreaterThan(-1);
+    expect(installAt).toBeGreaterThan(-1);
+    expect(clauseAt).toBeLessThan(installAt);
+  });
+
+  it('keeps the new clause distinguishable from the iteration-1 clauses, in both directions', async () => {
+    const { iter1, redispatch } = await workerBriefs778();
+    // The iteration-1 rendering does not carry the new clause's headline…
+    expect(iter1).not.toContain(HALFAPPLY_HEADLINE);
+    // …and the re-dispatch rendering still carries none of the iteration-1
+    // clauses' headlines (the #731 suite's own pin, re-asserted from this
+    // row's side, over the SAME two rows).
+    expect(redispatch).not.toContain(
+      'INHERITED WORK-IN-PROGRESS — two honest options, and DISCARDING IS THE DEFAULT.',
+    );
+    expect(redispatch).not.toContain(
+      '**IF THE RESET IS REFUSED, the two asserts above have a branch to take',
+    );
+  });
+
+  it('records the half-applied-checkout fact driver-side, and states the clause is not a harness-retry clause', () => {
+    const start = TEMPLATE.indexOf('// A THIRD trap belongs beside the two above');
+    expect(start).toBeGreaterThan(-1);
+    const end = TEMPLATE.indexOf('const WORKSPACE_SETUP_REDISPATCH', start);
+    expect(end).toBeGreaterThan(start);
+    const note = TEMPLATE.slice(start, end)
+      .split('\n')
+      .map((line) => line.replace(/^\/\/ ?/, ''))
+      .join(' ')
+      .replace(/\s+/g, ' ');
+    expect(note).toContain('HALF-APPLY');
+    expect(note).toContain('THIS IS NOT A HARNESS-RETRY-OF-A-RE-DISPATCH CLAUSE');
+    expect(note).toContain('issue #745');
+  });
+
+  it('NEGATIVE CONTROL — re-wording the clause BODY while its HEADLINE stays byte-intact fails the body pins (Convention 11)', async () => {
+    const gutted = TEMPLATE.replace(
+      /The write-deny above is scoped PER PATH[\s\S]*?the sandbox to be turned off\./,
+      'Deal with it.',
+    );
+    expect(gutted).not.toEqual(TEMPLATE); // the replace actually matched
+    expect(gutted).toContain(HALFAPPLY_HEADLINE); // …and the headline survived it
+    const briefs = await workerBriefs778(
+      composeDriverScript({ template: gutted, ...CONSTANTS, rows: rows778 }),
+    );
+    expect(briefs.redispatch).toContain(HALFAPPLY_HEADLINE); // headline-only pin still passes
+    expect(briefs.redispatch).not.toMatch(HALFAPPLY_BODY); // the body pins fire
+    expect(briefs.redispatch).not.toMatch(HALFAPPLY_BLOCKED);
+    expect(briefs.redispatch).not.toMatch(HALFAPPLY_CAPABILITY);
+  });
+});
+
 describe('compose-driver — the scope-grant projection reads the spine, never a hand-authored field (ADR-0041)', () => {
   function spineWithGrant(text: string): string {
     const base = renderSpine(
