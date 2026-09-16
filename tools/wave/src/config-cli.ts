@@ -9,11 +9,25 @@
  * the pre-P8 GitHub deferral, loadWaveConfig does not. This is how `wave-setup`
  * proves a freshly-written config loads (ADR-0016 skill-half grill 2026-06-18).
  *
- * Exit codes: 0 valid · 1 invalid/unreadable · 2 usage.
+ * Beside the refusals it reports WARNINGS (issue #761): an unknown key in any
+ * block, a value whose shape is not the one its key is read as, and an absolute
+ * path in an `engine` binding's argument position. All three are findings the
+ * loader has always read past — a misspelled key validated `ok` and surfaced at
+ * the first runtime use, or never. None of them refuses and none of them moves
+ * the exit code; `wave.config.json` is a semver contract (ADR-0035) and a new
+ * refusal on a config that validates today is a major. See the section banner
+ * above {@link collectConfigWarnings}.
+ *
+ * Exit codes: 0 valid (warnings included) · 1 invalid/unreadable · 2 usage.
  */
 
-import { loadWaveConfig } from './wave-config';
+import { loadWaveConfig, type WaveConfig } from './wave-config';
 import type { VerifyConfig } from './verify';
+// The Goal container vocabulary's OWN parser (ADR-0044) — called, never
+// re-spelled. See {@link collectConfigWarnings}'s goal block for why a warning
+// here is not the loader validating the role that ADR-0044 decision 4 keeps
+// store-side.
+import { parseGoalContainer } from './adapters/issue-store';
 import {
   helpRequested,
   positionalsOf,
@@ -75,6 +89,393 @@ function countDeclaredNeeds(verify: VerifyConfig): [declared: number, total: num
   return [declared, total];
 }
 
+// ── non-fatal findings: what the loader read and did not grade (issue #761) ──
+//
+// THE WHOLE SECTION IS WARNINGS, AND THAT IS THE DESIGN, NOT A SHORTFALL.
+// `wave.config.json` is a semver contract (ADR-0035), so a check that newly
+// REFUSED a config validating today would be a major at blast radius zero —
+// three of the findings this section reports look like they want a refusal and
+// every one of them is that major. So nothing below throws, nothing below moves
+// the exit code, and a config that printed `ok` before this section existed
+// prints `ok` still. What changes is that its typos are no longer invisible.
+//
+// **Why it lives here and not in `wave-config.ts`.** The loader is the natural
+// home — the keys these tables enumerate are the loader's own interfaces. A
+// collector there would have to be EXPORTED for this runner to reach it, and a
+// new exported symbol in an engine source module fails `barrel-drift.spec.ts`
+// unless `index.ts` (or that spec's allowlist) moves in the same diff; both are
+// outside this row's declared Files globs. So the collector sits beside its one
+// consumer, and the tables are held to the loader's declarations by
+// `wave-config.spec.ts`'s declaration-driven conformance test (every key the
+// TypeScript compiler API finds on the config interfaces must validate WITHOUT
+// a warning) rather than by a human keeping two lists in step. The trigger to
+// move it is a second consumer — the store-preflight, or a shipped JSON schema.
+
+/** One non-fatal finding about a config the loader accepted. */
+interface ConfigWarning {
+  /** Dotted path of the BLOCK the finding is about — `''` is the config root. */
+  readonly block: string;
+  /** Dotted path of the offending key or value. */
+  readonly path: string;
+  /** Which kind of finding this is — the machine key a JSON rendering would key on. */
+  readonly kind: 'unknown-key' | 'wrong-shape' | 'absolute-path' | 'goal-binding';
+  /** The one-line message: the key, its block, and what to do about it. */
+  readonly message: string;
+}
+
+/**
+ * The keys each block of `wave.config.json` declares, per
+ * `wave-config.ts`/`verify.ts`. A key outside its block's list is read by
+ * nothing — which is exactly why a typo in one has always validated `ok`.
+ *
+ * `store`'s list is per KIND, because the three store variants are a
+ * discriminated union and `team` on a github store is as meaningless as
+ * `repoRoot` on a linear one.
+ */
+const STORE_KEYS: Readonly<Record<'markdown' | 'github' | 'linear', readonly string[]>> = {
+  markdown: ['kind', 'repoRoot', 'slug', 'eligibility', 'goal'],
+  github: ['kind', 'eligibility', 'goal'],
+  linear: ['kind', 'team', 'project', 'eligibility', 'states', 'categoryLabels', 'goal'],
+};
+const TOP_LEVEL_KEYS: readonly string[] = ['store', 'verify', 'cleanup', 'engine'];
+const STORE_GOAL_KEYS: readonly string[] = ['container'];
+/** The claim rungs plus the two non-rung write targets and the opt-in done state. */
+const STORE_STATES_KEYS: readonly string[] = [
+  'queued',
+  'inFlight',
+  'inReview',
+  'unclaimTarget',
+  'unplanned',
+  'doneState',
+];
+const CLEANUP_KEYS: readonly string[] = ['disposableNames', 'extraRoots'];
+const ENGINE_KEYS: readonly string[] = ['cli', 'install'];
+const VERIFY_KEYS: readonly string[] = ['profiles'];
+const VERIFY_PROFILE_KEYS: readonly string[] = ['name', 'appliesTo', 'commands'];
+// `needs` is deliberately absent from the walk below: its keys are a CLOSED set
+// the loader already refuses on (ADR-0049), and a warning beside a refusal would
+// be a second, weaker owner of one rule.
+const VERIFY_COMMAND_KEYS: readonly string[] = ['cwd', 'command', 'needs'];
+
+/** A JSON object — never an array, never `null`. The only shape with keys to check. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** How a value is named in a wrong-shape warning: `a string ("milestone")`, `an array`, … */
+function describeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'string') return `a string (${JSON.stringify(value)})`;
+  if (typeof value === 'object') return 'an object';
+  return `a ${typeof value} (${JSON.stringify(value)})`;
+}
+
+/** `'store'` → `wave config "store"`; `''` → `the wave config root`. */
+function blockLabel(block: string): string {
+  return block === '' ? 'the wave config root' : `wave config "${block}"`;
+}
+
+function joinPath(block: string, key: string): string {
+  return block === '' ? key : `${block}.${key}`;
+}
+
+/**
+ * Report every key of `value` that its block does not declare.
+ *
+ * NAMES THE CLOSED SET, the way every refusal in `wave-config.ts` does: an
+ * author who mistyped `eligibilty` is one line away from the spelling that
+ * works, and an author who invented a key learns in the same line that nothing
+ * reads it. A non-object (or absent) block has no keys to check and is skipped —
+ * its SHAPE is reported separately.
+ */
+function collectUnknownKeys(
+  value: unknown,
+  block: string,
+  known: readonly string[],
+  out: ConfigWarning[],
+): void {
+  if (!isPlainObject(value)) return;
+  for (const key of Object.keys(value)) {
+    if (known.includes(key)) continue;
+    out.push({
+      block,
+      path: joinPath(block, key),
+      kind: 'unknown-key',
+      message:
+        `${blockLabel(block)} carries the unknown key ${JSON.stringify(key)} — nothing reads it, ` +
+        `and it is reported rather than refused so a config that validates today keeps validating. ` +
+        `The keys ${blockLabel(block)} declares are: ${known.join(', ')}.`,
+    });
+  }
+}
+
+/**
+ * Report a present value whose SHAPE is not the one its key is read as.
+ *
+ * Applied only where the loader is SILENT today. `verify`, `cleanup` and
+ * `engine` already refuse a non-object outright, and re-reporting a refusal as a
+ * warning would be a second owner of one rule; `store.goal`, `store.states`,
+ * `store.categoryLabels`, `store.eligibility` and each `verify.profiles[]` entry
+ * are the ones that have always loaded as whatever they happened to be.
+ */
+function expectShape(
+  value: unknown,
+  path: string,
+  want: 'object' | 'array',
+  consequence: string,
+  out: ConfigWarning[],
+): boolean {
+  if (value === undefined) return false;
+  const ok = want === 'array' ? Array.isArray(value) : isPlainObject(value);
+  if (ok) return true;
+  out.push({
+    block: path,
+    path,
+    kind: 'wrong-shape',
+    message:
+      `wave config "${path}" must be ${want === 'array' ? 'an array' : 'an object'} — got ` +
+      `${describeValue(value)}. ${consequence} Reported rather than refused: refusing it would ` +
+      `newly reject a config that validates today.`,
+  });
+  return false;
+}
+
+/**
+ * Report an absolute path sitting in an ARGUMENT position of an `engine`
+ * binding — the spelling the leading-slash rule cannot see (issues #725/#746).
+ *
+ * {@link normalizeEngineInstall}'s refusal is a POSITION check at index 0 of the
+ * whole binding string, so `/usr/local/bin/install.sh` is refused and
+ * `npm ci --prefix /abs/tools/wave` is not — and the second one is the spelling
+ * that actually broke: a prefix reached through a symlink makes a lockfile-exact
+ * install accuse a package that exists in neither the manifest nor the lockfile.
+ *
+ * A WARNING, emphatically. Widening the validator to refuse an absolute
+ * argument would newly reject a config that validates today — a major at blast
+ * radius zero, on the removal list of the vocabulary grill rather than in this
+ * row. What belongs here is the spelling, named.
+ */
+function collectAbsoluteArgvWords(
+  binding: string | undefined,
+  path: string,
+  out: ConfigWarning[],
+): void {
+  if (binding === undefined) return;
+  const words = binding.split(' ').filter((w) => w.length > 0);
+  // Word 0 is the command itself and a leading slash there is already REFUSED,
+  // so this walk starts at the first argument — the position the rule misses.
+  for (let i = 1; i < words.length; i++) {
+    if (!words[i].startsWith('/')) continue;
+    out.push({
+      block: path,
+      path,
+      kind: 'absolute-path',
+      message:
+        `wave config "${path}" carries the absolute path ${JSON.stringify(words[i])} in an ARGUMENT ` +
+        `position (word ${i + 1} of ${JSON.stringify(binding)}) — the leading-slash rule checks index 0 of ` +
+        `the whole binding, so this spelling validates. It is the spelling that breaks: a directory ` +
+        `argument that resolves through a symlink makes a lockfile-exact install report a missing ` +
+        `package that appears in neither the manifest nor the lockfile, because the root's name is ` +
+        `taken from the directory basename. Write it repo-relative instead. Reported rather than ` +
+        `refused: refusing it would newly reject a config that validates today (ADR-0032/ADR-0035).`,
+    });
+  }
+}
+
+/**
+ * Every non-fatal finding about a config the loader just accepted.
+ *
+ * Walks the value `loadWaveConfig` handed back — which IS the parsed JSON, so
+ * the keys nothing declares are still on it — block by block, top level
+ * downwards. Order is stable and structural (root, store, store's sub-blocks,
+ * verify, cleanup, engine) so two runs over one file print the same lines.
+ */
+function collectConfigWarnings(config: WaveConfig): ConfigWarning[] {
+  const raw = config as unknown as Record<string, unknown>;
+  const out: ConfigWarning[] = [];
+
+  collectUnknownKeys(raw, '', TOP_LEVEL_KEYS, out);
+
+  // `store` is an object with a known kind by the time the loader returns — both
+  // are refusals, not warnings — so the per-kind key list is always reachable.
+  const store = raw.store as Record<string, unknown>;
+  collectUnknownKeys(store, 'store', STORE_KEYS[config.store.kind], out);
+  if (expectShape(store.eligibility, 'store.eligibility', 'array', 'The eligibility OR-set is the marker list a wave reads to decide what it may grab (ADR-0003); a non-array declares none, and the store falls back to its default.', out)) {
+    const entries = store.eligibility as unknown[];
+    for (let i = 0; i < entries.length; i++) {
+      if (typeof entries[i] !== 'string') {
+        out.push({
+          block: 'store.eligibility',
+          path: `store.eligibility[${i}]`,
+          kind: 'wrong-shape',
+          message:
+            `wave config "store.eligibility[${i}]" must be a string — got ${describeValue(entries[i])}. ` +
+            `Reported rather than refused: refusing it would newly reject a config that validates today.`,
+        });
+      }
+    }
+  }
+  // ADR-0044 decision 4 — `store.goal` is read as an object with one key, and a
+  // non-object has always loaded silently. The ROLE is still graded store-side
+  // (`parseGoalContainer`, and the store-preflight's own goal-binding reading);
+  // what is reported here is only the SHAPE the loader itself read past.
+  if (expectShape(store.goal, 'store.goal', 'object', 'The Goal container binding is read off "store.goal.container" (ADR-0044); a non-object carries none, so every goal verb refuses.', out)) {
+    collectUnknownKeys(store.goal, 'store.goal', STORE_GOAL_KEYS, out);
+    // A VALUE that is no container role at all — `"not-a-real-container"`, an
+    // invented role, a number. Graded by `parseGoalContainer`, the vocabulary's
+    // own parser, so this is not a second copy of the closed set; the message it
+    // throws is reproduced verbatim.
+    //
+    // NOT the loader validating the role, which ADR-0044 decision 4 keeps
+    // store-side: nothing here refuses, and the two questions only a STORE can
+    // answer — is an ABSENT binding fatal, and does this store realize the role
+    // — are untouched and stay with the store-preflight's own `goalBinding`
+    // reading. What is answered here is the store-INDEPENDENT half: whether the
+    // authored string is in the vocabulary at all.
+    const container: unknown = (store.goal as Record<string, unknown>).container;
+    try {
+      parseGoalContainer(container);
+    } catch (err) {
+      out.push({
+        block: 'store.goal',
+        path: 'store.goal.container',
+        kind: 'goal-binding',
+        message:
+          `${(err as Error).message} Reported rather than refused here (ADR-0044 decision 4 keeps the ` +
+          `container ladder store-side); \`store-preflight\` grades the same binding against the store ` +
+          `that would have to realize it.`,
+      });
+    }
+  }
+  if (expectShape(store.states, 'store.states', 'object', 'The claim-rung → workflow-state-name overrides are read off this block (ADR-0020); a non-object declares none, so every rung stays at its default.', out)) {
+    collectUnknownKeys(store.states, 'store.states', STORE_STATES_KEYS, out);
+  }
+  // `categoryLabels` keys are the consumer's own schema categories, so there is
+  // no closed set to check INSIDE it — only that it is a block at all.
+  expectShape(store.categoryLabels, 'store.categoryLabels', 'object', 'The schema-category → consumer-label map is read off this block; a non-object declares none.', out);
+
+  const verify = raw.verify;
+  if (isPlainObject(verify)) {
+    collectUnknownKeys(verify, 'verify', VERIFY_KEYS, out);
+    const profiles: unknown = verify.profiles;
+    if (Array.isArray(profiles)) {
+      for (let p = 0; p < profiles.length; p++) {
+        const path = `verify.profiles[${p}]`;
+        if (!expectShape(profiles[p], path, 'object', 'A profile that is not an object selects nothing — the VerifyGate walks past it.', out)) continue;
+        const profile = profiles[p] as Record<string, unknown>;
+        collectUnknownKeys(profile, path, VERIFY_PROFILE_KEYS, out);
+        if (!expectShape(profile.commands, `${path}.commands`, 'array', 'A profile whose commands are not an array contributes no command at all.', out)) continue;
+        const commands = profile.commands as unknown[];
+        for (let c = 0; c < commands.length; c++) {
+          const cmdPath = `${path}.commands[${c}]`;
+          if (!expectShape(commands[c], cmdPath, 'object', 'A command that is not an object runs nothing.', out)) continue;
+          collectUnknownKeys(commands[c], cmdPath, VERIFY_COMMAND_KEYS, out);
+        }
+      }
+    }
+  }
+
+  const cleanup = raw.cleanup;
+  if (isPlainObject(cleanup)) collectUnknownKeys(cleanup, 'cleanup', CLEANUP_KEYS, out);
+
+  const engine = raw.engine;
+  if (isPlainObject(engine)) {
+    collectUnknownKeys(engine, 'engine', ENGINE_KEYS, out);
+    // Both bindings, by the same rule: the leading-slash position check misses
+    // an absolute ARGUMENT on either one, and `engine.cli` is as repo-relative a
+    // binding as `engine.install` (ADR-0032).
+    collectAbsoluteArgvWords(typeof engine.cli === 'string' ? engine.cli : undefined, 'engine.cli', out);
+    collectAbsoluteArgvWords(typeof engine.install === 'string' ? engine.install : undefined, 'engine.install', out);
+  }
+
+  return out;
+}
+
+// ── the summary line: what the loader actually read ──────────────────────────
+
+/** `"a", "b"` — a string list as the summary line renders it. */
+function quotedList(values: readonly unknown[]): string {
+  return values.map((v) => (typeof v === 'string' ? JSON.stringify(v) : String(v))).join(', ');
+}
+
+/** `queued="Todo", unplanned="Discarded"` — the declared members of a key→value block. */
+function renderPairs(block: Record<string, unknown>, keys: readonly string[]): string {
+  return keys
+    .filter((k) => block[k] !== undefined)
+    .map((k) => `${k}=${typeof block[k] === 'string' ? JSON.stringify(block[k]) : String(block[k])}`)
+    .join(', ');
+}
+
+/**
+ * The parenthesized segments of the `ok:` line — everything the loader actually
+ * read, not only the store kind, the profile count and the two engine bindings.
+ *
+ * EVERY SEGMENT IS CONDITIONAL, and that is the additive guarantee in one
+ * property: a config that declares no eligibility, no states, no category
+ * labels, no cleanup block and no goal binding prints the line it printed before
+ * this row existed, byte for byte. A reader who has only ever seen the old shape
+ * sees it unchanged until the config itself says more.
+ */
+function summarySegments(config: WaveConfig, warnings: readonly ConfigWarning[]): string[] {
+  const raw = config as unknown as Record<string, unknown>;
+  const store = raw.store as Record<string, unknown>;
+  const segments: string[] = [`store.kind=${config.store.kind}`];
+
+  if (Array.isArray(store.eligibility) && store.eligibility.length > 0) {
+    segments.push(`store.eligibility: ${quotedList(store.eligibility)}`);
+  }
+  if (isPlainObject(store.states)) {
+    const pairs = renderPairs(store.states, STORE_STATES_KEYS);
+    if (pairs !== '') segments.push(`store.states: ${pairs}`);
+  }
+  if (isPlainObject(store.categoryLabels)) {
+    const pairs = renderPairs(store.categoryLabels, Object.keys(store.categoryLabels));
+    if (pairs !== '') segments.push(`store.categoryLabels: ${pairs}`);
+  }
+  if (isPlainObject(store.goal) && typeof store.goal.container === 'string') {
+    segments.push(`store.goal.container: ${store.goal.container}`);
+  }
+
+  if (config.verify) {
+    const [needsDeclared, needsTotal] = countDeclaredNeeds(config.verify);
+    // ADR-0049 — the declared capability requirements WITH their denominator. An
+    // operator running this line after `wave-setup` is asking "did the needs I
+    // declared actually land?", and a count of 0 out of 3 answers it where
+    // silence would not. Deliberately conditional for the same reason every
+    // segment here is.
+    const needsNote =
+      needsDeclared > 0
+        ? `, ${needsDeclared} of ${needsTotal} verify command(s) declare a sandbox need`
+        : '';
+    segments.push(`verify: ${config.verify.profiles.length} profile(s)${needsNote}`);
+  }
+
+  const cleanup = raw.cleanup;
+  if (isPlainObject(cleanup)) {
+    if (Array.isArray(cleanup.disposableNames) && cleanup.disposableNames.length > 0) {
+      segments.push(`cleanup.disposableNames: ${quotedList(cleanup.disposableNames)}`);
+    }
+    if (Array.isArray(cleanup.extraRoots) && cleanup.extraRoots.length > 0) {
+      segments.push(`cleanup.extraRoots: ${quotedList(cleanup.extraRoots)}`);
+    }
+  }
+
+  // ADR-0032 — report the BOUND VALUE, not just that one exists. This is what an
+  // operator reads to confirm the repo is bound to the form they think it is;
+  // "engine.cli: present" would confirm nothing. An absent binding is silent
+  // rather than reported as unbound: absence is valid at the engine level, and
+  // whether it is acceptable is the consuming skills' call. `engine.install`
+  // (issue #717) rides beside it for the identical reason — wherever `cli`
+  // resolves through a gitignored path, the command that makes the binary exist
+  // is half the answer.
+  if (config.engine?.cli) segments.push(`engine.cli: ${config.engine.cli}`);
+  if (config.engine?.install) segments.push(`engine.install: ${config.engine.install}`);
+
+  if (warnings.length > 0) segments.push(`${warnings.length} warning(s)`);
+  return segments;
+}
+
 export function runConfig(args: string[]): number {
   const op = args[0];
   // `config --help` — the group has one op, so its roster IS that op's usage.
@@ -98,44 +499,14 @@ export function runConfig(args: string[]): number {
   }
   try {
     const config = loadWaveConfig(path);
-    // ADR-0049 — report the declared capability requirements beside the profile
-    // count, with their denominator. An operator running this line after
-    // `wave-setup` is asking "did the needs I declared actually land?", and a
-    // count of 0 out of 3 answers it where silence would not. Deliberately
-    // CONDITIONAL: a config that declares no needs prints exactly the line it
-    // printed before this field existed, so nothing that reads this output has
-    // to learn a new shape for the ordinary case.
-    const [needsDeclared, needsTotal] = config.verify
-      ? countDeclaredNeeds(config.verify)
-      : [0, 0];
-    const needsNote = needsDeclared > 0
-      ? `, ${needsDeclared} of ${needsTotal} verify command(s) declare a sandbox need`
-      : '';
-    const verifyNote = config.verify
-      ? `, verify: ${config.verify.profiles.length} profile(s)${needsNote}`
-      : '';
-    // ADR-0032 — report the BOUND VALUE, not just that one exists. This line is
-    // what an operator reads to confirm the repo is bound to the form they
-    // think it is; "engine.cli: present" would confirm nothing. An absent
-    // binding is silent rather than reported as unbound: absence is valid at
-    // the engine level, and whether it is acceptable is the consuming skills'
-    // call, not this validator's.
-    const engineNote = config.engine?.cli
-      ? `, engine.cli: ${config.engine.cli}`
-      : '';
-    // issue #717 — report the install binding BESIDE the invocation binding,
-    // for the identical reason. An operator reading this line after `wave-setup`
-    // is asking "is this repo bound to the forms I think it is?"; the command
-    // that makes the binary exist is half of that answer wherever `engine.cli`
-    // resolves through a gitignored path, which is the ordinary case. Silent
-    // when absent, exactly as `engine.cli` is: absence is valid here, and
-    // whether it is acceptable is the composing skill's call — `compose-driver`
-    // is where an absent install step meets a gitignored binding and refuses.
-    const engineInstallNote = config.engine?.install
-      ? `, engine.install: ${config.engine.install}`
-      : '';
+    // The non-fatal findings, on stderr, BEFORE the ok line on stdout: a human
+    // reads them above the verdict, and a caller that pipes stdout keeps reading
+    // exactly the one line it always read. Never an exit code — see the section
+    // banner above for why every one of these is a warning.
+    const warnings = collectConfigWarnings(config);
+    for (const warning of warnings) process.stderr.write(`warning: ${warning.message}\n`);
     process.stdout.write(
-      `ok: "${path}" is a valid wave config (store.kind=${config.store.kind}${verifyNote}${engineNote}${engineInstallNote})\n`,
+      `ok: "${path}" is a valid wave config (${summarySegments(config, warnings).join(', ')})\n`,
     );
     return 0;
   } catch (err) {

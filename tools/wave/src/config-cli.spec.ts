@@ -327,3 +327,291 @@ describe('config validate — verify command needs (ADR-0049)', () => {
     expect(stdoutBuf).not.toMatch(/needs|sandbox/);
   });
 });
+
+// ── the non-fatal findings the loader used to read past (issue #761) ─────────
+//
+// Fifteen scratch configs measured at 2.4.0 all printed `ok`: a typo at top
+// level, a typo nested in any known block, a non-object `goal`, a non-array
+// `eligibility`, a numeric `categoryLabels`, profiles that were not objects, and
+// an absolute path in an install-prefix argument. The only refusals anywhere
+// were inside `needs`. Every block below pins one of those as a WARNING —
+// named, on stderr, exit code untouched.
+//
+// THE REFUSAL IS THE TRAP, and it is why each block carries its own exit
+// assertion rather than only a message match: `wave.config.json` is a semver
+// contract (ADR-0035), so a check here that refused would be a major at blast
+// radius zero. `expect(code).toBe(0)` beside every warning is what says these
+// additions stayed additive.
+
+/** Every warning line stderr carried, with the `warning: ` prefix stripped. */
+function warningLines(): string[] {
+  return stderrBuf
+    .split('\n')
+    .filter((l) => l.startsWith('warning: '))
+    .map((l) => l.slice('warning: '.length));
+}
+
+describe('config validate — unknown keys are named, never refused (issue #761)', () => {
+  it('a typo at TOP LEVEL is named with its block, and still exits 0', () => {
+    const path = writeConfig({ store: { kind: 'github' }, verifyy: { profiles: [] } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toMatch(/^ok:/);
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain('the wave config root');
+    expect(warningLines()[0]).toContain('"verifyy"');
+    // The closed set is spelled out, the way every refusal in wave-config.ts
+    // spells its own — an author who mistyped is one line from the fix.
+    expect(warningLines()[0]).toContain('store, verify, cleanup, engine');
+  });
+
+  it.each([
+    ['store', { kind: 'github', eligibilty: ['x'] }, 'eligibilty'],
+    ['store.goal', { kind: 'github', goal: { containerr: 'milestone' } }, 'containerr'],
+  ])('a typo NESTED in %s is named with its block', (block, store, typo) => {
+    const path = writeConfig({ store });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain(`wave config "${block}"`);
+    expect(warningLines()[0]).toContain(`"${typo}"`);
+  });
+
+  it('names a typo in cleanup, engine, verify and each verify profile/command', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      cleanup: { disposableNamez: ['target'] },
+      engine: { instal: 'npm ci' },
+      verify: {
+        profiles: [
+          { name: 'a', appliesTo: ['**'], commandz: [], commands: [{ command: 'x', cwdd: 'y' }] },
+        ],
+      },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    const all = warningLines().join('\n');
+    expect(all).toContain('wave config "cleanup" carries the unknown key "disposableNamez"');
+    expect(all).toContain('wave config "engine" carries the unknown key "instal"');
+    expect(all).toContain('wave config "verify.profiles[0]" carries the unknown key "commandz"');
+    expect(all).toContain(
+      'wave config "verify.profiles[0].commands[0]" carries the unknown key "cwdd"',
+    );
+  });
+
+  it("the known set is the STORE KIND's own — \"team\" is a linear key and a github typo", () => {
+    // Without the per-kind split, the union of all three variants' keys would
+    // accept `team` on a github store and `repoRoot` on a linear one, which is
+    // exactly the class of mistake this warning exists for.
+    const linear = writeConfig({ store: { kind: 'linear', team: 'EX' } });
+    expect(runConfig(['validate', linear])).toBe(0);
+    expect(warningLines()).toEqual([]);
+
+    stderrBuf = '';
+    const github = writeConfig({ store: { kind: 'github', team: 'EX' } });
+    expect(runConfig(['validate', github])).toBe(0);
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain('"team"');
+  });
+
+  it('NEGATIVE CONTROL: a fully-declared config warns about nothing, and the typo\'d one still exits 0', () => {
+    // Half one: the warning is not something this walk says about everything — a
+    // config whose every block is populated with declared keys is silent.
+    const clean = writeConfig({
+      store: {
+        kind: 'linear',
+        team: 'EX',
+        project: 'P',
+        eligibility: ['ready-for-agent'],
+        states: {
+          queued: 'Todo',
+          inFlight: 'In Progress',
+          inReview: 'In Review',
+          unclaimTarget: 'Backlog',
+          unplanned: 'Canceled',
+          doneState: 'Done',
+        },
+        categoryLabels: { bug: 'Bug' },
+        goal: { container: 'project' },
+      },
+      verify: {
+        profiles: [
+          { name: 'a', appliesTo: ['**'], commands: [{ cwd: 'x', command: 'y', needs: { host: true } }] },
+        ],
+      },
+      cleanup: { disposableNames: ['target'], extraRoots: ['/scratch'] },
+      engine: { cli: './node_modules/.bin/flotilla-engine', install: 'npm ci' },
+    });
+    expect(runConfig(['validate', clean])).toBe(0);
+    expect(warningLines()).toEqual([]);
+
+    // Half two: the typo'd config exits 0 TOO. A warning that moved the exit
+    // code would be the refusal this row is forbidden to add.
+    stderrBuf = '';
+    const typod = writeConfig({ store: { kind: 'github' }, unknownTop: true });
+    expect(runConfig(['validate', typod])).toBe(0);
+    expect(warningLines()).toHaveLength(1);
+  });
+});
+
+describe('config validate — a value whose SHAPE is not what its key is read as (issue #761)', () => {
+  it('a non-object `goal` is REPORTED, not accepted as ok in silence', () => {
+    // `goal: "milestone"` reads like a shorthand and is not one: the container
+    // binding is read off `store.goal.container`, so a string carries none.
+    const path = writeConfig({ store: { kind: 'github', goal: 'milestone' } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain('"store.goal" must be an object');
+    expect(warningLines()[0]).toContain('a string ("milestone")');
+    expect(warningLines()[0]).toContain('store.goal.container');
+  });
+
+  it('a container role that is no role at all is named — through the vocabulary\'s own parser', () => {
+    // The store-INDEPENDENT half of the binding question. Whether a store
+    // REALIZES a role, and whether an absent binding is fatal, stay store-side
+    // (ADR-0044 decision 4) and are the store-preflight's `goalBinding` reading.
+    const path = writeConfig({ store: { kind: 'github', goal: { container: 'not-a-real-container' } } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain('"not-a-real-container"');
+    expect(warningLines()[0]).toContain('milestone | project | initiative | goal-file');
+  });
+
+  it('NEGATIVE CONTROL: a real role is silent — on the same key, the same config', () => {
+    const path = writeConfig({ store: { kind: 'github', goal: { container: 'milestone' } } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toEqual([]);
+  });
+
+  it('reports a non-array eligibility, a non-object states and a non-object categoryLabels', () => {
+    const path = writeConfig({
+      store: { kind: 'linear', team: 'EX', eligibility: 'not-an-array', states: 5, categoryLabels: 5 },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    const all = warningLines().join('\n');
+    expect(all).toContain('"store.eligibility" must be an array');
+    expect(all).toContain('"store.states" must be an object');
+    expect(all).toContain('"store.categoryLabels" must be an object');
+  });
+
+  it('reports a non-string eligibility entry without refusing the config', () => {
+    const path = writeConfig({ store: { kind: 'github', eligibility: ['ready-for-agent', 7] } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines().join('\n')).toContain('"store.eligibility[1]" must be a string');
+  });
+
+  it('profiles that are not objects are reported AND still counted — the count never silently shrinks', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      verify: { profiles: ['not-an-object', { commands: 'nope' }] },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    const all = warningLines().join('\n');
+    expect(all).toContain('"verify.profiles[0]" must be an object');
+    expect(all).toContain('"verify.profiles[1].commands" must be an array');
+    // The measured 2.4.0 line said `verify: 2 profile(s)` for exactly this
+    // config and still does — the count is the loader's reading, unchanged.
+    expect(stdoutBuf).toContain('verify: 2 profile(s)');
+  });
+
+  it('NEGATIVE CONTROL: the well-shaped spelling of each of those blocks is silent', () => {
+    const path = writeConfig({
+      store: {
+        kind: 'linear',
+        team: 'EX',
+        eligibility: ['ready-for-agent'],
+        states: { queued: 'Todo' },
+        categoryLabels: { bug: 'Bug' },
+        goal: { container: 'project' },
+      },
+      verify: { profiles: [{ name: 'a', appliesTo: ['**'], commands: [{ command: 'x' }] }] },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toEqual([]);
+  });
+});
+
+describe("config validate — an absolute path in an engine binding's ARGUMENT position (issue #761, folded #746)", () => {
+  it('names the spelling — and does NOT refuse it', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      engine: { install: 'npm ci --prefix /abs/tools/wave' },
+    });
+    expect(runConfig(['validate', path])).toBe(0); // a warning, never a refusal
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain('wave config "engine.install"');
+    expect(warningLines()[0]).toContain('"/abs/tools/wave"');
+    expect(warningLines()[0]).toContain('ARGUMENT');
+    // …and the binding still reaches the summary line verbatim: reported, never
+    // rewritten.
+    expect(stdoutBuf).toContain('engine.install: npm ci --prefix /abs/tools/wave');
+  });
+
+  it('applies to engine.cli by the same rule', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      engine: { cli: './node_modules/.bin/flotilla-engine --config /abs/wave.config.json' },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()[0]).toContain('wave config "engine.cli"');
+    expect(warningLines()[0]).toContain('"/abs/wave.config.json"');
+  });
+
+  it('CONTRAST: the same absolute path at index 0 is still REFUSED, exit 1 — the rule that exists is untouched', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      engine: { install: '/abs/tools/wave/install.sh' },
+    });
+    expect(runConfig(['validate', path])).toBe(1);
+    expect(stderrBuf).toMatch(/must be repo-relative/);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('NEGATIVE CONTROL: the repo-relative prefix — the one the refusal itself offers — is silent', () => {
+    const path = writeConfig({
+      store: { kind: 'github' },
+      engine: {
+        cli: './tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts',
+        install: 'npm ci --prefix tools/wave',
+      },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toEqual([]);
+  });
+});
+
+describe('config validate — the summary line reports what the loader actually read (issue #761)', () => {
+  it('names the claim states, the eligibility markers, the category labels, the cleanup block and the goal binding', () => {
+    const path = writeConfig({
+      store: {
+        kind: 'linear',
+        team: 'EX',
+        eligibility: ['ready-for-agent', 'wave-ready'],
+        states: { queued: 'Todo', unclaimTarget: 'Icebox' },
+        categoryLabels: { bug: 'Bug' },
+        goal: { container: 'initiative' },
+      },
+      cleanup: { disposableNames: ['target'], extraRoots: ['/scratch'] },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toContain('store.eligibility: "ready-for-agent", "wave-ready"');
+    expect(stdoutBuf).toContain('store.states: queued="Todo", unclaimTarget="Icebox"');
+    expect(stdoutBuf).toContain('store.categoryLabels: bug="Bug"');
+    expect(stdoutBuf).toContain('store.goal.container: initiative');
+    expect(stdoutBuf).toContain('cleanup.disposableNames: "target"');
+    expect(stdoutBuf).toContain('cleanup.extraRoots: "/scratch"');
+  });
+
+  it('counts the warnings on the line itself, so a piped stdout never reads clean while stderr says otherwise', () => {
+    const path = writeConfig({ store: { kind: 'github', eligibilty: ['x'] }, unknownTop: 1 });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toContain('2 warning(s)');
+  });
+
+  it("NEGATIVE CONTROL: a config declaring none of them prints TODAY'S line, byte for byte", () => {
+    // The additive guarantee, asserted on the whole string rather than on the
+    // absence of a substring — every new segment is conditional, so a config
+    // that says nothing more says nothing more.
+    const bare = writeConfig({ store: { kind: 'markdown', repoRoot: '/x', slug: 's' } });
+    expect(runConfig(['validate', bare])).toBe(0);
+    expect(stdoutBuf).toBe(`ok: "${bare}" is a valid wave config (store.kind=markdown)\n`);
+    expect(stderrBuf).toBe('');
+  });
+});

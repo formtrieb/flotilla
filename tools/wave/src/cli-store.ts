@@ -75,9 +75,12 @@ import { resolve } from 'node:path';
 import {
   DEFAULT_ELIGIBILITY,
   RUNG_PRECEDENCE,
+  GoalBindingError,
   parseGoalContainer,
+  requireGoalContainer,
   type IssueStore,
   type GoalContainer,
+  type GoalBindingFailure,
   type ClaimRung,
 } from './adapters/issue-store';
 import { buildStore } from './store-factory';
@@ -235,6 +238,151 @@ export interface StorePreflightReport {
   ok: boolean;
   storeKind: StoreConfig['kind'];
   checks: PreflightCheck[];
+  /**
+   * The Goal-container binding (`store.goal.container`, ADR-0044 decision 4)
+   * exercised at preflight time — see {@link goalBindingReading}.
+   *
+   * **A FIELD rather than a fourth {@link PreflightCheck} row, and that is a
+   * placement constraint rather than a preference.** `PreflightCheck['name']`
+   * is a root-exported CLOSED union, and `index.spec.ts` pins it with an
+   * exhaustive `switch` whose `never` arm typechecks only while the union has
+   * exactly its three members — deliberately, so a fourth name is a conscious
+   * edit of the barrel's own spec. That spec and `index.ts` are outside this
+   * row's declared Files globs, so widening the union was not an option to
+   * weigh here. An additive optional field is: it re-means nothing, removes
+   * nothing, and every existing reader of `checks` is untouched (the
+   * additive-key tolerance ADR-0035 states for every JSON output shape). The
+   * trigger to revisit is a row that owns `index.ts` and its spec — that row
+   * may promote this to a `goal-binding` check row if the uniformity is worth
+   * the union widening.
+   *
+   * **OPTIONAL in the type, always present in what {@link preflightStore}
+   * returns.** Optional is what makes it strictly additive for a consumer that
+   * builds a report of its own (a fake, a fixture); a required field would be
+   * an implementer-only break, and this row's contract is that nothing breaks.
+   *
+   * **ADVISORY BY CONSTRUCTION**, exactly as the lockstep row is: `status`
+   * narrows to `'pass' | 'advisory'`, so this reading cannot move `ok` and
+   * cannot move the verb's exit code without a visible change to this
+   * declaration. Preflight time is when it is cheap to NOTICE that every goal
+   * verb on this config would refuse; it is not the moment to refuse a wave
+   * whose rows have nothing to do with goals (a Linear consumer that declares
+   * no container is the ordinary, supported case — ADR-0044 decision 4 — and
+   * failing it here would break every such consumer's `store-preflight`).
+   */
+  goalBinding?: {
+    /** `pass` when a goal verb would resolve this binding; `advisory` when it would refuse. */
+    readonly status: 'pass' | 'advisory';
+    /** The role a goal verb would address — present exactly when `status` is `pass`. */
+    readonly container?: GoalContainer;
+    /** Which way the binding is unusable — the {@link GoalBindingError} discriminant. */
+    readonly failure?: GoalBindingFailure;
+    /** The configured role AS AUTHORED, when one was supplied and refused. */
+    readonly configured?: string;
+    /** Human-legible one-liner naming what was exercised and what came back. */
+    readonly detail: string;
+  };
+}
+
+// ── the Goal-container binding, exercised at preflight time (ADR-0044) ───────
+
+/**
+ * What each shipped store binds by DEFAULT and which container roles it
+ * REALIZES — the two per-store inputs {@link requireGoalContainer} takes.
+ *
+ * A table here rather than an import, because each store keeps these as
+ * module-private constants (`GOAL_CONTAINERS_REALIZED` /
+ * `DEFAULT_GOAL_CONTAINER` in all three adapters) and the adapter files are
+ * outside this row's declared Files globs. That makes this a SECOND copy of a
+ * fact — the drift class this repo closes systematically — so it is closed the
+ * only way a copy can be: `cli-store.spec.ts` runs a CONFORMANCE MATRIX over
+ * every (store kind × container role) pair plus the nothing-declared case and
+ * asserts, for each, that this reading's verdict agrees with what the real
+ * store does when a goal verb is actually called. A store that starts
+ * realizing a new role, or drops a default, turns that matrix red rather than
+ * leaving this table quietly wrong.
+ *
+ * The RULE itself is not copied: {@link requireGoalContainer} is still the one
+ * owner of the `unbound` / `unrealized-container` ladder, and
+ * {@link parseGoalContainer} (through {@link readGoalContainer}) is still the
+ * one owner of `unknown-container`. Only their inputs are restated.
+ */
+const STORE_GOAL_BINDINGS: Readonly<
+  Record<
+    StoreConfig['kind'],
+    { readonly fallback: GoalContainer | undefined; readonly realizable: readonly GoalContainer[] }
+  >
+> = {
+  github: { fallback: 'milestone', realizable: ['milestone'] },
+  // Linear is the one store with NO default — the whole of ADR-0044 decision 4.
+  linear: { fallback: undefined, realizable: ['project', 'initiative'] },
+  markdown: { fallback: 'goal-file', realizable: ['goal-file'] },
+};
+
+/**
+ * Exercise `store.goal.container` the way the seven `goal-*` ops do, and REPORT
+ * what came back.
+ *
+ * The gap this closes: the binding was read at the CLI edge only
+ * ({@link readGoalContainer}, whose callers are the goal verbs), so a typo'd
+ * role, an invented role, a role this store does not ship, and a Linear config
+ * that declares no role at all were all indistinguishable from a healthy config
+ * until the first goal op ran — `config validate` said `ok` and the preflight
+ * never looked. Preflight time is when there is still an operator reading.
+ *
+ * ONE READ, not a lookalike ladder. `readGoalContainer` is the same call the
+ * goal verbs make (so `unknown-container` and the non-object `store.goal`
+ * refusal are graded by their existing owners), and {@link requireGoalContainer}
+ * is the same shared resolver all three adapters call from their own `goalRole`
+ * (so `unbound` and `unrealized-container` are graded by theirs). What this
+ * function adds is only the per-store inputs — see {@link STORE_GOAL_BINDINGS}
+ * for how that copy is held to the stores themselves.
+ *
+ * CONFIG-ONLY, deliberately: it takes no `IssueStore` and makes no call on one.
+ * Two reasons. The binding ladder runs as the FIRST statement of every goal verb
+ * and is a pure function of config, so nothing is learned by reaching the
+ * tracker; and the cheapest goal verb that WOULD exercise it (`listGoals`) is an
+ * N+1 listing — one call per container to read its members — which is far too
+ * expensive a probe for a precondition report, and would make this reading fail
+ * for reasons (a rate limit, an outage) that have nothing to do with the
+ * binding.
+ */
+function goalBindingReading(config: WaveConfig): NonNullable<StorePreflightReport['goalBinding']> {
+  const kind = config.store.kind;
+  const rule = STORE_GOAL_BINDINGS[kind];
+  try {
+    const configured = readGoalContainer(config);
+    const container = requireGoalContainer({
+      storeKind: kind,
+      configured,
+      fallback: rule.fallback,
+      realizable: rule.realizable,
+    });
+    return {
+      status: 'pass',
+      container,
+      detail:
+        configured === undefined
+          ? `No "store.goal.container" is declared and the ${kind} store defaults to "${container}" — a goal verb resolves without one.`
+          : `"store.goal.container" is "${container}" and the ${kind} store realizes it — a goal verb resolves this binding.`,
+    };
+  } catch (err) {
+    // ADVISORY, never `fail`: see the field's own doc comment. The message is
+    // the owning refusal's own, verbatim, so the operator reads the same
+    // sentence a goal verb would have thrown at them later.
+    const advisory = ` Reported here rather than refused: an unusable goal binding stops the seven goal verbs and nothing else, so it never blocks a wave whose rows have no goal in them.`;
+    if (err instanceof GoalBindingError) {
+      return {
+        status: 'advisory',
+        failure: err.failure,
+        ...(err.configured !== undefined ? { configured: err.configured } : {}),
+        detail: `${err.message}${advisory}`,
+      };
+    }
+    // The non-object `store.goal` shape, which `readGoalContainer` refuses with
+    // a plain Error rather than a typed one — carried through unchanged.
+    return { status: 'advisory', detail: `${(err as Error).message}.${advisory}` };
+  }
 }
 
 // ── the plugin/engine lockstep version check (ADR-0032) ───────────────────────
@@ -540,6 +688,14 @@ export function engineVersionPreflightCheck(
  * nothing to compare against reports nothing rather than a permanent
  * `not-applicable` row nobody reads — and it can only be `pass`/`advisory`, so
  * it never moves `ok`.
+ *
+ * {@link StorePreflightReport.goalBinding} (ADR-0044) rides beside `checks` on
+ * every report: `store.goal.container` resolved through the very ladder the
+ * seven goal verbs use, so an unbound Linear config, a typo'd role or a role
+ * this store does not ship is seen HERE rather than at the first goal op. It is
+ * a config reading, so it costs no tracker call and is computed even for an
+ * injected store that implements nothing; and it is advisory by construction,
+ * so it never moves `ok`.
  */
 export async function preflightStore(
   config: WaveConfig,
@@ -560,7 +716,17 @@ export async function preflightStore(
       ),
     );
   }
-  return { ok: checks.every((c) => c.status !== 'fail'), storeKind: s.kind, checks };
+  return {
+    ok: checks.every((c) => c.status !== 'fail'),
+    storeKind: s.kind,
+    checks,
+    // ADR-0044 — the Goal-container binding, exercised here rather than left to
+    // the first goal op. Always reported (unlike the lockstep row, which needs
+    // an expectation to compare against, there is always a binding question to
+    // answer), and advisory by construction, so `ok` above is computed from
+    // `checks` alone exactly as it was before this field existed.
+    goalBinding: goalBindingReading(config),
+  };
 }
 
 /** Options for {@link preflightStore}. All optional — omitting them is today's behaviour. */
