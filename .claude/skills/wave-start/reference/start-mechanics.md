@@ -442,17 +442,7 @@ Each matching line is a whole Plan-Table row — its first cell is the id and it
 
 ### Release semantics — the standing rule, not a provisional shape
 
-The paragraph above is a **settled decision**, re-confirmed after the gate landed, and it is worth stating as a rule because its cost is real and someone will eventually propose paying it down. The rule has three parts, and they hold together:
-
-1. **Per-pass confirmation.** The release question is asked fresh on every `wave-start` pass over the wave. It is never inherited from an earlier pass.
-2. **HOLD is the unattended default.** No answer means held. This is the whole point: the gate must behave correctly when nobody is watching, which is the condition it exists for.
-3. **No durable release marker.** Nothing is written when a human says yes — no state, no label, no spine field, no sidecar. Release is expressed by the row simply *dispatching*: it moves past `planned` and stops matching the predicate.
-
-**The cost, stated plainly:** an **attended** Coordinator re-answers the same question on every pass over a wave that still holds a human-gated row. On a wave re-entered several times in a day that is a small, repeated tax on the one person who is present.
-
-**Why we pay it anyway.** A durable "released" marker would be a second source of truth about whether a human has acted, and it would be **stale by default** — written once, then read on every later pass, including passes where the world has moved (the credential was rotated back, the sandbox policy changed, the row was re-planned). The gate's whole value is that its answer is *current*. This is the same reasoning the HELD seam already uses one level up: `wave-start` re-derives the intra-wave `resolved` set fresh on every entry rather than recording it, for exactly this reason. Two seams, one rule — and the state the gate reads (`planned`) is already durable, in the spine, which is the WAL authority. Adding a marker would not make anything more durable; it would only make one of the two records able to lie.
-
-**What would change the decision.** Not "it was asked twice today" — that is the cost, already priced in. It would take a measured case where the *per-pass* question produced a **wrong** answer that a durable marker would have prevented: a human who said yes, and whose yes was then lost in a way that cost a wave. Until that exists, per-pass + HOLD + no marker is the rule, and a proposal to add a release marker should be read as a proposal to add a second source of truth.
+**Settled, not provisional** — asked fresh every pass, HOLD is the unattended default, and nothing durable records a release: no state, no label, no spine field, no sidecar. A row is released by simply *dispatching*, which moves it past `planned` and out of the predicate. See `../evidence/start-mechanics.md` for the full three-part rule, its cost, why it is paid anyway, and what would change the decision.
 
 **Nothing is written for a held row.** No new state, no label, no tracker call — `State` stays `planned`, the `ClaimRung` stays where `wave-create` left it, and step 9 reports the row plainly (with the human action it waits on) rather than flagging it. A held row is ordinary sequencing.
 
@@ -471,18 +461,11 @@ The grep above is the operator-facing detector, kept raw because step 3b runs be
 
 ### Why the human lane exists — the measured constraint, not the folk version
 
-The gate is worth having only if rows are classified `HITL-required` for real reasons, so know what the constraint actually measured out to be on the row that motivated this lane — a row whose work touched paths a dispatched agent could not update.
-
-**Measured, end-to-end:** the blocker was the **Bash sandbox's write-deny on specific paths**. The agent's file-editing tool wrote the target file *fine*; what failed was **git plumbing under the sandbox, which could not unlink it**. Two consequences follow, and both matter when you are deciding whether a row belongs in this lane:
-
-- **"An agent cannot write there" is the over-broad reading, and it is wrong.** Taken literally it classifies as human-gated a large set of rows an agent can in fact implement unattended, which costs exactly what this gate is supposed to save. The narrow, measured claim is about one tool path under one sandbox policy — not about agent write capability in general.
-- **The remedy is therefore path- and tool-shaped, not personnel-shaped.** A row blocked this way may stop being human-gated when the sandbox policy or the write path changes, with nothing about the work itself having moved. Re-read the Worker value when that happens instead of treating it as settled.
-
-Keep the distinction when you write a step-9 report: name the human action (`rotate the PAT in the keychain`, `approve the settings change`), never a blanket "agents can't write here".
+Classify a row `HITL-required` only for a real, measured constraint — never the over-broad "an agent cannot write there" reading, which costs exactly what this gate is supposed to save. The remedy is path- and tool-shaped, not personnel-shaped: re-read the Worker value once the sandbox policy or write path changes, and name the human action in a step-9 report (`rotate the PAT in the keychain`, `approve the settings change`), never the blanket reading. See `../evidence/start-mechanics.md` for the measured case that motivated this lane.
 
 ## The worktree-count advisory (step 4a) — the E2BIG preflight
 
-**The mechanism.** The agent harness composes its sandbox profile with one filesystem-deny entry per **registered** git worktree, and caches that profile for the whole session. Nothing about a single worktree is expensive; the *population* is. Once the profile exceeds the OS `exec` argument limit, every process spawn fails with `E2BIG` ("argument list too long") — the Coordinator's Bash calls and **every subagent's**, since a subagent inherits the same cached profile. Live occurrence 2026-07-30 during the resume of a seven-row wave, on the third dispatch run of the day; the subagent scope was confirmed with a minimal probe agent that hit the identical `E2BIG`.
+**The mechanism, in one sentence** (see `../evidence/start-mechanics.md` for the live 2026-07-30 occurrence and the subagent-scope confirmation): the harness composes its sandbox profile with one filesystem-deny entry per **registered** git worktree, cached for the whole session — past the OS `exec` argument limit every process spawn fails with `E2BIG`, the Coordinator's own Bash calls and every subagent's alike, since a subagent inherits the same cached profile.
 
 **Why it belongs in the preflight, before the flip.** The failure has no partial mode. A wave dispatched into a session already past the limit does not degrade — every Worker's first shell call dies, and the wave consumes its whole agent budget on calls that could not have succeeded. Measuring costs one `git` invocation.
 
@@ -492,7 +475,7 @@ Keep the distinction when you write a step-9 report: name the human action (`rot
 git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 ```
 
-The count deliberately **includes the primary checkout**, because that is what `git worktree list` reports and therefore what an operator reproducing this by hand sees. The engine's `checkWorktreeCountAdvisory` (`tools/wave/src/worktree-cleanup.ts`) counts the same population against the same `WORKTREE_COUNT_ADVISORY_THRESHOLD`, so the shell form and the engine can never quietly disagree — and the engine is where the number, its rationale, and the advisory wording live. The threshold is set so one full seven-row wave plus its reviewer checkouts stays *under* it: an advisory that fires during ordinary operation is an advisory that gets ignored.
+The count deliberately **includes the primary checkout**, because that is what `git worktree list` reports and therefore what an operator reproducing this by hand sees. The engine's `checkWorktreeCountAdvisory` (`tools/wave/src/worktree-cleanup.ts`) counts the same population against the same `WORKTREE_COUNT_ADVISORY_THRESHOLD`, so the shell form and the engine can never quietly disagree — and the engine is where the number, its rationale, and the advisory wording live.
 
 That advisory is also **CLI-reachable**, so nothing downstream has to re-implement the comparison: every `{{wave-cli}} worktree-cleanup` run — `--dry-run` included — prints `worktreeCount: { count, threshold, level, advisory }`, with `level` as `ok`/`advisory` and `advisory` carrying the engine's text verbatim (non-null exactly when `level` is `advisory`). It is read *before* any removal, so a preview and the real run report the same starting population, and it never affects the exit code. This step keeps the raw `git` one-liner because the preflight runs before any config/store resolution; the JSON field is the form to read once a sweep is already in hand. Both the literal above and the ones in the step-4a block are drift-pinned to the engine constant by `tools/wave/src/skill-schema-drift.spec.ts` — the number cannot diverge silently in either direction. **That pin is narrower than "the number is drift-pinned" sounds:** it catches COMPARISON-SHAPED occurrences of the number (`> 12`, `≤ 12`, `<=12`, …), never a prose restatement of the same value — an acceptance criterion that cites this guard as a general no-values-in-prose rule is promising more than it enforces.
 
@@ -500,13 +483,7 @@ That advisory is also **CLI-reachable**, so nothing downstream has to re-impleme
 
 ### Two terms, not one — the count is a proxy for only half the budget
 
-The paragraphs above describe **one** term. A second live occurrence proved that model incomplete, and in the most expensive way available: an operator following it would have swept worktrees and fixed nothing.
-
-**Measured** (wave `2026-07-30-arm-and-wiring`, row 250, worker disclosure 250.3): a real `E2BIG` at **~1019.5 KB of command line across just three argv entries**, with **166 sandbox deny paths of which only 15 were worktree-derived**. It was recovered by **compressing the PR body being passed as an argument** — no worktree was removed, and none needed to be. Two readings fall out of those numbers. The population term was about a *ninth* of the deny paths, and those paths' own bytes are a rounding error next to a megabyte of argv, so sweeping everything could not have brought that spawn under the limit. And three arguments is not an accumulation: a **single** oversized argument — a PR body, a composed agent brief, a file list — reaches the limit on its own, in a session whose worktree count is pristine.
-
-So the exec argument budget is a **sum**: `(harness-injected sandbox profile, proxied by the worktree count) + (the command line this spawn carries: argv + env)`. `E2BIG` fires on the sum, and neither term alone predicts it.
-
-**What that does to the threshold guidance above.** A count at or under the threshold means *this term* is fine; it does not mean the next spawn will succeed. Read both terms, always — the engine prints them side by side (`worktreeCount` and `commandLine`) on every `{{wave-cli}} worktree-cleanup` run, `--dry-run` included, each with its own `level` and its own verbatim `advisory` text. The second term's threshold is `COMMAND_LINE_ADVISORY_THRESHOLD_BYTES` in `tools/wave/src/worktree-cleanup.ts`, alongside the count's; as with the count, the engine owns the number, its rationale and its wording, and this file names the constant rather than restating its value.
+The exec argument budget is a **sum**: `(harness-injected sandbox profile, proxied by the worktree count) + (the command line this spawn carries: argv + env)`. `E2BIG` fires on the sum, and neither term alone predicts it — a worktree count under threshold is **not** an all-clear on its own. Read both terms, always — the engine prints them side by side (`worktreeCount` and `commandLine`) on every `{{wave-cli}} worktree-cleanup` run, `--dry-run` included, each with its own `level` and its own verbatim `advisory` text. The second term's threshold is `COMMAND_LINE_ADVISORY_THRESHOLD_BYTES` in `tools/wave/src/worktree-cleanup.ts`, alongside the count's; as with the count, the engine owns the number, its rationale and its wording, and this file names the constant rather than restating its value. See `../evidence/start-mechanics.md` for the measured incident that proved a count-only model wrong.
 
 ### The command-line term is itself TWO conditions — total, and per-string
 
@@ -517,11 +494,9 @@ So the exec argument budget is a **sum**: `(harness-injected sandbox profile, pr
 
 Both constants live in `tools/wave/src/worktree-cleanup.ts`, which owns each number, its rationale and the advisory wording; this file names the two constants and deliberately restates *neither* value — a number copied into prose here is a number that can drift, which is exactly what the pin in `tools/wave/src/skill-schema-drift.spec.ts` exists to prevent for the count. Both constants are also reachable from the engine's **package root**, so a consumer can state or raise either budget without a deep import (pinned in `tools/wave/src/index.spec.ts`). That count-only pin is why this subsection (and its shell-block twin in the step-4a block above) is carved into its OWN region in that spec file, separate from the worktree-count region: a comparison-shaped byte value written here by mistake is caught and named as THIS subsection's own drift, never misattributed to the worktree-count threshold.
 
-**Why an operator needs the second condition and not just the first.** A total safely under budget is *not* an all-clear. One oversized argument — a PR body, a composed agent brief, a pasted file list — can exceed the per-string cap on its own while the total sits nowhere near the total threshold, and the spawn dies anyway. `checkCommandLineSizeAdvisory` checks both and returns `level: advisory` when **either** trips, so reading `level` is sufficient; reading the printed `commandLine.threshold` is **not**, because that field carries the total threshold alone.
+**Reading the field.** `checkCommandLineSizeAdvisory` checks both and returns `level: advisory` when **either** trips, so reading `level` is sufficient; reading the printed `commandLine.threshold` is **not**, because that field carries the total threshold alone. Recovery differs per term: the population term is swept below; the command-line term is **shrunk at the caller** — compress the oversized body/brief, or pass it by file — and no sweep or restart moves it at all. See `../evidence/start-mechanics.md` for why an operator needs the per-string condition and not just the total.
 
-**The recovery differs per term, which is the whole point of separating them.** The population term is swept (plus the harness restart below). The command-line term is **shrunk at the caller** — compress the oversized body or brief, or pass it by file — and *no sweep and no restart move it at all*. Diagnose which term blew before reaching for either remedy: a Coordinator that answers every `E2BIG` with a worktree sweep will, on this incident's shape, restart a session and hit the identical failure on the very next call. Within the command-line term the two conditions refine that further: for the total, shrink the command line *overall*; for the per-string cap, shrink **the one oversized entry** — split it, compress it, or pass it by file. Trimming several small arguments is a real fix for the total and does nothing at all for the per-string cap.
-
-**Recovery — the three steps, in order.** (For the *population* term; see the paragraph directly above for the command-line term, which none of these three steps touches.)
+**Recovery — the three steps, in order.** (For the *population* term only — the command-line term has no sweep, see above.)
 
 ```bash
 {{wave-cli}} worktree-cleanup --orphans --detached "$REPO"   # 1. sweep (wave-close phase 3 = reading guide)
@@ -529,11 +504,9 @@ git -C "$REPO" worktree prune                                # 2. clear unvalida
 #                                                              3. RESTART the harness — see below
 ```
 
-`--detached` is what makes step 1 actually reach this incident's population. An agent's or reviewer's own hand-made detached scratch checkout is git-*registered* (so the `--orphans` directory sweep never sees it) and carries no `agent-`/`wf_` name prefix (so the name-allowlisted GC filters it out) — every other sweep structurally misses it, which is how it survives wave after wave. The sweep refuses anything where work could be staked: a branch-bearing worktree in the same root is skipped `live-branch`, a dirty one `dirty`, a locked one `locked`, and none of the three is ever removed. Prepend `--dry-run` to preview first — preview and run share one plan, so `detached.selected` names exactly what the run will remove.
+`--detached` is what makes step 1 reach a hand-made detached scratch checkout: git-*registered* (so `--orphans` never sees it) and carrying no `agent-`/`wf_` name prefix (so the name-allowlisted GC filters it out). The sweep refuses anything where work could be staked: a branch-bearing worktree is skipped `live-branch`, a dirty one `dirty`, a locked one `locked`, and none of the three is ever removed. Prepend `--dry-run` to preview first — preview and run share one plan, so `detached.selected` names exactly what the run will remove.
 
-Step 3 is not optional and is not intuitive: **cleanup alone does not recover a session that is already failing.** The profile is cached, so removing the worktrees fixes the population while the running session keeps the deny list it already built — every Bash spawn keeps dying. This was verified live: `git worktree remove` + `git worktree prune` did not restore the session, and only a harness restart did. Sweep *then* restart; a report that says "cleaned up, retrying" without the restart is describing a retry that cannot work.
-
-**Between waves, not only before one.** The incident was the third dispatch run of a single day, and its residue came from the first two runs plus a previous session's leftovers. A multi-wave day wants this count re-read after every close, which is where [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md) picks it up.
+**Step 3 (the harness restart) is not optional:** the profile is cached, so removing worktrees fixes the population while the running session keeps the deny list it already built — sweep alone does not recover a session already failing. Sweep *then* restart. Re-read this count after every close, not only before a wave — [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md) is where a multi-wave day picks it up. See `../evidence/start-mechanics.md` for the live verification and the incident this recovery sequence answers.
 
 ## The plugin/engine lockstep gate (step 4b) — a STOP, not an advisory
 
@@ -541,7 +514,7 @@ Step 3 is not optional and is not intuitive: **cleanup alone does not recover a 
 
 **Division of labour.** The engine knows only *its own* version and how to compare it against an expectation handed to it (`{{wave-cli}} version --expect <v>`); it never goes hunting for a plugin manifest, because it has no way to know which clone the running skills came from. The **Coordinator** supplies the expectation, read from `.claude-plugin/plugin.json` at the skill's own resolution anchor — the plugin clone is a full-repo clone, so the manifest ships with it (ADR-0031's premise, paying off here).
 
-**Why a STOP here, when step 4a is only an advisory.** The asymmetry is the same one that separates the host-auth probe from the worktree count: a lockstep skew is **measured**, not heuristic. A mismatched engine is a *different program* from the one the composed briefs describe — verbs it lacks, flags whose shape moved, exit codes that changed meaning — and the failure lands inside dispatched Workers, one per row, after the coarse ledger already says `in-flight`. There is no partial mode worth having and no cheaper moment to notice: the check costs one process spawn and runs *before* the flip.
+**A STOP here, unlike step 4a's advisory:** the skew is **measured**, not heuristic — a mismatched engine is a different program from the one the composed briefs describe, and the failure would otherwise land inside dispatched Workers after the ledger already says `in-flight`. The check costs one process spawn and runs *before* the flip. See `../evidence/start-mechanics.md` for the full asymmetry argument.
 
 **Scope: the installed form only.** The gate is meaningful exactly where the two halves can drift — a repo whose `engine.cli` points at the installed package binary, since the plugin and the npm package are then two independently-updatable artifacts. On the **source form** (this repo: `engine.cli` is the vendored `tools/wave/src/cli.ts` invocation) skills and engine come out of one checkout at one SHA, so the comparison cannot fail and the gate is skipped. Documented as vacuous rather than quietly always-run: a reader of a green gate should know whether it *held* or merely *could not fire* — and step 4b decides that from the binding string, not from anyone's sense of which repo they are in.
 
@@ -562,25 +535,19 @@ Single-owner, deliberately: the command lives in the engine (`tools/wave/src/cli
 
 **What is checked, and why the compose-time field assertion cannot catch it.** `assertRequiredRowFields` runs `isMissingField` over every row before any brief is composed — but that predicate tests presence/non-emptiness only (`undefined`, `null`, the literal string `"undefined"`, or a blank/whitespace-only value). A well-formed anchor SHA that simply does not name a real commit in this checkout — a fabricated value with a correct-looking short prefix, a copy-paste of the wrong hash, a stale value left over from an earlier session — is present and non-empty, so it passes that check exactly as a real anchor does.
 
-**It used to be step 4c, run by hand; it is now the verb's (issue #680).** Nothing INSIDE the composed script can check this: a Workflow `script` has no filesystem or git access (§Harness constraint, [workflow-driver.md](workflow-driver.md)). `compose-driver` is not the script — it is engine code with a real filesystem — so it runs the check itself, per compose, before it writes anything:
+`compose-driver` runs the check itself, per compose, before it writes anything — nothing INSIDE the composed script can check this, since a Workflow `script` has no filesystem or git access (§Harness constraint, [workflow-driver.md](workflow-driver.md)):
 
 ```bash
 git -C <repo-root> rev-parse --verify "<anchorSha>^{commit}"
 ```
 
-`--verify … ^{commit}` fails (non-zero) on anything that is not a real, resolvable commit object in this checkout — a fabricated hash, a real-looking prefix with no match, a SHA that belongs to a different remote/fork entirely — while passing on any resolvable commit-ish (full SHA, unique abbreviation, tag, branch). The verb turns a failure into **exit 1 naming the SHA and the repair** ("re-derive it — `git rev-parse HEAD` at dispatch time"), and writes no script at all.
-
-**Why it is a refusal and not left to the Reviewer.** A bad anchor reaches every row's Worker (`git reset --hard <anchorSha>`) AND every row's Reviewer (the diff base) individually — the defect is discovered N times, once per dispatched agent, instead of once. §Recovery protocol below documents the cost of a bad anchor caught only downstream (two Reviewers returning spurious `questions-blocking` against the literal string `"undefined"`); an unresolvable-but-well-formed SHA is the same failure shape one layer earlier.
-
-**Live occurrence.** A fabricated anchor SHA with a correct 7-character prefix passed compose and reached four parallel Worker/Reviewer briefs; all four Workers independently caught it themselves during their own workspace-setup `git rev-parse HEAD` confirmation — four agent budgets spent discovering, individually, a defect one check catches once, before any of them runs.
+`--verify … ^{commit}` fails (non-zero) on anything that is not a real, resolvable commit object in this checkout — a fabricated hash, a real-looking prefix with no match, a SHA that belongs to a different remote/fork entirely — while passing on any resolvable commit-ish (full SHA, unique abbreviation, tag, branch). The verb turns a failure into **exit 1 naming the SHA and the repair** ("re-derive it — `git rev-parse HEAD` at dispatch time"), and writes no script at all. See `../evidence/start-mechanics.md` for this gate's pre-verb history (it used to be step 4c, run by hand), why it is a refusal rather than left to the Reviewer, and the live occurrence that motivated it.
 
 **Layered on top of, never a replacement for, the presence-only check.** `REQUIRED_ROW_FIELDS`/`isMissingField` still catches an absent/blank/`"undefined"` `anchorSha`, and stays exactly as narrow as it was: it asks "is this field present enough to interpolate", never "does this value resolve" (composition constraint 3 in [workflow-driver.md](workflow-driver.md) names the split). This gate is the ONLY thing that catches a well-formed value that does not exist.
 
-## The driver compose gate — RETIRED with the transcription it policed (issue #680)
+## The driver compose gate — retired with the transcription it policed (issue #680)
 
-There used to be a **compose-currency gate** here, at step 4d: every dispatch extracted the Workflow script from `workflow-driver.md`'s `## The script` fence and filled it in by hand, so the thing about to be dispatched was a COPY — and a stale copy of the whole driver is a defect nothing INSIDE the copy can detect, because a copy's own assertions are exactly as out of date as the rest of it. The gate asked, before any row was composed, whether the script had been freshly extracted or currency-checked against a seeded checklist.
-
-**There is no copy any more.** The script ships as an engine package asset (`tools/wave/driver/wave-start-inflight.js`) and `compose-driver` reads it from the package on every run. The failure class the gate existed for — a document edited out from under a script someone kept around — cannot occur, so the gate goes rather than being restated. Its two motivating occurrences (a frozen template that outlived the cwd-persistence fix; a compose-fresh anchor-diff that caught a falsified reviewer-isolation claim one wave later) stay recorded in [workflow-driver.md](workflow-driver.md) as the evidence for why the transcription had to end.
+The script ships as an engine package asset (`tools/wave/driver/wave-start-inflight.js`) and `compose-driver` reads it from the package on every run, so there is no hand-transcribed copy left to go stale. See `../evidence/start-mechanics.md` for the retired compose-currency gate's history and its two motivating occurrences (also recorded in [workflow-driver.md](workflow-driver.md)).
 
 **Its tracker-currency sibling survives, and is likewise the verb's now (ADR-0041).** Whether each row's EMBEDDED SPEC (`issue.issueSpec`, and `issue.scopeGrants`) still matches what the tracker holds is a per-row fact that goes stale independently of anything. `compose-driver` re-reads every dispatchable row through `issue-store read` + `triage-read` on EVERY run — a fresh dispatch, a cap=1 re-dispatch (step 7c below), a wave-resume `redispatch` hand-off alike — with no condition and no cache. [workflow-driver.md](workflow-driver.md)'s "The recompose-refetch rule" states it in full, including why a conditional re-fetch was the failure mode it replaces and the same-round boundary it deliberately does not retroactively fix.
 
@@ -680,11 +647,9 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 #   `summarySource` discloses the body's. The close phrase is the only tracker id
 #   the title or body may name (Convention 4 / mention discipline).
 #
-#   Why this is worth a paragraph: before it, one change carried THREE titles —
-#   the Worker's commit subject and the title it opened the PR with, the row
-#   title this verb wrote over it on reuse, and the Worker's again on the squash
-#   commit that landed (a single-commit PR takes its subject from the commit).
-#   Preserving the live title collapses all three back into one.
+#   Preserving the live title collapses what used to be three separate titles
+#   for one change into one — see ../evidence/start-mechanics.md for the
+#   pre-route-tuple history.
 #
 #   host-routed since the Bitbucket adapter landed (ADR-0023 amendment
 #   2026-08-10): GITHUB_TOKEN on a github remote, BITBUCKET_TOKEN +
@@ -801,22 +766,9 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 
 ### Verified routing outputs (the cells `route-tuple` resolves internally)
 
-`route-tuple` derives both `--state` values and runs both routes itself, so these are no longer calls you make — they are the table of what it resolves, and the reference for reading `steps[]`. The single verbs below still exist and still print exactly this, which is what makes a one-cell question answerable without running a whole route.
+`route-tuple` derives both `--state` values and runs both routes itself, so these are no longer calls you make. The two load-bearing routes, verified against the live CLI: a public-API `approve` STOPs (never a silent fast-path to the auto-PR), and the 2nd `changes-requested` STOPs at the re-dispatch cap (`transition()`'s cap=1). An Operator-ruled round admits an `--iter` above the cap without ever buying the row a second one — the ruled `approve` reaches the state an ordinary `approve` reaches, and the ruled `changes-requested` still reaches the cap-exhaustion STOP.
 
-| Invocation | Output |
-|---|---|
-| `route-outcome --outcome done --state dispatched` | `{"event":"worker-done","outcome":{"type":"transition","nextState":"report-in"}}` |
-| `route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing` | `{"event":"reviewer-approve","outcome":{"type":"transition","nextState":"approved"}}` |
-| `route-verdict --verdict approve --iteration 1 --risk public-API-change --state reviewing` | `{"event":"reviewer-approve-public-api","outcome":{"type":"stop","reason":"public-api-approval-required","severity":"blocking"}}` |
-| `route-verdict --verdict changes-requested --iteration 1 --risk isolated-refactor --state reviewing` | `{"event":"reviewer-changes-requested-1st","outcome":{"type":"transition","nextState":"re-dispatched"}}` |
-| `route-verdict --verdict changes-requested --iteration 2 --risk isolated-refactor --state re-dispatched` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"}}` |
-| `route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing` (no ruling) | exit 1 — `iteration 3 is out of range. Expected an integer in [1, 2] (re-dispatch cap = 1).` |
-| `route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing --ruling "<reason>"` | `{"event":"reviewer-approve","outcome":{"type":"transition","nextState":"approved"},"ruled":{"cell":"reviewer-approve-ruled","ruling":"<reason>"}}` |
-| `route-verdict --verdict changes-requested --iteration 3 --risk mechanical --state re-dispatched --ruling "<reason>"` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"},"ruled":{"cell":"reviewer-changes-requested-ruled","ruling":"<reason>"}}` |
-
-The public-API `approve` STOPs (it never silently fast-paths to the auto-PR) and the 2nd `changes-requested` STOPs (the cap=1, enforced inside `transition()`) are the two load-bearing routes — verified against the live CLI.
-
-The last three rows are the **Operator-ruled round**: the documented Reviewer-only re-dispatch outside the cap, and the refusal that still stands without it. Note the pairing — the ruled `approve` reaches the state an ordinary `approve` reaches, and the ruled `changes-requested` reaches the cap-exhaustion STOP, so a ruled round never buys the row another one. Full table, and the shape of the ruling itself: `wave-shared/reference/routing-mechanics.md` §"The Operator-ruled round".
+The full table (every invocation against its exact JSON output) moved to `../evidence/start-mechanics.md`. The shape of the ruling itself: `wave-shared/reference/routing-mechanics.md` §"The Operator-ruled round".
 
 ## `riskClass` for the verdict route
 
