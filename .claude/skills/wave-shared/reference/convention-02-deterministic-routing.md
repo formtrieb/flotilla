@@ -1,5 +1,7 @@
 ## Convention 2 — the deterministic routing chain
 
+**Enforced by:** engine refusal — `tools/wave/src/route-tuple.ts` (the whole chain is one verb, so no link in it can be hand-synthesised).
+
 Routing is **never** hand-synthesised from prose. The chain is, in order:
 
 ```

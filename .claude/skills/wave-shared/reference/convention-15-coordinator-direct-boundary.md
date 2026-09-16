@@ -1,5 +1,7 @@
 ## Convention 15 — issue-closing work never lands without a Reviewer verdict
 
+**Enforced by:** reference doc — this file. A prose rung by design, and it says so plainly: there is no verb to call and no gate to pass, so the full prose below IS the enforcement.
+
 **The prohibition comes first, and it is stated as a prohibition on purpose: a reader who takes in only the first half must come away with the safe half.**
 
 > **No pull request that closes a tracker issue lands without a Reviewer verdict.** Not for a doc-only diff. Not for a one-line skill edit. Not for a bundle of mechanical follow-ups. Not because the Coordinator wrote the change itself and is sure of it.

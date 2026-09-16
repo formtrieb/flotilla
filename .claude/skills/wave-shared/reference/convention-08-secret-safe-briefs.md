@@ -1,5 +1,7 @@
 ## Convention 8 — secret-safe tool output (binds every role, the Coordinator included)
 
+**Enforced by:** hook — `tools/wave/hooks/echo-guard.cjs` (the echo shape, on every role's Bash call); brief prose — `tools/wave/driver/wave-start-inflight.js` (the isolated-role no-probe rule).
+
 An agent's tool output is not ephemeral — it is the session transcript on disk, long-lived and read by humans and downstream agents alike. **No role in this pipeline echoes an environment variable's VALUE into that output — not even with fallback syntax like `${VAR:-no}` — dumps the whole environment, or reads a gitignored settings/secrets file.**
 
 ### Who this binds — the Coordinator too, not only the briefs it composes

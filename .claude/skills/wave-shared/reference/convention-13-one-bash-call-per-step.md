@@ -1,5 +1,7 @@
 ## Convention 13 — one Bash call per step; never fuse `cd X && <command>`
 
+**Enforced by:** brief prose — `tools/wave/driver/wave-start-inflight.js` (the policy clause every dispatched role is handed; both mechanisms are the harness's own, so there is nothing here to promote this to).
+
 **Two independent mechanisms in this pipeline break on the same input shape — a Bash command that fuses several steps with `&&`.** They are unrelated systems: a permission matcher and a worktree-isolation guard. What they share is only the shape that trips them, and their failure signatures are *opposites* — one stalls the wave loudly, the other drops a step in silence. That is why this is one convention naming both, rather than an aside in whichever brief met one of them first.
 
 **The rule every dispatched role obeys: issue ONE Bash call per step.** Never glue a directory change onto the front of the command that matters. Where the tool accepts a directory flag, prefer it over a `cd` at all — `npm ci --prefix <dir>`, `git -C <dir> …`, `npx vitest run --root <dir>` — because for a dispatched role a preceding `cd` does not reach the next call at all, so splitting a fused command is only half a fix (see "Splitting is not always a preceding `cd`" below).

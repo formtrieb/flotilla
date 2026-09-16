@@ -1,5 +1,7 @@
 ## Convention 4 — the store-kind close phrase (PR body)
 
+**Enforced by:** engine refusal — `tools/wave/src/compose-driver.ts` (derives the phrase from the configured store kind) and `tools/wave/src/host-pr.ts` (refuses a PR reuse that would drop it).
+
 The magic word a merged PR's body must carry to close/link the issue is **derived from the configured store kind** (`wave.config.json`'s `store.kind`), not hardcoded — a PR is always a GitHub artifact in both known consumers, but the phrase the *tracker* recognizes differs (ADR-0020):
 
 | `store.kind` | Close phrase | Example |
