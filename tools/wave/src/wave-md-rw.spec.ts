@@ -1740,3 +1740,172 @@ describe('TERMINAL_ROW_STATES — the terminal partition of ROW_STATES (issue #7
     }
   });
 });
+
+// ─── issue #751 — upsertPrLogRow scaffolds the BARE `## PR-Log` heading ──────
+//
+// `renderSpine` has always emitted `## PR-Log` as a bare heading, and
+// `upsertPrLogRow` used to throw `"## PR-Log" table is malformed (no
+// separator/header)` on exactly that shape — so the library path could not
+// write a fresh spine's PR-Log at all. 102 of 102 archived spines in this repo
+// carry the section empty. A bare heading is not a malformed table, it is an
+// un-materialised one, which is the reading `ensureDisclosuresSection` has
+// always taken of a bare `## Disclosures` heading.
+//
+// Convention 11 falsification for this block: restore the `throw new
+// Error('upsertPrLogRow: "## PR-Log" table is malformed (no separator/header).')`
+// in place of the scaffold branch and every test below goes red with that very
+// message. The observed failing output is recorded in this row's report.
+describe('upsertPrLogRow — a bare `## PR-Log` heading is scaffolded, not refused (issue #751)', () => {
+  /** The exact shape `renderSpine` produces: heading, blank, next heading. */
+  function freshSpine(): string {
+    return renderSpine(
+      {
+        slug: 'pr-log-scaffold',
+        description: 'scaffold',
+        coordinator: 'c',
+        model: 'm',
+        created: '2026-09-16',
+        lastUpdated: '2026-09-16',
+      },
+      [
+        { id: '01', title: 'First row', worker: 'background', risk: 'mechanical' },
+        { id: '02', title: 'Second row', worker: 'background', risk: 'mechanical' },
+      ],
+      { issues: [], cells: [] },
+      'ok',
+    );
+  }
+
+  const ROW_1 = {
+    created: '2026-09-16',
+    id: '01',
+    prCell: 'https://github.com/o/r/pull/1',
+    closes: 'Closes #1',
+    merged: '2026-09-16',
+    notes: '—',
+  };
+  const ROW_2 = {
+    created: '2026-09-17',
+    id: '02',
+    prCell: 'https://github.com/o/r/pull/2',
+    closes: 'Closes #2',
+    merged: '2026-09-17',
+    notes: 'landed second',
+  };
+
+  /** The `[start, end)` source slice of one `## <name>` section, as text. */
+  function sectionText(source: string, name: string): string {
+    const lines = source.split('\n');
+    const start = lines.findIndex((l) => l.trim() === `## ${name}`);
+    if (start === -1) return '';
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^##\s+\S/.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+    return lines.slice(start, end).join('\n');
+  }
+
+  it('scaffolds a six-column header + separator and inserts the row', () => {
+    const out = upsertPrLogRow(freshSpine(), ROW_1);
+    const section = sectionText(out, 'PR-Log').split('\n');
+    expect(section[0]).toBe('## PR-Log');
+    expect(section).toContain('| Created | ID | PR | Closes | Merged | Notes |');
+    expect(section).toContain('|---|---|---|---|---|---|');
+    expect(section).toContain(
+      '| 2026-09-16 | 01 | https://github.com/o/r/pull/1 | Closes #1 | 2026-09-16 | — |',
+    );
+  });
+
+  it('readSpine reads the scaffolded row back with all six cells', () => {
+    const parsed = readSpine(upsertPrLogRow(freshSpine(), ROW_1));
+    expect(parsed.prLog).toHaveLength(1);
+    expect(parsed.prLog[0]).toMatchObject({
+      created: '2026-09-16',
+      id: '01',
+      prCell: 'https://github.com/o/r/pull/1',
+      closes: 'Closes #1',
+      merged: '2026-09-16',
+      notes: '—',
+    });
+  });
+
+  it('a SECOND row lands under the scaffolded table — the first row is byte-identical', () => {
+    const once = upsertPrLogRow(freshSpine(), ROW_1);
+    const firstLine = once
+      .split('\n')
+      .find((l) => l.includes('https://github.com/o/r/pull/1'))!;
+    const twice = upsertPrLogRow(once, ROW_2);
+    expect(twice.split('\n')).toContain(firstLine);
+    expect(readSpine(twice).prLog.map((r) => r.id)).toEqual(['01', '02']);
+    // …and the header is scaffolded exactly once.
+    expect(
+      twice.split('\n').filter((l) => l === '| Created | ID | PR | Closes | Merged | Notes |'),
+    ).toHaveLength(1);
+  });
+
+  it('a spine with NO `## PR-Log` section at all STILL throws — filling a section in is not inventing one', () => {
+    const noSection = freshSpine()
+      .split('\n')
+      .filter((l) => l !== '## PR-Log')
+      .join('\n');
+    expect(() => upsertPrLogRow(noSection, ROW_1)).toThrow(
+      /spine has no "## PR-Log" section/,
+    );
+  });
+
+  it('a renderSpine spine written by upsertPrLogRow round-trips with every other section byte-identical', () => {
+    const before = freshSpine();
+    const after = upsertPrLogRow(before, ROW_1);
+    for (const section of ['Plan-Table', 'Resume-Metadata', 'Closed-by', 'Disclosures']) {
+      expect(sectionText(after, section), section).toBe(sectionText(before, section));
+    }
+    // …and the whole file still parses, with nothing else disturbed.
+    const parsed = readSpine(after);
+    expect(parsed.planTable.map((r) => r.id)).toEqual(['01', '02']);
+    expect(parsed.closedBy.body).toBe(readSpine(before).closedBy.body);
+    expect(readDisclosures(after)).toEqual(readDisclosures(before));
+  });
+
+  it('a section carrying hand-written prose keeps the prose on top and grows the table below it', () => {
+    const withProse = freshSpine().replace(
+      '## PR-Log\n',
+      '## PR-Log\n\nOne row per `pr-created` issue.\n',
+    );
+    const out = upsertPrLogRow(withProse, ROW_1);
+    const section = sectionText(out, 'PR-Log')
+      .split('\n')
+      .filter((l) => l !== '');
+    expect(section[0]).toBe('## PR-Log');
+    expect(section[1]).toBe('One row per `pr-created` issue.');
+    expect(section[2]).toBe('| Created | ID | PR | Closes | Merged | Notes |');
+    expect(readSpine(out).prLog).toHaveLength(1);
+  });
+
+  it('a spine that ALREADY has a table is untouched by the scaffold path', () => {
+    // The pre-existing behaviour, re-pinned beside the new branch: a populated
+    // (or placeholder-carrying) table still takes the original insert path, so
+    // the scaffold can never double a header onto a real table.
+    const withTable = freshSpine().replace(
+      '## PR-Log\n',
+      [
+        '## PR-Log',
+        '',
+        '| Created | ID  | PR  | Closes | Merged | Notes |',
+        '| ------- | --- | --- | ------ | ------ | ----- |',
+        '| —       | —   | —   | —      | —      | _(no PRs yet)_ |',
+        '',
+      ].join('\n'),
+    );
+    const out = upsertPrLogRow(withTable, ROW_1);
+    // The scaffolded header never appears — the existing (padded) one is still
+    // the section's only header, and the row replaced the placeholder in place.
+    expect(sectionText(out, 'PR-Log')).not.toContain(
+      '| Created | ID | PR | Closes | Merged | Notes |',
+    );
+    expect(sectionText(out, 'PR-Log')).toContain('| Created | ID  | PR  | Closes | Merged | Notes |');
+    expect(readSpine(out).prLog).toHaveLength(1);
+  });
+});
