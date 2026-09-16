@@ -7303,3 +7303,225 @@ describe('worktree-cleanup subcommand — a terminal wave sweeps its own refs an
     expect(existsSync(ownDir)).toBe(true);
   });
 });
+
+// ─── worktree-cleanup — the PARKED-only wave, the fifth terminal state
+//             (issue #772) ───────────────────────────────────────────────────
+//
+// The gap this block closes, stated as the measurement that found it: the
+// terminal-wave verdict was driven through `pr-created`, `approved`, `failed`
+// and `abandoned`, and `parked` only ever through a run WITHOUT `--orphans` —
+// which never computes the verdict at all. A Reviewer replaced the CLI's
+// `parked` literal with a typo and the whole suite (75 files, 4467 tests) stayed
+// green. The literal is now a member of the spine reader's typed
+// `TERMINAL_ROW_STATES`, so `tsc` catches a misspelling at the declaration; this
+// block is the runtime half, and it is what fails if the member is ever dropped
+// from the set rather than misspelled in it.
+//
+// Deliberately SELF-CONTAINED — its own repo, its own git drive, its own spine
+// writer — rather than an `it` appended inside the issue-#748 block above. The
+// wave that carries this row has three later rounds landing in this same file,
+// and a block with no shared fixture is a block none of them can disturb.
+//
+// A parked-only wave is not a hypothetical shape: ADR-0022's park exit is what
+// `wave-close`'s awaiting-human gate prescribes, so a wave whose every row was
+// parked is a wave that took the documented exit on all of them. Its refs and
+// its composed driver are residue exactly like any other finished wave's.
+describe('worktree-cleanup — a PARKED-only wave is terminal and sweeps its own residue (issue #772)', () => {
+  let repo: string;
+
+  const SLUG = '2026-09-16-parked-only';
+  // Row 131 carries all three ref namespaces; row 132 makes "EVERY row is
+  // parked" a claim about more than one row — a per-row rule would read this
+  // spine the same way, a wave-level one only agrees when both are terminal.
+  const OWN_REFS = ['refs/review/131', 'refs/review/sib/131', 'refs/sib/131', 'refs/review/132'];
+  const STRANGER_REF = 'refs/review/777';
+
+  interface ParkedCleanupJson {
+    orphans?: {
+      reviewRefs?: {
+        liveRowIds: string[] | null;
+        selected?: Array<{ ref: string }>;
+        removed?: Array<{ ref: string }>;
+        skipped: Array<{ ref: string; reason: string }>;
+      };
+      drivers?: {
+        selected?: Array<{ slug: string; finishedBy: string | null }>;
+        removed?: Array<{ slug: string }>;
+        skipped: Array<{ slug: string; reason: string }>;
+      };
+    };
+  }
+
+  /** Drive the git calls `worktree-cleanup --orphans` issues, and nothing else. */
+  function driveGit(): void {
+    vi.mocked(execFileSync).mockReset();
+    vi.mocked(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'for-each-ref' && cmdArgs[1] === '--format=%(refname)') {
+        return [...OWN_REFS, STRANGER_REF].join('\n') + '\n';
+      }
+      if (cmdArgs[0] === 'for-each-ref' && cmdArgs[1] === '--format=%(refname:short)') {
+        return '\n';
+      }
+      if (cmdArgs[0] === 'symbolic-ref') return 'main\n';
+      return '';
+    });
+  }
+
+  /**
+   * A two-row spine for `SLUG`. Both rows carry `state` unless `secondState`
+   * says otherwise — the mixed-spine case is the only caller that differs.
+   */
+  function writeSpine(state: string, secondState: string = state): string {
+    const wavesDir = join(repo, '.flotilla', 'waves');
+    mkdirSync(wavesDir, { recursive: true });
+    const path = join(wavesDir, `${SLUG}.md`);
+    writeFileSync(
+      path,
+      [
+        `# Wave ${SLUG}`,
+        '',
+        '**Status:** in-flight',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        `| 131 | Alpha | background | mechanical | universal | — | ${state} | 1 | — |`,
+        `| 132 | Beta | background | mechanical | universal | — | ${secondState} | 1 | — |`,
+        '',
+        '## Resume-Metadata',
+        '',
+        '```yaml',
+        'dispatch-log:',
+        '  - "131 → agent wf_aaa (sonnet) branch wave/131-alpha"',
+        '  - "132 → agent wf_bbb (sonnet) branch wave/132-beta"',
+        '```',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    return path;
+  }
+
+  /** Plant `<repo>/.flotilla/tmp/<slug>/driver.js`, as compose-driver writes it. */
+  function plantDriverDir(slug: string): string {
+    const dir = join(repo, '.flotilla', 'tmp', slug);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'driver.js'), '// composed driver\n', 'utf-8');
+    return dir;
+  }
+
+  beforeEach(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'wave-cli-772-')));
+    writeFileSync(join(repo, 'package.json'), '{"name":"cli-772"}', 'utf-8');
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    try {
+      rmSync(repo, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('every row PARKED: the wave\'s own refs are selected across all three namespaces, its driver directory is selected wave-terminal, and liveRowIds reads []', () => {
+    driveGit();
+    const ownDir = plantDriverDir(SLUG);
+    const spine = writeSpine('parked');
+
+    // `--dry-run` so BOTH populations report under `selected` — and so the one
+    // assertion this row exists for is about the PLAN, which the real run then
+    // executes verbatim (the issue #377 discipline the block above pins).
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run', '--wave', spine])).toBe(0);
+    const preview = JSON.parse(stdoutBuf) as ParkedCleanupJson;
+
+    const rr = preview.orphans!.reviewRefs!;
+    // Declared, and legitimately empty — the reading `null` could not express,
+    // and the reading a NON-terminal parked wave would not produce.
+    expect(rr.liveRowIds).toEqual([]);
+    expect(rr.selected!.map((r) => r.ref).sort()).toEqual([...OWN_REFS, STRANGER_REF].sort());
+    expect(rr.skipped).toEqual([]);
+
+    const drivers = preview.orphans!.drivers!;
+    expect(drivers.selected!.map((d) => d.slug)).toEqual([SLUG]);
+    expect(drivers.selected![0].finishedBy).toBe('wave-terminal');
+
+    // A preview removes nothing.
+    expect(existsSync(ownDir)).toBe(true);
+    expect(execFileSync).not.toHaveBeenCalledWith(
+      'git',
+      ['update-ref', '-d', 'refs/review/131'],
+      expect.anything(),
+    );
+  });
+
+  it('...and the real run executes that plan: all four refs deleted, the driver directory gone', () => {
+    driveGit();
+    const ownDir = plantDriverDir(SLUG);
+    const spine = writeSpine('parked');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--wave', spine])).toBe(0);
+    const real = JSON.parse(stdoutBuf) as ParkedCleanupJson;
+    expect(real.orphans!.reviewRefs!.removed!.map((r) => r.ref).sort()).toEqual(
+      [...OWN_REFS, STRANGER_REF].sort(),
+    );
+    expect(real.orphans!.drivers!.removed!.map((d) => d.slug)).toEqual([SLUG]);
+    expect(existsSync(ownDir)).toBe(false);
+    for (const ref of OWN_REFS) {
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        ['update-ref', '-d', ref],
+        expect.objectContaining({ cwd: repo }),
+      );
+    }
+  });
+
+  it('PROVE THE CHECK CAN FAIL (Convention 11): one row back to `reviewing` and the SAME refs and the SAME driver directory are spared live-row / live-wave', () => {
+    // The falsifying input for the case above, and the one that would also fire
+    // if `parked` were ever dropped from `TERMINAL_ROW_STATES` (or misspelled in
+    // it, before the type gate made that impossible): a wave whose rows are not
+    // all terminal keeps every one of its own refs and its own driver.
+    driveGit();
+    const ownDir = plantDriverDir(SLUG);
+    const spine = writeSpine('reviewing');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run', '--wave', spine])).toBe(0);
+    const preview = JSON.parse(stdoutBuf) as ParkedCleanupJson;
+
+    const rr = preview.orphans!.reviewRefs!;
+    expect(rr.liveRowIds!.sort()).toEqual(['131', '132']);
+    expect(rr.selected!.map((r) => r.ref)).toEqual([STRANGER_REF]);
+    for (const ref of OWN_REFS) {
+      expect(rr.skipped.find((s) => s.ref === ref)?.reason).toBe('live-row');
+    }
+
+    const drivers = preview.orphans!.drivers!;
+    expect(drivers.selected).toEqual([]);
+    expect(drivers.skipped.map((d) => d.reason)).toEqual(['live-wave']);
+    expect(existsSync(ownDir)).toBe(true);
+
+    // …and this IS the failing state of the parked case's own assertions, not a
+    // merely different one.
+    expect(() => {
+      expect(rr.liveRowIds).toEqual([]);
+    }).toThrow();
+    expect(() => {
+      expect(drivers.selected!.map((d) => d.slug)).toEqual([SLUG]);
+    }).toThrow();
+  });
+
+  it('a MIXED spine is not terminal either — parked rows do not carry a still-running sibling over the line', () => {
+    // The wave-level rule, asked of the state this row adds. A per-row reading
+    // would sweep row 131's refs here; the shipped rule sweeps neither.
+    driveGit();
+    const spine = writeSpine('parked', 'dispatched');
+
+    expect(main(['worktree-cleanup', repo, '--orphans', '--dry-run', '--wave', spine])).toBe(0);
+    const rr = (JSON.parse(stdoutBuf) as ParkedCleanupJson).orphans!.reviewRefs!;
+    expect(rr.liveRowIds!.sort()).toEqual(['131', '132']);
+    expect(rr.selected!.map((r) => r.ref)).toEqual([STRANGER_REF]);
+    expect(rr.skipped.find((s) => s.ref === 'refs/review/131')?.reason).toBe('live-row');
+  });
+});

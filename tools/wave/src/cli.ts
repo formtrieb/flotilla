@@ -452,7 +452,7 @@ import {
   type MergeOrderResult,
   type ComputeMergeOrderOptions,
 } from './merge-order';
-import { readSpine, requireBranchesByIssueId } from './wave-md-rw';
+import { readSpine, requireBranchesByIssueId, TERMINAL_ROW_STATES } from './wave-md-rw';
 import { classifyClosedBy, needsPin } from './closed-by';
 import { detectHost } from './host-pr';
 import { runHostPr } from './host-pr-cli';
@@ -1460,9 +1460,17 @@ function resolveLiveWaveScope(args: string[], repoRoot: string): LiveWaveScope {
     // question is asked of the whole Plan-Table at once: either every row has
     // reached a terminal state and the wave's residue is sweepable, or none of
     // it is.
+    //
+    // `row.state` is the spine reader's UNVALIDATED cell text
+    // (`RowState | string`), so the typed constant is widened at this one call
+    // site rather than being kept as an untyped local copy (issue #772). An
+    // unrecognized state is simply absent from the set and reads NON-terminal,
+    // which is the safe direction: the wave stays live and its residue spared.
     const terminal =
       spine.planTable.length > 0 &&
-      spine.planTable.every((row) => TERMINAL_ROW_STATES.has(row.state));
+      spine.planTable.every((row) =>
+        (TERMINAL_ROW_STATES as ReadonlySet<string>).has(row.state),
+      );
     return {
       declared: true,
       terminal,
@@ -1516,27 +1524,6 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
   slug: null,
   wavesDir: null,
 };
-
-/**
- * The Plan-Table row states that mean a row is FINISHED — it will not dispatch
- * again, and nothing is still reading its worktree, its branch or its refs
- * (ADR-0042 Amendment 2026-09-08, decision 10; ADR-0022 for `parked`, whose
- * claim is released at park time).
- *
- * The same five the resume reconciliation treats as terminal, spelled here
- * rather than shared because the spine reader exports the full `ROW_STATES`
- * vocabulary and not this partition of it. A row state added to that vocabulary
- * without being weighed here reads as NON-terminal — which is the safe
- * direction: an unrecognized state keeps the whole wave live and its residue
- * spared.
- */
-const TERMINAL_ROW_STATES = new Set<string>([
-  'pr-created',
-  'approved',
-  'failed',
-  'abandoned',
-  'parked',
-]);
 
 /**
  * Run the `worktree-cleanup` subcommand — a thin router to the worktree-cleanup

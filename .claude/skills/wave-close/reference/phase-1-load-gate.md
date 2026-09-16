@@ -10,7 +10,7 @@ WAVE=.flotilla/waves/2026-06-19-foo.md   # this wave's spine path
 {{wave-cli}} spine read "$WAVE"
 ```
 
-Scan every Plan-Table row's `State` cell. Terminal = `pr-created` | `approved` | `failed` | `abandoned` | `parked` (`parked`: ADR-0022). None may still be `dispatched` | `re-dispatched` | `reviewing` | `report-in` | `verdict-in`. If any row is non-terminal, STOP:
+Scan every Plan-Table row's `State` cell. Terminal = the engine's `TERMINAL_ROW_STATES`, the exported partition of `ROW_STATES` that this list is a transcription of: `pr-created` | `approved` | `failed` | `abandoned` | `parked` (`parked`: ADR-0022). The same five the `worktree-cleanup --orphans` terminal-wave verdict and the resume reconciliation read — if this list and that constant ever disagree, the constant is right. None may still be `dispatched` | `re-dispatched` | `reviewing` | `report-in` | `verdict-in`. If any row is non-terminal, STOP:
 
 ```
 wave not yet terminal — N row(s) still in flight

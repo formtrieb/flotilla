@@ -70,6 +70,46 @@ export const ROW_STATES = [
 
 export type RowState = (typeof ROW_STATES)[number];
 
+/**
+ * The TERMINAL partition of {@link ROW_STATES} — the five states that mean a row
+ * is FINISHED: it will not dispatch again, and nothing is still reading its
+ * worktree, its branch or its refs. Its claim is either held by a landed PR or,
+ * for `parked` (ADR-0022), already released at park time.
+ *
+ * It lives HERE, beside the vocabulary it partitions, because the partition had
+ * three separate spellings and no owner (issue #772): the resume
+ * reconciliation's never-downgrade/never-redispatch set, the
+ * `worktree-cleanup --orphans` terminal-wave verdict that decides whether a
+ * wave's own review refs and composed driver are residue (ADR-0042 Amendment
+ * 2026-09-08 decision 10), and the `wave-close` load-gate prose that quotes the
+ * list to an operator. Three copies is three chances to drift, and one of them
+ * was an untyped `Set<string>`: a Reviewer replaced its `parked` with a typo and
+ * the whole suite stayed green, which would have kept a parked-only wave reading
+ * live and spared its residue forever.
+ *
+ * Typed against {@link RowState}, and that is the point of promoting it rather
+ * than merely sharing it: a member that is not in `ROW_STATES` is a compile
+ * error here, and so is a typo at any call site that passes a `RowState`.
+ *
+ * A caller testing an UNVALIDATED cell widens deliberately at its own call site
+ * — {@link PlanTableRow.state} is `RowState | string`, because the reader
+ * records what the spine actually says rather than refusing it. An unrecognized
+ * state is then simply absent from this set and reads NON-terminal, which is the
+ * safe direction: the wave stays live and its residue is spared.
+ *
+ * A state added to `ROW_STATES` is NOT added here by default. Weighing it is a
+ * decision; leaving it unweighed fails safe.
+ */
+export const TERMINAL_ROW_STATES: ReadonlySet<RowState> = new Set<RowState>([
+  'pr-created',
+  'approved',
+  'failed',
+  'abandoned',
+  // ADR-0022 — terminal AND claim-releasing, the only member with no branch and
+  // no PR behind it, and the one a typo hid from every existing test (#772).
+  'parked',
+]);
+
 // ─── Structured view ──────────────────────────────────────────────────────────
 
 export interface Frontmatter {
