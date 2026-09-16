@@ -291,19 +291,22 @@ function usage(message: string): number {
  * The `STILL OPEN:` line, byte-identical to the one `issue-store close` writes
  * (issue-store-cli.ts's `close` case, issue #399).
  *
- * It is a COPY, and knowingly: `issue-store-cli.ts` owns the sentence and is
- * outside this row's declared Files, so the sentence could not be lifted into
- * one home in this slice. `close-row.spec.ts` pins the two renderings against
- * each other by reading that module's source, which is the anti-drift guard a
- * shared constant would otherwise have been.
+ * It is a COPY, and knowingly: `issue-store-cli.ts` owns the sentence, and
+ * collapsing the two renderings into one home is its own separate slice (#800).
+ * Until that lands, `close-row.spec.ts` pins the two renderings against each
+ * other by reading that module's source, which is the anti-drift guard a shared
+ * constant would otherwise have been — so a reword has to be made in BOTH
+ * places, in lockstep, as #801 did when it took the maintainer-only document
+ * pointer out of the sentence.
  */
 function stillOpenLine(id: string, prUrl: string): string {
   return (
     `STILL OPEN: issue ${id} recorded closing facts (${prUrl}) but the ` +
     `tracker still reports it OPEN — this call does not natively close ` +
     `an issue whose satisfying act was not a merged PR carrying its own ` +
-    `close phrase. See docs/RELEASING.md step 7 for the documented ` +
-    `operator procedure.\n`
+    `close phrase. It stays open until that native close happens, and ` +
+    `there is no further close verb to reach for: close it by hand in ` +
+    `the tracker.\n`
   );
 }
 

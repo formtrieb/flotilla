@@ -673,13 +673,23 @@ describe('close-row', () => {
     it('a tracker that still reads `open` gets the STILL OPEN line, verbatim, and exit 0', async () => {
       expect(await runCloseRow(argv(idA, ['--verdicts-dir', verdictsDir]), deps())).toBe(0);
       expect(result().closing).toMatchObject({ state: 'open' });
+      // #801: the line says what the READER does next in their own terms and
+      // names no document — a consumer repo has this engine but not this
+      // repo's release procedure, so a pointer at one was unfollowable.
       expect(stderr).toContain(
         `STILL OPEN: issue ${idA} recorded closing facts (${prA}) but the ` +
           'tracker still reports it OPEN — this call does not natively close ' +
           'an issue whose satisfying act was not a merged PR carrying its own ' +
-          'close phrase. See docs/RELEASING.md step 7 for the documented ' +
-          'operator procedure.',
+          'close phrase. It stays open until that native close happens, and ' +
+          'there is no further close verb to reach for: close it by hand in ' +
+          'the tracker.',
       );
+      // …and the line itself points at no maintainer-only document of any
+      // kind. Asserted on the LINE, not on the whole stream, so an unrelated
+      // future stderr write cannot make this read red for the wrong reason.
+      const line = stderr.split('\n').find((l) => l.startsWith('STILL OPEN:'))!;
+      expect(line).not.toMatch(/RELEASING/);
+      expect(line).not.toMatch(/\.md\b/);
     });
 
     it('a natively-closed, merged issue reports `merged` and prints NO STILL OPEN line', async () => {
@@ -695,12 +705,17 @@ describe('close-row', () => {
 
     /**
      * The anti-drift guard for the copied sentence. `issue-store-cli.ts` owns
-     * the `STILL OPEN:` line and is outside this row's declared Files, so the
-     * two renderings could not be collapsed into one constant in this slice.
-     * What CAN be asserted without touching that module is that the sentence
-     * it ships and the sentence this verb ships are the same sentence — read
-     * off its source, so a reworded original fails here rather than drifting
-     * in silence.
+     * the `STILL OPEN:` line; collapsing the two renderings into one constant
+     * is its own separate slice (#800). Until that lands, what CAN be asserted
+     * without a shared home is that the sentence that module ships and the
+     * sentence this verb ships are the same sentence — read off its source, so
+     * a reworded original fails here rather than drifting in silence.
+     *
+     * The extraction takes the whole template literal, from its opening
+     * backtick to the `\n` that terminates it, rather than splitting on a
+     * phrase from the prose — a reword then still compares the FULL sentence
+     * instead of quietly shortening the window it compares (#801, which
+     * reworded the tail).
      */
     it('the STILL OPEN sentence is byte-identical to the one `issue-store close` ships', async () => {
       await runCloseRow(argv(idA, ['--verdicts-dir', verdictsDir]), deps());
@@ -714,14 +729,16 @@ describe('close-row', () => {
       const owner = readFileSync(join(__dirname, 'issue-store-cli.ts'), 'utf-8');
       const theirs = owner
         .slice(owner.indexOf('`STILL OPEN: issue '))
-        .split('operator procedure.')[0]
+        .split('\\n`')[0]
         .replace(/`\s*\+\s*`/g, '')
         .replace(/\$\{id\}/g, idA)
         .replace(/\$\{prUrl\}/g, prA)
         .replace(/^`/, '')
         .replace(/\s+/g, ' ')
         .trim();
-      expect(mine.replace(/\s+/g, ' ')).toContain(theirs);
+      // Whole sentence, not a prefix of one: equality, so a tail either module
+      // grows or loses on its own is caught too.
+      expect(mine.replace(/\s+/g, ' ').trim()).toBe(theirs);
     });
   });
 

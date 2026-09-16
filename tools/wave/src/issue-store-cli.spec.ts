@@ -1017,12 +1017,11 @@ describe('issue-store-cli — done-reconcile close seam (FOR-18)', () => {
 // cosmetic AC tick but does NOT natively close an issue whose satisfying act
 // was not a merged PR carrying its own close phrase. Before this slice that
 // gap was silent — exit 0, `Closed-by:` written, issue still OPEN — the exact
-// shape #339 (1.0.0) and #397 (1.0.1) both hit and had to be rescued by hand
-// (docs/RELEASING.md step 7). These specs exercise that shared shape on
-// GitHubIssuesStore (the store both occurrences lived on): `close()` there
-// never calls `nativeClose`, so a row whose satisfying act was never a
-// merged-PR `Closes #N` stays open after the call — the same shape a
-// release-bump PR that names no issue produces.
+// shape #339 (1.0.0) and #397 (1.0.1) both hit and had to be rescued by hand.
+// These specs exercise that shared shape on GitHubIssuesStore (the store both
+// occurrences lived on): `close()` there never calls `nativeClose`, so a row
+// whose satisfying act was never a merged-PR `Closes #N` stays open after the
+// call — the same shape a release-bump PR that names no issue produces.
 describe('issue-store-cli — close reports the native end-state loudly (#399)', () => {
   let outSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
@@ -1084,6 +1083,30 @@ describe('issue-store-cli — close reports the native end-state loudly (#399)',
     expect(errCaptured).toMatch(/STILL OPEN/);
     expect(errCaptured).toContain(id);
     expect(errCaptured).toContain('https://github.com/o/r/pull/999');
+
+    // #801: the sentence itself, pinned here at the module that OWNS it —
+    // `close-row.spec.ts` pins its copy against this source, so this is the
+    // one assertion that says what the wording actually is. It speaks in the
+    // reader's own terms (the issue stays open until the native close happens;
+    // flip it by hand in the tracker) and names no document, because the
+    // caller may be any consumer repo and this repo's release procedure is not
+    // a file they have.
+    //
+    // Whole-line equality, not containment: a document pointer appended to the
+    // sentence is then caught here rather than sliding in behind a prefix
+    // match. That also subsumes a separate "names no .md" guard at this site,
+    // which is why there is none — the explicit maintainer-document guard sits
+    // in `close-row.spec.ts`, where the pin is deliberately prefix-shaped and
+    // the guard can therefore be made to fail on its own.
+    const line = errCaptured.split('\n').find((l) => l.startsWith('STILL OPEN:'))!;
+    expect(line).toBe(
+      `STILL OPEN: issue ${id} recorded closing facts ` +
+        '(https://github.com/o/r/pull/999) but the tracker still reports it ' +
+        'OPEN — this call does not natively close an issue whose satisfying ' +
+        'act was not a merged PR carrying its own close phrase. It stays open ' +
+        'until that native close happens, and there is no further close verb ' +
+        'to reach for: close it by hand in the tracker.',
+    );
   });
 
   it('contrast — an ordinary merged-PR close reports `merged` and stays silent (no STILL OPEN line)', async () => {
