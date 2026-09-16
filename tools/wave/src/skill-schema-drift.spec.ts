@@ -3306,15 +3306,19 @@ describe('skill-schema-drift — every pointer to the anyOf-free copy names the 
 // helper the sibling-prediction pins use, so a match has to come from the clause
 // under test.
 //
-// **Deliberately NOT pinned here: the driver's reviewerBrief.** The third copy
-// of this contract is the brief `driver/wave-start-inflight.js` composes, whose
-// SECRET-SAFE clause still ends "you never call `host-pr` and never read a
-// secret" — the very sentence this row's gap report quotes. That file sits
-// outside this row's declared Files globs, so the sentence is left standing and
-// disclosed rather than edited, and this spec does not pin a copy the row may
-// not move. Whoever moves it should extend this block to three copies; the
-// #431 lesson recorded above — a fourth copy outside a row's Files, missed
-// entirely, teaching the old contract for a full wave — is exactly this shape.
+// **THREE copies, and the third is the only one a running Reviewer ever sees.**
+// The agent definition and Convention 7 are what a person reads; the brief
+// `driver/wave-start-inflight.js` composes is what a dispatched Reviewer is
+// actually handed. Iteration 1 of this row moved the first two and left the
+// driver's SECRET-SAFE clause ending "you never call `host-pr` and never read a
+// secret" — that file sat outside the row's declared Files at the time, so the
+// sentence was disclosed rather than edited — and the Reviewer of that very
+// iteration obeyed the stale sentence and could not read this PR's body. That is
+// the #431 shape recorded above, caught one ROUND later instead of one wave: a
+// copy outside a row's Files teaching the old contract to a live dispatch.
+// Iteration 2 moved it under a purpose-bound scope extension, and this block
+// pins all three from here on, so the next re-wording cannot re-open the gap in
+// the one copy that binds a running agent while the two readable ones look fine.
 
 const CONVENTION_07_MD = join(
   __dirname,
@@ -3340,6 +3344,7 @@ function teachesStatusContentRead(region: string): boolean {
 describe('skill-schema-drift — the host-seam clause teaches the status title/body read (row 777)', () => {
   const reviewerAgentMd = readFileSync(WAVE_REVIEWER_AGENT_MD, 'utf-8');
   const convention07Md = readFileSync(CONVENTION_07_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   /** Check 2's own section of the Reviewer's agent definition. */
   function agentCheck2(md: string): string {
@@ -3371,6 +3376,26 @@ describe('skill-schema-drift — the host-seam clause teaches the status title/b
     );
   }
 
+  /**
+   * The reviewerBrief's SECRET-SAFE clause — the third copy, and the only one a
+   * dispatched Reviewer is actually handed.
+   *
+   * Scoped to that clause's own span for the same reason as the two above, with
+   * one extra: the driver is a ~1000-line file whose WORKER brief already names
+   * `host-pr status --branch` (the terminator's post-create re-query, and again
+   * in the Convention 13 prose). A file-wide match here would be satisfied by
+   * the Worker's instructions and would pass however the Reviewer's own clause
+   * reads — which is precisely the state iteration 1 shipped in.
+   */
+  function driverSecretSafeClause(js: string): string {
+    return contractRegion(
+      js,
+      'driver/wave-start-inflight.js reviewerBrief SECRET-SAFE clause',
+      '**SECRET-SAFE** (wave-shared Convention 8)',
+      '## Original issue spec',
+    );
+  }
+
   it("the Reviewer's Check 2 host-seam clause names title and body, read-only, at no extra call", () => {
     expect(teachesStatusContentRead(agentCheck2(reviewerAgentMd))).toBe(true);
   });
@@ -3381,6 +3406,24 @@ describe('skill-schema-drift — the host-seam clause teaches the status title/b
 
   it("Convention 7's status bullet carries the same read", () => {
     expect(teachesStatusContentRead(conventionStatusBullet(convention07Md))).toBe(true);
+  });
+
+  it("the driver's composed reviewerBrief carries it too — the copy that binds a live dispatch", () => {
+    expect(teachesStatusContentRead(driverSecretSafeClause(driverJs))).toBe(true);
+  });
+
+  it('the driver copy still forbids the host WRITES — this row widened a CAPABILITY, not the role', () => {
+    // The regression the re-wording could plausibly cause, and the reason this
+    // assertion is scoped to the driver alone: the sentence it replaced was a
+    // FLAT prohibition ("you never call `host-pr`"). Turning a flat no into a
+    // read permission has to leave the write half standing explicitly, or the
+    // brief now reads as "the Reviewer may call `host-pr`" full stop — a role
+    // change smuggled in as a capability change.
+    const clause = driverSecretSafeClause(driverJs);
+    expect(clause).toMatch(/host WRITE/);
+    expect(clause).toMatch(/host-pr create/);
+    expect(clause).toMatch(/\barm\b/);
+    expect(clause).toMatch(/\bmerge\b/);
   });
 
   it('the status bullet also states the ABSENCE rule — absent keys, never empty strings', () => {
@@ -3396,10 +3439,11 @@ describe('skill-schema-drift — the host-seam clause teaches the status title/b
   it('every copy still forbids the raw host CLI — the read is a wider CAPABILITY, not a wider rule', () => {
     // The regression this row could plausibly cause: "the Reviewer may read the
     // PR body" re-read as "the Reviewer may reach the host however it likes".
-    // Both copies must still name `gh` as refused.
+    // All three copies must still name `gh` as refused.
     expect(agentCheck2(reviewerAgentMd)).toMatch(/gh pr view/);
     expect(agentDisciplineHostBullet(reviewerAgentMd)).toMatch(/gh pr view/);
     expect(convention07Md).toMatch(/never raw `gh`/);
+    expect(driverSecretSafeClause(driverJs)).toMatch(/gh pr view/);
   });
 
   it('NEGATIVE CONTROL — the predicate fires on text that names the fields but drops the qualification', () => {
