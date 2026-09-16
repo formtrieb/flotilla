@@ -45,7 +45,8 @@
       "Bash(git commit -m:*)",
       "Bash(git push origin wave/:*)",
       "Bash(git worktree add:*)",
-      "Bash(mkdir -p:*)"
+      "Bash(mkdir -p:*)",
+      "Bash(git show:*)"
     ],
     "deny": [
       "Read(.env)",
