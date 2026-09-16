@@ -2172,3 +2172,139 @@ describe('compose-driver — the verb, end to end', () => {
     expect((await composeAndReadStep(spinePath, configPath)).source).toBe('engine.install');
   });
 });
+
+// ─── issue #767: a `model` word inside the BRANCH slug must not shadow the
+// recorded model tier ──────────────────────────────────────────────────────
+//
+// The end-to-end receipt-level regression for the wave-md-rw.ts MODEL_REF fix
+// (see wave-md-rw.spec.ts "dispatch-log model parsing stays clear of a
+// `model`-shaped branch slug (issue #767)" for the reader/writer-level cases).
+// This exercises the real bug report shape through the actual compose-driver
+// verb: a row whose branch slug ends in the word `model`, composed with the
+// engine's `modelByRow` derivation, must come out with the recorded tier, not
+// the literal word `model`.
+describe('compose-driver — a `model`-shaped branch slug does not shadow the recorded tier (issue #767)', () => {
+  let repoRoot: string;
+  let anchor: string;
+  let stdout: string;
+  let stderr: string;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const SLUG = '2026-09-16-model-shadow';
+
+  async function seed(filingHint: string): Promise<{ id: string; spinePath: string; configPath: string }> {
+    const store = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const id = await store.create({
+      title: 'Delete old board view model',
+      filingHint,
+      risk: 'isolated-refactor',
+      worker: 'background',
+      files: ['tools/wave/**'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'the old view model is gone', checked: false }],
+      bodySections: [{ heading: 'What to build', markdown: 'Delete it.' }],
+    });
+
+    let spine = renderSpine(
+      {
+        slug: SLUG,
+        description: 'model-shadow regression',
+        coordinator: 'c',
+        model: 'm',
+        created: '2026-09-16',
+        lastUpdated: '2026-09-16',
+      },
+      [{ id, title: 'Delete old board view model', worker: 'background', risk: 'isolated-refactor' }],
+      { issues: [], cells: [] },
+      'ok',
+    );
+    spine = setRowState(spine, id, 'dispatched');
+    spine = upsertDispatchLogEntry(spine, id, `wave/${id}-${filingHint}`);
+    spine = upsertDispatchLogModel(spine, id, 'sonnet');
+
+    const spinePath = join(repoRoot, '.flotilla', 'waves', `${SLUG}.md`);
+    mkdirSync(join(repoRoot, '.flotilla', 'waves'), { recursive: true });
+    writeFileSync(spinePath, spine, 'utf8');
+
+    const configPath = join(repoRoot, 'wave.config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: { cli: SOURCE_FORM_CLI },
+        verify: { profiles: [] },
+      }),
+      'utf8',
+    );
+    return { id, spinePath, configPath };
+  }
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'compose-driver-model-shadow-'));
+    execFileSync('git', ['-C', repoRoot, 'init', '-q']);
+    execFileSync('git', [
+      '-C', repoRoot,
+      '-c', 'user.email=t@example.invalid',
+      '-c', 'user.name=t',
+      'commit', '--allow-empty', '-q', '-m', 'anchor',
+    ]);
+    anchor = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    stdout = '';
+    stderr = '';
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      stdout += String(c);
+      return true;
+    });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('a branch slug ending in the word `model` still composes the recorded tier, not the literal word', async () => {
+    const { id, spinePath, configPath } = await seed('delete-old-board-view-model');
+    const out = join(repoRoot, 'driver.js');
+    const code = await runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+    ]);
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string; branch: string }> };
+    const row = receipt.rows.find((r) => r.id === id);
+    expect(row?.branch).toBe(`wave/${id}-delete-old-board-view-model`);
+    expect(row?.model).toBe('sonnet');
+  });
+
+  it('CONTROL — a branch slug without the word `model` composes the same recorded tier', async () => {
+    const { id, spinePath, configPath } = await seed('delete-dead-board-vm');
+    const out = join(repoRoot, 'driver.js');
+    const code = await runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+    ]);
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string; branch: string }> };
+    const row = receipt.rows.find((r) => r.id === id);
+    expect(row?.branch).toBe(`wave/${id}-delete-dead-board-vm`);
+    expect(row?.model).toBe('sonnet');
+  });
+});
