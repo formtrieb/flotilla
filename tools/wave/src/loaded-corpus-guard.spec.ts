@@ -173,25 +173,33 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: 203,927 B measured the day the declaration lines landed,
- * rounded up to the next full KB.
+ * Why this number: this is the ratchet row (ADR-0050's last), which lowers the
+ * constant to the wave's own landed result instead of leaving the bytes alone.
+ * 158,779 B measured on `main` after every other row of the wave (#806–#814)
+ * had landed, rounded up to the next full KB. Row 1 pinned 204,000 (measured
+ * 203,927); the walk-back rows lowered the bytes and left the constant alone;
+ * this row closes the loop.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 204_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 159_000;
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: 1,292,393 B measured the day the declaration lines landed,
- * rounded up to the next full KB.
+ * Why this number: this is the ratchet row (ADR-0050's last), which lowers the
+ * constant to the wave's own landed result instead of leaving the bytes alone.
+ * 1,217,102 B measured on `main` after every other row of the wave (#806–#814)
+ * had landed, rounded up to the next full KB. Row 1 pinned 1,293,000 (measured
+ * 1,292,393); the walk-back rows lowered the bytes and left the constant alone;
+ * this row closes the loop.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_293_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_218_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
 const MIN_STANDING_LOAD_FILES = 17; // 18 at landing (SKILL.md + 17 reference files)
 const MIN_CORPUS_FILES = 50; // 57 at landing
 const MIN_CONVENTION_FILES = 16; // every allocated Convention number has a file
-const MIN_INSTRUCTION_FILES = 40; // 47 shipped SKILL.md / reference/ / agent files at landing
+const MIN_INSTRUCTION_FILES = 40; // 54 shipped SKILL.md / reference/ / agent files at landing (corrected: replicating this predicate over the landing-day tree gives 54, not the 47 first written here)
 const MIN_DOCS_CITING_FILES = 15; // 18 of those cite docs/ at landing — the class the predicate must not empty
 
 // The guard prints both sums on every run, so the current cost is readable
@@ -498,7 +506,10 @@ function docsReadInstructions(md: string, file: string): DocsReadInstruction[] {
 /** A `docs/` citation in either shape — a markdown-link target or a backticked
  * path. Deliberately NOT a `/g` regex: it is used as a per-file boolean, and a
  * global regex carries `lastIndex` across calls, which silently skips every
- * other file (observed while landing this spec: 15 files counted instead of 30).
+ * other file (observed while landing this spec: 15 files counted instead of 18 —
+ * corrected: the neighbouring `MIN_DOCS_CITING_FILES` comment and the landing
+ * row's own report both give 18 as the true per-file count; the 30 first
+ * written here did not match either).
  */
 const DOCS_CITATION = /(?:\]\(|`)(?:\.{1,2}\/)*docs\/[A-Za-z0-9._/-]+/;
 
