@@ -1189,8 +1189,11 @@ describe('store.goal.container: typing did NOT move the refusal ladder', () => {
 // merges it over `DEFAULT_LINEAR_STATES`, so an UNDECLARED key reached the store
 // by accident of that merge. One shipped consumer already sets
 // `unclaimTarget: "Todo"`. The harm of the gap was never a wrong write — it was
-// that `config validate` could not see a typo in a key it did not know about, and
-// that the documented shape said four keys where the adapter reads six.
+// that a TypeScript author annotating the block got no compile error on a typo'd
+// key the type did not know about, and that the documented shape said four keys
+// where the adapter reads six. Typing the keys closes exactly that, and nothing
+// wider: `config validate` never saw such a typo and STILL DOES NOT — `states`
+// has no loader validator, by design, which the NEGATIVE CONTROL below pins.
 //
 // The assertion that closes it is a KEY-SET EQUALITY against the adapter's own
 // declaration, not a hand-listed check for the two names: a seventh state the

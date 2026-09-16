@@ -132,8 +132,10 @@ export interface GitHubStoreConfig {
  * straight to the adapter, which merges it over `DEFAULT_LINEAR_STATES`, so an
  * untyped key reached the store by accident of that merge. One shipped consumer
  * already sets `unclaimTarget: "Todo"`. Typing them changes no behaviour; it
- * makes `config validate` able to see a typo in them and gives the documented
- * shape one place to be read off. Additive (Minor, ADR-0035): no key here was
+ * makes a typo in either key a COMPILE error for a TypeScript author who
+ * annotates the block against this interface, and gives the documented shape
+ * one place to be read off. It does NOT make `config validate` see that typo —
+ * that check lives only in the type. Additive (Minor, ADR-0035): no key here was
  * renamed, removed or re-typed, and the loader gains no new refusal for
  * `states` — an unknown key under `states` is as silently tolerated today as it
  * was yesterday.
