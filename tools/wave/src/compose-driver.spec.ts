@@ -1015,6 +1015,26 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
   const RETRY_REANCHORS =
     /a retried FIRST iteration re-anchors to the wave anchor SHA exactly as a\s+first attempt does/;
 
+  // ── issue #744: the two allowlist rulings the refused-reset remedy rests on ──
+  //
+  // The sibling row (#731) could only HEDGE both halves of its own remedy,
+  // because the permission-allowlist scaffold it depends on sat outside its
+  // declared Files globs. The Operator ruled both on 2026-09-16 — YES to the
+  // read-at-commit, NO to the untracked sweep — and the brief now states each
+  // as a ruling rather than as a hedge. These pins are what keeps it that way;
+  // the negative control at the end of this block shows each BODY can fail
+  // while its headline stays byte-intact.
+  /** The headline carries the row's OWN anchor, so it is derived, never typed twice. */
+  const readAtCommitHeadline = (sha: string) =>
+    `**The source for that read is \`git show ${sha}:<path>\` — prescribed, not hedged.**`;
+  const READ_AT_COMMIT_BODY =
+    /allowlist scaffold carries `Bash\(git show:\*\)` as a prefix match \(Operator ruling\s+2026-09-16, the command form measured exit 0 under a dispatched agent's sandbox\)/;
+  const READ_AT_COMMIT_FALLBACK =
+    /If that read is ITSELF refused\s+for a permission reason, report it under policy clause 12 and stop at `blocked`/;
+  const GIT_CLEAN_RULING_HEADLINE = '**Its absence is a RULING, not a gap (Operator, 2026-09-16):**';
+  const GIT_CLEAN_CONFINEMENT =
+    /a prefix-matched grant\s+cannot be confined to the agent's OWN worktree, so any `git clean` entry would reach\s+every sibling's live checkout/;
+
   /** One iteration-1 row and one re-dispatch row, from ONE composed script. */
   const rows = [
     row({ id: '42', slug: 'first' }),
@@ -1088,6 +1108,34 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
     // allowlist scaffold), so prescribing it would stall the row on a
     // permission prompt with nobody there to answer it.
     expect(iter1).toMatch(/\*\*Do not reach for\s+`git clean`\*\*/);
+  });
+
+  it('states the git clean absence as a RULING with its confinement reason, not as a gap the next row closes (issue #744)', async () => {
+    const { iter1 } = await workerBriefs();
+    // "Not on the allowlist" alone reads as an oversight a Worker may ask to
+    // have fixed. The Operator's 2026-09-16 ruling says WHY it can never be
+    // fixed: a permission entry is a prefix match over a command string, and no
+    // prefix of `git clean` can be confined to the agent's own worktree — the
+    // same reason `git worktree remove`/`prune` are withheld.
+    expect(iter1).toContain(GIT_CLEAN_RULING_HEADLINE);
+    expect(iter1).toMatch(GIT_CLEAN_CONFINEMENT);
+    expect(iter1).toMatch(/the same reason `git worktree remove`\/`prune` are\s+withheld/);
+  });
+
+  it('PRESCRIBES git show <anchorSha>:<path> as the refused-reset restore source, and keeps the report-and-stop fallback (issue #744)', async () => {
+    const { iter1 } = await workerBriefs();
+    // Prescription, not a hedge: the read is on the measured AFK command
+    // surface (wave-setup's scaffold carries `Bash(git show:*)`), so the
+    // remedy no longer depends on whatever permission surface the Worker
+    // happens to have.
+    expect(iter1).toContain(readAtCommitHeadline(rows[0].anchorSha));
+    expect(iter1).toMatch(READ_AT_COMMIT_BODY);
+    // The hedge that used to stand in the prescription's place is gone.
+    expect(iter1).not.toContain('where your permission surface carries that read');
+    // …and the floor survives the widening: a read refused anyway is reported
+    // under clause 12 and STOPS, never guessed past.
+    expect(iter1).toMatch(READ_AT_COMMIT_FALLBACK);
+    expect(iter1).toMatch(/rather than guessing at the content\./);
   });
 
   it('gives the clean-tree assert a branch to take when the reset is REFUSED, instead of leaving it a dead end', async () => {
@@ -1187,6 +1235,48 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
     expect(refusalBriefs.iter1).toContain(REFUSAL_HEADLINE); // headline-only pin still passes
     expect(refusalBriefs.iter1).not.toMatch(REFUSAL_BODY); // the body pins fire
     expect(refusalBriefs.iter1).not.toMatch(REFUSAL_BLOCKED);
+  });
+
+  it('NEGATIVE CONTROL — the two allowlist-ruling clauses fail their BODY pins while their headlines stay byte-intact (issue #744)', async () => {
+    // The same demonstration as the control above, run against the clauses
+    // THIS row added. Both rulings are exactly the shape that degrades
+    // silently: a bold line that still reads as present over a body that no
+    // longer says which command to run, or why the other one is withheld.
+
+    // Probe C — the prescribed read-at-commit. The headline keeps naming
+    // `git show <anchorSha>:<path>`; everything that makes it a PRESCRIPTION
+    // (the allowlist citation, the ruling, the measurement) and the
+    // report-and-stop fallback underneath it are replaced.
+    const guttedRead = TEMPLATE.replace(
+      /(\*\*The source for that read is [\s\S]*?prescribed, not hedged\.\*\*)[\s\S]*?guessing at the content\./,
+      '$1 Work it out.',
+    );
+    expect(guttedRead).not.toEqual(TEMPLATE); // the replace actually matched
+    const readBriefs = await workerBriefs(
+      composeDriverScript({ template: guttedRead, ...CONSTANTS, rows }),
+    );
+    // a headline-only pin still passes…
+    expect(readBriefs.iter1).toContain(readAtCommitHeadline(rows[0].anchorSha));
+    // …and the body pins, and only the body pins, fire.
+    expect(readBriefs.iter1).not.toMatch(READ_AT_COMMIT_BODY);
+    expect(readBriefs.iter1).not.toMatch(READ_AT_COMMIT_FALLBACK);
+
+    // Probe D — the `git clean` ruling. The withheld-command headline survives
+    // (so does the older "Do not reach for `git clean`" dead-end pin), while
+    // the confinement reason that turns the absence from an oversight into a
+    // decision is gone — the precise degradation this row exists to prevent.
+    const guttedClean = TEMPLATE.replace(
+      /(\*\*Its absence is a RULING, not a gap \(Operator, 2026-09-16\):\*\*)[\s\S]*?do not ask for the entry\./,
+      '$1 Trust me.',
+    );
+    expect(guttedClean).not.toEqual(TEMPLATE); // the replace actually matched
+    expect(guttedClean).toContain(GIT_CLEAN_RULING_HEADLINE); // …and the headline survived it
+    const cleanBriefs = await workerBriefs(
+      composeDriverScript({ template: guttedClean, ...CONSTANTS, rows }),
+    );
+    expect(cleanBriefs.iter1).toContain(GIT_CLEAN_RULING_HEADLINE); // headline-only pin still passes
+    expect(cleanBriefs.iter1).toMatch(/\*\*Do not reach for\s+`git clean`\*\*/); // so does the dead-end pin
+    expect(cleanBriefs.iter1).not.toMatch(GIT_CLEAN_CONFINEMENT); // the body pin fires
   });
 });
 
