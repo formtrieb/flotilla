@@ -2,6 +2,8 @@
 
 Read `../wave-shared/SKILL.md` and every file under `../wave-shared/reference/`, resolved against wave-close's own base directory (not this reference file's, which sits one level deeper) — for its auth-preflight and atomic-spine conventions.
 
+Also read [close-mechanics.md](close-mechanics.md) once, here — the cross-phase exit-code and command tables every later phase draws on. No other phase names it.
+
 Read the spine and confirm the terminality gate before doing anything else:
 
 ```bash
