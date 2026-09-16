@@ -75,39 +75,39 @@ This is deliberately **prose-tier** (ADR-0034 draft mode): the lightest possible
 
 ## Procedure
 
-Each phase's full worked body — guards, worked command blocks, live-finding annotations, and that phase's own Common-Mistakes bullets — lives in its own file under [reference/](reference/), named by phase number. **Load every file in that directory, not a subset picked by name** — a sibling's "phase N" citation resolves to real prose only once the whole directory has been read. This loader deliberately does not enumerate what's in there: a new guard or a new live finding is a new edit to its one phase file, with zero edits to this file or to any sibling phase file required. The numbering below (`1`, `2`, `3`, `4`, `4a`, `4b`, `5`, `6`) is the stable identifier sibling skills cite (e.g. "wave-close phase 4b").
+Each phase's full worked body — guards, worked command blocks, live-finding annotations, and that phase's own Common-Mistakes bullets — lives in its own file under [reference/](reference/), named by phase number and linked from its own step below, loaded there rather than upfront. A cross-phase "phase N" citation inside a phase file still resolves once you reach that phase. The numbering below (`1`, `2`, `3`, `4`, `4a`, `4b`, `5`, `6`) is the stable identifier sibling skills cite (e.g. "wave-close phase 4b").
 
 ### 1. Load wave-shared + gate
 
-Read `../wave-shared/SKILL.md` and every file under `../wave-shared/reference/`, resolved against this skill's own base directory, read the spine, and confirm the terminality gate before doing anything else; a re-run on an already-archived wave is a guarded no-op past this point.
+[phase 1](reference/phase-1-load-gate.md). Read `../wave-shared/SKILL.md` and every file under `../wave-shared/reference/`, resolved against this skill's own base directory, read the spine, and confirm the terminality gate before doing anything else; a re-run on an already-archived wave is a guarded no-op past this point.
 
 ### 2. Auth preflight (skip when no host writes pending)
 
-Skip the network entirely when every row's `Closed-by:` already classifies as a real PR; otherwise detect the host and verify auth before any write.
+[phase 2](reference/phase-2-auth-preflight.md). Skip the network entirely when every row's `Closed-by:` already classifies as a real PR; otherwise detect the host and verify auth before any write.
 
 ### 3. Worktree cleanup — BEFORE the merge
 
-Clean up this wave's agent worktrees and sweep orphaned branches/directories — unconditionally, every time — so nothing still holds a wave branch locally by the time anyone reaches the merge step.
+[phase 3](reference/phase-3-worktree-cleanup.md). Clean up this wave's agent worktrees and sweep orphaned branches/directories — unconditionally, every time — so nothing still holds a wave branch locally by the time anyone reaches the merge step.
 
 ### 4. Advisory merge-order (print-only) — the merge happens here, verify branch deletion separately
 
-Recompute and print the advisory merge order, merge each PR through the engine host seam, and verify branch deletion as its own checked step — the merge command's exit code alone is never evidence the branch is gone.
+[phase 4](reference/phase-4-advisory-merge-order.md). Recompute and print the advisory merge order, merge each PR through the engine host seam, and verify branch deletion as its own checked step — the merge command's exit code alone is never evidence the branch is gone.
 
 ### 4a. Self-repair check + pull to completion before you reconcile (W4-F1 / W5-F3)
 
-Detect whether this wave's own rows changed the engine surface wave-close depends on, then pull `main` to a verified completion before phase 5 reconciles against it. A mandatory pre-pull check against the three harness write-denied path classes (`.claude/skills/**`, `.claude/agents/**`, `.claude/settings.json`) decides sandbox-on vs sandbox-off *before* the pull runs, rather than diagnosing a half-applied pull after the fact.
+[phase 4a](reference/phase-4a-self-repair-pull.md). Detect whether this wave's own rows changed the engine surface wave-close depends on, then pull `main` to a verified completion before phase 5 reconciles against it. A mandatory pre-pull check against the three harness write-denied path classes (`.claude/skills/**`, `.claude/agents/**`, `.claude/settings.json`) decides sandbox-on vs sandbox-off *before* the pull runs, rather than diagnosing a half-applied pull after the fact.
 
 ### 4b. `--auto` — partial-arm confirm + arm-and-exit (opt-in)
 
-Opt-in only: present one confirm for the wave, arm the order-free rows through `host-pr arm`, then exit without watching — the overlapping tail stays on the phase-4 advisory order.
+[phase 4b](reference/phase-4b-partial-arm.md). Opt-in only: present one confirm for the wave, arm the order-free rows through `host-pr arm`, then exit without watching — the overlapping tail stays on the phase-4 advisory order.
 
 ### 5. Done-reconcile + needs-attention for stuck rows
 
-Probe each terminal row's closing state via the evidence hierarchy, then land it `done`, flag it, or report it — never guessing between merged and rejected. A never-dispatched row (`parked`, or `planned` in one of the two held lanes) is reported under its own rubric and never probed: there is nothing for a probe to find, and a flag would answer a question nobody asked.
+[phase 5](reference/phase-5-done-reconcile.md). Probe each terminal row's closing state via the evidence hierarchy, then land it `done`, flag it, or report it — never guessing between merged and rejected. A never-dispatched row (`parked`, or `planned` in one of the two held lanes) is reported under its own rubric and never probed: there is nothing for a probe to find, and a flag would answer a question nobody asked.
 
 ### 6. Archive (the last phase — terminal-only, idempotent, layout-aware)
 
-**Two** fail-closed gates run first, in this order, each read by exit code alone. The disclosure gate: `spine check-disclosures` blocks on any `open` entry, and every open disclosure the wave surfaced must carry a disposition — one of exactly `resolved-in-slice | scope-extension | filed:<id> | dropped:<reason> | upstream:<ref>` — before the archive proceeds (ADR-0027). The gate checks existence only and never judges quality, so **which** disposition to reach for is your judgment, guided by the defaults in the phase file: a disclosure earns its own ticket only when it names a mechanism defect with an observed consequence, everything else bundles thematically via a shared `filed:<id>` (N:1, appends only while that bundle is still bare), and a `filed:` body carries the observation — symptom, evidence, provenance — never an unverified diagnosis (ADR-0027 Amendment 2026-07-31). Then the awaiting-human gate: `spine check-awaiting-human` blocks while any human-gated row still sits at `planned` holding the live `queued` claim nothing ever released, and it offers exactly two exits — the human acts and the row dispatches, or the row is parked and unclaimed ([reference/phase-6-archive.md](reference/phase-6-archive.md), park per ADR-0022). Both gates are fail-closed in both directions: an unreadable spine blocks exactly like a real finding. Once both are clear and every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
+[phase 6](reference/phase-6-archive.md). **Two** fail-closed gates run first, in this order, each read by exit code alone. The disclosure gate: `spine check-disclosures` blocks on any `open` entry, and every open disclosure the wave surfaced must carry a disposition — one of exactly `resolved-in-slice | scope-extension | filed:<id> | dropped:<reason> | upstream:<ref>` — before the archive proceeds (ADR-0027). The gate checks existence only and never judges quality, so **which** disposition to reach for is your judgment, guided by the defaults in the phase file: a disclosure earns its own ticket only when it names a mechanism defect with an observed consequence, everything else bundles thematically via a shared `filed:<id>` (N:1, appends only while that bundle is still bare), and a `filed:` body carries the observation — symptom, evidence, provenance — never an unverified diagnosis (ADR-0027 Amendment 2026-07-31). Then the awaiting-human gate: `spine check-awaiting-human` blocks while any human-gated row still sits at `planned` holding the live `queued` claim nothing ever released, and it offers exactly two exits — the human acts and the row dispatches, or the row is parked and unclaimed ([reference/phase-6-archive.md](reference/phase-6-archive.md), park per ADR-0022). Both gates are fail-closed in both directions: an unreadable spine blocks exactly like a real finding. Once both are clear and every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
 
 ## Common Mistakes
 
