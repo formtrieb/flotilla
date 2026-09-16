@@ -1,5 +1,7 @@
 ## Convention 9 — wiring-disclosure (a new verb/interface names its consumer, or discloses the gap)
 
+**Enforced by:** brief prose — `tools/wave/driver/wave-start-inflight.js` (the policy clause a Worker is handed; no structure can see whether a new symbol is actually invoked).
+
 A Worker that introduces a new verb, subcommand, or exported interface can pass every gate — spec-covered, tests green — while the consuming flow never calls it, because the call site lives in a file outside the slice's declared Files globs. There is no structural way to catch "is this new symbol actually invoked" at the schema boundary, so the fix is a brief-level disclosure requirement, not an engine check: a slice introducing a new verb, subcommand, or exported interface must, in its `WorkerReport`, either
 
 - name the consuming call-site(s) that now invoke it, or

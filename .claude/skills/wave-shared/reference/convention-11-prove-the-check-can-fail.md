@@ -1,5 +1,7 @@
 ## Convention 11 — prove the check can fail (a slice shipping a NEW check shows it going red, or discloses that it could not)
 
+**Enforced by:** brief prose — `tools/wave/driver/wave-start-inflight.js` (the policy clause every dispatched role is handed; a falsification is evidence a reader grades, not a shape in a diff).
+
 A check that works and a check that cannot fail are indistinguishable from their output. Both print green. Both satisfy an acceptance criterion phrased *"the check passes"*. Both survive a Reviewer's re-run of the verify profile, and both survive it just as convincingly. The two worlds differ **only** on the input the check exists to catch — and nothing in the ordinary wave obliges anyone to produce that input. This is the wiring-gap shape Convention 9 answers, one layer over: the risk sits where no acceptance criterion is pointed, so no role is required to look.
 
 **A slice that introduces a new check must demonstrate that check failing on the input it exists to catch, and report the demonstration — or report, in the same channel, that it could not falsify the check and why.**

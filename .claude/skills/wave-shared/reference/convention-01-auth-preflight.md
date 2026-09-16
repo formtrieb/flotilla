@@ -1,5 +1,7 @@
 ## Convention 1 — auth-preflight (detect-host → verify)
 
+**Enforced by:** engine refusal — `tools/wave/src/credential-probe-cli.ts` (the value-free preflight probe); drift-spec — `tools/wave/src/no-gh-shellout-guard.spec.ts` (no engine module shells a tracker CLI at all).
+
 Before **any** tracker write in an execution skill, confirm the host is reachable and authenticated. flotilla never shells a tracker CLI directly — it goes through the engine's host seam.
 
 1. `detect-host` — resolves the configured store and its host (e.g. `github`).

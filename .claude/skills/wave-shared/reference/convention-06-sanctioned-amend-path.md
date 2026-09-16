@@ -1,5 +1,7 @@
 ## Convention 6 — the sanctioned amend path (Worker discloses, Coordinator amends)
 
+**Enforced by:** engine refusal — `tools/wave/src/issue-store-cli.ts` (the `amend` verb whole-patch-validates before any write, and an empty patch is a usage error).
+
 When a Worker discovers mid-slice that an issue's **authored content** needs correcting — most often a **deferral that re-scopes an already-open issue** (the W4-F5 case: FOR-23's Worker found a gap belonging to FOR-20) — the fix goes through the engine's **Amend facet** (ADR-0025), never raw tracker GraphQL and never a tracker CLI.
 
 - **The Worker discloses; it does NOT write.** A Worker has no store access from its isolated worktree (W4-F4) — its `wave.config.json` is gitignored and absent there. It records the needed change in its `WorkerReport` (`judgmentCalls` / `reviewerFocusItems`), and the **Coordinator** performs the amend from the wave root, where the store is configured.

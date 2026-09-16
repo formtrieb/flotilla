@@ -1,5 +1,7 @@
 ## Convention 14 — citation placement: operational text carries the *why*, citations live in provenance positions
 
+**Enforced by:** drift-spec — `tools/wave/src/skill-reference-guard.spec.ts` (its class-(d) predicate over every shipped `SKILL.md` body, with the seeded legacy list as a ratchet).
+
 **flotilla's skills are an agent-executed protocol, not a manual.** That cuts two ways at once, and mistaking either half for the whole produces a different defect:
 
 - **The *why* behind a hard rule is load-bearing.** An executing agent that meets an unexplained invariant does not obey it — it *improves* it. Stripping rationale out of instruction text is not tightening; it is removing the only thing standing between a rule and an agent's good intentions.

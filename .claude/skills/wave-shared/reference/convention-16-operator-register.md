@@ -1,5 +1,7 @@
 ## Convention 16 — user-directed output holds the operator register
 
+**Enforced by:** drift-spec — `tools/wave/src/skill-clause-drift.spec.ts` (the short clause is byte-pinned in every shipped `SKILL.md` body; the register itself is a speech rule no guard can grade).
+
 **Three audiences read what this pipeline produces, and only one of them was ever written for.** The executing agent reads the skill prose. The maintainer reads the decision records and the retros. The **Operator** — the person at the live session — reads the agent's *own output*, and until this convention existed that surface was governed by nothing at all: it inherited the maintainer's vocabulary by default, because no rule said otherwise.
 
 > **The register is a property of the output, not of the reader.** Every line an agent prints for the person at the session is operator-directed, whether the person is a first-time adopter, a consumer developer, or the maintainer who wrote the skill. There is no "they'll know what I mean" exemption — the register does not change with who is guessed to be sitting there.

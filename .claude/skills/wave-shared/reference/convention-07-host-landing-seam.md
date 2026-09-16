@@ -1,5 +1,7 @@
 ## Convention 7 — the host landing seam + the done-reconcile evidence hierarchy
 
+**Enforced by:** engine refusal — `tools/wave/src/host-pr.ts` (the whole verb group is detect-host-routed, and a remote the engine cannot identify refuses typed on every verb).
+
 Landing (arm / merge) and the host-side merge probe are **code-host** writes/reads, not tracker ones, and they all go through the engine's **`host-pr`** verb group (ADR-0023) — never raw `gh` (its creds are sandbox-denied and its TLS fails under the sandbox, live-proven — ADR-0015). Three shipped verbs, detect-host-routed, with **two shipped adapters — `github` and `bitbucket`**; a remote the engine cannot identify refuses loud and typed (`code: "adapter-not-implemented"`) on every verb. A new host needs only a `LandingHost` implementation — **no new skills**, which is why this page is unchanged in shape by the Bitbucket adapter landing:
 
 - **`host-pr arm --branch <b>`** — the `--auto` landing intent (wave-close phase 4b). It decides **per PR**: checks pending → **enable auto-merge**; already clean → **direct merge now**. Idempotent (`already-merged` on a re-run). Outcomes: `armed` / `merged` / `already-merged` / `refused` / `no-pr`.
