@@ -25,9 +25,14 @@ import {
   normalizeEngineCli,
   type GitHubStoreConfig,
   type LinearStoreConfig,
+  type LinearStateMapConfig,
   type MarkdownStoreConfig,
   type StoreGoalConfig,
 } from './wave-config';
+// The ADAPTER's own state map, imported so the config block below is compared
+// against the declaration it mirrors rather than against a second list restated
+// in this file — the same reason `GoalContainer` is imported for `store.goal`.
+import type { LinearStateMap } from './adapters/linear/linear-issues-store';
 // The container vocabulary as the FACET owns it — imported so the specs below
 // compare the typed config field against the adapter's own closed union and its
 // own parser, rather than against a second list restated in this file.
@@ -53,6 +58,12 @@ import {
   // `tsc --noEmit` fails outright if it regresses off the barrel — and the
   // identity assertions in the dedicated describe below are the other.
   type StoreGoalConfig as StoreGoalConfigFromRoot,
+  // The Linear `states` block, WIDENED in this diff to carry `unclaimTarget`
+  // and `unplanned` (issue #755). Paired here for the same reason every other
+  // alias in this block is: a root-only consumer annotates
+  // `config.store.states` with this name, so the widening has to be what the
+  // BARREL re-exports, not merely what the module file declares.
+  type LinearStateMapConfig as LinearStateMapConfigFromRoot,
 } from './index';
 
 function loadConfigFromString(json: string) {
@@ -1168,6 +1179,202 @@ describe('store.goal.container: typing did NOT move the refusal ladder', () => {
     expect(err).toBeInstanceOf(GoalBindingError);
     expect(err.failure).toBe('unknown-container');
     expect(err.field).toBe('store.goal.container');
+  });
+});
+
+// ── store.states: the key set is the ADAPTER's, not a shorter one (issue #755) ──
+//
+// `unclaimTarget` and `unplanned` were honoured at runtime long before they were
+// typed: the factory hands `store.states` straight to `LinearIssuesStore`, which
+// merges it over `DEFAULT_LINEAR_STATES`, so an UNDECLARED key reached the store
+// by accident of that merge. One shipped consumer already sets
+// `unclaimTarget: "Todo"`. The harm of the gap was never a wrong write — it was
+// that a TypeScript author annotating the block got no compile error on a typo'd
+// key the type did not know about, and that the documented shape said four keys
+// where the adapter reads six. Typing the keys closes exactly that, and nothing
+// wider: `config validate` never saw such a typo and STILL DOES NOT — `states`
+// has no loader validator, by design, which the NEGATIVE CONTROL below pins.
+//
+// The assertion that closes it is a KEY-SET EQUALITY against the adapter's own
+// declaration, not a hand-listed check for the two names: a seventh state the
+// adapter grows later fails this without anyone remembering to come back here.
+
+/** The config block's key set, exactly as `wave-config.ts` declares it. */
+type LinearStateConfigKeys = keyof LinearStateMapConfig;
+/** The adapter's own key set — `Partial<…>` because that is the shape the store's options take. */
+type LinearStateAdapterKeys = keyof Partial<LinearStateMap>;
+
+type LinearStateKeySetsAreEqual = ExpectTrue<
+  TypeIdentical<LinearStateConfigKeys, LinearStateAdapterKeys>
+>;
+// NEGATIVE CONTROL (wave-shared Convention 11), in the SHAPE THE GAP ACTUALLY
+// HAD: drop exactly the two keys this row adds and the equality must report
+// FALSE. This is the pre-fix config type reconstructed, so the assertion above
+// is demonstrably measuring the thing that was broken rather than being true for
+// any pair of key sets.
+type KeySetEqualityCatchesTheMissingPair = ExpectFalse<
+  TypeIdentical<
+    keyof Omit<LinearStateMapConfig, 'unclaimTarget' | 'unplanned'>,
+    LinearStateAdapterKeys
+  >
+>;
+// SECOND NEGATIVE CONTROL, the other direction: a config key the adapter does
+// NOT read must fail it too. Without this, a check satisfied by "config ⊆
+// adapter" would pass while the config invented a key nothing honours.
+type KeySetEqualityCatchesAnInventedKey = ExpectFalse<
+  TypeIdentical<
+    keyof (LinearStateMapConfig & { triageTarget?: string }),
+    LinearStateAdapterKeys
+  >
+>;
+// The BARREL's copy is the module's copy — the widened type is what a root-only
+// consumer gets, not a lookalike that stopped at four keys.
+type RootLinearStateMapConfigIsTheModuleDeclaration = ExpectTrue<
+  TypeIdentical<LinearStateMapConfigFromRoot, LinearStateMapConfig>
+>;
+
+describe('store.states: LinearStateMapConfig declares exactly the keys the Linear adapter reads (issue #755)', () => {
+  it('the key set of the config block EQUALS the key set of the adapter state map', () => {
+    // `tsc --noEmit` is the real assertion; binding the aliases to `true` keeps
+    // them load-bearing at runtime so they cannot rot into dead types.
+    const equal: LinearStateKeySetsAreEqual = true;
+    const root: RootLinearStateMapConfigIsTheModuleDeclaration = true;
+    expect([equal, root]).toEqual([true, true]);
+
+    // The runtime half of the same claim, so a reader can see the six names:
+    // every key the DEFAULT map ships is declarable in the config, and
+    // `doneState` — the one member with no default — is declarable too.
+    const everyKey: Required<LinearStateMapConfig> = {
+      queued: 'Todo',
+      inFlight: 'In Progress',
+      inReview: 'In Review',
+      unclaimTarget: 'Backlog',
+      unplanned: 'Canceled',
+      doneState: 'Done',
+    };
+    expect(Object.keys(everyKey).sort()).toEqual([
+      'doneState',
+      'inFlight',
+      'inReview',
+      'queued',
+      'unclaimTarget',
+      'unplanned',
+    ]);
+  });
+
+  it('NEGATIVE CONTROL: the equality reports FALSE for the pre-fix key set (the two keys missing)', () => {
+    const missingPair: KeySetEqualityCatchesTheMissingPair = false;
+    expect(missingPair).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL: …and FALSE for an invented key the adapter never reads, so it is equality and not containment', () => {
+    const invented: KeySetEqualityCatchesAnInventedKey = false;
+    expect(invented).toBe(false);
+  });
+
+  it('a config carrying BOTH new keys loads with the values preserved verbatim on the typed field', () => {
+    const cfg = loadWithStore({
+      kind: 'linear',
+      team: 'EX',
+      states: { unclaimTarget: 'Icebox', unplanned: 'Discarded' },
+    });
+    const store = cfg.store as LinearStoreConfig;
+    // Read off the TYPED field — these lines do not compile unless the keys are declared.
+    expect(store.states?.unclaimTarget).toBe('Icebox');
+    expect(store.states?.unplanned).toBe('Discarded');
+    // …and nothing was invented beside them.
+    expect(store.states).toEqual({ unclaimTarget: 'Icebox', unplanned: 'Discarded' });
+  });
+
+  it('the two new keys sit beside the three rungs and doneState without disturbing them', () => {
+    const store = loadWithStore({
+      kind: 'linear',
+      team: 'EX',
+      states: {
+        queued: 'Ready',
+        inFlight: 'Doing',
+        inReview: 'Reviewing',
+        unclaimTarget: 'Icebox',
+        unplanned: 'Discarded',
+        doneState: 'Shipped',
+      },
+    }).store as LinearStoreConfig;
+    expect(store.states).toEqual({
+      queued: 'Ready',
+      inFlight: 'Doing',
+      inReview: 'Reviewing',
+      unclaimTarget: 'Icebox',
+      unplanned: 'Discarded',
+      doneState: 'Shipped',
+    });
+  });
+
+  // ── the ADDITIVE guarantee: no config that loaded yesterday is refused ──
+  //
+  // The loader validates NOTHING under `states` and this row deliberately adds
+  // no rule there (ADR-0020's refusal ladder for state NAMES is the live team
+  // catalog, probed by `store-preflight` — not a load-time list the loader
+  // could never be right about). These are the negative controls for that: the
+  // shapes below are exactly what a consumer config written before this row
+  // looks like.
+
+  it('NEGATIVE CONTROL: a linear config with NO states key loads byte-identically to the authored object', () => {
+    const authored = {
+      store: { kind: 'linear', team: 'EX', project: 'Example', eligibility: ['ready-for-agent'] },
+    };
+    expect(loadConfigFromString(JSON.stringify(authored))).toEqual(authored);
+    expect((loadWithStore(authored.store).store as LinearStoreConfig).states).toBeUndefined();
+  });
+
+  it('NEGATIVE CONTROL: a SUBSET of state keys loads exactly as before — no key invented, none required', () => {
+    for (const states of [
+      { queued: 'Todo' },
+      { doneState: 'Done' },
+      { unclaimTarget: 'Todo' }, // the live DSW21 shape
+      {},
+    ]) {
+      const store = loadWithStore({ kind: 'linear', team: 'EX', states }).store as LinearStoreConfig;
+      expect(store.states).toEqual(states);
+    }
+  });
+
+  it('NEGATIVE CONTROL: the loader gained NO throw path for states — every shape below still loads', () => {
+    // Including shapes the loader never refused and must keep not refusing: an
+    // unknown key, and a non-string value. `states` has no validator by design;
+    // a wrong NAME is caught live by the store-preflight's state-catalog check,
+    // which is the only place that answer actually exists.
+    for (const states of [
+      { unclaimTarget: 'Icebox' },
+      { unclaimTargets: 'Icebox' }, // a typo — tolerated by the loader, as before
+      { unplanned: 42 },
+      'not-an-object',
+      null,
+    ]) {
+      expect(() => loadWithStore({ kind: 'linear', team: 'EX', states })).not.toThrow();
+    }
+  });
+
+  it('a root-only consumer annotates the states block by NAME, with both new keys, off the PACKAGE ROOT', () => {
+    // The package-root pairing this row owes (AC#6): one value, named from the
+    // barrel, carrying the widened key set, assigned into the store config —
+    // so the widening is demonstrably what the barrel re-exports, not only what
+    // the module file declares.
+    const states: LinearStateMapConfigFromRoot = {
+      unclaimTarget: 'Icebox',
+      unplanned: 'Discarded',
+    };
+    const linear: LinearStoreConfig = { kind: 'linear', team: 'EX', states };
+    const fromRoot: WaveConfigFromRoot = { store: linear };
+
+    expect(fromRoot.store.kind).toBe('linear');
+    expect((fromRoot.store as LinearStoreConfig).states?.unclaimTarget).toBe('Icebox');
+    expect((fromRoot.store as LinearStoreConfig).states?.unplanned).toBe('Discarded');
+
+    // …and the root-imported name really is optional-per-key: an empty block is
+    // a complete value of this type, which is what "declare only what you
+    // override" needs.
+    const nothingOverridden: LinearStateMapConfigFromRoot = {};
+    expect(nothingOverridden.unclaimTarget).toBeUndefined();
   });
 });
 

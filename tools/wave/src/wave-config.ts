@@ -118,10 +118,48 @@ export interface GitHubStoreConfig {
   goal?: StoreGoalConfig;
 }
 
+/**
+ * The `store.states` block of a `linear` wave config — the claim-rung →
+ * workflow-state-NAME overrides, plus the two NON-RUNG targets the adapter
+ * writes to (ADR-0020, amended 2026-09-16).
+ *
+ * THE KEY SET IS THE ADAPTER'S, NOT A SHORTER ONE. Every member here mirrors a
+ * member of the adapter's own `LinearStateMap` (adapters/linear), and
+ * `wave-config.spec.ts` pins that equality as a type-level assertion (with
+ * negative controls in both directions) so the two cannot drift apart again.
+ * `unclaimTarget` and `unplanned` were honoured at
+ * runtime long before they were typed — the factory hands `store.states`
+ * straight to the adapter, which merges it over `DEFAULT_LINEAR_STATES`, so an
+ * untyped key reached the store by accident of that merge. One shipped consumer
+ * already sets `unclaimTarget: "Todo"`. Typing them changes no behaviour; it
+ * makes a typo in either key a COMPILE error for a TypeScript author who
+ * annotates the block against this interface, and gives the documented shape
+ * one place to be read off. It does NOT make `config validate` see that typo —
+ * that check lives only in the type. Additive (Minor, ADR-0035): no key here was
+ * renamed, removed or re-typed, and the loader gains no new refusal for
+ * `states` — an unknown key under `states` is as silently tolerated today as it
+ * was yesterday.
+ */
 export interface LinearStateMapConfig {
   queued?: string;    // default 'Todo'
   inFlight?: string;  // default 'In Progress'
   inReview?: string;  // default 'In Review'
+  /**
+   * Where a RELEASED claim is parked — default `'Backlog'`. Written by
+   * `LinearIssuesStore.unclaim()` (the state an issue returns to when a wave
+   * gives its claim back) and, cosmetically, by `applyTriage()` when it clears
+   * Linear's native `Triage` inbox column. Point it at whichever column this
+   * consumer's humans actually park unclaimed work in — DSW21 sets `"Todo"`.
+   */
+  unclaimTarget?: string;
+  /**
+   * The state an issue closed as NOT PLANNED is moved to — default
+   * `'Canceled'`, Linear's native `not_planned` column. Written by
+   * `LinearIssuesStore.closeUnplanned()`, which applies the schema's unplanned
+   * triage label and then moves the issue here. Set it only for a workspace
+   * whose canceled-category column is named something else.
+   */
+  unplanned?: string;
   /**
    * Optional opt-in fallback done-state name. NO default — leave unset (the
    * recommended mode) and `done` stays fully DERIVED from the tracker's own
@@ -140,7 +178,11 @@ export interface LinearStoreConfig {
   /** Optional project name — the listOpen candidate filter (ADR-0020). */
   project?: string;
   eligibility?: string[];
-  /** Claim-rung → workflow-state-name mapping (defaults per ADR-0020). */
+  /**
+   * Workflow-state-NAME overrides — the three claim rungs plus the
+   * `unclaimTarget`/`unplanned` write targets and the opt-in `doneState`
+   * (defaults per ADR-0020; see {@link LinearStateMapConfig}).
+   */
   states?: LinearStateMapConfig;
   /** Schema-category → existing consumer label (e.g. {"bug":"Bug"}). */
   categoryLabels?: Record<string, string>;

@@ -59,6 +59,49 @@ describe('config validate', () => {
     expect(stdoutBuf).toMatch(/1 profile/);
   });
 
+  // ── issue #755 — the two non-rung Linear state keys at the validate seam ──
+  //
+  // `config validate` is the surface `wave-setup` uses to prove a freshly-written
+  // config loads, so it is where a consumer finds out whether the `states` block
+  // it just authored is accepted. Both keys were honoured at runtime before they
+  // were typed; these pin that the documented shape and the validated shape are
+  // now the same shape.
+
+  it('exits 0 for a linear config carrying states.unclaimTarget and states.unplanned', () => {
+    const path = writeConfig({
+      store: {
+        kind: 'linear',
+        team: 'EX',
+        states: { unclaimTarget: 'Icebox', unplanned: 'Discarded' },
+      },
+    });
+    const code = runConfig(['validate', path]);
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/ok/i);
+    expect(stdoutBuf).toMatch(/linear/);
+  });
+
+  it('exits 0 for the live DSW21 shape — unclaimTarget alone, beside a project and eligibility', () => {
+    const path = writeConfig({
+      store: {
+        kind: 'linear',
+        team: 'DSW',
+        project: 'Example Project',
+        eligibility: ['ready-for-agent'],
+        states: { unclaimTarget: 'Todo' },
+      },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+  });
+
+  it('NEGATIVE CONTROL: a linear config with NO states block validates identically — the keys are optional', () => {
+    // Without this the two exits above are equally consistent with `states`
+    // having become required, which would break every config written before it.
+    const path = writeConfig({ store: { kind: 'linear', team: 'EX' } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toMatch(/ok/i);
+  });
+
   it('exits 1 with a clear message for an unknown store kind', () => {
     const path = writeConfig({ store: { kind: 'svn' } });
     const code = runConfig(['validate', path]);

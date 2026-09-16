@@ -360,6 +360,90 @@ describe('preflightStore (FOR-12) — probes TRACKER preconditions through the A
     expect(catalog?.detail).toContain('In Review'); // names the EXACT missing state, loudly
   });
 
+  // ── issue #755 — the two NON-RUNG state names are configurable, and the
+  // catalog check verifies the CONFIGURED value, not the default ──
+  //
+  // The check already read the effective map (config merged over defaults), so
+  // the behaviour predates the typed keys; what did not exist was any spec
+  // saying so, and the in-source comment read "unclaimTarget/unplanned stay at
+  // Backlog/Canceled unless a future config exposes them". These pin the check
+  // against a consumer that HAS exposed them — the DSW21 shape.
+
+  /** The standard workflow with `Backlog`/`Canceled` REMOVED, plus two custom columns. */
+  const TEAM_WITH_CUSTOM_TARGETS = [
+    { name: 'Triage', type: 'triage' as const },
+    { name: 'Icebox', type: 'backlog' as const },
+    { name: 'Todo', type: 'unstarted' as const },
+    { name: 'In Progress', type: 'started' as const },
+    { name: 'In Review', type: 'started' as const },
+    { name: 'Done', type: 'completed' as const },
+    { name: 'Discarded', type: 'canceled' as const },
+  ];
+
+  it('linear: a configured unclaimTarget/unplanned the team HAS → state-catalog passes on a team with no Backlog or Canceled', async () => {
+    const api = new InMemoryLinearApi();
+    api.setStateCatalog(TEAM_WITH_CUSTOM_TARGETS);
+    const store = new LinearIssuesStore({ api });
+    const report = await preflightStore(
+      {
+        store: {
+          kind: 'linear',
+          team: 'EX',
+          states: { unclaimTarget: 'Icebox', unplanned: 'Discarded' },
+        },
+      },
+      store,
+    );
+
+    expect(statusByName(report.checks)['state-catalog']).toBe('pass');
+  });
+
+  it('linear: NEGATIVE CONTROL — the SAME team without the overrides fails, naming Backlog AND Canceled', async () => {
+    // The control that makes the pass above mean something: on this catalog the
+    // DEFAULTS are the missing names, so the check is demonstrably reading the
+    // configured values rather than being satisfied by any catalog at all.
+    const api = new InMemoryLinearApi();
+    api.setStateCatalog(TEAM_WITH_CUSTOM_TARGETS);
+    const store = new LinearIssuesStore({ api });
+    const report = await preflightStore({ store: { kind: 'linear', team: 'EX' } }, store);
+
+    const catalog = report.checks.find((c) => c.name === 'state-catalog');
+    expect(catalog?.status).toBe('fail');
+    expect(catalog?.detail).toContain('"Backlog"');
+    expect(catalog?.detail).toContain('"Canceled"');
+  });
+
+  it('linear: a configured unclaimTarget the team LACKS → FAILS and names that state, not the default', async () => {
+    const api = new InMemoryLinearApi(); // the standard workflow — no 'Parking Lot'
+    const store = new LinearIssuesStore({ api });
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', states: { unclaimTarget: 'Parking Lot' } } },
+      store,
+    );
+
+    expect(report.ok).toBe(false);
+    const catalog = report.checks.find((c) => c.name === 'state-catalog');
+    expect(catalog?.status).toBe('fail');
+    expect(catalog?.detail).toContain('Parking Lot');
+    // …and it does NOT report the default it replaced as missing — the team has it.
+    expect(catalog?.detail).not.toContain('Backlog');
+  });
+
+  it('linear: a configured unplanned the team LACKS → FAILS and names that state, not the default', async () => {
+    const api = new InMemoryLinearApi(); // the standard workflow — no 'Shelved'
+    const store = new LinearIssuesStore({ api });
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', states: { unplanned: 'Shelved' } } },
+      store,
+    );
+
+    expect(report.ok).toBe(false);
+    const catalog = report.checks.find((c) => c.name === 'state-catalog');
+    expect(catalog?.status).toBe('fail');
+    expect(catalog?.detail).toContain('Shelved');
+    expect(catalog?.detail).not.toContain('Canceled');
+  });
+
   it('linear: a missing GitHub integration with NO doneState fallback → FAILS loudly', async () => {
     const api = new InMemoryLinearApi();
     api.setGitHubIntegration(false);
