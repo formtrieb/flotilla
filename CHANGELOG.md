@@ -9,6 +9,305 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.6.0] — 2026-09-16
+
+**The release that gives every fact one owner.** One wave since 2.5.0 — seven rows, five
+serial rounds, two rows sent back once and approved at their second iteration, four
+landing rulings and one blocking question — plus one decision record, and every line
+below takes a fact that lived in two or three places and gives it a single home. The
+terminal partition of the row-state vocabulary was spelled in three copies and one of them
+was an untyped set; it is one exported constant now. A row's model tier was derived twice
+— recorded by the Coordinator and silently re-derived by the composer — and the composer
+now echoes the recorded value or refuses. Two Linear state keys were honoured at runtime
+and typed nowhere; they are typed and documented. The done-reconcile program was prose in
+two skills and the two spine sections it should have written stayed empty in a hundred and
+two archives; it is one verb, and this release's own wave is the first whose spine carries
+them. The Reviewer's host-seam sentence said three different things in three copies; it
+says one thing, pinned. Minor: one value joins the package root, four optional members
+join two exported types, one root export changes an observable outcome, one compose-time
+default becomes a refusal — each named under Upgrading below — nothing is removed.
+
+### Upgrading
+
+Second entry with this section — the seven items [docs/RELEASING.md](docs/RELEASING.md)
+prescribes, in its order, each answered. Items 1–5 are read from the diff since `v2.5.0`;
+items 6 and 7 from the `## Heads-up` sections the wave wrote onto its row issues at
+disposition (#751, #753, #755, #772, #777 — the carrier rule's first use as designed) and
+from the package-root export ledger.
+
+- **Plugin/marketplace update:** the plugin manifest moves to 2.6.0 and nothing else in
+  it changes; the marketplace listing is byte-identical to 2.5.0. Update the installed
+  plugin to 2.6.0.
+- **Engine dependency pin** (vendored-form re-copy equivalent): `@formtrieb/flotilla-engine`
+  moves from 2.5.0 to 2.6.0 — bump the pin (the `store-preflight --expect` lockstep
+  advisory reads the pair). A vendor-copy consumer re-copies `tools/wave/` at this tag;
+  that is the equivalent action, not a variant of the install phrasing.
+- **Config keys added or changed:** two, both optional, both on the Linear store's
+  `states` map (issue #755): `states.unclaimTarget` (default `Backlog` — where `unclaim()`
+  and the triage cosmetic move land) and `states.unplanned` (default `Canceled` — where
+  `closeUnplanned()` lands). Both were honoured at runtime before; they are typed on
+  `LinearStateMapConfig` and documented in the setup tables now, and `store-preflight`'s
+  `state-catalog` check verifies the *configured* names for all five required states. A
+  consumer that already sets either key changes nothing; one that does not gets the same
+  defaults it always had. No config that loaded before is refused.
+- **Hook re-copy:** none — `hooks/` is unchanged since 2.5.0.
+- **Allowlist parity:** none — the tracked permission-allowlist scaffold `wave-setup`
+  writes is unchanged since 2.5.0 (its `states` and `store.goal` tables moved; the
+  `permissions.allow` block did not).
+- **Behaviour heads-ups** — four, each a changed outcome for an unchanged input, each
+  ruled minor under ADR-0035 with the heads-up as the condition:
+  1. **`compose-driver` refuses a row with no recorded model where it used to fall back
+     silently** (issue #753). The composer fills a row's model from the `--row-meta`
+     `model` override, else from the dispatch-log entry `spine set-branch --model`
+     recorded, else it refuses before writing anything (exit 1, naming the row id, its
+     Risk-derived tier and the `spine set-branch --model` remedy). The `wave-start` skill
+     has always recorded `--model` at its flip step, so the operated path is unaffected;
+     a hand-built spine, or a caller driving `compose-driver` directly without a recorded
+     model, now gets a refusal instead of an opus/sonnet default. The Risk-derived helper
+     returns only the abstract tier marker (`heavy` / `standard`); binding a tier to a
+     concrete model id is the Coordinator's recorded act, and a config key for it is a
+     deferred follow-on (ADR-0012 Amendment 2026-09-16; #803).
+  2. **`upsertPrLogRow` no longer throws on the bare `## PR-Log` heading `renderSpine`
+     produces** (issue #751) — it scaffolds the six-column header and separator and
+     inserts the row. Anything that caught or asserted that throw sees a written table
+     instead. The row's `Merged` cell records when the done-reconcile landed the row, not
+     a verified merge date.
+  3. **A Reviewer may read a PR's title and body through the engine** (issue #777). The
+     Reviewer's host-seam clause — in the agent definition, in Convention 7, and in the
+     composed brief the driver template renders — now names the read-only
+     `host-pr status` read as allowed while still forbidding every host write and any raw
+     host CLI. An acceptance criterion about a PR body becomes checkable by the role that
+     checks everything else — from the first wave composed on this release (the composer
+     builds the driver from the installed package asset, so a wave in flight on 2.5.0
+     keeps the old brief). The Operator rule of 2026-09-16 that kept acceptance criteria
+     off PR bodies is lifted with this release.
+  4. **`store-preflight`'s `state-catalog` check verifies the configured state names, not
+     the defaults** (issue #755). A Linear team whose catalog lacks the configured
+     `unclaimTarget`/`unplanned` name now fails preflight naming that state where it used
+     to pass on the default's presence. And, stated plainly because the row was reopened
+     over the opposite claim: a typo in a `states` key is caught by the TypeScript type
+     for a TypeScript author only — `config validate` still tolerates it by design, and
+     the catalog probe verifies the default in its place.
+- **Implementer heads-ups:** additive surface, nothing renamed or removed, the package
+  barrel's diff since `v2.5.0` is one added line. **One new package-root value:**
+  `TERMINAL_ROW_STATES: ReadonlySet<RowState>` — the terminal partition of the row-state
+  vocabulary (`pr-created`, `approved`, `failed`, `abandoned`, `parked`), promoted onto the
+  spine reader beside `ROW_STATES` (unchanged at eleven members and order); the CLI's
+  terminal-wave verdict and the resume reconciliation read it instead of their own copies
+  (issue #772). **Optional members on already-exported types:** `PrLandingStatus.title?`
+  and `.body?` (issue #777); `LinearStateMapConfig.unclaimTarget?` and `.unplanned?`
+  (issue #755). **A changed outcome on a root export:** `upsertPrLogRow`, above. **A new
+  verb with allowlisted exports, not root ones:** `close-row` (issue #751) — its module's
+  exports sit in the barrel-drift allowlist with stated reasons, modelled on
+  `runRouteTuple`. **A module-local helper's return value:** `modelForRisk` (allowlisted,
+  not root-exported) keeps its name and signature but returns the tier marker instead of
+  a model id (issue #753). The Linear adapter's `LinearStateMap`, `DEFAULT_LINEAR_STATES`
+  and `LinearIssuesStoreOptions` are unchanged.
+
+### Added
+
+- **`close-row` — the done-reconcile is one verb, and the two spine sections it writes are
+  finally written** (issue #751). The program that landed a merged row — capture
+  `verdict-acked` into a shell variable, guard it, parse it with `node -e`, call
+  `issue-store close --acked` — stood as prose in the wave-close phase-5 reference and
+  again in the wave-resume skill, in exactly the command-in-a-shell-variable shape the
+  conventions warn about; and the spine's `## PR-Log` and `## Closed-by` sections were
+  rendered by every spine and written by nothing — a hundred and two archived spines
+  carried both empty. `close-row --spine <spine> --id <id>` upserts the row's PR-Log line
+  and its Closed-by line (keyed by id, read-then-upsert, so a second row never deletes the
+  first), derives the acked acceptance-criterion indexes from the latest valid verdict
+  sidecar, then calls the store's `close(id, prUrl, acked)` — both spine writes before the
+  store call, proven with an injected store and spine io that record call order. It prints
+  JSON with a per-step `performed` / `performed-before` / `skipped` status and the closing
+  state, refuses with exit 2 when the PR URL does not classify as a real PR, and forwards
+  the `STILL OPEN:` line unchanged. Both skills call it; the derivation program is gone
+  from both. Eight falsifications shipped with it, five re-run by the Reviewer.
+- **The terminal partition has one typed owner** (issue #772). `TERMINAL_ROW_STATES` is
+  exported from the spine reader, typed against `RowState`, and the CLI's terminal-wave
+  verdict for the sweeps and the resume reconciliation read it. The row that motivated
+  it: the CLI's copy was an untyped `Set<string>`, and a Reviewer's probe that replaced
+  `parked` with a typo left the entire suite green — a parked-only wave would have read
+  non-terminal and spared its residue forever. A parked-only `--orphans` case now pins the
+  fifth literal, and the same typo turns thirteen cases and the type gate red
+  (`Did you mean "parked"?`).
+- **`host-pr status` prints `title` and `body`** (issue #777) — as strings equal to the
+  host's current values on an open or merged PR, absent when the state is `none` or the
+  host omits them, never empty strings, from the read the verb already performs (no
+  additional host call; falsified, including four pre-existing exact-shape tests). Both
+  shipped hosts surface them: GitHub live-proven by the row's own Worker running the
+  shipped verb against its own PR; Bitbucket proven against the injectable seam only —
+  see Unsettled. Four Reviewers in the same wave reported the gap this closes: a PR-body
+  claim they could not check.
+- **Two Linear state keys, typed and documented** (issue #755) — `states.unclaimTarget`
+  and `states.unplanned` on `LinearStateMapConfig`, the setup skill's `states` table with
+  all six keys and their defaults, `store.goal.container` and the verify `needs` classes
+  in each store kind's setup table, and the preflight's catalog check verifying the
+  configured names. Filed from a consumer whose `unclaimTarget: "Todo"` had been honoured
+  at runtime and named in no type and no table.
+- **A decision record for the loaded corpus** (PR #805,
+  [ADR-0050](docs/adr/0050-the-loaded-corpus-is-a-pinned-measure-and-a-rules-enforcement-tier-decides-its-reading-class.md),
+  the #714 / FOR-370 grill). Three reading classes — **Standing load**, **Step load**,
+  **Evidence** — never called tiers; a rule's enforcement tier decides which class its
+  prose belongs in, declared in a fixed `**Enforced by:**` line per convention file; the
+  shared standing load and the loaded corpus become pinned byte measures in the guard
+  (lowered freely, raised only in a diff that says so); wave-close's phase files become
+  step load; `evidence/` is per skill. Amendments to ADR-0028 and ADR-0034, three glossary
+  terms, and the charter's index lines for ADR-0049 and ADR-0050. Its ten implementation
+  rows are filed bare (#806–#815) and are the next wave.
+- **The candidate-id derivation's fail-safe null arm has a spec** (issue #780) — the arm
+  that protects any future store with a different id shape, exercised once by a Reviewer's
+  probe in the last wave and pinned now for all three shipped id shapes, asserting the
+  store's closing probe is never reached on that path.
+- **The composed Worker brief single-quotes the PR title** (issue #753, folded from #776).
+  An inner single quote is escaped as `'\''`, the brief tells the Worker to run the line
+  exactly as printed, and `prTitle` in the composed row stays the plain title — a title
+  beginning with a backtick token no longer triggers command substitution, which it did
+  live.
+
+### Fixed
+
+- **A branch slug ending in `model` no longer shadows the dispatched tier** (issue #767).
+  The dispatch-log reader's `MODEL_REF` matched on `\b`, so a slug such as
+  `…-view-model` followed by the real ` model sonnet` token captured the literal word
+  `model` as the row's model — the shape the bug report showed as `"model": "model"`. It
+  anchors on whitespace or string start now, with a positive and a negative case and the
+  re-tuning path proven byte-identical.
+- **Four pointers that taught something false** (issue #753): the Reviewer brief no longer
+  cites a "policy clause 11" numbered only in the Worker brief; the DoR gate module and its
+  specs spell the Gate-8 origin issue `#127`, not `FOR-127`; the wave-start skill no
+  longer says the spine is flipped to `in-flight` (the frontmatter is confirmed `ready`
+  and each row's State is flipped to `dispatched`); and the wave-shared and wave-start
+  references name the shipped driver script — not the reference document — as the home
+  of the anyOf-free schema copy. The issue's own "checked and not a defect" note on that
+  last item was itself wrong, and the Worker showed it from the code.
+- **The composer's model-id fallback is retired** (issue #753) — no string literal naming
+  a model brand remains in the composer or the driver template's row fields (a spec scans
+  both for the two retired literals); ADR-0012 carries the dated amendment. One concrete
+  id survives by construction — the Scribe stage's own `agent()` argument — and is #803's.
+- **The close skill's prose spells the terminal partition from the constant** (issue
+  #772): the load-gate reference, the archive reference's terminality bullet, the
+  worktree-cleanup reference's terminal-wave rule (both places) and the skill body's
+  terminality-gate section name `TERMINAL_ROW_STATES` as the source of the five.
+- **`cli-store.ts` no longer promises a "future config" that had shipped** (issue #755):
+  the state-catalog comment that read "unless a future config exposes them" names the
+  five configurable required states.
+- **The Reviewer's host-seam sentence agrees with itself across all three copies**
+  (issue #777): the agent definition, Convention 7 and the composed brief say the same
+  thing, and a drift pin holds all three — the third copy, in the driver template, was
+  outside the row's declared Files and reached it through a scope extension granted at
+  the Reviewer's blocking question and projected into the iteration-2 brief.
+
+### Changed
+
+- **Four behaviours change for the same input — the heads-ups.** The composer refuses a
+  row without a recorded model (issue #753); `upsertPrLogRow` scaffolds instead of
+  throwing (issue #751); a Reviewer may read a PR's title and body through `host-pr
+  status` (issue #777); the Linear preflight verifies configured state names (issue
+  #755). Each is stated once, with what a dependent consumer does, under Upgrading above.
+- **A merged row's done-reconcile writes the spine** (issue #751). Before this release a
+  wave's close wrote the tracker and left the spine's PR-Log and Closed-by sections as
+  bare headings; from this release on, a wave closed through phase 5 carries one PR-Log
+  row and one Closed-by line per landed row. A consumer that tracks `.flotilla/` in git
+  sees those writes in the close's commit.
+- **The implementer heads-up is real but small.** One root value, four optional members,
+  one changed outcome, one allowlisted module (Upgrading, item 7). The barrel's diff since
+  `v2.5.0` is one added line and no removed line.
+
+### Proven since 2.5.0
+
+- **The half-applied re-dispatch checkout clause, twice live.** Landed in 2.5.0 with no
+  live occurrence after it; both iteration-2 Workers of this wave hit it — `checkout -B`
+  refused to unlink tracked skill files under the harness write-deny, reported the switch
+  as successful, left the working copies stale — and both recovered exactly as the clause
+  prescribes: compared every declared path against the branch tip, restored through the
+  file-editing tool, re-asserted, never escalated. The second time the auto-mode
+  classifier refused the first file-tool edit and the retry succeeded (#792's shape). The
+  Reviewers measured that neither episode reverted anything.
+- **The cleanup's exhaust-then-judge, a third positive read.** Seven Worker worktrees at
+  the close: run 1 EXHAUSTED on every one, two survivors each (`.claude/agents`,
+  `.vscode`), `exclusivelyDenied: true`, `manualRecovery` present, seven deferred branches
+  named; after seven sandbox-off removes and a prune, run 2 deleted fourteen branches
+  with nothing deferred. Decision 6 stands after three closes.
+- **A terminal wave sweeps its own residue, a second read.** Nine own review refs and the
+  composed-driver directory went on run 1 of the same close, with `liveRowIds: []`.
+- **`close-row`'s first live use** — landed by this wave's own row 751, pulled before
+  phase 5, and used to land all seven rows: every step `performed`, the acked indexes
+  derived from the second-iteration verdict where one existed, every tracker row `done`.
+  The archived spine is the first in this repository with a filled PR-Log and Closed-by.
+- **The heads-up carrier, as designed.** Five `## Heads-up` sections written at
+  disposition onto the row issues and read into this entry's Upgrading section — the
+  rule 2.5.0 introduced, used for the first time without a hand-carried item.
+- **The partial-coverage advisory pointed at the finding again.** Row 755's one blocking
+  finding — a false "config validate sees a typo" claim — sat in its single inspection-only
+  file (ADR-0020), where the advisory told the Reviewer to read by hand. Third wave in a
+  row where the one defect landed in the file no verify profile backs. The claim's premise
+  came from the issue text the Coordinator wrote; the iteration-2 brief said not to
+  re-derive from it, and the Worker derived the replacement from the code and measured
+  both halves.
+- **The Reviewer falsified the Coordinator twice and the Worker falsified the issue
+  once.** A routing note misquoted an agent-definition sentence (the Worker read the file
+  instead); an issue body's "checked and not a defect" note was wrong (the Worker showed
+  it from the anchor); the composer's stripped PR title was malformed for one row (the
+  Worker reworded it, and the Coordinator's landing path learned to preserve the live
+  title). None reached a landed artifact.
+- **The public-API landing STOP resolved four times through the hand path, and a
+  blocking question once through a scope grant.** The scope extension recorded on the
+  spine at routing reached the iteration-2 brief through the composer (`scopeGrants: 1`),
+  and the row's Reviewer confirmed the diff was exactly the two files the grant named.
+- **No install-form failure in thirty-four dispatched agents.** Since the repo-relative
+  prefix landed (2.5.0), every Worker and Reviewer of this wave installed clean; the
+  Reviewers that chose absolute paths used the physical `/private/tmp` form.
+- **Serial rounds re-anchored on the moved default branch, every round.** Five rounds,
+  four re-anchors, every later Worker starting from a main that already contained its
+  predecessors; the file-overlap map's four-row serial chain landed without one merge
+  conflict.
+
+### Unsettled by construction, and what is not yet proven
+
+The list is 2.5.0's, re-read against the one wave since, plus what this release adds.
+
+- **The Reviewer's PR read takes effect only from the first wave composed on this release
+  — `verify`: that wave's first PR-body acceptance criterion.** Every Reviewer of the wave
+  that landed it, including the one that reviewed it, still carried the old brief: the
+  composer builds the driver from the installed package asset, not from the branch under
+  review.
+- **The Bitbucket half of `host-pr status`'s title/body is spec-proven only — `verify`:
+  the next live Bitbucket `status` run** (#816). No Bitbucket credential is reachable in
+  this repository; the adapter reads the fields off the collection response with no
+  `fields` selector, which Atlassian documents as omitting verbose fields; the vendor
+  document lists a third body spelling the fallback chain does not read.
+- **The driver template has no parse gate** (#819). `node --check` cannot parse it in
+  either module mode and every spec reads it as text, so an unbalanced template literal in
+  a brief would ship with every test green. Two rows of this wave edited that literal
+  structure; both verified their edits by rendering the function out of the file.
+- **The composer's refusal has no live occurrence** — this repository's own dispatch path
+  records `--model` on every row, so the refusal ran under test only. `verify`: a consumer
+  driving `compose-driver` without a recorded model.
+- **`close-row` on a consumer whose `.flotilla/` is git-tracked** — here it is ignored, so
+  the spine writes never entered a commit. `verify`: the first consumer close on 2.6.0.
+- **The Linear retry window still has no live read** (every wave since 2.4.0 ran on the
+  GitHub store), **the readiness gate's fail arm has not held a live row** (no row filed
+  since declares a resolvable blocker), **the `capability-gated` path has not run
+  end-to-end**, **the tracked `sandbox` block's reach is open**, **the ruled Reviewer-only
+  cell above cap has no live round**, and **the inherited-work-in-progress default has
+  had no harness retry** — each unchanged since its last entry.
+- **The `${CLAUDE_SKILL_DIR}` clean-room probe is still outstanding**, **the sandboxed
+  `gh` mechanism is unmeasured by design**, **`files-drift` is run-or-retire for the #707
+  grill**, and **headless is designed, not built** — unchanged.
+- **ADR-0050's pinned byte measures are a decision, not yet a guard.** The ten rows that
+  build the Enforced-by lines, the reading-class split and the two pinned constants are
+  filed bare (#806–#815); until they land, the loaded corpus is measured in a decision
+  record and enforced by nothing.
+- **Filed from the wave's close, bare:** Linear wording residue (#797 — `not_planned` is
+  GitHub vocabulary, `In Review` is not a stock Linear status, one fixed-name sentence
+  left), engine residue (#800 — the `STILL OPEN:` sentence in two modules held together by
+  a source-reading spec, a distance-shaped guard, a sixth hand-spelled copy of the terminal
+  partition, the worktree-isolation guard's undocumented size threshold, one file-wide
+  assertion, the composer's bare-id strip leaving a dangling possessive), maintainer
+  mechanics in the consumer skill surface (#801 — three surfaces name `docs/RELEASING.md`,
+  a file no consumer has), the last concrete model id and the deferred tier→id config key
+  (#803), and the two above (#816, #819).
+
 ## [2.5.0] — 2026-09-16
 
 **The release that checks before it judges.** Four waves since 2.4.0 — twenty rows,
