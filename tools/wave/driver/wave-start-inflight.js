@@ -665,6 +665,32 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
 // The Coordinator has already deregistered the iteration-1 worktree that held
 // this branch (start-mechanics.md step 7d), so the checkout below is never
 // blocked by a stale `git worktree` registration.
+//
+// A THIRD trap belongs beside the two above, and it is NOT either of them:
+// the tracking-free checkout itself can HALF-APPLY under the harness
+// write-deny. That deny is scoped PER PATH, not per git operation — a
+// `git checkout -B` that must unlink or rewrite a tracked path under a
+// denied directory (the skills corpus, `.claude/skills/`, is the measured
+// case) is refused for each such path while the branch switch is still
+// reported successful: `HEAD` lands on the new branch, and the denied
+// working copies silently keep their PRE-checkout content, because git
+// records no conflict for a write it was never allowed to attempt. Live
+// occurrence: wave `2026-09-08-blocker-truth-and-call-form`, row 749
+// iteration 2 (Worker-reported) and the same wave's close-time worktree
+// sweep (Coordinator-disclosed) — filed forward as issue #778.
+//
+// THIS IS NOT A HARNESS-RETRY-OF-A-RE-DISPATCH CLAUSE. A harness retry that
+// lands the SAME agent back on an ALREADY-re-dispatched (iteration≥2)
+// worktree was ruled on with no clause of its own (issue #745) — nothing
+// about a retry changes which branch or commits are correct, so there was
+// nothing for a clause to add. This clause answers a different question:
+// whether the CHECKOUT OPERATION on a re-dispatch iteration itself fully
+// applied, independent of which attempt reached it — a fresh iteration≥2
+// dispatch and a harness-retried one are equally exposed to it. The
+// iteration≥2 workspace-setup brief below now carries a clause for exactly
+// that, ordered before its install step and before any verify command,
+// because the corpus-scanning guards this repo's own gate runs read the
+// WORKING TREE, never the index.
 const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) — RE-DISPATCH, iteration ${issue.iteration}
 1. \`pwd\` — confirm you are in a worktree (not the parent path). **This is the one cwd
    check you need and the only one you can have:** your cwd is reset to this same dispatch
@@ -691,6 +717,12 @@ const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) —
    (The Coordinator already deregistered the iteration-1 worktree that held
    this branch before this dispatch — start-mechanics.md step 7d — so this
    checkout is never blocked by a stale worktree registration.)
+
+   **IF THE CHECKOUT HALF-APPLIES UNDER THE HARNESS WRITE-DENY, HEAD LANDING IS NOT PROOF THE WORKING TREE FOLLOWED IT — and this is NOT the harness-retry-of-a-re-dispatch case (that one is #745's, ruled with no clause).** The write-deny above is scoped PER PATH, not per git operation: a checkout that must unlink or rewrite a tracked path under a denied directory (the skills corpus, \`.claude/skills/\`, is the measured case) prints \`Operation not permitted\` for each such path and still reports the branch switch as successful — \`HEAD\` moves to \`${issue.branch}\` correctly, while those specific working copies silently keep their PRE-checkout content, because git records no conflict for a write it was never allowed to attempt. The two asserts above can both read clean on exactly that state, so a clean \`git status --porcelain\` here is not the guarantee it is everywhere else in this brief. Before you install anything or run any verify command — this repo's own corpus-scanning guards read the WORKING TREE, never the index, so a stale copy sitting there is invisible to \`git status\` and validates as if it were the checked-out commit:
+   1. Compare every path this row's declared Files globs touch against the branch tip: \`git show ${issue.branch}:<path>\` read alongside the file on disk.
+   2. Restore any path that differs to the branch tip's content through your FILE-EDITING tool. **Staging the correct content through the git object store — \`git add\`, or any write that only updates the index — is not the path**: the corpus guards read the working copy, and the index is invisible to them.
+   3. Re-run \`git status --porcelain\` and \`git rev-parse HEAD\`. Both clean and matching → continue. A path that still resists your file-editing tool → STOP and report \`blocked\`, naming the residual paths and quoting the refusal verbatim.
+   This is a capability refusal (policy clause 12): you may not re-run the checkout with the sandbox off, and you may not ask for the sandbox to be turned off.
 3. Install dependencies. A worktree checkout carries **tracked files only** — if
    this consumer's dependency directory is gitignored (the ordinary case for a
    lockfile-managed tree), it is **absent here, not merely un-installed**, and
