@@ -870,10 +870,20 @@ async function linearChecks(api: LinearApi, storeConfig: LinearStoreConfig): Pro
   const catalog = await api.listStates();
   const catalogNames = new Set(catalog.map((c) => c.name));
 
-  // Every claim-ledger state name the wave will `setState` to must exist in the
+  // Every workflow-state name the wave will `setState` to must exist in the
   // team catalog. The store merges config over defaults the SAME way (see
-  // LinearIssuesStore), so unclaimTarget/unplanned stay at Backlog/Canceled
-  // unless a future config exposes them; doneState is checked only when set.
+  // LinearIssuesStore), which is why the EFFECTIVE map is what gets checked
+  // rather than the authored one.
+  //
+  // All five required names are CONFIGURABLE and all five are checked here:
+  // the three claim rungs, plus `unclaimTarget` (default `Backlog`, where
+  // `unclaim()` parks a released claim) and `unplanned` (default `Canceled`,
+  // where `closeUnplanned()` lands). Those last two were honoured at runtime
+  // before `LinearStateMapConfig` declared them, and this comment used to say
+  // they "stay at Backlog/Canceled unless a future config exposes them" — that
+  // future arrived (issue #755): the keys are typed, documented in wave-setup's
+  // tables, and a consumer that overrides one gets its OWN name verified here.
+  // `doneState` remains the one optional member — checked only when set.
   const effective: LinearStateMap = { ...DEFAULT_LINEAR_STATES, ...storeConfig.states };
   const required = [
     effective.queued,

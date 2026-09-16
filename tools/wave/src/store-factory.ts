@@ -61,6 +61,13 @@ export function buildStore(config: WaveConfig, deps?: StoreDeps): IssueStore {
     return new LinearIssuesStore({
       api: deps.linearApi,
       ...(s.eligibility !== undefined ? { eligibility: s.eligibility } : {}),
+      // `states` passes through WHOLE, and its key set is now the adapter's own
+      // (issue #755): `LinearStateMapConfig` declares `unclaimTarget` and
+      // `unplanned` alongside the three rungs and `doneState`, so what reaches
+      // `Partial<LinearStateMap>` here is a TYPED pass-through rather than the
+      // accident-of-merge it was while those two keys were undeclared. The
+      // adapter still merges over `DEFAULT_LINEAR_STATES` — this factory has no
+      // defaults of its own and deliberately adds none.
       ...(s.states !== undefined ? { states: s.states } : {}),
       ...(s.categoryLabels !== undefined ? { categoryLabels: s.categoryLabels } : {}),
     });

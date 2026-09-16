@@ -54,7 +54,7 @@ Each check reports `pass` / `fail` / `not-applicable`; the report `ok` is `true`
 | Check (`name`) | `github` | `linear` | `markdown` |
 |---|---|---|---|
 | `tracker-host-integration` | n/a (GitHub is its own host) | **probed** — Linear↔GitHub integration installed? (n/a when `states.doneState` is set — the FOR-13 fallback) | n/a |
-| `state-catalog` | **probed** (issue #131) — GitHub's claims *are* labels, which is exactly why they need verifying: every label the wave reads or writes must exist in the repository — the eligibility set, `risk/*` (four), `worker/*` (four), the three `wave/*` claim rungs and `wave/needs-attention` (thirteen on a fresh repo with the defaults). A `fail` names each missing label in `detail`; re-run with `--create-missing-labels` (above) to create exactly that set through the engine's own credential, or, when that credential cannot create labels, create them once by hand (`gh label create <name>` per name, or the repository's label settings) and re-run | **probed** — team catalog covers every configured claim state (`Todo`/`In Progress`/`In Review` + `Backlog`/`Canceled` + `doneState`) | n/a |
+| `state-catalog` | **probed** (issue #131) — GitHub's claims *are* labels, which is exactly why they need verifying: every label the wave reads or writes must exist in the repository — the eligibility set, `risk/*` (four), `worker/*` (four), the three `wave/*` claim rungs and `wave/needs-attention` (thirteen on a fresh repo with the defaults). A `fail` names each missing label in `detail`; re-run with `--create-missing-labels` (above) to create exactly that set through the engine's own credential, or, when that credential cannot create labels, create them once by hand (`gh label create <name>` per name, or the repository's label settings) and re-run | **probed** — the team catalog covers every state name the wave will `setState` to, read off the EFFECTIVE `states` map (this consumer's overrides merged over the defaults), never off the defaults alone: the three claim rungs (defaults `Todo`/`In Progress`/`In Review`), the unclaim target (default `Backlog`) and the unplanned target (default `Canceled`) — each of the five configurable, each verified under whatever name this consumer configured — plus `doneState` when set | n/a |
 
 The report is JSON on stdout:
 
@@ -219,6 +219,10 @@ npm install
 
 This is not a second scaffold form — it produces the identical `./node_modules/.bin/flotilla-engine` binary and the identical `{ "engine": { "cli": "./node_modules/.bin/flotilla-engine", "install": "npm ci" } }` config value as the ordinary Node-consumer path above. **The install command is recorded the same way on both paths: as `engine.install`.** The only difference is that this install is a **new** step rather than one more line inside an install the consumer already runs — so on the non-Node path it comes FIRST in whatever `install` names, ahead of the consumer's own build install, so `engine.cli` resolves before the row's first engine call. Where a consumer needs both, record them as one plain argv command list, never two fused with `&&` (the plain-argv rule refuses that outright, and wave-shared Convention 13 forbids it a tier earlier); if the two genuinely cannot be expressed as one argv command, that is the case for `--deps-setup` at compose time, which sits one precedence level above `engine.install`. The engine needs a Node runtime regardless of what this consumer builds — this manifest makes that already-true prerequisite explicit and worktree-resolvable, not a new one.
 
+### The shared `store.goal` block (every store kind)
+
+**`store.goal` is carried by all three store kinds, and the loader deliberately validates none of it.** The block is `{ container?: GoalContainer }` — one named, root-exported interface (`StoreGoalConfig`), identical on every variant. An ABSENT `container` is a legitimate state meaning "this consumer declared nothing", and each store answers that for itself: GitHub defaults to `milestone`, MarkdownFs to `goal-file`, Linear refuses as `unbound`. A present-but-unknown role (`"epic"`, say) survives the load verbatim and is refused store-side by `parseGoalContainer` with `field: "store.goal.container"`. Only a store knows which roles it realizes, so the refusal ladder has exactly one owner and `config validate` is not it — a `config validate` PASS is not a statement that the goal binding is usable, which is what the per-kind rows below spell out.
+
 ### `MarkdownStoreConfig`
 
 | Field | Required | Shape |
@@ -227,6 +231,7 @@ This is not a second scaffold form — it produces the identical `./node_modules
 | `repoRoot` | yes | absolute path string |
 | `slug` | yes | kebab-key string (identifies the issue set) |
 | `eligibility` | no | `string[]` — defaults to `["ready-for-agent"]` |
+| `goal` | no | `{ container? }` — the native container role a goal is realized as (ADR-0044). MarkdownFs realizes `goal-file` and **defaults to it**, so an absent binding is the ordinary case here |
 
 ### `GitHubStoreConfig`
 
@@ -234,6 +239,7 @@ This is not a second scaffold form — it produces the identical `./node_modules
 |---|---|---|
 | `kind` | yes | `"github"` |
 | `eligibility` | no | `string[]` — defaults to `["ready-for-agent"]` |
+| `goal` | no | `{ container? }` — the native container role a goal is realized as (ADR-0044). GitHub realizes `milestone` and **defaults to it** (its only native container with direct issue membership); declaring anything else is refused store-side as `unrealized-container` |
 
 > There is **no `repo` field** on `GitHubStoreConfig`. The `gh` ambient context (the current directory's tracked remote) supplies the repo. Adding a `repo` field will fail validation.
 
@@ -245,8 +251,24 @@ This is not a second scaffold form — it produces the identical `./node_modules
 | `team` | yes | Linear team key or display name (e.g. `"EX"` or `"Example"`) — owns the workflow-state catalog + label namespace. Use the exact team key as Linear displays it (identifiers read `EX-16` → key `EX`); the lookup is case-sensitive. |
 | `project` | no | Linear project display name — scopes `listOpen` and the PRD Document panel to that project; omit for a whole-team draw. Omitting `project` does **not** disable PRD publishing: the Document facet falls back team-scoped — `publishDocument` parents the Document on the configured `team`, and `listDocuments` narrows server-side to that team (ADR-0017 as amended). Know the structural consequence: Linear documents `Document.team` as null for any non-team parent, so the team-filtered listing can never return a *project-attached* Document — deliberately accepted by the team-central convention. |
 | `eligibility` | no | `string[]` — defaults to `["ready-for-agent"]` |
-| `states` | no | `{ queued?, inFlight?, inReview?, doneState? }` — claim-rung → workflow-state-name overrides; defaults to `{"queued": "Todo", "inFlight": "In Progress", "inReview": "In Review"}` (no default `doneState` — see below) |
+| `states` | no | `{ queued?, inFlight?, inReview?, unclaimTarget?, unplanned?, doneState? }` — workflow-state-name overrides, **six keys**; see the table directly below for each one's default and the write that uses it |
 | `categoryLabels` | no | `Record<string, string>` — triage-category → existing label name (e.g. `{"bug": "Bug", "enhancement": "Improvement"}`) |
+| `goal` | no | `{ container? }` — the native container role a goal is realized as (ADR-0044). **Linear is the one store kind with NO default**: live consumer conventions disagree about what a Linear project *means*, so an absent binding is refused store-side as `unbound` rather than guessed at. Declare `"project"` or `"initiative"` |
+
+#### `states` — all six keys, their defaults, and the write each one steers
+
+| Key | Default | The write that uses it |
+|---|---|---|
+| `queued` | `"Todo"` | `transition(id, 'queued')` — the soft claim a wave takes at plan time |
+| `inFlight` | `"In Progress"` | `transition(id, 'in-flight')` — a dispatched row |
+| `inReview` | `"In Review"` | `transition(id, 'in-review')` — a row whose PR is open |
+| `unclaimTarget` | `"Backlog"` | `unclaim()` — where a RELEASED claim is parked; also the cosmetic `applyTriage()` move that clears Linear's native `Triage` inbox column |
+| `unplanned` | `"Canceled"` | `closeUnplanned()` — Linear's native `not_planned` column, where an issue closed as not-planned lands |
+| `doneState` | *none* — see below | the opt-in FOR-13 fallback: a forced transition once the wave has confirmed the PR merged |
+
+Every key is optional and declared only when this consumer's column is named something else — `{"states": {"unclaimTarget": "Todo"}}` is a complete, valid block (and is the live DSW21 shape: that team parks unclaimed work in `Todo`, not `Backlog`). The five with defaults are all verified against the live team catalog by `store-preflight`'s `state-catalog` check, each under the name this config gives it; `doneState` is checked only when set.
+
+`unclaimTarget` and `unplanned` were honoured at runtime from the adapter's first day but stayed **out of the typed config and out of this table** until issue #755 — the factory passes `states` through whole and the adapter merges it over its defaults, so they worked by accident of that merge. Typing them changed no behaviour; it made `config validate` able to see a typo in them and gave the shape one documented place. A config already setting either keeps working byte-for-byte.
 
 #### `states.doneState` — the opt-in no-integration fallback (FOR-13)
 
@@ -280,9 +302,19 @@ Each `VerifyProfile`:
 |---|---|---|
 | `name` | yes | string identifier for the profile |
 | `appliesTo` | yes | `string[]` of globs — the profile runs when any changed file matches |
-| `commands` | yes | `{ cwd?: string; command: string }[]` — run in order; first non-zero exit halts |
+| `commands` | yes | `{ cwd?: string; command: string; needs?: VerifyCommandNeeds }[]` — run in order; first non-zero exit halts |
 
 `cwd` is optional on each command; if absent, the command runs from the repo root.
+
+Each command's `needs` (ADR-0049) is optional too, and declares what the command must be able to REACH before it can run at all — the config half of "a dispatched agent never escalates its own permissions". It is data for the setup scaffold and for both dispatch briefs, never a grant the engine hands out:
+
+| Key | Shape | What it declares |
+|---|---|---|
+| `writes` | non-empty `string[]` | filesystem paths outside the worktree the command writes to (`"~/Library/Developer/Xcode/DerivedData"`, `"/var/tmp/build-cache"`). A `~`-rooted path is the ORDINARY case here and is **not** refused — nothing resolves these; the skill tier writes them into the harness's own sandbox block. (Contrast `cleanup.extraRoots`, which refuses one because the sweep *does* resolve it.) |
+| `network` | non-empty `string[]` | hosts the command must reach (`"developer.apple.com"`, `"registry.npmjs.org"`) |
+| `host` | literally `true` | an un-narrowable host capability — a daemon socket, a simulator, a device. There is no `false`: the key is present when the requirement exists and absent otherwise |
+
+Declare only what applies; at least one key must be present. A malformed declaration — an unknown key (a near-miss spelling such as `networks` included), a non-object `needs`, an empty object, an empty or non-string array entry, a `host` that is not literally `true` — fails at `config validate` time naming `verify.profiles[i].commands[j].needs` and the closed set, rather than surfacing five hours into an unattended wave as a gate nobody can answer. `writes` and `network` are scaffolded into the harness's sandbox block ([Sandbox capability scaffold](#sandbox-capability-scaffold-writesnetwork-from-declared-needs-adr-0049)); **`host` never is** — it cannot be narrowed to a path or a host, so it is provided operator-local only, never written into a tracked file.
 
 #### Measure before recording — resolution proven by execution, not inspection
 
@@ -440,7 +472,7 @@ This value is not consumer-specific — it is the SAME string for every Node con
 
 ### linear store (ADR-0020 — the Example Project example)
 
-`team` is required; `project` scopes the candidate draw to one Linear project (omit it for a whole-team draw). `states`/`categoryLabels` are shown here overriding the defaults to match this consumer's own workflow-state and label names — omit either key entirely to take the default.
+`team` is required; `project` scopes the candidate draw to one Linear project (omit it for a whole-team draw). `states`/`categoryLabels` are shown here overriding the defaults to match this consumer's own workflow-state and label names — omit either key entirely to take the default. The `states` block below overrides the three claim rungs only, which is a choice, not the whole shape: `unclaimTarget` and `unplanned` are equally declarable and default to `Backlog`/`Canceled` when omitted — see [the six-key table](#states--all-six-keys-their-defaults-and-the-write-each-one-steers) above. This example also declares no `goal.container`, which on a Linear store is the one binding with no default — a goal-facet call against this config is refused as `unbound` until one is declared.
 
 ```json
 {
