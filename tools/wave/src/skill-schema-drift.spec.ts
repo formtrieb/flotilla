@@ -3280,3 +3280,141 @@ describe('skill-schema-drift — every pointer to the anyOf-free copy names the 
     expect(stale).toMatch(/anyOf-free driver copy in `?\.claude\/skills\/wave-start\/reference\/workflow-driver\.md`?/);
   });
 });
+
+// ─── The host-seam READ clause names title and body (row 777) ────────────────
+//
+// `host-pr status` gained two keys — the PR's live `title` and `body` — and the
+// only thing that converts a shipped capability into a Reviewer that USES it is
+// the contract text telling it the read exists. That text is hand-maintained in
+// two tracked copies at once (the Reviewer's own system prompt, and the shared
+// convention every wave role reads), which is precisely the shape the pins above
+// exist for: one copy rots, nothing fails, and the capability is shipped and
+// unreachable at the same time.
+//
+// **Two properties per copy, and the second is the one that rots quietly.** That
+// the read is NAMED (both field names, present) is the obvious half. That it is
+// marked READ-ONLY and free of an extra host call is the half a well-meaning
+// re-wording drops first — and dropping it is not cosmetic: the whole argument
+// for letting this role touch the host at all is that the verb writes nothing,
+// so a copy that names the fields without that qualification is teaching a
+// different, wider permission than the one this row shipped.
+//
+// **Scoped to a region, never file-wide.** `.claude/agents/wave-reviewer.md` is
+// a 160-line contract that mentions `host-pr status` in more than one section; a
+// bare file-wide `toContain('body')` would pass off almost any sentence in it.
+// Each pin below reads the clause's OWN span, via the same `contractRegion`
+// helper the sibling-prediction pins use, so a match has to come from the clause
+// under test.
+//
+// **Deliberately NOT pinned here: the driver's reviewerBrief.** The third copy
+// of this contract is the brief `driver/wave-start-inflight.js` composes, whose
+// SECRET-SAFE clause still ends "you never call `host-pr` and never read a
+// secret" — the very sentence this row's gap report quotes. That file sits
+// outside this row's declared Files globs, so the sentence is left standing and
+// disclosed rather than edited, and this spec does not pin a copy the row may
+// not move. Whoever moves it should extend this block to three copies; the
+// #431 lesson recorded above — a fourth copy outside a row's Files, missed
+// entirely, teaching the old contract for a full wave — is exactly this shape.
+
+const CONVENTION_07_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-shared/reference/convention-07-host-landing-seam.md',
+);
+
+/**
+ * Does `region` teach the status read as covering the PR's authored content —
+ * both field names, and the read-only qualification that is the whole licence?
+ *
+ * Both halves are required together and inside ONE region, for the reason the
+ * block comment gives: the field names without the qualification is a wider
+ * permission than the verb has, and the qualification without the field names
+ * is the contract as it stood before this row.
+ */
+function teachesStatusContentRead(region: string): boolean {
+  const namesBothFields = /\btitle\b/i.test(region) && /\bbody\b/i.test(region);
+  const readOnly = /read[- ]only|never writes/i.test(region);
+  const noExtraCall = /no extra (host )?call/i.test(region);
+  return namesBothFields && readOnly && noExtraCall;
+}
+
+describe('skill-schema-drift — the host-seam clause teaches the status title/body read (row 777)', () => {
+  const reviewerAgentMd = readFileSync(WAVE_REVIEWER_AGENT_MD, 'utf-8');
+  const convention07Md = readFileSync(CONVENTION_07_MD, 'utf-8');
+
+  /** Check 2's own section of the Reviewer's agent definition. */
+  function agentCheck2(md: string): string {
+    return contractRegion(
+      md,
+      'wave-reviewer.md agent definition',
+      '### 2. Git-state sanity',
+      '### 3. Per-AC verification',
+    );
+  }
+
+  /** The Discipline bullet that states the same rule for the whole review. */
+  function agentDisciplineHostBullet(md: string): string {
+    return contractRegion(
+      md,
+      'wave-reviewer.md agent definition (Discipline)',
+      '- **Reach the code host through the engine',
+      '- **Diff against the anchor SHA',
+    );
+  }
+
+  /** Convention 7's own `status` bullet. */
+  function conventionStatusBullet(md: string): string {
+    return contractRegion(
+      md,
+      'convention-07-host-landing-seam.md',
+      '- **`host-pr status --branch <b>`**',
+      '\n\n**The seam covers READS',
+    );
+  }
+
+  it("the Reviewer's Check 2 host-seam clause names title and body, read-only, at no extra call", () => {
+    expect(teachesStatusContentRead(agentCheck2(reviewerAgentMd))).toBe(true);
+  });
+
+  it('the Discipline bullet teaches the same read, so the rule does not depend on reaching Check 2', () => {
+    expect(teachesStatusContentRead(agentDisciplineHostBullet(reviewerAgentMd))).toBe(true);
+  });
+
+  it("Convention 7's status bullet carries the same read", () => {
+    expect(teachesStatusContentRead(conventionStatusBullet(convention07Md))).toBe(true);
+  });
+
+  it('the status bullet also states the ABSENCE rule — absent keys, never empty strings', () => {
+    // The shape half of the contract, which is what a reader has to know to
+    // grade "the host did not surface it" as absence of evidence rather than as
+    // a finding. Kept as its own assertion: a copy could name the read
+    // perfectly and still leave a reader guessing what a missing key means.
+    const bullet = conventionStatusBullet(convention07Md);
+    expect(bullet).toMatch(/absent/i);
+    expect(bullet).toMatch(/never an empty string|not empty strings/i);
+  });
+
+  it('every copy still forbids the raw host CLI — the read is a wider CAPABILITY, not a wider rule', () => {
+    // The regression this row could plausibly cause: "the Reviewer may read the
+    // PR body" re-read as "the Reviewer may reach the host however it likes".
+    // Both copies must still name `gh` as refused.
+    expect(agentCheck2(reviewerAgentMd)).toMatch(/gh pr view/);
+    expect(agentDisciplineHostBullet(reviewerAgentMd)).toMatch(/gh pr view/);
+    expect(convention07Md).toMatch(/never raw `gh`/);
+  });
+
+  it('NEGATIVE CONTROL — the predicate fires on text that names the fields but drops the qualification', () => {
+    // The exact drift the pins above exist to catch, in both directions.
+    const fieldsOnly = 'Reach the code host through `host-pr status`, which reports the PR title and body.';
+    expect(teachesStatusContentRead(fieldsOnly)).toBe(false);
+
+    const qualificationOnly =
+      '`host-pr status` is a read-only probe off that same response, at no extra host call.';
+    expect(teachesStatusContentRead(qualificationOnly)).toBe(false);
+
+    // …and passes on a sentence that carries both, so the control proves a
+    // discriminator rather than a predicate that never returns true.
+    const both =
+      "`host-pr status` prints the PR's live `title` and `body` off that same response — read-only, at no extra host call.";
+    expect(teachesStatusContentRead(both)).toBe(true);
+  });
+});

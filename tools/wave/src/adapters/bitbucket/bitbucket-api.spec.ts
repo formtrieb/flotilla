@@ -246,6 +246,100 @@ describe('RealBitbucketApi.getPrStatus', () => {
     await expect(api(http).getPrStatus('b')).rejects.toThrow(/Access denied/);
     await expect(api(http).getPrStatus('b')).rejects.toBeInstanceOf(BitbucketApiError);
   });
+
+  // ─── title + body, off the SAME list response ───────────────────────────
+  //
+  // The second shipped host has to answer the same question the first one does,
+  // or an acceptance criterion about a PR body is checkable on GitHub and not
+  // here — which is a worse state than not shipping the read at all, because it
+  // looks uniform from the contract.
+  //
+  // Bitbucket's body spelling was settled against Atlassian's own OpenAPI
+  // document (dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json, read
+  // 2026-09-16), which disagrees with itself: the `pullrequest` schema's
+  // `properties` do NOT list `description`, yet the create endpoint's prose
+  // documents it against that same schema ("Other fields: `description` - a
+  // string"), and `summary: { raw, markup, html }` IS listed, with `raw`
+  // documented as "The text as it was typed by a user". Both spellings are
+  // therefore accepted, `description` first — it is the one `host-pr create`
+  // writes and `findOpenPr` reads back.
+
+  it('an OPEN PR surfaces title + body (description) off the list response — no extra request', async () => {
+    const { http, calls } = fakeHttp([
+      [
+        urlHas('/pullrequests'),
+        page([openPr({ title: 'the live title', description: 'the live body' })]),
+      ],
+      NO_RESTRICTIONS,
+    ]);
+    const status = await api(http).getPrStatus('b');
+    expect(status.title).toBe('the live title');
+    expect(status.body).toBe('the live body');
+    // The list read + the branch-restrictions read `mergeabilityOf` already
+    // makes. Exactly the request set this method made before the content read
+    // existed — nothing was added for `title`/`body`.
+    expect(calls).toHaveLength(2);
+    expect(calls.filter((c) => c.url.includes('/pullrequests'))).toHaveLength(1);
+  });
+
+  it('falls back to the schema-listed `summary.raw` when no top-level description is sent', async () => {
+    const { http } = fakeHttp([
+      [
+        urlHas('/pullrequests'),
+        page([openPr({ title: 'T', summary: { raw: 'body as typed', markup: 'markdown', html: '<p/>' } })]),
+      ],
+      NO_RESTRICTIONS,
+    ]);
+    expect((await api(http).getPrStatus('b')).body).toBe('body as typed');
+  });
+
+  it('a top-level description WINS over summary.raw — it is the field this engine writes', async () => {
+    const { http } = fakeHttp([
+      [
+        urlHas('/pullrequests'),
+        page([openPr({ description: 'authoritative', summary: { raw: 'rendered copy' } })]),
+      ],
+      NO_RESTRICTIONS,
+    ]);
+    expect((await api(http).getPrStatus('b')).body).toBe('authoritative');
+  });
+
+  it('a MERGED PR surfaces them too, off the same single list read', async () => {
+    const { http, calls } = fakeHttp([
+      [
+        urlHas('/pullrequests'),
+        page([openPr({ state: 'MERGED', title: 'landed', description: 'landed body' })]),
+      ],
+    ]);
+    expect(await api(http).getPrStatus('b')).toEqual({
+      state: 'merged',
+      number: 7,
+      url: 'https://bitbucket.org/ws/repo/pull-requests/7',
+      title: 'landed',
+      body: 'landed body',
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('state:none carries NEITHER key', async () => {
+    const { http } = fakeHttp([[urlHas('/pullrequests'), page([])]]);
+    const status = await api(http).getPrStatus('b');
+    expect(status).toEqual({ state: 'none' });
+    expect('title' in status).toBe(false);
+    expect('body' in status).toBe(false);
+  });
+
+  it('a payload lacking both — and one sending empty strings — leaves both keys absent, never `\'\'`', async () => {
+    for (const over of [{}, { title: '', description: '' }, { title: '', summary: { raw: '' } }]) {
+      const { http } = fakeHttp([
+        [urlHas('/pullrequests'), page([openPr(over)])],
+        NO_RESTRICTIONS,
+      ]);
+      const status = await api(http).getPrStatus('b');
+      expect('title' in status, JSON.stringify(over)).toBe(false);
+      expect('body' in status, JSON.stringify(over)).toBe(false);
+    }
+  });
 });
 
 // ─── mergeability — Atlassian's own merge-check sentence, implemented ─────────

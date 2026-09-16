@@ -604,6 +604,9 @@ export class RealGitHubApi implements GitHubApi {
         state: merged !== undefined ? 'merged' : 'closed-unmerged',
         number: Number(chosen.number),
         url: typeof chosen.html_url === 'string' ? chosen.html_url : undefined,
+        // The LIST payload already carries the authored content for this PR —
+        // this leg makes no detail call at all, and gains none by reading it.
+        ...prContent(chosen),
       };
     }
 
@@ -619,6 +622,9 @@ export class RealGitHubApi implements GitHubApi {
       url,
       mergeability: toMergeability(detail.json),
       ...prRefs(detail.json),
+      // Same payload `prRefs` reads — the single-PR GET this method already
+      // performed for `mergeable_state`. No third request.
+      ...prContent(detail.json),
     };
   }
 
@@ -947,6 +953,31 @@ function prRefs(json: unknown): { headSha?: string; baseRef?: string } {
   return {
     ...(typeof sha === 'string' && sha.length > 0 ? { headSha: sha } : {}),
     ...(typeof ref === 'string' && ref.length > 0 ? { baseRef: ref } : {}),
+  };
+}
+
+/**
+ * A PR payload's authored content — `title` + `body` — as PRESENT-ONLY keys, the
+ * same treatment {@link prRefs} gives the check-attach coordinates and for the
+ * same reason: a payload carrying neither yields `{}`, so `getPrStatus`'s shape
+ * is unchanged from before this read existed.
+ *
+ * GitHub sends `body: null` for a PR with no description, and an EMPTY STRING is
+ * folded into absence here too — `PrLandingStatus.title`/`body` are two-valued
+ * by contract (see their doc comment), so this verb never emits `''`.
+ *
+ * Callable against EITHER payload this method holds: the list item (the
+ * merged/closed leg, which makes no detail call) or the single-PR GET (the open
+ * leg, already fetched for `mergeable_state`). Both are reads of bytes already
+ * in hand — nothing here issues a request.
+ */
+function prContent(json: unknown): { title?: string; body?: string } {
+  const o = (json ?? {}) as Record<string, unknown>;
+  const title = o.title;
+  const body = o.body;
+  return {
+    ...(typeof title === 'string' && title.length > 0 ? { title } : {}),
+    ...(typeof body === 'string' && body.length > 0 ? { body } : {}),
   };
 }
 

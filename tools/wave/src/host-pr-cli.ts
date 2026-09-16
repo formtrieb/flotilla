@@ -235,6 +235,10 @@ function fullUsageLines(): string[] {
     '            failure. `arm` accepts the same flag with its own (partially deferred) semantics — see above.',
     '            Output: a single JSON object on stdout.',
     '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only.',
+    '            Also prints the PR\'s live `title` and `body` when the host surfaces them — read off the same',
+    '            response the state comes from, no extra host call. Both keys are ABSENT on state none and',
+    '            whenever the host does not surface them, and never an empty string. This is how a role that',
+    '            may not write reads what a PR says (the close phrase included), instead of `gh pr view`.',
     '            Output: a single JSON object on stdout.',
     '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
     '            On bitbucket it also reports create-credentials — an ADVISORY (it never changes the exit code)',
@@ -297,6 +301,8 @@ const VERB_CONTRACT: Record<Verb, readonly string[]> = {
   status: [
     'usage: host-pr status --branch <branch> [--remote <url>]',
     '  Reports the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only — never writes.',
+    '  Also reports the PR\'s live `title` and `body` off that same response (no extra host call): absent on',
+    '  state none and wherever the host does not surface them, and never an empty string.',
     'output: a single JSON object on stdout',
   ],
   preflight: [

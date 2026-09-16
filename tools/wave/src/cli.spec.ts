@@ -7587,3 +7587,72 @@ describe('close-row — router wiring (issue #751)', () => {
     expect(stderrBuf.split('\n')[0]).toBe('error: close-row requires --id <id>');
   });
 });
+
+// ─── `host-pr status` teaches its title/body read at the CLI edge (row 777) ──
+//
+// The verb grew two result keys — the PR's live `title` and `body` — and the
+// only way a caller who did not read this row's diff finds out is the usage
+// text. Two surfaces print it and they are maintained separately: the VERB's own
+// contract section (issue #505 — printed once the verb is known, so a wrong flag
+// on `status` teaches only `status`) and the full multi-verb dump (printed when
+// no verb narrows it). A capability documented on one and not the other is the
+// ordinary shape of this drift, so both are asserted here, through the real
+// async wire rather than by reading the source.
+//
+// Deliberately NOT asserted here: the verb's behaviour. That is
+// host-pr-cli.spec.ts's, and duplicating it would make this file fail for
+// reasons that have nothing to do with the CLI edge.
+
+describe('host-pr status usage names the title/body read (row 777)', () => {
+  let stderrBuf = '';
+
+  beforeEach(() => {
+    stderrBuf = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderrBuf += String(c);
+      return true;
+    });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("the status verb's OWN contract section names both fields, read-only and call-free", async () => {
+    // A missing --branch is the cheapest way to the verb-scoped usage: the
+    // router knows the verb, so `usage(msg, verb)` prints VERB_CONTRACT.status.
+    const code = await mainAsync(['host-pr', 'status']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toContain('`title`');
+    expect(stderrBuf).toContain('`body`');
+    expect(stderrBuf).toMatch(/Read-only/);
+    expect(stderrBuf).toMatch(/no extra host call/);
+    // …and it still teaches what an ABSENT key means, which is what stops a
+    // caller reading "no body" off a host that simply does not surface one.
+    expect(stderrBuf).toMatch(/absent/i);
+    expect(stderrBuf).toMatch(/never an empty string/i);
+  });
+
+  it('the full multi-verb dump carries the same read, so a caller who named no verb finds it too', async () => {
+    const code = await mainAsync(['host-pr']);
+    expect(code).toBe(2);
+
+    // Slice out STATUS's own paragraph rather than searching the whole dump: a
+    // file-wide match would be satisfied by `create`'s section, which legitimately
+    // talks about a PR's title and body because a reuse REWRITES them. That is the
+    // opposite claim from this one, and a pin that cannot tell the two apart would
+    // pass with status's paragraph deleted.
+    const lines = stderrBuf.split('\n');
+    const from = lines.findIndex((l) => l.startsWith('  status '));
+    expect(from, 'the dump no longer carries a `status` verb paragraph').toBeGreaterThan(-1);
+    const rest = lines.slice(from + 1);
+    const nextVerb = rest.findIndex((l) => /^ {2}\S/.test(l));
+    const statusSection = rest.slice(0, nextVerb === -1 ? rest.length : nextVerb).join('\n');
+
+    expect(statusSection).toContain('`title`');
+    expect(statusSection).toContain('`body`');
+    expect(statusSection).toMatch(/no extra host call/);
+    expect(statusSection).toMatch(/never an empty string/i);
+  });
+});

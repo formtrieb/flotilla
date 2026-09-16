@@ -941,6 +941,48 @@ export interface PrLandingStatus {
    * repo's default branch, which is the base for every flotilla wave row.
    */
   baseRef?: string;
+  /**
+   * The PR's TITLE, as the host currently holds it.
+   *
+   * Read out of the payload the status read ALREADY fetched — never a second
+   * request (each adapter's spec asserts the request count is unchanged). A host
+   * that does not surface it leaves the key absent; the verb never fails for
+   * want of it.
+   */
+  title?: string;
+  /**
+   * The PR's BODY, as the host currently holds it — GitHub's `body`, Bitbucket's
+   * `description`. Same provenance and same optionality as {@link title}.
+   *
+   * This is the field that makes an acceptance criterion ABOUT the PR body
+   * checkable by the role that checks everything else. The Reviewer's contract
+   * sends it to the code host through this seam and nowhere else (wave-shared
+   * Convention 7); before these two keys existed the verb answered where the PR
+   * was but never what it said, so a criterion like "the body records the
+   * mutation that made the check fail" was unreachable from the review
+   * environment and had to be marked `partial` or left unopened — four
+   * Reviewers reported that same gap in a single wave.
+   *
+   * ## Two-valued here, deliberately — and this is a departure worth naming
+   *
+   * {@link OpenPrRef.body} models the same text THREE-valued: a string
+   * *including* `''` is evidence of what the live PR says, and `undefined` means
+   * "not readable here". That distinction earns its keep there because the
+   * close-phrase guard refuses only on evidence, so "empty body" and "unreadable
+   * body" must not be conflated.
+   *
+   * These two keys are two-valued instead: an empty string is treated exactly as
+   * an absent one, so `status` NEVER emits `title: ''` or `body: ''`. Two
+   * reasons, and the departure is deliberate on both. (1) It makes "no empty
+   * strings" a property of the verb a caller can rely on, rather than a claim
+   * about one host's payload — the `headSha`/`baseRef` rule the adapters already
+   * apply to their other present-only keys. (2) It keeps the hosts ANSWERING
+   * ALIKE for the same real situation: GitHub sends `body: null` for an empty
+   * description while Bitbucket sends `""`, so a three-valued read would report
+   * a bodyless PR as absent on one host and `''` on the other — a difference
+   * about the wire format, dressed as a difference about the PR.
+   */
+  body?: string;
 }
 
 /** Outcome of a merge write. `merged:false` = the host declined (not an error). */
