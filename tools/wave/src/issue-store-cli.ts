@@ -517,16 +517,19 @@ export async function runIssueStore(
         // act was not a merged PR carrying its own close phrase (a release, a
         // hand action). Left bare, that read as success on exit 0 with the
         // issue silently still open (#339 at 1.0.0, #397 at 1.0.1 — both
-        // rescued by hand; see docs/RELEASING.md step 7). Probe the SAME
-        // evidence `read-closing` exposes and print it: additive under
-        // ADR-0035 (a wholly new stdout shape where `close` printed nothing
-        // before; no existing key renamed/removed, exit-code meaning
-        // unchanged — 0 either way, a still-open issue after `close` is a
-        // documented, non-domain-failure outcome). When the probe still
-        // reads `open`, ALSO write an unmistakable line so a human running
-        // this by hand cannot mistake exit 0 for "closed" — the documented
-        // operator procedure (docs/RELEASING.md step 7 / this repo's
-        // close-mechanics.md) is the path from here; no new close verb.
+        // rescued by hand). Probe the SAME evidence `read-closing` exposes
+        // and print it: additive under ADR-0035 (a wholly new stdout shape
+        // where `close` printed nothing before; no existing key
+        // renamed/removed, exit-code meaning unchanged — 0 either way, a
+        // still-open issue after `close` is a documented,
+        // non-domain-failure outcome). When the probe still reads `open`,
+        // ALSO write an unmistakable line so a human running this by hand
+        // cannot mistake exit 0 for "closed". That line speaks in the
+        // READER'S terms — the issue stays open until the native close
+        // happens, and the reader flips it by hand in the tracker — and it
+        // names no document, because the caller may be any consumer repo and
+        // this repo's own release procedure is not a file they have (#801).
+        // No new close verb, here or there.
         const closing = await store.readClosing(id);
         printJson(closing);
         if (closing.state === 'open') {
@@ -534,8 +537,9 @@ export async function runIssueStore(
             `STILL OPEN: issue ${id} recorded closing facts (${prUrl}) but the ` +
               `tracker still reports it OPEN — this call does not natively close ` +
               `an issue whose satisfying act was not a merged PR carrying its own ` +
-              `close phrase. See docs/RELEASING.md step 7 for the documented ` +
-              `operator procedure.\n`,
+              `close phrase. It stays open until that native close happens, and ` +
+              `there is no further close verb to reach for: close it by hand in ` +
+              `the tracker.\n`,
           );
         }
         return 0;
