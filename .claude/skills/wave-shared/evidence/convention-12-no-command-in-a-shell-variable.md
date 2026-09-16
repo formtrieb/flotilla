@@ -95,7 +95,7 @@ flotilla's own repo, 2026-09-08, all forms minutes apart in one session, sandbox
 
 **This convention's own guard hook sends an operator into a nested context.** `conv12-guard.cjs`'s refusal message teaches, as its third remedy, *"for a loop or multi-step logic, write a script file and run it via `bash <file>`"* — and Convention 13's Catalog entry 1 reaches the same shape independently, as the fifth station that finally beats the worktree-isolation guard. That remedy is **not withdrawn**: it solves the problem it was written for, because the expansion then lives inside the executed file rather than in the tool-call text the guards match.
 
-The convention's own forms stay safe inside such a script for a reason that is architectural rather than lucky: they route host calls through the **engine CLI**, whose host access is Node's `fetch` and argv-form `git` — both on the passing side of control 3 — and the rest of what they run (`git rev-parse`, `jq`, `grep`) routes no trust evaluation through Security.framework either. The hazard is a raw `gh` an operator puts inside such a script, not the script.
+The convention's own forms stay safe inside such a script for a reason that is architectural rather than lucky: they route host calls through the **engine CLI**, whose host access is Node's `fetch` and argv-form `git` — both on the passing side of control 3 — and the rest of what they run (`git rev-parse`, `jq`, `grep`) makes no network connection and performs no TLS handshake at all, so there is no comparable form for this to observe. The hazard is a raw `gh` an operator puts inside such a script, not the script.
 
 #### Exposed, and not
 

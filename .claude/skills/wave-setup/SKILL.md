@@ -230,7 +230,7 @@ export GITHUB_TOKEN="$(security find-generic-password -a $USER -s flotilla-githu
 
 ### `GITHUB_TOKEN` vs `gh`'s own auth — two different credentials
 
-The engine talks raw HTTP with `GITHUB_TOKEN` for every wave operation — issue CRUD, PR open/merge/arm, both preflights — and never shells out to `gh` (ADR-0019/0023: `gh`'s credentials are sandbox-denied and its TLS has failed under both the system keychain and a proxying sandbox). `gh` carries its own, separately-authenticated credential (`gh auth login` / the system keyring), used only when *you* run a `gh` command directly, outside the wave pipeline — most commonly `gh repo create` when bootstrapping a brand-new consumer repo, which needs a permission (creating repositories) the wave token deliberately does not carry.
+The engine talks raw HTTP with `GITHUB_TOKEN` for every wave operation — issue CRUD, PR open/merge/arm, both preflights — and never shells out to `gh` (ADR-0019/0023: `gh`'s credentials are sandbox-denied and its TLS has failed under the sandbox in every live run, ADR-0015). `gh` carries its own, separately-authenticated credential (`gh auth login` / the system keyring), used only when *you* run a `gh` command directly, outside the wave pipeline — most commonly `gh repo create` when bootstrapping a brand-new consumer repo, which needs a permission (creating repositories) the wave token deliberately does not carry.
 
 Because these are two independent credentials, a setup can be **half-authenticated in a way that presents as one confusing failure**: `gh auth status` can report an invalid keyring token while `GITHUB_TOKEN` is simply unset (or the reverse) — two distinct problems, easy to misread as one. Check both, separately, before concluding either is fine:
 
