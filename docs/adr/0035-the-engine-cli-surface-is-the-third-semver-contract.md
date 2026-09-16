@@ -21,3 +21,12 @@
 - The CHANGELOG names the third contract at the next release cut, alongside the two 1.0.0 named.
 - The ported CLI spec files remain the contract's regression net; a wire-shape change that passes them but violates this ADR is a review finding, not a green light.
 - No engine change. This ADR closes no issue by merge phrase and lands Coordinator-direct (ADR-0033).
+
+## Amendment 2026-09-16 — input strictness, aliases, `--json`, and the Catalog (the #763 vocabulary grill, ADR-0051)
+
+The decision above rules on the contract's *output* side — what a consumer reads — and leaves its *input* side implicit. Four rulings close that:
+
+- **Refusing a flag the verb previously swallowed is minor, with an Upgrading heads-up.** Exit 2 already means usage on four verbs; extending the refusal to every verb re-means nothing and removes nothing. An invocation that succeeded only because its typo was ignored was never a documented shape. The precedent is #750: a gate that can now fail where it deferred landed as a minor with a heads-up.
+- **An alias is additive.** A second accepted spelling for a verb, op or flag, resolved to the same meaning, is a new optional input — minor. A *rename* stays major, which is why ADR-0051 renames nothing and marks instead.
+- **Every `--json` output shape is contract from the day it ships**, under the same additive-key tolerance as every other JSON shape; the default output of a verb that gains `--json` stays byte-identical, and `--json` never changes an exit code.
+- **The Catalog — the router's aggregate of every Verb contract — is this contract's machine-readable form.** What the Catalog emits is the surface this record freezes; a wire-shape change that passes the spec files but changes the Catalog's reading of a verb is the review finding the consequences above already describe.

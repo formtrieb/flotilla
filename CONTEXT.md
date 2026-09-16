@@ -276,7 +276,25 @@ _Avoid_: dev mode (implies a runtime toggle — the binding is static, tracked c
 
 **Dual-form**:
 A *prose reference* stated in both its in-repo form and its installed form, so whichever context is live, the reader picks the one that resolves — retained for by-name recommendations addressed to a human (slash commands). Agent-side cross-skill loading is outside its scope entirely: that is a sibling-path read against the loading skill's own base directory, one spelling in every context (ADR-0040). Prose only: an *invocation* is never dual-form — the engine invocation is a single setup-time binding (`engine.cli`, ADR-0032) that fails loud, never a chained alternative.
-_Avoid_: fallback (the resolving form is chosen by reading context, and invocations never chain at runtime), alias.
+_Avoid_: fallback (the resolving form is chosen by reading context, and invocations never chain at runtime), alias (an **Alias** is a second *spelling* inside one invocation, never a second invocation — see Engine surface).
+
+### Engine surface
+
+**Verb contract**:
+One engine verb's declared table — its flags, each with one **Canonical spelling** and any **Aliases**, the kind of value each takes, the positional arity, and the output class (text · JSON · silent write · product) — the single owner every reader of "what does this verb accept" consults: the parser, the unknown-flag refusal, `--help`, and the **Catalog** (ADR-0051). It lives beside the verb's runner, never in a central file.
+_Avoid_: usage (the rendered view of the contract, not the contract), flag table (names one column of it), schema (that word belongs to the payloads a verb reads and writes).
+
+**Catalog**:
+The sum of every **Verb contract**, collected by the router — the machine-readable form of the CLI's semver contract (ADR-0035), emitted, never written by hand.
+_Avoid_: API map (a written map is the option the catalog replaced), help (the rendered view), verb list (only the top level).
+
+**Canonical spelling**:
+The one spelling per verb, op, or flag that its **Verb contract** marks, and the only spelling skills, the driver, `--help`, and the **Catalog** ever use — chosen by the family rule (the spelling of the family with the most verbs; a tie goes to the spelling that names the thing), so a new flag is named by the rule, not by a grill (ADR-0051).
+_Avoid_: preferred (suggests taste), primary (suggests a ranking among more than two).
+
+**Alias**:
+A second accepted spelling for the same verb, op, or flag — resolved by the same parser to the same meaning, silently, and never called deprecated; together the aliases are the removal list a later major reads, and nothing else (ADR-0051).
+_Avoid_: deprecated (promises a removal that has no date), fallback (aliases never chain, both resolve alike), synonym (fine in prose, not the term), alternative form.
 
 ### Reading classes
 
@@ -330,6 +348,7 @@ _Avoid_: consumer mode (not a mode — the register is the default, the source-f
 - A **Worker**/**Reviewer** disclosure becomes a **Disclosure** in the **Spine** at verdict-routing; a **Coordinator** find during close is captured at discovery, and the window ends hard at the archive (ADR-0038); `wave-close` archives only when every **Disclosure**'s **Disposition** is terminal — existence is gated mechanically, quality stays human (ADR-0027).
 - A **PRD** is sliced by `to-issues` into many grabbable **IssueView**s, each carrying a **Parent** backlink to it; the PRD's *consumed* status is derived from those backlinks, never written — the same derive-don't-write discipline as the **Coarse state** bookends.
 - A **Goal**'s member set lives in its bound native container; the **Frontier** is derived from member state, never written. Goal membership never makes an issue wave-eligible and the goal surface has no dispatch verbs — planning skills read it, execution skills never do (ADR-0044).
+- A **Verb contract** marks exactly one **Canonical spelling** per flag and any number of **Aliases**; the **Catalog** is the sum of every Verb contract and is never authored separately. What a Verb contract does not declare, the verb refuses (ADR-0051).
 - **Arming** hands an approved row's merge to the code host; landing evidence flows back through the done-reconcile hierarchy **tracker attachment > host PR state > nothing** (ADR-0023).
 - The **Echo-Guard** is defense-in-depth *over* the auth anchors, never one of them: the tracked settings-deny entries own the gitignored-file-read vector, the **Lookup-Command** indirection owns the direct-execution vector (ADR-0029), and the guard covers only what a command's own text reveals.
 - The **Sweep** accounts for every registered worktree: an incomplete removal carries its **Survivor set** — judged only after the delete has exhausted its permissions — and, when exhausted, **Manual recovery**; a worktree outside every **Containment root** is reported **Unaccounted** — removal of both belongs to the **Operator**, never to a more forceful sweep, and never to an agent (ADR-0042, Amendment 2026-09-08; ADR-0049). A wave's own review refs and composed drivers are live until it is a **Terminal wave**; from then on its own close sweeps them (ADR-0042 Amendment 2026-09-08).
@@ -344,6 +363,7 @@ _Avoid_: consumer mode (not a mode — the register is the default, the source-f
 - **"human"** is overloaded across two pipeline stages with **opposite** wave outcomes. **Resolved (ADR-0015):** `ready-for-human` (triage eligibility axis) = *not* wave work, a human handles it entirely outside flotilla, never enters a wave; `HITL-required` (Worker axis, ADR-0012) = wave work that *does* enter a wave, merely human-gated. The separating test is "does the wave system track/surface this work at all?". A `public-API-change` is `ready-for-agent` + `background-heavy` (AFK-implementable, landing-gated), **never** `ready-for-human`.
 - **"deferred"** is overloaded across three moments. **Resolved (ADR-0049):** the **Deferred (gate outcome)** sense is the DoR's — a check whose data source is absent *before* dispatch; the AC sense (`acVerification[].met = deferred`) is the **Reviewer**'s — an outcome unreachable from the review environment. A verify command withheld for a missing **Capability requirement** is deliberately *not* a third sense: the gate itself gets no status of its own; the acceptance criteria it would have backed take the AC sense, with `capability-gated` as the valve's fourth trigger beside merge-, prod- and human-gated.
 - **"tier"** gained a third neighbour with the reading classes. **Resolved (ADR-0050):** a reading class is never called a tier — **Standing load**, **Step load**, **Evidence** say *when* a file is read; **Enforcement Tier** says *where* a rule is enforced. **"evidence"** likewise: the reading class is written **Evidence (reading class)** where the Reviewer's general sense ("evidence before assertions") could be read instead, and "provenance position" in ADR-0034 means the Evidence class.
+- **"alias"** carried two senses: a second *invocation form* of the engine (the direct module path beside the subcommand — the sense **Dual-form** avoids, because an invocation is one static binding and never chooses) and a second *spelling* of one verb, op, or flag. **Resolved (ADR-0051):** unqualified "alias" is the spelling sense — the **Alias** term. The invocation-form sense stays avoided and unnamed; the router's usage text calls the module paths *direct module invocations*, not aliases. `version`'s `--version` is an Alias in the resolved sense.
 
 ## Example dialogue
 
