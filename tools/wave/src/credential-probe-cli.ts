@@ -82,7 +82,45 @@ import {
   type CredentialLookupSpawn,
 } from './credential-resolver';
 import { BITBUCKET_TOKEN_VAR } from './adapters/bitbucket/bitbucket-api';
-import { printJson } from './cli-utils';
+import { flagAll, printJson } from './cli-utils';
+import {
+  hasFlag,
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
+
+/**
+ * `credential-probe`'s Verb contract (ADR-0051 decision 2), declared beside its
+ * runner.
+ *
+ * This is one of the four verbs that refused unknown flags BEFORE ADR-0051, and
+ * it did so from a hand-rolled loop with its own idea of what `--var` with no
+ * value means and its own `--config` accept-and-discard case. That loop is gone:
+ * the contract states the same three facts (`--all` is a switch, `--var` repeats,
+ * `--config` is tolerated and unused) and the one shared refusal path does the
+ * rest, with the same exit code it always used.
+ */
+export const CREDENTIAL_PROBE_CONTRACT: VerbContract = {
+  verb: 'credential-probe',
+  flags: [
+    { canonical: '--all', value: 'none', valueType: 'none' },
+    { canonical: '--var', value: 'repeatable', valueType: 'text' },
+    // Accepted and DISCARDED (the FOR-87/W25-F2 precedent): a Coordinator
+    // wrapper appends it uniformly to every engine invocation, and a probe that
+    // reads only the environment has no use for it.
+    { canonical: '--config', value: 'one', valueType: 'path' },
+  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: [
+    'usage:',
+    '  credential-probe --all                          # probe every CONFIGURED credential',
+    '  credential-probe --var <VAR> [--var <VAR> ...]  # probe exactly these (e.g. GITHUB_TOKEN)',
+    'output: JSON — the value-free CredentialProbeReport; never a secret',
+  ],
+};
 
 /**
  * The credentials THIS engine's own adapters read (ADR-0029's mechanical
@@ -322,35 +360,31 @@ export function runCredentialProbe(
   opts: CredentialProbeOptions = {},
 ): number {
   const env = opts.env ?? process.env;
-  const named: string[] = [];
-  let all = false;
 
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--all') {
-      all = true;
-      continue;
-    }
-    if (a === '--var') {
-      const value = args[i + 1];
-      if (value === undefined || value.startsWith('--')) {
-        process.stderr.write('error: credential-probe: --var requires a variable name\n');
-        printUsage();
-        return 2;
-      }
-      named.push(value);
-      i++;
-      continue;
-    }
-    if (a === '--config') {
-      i++; // accepted-and-ignored, value token consumed (FOR-87 uniform-wrapper tolerance)
-      continue;
-    }
-    process.stderr.write(
-      a.startsWith('--')
-        ? `error: credential-probe: unknown flag ${a}\n`
-        : `error: credential-probe: unexpected argument "${a}" — select with --all or --var <VAR>\n`,
-    );
+  if (helpRequested(CREDENTIAL_PROBE_CONTRACT, args)) {
+    return printVerbHelp(CREDENTIAL_PROBE_CONTRACT);
+  }
+  // The ONE refusal path (ADR-0051 decision 4), replacing this verb's own
+  // private list. Same exit code, same class of mistake caught — an unknown
+  // flag and a stray positional alike — now with the did-you-mean line and this
+  // verb's own usage behind it.
+  const refusal = refuseUndeclared(CREDENTIAL_PROBE_CONTRACT, args);
+  if (refusal !== 0) {
+    printUsage();
+    return refusal;
+  }
+
+  const all = hasFlag(CREDENTIAL_PROBE_CONTRACT, args, 'all');
+  const named = flagAll(args, CREDENTIAL_PROBE_CONTRACT, 'var');
+  // A `--var` with nothing usable after it is the shape that silently disarms a
+  // selection, so it stays a loud usage error rather than an empty name.
+  if (named.some((v) => v === undefined || v.startsWith('--') || v.length === 0)) {
+    process.stderr.write('error: credential-probe: --var requires a variable name\n');
+    printUsage();
+    return 2;
+  }
+  if (hasFlag(CREDENTIAL_PROBE_CONTRACT, args, 'var') && named.length === 0) {
+    process.stderr.write('error: credential-probe: --var requires a variable name\n');
     printUsage();
     return 2;
   }

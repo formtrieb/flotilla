@@ -14,6 +14,35 @@
 
 import { loadWaveConfig } from './wave-config';
 import type { VerifyConfig } from './verify';
+import {
+  helpRequested,
+  positionalsOf,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
+
+/**
+ * `config validate`'s Verb contract (ADR-0051 decision 2), declared beside its
+ * runner. The group has exactly one op and it is all-positional: `config
+ * validate <path>` takes no flag at all, which is why the declaration below has
+ * an empty `flags` list and a fixed arity of two (the op token plus the path).
+ *
+ * Output class `prose`: it prints a one-line ok/error message, not JSON — the
+ * surprise this verb was part of when issue #505 measured it.
+ */
+export const CONFIG_CONTRACTS: Readonly<Record<string, VerbContract>> = {
+  validate: {
+    verb: 'config validate',
+    flags: [],
+    positionals: { kind: 'fixed', count: 1, labels: ['<path>'] },
+    output: 'prose',
+    usage: [
+      'usage: config validate <path>',
+      'output: text (a one-line ok/error message), not JSON',
+    ],
+  },
+};
 
 function printUsage(): void {
   process.stderr.write(['usage:', '  config validate <path>', ''].join('\n'));
@@ -48,11 +77,21 @@ function countDeclaredNeeds(verify: VerifyConfig): [declared: number, total: num
 
 export function runConfig(args: string[]): number {
   const op = args[0];
+  // `config --help` — the group has one op, so its roster IS that op's usage.
+  if (op === '--help') {
+    process.stdout.write(['usage:', '  config validate <path>', ''].join('\n'));
+    return 0;
+  }
   if (op !== 'validate') {
     printUsage();
     return 2;
   }
-  const path = args[1];
+  const contract = CONFIG_CONTRACTS.validate;
+  const opArgs = args.slice(1);
+  if (helpRequested(contract, opArgs)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, opArgs);
+  if (refusal !== 0) return refusal;
+  const path = positionalsOf(contract, opArgs)[0];
   if (!path) {
     printUsage();
     return 2;

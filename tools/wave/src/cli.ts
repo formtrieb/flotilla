@@ -7,18 +7,18 @@
  *   npx tsx tools/wave/src/cli.ts <issue-path> [<issue-path> ...]
  *   npx tsx tools/wave/src/cli.ts dor <issue-path> [<issue-path> ...]
  *   npx tsx tools/wave/src/cli.ts files-drift <issue-path> <sha-range>
- *   npx tsx tools/wave/src/cli.ts merge-order <wave-md-path>
+ *   npx tsx tools/wave/src/cli.ts merge-order (--spine <path> | <wave-md-path>)
  *   npx tsx tools/wave/src/cli.ts closed-by <closed-by-line>
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
  *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>] [--body <t> | --body-file <path>]
- *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]
- *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports <dir> --verdicts <dir> [...]
+ *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --spine <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]
+ *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [...]
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
  *   npx tsx tools/wave/src/cli.ts compose-driver --spine <spine> --out <path> --anchor <sha> [...]
- *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--ruling <text>] [...]
+ *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report-file <path> --verdict-file <path> --anchor <sha> [--ruling <text>] [...]
  *   npx tsx tools/wave/src/cli.ts close-row --spine <spine> --id <id> [--pr-url <url>] [...]
- *   npx tsx tools/wave/src/cli.ts route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]
+ *   npx tsx tools/wave/src/cli.ts route-verdict --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]
  *
  * Subcommands:
  *   dor          Run the DOR-Gate validator (default when no subcommand is given).
@@ -480,7 +480,7 @@ import {
 import { readSpine, requireBranchesByIssueId, TERMINAL_ROW_STATES } from './wave-md-rw';
 import { classifyClosedBy, needsPin } from './closed-by';
 import { detectHost } from './host-pr';
-import { runHostPr } from './host-pr-cli';
+import { runHostPr, HOST_PR_CONTRACTS } from './host-pr-cli';
 import {
   listAgentWorktrees,
   planCleanup,
@@ -537,12 +537,12 @@ import {
   planComposedDriverSweep,
   executeComposedDriverSweep,
 } from './worktree-cleanup';
-import { runConflictMap, runConflictMapById } from './conflict-map-cli';
-import { runCrossWave } from './cross-wave-cli';
-import { runIssueStore } from './issue-store-cli';
-import { runSpine } from './spine-cli';
-import { runConfig } from './config-cli';
-import { runCredentialProbe } from './credential-probe-cli';
+import { runConflictMap, runConflictMapById, CONFLICT_MAP_CONTRACT } from './conflict-map-cli';
+import { runCrossWave, CROSS_WAVE_CONTRACT } from './cross-wave-cli';
+import { runIssueStore, ISSUE_STORE_CONTRACTS } from './issue-store-cli';
+import { runSpine, SPINE_CONTRACTS } from './spine-cli';
+import { runConfig, CONFIG_CONTRACTS } from './config-cli';
+import { runCredentialProbe, CREDENTIAL_PROBE_CONTRACT } from './credential-probe-cli';
 import {
   runRouteVerdict,
   runRouteOutcome,
@@ -550,12 +550,25 @@ import {
   runValidateVerdict,
   runWriteReport,
   runWriteVerdict,
+  ROUTE_CONTRACTS,
 } from './route-cli';
 import { findScratchRoot } from './find-repo-root';
 import { flag, printJson } from './cli-utils';
 import {
+  DISPLACED_VERB_CONTRACTS,
+  hasFlag,
+  helpRequested,
+  normalizeForRunner,
+  positionalsOf,
+  printVerbHelp,
+  refuseUndeclared,
+  resolveTwin,
+  type VerbContract,
+} from './verb-contract';
+import {
   resolveStore,
   runStorePreflightSubcommand,
+  STORE_PREFLIGHT_CONTRACT,
   // ADR-0032 — the lockstep version surface. Imported from cli-store rather
   // than defined here on purpose: `store-preflight` reports the SAME comparison
   // as an advisory, and cli.ts already depends on cli-store (the reverse
@@ -564,7 +577,7 @@ import {
   compareEngineVersion,
   engineVersionExitCode,
 } from './cli-store';
-import { runResume } from './resume-cli';
+import { runResume, RESUME_CONTRACT } from './resume-cli';
 import { runComposeDriver } from './compose-driver';
 import { runRouteTuple } from './route-tuple';
 import { runCloseRow } from './close-row';
@@ -672,6 +685,239 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
   version: 'Print the engine package version, optionally checked against --expect (ADR-0032).',
 };
 
+/**
+ * The Verb contracts of the verbs whose RUNNERS live in this file (ADR-0051
+ * decision 2: a contract lives beside its runner; the router only collects).
+ *
+ * Two of ADR-0051's renames land here:
+ *
+ *   - **worktree-cleanup's spine path is `--spine`**, with `--wave` as its
+ *     silent alias (decision 5). `--wave` used to be a spine PATH here and a
+ *     BOOLEAN on `spine add-disclosure` — one spelling, two value types, which
+ *     is the one thing decision 5 forbids outright. After this, `--wave` is an
+ *     alias everywhere and canonical nowhere.
+ *   - **Three of the five named twins** (decision 6) are declared here:
+ *     `merge-order --spine`, `verdict-acked --verdicts-dir --id`, and
+ *     `render-verdict --verdicts-dir --id --anchor`. The named form is
+ *     canonical, the positional form survives as its alias, and a MIXED call is
+ *     a usage error — `verdict-acked <dir> --id X` reads to its caller as
+ *     though both halves landed.
+ */
+const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
+  dor: {
+    verb: 'dor',
+    flags: [
+      { canonical: '--id', value: 'one', valueType: 'id' },
+      { canonical: '--repo-root', value: 'one', valueType: 'dir' },
+      { canonical: '--config', value: 'one', valueType: 'path' },
+    ],
+    positionals: { kind: 'variadic', min: 1, label: '<issue-path>' },
+    output: 'prose',
+    usage: [
+      'usage: flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]',
+      '       flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]',
+      '  The --id form reads the issue from the IssueStore and takes NO positional.',
+      'output: text (PASS/FAIL + gate lines), not JSON',
+    ],
+  },
+  'files-drift': {
+    verb: 'files-drift',
+    flags: [],
+    positionals: { kind: 'fixed', count: 2, labels: ['<issue-path>', '<sha-range>'] },
+    output: 'prose',
+    usage: [
+      'usage: flotilla-engine files-drift <issue-path> <sha-range>',
+      'output: text, with a JSON block embedded at the end',
+    ],
+  },
+  'merge-order': {
+    verb: 'merge-order',
+    flags: [{ canonical: '--spine', value: 'one', valueType: 'path' }],
+    positionals: { kind: 'fixed', count: 1, labels: ['<wave-md-path>'] },
+    output: 'json',
+    twin: [{ flag: '--spine', label: '<wave-md-path>' }],
+    usage: [
+      'usage: flotilla-engine merge-order (--spine <path> | <wave-md-path>)',
+      '  The spine is named EITHER by --spine or as the positional — never both.',
+      'output: JSON',
+    ],
+  },
+  'closed-by': {
+    verb: 'closed-by',
+    flags: [],
+    // The line is JOINED from every positional, so an unquoted `Closed-by:` line
+    // is as legal as a quoted one — variadic, and the floor is one token.
+    positionals: { kind: 'variadic', min: 1, label: '<closed-by-line>' },
+    output: 'json',
+    usage: ['usage: flotilla-engine closed-by <closed-by-line>', 'output: JSON'],
+  },
+  'detect-host': {
+    verb: 'detect-host',
+    // Accepted and DISCARDED — the FOR-87/W25-F2 uniform-wrapper tolerance.
+    // This verb parses a URL and resolves nothing, but `wave-shared`'s
+    // auth-preflight convention documents the proxy-prefix fallback as
+    // `… cli.ts detect-host <remote-url> --config <path>`, and that invocation
+    // was live in the corpus when this refusal landed (found by walking all 287
+    // `{{wave-cli}}` invocation lines under `.claude/` against the aggregate).
+    // Declaring it keeps a documented, copy-pasteable command working; nothing
+    // here reads the value.
+    flags: [{ canonical: '--config', value: 'one', valueType: 'path' }],
+    positionals: { kind: 'fixed', count: 1, labels: ['<remote-url>'] },
+    output: 'json',
+    usage: [
+      'usage: flotilla-engine detect-host <remote-url>',
+      '  --config is accepted and ignored (uniform-wrapper tolerance); this verb resolves no store.',
+      'output: JSON',
+    ],
+  },
+  'worktree-cleanup': {
+    verb: 'worktree-cleanup',
+    flags: [
+      { canonical: '--dry-run', value: 'none', valueType: 'none' },
+      { canonical: '--orphans', value: 'none', valueType: 'none' },
+      { canonical: '--detached', value: 'none', valueType: 'none' },
+      { canonical: '--spine', aliases: ['--wave'], value: 'one', valueType: 'path' },
+      { canonical: '--branches', value: 'one', valueType: 'list' },
+      { canonical: '--config', value: 'one', valueType: 'path' },
+    ],
+    positionals: { kind: 'fixed', count: 1, labels: ['<repo-root>'] },
+    output: 'json',
+    usage: [
+      'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--spine <spine>] [--branches <b1,b2>] [--orphans] [--detached] [--config <path>]   # prints JSON',
+      '  --wave is accepted as an alias of --spine.',
+    ],
+  },
+  'verdict-acked': {
+    verb: 'verdict-acked',
+    flags: [
+      { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
+      { canonical: '--id', value: 'one', valueType: 'id' },
+    ],
+    positionals: { kind: 'fixed', count: 2, labels: ['<verdictsDir>', '<id>'] },
+    output: 'json',
+    twin: [
+      { flag: '--verdicts-dir', label: '<verdictsDir>' },
+      { flag: '--id', label: '<id>' },
+    ],
+    usage: [
+      'usage: flotilla-engine verdict-acked (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)',
+      '  ALL named or ALL positional — a mixed call is a usage error.',
+      'output: JSON',
+    ],
+  },
+  'render-verdict': {
+    verb: 'render-verdict',
+    flags: [
+      { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
+      { canonical: '--id', value: 'one', valueType: 'id' },
+      { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
+    ],
+    positionals: { kind: 'fixed', count: 2, labels: ['<verdictsDir>', '<id>'] },
+    // stdout is the rendered markdown itself — the product, not a report.
+    output: 'product',
+    twin: [
+      { flag: '--verdicts-dir', label: '<verdictsDir>' },
+      { flag: '--id', label: '<id>' },
+    ],
+    usage: [
+      'usage: flotilla-engine render-verdict (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>) --anchor <sha>',
+      '  The directory and the id are ALL named or ALL positional; --anchor is always named.',
+      'output: text (the rendered markdown), not JSON',
+    ],
+  },
+  version: {
+    verb: 'version',
+    flags: [{ canonical: '--expect', value: 'one', valueType: 'version' }],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
+      'usage: flotilla-engine version [--expect <plugin-version>]',
+      '  Prints { version, expected, match, outcome, detail, repair } as JSON.',
+      '  Resolves no store and reads no wave config.',
+      '  Exit: 0 match / bare read; 1 mismatch, unreadable engine version, or',
+      '  unusable expectation; 2 usage.',
+    ],
+  },
+};
+
+/**
+ * The verb GROUPS — a group token plus an op token address one contract.
+ * Collected here so the aggregate reader, the `--help` interception and the
+ * later Catalog all resolve `spine add-disclosure` the same way.
+ */
+const VERB_GROUP_CONTRACTS: Readonly<Record<string, Readonly<Record<string, VerbContract>>>> = {
+  'host-pr': HOST_PR_CONTRACTS,
+  'issue-store': ISSUE_STORE_CONTRACTS,
+  spine: SPINE_CONTRACTS,
+  config: CONFIG_CONTRACTS,
+};
+
+/**
+ * The top-level verbs whose contracts are declared in their OWN `*-cli` module
+ * (or, for the three whose runner module is outside this row's declared Files
+ * globs, in `verb-contract.ts` — see {@link DISPLACED_VERB_CONTRACTS}). The
+ * router only collects.
+ */
+const DELEGATED_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
+  'conflict-map': CONFLICT_MAP_CONTRACT,
+  'cross-wave': CROSS_WAVE_CONTRACT,
+  resume: RESUME_CONTRACT,
+  'store-preflight': STORE_PREFLIGHT_CONTRACT,
+  'credential-probe': CREDENTIAL_PROBE_CONTRACT,
+  ...ROUTE_CONTRACTS,
+  ...DISPLACED_VERB_CONTRACTS,
+};
+
+/**
+ * THE aggregate reader (ADR-0051 decision 2) — every Verb contract the engine
+ * declares, top-level verbs and group ops alike, keyed by exactly what a caller
+ * types (`route-tuple`, `spine add-disclosure`, `issue-store triage-apply`).
+ *
+ * Root-exported, because three later rows read it rather than re-deriving it:
+ * the skill-side pin (which asserts every `{{wave-cli}}` invocation resolves to
+ * a contract and uses canonical spellings), the prose-verb `--json` row (which
+ * reads the output classes), and the usage-rendering row (which renders each
+ * verb's usage FROM its contract instead of the hand-written lines above).
+ *
+ * The router COLLECTS; it declares only the nine verbs whose runners are in this
+ * file.
+ */
+export function verbContracts(): Readonly<Record<string, VerbContract>> {
+  const out: Record<string, VerbContract> = {
+    ...ROUTER_VERB_CONTRACTS,
+    ...DELEGATED_VERB_CONTRACTS,
+  };
+  for (const [group, ops] of Object.entries(VERB_GROUP_CONTRACTS)) {
+    for (const [op, contract] of Object.entries(ops)) {
+      out[`${group} ${op}`] = contract;
+    }
+  }
+  return out;
+}
+
+/**
+ * The contract an argv addresses, plus the arguments that belong to it —
+ * `undefined` when argv names no verb this engine knows, or names a verb group
+ * without a recognised op.
+ *
+ * ONE resolver, so the refusal, `--help` and the Catalog can never disagree
+ * about which contract an invocation meant.
+ */
+export function contractForArgv(
+  argv: readonly string[],
+): { contract: VerbContract; args: string[] } | undefined {
+  const first = argv[0];
+  if (first === undefined) return undefined;
+  const group = VERB_GROUP_CONTRACTS[first];
+  if (group !== undefined) {
+    const op = argv[1];
+    const contract = op === undefined ? undefined : group[op];
+    return contract === undefined ? undefined : { contract, args: argv.slice(2) };
+  }
+  const contract = verbContracts()[first];
+  return contract === undefined ? undefined : { contract, args: argv.slice(1) };
+}
+
 const STATUS_SYMBOL: Record<string, string> = {
   pass: '✓',
   warn: '⚠',
@@ -706,9 +952,16 @@ function renderResult(issuePath: string, result: DorResult): string {
   return lines.join('\n');
 }
 
-function printUsage(): void {
-  process.stderr.write(
-    [
+/**
+ * The router's whole-CLI usage, as lines.
+ *
+ * Split out from {@link printUsage} (which still writes them to stderr on a
+ * misinvocation) so a bare `flotilla-engine --help` can write the SAME text to
+ * stdout and exit 0 — a help request is an answer, not an error, and answering
+ * on stderr with exit 2 is how a `--help` ends up unreadable in a pipeline.
+ */
+function usageLines(): string[] {
+  return [
       'usage:',
       // Every line below carries an inline OUTPUT-FORMAT note (issue #505 —
       // the `dor`-prints-text surprise class: five sibling verbs print JSON,
@@ -718,10 +971,10 @@ function printUsage(): void {
       '  flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL + gate lines), not JSON',
       '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints text, same as the file form',
       '  flotilla-engine files-drift <issue-path> <sha-range>   # prints text, with a JSON block embedded at the end',
-      '  flotilla-engine merge-order <wave-md-path>   # prints JSON',
+      '  flotilla-engine merge-order (--spine <path> | <wave-md-path>)   # prints JSON',
       '  flotilla-engine closed-by <closed-by-line>   # prints JSON',
       '  flotilla-engine detect-host <remote-url>   # prints JSON',
-      '  flotilla-engine worktree-cleanup (--dry-run | --wave <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]   # prints JSON',
+      '  flotilla-engine worktree-cleanup (--dry-run | --spine <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]   # prints JSON',
       '    --detached   also sweep REGISTERED detached-HEAD scratch checkouts under the worktrees root (the E2BIG population); --dry-run previews the same plan',
       '  flotilla-engine conflict-map <issue-path> [<issue-path> ...]   # prints JSON',
       '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints JSON',
@@ -734,7 +987,7 @@ function printUsage(): void {
       // line and asserts each real op appears in it. Detail lines may follow.
       '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures|human-gated|check-awaiting-human> <spine-path> [...args]   # per-op output — mostly JSON on reads; several write ops print nothing or a bare id/ref on success',
       '    spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>   # ADR-0027: capture at verdict-routing',
-      '    spine add-disclosure <spine-path> --wave --source <worker|reviewer|coordinator> --text <t>   # ADR-0038: wave-scoped capture — no row, no iteration; the window runs to the archive',
+      '    spine add-disclosure <spine-path> --wave-scoped --source <worker|reviewer|coordinator> --text <t>   # ADR-0038: wave-scoped capture — no row, no iteration; the window runs to the archive',
       `    spine set-disposition <spine-path> <disclosure-ref> <${DISPOSITION_VOCABULARY.replace(/ \| /g, '|')}>`,
       '    spine check-disclosures <spine-path>   # fail-closed archive gate: exit != 0 iff an `open` disclosure remains',
       // The ADR-0012 human-lane pair. Dispatched by spine-cli's own table like
@@ -744,11 +997,11 @@ function printUsage(): void {
       '    spine human-gated <spine-path> [--workers <a,b>]   # ADR-0012: list the wave\'s human lane (JSON); empty is a legitimate answer, never a gate',
       '    spine check-awaiting-human <spine-path> [--workers <a,b>]   # fail-closed archive gate: exit != 0 iff a human-gated row still holds a live claim',
       '  flotilla-engine config validate <path>   # prints text (a one-line ok/error message), not JSON',
-      '  flotilla-engine resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]   # prints JSON',
+      '  flotilla-engine resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [--repo-root <dir>] [--marker <m>] [--force]   # prints JSON',
       '  flotilla-engine store-preflight [--config <path>]   # prints JSON',
       '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
       '  flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha> [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>] [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>] [--row-meta <json|path>]   # writes the Workflow driver script to --out; prints a JSON receipt',
-      '  flotilla-engine route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--config <path>] [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>] [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]   # the whole post-return sequence for one row; prints one JSON result',
+      '  flotilla-engine route-tuple --spine <spine> --id <id> --iter <n> --report-file <path> --verdict-file <path> --anchor <sha> [--config <path>] [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>] [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]   # the whole post-return sequence for one row; prints one JSON result',
       // The catalog used to list `[--title <text>]` with no semantics at all,
       // while the verb's OWN usage text carried the preserve-on-reuse rule — so
       // the one surface a stranger reaches first said the least about the one
@@ -757,28 +1010,43 @@ function printUsage(): void {
       '    --title <text> RENAMES the PR. Without it, a REUSE preserves the live PR title byte-identically (the Worker opened it and named its own change), exactly as the body preserves the live PR body; a CREATE falls back to the spine row title with bare tracker ids stripped. The result reports which of the three it used as `titleSource` (flag | live-pr | row).',
       '  flotilla-engine close-row --spine <spine> --id <id> [--pr-url <url>] [--config <path>] [--repo-root <dir>] [--verdicts-dir <dir>]   # the done-reconcile for one merged row; prints one JSON result',
       '    Writes the row\'s `## PR-Log` and `## Closed-by` lines (read-then-upsert, keyed by id — a second row never deletes the first one\'s line), BOTH before the tracker close, then derives the met-AC indexes from the MAX-iter valid verdict sidecar and calls close with them. It does not decide whether the PR merged; it refuses a PR cell that is not a real PR URL.',
-      '  flotilla-engine route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]   # prints JSON',
+      '  flotilla-engine route-verdict --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]   # prints JSON',
       '    --ruling "<the Operator\'s reason>" is the ONLY thing that admits an iteration ABOVE the re-dispatch cap — the Operator-ruled, Reviewer-only round. Without it an above-cap iteration stays refused; with it the result names the ruled cell and quotes the ruling. Accepted by route-tuple too, for the same round.',
       '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
       '  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON',
       '  flotilla-engine validate-verdict <file>   # prints text ("valid"), not JSON',
-      '  flotilla-engine write-report <json-file> --dir <reportsDir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
-      '  flotilla-engine write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
-      '  flotilla-engine verdict-acked <verdictsDir> <id>   # prints JSON',
-      '  flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>   # prints text (the rendered markdown), not JSON',
+      '  flotilla-engine write-report (--report-file <path> | <json-file>) --reports-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
+      '  flotilla-engine write-verdict (--verdict-file <path> | <json-file>) --verdicts-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
+      '  flotilla-engine verdict-acked (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)   # prints JSON',
+      '  flotilla-engine render-verdict (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>) --anchor <sha>   # prints text (the rendered markdown), not JSON',
       '  flotilla-engine version [--expect <plugin-version>]   # ADR-0032: the engine version, and the lockstep comparison (alias: --version); prints JSON',
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
       '',
+      // ADR-0051's glossary consequence, as a code change: "alias" is now the
+      // SPELLING sense — one canonical flag spelling plus the near-synonyms it
+      // silently accepts. A direct module invocation is not a second spelling of
+      // a flag; it is a second way of reaching the same runner, which the
+      // glossary's `Dual-form` entry is the word for. Calling it an alias here
+      // made the one term the whole record turns on ambiguous at the surface a
+      // stranger reads first.
       '  Every engine verb is reachable as a subcommand of THIS CLI. The direct',
-      '  module invocations below still work as aliases and route to the very',
-      '  same runners — prefer the subcommand form listed above:',
+      '  module invocations below still route to the same runners; the subcommand',
+      '  form is the contract — prefer the form listed above:',
       '    npx tsx tools/wave/src/resume-cli.ts ...            -> the `resume` subcommand',
       '    npx tsx tools/wave/src/cli-store.ts preflight ...   -> the `store-preflight` subcommand',
       '    npx tsx tools/wave/src/spine-cli.ts <op> ...        -> the `spine` subcommand',
       '',
-    ].join('\n'),
-  );
+      '  Every verb accepts --json and --help (ADR-0051). --help prints that one',
+      '  verb\'s contract and constructs no store and no host. Every flag has ONE',
+      '  canonical spelling; the near-synonyms a verb used to take are accepted as',
+      '  silent aliases, and anything a verb does not declare exits 2.',
+      '',
+  ];
+}
+
+function printUsage(): void {
+  process.stderr.write(usageLines().join('\n'));
 }
 
 function runDor(paths: string[]): number {
@@ -798,16 +1066,23 @@ function runDor(paths: string[]): number {
   // profiles" (see `NOTE_VERIFY_PROFILES_EMPTY` in dor-gate.ts) — `verify`
   // stays `undefined` after this block ONLY when `--config` itself was never
   // supplied, which is exactly the case that deferral should name.
-  const filePaths = [...paths];
+  const contract = ROUTER_VERB_CONTRACTS.dor;
+  if (helpRequested(contract, paths)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, paths);
+  if (refusal !== 0) return refusal;
+
+  // The issue paths are the contract's positionals, so a flag's VALUE can never
+  // be validated as an issue file (the `--config <path>` splice below used to be
+  // the only thing standing between this loop and exactly that).
+  const filePaths = positionalsOf(contract, paths);
   let verify: VerifyConfig | undefined;
-  const configIdx = filePaths.indexOf('--config');
+  const configIdx = paths.indexOf('--config');
   if (configIdx !== -1) {
-    const configPath = filePaths[configIdx + 1];
+    const configPath = paths[configIdx + 1];
     if (configPath === undefined) {
       process.stderr.write('error: dor --config requires a <path>\n');
       return 2;
     }
-    filePaths.splice(configIdx, 2);
     try {
       verify = loadWaveConfig(configPath).verify ?? { profiles: [] };
     } catch (err) {
@@ -869,7 +1144,18 @@ export async function runDorById(
   args: string[],
   injected?: IssueStore,
 ): Promise<number> {
-  const id = flag(args, '--id');
+  const contract = ROUTER_VERB_CONTRACTS.dor;
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  // The `--id` FORM takes no positional at all — the arity declared on the
+  // contract is the PATH form's — so the declared arity is narrowed for this
+  // call and a stray path exits 2 instead of being silently ignored
+  // (ADR-0051 decision 4).
+  const refusal = refuseUndeclared(contract, args, {
+    positionals: { kind: 'fixed', count: 0 },
+  });
+  if (refusal !== 0) return refusal;
+
+  const id = flag(args, contract, 'id');
   if (id === undefined) {
     process.stderr.write('error: dor --id requires an <id>\n');
     return 2;
@@ -895,7 +1181,7 @@ export async function runDorById(
     return 1;
   }
 
-  const repoRoot = flag(args, '--repo-root');
+  const repoRoot = flag(args, contract, 'repo-root');
 
   // FOR-151: thread the consumer's wave.config.json `verify` block into
   // Gate 8 (verify-profile-coverage) so it can actually run instead of
@@ -914,7 +1200,7 @@ export async function runDorById(
   // check" (still genuinely `verify === undefined`, only when `--config`
   // itself was never passed) apart from "a config loaded and declares zero
   // profiles" (`NOTE_VERIFY_PROFILES_EMPTY` in dor-gate.ts).
-  const configPath = flag(args, '--config');
+  const configPath = flag(args, contract, 'config');
   let verify: VerifyConfig | undefined;
   if (configPath !== undefined) {
     try {
@@ -1134,6 +1420,10 @@ function renderDriftResult(result: DriftResult): string {
  *   2 — cross-project-drift (blocking) OR argument error
  */
 function runFilesDrift(args: string[]): number {
+  const contract = ROUTER_VERB_CONTRACTS['files-drift'];
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
   if (args.length < 2) {
     process.stderr.write(
       [
@@ -1230,18 +1520,32 @@ function runMergeOrder(
   args: string[],
   opts: ComputeMergeOrderOptions = {},
 ): number {
-  if (args.length < 1) {
+  const contract = ROUTER_VERB_CONTRACTS['merge-order'];
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
+
+  // Named twin (ADR-0051 decision 6): `--spine <path>` is canonical because four
+  // sibling verbs already spell the spine that way; the bare positional survives
+  // as its alias, and passing both is a usage error.
+  const twin = resolveTwin(contract, args);
+  if (!twin.ok) {
+    process.stderr.write([`error: ${twin.error}`, ...contract.usage, ''].join('\n'));
+    return 2;
+  }
+  const spineArg = twin.values[0];
+  if (spineArg === undefined) {
     process.stderr.write(
       [
         'error: merge-order requires one argument',
-        'usage: flotilla-engine merge-order <wave-md-path>   # prints JSON',
+        ...contract.usage,
         '',
       ].join('\n'),
     );
     return 2;
   }
 
-  const spinePath = resolve(args[0]);
+  const spinePath = resolve(spineArg);
   const repoRoot = opts.repoRoot ?? findRepoRoot(spinePath);
   let result: MergeOrderResult;
   try {
@@ -1268,6 +1572,10 @@ function runMergeOrder(
  *   0 — needsPin: false   1 — needsPin: true   2 — missing arg
  */
 function runClosedBy(args: string[]): number {
+  const contract = ROUTER_VERB_CONTRACTS['closed-by'];
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
   if (args.length < 1) {
     process.stderr.write(
       [
@@ -1296,6 +1604,10 @@ function runClosedBy(args: string[]): number {
  *   0 — github / bitbucket   1 — unknown host   2 — missing arg
  */
 function runDetectHost(args: string[]): number {
+  const contract = ROUTER_VERB_CONTRACTS['detect-host'];
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
   if (args.length < 1) {
     process.stderr.write(
       [
@@ -1351,19 +1663,13 @@ function resolveBranchFilter(
   args: string[],
   repoRoot: string,
 ): Set<string> | undefined {
-  // Extract --wave <value> and --branches <value> from the args.
-  let waveSpinePath: string | null = null;
-  let branchesLiteral: string | null = null;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--wave' && i + 1 < args.length) {
-      waveSpinePath = args[i + 1];
-      i++;
-    } else if (args[i] === '--branches' && i + 1 < args.length) {
-      branchesLiteral = args[i + 1];
-      i++;
-    }
-  }
+  // The spine path and the branch literal, read THROUGH the contract — so
+  // `--spine` (canonical, ADR-0051 decision 5) and `--wave` (its alias, the
+  // spelling every existing `wave-close` call-site still uses) both resolve
+  // here, and neither can be confused with another flag's value.
+  const contract = ROUTER_VERB_CONTRACTS['worktree-cleanup'];
+  const waveSpinePath = flag(args, contract, 'spine') ?? null;
+  const branchesLiteral = flag(args, contract, 'branches') ?? null;
 
   if (waveSpinePath === null && branchesLiteral === null) {
     return undefined; // No filter — global GC.
@@ -1379,7 +1685,7 @@ function resolveBranchFilter(
     } catch (err) {
       // Propagate as a usage error — the spine must be readable.
       throw new Error(
-        `--wave: could not read spine "${absSpine}": ${(err as Error).message}`,
+        `--spine: could not read spine "${absSpine}": ${(err as Error).message}`,
         { cause: err },
       );
     }
@@ -1399,7 +1705,7 @@ function resolveBranchFilter(
       // read alike — an operator should never have to tell "I could not scope"
       // from "nothing was in scope".
       throw new Error(
-        `--wave: no branch scope could be derived from spine "${absSpine}" — ` +
+        `--spine: no branch scope could be derived from spine "${absSpine}" — ` +
           'refusing to fall back to an unscoped cleanup, which would select every ' +
           'agent worktree in the repository (including any sibling wave still in ' +
           `flight). Reader said: ${(err as Error).message}`,
@@ -1471,13 +1777,11 @@ function resolveBranchFilter(
  * into two.
  */
 function resolveLiveWaveScope(args: string[], repoRoot: string): LiveWaveScope {
-  let waveSpinePath: string | null = null;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--wave' && i + 1 < args.length) {
-      waveSpinePath = args[i + 1];
-      i++;
-    }
-  }
+  // Same contract read as `resolveBranchFilter` — `--spine` or its `--wave`
+  // alias — so the two functions cannot disagree about which spine this run is
+  // scoped to.
+  const waveSpinePath =
+    flag(args, ROUTER_VERB_CONTRACTS['worktree-cleanup'], 'spine') ?? null;
   if (waveSpinePath === null) return UNDECLARED_WAVE_SCOPE;
 
   const absSpine = resolve(repoRoot, waveSpinePath);
@@ -1797,43 +2101,22 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
  *   2 — usage / unexpected error
  */
 function runWorktreeCleanup(args: string[]): number {
-  const dryRun = args.includes('--dry-run');
-  const orphans = args.includes('--orphans');
-  const detached = args.includes('--detached');
-  // Positional args are those that don't start with '--' and are not values of
-  // a known flag (--wave / --branches / --config consume the token after
-  // them). `--config <path>` is accepted (FOR-87, W25-F2): every sibling verb
-  // already tolerates the uniform Coordinator-wrapper flag, and without a case
-  // for it here its value token fell through to `positional` (silently
-  // binding as <repo-root> — a confusing ENOTDIR on a concatenated phantom
-  // path). Its value is now actually loaded (issue #184 — see the doc comment
-  // above this function), not merely consumed-and-discarded. Any OTHER
-  // unknown `--flag` fails loud below — a flag-shaped token must never
-  // silently bind as data.
-  const noValueFlags = new Set(['--dry-run', '--orphans', '--detached']);
-  const flagsWithValues = new Set(['--wave', '--branches', '--config']);
-  const positional: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a.startsWith('--')) {
-      if (flagsWithValues.has(a)) {
-        i++; // consume the value token (--config's value is loaded below, issue #184)
-        continue;
-      }
-      if (noValueFlags.has(a)) {
-        continue;
-      }
-      process.stderr.write(
-        [
-          `error: worktree-cleanup: unknown flag ${a}`,
-          'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--wave <spine>] [--branches <b1,b2>] [--orphans] [--detached] [--config <path>]   # prints JSON',
-          '',
-        ].join('\n'),
-      );
-      return 2;
-    }
-    positional.push(a);
-  }
+  const contract = ROUTER_VERB_CONTRACTS['worktree-cleanup'];
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  // This verb's own unknown-flag list — the two `Set`s that used to live here,
+  // one naming the value-less flags and one the value-taking ones — is gone,
+  // folded into the ONE refusal path (ADR-0051 decision 4). The contract states
+  // per flag whether it consumes the next token, which is what those Sets
+  // encoded, and `--config <path>` stays accepted (FOR-87, W25-F2: every
+  // sibling verb tolerates the uniform Coordinator-wrapper flag, and its value
+  // is loaded below — issue #184 — rather than consumed and discarded).
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
+
+  const dryRun = hasFlag(contract, args, 'dry-run');
+  const orphans = hasFlag(contract, args, 'orphans');
+  const detached = hasFlag(contract, args, 'detached');
+  const positional = positionalsOf(contract, args);
   const repoRoot =
     positional.length > 0 ? resolve(positional[0]) : process.cwd();
 
@@ -1850,7 +2133,7 @@ function runWorktreeCleanup(args: string[]): number {
   // second key would parse and re-validate the same file twice and could report
   // its failure twice, which is how one config error turns into two confusing
   // messages.
-  const configPath = flag(args, '--config');
+  const configPath = flag(args, contract, 'config');
   let disposableNames: readonly string[] | undefined;
   let extraRoots: readonly string[] | undefined;
   if (configPath !== undefined) {
@@ -2532,13 +2815,28 @@ function defaultVerdictSidecarReader(): SidecarReader {
  * Exit codes: 0 — printed (found or not found); 2 — usage (missing args).
  */
 function runVerdictAcked(args: string[]): number {
-  const verdictsDir = args[0];
-  const id = args[1];
+  const contract = ROUTER_VERB_CONTRACTS['verdict-acked'];
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
+
+  // Named twin (ADR-0051 decision 6): a sibling verb takes this directory and
+  // this id as `--verdicts-dir`/`--id`, so this verb accepts them named as well
+  // — canonically — while keeping the positional pair as their alias. A MIXED
+  // call (`verdict-acked <dir> --id X`) is a usage error, because it reads to
+  // its caller as though both halves landed.
+  const twin = resolveTwin(contract, args);
+  if (!twin.ok) {
+    process.stderr.write([`error: ${twin.error}`, ...contract.usage, ''].join('\n'));
+    return 2;
+  }
+  const verdictsDir = twin.values[0];
+  const id = twin.values[1];
   if (verdictsDir === undefined || id === undefined) {
     process.stderr.write(
       [
         'error: verdict-acked requires <verdictsDir> <id>',
-        'usage: flotilla-engine verdict-acked <verdictsDir> <id>   # prints JSON',
+        ...contract.usage,
         '',
       ].join('\n'),
     );
@@ -2582,14 +2880,27 @@ function runVerdictAcked(args: string[]): number {
  * 2 — usage (missing args).
  */
 function runRenderVerdict(args: string[]): number {
-  const verdictsDir = args[0];
-  const id = args[1];
-  const anchorSha = flag(args, '--anchor');
+  const contract = ROUTER_VERB_CONTRACTS['render-verdict'];
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
+
+  // Named twin (ADR-0051 decision 6), same as `verdict-acked` above. `--anchor`
+  // is NOT part of the twin: it has no positional spelling on any verb, so it
+  // is always named and never participates in the all-named/all-positional rule.
+  const twin = resolveTwin(contract, args);
+  if (!twin.ok) {
+    process.stderr.write([`error: ${twin.error}`, ...contract.usage, ''].join('\n'));
+    return 2;
+  }
+  const verdictsDir = twin.values[0];
+  const id = twin.values[1];
+  const anchorSha = flag(args, contract, 'anchor');
   if (verdictsDir === undefined || id === undefined || anchorSha === undefined) {
     process.stderr.write(
       [
         'error: render-verdict requires <verdictsDir> <id> --anchor <sha>',
-        'usage: flotilla-engine render-verdict <verdictsDir> <id> --anchor <sha>   # prints text (the rendered markdown), not JSON',
+        ...contract.usage,
         '',
       ].join('\n'),
     );
@@ -2648,29 +2959,31 @@ function runRenderVerdict(args: string[]): number {
  * and the one-line `repair` without parsing prose.
  */
 function runVersion(args: string[]): number {
+  const contract = ROUTER_VERB_CONTRACTS.version;
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  // This verb's own hand-rolled arg loop — one of the four private unknown-flag
+  // lists ADR-0051 decision 4 folds into a single path — is gone. What it
+  // enforced is unchanged: an unknown flag and a stray positional are both
+  // usage errors, and both still exit 2. What it could not do, this path does:
+  // name the nearest declared flag.
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
+
+  // The value-less `--expect` stays this verb's OWN check, and deliberately so:
+  // it is not about a token the contract fails to declare, it is about a
+  // DECLARED flag whose value went missing — the exact shape that turns a
+  // version gate off when its input breaks (an unset shell variable, a `jq`
+  // miss). `flag()` cannot tell it from the flag being absent, so the check is
+  // positional and the message is this verb's.
   let expected: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--expect') {
-      const value = args[i + 1];
-      if (
-        value === undefined ||
-        value.startsWith('--') ||
-        value.trim().length === 0
-      ) {
-        return versionUsage(
-          '--expect requires a <plugin-version> value — a value-less --expect is a caller whose lookup produced nothing, not a request to skip the check',
-        );
-      }
-      expected = value;
-      i++;
-      continue;
+  if (hasFlag(contract, args, 'expect')) {
+    const value = flag(args, contract, 'expect');
+    if (value === undefined || value.startsWith('--') || value.trim().length === 0) {
+      return versionUsage(
+        '--expect requires a <plugin-version> value — a value-less --expect is a caller whose lookup produced nothing, not a request to skip the check',
+      );
     }
-    return versionUsage(
-      a.startsWith('--')
-        ? `unknown flag ${a}`
-        : `unexpected argument "${a}" — version takes no positional arguments`,
-    );
+    expected = value;
   }
 
   const report = compareEngineVersion(expected);
@@ -2682,11 +2995,7 @@ function versionUsage(message: string): number {
   process.stderr.write(
     [
       `error: version: ${message}`,
-      'usage: flotilla-engine version [--expect <plugin-version>]',
-      '  Prints { version, expected, match, outcome, detail, repair } as JSON.',
-      '  Resolves no store and reads no wave config.',
-      '  Exit: 0 match / bare read; 1 mismatch, unreadable engine version, or',
-      '  unusable expectation; 2 usage.',
+      ...ROUTER_VERB_CONTRACTS.version.usage,
       '',
     ].join('\n'),
   );
@@ -2711,6 +3020,16 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   // router is the only place the spelling can live.
   if (first === '--version') {
     return runVersion(argv.slice(1));
+  }
+
+  // A BARE `--help` (ADR-0051 decision 7) — the whole-CLI usage, on stdout and
+  // exit 0. Every VERB's own `--help` is answered by that verb's runner, from
+  // its own contract, which is what keeps a help request from ever constructing
+  // a store or a host; this case is only the no-verb one, where the router is
+  // the thing being asked about.
+  if (first === '--help') {
+    process.stdout.write(usageLines().join('\n'));
+    return 0;
   }
 
   // Explicit subcommand routing.
@@ -2901,6 +3220,32 @@ export function main(argv: string[] = process.argv.slice(2)): number {
  * deterministic non-zero exit instead of depending on the runtime's unhandled-
  * rejection default.
  */
+/**
+ * The contract gate for the three verbs whose RUNNER module sits outside this
+ * row's declared Files globs (`compose-driver.ts`, `route-tuple.ts`,
+ * `close-row.ts` — see {@link DISPLACED_VERB_CONTRACTS}).
+ *
+ * It does here, at the router, exactly what every other verb's runner does for
+ * itself: answers `--help` from the contract before any store or host is built,
+ * refuses anything the contract does not declare, and then hands the runner an
+ * argv whose flags are spelled the way that runner reads them
+ * ({@link normalizeForRunner} — the only place the two `runnerToken` bridges
+ * are used, so `route-tuple --verdict-file <p>` reaches an unrewritten runner
+ * that still looks for `--verdict`).
+ *
+ * `code` is `null` when the call may proceed; `args` is what to pass on.
+ */
+function gateDisplacedVerb(
+  verb: keyof typeof DISPLACED_VERB_CONTRACTS,
+  args: string[],
+): { code: number | null; args: string[] } {
+  const contract = DISPLACED_VERB_CONTRACTS[verb];
+  if (helpRequested(contract, args)) return { code: printVerbHelp(contract), args };
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return { code: refusal, args };
+  return { code: null, args: normalizeForRunner(contract, args) };
+}
+
 export async function mainAsync(
   argv: string[] = process.argv.slice(2),
   injected?: IssueStore,
@@ -2932,7 +3277,9 @@ export async function mainAsync(
     // --spine/--out/--anchor are all required — and its own usage names all
     // three, which is a better answer than the router's whole-CLI usage dump.
     if (argv[0] === 'compose-driver') {
-      return await runComposeDriver(argv.slice(1), injected);
+      const gated = gateDisplacedVerb('compose-driver', argv.slice(1));
+      if (gated.code !== null) return gated.code;
+      return await runComposeDriver(gated.args, injected);
     }
     // `route-tuple` is async twice over — it talks to the code HOST
     // (find-before-create, the status re-query) and it resolves a store (the
@@ -2942,7 +3289,9 @@ export async function mainAsync(
     // and the runner's own usage names all six, which teaches far better than
     // the router's whole-CLI dump.
     if (argv[0] === 'route-tuple') {
-      return await runRouteTuple(argv.slice(1), injected ? { store: injected } : {});
+      const gated = gateDisplacedVerb('route-tuple', argv.slice(1));
+      if (gated.code !== null) return gated.code;
+      return await runRouteTuple(gated.args, injected ? { store: injected } : {});
     }
     // `close-row` resolves a store — the done-reconcile ends in the tracker's
     // own `close(id, prUrl, acked)` — so it is intercepted here like
@@ -2951,7 +3300,9 @@ export async function mainAsync(
     // own usage names both, plus the refusal rule for a PR cell that is not a
     // real PR URL — which teaches far better than the router's whole-CLI dump.
     if (argv[0] === 'close-row') {
-      return await runCloseRow(argv.slice(1), injected ? { store: injected } : {});
+      const gated = gateDisplacedVerb('close-row', argv.slice(1));
+      if (gated.code !== null) return gated.code;
+      return await runCloseRow(gated.args, injected ? { store: injected } : {});
     }
     // `dor --id <id>` is the store-backed (async) form; bare `dor <path>...`
     // stays in the sync `main()`. The `--id` flag is the disambiguator (ADR-0014).

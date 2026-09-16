@@ -97,6 +97,42 @@ import {
   type SidecarReader,
 } from './sidecar';
 import { flag, printJson } from './cli-utils';
+import {
+  hasFlag,
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
+
+/**
+ * `resume`'s Verb contract (ADR-0051 decision 2), declared beside its runner.
+ *
+ * It carried two of the four measured spelling axes on its own: `--reports` and
+ * `--verdicts` where every sibling verb says `--reports-dir` / `--verdicts-dir`.
+ * Decision 3 makes the longer spelling canonical — a tie goes to the spelling
+ * that NAMES the thing — and keeps both short forms as this verb's silent
+ * aliases, so the six `wave-resume` call-sites that still spell them the old way
+ * resolve unchanged.
+ */
+export const RESUME_CONTRACT: VerbContract = {
+  verb: 'resume',
+  flags: [
+    { canonical: '--spine', value: 'one', valueType: 'path', required: true },
+    { canonical: '--reports-dir', aliases: ['--reports'], value: 'one', valueType: 'dir', required: true },
+    { canonical: '--verdicts-dir', aliases: ['--verdicts'], value: 'one', valueType: 'dir', required: true },
+    { canonical: '--repo-root', value: 'one', valueType: 'dir' },
+    { canonical: '--marker', value: 'one', valueType: 'text' },
+    { canonical: '--force', value: 'none', valueType: 'none' },
+  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: [
+    'usage: resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [--repo-root <dir>] [--marker <m>] [--force]',
+    '  --reports and --verdicts are accepted as aliases of --reports-dir and --verdicts-dir.',
+    'output: JSON — the ResumeResult plus a `cleanup` array',
+  ],
+};
 
 /**
  * The durable-home reads (+ the crash-cleanup seam), isolated for testing.
@@ -160,8 +196,8 @@ export const defaultDeps: ResumeDeps = {
 function printUsage(): void {
   process.stderr.write(
     [
-      'error: --spine, --reports and --verdicts are required',
-      'usage: resume --spine <path> --reports <dir> --verdicts <dir> [--repo-root <dir>] [--marker <m>] [--force]',
+      'error: --spine, --reports-dir and --verdicts-dir are required',
+      ...RESUME_CONTRACT.usage,
       '',
     ].join('\n'),
   );
@@ -178,12 +214,16 @@ function printUsage(): void {
  * @returns exit code: 0 success, 1 domain failure, 2 usage error
  */
 export function runResume(args: string[], deps: ResumeDeps = defaultDeps): number {
-  const spinePath = flag(args, '--spine');
-  const reportsDir = flag(args, '--reports');
-  const verdictsDir = flag(args, '--verdicts');
-  const repoRoot = flag(args, '--repo-root') ?? process.cwd();
-  const marker = flag(args, '--marker');
-  const force = args.includes('--force');
+  if (helpRequested(RESUME_CONTRACT, args)) return printVerbHelp(RESUME_CONTRACT);
+  const refusal = refuseUndeclared(RESUME_CONTRACT, args);
+  if (refusal !== 0) return refusal;
+
+  const spinePath = flag(args, RESUME_CONTRACT, 'spine');
+  const reportsDir = flag(args, RESUME_CONTRACT, 'reports-dir');
+  const verdictsDir = flag(args, RESUME_CONTRACT, 'verdicts-dir');
+  const repoRoot = flag(args, RESUME_CONTRACT, 'repo-root') ?? process.cwd();
+  const marker = flag(args, RESUME_CONTRACT, 'marker');
+  const force = hasFlag(RESUME_CONTRACT, args, 'force');
 
   if (spinePath === undefined || reportsDir === undefined || verdictsDir === undefined) {
     printUsage();

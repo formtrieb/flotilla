@@ -1529,3 +1529,81 @@ export {
   type DepsSetupResolution,
   type DepsSetupSource,
 } from './compose-driver';
+
+// ─── the Verb contract (ADR-0051) ────────────────────────────────────────────
+//
+// The type and the machinery that reads it. Root-exported as a whole rather
+// than selectively, because the four readers ADR-0051 names are not all in this
+// repo: the parser and the refusal are (`flag()`, `refuseUndeclared`), `--help`
+// is, and the CATALOG is a later row that emits these contracts as JSON. A
+// consumer writing its own tooling against the engine surface reaches for the
+// same pieces — which spellings a verb accepts, which one is canonical, what
+// its output class is — and none of that is reachable through a CLI invocation.
+//
+// Additive (Minor, ADR-0035): every name below is new.
+export {
+  ROUTER_GLOBAL_FLAGS,
+  DISPLACED_VERB_CONTRACTS,
+  routerGlobalFlag,
+  flagContractForToken,
+  resolveFlagContract,
+  acceptedSpellings,
+  declaredFlagTokens,
+  canonicalFlagTokens,
+  editDistance,
+  nearestDeclared,
+  scanArgs,
+  hasFlag,
+  positionalsOf,
+  normalizeForRunner,
+  checkUndeclared,
+  renderRefusal,
+  describeArity,
+  refuseUndeclared,
+  helpRequested,
+  printVerbHelp,
+  resolveTwin,
+  firstValueOf,
+  allValuesOf,
+  type FlagValueKind,
+  type FlagValueType,
+  type FlagContract,
+  type PositionalArity,
+  type TwinSlot,
+  type OutputClass,
+  type VerbContract,
+  type ScannedArgs,
+  type VerbContractViolation,
+  type CheckOptions,
+  type TwinMode,
+  type TwinResolution,
+} from './verb-contract';
+
+// THE aggregate reader plus the argv resolver (ADR-0051 decision 2). These are
+// the "one thing" the skill-side pin (the row that rewrites the skills to
+// canonical), the prose-verb `--json` row (which reads the output classes) and
+// the Catalog all read, so they are the two names on this barrel that a later
+// row is guaranteed to reach for.
+export { verbContracts, contractForArgv } from './cli';
+
+// Each module's OWN contracts, beside its runner (ADR-0051 decision 2 — never a
+// central file). `verbContracts()` above collects them; they are named here
+// individually for the same reason every other CLI runner on this barrel is:
+// a consumer that reaches for one verb's contract should not have to filter the
+// whole aggregate for it.
+export { HOST_PR_CONTRACTS } from './host-pr-cli';
+export { ISSUE_STORE_CONTRACTS } from './issue-store-cli';
+export { SPINE_CONTRACTS } from './spine-cli';
+export { ROUTE_CONTRACTS } from './route-cli';
+export { RESUME_CONTRACT } from './resume-cli';
+export { CROSS_WAVE_CONTRACT } from './cross-wave-cli';
+export { CONFLICT_MAP_CONTRACT } from './conflict-map-cli';
+export { CONFIG_CONTRACTS } from './config-cli';
+export { CREDENTIAL_PROBE_CONTRACT } from './credential-probe-cli';
+export { STORE_PREFLIGHT_CONTRACT } from './cli-store';
+
+// The repeatable-flag reader that joined `flag()` in cli-utils (ADR-0051): three
+// hand-rolled loops (issue-store's `flagAll`, conflict-map's
+// `partitionStoreArgs`, credential-probe's `--var` branch) collapsed into it,
+// and it is on the barrel because `flag()`'s neighbours already are.
+export { flagAll } from './cli-utils';

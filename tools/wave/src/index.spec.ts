@@ -1206,8 +1206,76 @@ const SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT = [
   'resolveTitle',
 ].sort();
 
+/**
+ * The Verb contract family (ADR-0051) — the type's machinery, the router's
+ * aggregate reader, and each module's own contracts.
+ *
+ * Why the WHOLE family rather than the two names the acceptance criterion asks
+ * for: ADR-0051 decision 2 names four readers of a contract — the parser, the
+ * refusal, `--help` and the Catalog — and only three of them are in this repo.
+ * A consumer writing its own tooling against the engine surface asks the same
+ * questions those four ask (which spellings does this verb accept, which one is
+ * canonical, what is its output class), and none of them is answerable through
+ * a CLI invocation. So the machinery travels with the type.
+ *
+ * The TWENTY types that came with them — `VerbContract`, `FlagContract`,
+ * `FlagValueKind`, `FlagValueType`, `PositionalArity`, `TwinSlot`,
+ * `OutputClass`, `ScannedArgs`, `VerbContractViolation`, `CheckOptions`,
+ * `TwinMode`, `TwinResolution` — are erased at runtime and add nothing to the
+ * count below; `tsc --noEmit` plus barrel-drift.spec.ts's compiler-API check are
+ * their gate, exactly as they are for every type half above.
+ *
+ * Semver: ADDITIONS only, so minor (ADR-0035). The behaviour change that rides
+ * with them — a flag a verb never declared now exits 2 where it was silently
+ * swallowed — is minor WITH AN UPGRADING HEADS-UP under the 2026-09-16
+ * amendment, and every old spelling still resolves as an alias.
+ */
+const VERB_CONTRACT_FAMILY_ADDED_AT_ROOT = [
+  // The machinery (verb-contract.ts)
+  'ROUTER_GLOBAL_FLAGS',
+  'DISPLACED_VERB_CONTRACTS',
+  'routerGlobalFlag',
+  'flagContractForToken',
+  'resolveFlagContract',
+  'acceptedSpellings',
+  'declaredFlagTokens',
+  'canonicalFlagTokens',
+  'editDistance',
+  'nearestDeclared',
+  'scanArgs',
+  'hasFlag',
+  'positionalsOf',
+  'normalizeForRunner',
+  'checkUndeclared',
+  'renderRefusal',
+  'describeArity',
+  'refuseUndeclared',
+  'helpRequested',
+  'printVerbHelp',
+  'resolveTwin',
+  'firstValueOf',
+  'allValuesOf',
+  // The router's aggregate reader + the argv resolver (cli.ts)
+  'verbContracts',
+  'contractForArgv',
+  // Each module's own contracts, beside its runner
+  'HOST_PR_CONTRACTS',
+  'ISSUE_STORE_CONTRACTS',
+  'SPINE_CONTRACTS',
+  'ROUTE_CONTRACTS',
+  'RESUME_CONTRACT',
+  'CROSS_WAVE_CONTRACT',
+  'CONFLICT_MAP_CONTRACT',
+  'CONFIG_CONTRACTS',
+  'CREDENTIAL_PROBE_CONTRACT',
+  'STORE_PREFLIGHT_CONTRACT',
+  // The repeatable-flag reader that joined `flag()` in cli-utils
+  'flagAll',
+].sort();
+
 const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   ROOT_RUNTIME_EXPORT_COUNT_BEFORE +
+  VERB_CONTRACT_FAMILY_ADDED_AT_ROOT.length +
   SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT.length +
   CREATE_OR_REUSE_FAMILY_ADDED_AT_ROOT.length +
   COMMAND_LINE_FAMILY_ADDED_AT_ROOT.length +
@@ -1772,6 +1840,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // The count alone is necessary but not sufficient: a stowaway arriving in
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(VERB_CONTRACT_FAMILY_ADDED_AT_ROOT),
+    );
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT),
     );

@@ -195,7 +195,7 @@ describe('resume — one runner, two spellings (issue #77)', () => {
       // missing-flag guard answers — before any disk or git access.
       const code = main(['resume', '--spine', '/x', '--reports', '/r']);
       expect(code).toBe(2);
-      expect(stderrBuf).toMatch(/--spine, --reports and --verdicts are required/);
+      expect(stderrBuf).toMatch(/--spine, --reports-dir and --verdicts-dir are required/);
       expect(stderrBuf).not.toMatch(/unknown subcommand/);
     } finally {
       err.mockRestore();

@@ -42,9 +42,16 @@
 import { resolve } from 'node:path';
 import { computeConflictMap, loadIssueGlobs, type IssueGlobs } from './conflict-map';
 import { findScratchRoot } from './find-repo-root';
-import { flag } from './cli-utils';
+import { flag, flagAll } from './cli-utils';
 import { resolveStore } from './cli-store';
 import type { IssueStore } from './adapters/issue-store';
+import {
+  helpRequested,
+  positionalsOf,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
 
 const USAGE_LINES = [
   'usage:',
@@ -58,33 +65,29 @@ function writeUsage(): void {
 }
 
 /**
- * Collect every `--id <value>` pair and every stray positional token from an
- * arg list, skipping the known value-carrying flags (`--repo-root`, `--config`)
- * and their values. Any leftover positional is a mixed-in issue path — AC3's
- * "mixing paths and --id" error case.
+ * `conflict-map`'s Verb contract (ADR-0051 decision 2) — ONE contract for both
+ * invocation forms, because both are one verb.
+ *
+ * `--id` is REPEATABLE here and takes one value on `dor`; that is a difference
+ * in arity, not in value TYPE, so decision 5's uniqueness rule (no canonical
+ * spelling carries two value types) is untouched — both spell an issue id.
+ *
+ * The positional arity declared below is the PATH form's. The store form takes
+ * none at all, and the runner narrows the arity to zero for that call: a
+ * positional mixed into `--id` is the "cannot mix" error, and it now travels
+ * the same refusal path every other undeclared token does.
  */
-function partitionStoreArgs(args: string[]): { ids: string[]; positionals: string[] } {
-  const ids: string[] = [];
-  const positionals: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const tok = args[i];
-    if (tok === '--id') {
-      const val = args[i + 1];
-      if (val !== undefined) {
-        ids.push(val);
-        i++; // consume the value
-      }
-      continue;
-    }
-    if (tok === '--repo-root' || tok === '--config') {
-      i++; // consume the value; never a positional
-      continue;
-    }
-    if (tok.startsWith('--')) continue; // any other flag: ignore, never a path
-    positionals.push(tok);
-  }
-  return { ids, positionals };
-}
+export const CONFLICT_MAP_CONTRACT: VerbContract = {
+  verb: 'conflict-map',
+  flags: [
+    { canonical: '--id', value: 'repeatable', valueType: 'id' },
+    { canonical: '--repo-root', value: 'one', valueType: 'dir' },
+    { canonical: '--config', value: 'one', valueType: 'path' },
+  ],
+  positionals: { kind: 'variadic', min: 1, label: '<issue-path>' },
+  output: 'json',
+  usage: [...USAGE_LINES, 'output: JSON — { issues, cells }'],
+};
 
 /**
  * Run the conflict-map CLI — PATH form (sync).
@@ -95,12 +98,17 @@ function partitionStoreArgs(args: string[]): { ids: string[]; positionals: strin
  * @returns exit code: 0 success, 1 no readable issues, 2 missing args
  */
 export function runConflictMap(args: string[]): number {
-  if (args.length === 0) {
+  if (helpRequested(CONFLICT_MAP_CONTRACT, args)) return printVerbHelp(CONFLICT_MAP_CONTRACT);
+  const refusal = refuseUndeclared(CONFLICT_MAP_CONTRACT, args);
+  if (refusal !== 0) return refusal;
+
+  const paths = positionalsOf(CONFLICT_MAP_CONTRACT, args);
+  if (paths.length === 0) {
     writeUsage();
     return 2;
   }
 
-  const absPaths = args.map((arg) => resolve(arg));
+  const absPaths = paths.map((arg) => resolve(arg));
   const repoRoot = findScratchRoot(absPaths[0]);
   const inputs = loadIssueGlobs(absPaths);
 
@@ -141,8 +149,13 @@ export async function runConflictMapById(
   args: string[],
   injected?: IssueStore,
 ): Promise<number> {
-  const { ids, positionals } = partitionStoreArgs(args);
+  if (helpRequested(CONFLICT_MAP_CONTRACT, args)) return printVerbHelp(CONFLICT_MAP_CONTRACT);
+  const ids = flagAll(args, CONFLICT_MAP_CONTRACT, 'id');
+  const positionals = positionalsOf(CONFLICT_MAP_CONTRACT, args);
 
+  // The mixed-form refusal keeps its OWN message: "cannot mix issue paths and
+  // --id" teaches the actual mistake, which the generic stray-positional
+  // refusal below could not. Everything else undeclared goes the one way.
   if (positionals.length > 0) {
     process.stderr.write(
       'error: cannot mix issue paths and --id in one call — use one form or the other\n',
@@ -150,6 +163,13 @@ export async function runConflictMapById(
     writeUsage();
     return 2;
   }
+  // The store form takes NO positional, so the declared (path-form) arity is
+  // narrowed to zero for this call; positionals are already handled above, so
+  // what reaches here is an undeclared FLAG (ADR-0051 decision 4).
+  const refusal = refuseUndeclared(CONFLICT_MAP_CONTRACT, args, {
+    positionals: { kind: 'fixed', count: 0 },
+  });
+  if (refusal !== 0) return refusal;
   if (ids.length === 0) {
     process.stderr.write('error: conflict-map --id requires at least one <id>\n');
     writeUsage();
@@ -180,7 +200,7 @@ export async function runConflictMapById(
     inputs.push({ issueId: view.id, files: view.files });
   }
 
-  const repoRoot = flag(args, '--repo-root');
+  const repoRoot = flag(args, CONFLICT_MAP_CONTRACT, 'repo-root');
   const result = computeConflictMap(
     inputs,
     repoRoot !== undefined ? { repoRoot } : {},

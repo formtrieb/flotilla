@@ -4756,7 +4756,7 @@ describe('router wiring — resume (issue #77)', () => {
     // usage, which the top-level router usage never prints.
     const code = main(['resume', '--spine', '/x', '--reports', '/r']);
     expect(code).toBe(2);
-    expect(stderrBuf).toMatch(/--spine, --reports and --verdicts are required/);
+    expect(stderrBuf).toMatch(/--spine, --reports-dir and --verdicts-dir are required/);
     expect(stderrBuf).not.toMatch(/unknown subcommand/);
   });
 

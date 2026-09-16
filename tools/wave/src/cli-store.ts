@@ -92,6 +92,12 @@ import type { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { DEFAULT_LINEAR_STATES, type LinearStateMap } from './adapters/linear/linear-issues-store';
 import { RISK_VALUES, WORKER_VALUES, type Risk, type Worker } from './header-parser';
 import { flag, printJson, describeConfigLoadError } from './cli-utils';
+import {
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
 
 /**
  * Read `--config <path>` (default `wave.config.json`, resolved against cwd)
@@ -980,6 +986,30 @@ function markdownChecks(): PreflightCheck[] {
  */
 const CREATE_MISSING_LABELS_FLAG = '--create-missing-labels';
 
+/**
+ * `store-preflight`'s Verb contract (ADR-0051 decision 2), declared beside its
+ * runner. None of ADR-0051's four spelling axes passes through this verb, so the
+ * declaration states what the runner already read — plus the two router globals
+ * every verb now accepts, which is what lets `store-preflight --help` answer
+ * WITHOUT resolving a store or reaching the tracker (issue #758).
+ */
+export const STORE_PREFLIGHT_CONTRACT: VerbContract = {
+  verb: 'store-preflight',
+  flags: [
+    { canonical: '--config', value: 'one', valueType: 'path' },
+    { canonical: '--expect', value: 'one', valueType: 'version' },
+    { canonical: CREATE_MISSING_LABELS_FLAG, value: 'none', valueType: 'none' },
+  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: [
+    `usage: store-preflight [--config <path>] [--expect <plugin-version>] [${CREATE_MISSING_LABELS_FLAG}]`,
+    '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
+    '  For code-host posture run `host-pr preflight` — it is store-blind.',
+    'output: JSON — the StorePreflightReport',
+  ],
+};
+
 function preflightUsage(message: string): number {
   process.stderr.write(
     [
@@ -1056,6 +1086,16 @@ export async function runStorePreflight(args: string[], injected?: IssueStore): 
   if (op !== 'preflight') {
     return preflightUsage(`unknown op "${op ?? ''}" — only "preflight" is supported`);
   }
+  // Answered from argv alone, BEFORE `resolveStore` builds a tracker client and
+  // resolves a credential (ADR-0051 decisions 4 + 7 — the `store-preflight
+  // --help` network probe of issue #758 stops here).
+  const opArgs = args.slice(1);
+  if (helpRequested(STORE_PREFLIGHT_CONTRACT, opArgs)) {
+    return printVerbHelp(STORE_PREFLIGHT_CONTRACT);
+  }
+  const refusal = refuseUndeclared(STORE_PREFLIGHT_CONTRACT, opArgs);
+  if (refusal !== 0) return refusal;
+
   const expected = readExpectFlag(args);
   if (expected === null) {
     return preflightUsage(
