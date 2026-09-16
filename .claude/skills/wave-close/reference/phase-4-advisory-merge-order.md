@@ -3,7 +3,7 @@
 Recompute the order and print it as a clear advisory block. The engine sources each issue's branch from the spine's dispatch-log (exact branches, not guesses):
 
 ```bash
-{{wave-cli}} merge-order "$WAVE"
+{{wave-cli}} merge-order --spine "$WAVE"
 # { "algorithmic": ["wave-orch/42-foo", "wave-orch/43-bar"], "override": null, "hasOverride": false, "reason": "no stacking detected" }
 ```
 

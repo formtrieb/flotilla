@@ -237,7 +237,7 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #   worth more than the pattern-match's brevity here.
 WAVE_CONFIG="$REPO/wave.config.json"   # or wherever this consumer keeps it
 ENGINE_CLI=$(node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String((c.engine||{}).cli||""))' "$WAVE_CONFIG")
-#   An empty ENGINE_CLI is never "unbound, carry on": every {{wave-cli}} call in
+#   An empty ENGINE_CLI is never "unbound, carry on": every engine-CLI call in
 #   the steps above already used the binding, so nothing here could have run
 #   without one. Empty means the config could not be read — a did-not-run.
 if [ -z "$ENGINE_CLI" ] || [ "$ENGINE_CLI" = "null" ] || [ "$ENGINE_CLI" = "undefined" ]; then
@@ -567,7 +567,7 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #       each Scribe to write its payload to
 #       `$REPO/.flotilla/tmp/<report|verdict>-<id>-<iter>.json` before running
 #       the write verb over it, so both files are already on disk here — and are
-#       the same two the routing verb takes as --report/--verdict at 7a.
+#       the same two the routing verb takes as --report-file/--verdict-file at 7a.
 #
 #       One add-disclosure call per disclosed item, --source matching who raised
 #       it — the verb is source-neutral, Worker/Reviewer/Coordinator land
@@ -593,8 +593,8 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 
 # 7a. Route the tuple — ONE verb, the whole write-ahead sequence, one result.
 {{wave-cli}} route-tuple --spine "$SPINE" --id "$ID" --iter "$ITER" \
-  --report  "$REPO/.flotilla/tmp/report-$ID-$ITER.json" \
-  --verdict "$REPO/.flotilla/tmp/verdict-$ID-$ITER.json" \
+  --report-file  "$REPO/.flotilla/tmp/report-$ID-$ITER.json" \
+  --verdict-file "$REPO/.flotilla/tmp/verdict-$ID-$ITER.json" \
   --anchor "$ANCHOR_SHA" --config wave.config.json
 #   Run it BARE — no `| jq`, no `$( )`, no assignment. Its JSON lands in this
 #   session's own output, which is where you read it. Nothing crosses a call
@@ -607,7 +607,7 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #   IN ORDER, and this IS the write-ahead order:
 #     sidecar presence + validation   the Scribe stages (step 6) normally wrote
 #                                     both already; a MISSING or CORRUPT one is
-#                                     recovered from the --report/--verdict
+#                                     recovered from the --report-file/--verdict-file
 #                                     payload through the same renderer
 #                                     write-report uses, and reported under
 #                                     `recovered`. If it cannot be recovered the
@@ -865,7 +865,7 @@ A `terminal-failure` row's eventual disposition is not always `abandoned` — st
 |---|---|
 | `0` | written — absolute path of `<id>-<iter>.md` on stdout (`mkdir -p`, last-writer-wins) |
 | `1` | invalid payload, or `report.issue`↔`--id` mismatch — **nothing written** |
-| `2` | usage error (missing `<json-file>`/`--dir`/`--id`/`--iter`, non-integer `--iter`, or unreadable/unparseable `<json-file>`) |
+| `2` | usage error (missing the payload file flag / the directory flag / `--id` / `--iter`, non-integer `--iter`, or an unreadable/unparseable payload file) |
 
 ### `version` (the step-4b lockstep gate, ADR-0032)
 | Code | Meaning |

@@ -920,9 +920,18 @@ describe('skill-schema-drift — the shipped driver path constants are shell-quo
     expect(driverJs).toContain('"${REPO_ROOT}/.flotilla/tmp/');
   });
 
-  it('the Scribe brief --dir interpolates the sidecar dir shell-quoted', () => {
+  it('the Scribe brief interpolates the sidecar dir shell-quoted, under its canonical flag', () => {
+    // RE-SPELLED (ADR-0051 decisions 5 and 6): the sidecar directory used to
+    // reach this call as `--dir`, which is now that verb's silent ALIAS. The
+    // canonical spelling differs per write verb — `--reports-dir` on
+    // write-report, `--verdicts-dir` on write-verdict — so the brief composes
+    // the whole call per kind and this pin reads both. The INVARIANT is
+    // unchanged: whatever the flag is called, `${dir}` reaches the shell quoted.
     expect(hasUnquotedInterpolation(driverJs, '--dir ${dir}')).toBe(false);
-    expect(driverJs).toContain('--dir "${dir}"');
+    expect(hasUnquotedInterpolation(driverJs, '--reports-dir ${dir}')).toBe(false);
+    expect(hasUnquotedInterpolation(driverJs, '--verdicts-dir ${dir}')).toBe(false);
+    expect(driverJs).toContain('--reports-dir "${dir}"');
+    expect(driverJs).toContain('--verdicts-dir "${dir}"');
   });
 
   it('negative control — both detectors actually fire on the unquoted forms (would have failed pre-fix, DA-F2)', () => {
@@ -935,10 +944,12 @@ describe('skill-schema-drift — the shipped driver path constants are shell-quo
     // form, that regression could reappear and this spec would not catch it.
     const regressed = driverJs
       .replace('"${REPO_ROOT}/.flotilla/tmp/', '${REPO_ROOT}/.flotilla/tmp/')
-      .replace('--dir "${dir}"', '--dir ${dir}');
-    expect(regressed).not.toEqual(driverJs); // both replacements actually matched
+      .replace('--reports-dir "${dir}"', '--reports-dir ${dir}')
+      .replace('--verdicts-dir "${dir}"', '--verdicts-dir ${dir}');
+    expect(regressed).not.toEqual(driverJs); // the replacements actually matched
     expect(unquotedRepoRootPaths(regressed).length).toBeGreaterThan(0);
-    expect(hasUnquotedInterpolation(regressed, '--dir ${dir}')).toBe(true);
+    expect(hasUnquotedInterpolation(regressed, '--reports-dir ${dir}')).toBe(true);
+    expect(hasUnquotedInterpolation(regressed, '--verdicts-dir ${dir}')).toBe(true);
   });
 });
 

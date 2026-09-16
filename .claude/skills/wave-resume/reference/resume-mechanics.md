@@ -15,13 +15,13 @@ The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the comman
 | Call | Purpose / shape |
 |---|---|
 | `{{wave-cli}} spine read <spine-path>` | the WAL authority — read FIRST (raw spine markdown on stdout) |
-| `{{wave-cli}} resume --spine <p> --reports <d> --verdicts <d> [--repo-root <d>] [--marker <m>] [--force]` | `{ rows, fatals, cleanup }` JSON |
-| `{{wave-cli}} worktree-cleanup --orphans --detached` | (step 4b) the general orphan-directory / orphan-branch / detached-scratch / Scribe-scratch sweep — the SAME verb and flag pair `wave-close` phase 3 and `wave-start`'s dispatch preflight run. Reports `{ removed, skipped, errors, branchesDeleted, branchHygieneSkipped, orphans: { removed, skipped, errors, scratch: { dir, present, removed, skipped, errors } }, detached: { removed, skipped, errors } }`. `orphans.scratch` is the Scribe scratch sweep (issue #355) — full reading guide: [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md#the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-lifecycle-issue-355). Row-unscoped by design (no `--wave` flag here — this call sweeps repo-wide, exactly like the close and dispatch-preflight calls it mirrors); it never touches the tracker. |
+| `{{wave-cli}} resume --spine <p> --reports-dir <d> --verdicts-dir <d> [--repo-root <d>] [--marker <m>] [--force]` | `{ rows, fatals, cleanup }` JSON |
+| `{{wave-cli}} worktree-cleanup --orphans --detached` | (step 4b) the general orphan-directory / orphan-branch / detached-scratch / Scribe-scratch sweep — the SAME verb and flag pair `wave-close` phase 3 and `wave-start`'s dispatch preflight run. Reports `{ removed, skipped, errors, branchesDeleted, branchHygieneSkipped, orphans: { removed, skipped, errors, scratch: { dir, present, removed, skipped, errors } }, detached: { removed, skipped, errors } }`. `orphans.scratch` is the Scribe scratch sweep (issue #355) — full reading guide: [wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md#the-scribe-scratch-sweep--a-repo-internal-location-that-had-no-lifecycle-issue-355). Row-unscoped by design (no `--spine` flag here — this call sweeps repo-wide, exactly like the close and dispatch-preflight calls it mirrors); it never touches the tracker. |
 | `{{wave-cli}} issue-store read-closing <id>` | `ClosingState` — the 4th, skill-only done-reconcile input (tracker-attachment tier of the evidence hierarchy) |
 | `{{wave-cli}} host-pr status --branch <b>` | host-evidence tier (ADR-0023): `{ state: "open"\|"merged"\|"closed-unmerged"\|"none", url? }` — consulted when `read-closing` cannot see a merge on a no-integration workspace. No `--config` (talks to the code host, not the tracker). |
-| `{{wave-cli}} verdict-acked <verdictsDir> <id>` | (FOR-17) the single-owner derivation of `close`'s `--acked` indexes: `{ "acked": [0, 2], "iter": 2\|null, "corrupt": 0 }`. Reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` out of `<verdictsDir>` and returns the 0-based `acVerification` indexes marked `met` — partial/not-met/deferred excluded. Max-iter means a changes-requested → re-dispatch cycle's answer is always the LATEST verdict. No verdict sidecar (or only a corrupt one) → `{ acked: [], iter: null, corrupt: N }`, never a failure — the tick is cosmetic (ADR-0004). |
+| `{{wave-cli}} verdict-acked --verdicts-dir <verdictsDir> --id <id>` | (FOR-17) the single-owner derivation of `close`'s `--acked` indexes: `{ "acked": [0, 2], "iter": 2\|null, "corrupt": 0 }`. Reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` out of `<verdictsDir>` and returns the 0-based `acVerification` indexes marked `met` — partial/not-met/deferred excluded. Max-iter means a changes-requested → re-dispatch cycle's answer is always the LATEST verdict. No verdict sidecar (or only a corrupt one) → `{ acked: [], iter: null, corrupt: N }`, never a failure — the tick is cosmetic (ADR-0004). |
 | `{{wave-cli}} issue-store close <id> <prUrl> [--acked 0,2,3]` | the done-reconcile: land a `merged` row `done` + the cosmetic AC tick from `--acked` (source it from `verdict-acked`, above — never hand-parse a verdict) — idempotent no-op-or-reconcile; FOR-13 fallback on a no-integration `states.doneState` store, fired the moment the host supplies the merge evidence. The existing `IssueStore.close()` verb — never re-implemented. |
-| `{{wave-cli}} route-tuple --spine <p> --id <id> --iter <n> --report <payload> --verdict <payload> --anchor <sha> --config <cfg>` | (step 8) the post-return sequence for ONE row, in one call — the same verb `wave-start` step 7 runs, reached here for an `adopt` row whose report AND verdict are both on disk: the kill interrupted the routing, and this finishes it. Prints one JSON result; read `disposition` (`pr-created` \| `re-dispatched` \| `stop`). Every step reports `performed` or `performed-before`, so whatever the crash left half-done is completed and nothing already done is repeated — the open PR is reused, not duplicated. Full contract, and the single-verb pages it composes: [../../wave-shared/reference/routing-mechanics.md](../../wave-shared/reference/routing-mechanics.md). |
+| `{{wave-cli}} route-tuple --spine <p> --id <id> --iter <n> --report-file <payload> --verdict-file <payload> --anchor <sha> --config <cfg>` | (step 8) the post-return sequence for ONE row, in one call — the same verb `wave-start` step 7 runs, reached here for an `adopt` row whose report AND verdict are both on disk: the kill interrupted the routing, and this finishes it. Prints one JSON result; read `disposition` (`pr-created` \| `re-dispatched` \| `stop`). Every step reports `performed` or `performed-before`, so whatever the crash left half-done is completed and nothing already done is repeated — the open PR is reused, not duplicated. Full contract, and the single-verb pages it composes: [../../wave-shared/reference/routing-mechanics.md](../../wave-shared/reference/routing-mechanics.md). |
 | `{{wave-cli}} issue-store transition <id> <queued\|in-flight\|in-review>` | idempotent coarse re-projection |
 | `{{wave-cli}} issue-store flag <id> --kind <recoverable-stop\|terminal-failure> --question "<q>" --option "<o>" [--option "<o>"]` | flag a fatal / closed-unmerged → needs-attention |
 
@@ -30,8 +30,8 @@ The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the comman
 | Flag | Required | Meaning |
 |---|---|---|
 | `--spine <path>` | yes | the WAVE.md spine (`.flotilla/waves/<slug>.md`) |
-| `--reports <dir>` | yes | sidecar reports dir — `.flotilla/waves/<slug>/reports/` by convention |
-| `--verdicts <dir>` | yes | sidecar verdicts dir — `.flotilla/waves/<slug>/verdicts/` by convention |
+| `--reports-dir <dir>` | yes | sidecar reports dir — `.flotilla/waves/<slug>/reports/` by convention |
+| `--verdicts-dir <dir>` | yes | sidecar verdicts dir — `.flotilla/waves/<slug>/verdicts/` by convention |
 | `--repo-root <dir>` | no | where `git worktree list` runs; defaults to `process.cwd()` |
 | `--marker <m>` | no | narrow agent-worktree matching to a single marker; omit → engine's `agent-` + `wf_` allowlist. Only scopes the reconciliation read; crash-cleanup (below) always scans unscoped. |
 | `--force` | no | **crash-cleanup only** (FOR-10): allow destroying a DIRTY crashed worktree found for a `redispatch` row. Omit by default — a dirty match is reported via `blockedByDirty: true` and left untouched. Never affects reconciliation itself. |
@@ -86,7 +86,7 @@ The wave engine CLI. **The binding rule (ADR-0032): `{{wave-cli}}` IS the comman
 `read-closing` prints `{ "state": "open" | "merged" | "closed-unmerged" | "closed-unknown", "prUrl"?: string }` — the four outcomes are **evidence claims, not verdicts** (ADR-0020):
 
 - `open` — PR still open / no PR yet → keep the `in-review` rung; no action. Exception: a no-integration `states.doneState` workspace never reports `merged` — consult `host-pr status --branch <b>` (the evidence hierarchy, ADR-0023); on its `state: merged`, derive `--acked` (below), then land it with `close` (FOR-13 fallback). No out-of-band human-confirmation step.
-- `merged` — the PR landed during the outage → **derive `--acked` via `verdict-acked <verdictsDir> <id>` (FOR-17), then land it `done` via `issue-store close <id> <prUrl> --acked <indexes>`** (the done-reconcile). **Do not `transition`** (no `done` rung); `close` is idempotent and records the closing facts + the cosmetic AC tick — on a native-integration tracker `read().status` also derives `done` from the merged PR's store-kind close phrase (`wave-shared` Convention 4). Carries `prUrl`.
+- `merged` — the PR landed during the outage → **derive `--acked` via `verdict-acked --verdicts-dir <verdictsDir> --id <id>` (FOR-17), then land it `done` via `issue-store close <id> <prUrl> --acked <indexes>`** (the done-reconcile). **Do not `transition`** (no `done` rung); `close` is idempotent and records the closing facts + the cosmetic AC tick — on a native-integration tracker `read().status` also derives `done` from the merged PR's store-kind close phrase (`wave-shared` Convention 4). Carries `prUrl`.
 - `closed-unmerged` — a closing PR was **found and it did not merge** (a proven rejection) → **flag `recoverable-stop`** (not auto-`available`).
 - `closed-unknown` — closed with **no PR evidence either way** (a hand-close, a duplicate, or the W2-F1c foreign-id mention). *Absence of evidence, not evidence of rejection* → **never flag on the tracker probe alone**. Fall to the host (evidence hierarchy): `host-pr status --branch <b>` — `merged` lands it (derive `--acked`, then `close`, FOR-13 fallback), `closed-unmerged` is the only host answer that justifies a `recoverable-stop` flag, and `open`/`none` is **reported** (`closed-unknown — closed, no merged-PR evidence found; confirm before landing`) and left for the human, never re-dispatched.
 
@@ -113,14 +113,14 @@ VERDICTS=".flotilla/waves/$SLUG/verdicts"
 # 2-4. Reconcile ({{wave-cli}} resume — enumerates worktrees + reads sidecars itself)
 #      Crash-cleanup for every redispatch row runs INSIDE this call, before it prints (FOR-10).
 {{wave-cli}} resume \
-  --spine "$SPINE" --reports "$REPORTS" --verdicts "$VERDICTS" --repo-root "$REPO" > result.json
+  --spine "$SPINE" --reports-dir "$REPORTS" --verdicts-dir "$VERDICTS" --repo-root "$REPO" > result.json
 # clean spine, no sidecars, no worktree → rows[0]: { decision: "redispatch", coarse: "queued" }, fatals: []
 # a corrupt report sidecar → rows[0]: { decision: "needs-attention" }, fatals: [{ id, reason: "corrupt sidecar(s): report@1" }]
 # a crashed, locked worktree still on the redispatch row's branch → already unlocked+removed+branch-deleted by
 # the time result.json is written; cleanup[0]: { branch, worktreeRemoved: true, branchDeleted: true, blockedByDirty: false }
 # that SAME worktree but dirty (uncommitted changes) → left untouched; cleanup[0].blockedByDirty: true — surface
 # `worktreePath` to a human; only re-run with --force after explicit confirmation:
-#   {{wave-cli}} resume --spine "$SPINE" --reports "$REPORTS" --verdicts "$VERDICTS" \
+#   {{wave-cli}} resume --spine "$SPINE" --reports-dir "$REPORTS" --verdicts-dir "$VERDICTS" \
 #     --repo-root "$REPO" --force > result.json
 
 # 4b. General sweep — orphaned directories/branches, detached scratch checkouts, and
@@ -152,7 +152,7 @@ VERDICTS=".flotilla/waves/$SLUG/verdicts"
 # They share one scope because that is the only scope the variables exist in
 # (wave-shared Convention 12, half two, Form 2), and the close path's
 # done-reconcile carries the identical block.
-ACKED_JSON=$({{wave-cli}} verdict-acked "$VERDICTS" "$ID")   # { acked: [...], iter, corrupt }
+ACKED_JSON=$({{wave-cli}} verdict-acked --verdicts-dir "$VERDICTS" --id "$ID")   # { acked: [...], iter, corrupt }
 
 # GUARD THE CAPTURE THAT PROVES THE VERB RAN (wave-shared Convention 12). This is
 # the SAME shape the close path's done-reconcile guards, and the two must not
@@ -222,11 +222,11 @@ ACKED=$(echo "$ACKED_JSON" | node -e 'process.stdout.write(JSON.parse(require("f
 
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
-| `{{wave-cli}} resume` | `{ rows, fatals, cleanup }` on stdout | domain failure during assembly/resume | missing `--spine`/`--reports`/`--verdicts` |
+| `{{wave-cli}} resume` | `{ rows, fatals, cleanup }` on stdout | domain failure during assembly/resume | missing `--spine`/`--reports-dir`/`--verdicts-dir` |
 | `worktree-cleanup` | clean | per-worktree removal errors | usage |
 | `spine read` | spine source on stdout | bad path / parse | usage |
 | `read-closing` | `ClosingState` | issue not found | usage |
-| `verdict-acked` | `{ acked, iter, corrupt }` printed (found or not found — an absent/corrupt verdict is not a failure) | — | missing `<verdictsDir>`/`<id>` |
+| `verdict-acked` | `{ acked, iter, corrupt }` printed (found or not found — an absent/corrupt verdict is not a failure) | — | missing `--verdicts-dir`/`--id` |
 | `close` | closing facts recorded (done-reconcile / FOR-13 fallback) | issue not found (store threw) | missing `<id>`/`<prUrl>` |
 | `transition` | written (idempotent) | invalid transition / not found | usage |
 | `flag` | written | issue not found | bad `--kind` |

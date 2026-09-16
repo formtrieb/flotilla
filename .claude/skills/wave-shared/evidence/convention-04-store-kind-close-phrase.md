@@ -56,7 +56,7 @@ When this footgun *does* fire, the detection side is the closing probe: an issue
 
 Convention 4 governs *closing* the issue; this governs *informing the merge decision*. The close phrase alone leaves the human who reviews and lands the PR blind to what the Reviewer actually found — the verdict, the AC-verification table, re-run test counts, advisories — none of which lives anywhere the human looks. **A render lives where its reader lives, and a machine never reads a render back:** the sidecar (`.flotilla/waves/<slug>/verdicts/<id>-<iter>.md`) stays the full typed authority a machine resumes/routes from — never trimmed; the PR is the *one* human-facing render, written once at PR-open; the tracker carries state + pointers only (rung, AC ticks, PR attachment) — a prose result parked on the ticket would tax `listOpen`/`readTriage` on every future planning cycle.
 
-`{{wave-cli}} render-verdict <verdictsDir> <id> --anchor <sha>` is the single-owner render (`renderVerdictSection()`, `reviewer-verdict-schema.ts`): it reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` — the same `sidecar.ts` reader `verdict-acked` uses — and prints a compact `## Reviewer verdict` markdown section (verdict + iteration, the per-AC table, re-run verify counts, anchor SHA, advisories) to stdout. Call it at the `approved → pr-created` terminator (wave-start's PR-open step, right where the store-kind close phrase above is composed) and fold its output into the `--body` passed to `host-pr create` — on the live dispatch path `route-tuple` does exactly this inside the engine, in one verb. Because the sidecar reader always resolves the LATEST iteration, a changes-requested → re-dispatch cycle's PR body carries the verdict that actually approved the row, never the stale first one:
+`{{wave-cli}} render-verdict --verdicts-dir <verdictsDir> --id <id> --anchor <sha>` is the single-owner render (`renderVerdictSection()`, `reviewer-verdict-schema.ts`): it reads the MAX-iter valid ReviewerVerdict sidecar for `<id>` — the same `sidecar.ts` reader `verdict-acked` uses — and prints a compact `## Reviewer verdict` markdown section (verdict + iteration, the per-AC table, re-run verify counts, anchor SHA, advisories) to stdout. Call it at the `approved → pr-created` terminator (wave-start's PR-open step, right where the store-kind close phrase above is composed) and fold its output into the `--body` passed to `host-pr create` — on the live dispatch path `route-tuple` does exactly this inside the engine, in one verb. Because the sidecar reader always resolves the LATEST iteration, a changes-requested → re-dispatch cycle's PR body carries the verdict that actually approved the row, never the stale first one:
 
 ```bash
 # ONE Bash call. The render is captured and CONSUMED here, in the call that
@@ -64,7 +64,7 @@ Convention 4 governs *closing* the issue; this governs *informing the merge deci
 # boundary (Convention 12, half two). The guard is INLINE for that reason: a
 # check issued in a later call would inspect a variable that is unset in its own
 # shell, which is not a weaker guard but no guard at all.
-VERDICT_SECTION=$({{wave-cli}} render-verdict "$VERDICTS" "$ID" --anchor "$ANCHOR_SHA")
+VERDICT_SECTION=$({{wave-cli}} render-verdict --verdicts-dir "$VERDICTS" --id "$ID" --anchor "$ANCHOR_SHA")
 if [ -z "$VERDICT_SECTION" ] || [ "$VERDICT_SECTION" = "null" ]; then
   echo "STOP: VERDICT_SECTION came back empty — render-verdict did not run. Refusing to open a PR whose body silently omits the verdict." >&2
   exit 1

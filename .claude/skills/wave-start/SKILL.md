@@ -183,7 +183,7 @@ Two calls per tuple, in this order — the disclosure capture, then the routing 
 
    ```bash
    {{wave-cli}} route-tuple --spine <spine> --id <id> --iter <iter> \
-     --report <tuple-report-json> --verdict <tuple-verdict-json> \
+     --report-file <tuple-report-json> --verdict-file <tuple-verdict-json> \
      --anchor <anchorSha> --config <cfg> [--title "<pr title>"]
    ```
 
@@ -219,7 +219,7 @@ Do **not** auto-proceed past a STOP — these are the human gates the protocol p
 2. **A ruled Reviewer-only round, outside the cap — `--ruling`.** The exit for a `re-dispatch-cap-exhausted` STOP the Operator has ruled on: the world is fixed, the branch content is fine, and what is owed is one more *review*, not one more Worker attempt. Fix the world, bump the row's iteration (`{{wave-cli}} spine set-row-iter "$SPINE" "$ID" 3`) so the round's sidecars land at that iteration, re-dispatch the **Reviewer only**, then route the returned tuple with the Operator's own reason attached:
 
    ```bash
-   {{wave-cli}} route-verdict --verdict "$VERDICT" --iteration 3 \
+   {{wave-cli}} route-verdict --verdict "$VERDICT" --iter 3 \
      --risk "$RISKCLASS" --state reviewing \
      --ruling "<the Operator's own reason, as they stated it>"
    ```

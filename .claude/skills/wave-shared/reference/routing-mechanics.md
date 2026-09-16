@@ -19,7 +19,7 @@ Reading the configured value is only half an instruction. The other half is **ho
 wave_cli() { NODE_USE_ENV_PROXY=1 ./tools/wave/node_modules/.bin/tsx tools/wave/src/cli.ts "$@"; }
 
 # --state is verdict-keyed, not iteration-keyed (wave-start/reference/start-mechanics.md "Verified routing outputs") — reviewing is correct for this approve/iteration-1 cell, not a fixed value for every call. `route-tuple` derives it for you; this single verb does not.
-wave_cli route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing
+wave_cli route-verdict --verdict approve --iter 1 --risk mechanical --state reviewing
 ```
 
 `"$@"` is the one expansion that preserves argument boundaries in **every** shell, which is exactly why a function survives where a variable does not. Read every `{{wave-cli}}` in the tables below as that function — and read a **list** the same way: iterate a real array (`for x in "${IDS[@]}"`), never a bare `$LIST` in a `for` head.
@@ -49,8 +49,8 @@ These validate a structured return on disk against the same constraints the inli
 
 | Call | Behavior |
 |---|---|
-| `{{wave-cli}} write-report <json-file> --dir <reportsDir> --id <id> --iter <n>` | validate-then-write: renders `<reportsDir>/<id>-<iter>.md` (fenced `WorkerReport`) the `sidecar.ts` reader accepts; refuses an invalid payload or a `report.issue`↔`--id` mismatch (exit 1, nothing written); `mkdir -p`; last-writer-wins; prints the absolute written path on exit 0 |
-| `{{wave-cli}} write-verdict <json-file> --dir <verdictsDir> --id <id> --iter <n>` | same, for a `ReviewerVerdict` (no issue cross-check); renders `<verdictsDir>/<id>-<iter>.md` |
+| `{{wave-cli}} write-report --report-file <json-file> --reports-dir <reportsDir> --id <id> --iter <n>` | validate-then-write: renders `<reportsDir>/<id>-<iter>.md` (fenced `WorkerReport`) the `sidecar.ts` reader accepts; refuses an invalid payload or a `report.issue`↔`--id` mismatch (exit 1, nothing written); `mkdir -p`; last-writer-wins; prints the absolute written path on exit 0 |
+| `{{wave-cli}} write-verdict --verdict-file <json-file> --verdicts-dir <verdictsDir> --id <id> --iter <n>` | same, for a `ReviewerVerdict` (no issue cross-check); renders `<verdictsDir>/<id>-<iter>.md` |
 
 The filename is **engine-computed** — the caller passes `--id` + `--iter`, never a path with a name. These are the printers paired with the reader (`renderSpine`↔`readSpine` symmetry): a Scribe (or the inline Coordinator) runs them the moment an agent returns, so a durable record exists before any routing. Never hand-format a sidecar; never bundle the writes after routing.
 
@@ -58,9 +58,9 @@ The filename is **engine-computed** — the caller passes `--id` + `--iter`, nev
 
 | Call | Prints |
 |---|---|
-| `{{wave-cli}} route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> --config <cfg> [--title <text>] [--ruling <text>]` | ONE JSON result: `{ ok, verb, id, iter, disposition, steps[], wrote{…}, … }` — plus a `ruled` object on an Operator-ruled round |
+| `{{wave-cli}} route-tuple --spine <spine> --id <id> --iter <n> --report-file <path> --verdict-file <path> --anchor <sha> --config <cfg> [--title <text>] [--ruling <text>]` | ONE JSON result: `{ ok, verb, id, iter, disposition, steps[], wrote{…}, … }` — plus a `ruled` object on an Operator-ruled round |
 
-This is the whole post-return sequence for one row, in the write-ahead order, in one process: the sidecar presence-and-validation check (recovering a missing or corrupt record from the passed `--report`/`--verdict` payload through the same writer the Scribe stages use, and refusing rather than guessing when it cannot), the worker-phase route, the verdict-phase route, the verdict render, find-before-create of the PR, the host status re-query, the two spine writes, and the `in-review` rung transition. Both `--state` derivations are the verb's — iteration-keyed for the worker phase, **verdict**-keyed for the reviewer phase — and `riskClass` comes off the typed verdict, so neither is a flag anyone can garble.
+This is the whole post-return sequence for one row, in the write-ahead order, in one process: the sidecar presence-and-validation check (recovering a missing or corrupt record from the passed `--report-file`/`--verdict-file` payload through the same writer the Scribe stages use, and refusing rather than guessing when it cannot), the worker-phase route, the verdict-phase route, the verdict render, find-before-create of the PR, the host status re-query, the two spine writes, and the `in-review` rung transition. Both `--state` derivations are the verb's — iteration-keyed for the worker phase, **verdict**-keyed for the reviewer phase — and `riskClass` comes off the typed verdict, so neither is a flag anyone can garble.
 
 Read `disposition`:
 
@@ -83,8 +83,8 @@ Exit codes: `0` — the sequence completed (a `stop` is a routed outcome, not a 
 | Call | Prints | Wraps |
 |---|---|---|
 | `{{wave-cli}} route-outcome --outcome <workerOutcome> --state <issueState>` | JSON `{ event, outcome }` | `outcomeToEvent` → `transition` |
-| `{{wave-cli}} route-verdict --verdict <approve\|changes-requested\|questions-blocking> --iteration <n> --risk <riskValue> --state <issueState> [--ruling <text>]` | JSON `{ event, outcome }`, plus `ruled` on an above-cap ruled round | `verdictToRouting` → `transition` |
-| `{{wave-cli}} render-verdict <verdictsDir> <id> --anchor <sha>` | the `## Reviewer verdict` markdown section (text) | the MAX-iter valid verdict sidecar → `renderVerdictSection` |
+| `{{wave-cli}} route-verdict --verdict <approve\|changes-requested\|questions-blocking> --iter <n> --risk <riskValue> --state <issueState> [--ruling <text>]` | JSON `{ event, outcome }`, plus `ruled` on an above-cap ruled round | `verdictToRouting` → `transition` |
+| `{{wave-cli}} render-verdict --verdicts-dir <verdictsDir> --id <id> --anchor <sha>` | the `## Reviewer verdict` markdown section (text) | the MAX-iter valid verdict sidecar → `renderVerdictSection` |
 | `{{wave-cli}} host-pr create --branch <b> --title <t> --body <body>` | JSON `{ ok, outcome, url, … }` | find-before-create, then update-or-create |
 | `{{wave-cli}} host-pr status --branch <b>` | JSON `{ state, url?, … }` | the host's own answer for that branch |
 
@@ -108,7 +108,7 @@ Three properties of that table are the point, and each is pinned by a spec:
 - **The reason is in the output.** `ruled` carries `{ cell, ruling }` — on `route-verdict`'s printed JSON, and on `route-tuple`'s both in the `route-verdict` step and at the top level. Quote it from there in the closing report rather than reconstructing it from memory.
 
 ```bash
-wave_cli route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing \
+wave_cli route-verdict --verdict approve --iter 3 --risk mechanical --state reviewing \
   --ruling "Operator ruling 03:50 — the throwaway repository was deleted; re-dispatch the Reviewer only."
 ```
 
@@ -170,7 +170,7 @@ Never pipe any of these three calls through another command before reading its e
 |---|---|
 | `0` | written (absolute path of `<id>-<iter>.md` on stdout) |
 | `1` | invalid payload, or `report.issue`↔`--id` mismatch — **nothing written** |
-| `2` | usage error (missing `<json-file>`/`--dir`/`--id`/`--iter`, non-integer `--iter`, or unreadable/unparseable `<json-file>`) |
+| `2` | usage error (missing the payload file flag / the directory flag / `--id` / `--iter`, non-integer `--iter`, or an unreadable/unparseable payload file) |
 
 ### `issue-store flag` / `clear-flag` / `transition`
 

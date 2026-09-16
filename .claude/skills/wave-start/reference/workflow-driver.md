@@ -174,7 +174,7 @@ Inside the repo, nothing needs adding, and `worktree-cleanup` sweeps the file
 at close with the rest of `.flotilla/tmp/` — **under a stated rule, and not
 before this wave is finished** (issue #748). The `--orphans` pass reports this
 directory under its own `orphans.drivers` key and removes it on exactly two
-routes: the `--wave` spine's **every** row is terminal (`pr-created`,
+routes: **every** row of the `--spine` spine is terminal (`pr-created`,
 `approved`, `failed`, `abandoned`, `parked`), or that spine already sits in the
 archive location wave-close's archive phase moves it to. Otherwise it is
 reported and left alone — `live-wave` while a spine for the slug exists and is

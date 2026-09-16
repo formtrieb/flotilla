@@ -77,7 +77,7 @@ When the producing command is not idempotent, or the value exists nowhere but in
 ```bash
 # ONE Bash call. The capture, its guard, and the consuming command all live here
 # together, because that is the only scope in which the variable exists.
-ACKED_JSON=$(wave_cli verdict-acked "$VERDICTS" "$ID")
+ACKED_JSON=$(wave_cli verdict-acked --verdicts-dir "$VERDICTS" --id "$ID")
 if [ -z "$ACKED_JSON" ] || [ "$ACKED_JSON" = "null" ] || [ "$ACKED_JSON" = "undefined" ]; then
   echo "STOP: ACKED_JSON came back empty — the command that should have produced it did not run (exit 127? no match? no such key?). Refusing to continue with an empty value." >&2
   exit 1

@@ -82,13 +82,13 @@ There used to be a **compose-currency gate** here, at step 4d: every dispatch ex
 | Invocation | Output |
 |---|---|
 | `route-outcome --outcome done --state dispatched` | `{"event":"worker-done","outcome":{"type":"transition","nextState":"report-in"}}` |
-| `route-verdict --verdict approve --iteration 1 --risk mechanical --state reviewing` | `{"event":"reviewer-approve","outcome":{"type":"transition","nextState":"approved"}}` |
-| `route-verdict --verdict approve --iteration 1 --risk public-API-change --state reviewing` | `{"event":"reviewer-approve-public-api","outcome":{"type":"stop","reason":"public-api-approval-required","severity":"blocking"}}` |
-| `route-verdict --verdict changes-requested --iteration 1 --risk isolated-refactor --state reviewing` | `{"event":"reviewer-changes-requested-1st","outcome":{"type":"transition","nextState":"re-dispatched"}}` |
-| `route-verdict --verdict changes-requested --iteration 2 --risk isolated-refactor --state re-dispatched` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"}}` |
-| `route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing` (no ruling) | exit 1 — `iteration 3 is out of range. Expected an integer in [1, 2] (re-dispatch cap = 1).` |
-| `route-verdict --verdict approve --iteration 3 --risk mechanical --state reviewing --ruling "<reason>"` | `{"event":"reviewer-approve","outcome":{"type":"transition","nextState":"approved"},"ruled":{"cell":"reviewer-approve-ruled","ruling":"<reason>"}}` |
-| `route-verdict --verdict changes-requested --iteration 3 --risk mechanical --state re-dispatched --ruling "<reason>"` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"},"ruled":{"cell":"reviewer-changes-requested-ruled","ruling":"<reason>"}}` |
+| `route-verdict --verdict approve --iter 1 --risk mechanical --state reviewing` | `{"event":"reviewer-approve","outcome":{"type":"transition","nextState":"approved"}}` |
+| `route-verdict --verdict approve --iter 1 --risk public-API-change --state reviewing` | `{"event":"reviewer-approve-public-api","outcome":{"type":"stop","reason":"public-api-approval-required","severity":"blocking"}}` |
+| `route-verdict --verdict changes-requested --iter 1 --risk isolated-refactor --state reviewing` | `{"event":"reviewer-changes-requested-1st","outcome":{"type":"transition","nextState":"re-dispatched"}}` |
+| `route-verdict --verdict changes-requested --iter 2 --risk isolated-refactor --state re-dispatched` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"}}` |
+| `route-verdict --verdict approve --iter 3 --risk mechanical --state reviewing` (no ruling) | exit 1 — `iteration 3 is out of range. Expected an integer in [1, 2] (re-dispatch cap = 1).` |
+| `route-verdict --verdict approve --iter 3 --risk mechanical --state reviewing --ruling "<reason>"` | `{"event":"reviewer-approve","outcome":{"type":"transition","nextState":"approved"},"ruled":{"cell":"reviewer-approve-ruled","ruling":"<reason>"}}` |
+| `route-verdict --verdict changes-requested --iter 3 --risk mechanical --state re-dispatched --ruling "<reason>"` | `{"event":"reviewer-changes-requested-2nd","outcome":{"type":"stop","reason":"re-dispatch-cap-exhausted","severity":"error"},"ruled":{"cell":"reviewer-changes-requested-ruled","ruling":"<reason>"}}` |
 
 The public-API `approve` STOPs (it never silently fast-paths to the auto-PR) and the 2nd `changes-requested` STOPs (the cap=1, enforced inside `transition()`) are the two load-bearing routes — verified against the live CLI.
 

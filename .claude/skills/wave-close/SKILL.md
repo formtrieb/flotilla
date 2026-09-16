@@ -55,7 +55,7 @@ One verb, two spellings — reach for whichever the find actually is:
   ```
 - **Wave-scoped** — the find is about the wave's OWN machinery and no row owns it: the worktree sweep, a phase-2 auth posture, the merge-order tool itself.
   ```bash
-  {{wave-cli}} spine add-disclosure <wave-file> --wave --source coordinator --text "<the gap>"
+  {{wave-cli}} spine add-disclosure <wave-file> --wave-scoped --source coordinator --text "<the gap>"
   ```
   Do **not** hang such a find on an arbitrary "affected" row to make it fit the row-scoped form: that corrupts row-scoped counting and has no answer at all for a find with no affected row (the option ADR-0038 rejected by name).
 
