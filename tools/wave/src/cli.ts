@@ -17,6 +17,7 @@
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
  *   npx tsx tools/wave/src/cli.ts compose-driver --spine <spine> --out <path> --anchor <sha> [...]
  *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report <path> --verdict <path> --anchor <sha> [--ruling <text>] [...]
+ *   npx tsx tools/wave/src/cli.ts close-row --spine <spine> --id <id> [--pr-url <url>] [...]
  *   npx tsx tools/wave/src/cli.ts route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]
  *
  * Subcommands:
@@ -396,6 +397,30 @@
  *       spine/tracker write that threw
  *   2 — usage, an unreadable/invalid config, or an unreadable spine
  *
+ * close-row — the done-reconcile for ONE merged row, in one call: it upserts the
+ * row's `## PR-Log` line and its `## Closed-by` line (the two spine sections
+ * `renderSpine` has always emitted and nothing ever wrote), derives the met-AC
+ * indexes from the MAX-iter valid verdict sidecar through the same derivation
+ * `verdict-acked` prints, and then calls the store's `close(id, prUrl, acked)`.
+ * Both spine writes precede the tracker write, because the spine is the WAL a
+ * resume reconstructs from. It replaces a twelve-line shell program — a capture,
+ * its Convention-12 guard, a `node -e` parse and a hand-written `issue-store
+ * close --acked` — that was carried as prose in two skills at once.
+ *
+ * It does NOT decide whether the PR merged: the evidence hierarchy (ADR-0023)
+ * stays with the caller. Its own refusal is mechanical — the PR cell must
+ * classify as a real PR URL under the `closed-by` classifier.
+ *
+ * ASYNC (it resolves a store), so `mainAsync` intercepts it before the sync
+ * `main()` router, like `route-tuple` / `compose-driver`. Exit codes:
+ *   0 — the row was landed; read `closing.state` (a state still reading `open`
+ *       is the documented non-failing outcome `issue-store close` also has, and
+ *       the same `STILL OPEN:` line says so on stderr)
+ *   1 — a spine section it must write into is absent, or a spine/tracker write
+ *       threw
+ *   2 — usage, an unreadable config or spine, an unknown row id, or a PR cell
+ *       that is not a real PR URL. Nothing is written on any of them.
+ *
  * version (ADR-0032 — the plugin/engine lockstep gate's engine half) — prints
  * the ENGINE PACKAGE's own version as JSON, and, with `--expect <version>`,
  * compares it against a caller-supplied expectation. Resolves no store and
@@ -542,6 +567,7 @@ import {
 import { runResume } from './resume-cli';
 import { runComposeDriver } from './compose-driver';
 import { runRouteTuple } from './route-tuple';
+import { runCloseRow } from './close-row';
 import type { IssueStore } from './adapters/issue-store';
 import type { IssueRef } from './contract';
 import { readSidecars, type SidecarReader } from './sidecar';
@@ -585,6 +611,7 @@ const KNOWN_SUBCOMMANDS = [
   'credential-probe',
   'compose-driver',
   'route-tuple',
+  'close-row',
   'route-verdict',
   'route-outcome',
   'validate-report',
@@ -630,6 +657,8 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
     'Compose the Workflow dispatch driver from the spine, the config and the store, and write it to --out.',
   'route-tuple':
     'Perform the whole post-return sequence for one returned tuple — sidecar check, routing, verdict render, create-or-reuse, status re-query, spine writes, rung transition — and print one result.',
+  'close-row':
+    "Land one merged row: upsert its PR-Log and Closed-by lines, derive the met-AC indexes from its final verdict, then close it on the tracker.",
   'route-verdict':
     'Route a reviewer verdict + iteration + risk to its state-machine event; --ruling <text> is the Operator ruling that alone admits an iteration above the re-dispatch cap.',
   'route-outcome': 'Route a worker outcome + state to its state-machine event.',
@@ -726,6 +755,8 @@ function printUsage(): void {
       // flag that silently renames somebody else's PR. Same wording as
       // route-tuple's usage(), deliberately (issue #724).
       '    --title <text> RENAMES the PR. Without it, a REUSE preserves the live PR title byte-identically (the Worker opened it and named its own change), exactly as the body preserves the live PR body; a CREATE falls back to the spine row title with bare tracker ids stripped. The result reports which of the three it used as `titleSource` (flag | live-pr | row).',
+      '  flotilla-engine close-row --spine <spine> --id <id> [--pr-url <url>] [--config <path>] [--repo-root <dir>] [--verdicts-dir <dir>]   # the done-reconcile for one merged row; prints one JSON result',
+      '    Writes the row\'s `## PR-Log` and `## Closed-by` lines (read-then-upsert, keyed by id — a second row never deletes the first one\'s line), BOTH before the tracker close, then derives the met-AC indexes from the MAX-iter valid verdict sidecar and calls close with them. It does not decide whether the PR merged; it refuses a PR cell that is not a real PR URL.',
       '  flotilla-engine route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]   # prints JSON',
       '    --ruling "<the Operator\'s reason>" is the ONLY thing that admits an iteration ABOVE the re-dispatch cap — the Operator-ruled, Reviewer-only round. Without it an above-cap iteration stays refused; with it the result names the ruled cell and quotes the ruling. Accepted by route-tuple too, for the same round.',
       '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
@@ -2816,6 +2847,16 @@ export function main(argv: string[] = process.argv.slice(2)): number {
           'error: route-tuple is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
         );
         return 2;
+      case 'close-row':
+        // Same again: `close-row` resolves a store — the done-reconcile's whole
+        // point is the tracker `close(id, prUrl, acked)` at the end of it — so
+        // it is async and `mainAsync` intercepts it first. Reaching this case
+        // means a caller invoked the sync `main(['close-row', ...])` path
+        // directly.
+        process.stderr.write(
+          'error: close-row is async; invoke it via the async entrypoint (mainAsync) — e.g. the CLI binary, not the sync main()\n',
+        );
+        return 2;
     }
   }
 
@@ -2902,6 +2943,15 @@ export async function mainAsync(
     // the router's whole-CLI dump.
     if (argv[0] === 'route-tuple') {
       return await runRouteTuple(argv.slice(1), injected ? { store: injected } : {});
+    }
+    // `close-row` resolves a store — the done-reconcile ends in the tracker's
+    // own `close(id, prUrl, acked)` — so it is intercepted here like
+    // `route-tuple` above. The interception bypasses `main()`'s zero-arg guard,
+    // deliberately: a bare `close-row` has two required flags and the runner's
+    // own usage names both, plus the refusal rule for a PR cell that is not a
+    // real PR URL — which teaches far better than the router's whole-CLI dump.
+    if (argv[0] === 'close-row') {
+      return await runCloseRow(argv.slice(1), injected ? { store: injected } : {});
     }
     // `dor --id <id>` is the store-backed (async) form; bare `dor <path>...`
     // stays in the sync `main()`. The `--id` flag is the disambiguator (ADR-0014).

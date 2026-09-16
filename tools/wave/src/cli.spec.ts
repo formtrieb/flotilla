@@ -7525,3 +7525,65 @@ describe('worktree-cleanup — a PARKED-only wave is terminal and sweeps its own
     expect(rr.skipped.find((s) => s.ref === 'refs/review/131')?.reason).toBe('live-row');
   });
 });
+
+// ─── issue #751 — the close-row verb is wired into the router ────────────────
+//
+// Same shape as the `compose-driver` and `route-tuple` blocks earlier in this
+// file, and for the same reason: the roster is self-pinning (the unknown-verb
+// block derives its ground truth from the printed `available:` line), so what
+// needs its own assertions is the ROUTING. `close-row` resolves a store — the
+// done-reconcile ends in the tracker's own `close(id, prUrl, acked)` — so it
+// must be intercepted by `mainAsync` before the sync router.
+//
+// Convention 11 falsification for this block: deleting the
+// `if (argv[0] === 'close-row')` interception from `mainAsync` makes the SECOND
+// test below fail. The discriminator is deliberately the runner's OWN first
+// usage line, and it had to be: the sync router's zero-arg guard prints the
+// whole-CLI usage dump, which ALSO names --spine/--id (the verb's own usage
+// line lives in it), so asserting those flag names alone is a check that cannot
+// fail. The observed failing output is recorded in this row's report.
+describe('close-row — router wiring (issue #751)', () => {
+  it('is on the verb roster, so it never reaches the unknown-subcommand path', () => {
+    const code = main(['definitely-bogus-verb']);
+    expect(code).toBe(2);
+    const summaryLine = stderrBuf.split('\n').find((l) => l.includes('available:'))!;
+    expect(summaryLine).toContain('close-row');
+    // …and its purpose line rides along, one per verb.
+    expect(stderrBuf).toMatch(/^ {2}close-row {2}\S/m);
+  });
+
+  it("mainAsync intercepts it BEFORE the sync router — the answer is the RUNNER's own usage, not the router's whole-CLI dump", async () => {
+    const code = await mainAsync(['close-row']);
+    expect(code).toBe(2);
+    // Only the RUNNER can print this line, and it is the first thing it prints.
+    expect(stderrBuf.split('\n')[0]).toBe('error: close-row requires --spine <spine>');
+    expect(stderrBuf).toMatch(/--pr-url/);
+    // …and neither the sync router's async refusal nor its whole-CLI dump answered.
+    expect(stderrBuf).not.toMatch(/invoke it via the async entrypoint/);
+    expect(stderrBuf).not.toMatch(/available subcommands:/);
+  });
+
+  it('the sync main() refuses it the way it refuses every other async verb', () => {
+    const code = main(['close-row', '--spine', 'x']);
+    expect(code).toBe(2);
+    expect(stderrBuf).toMatch(/close-row is async/);
+    expect(stderrBuf).toMatch(/mainAsync/);
+  });
+
+  it('the top-level usage names the verb and its required flags', () => {
+    main([]); // zero args → printUsage()
+    const usageLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('flotilla-engine close-row'))!;
+    expect(usageLine).toBeDefined();
+    expect(usageLine).toContain('--spine');
+    expect(usageLine).toContain('--id');
+    expect(usageLine).toContain('--pr-url');
+  });
+
+  it('a missing --id reaches the runner too, not the router — the second required flag', async () => {
+    const code = await mainAsync(['close-row', '--spine', 'x']);
+    expect(code).toBe(2);
+    expect(stderrBuf.split('\n')[0]).toBe('error: close-row requires --id <id>');
+  });
+});

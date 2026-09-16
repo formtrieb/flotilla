@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   spineStoreFromSource,
@@ -639,5 +641,90 @@ describe('SpineStore — the disclosure verbs on the store surface', () => {
     expect(s.disclosures()).toEqual([]);
     // Re-parse survived: the wave-md-rw view is intact.
     expect(s.branchesByIssueId()['01']).toBe('wave-orch/01-thing');
+  });
+});
+
+// ─── issue #751 — the PR-Log writer is total through the store too ───────────
+//
+// `upsertPrLogRow` used to throw on the bare `## PR-Log` heading `renderSpine`
+// produces, and this module's own doc comments cited that throw twice as the
+// trap the `## Disclosures` section deliberately does NOT repeat. The writer
+// now scaffolds instead, so both citations are retractions waiting to happen —
+// the block below is what keeps them retracted.
+//
+// Convention 11 falsification for this block: put the sentence
+// "(`upsertPrLogRow` throws \"table is malformed\" on a bare heading)" back into
+// either doc comment and the last test goes red naming the file and the
+// passage. The observed failing output is recorded in this row's report.
+describe('upsertPrLogRow through the SpineStore (issue #751)', () => {
+  /** A fresh `renderSpine` spine — bare `## PR-Log` heading, nothing else. */
+  function freshSource(): string {
+    return renderSpine(
+      {
+        slug: 'store-pr-log',
+        description: 'd',
+        coordinator: 'c',
+        model: 'm',
+        created: '2026-09-16',
+        lastUpdated: '2026-09-16',
+      },
+      [{ id: '01', title: 'T 01', worker: 'background', risk: 'mechanical' }],
+      { issues: [], cells: [] },
+      'ok',
+    );
+  }
+
+  it('the store scaffolds and writes the row, and re-parses it back', () => {
+    const s = spineStoreFromSource(freshSource());
+    expect(s.spine().prLog).toEqual([]);
+    s.upsertPrLogRow({
+      created: '2026-09-16',
+      id: '01',
+      prCell: 'https://github.com/o/r/pull/1',
+      closes: 'Closes #1',
+      merged: '2026-09-16',
+      notes: '—',
+    });
+    expect(s.spine().prLog).toHaveLength(1);
+    expect(s.spine().prLog[0]).toMatchObject({ id: '01', closes: 'Closes #1' });
+    // The re-parse after the write is what makes the store's view usable
+    // immediately — the property every sibling writer on this store has.
+    expect(readSpine(s.source()).prLog[0].prCell).toBe('https://github.com/o/r/pull/1');
+  });
+
+  it('the pre-existing placeholder path through the store is unchanged', () => {
+    const s = spineStoreFromSource(SRC);
+    s.upsertPrLogRow({
+      created: '2026-06-06',
+      id: '01',
+      prCell: 'https://github.com/o/r/pull/1',
+      closes: 'Closes #1',
+      merged: '2026-06-06',
+      notes: '—',
+    });
+    expect(s.spine().prLog).toHaveLength(1);
+    expect(s.source()).toContain('| ------- | -- | -- | ------ | ------ | ----- |');
+  });
+
+  it('no doc comment in the spine writer or the spine store still says upsertPrLogRow throws on a bare heading', () => {
+    // The retraction, asserted rather than remembered. The claim is scoped to
+    // the co-occurrence of the symbol and the word `malformed` inside one
+    // passage: `upsertPrLogRow`'s own JSDoc still (correctly) documents that a
+    // spine with NO `## PR-Log` SECTION throws, which is a different claim and
+    // stays true.
+    for (const file of ['wave-md-rw.ts', 'spine-store.ts']) {
+      const source = readFileSync(join(__dirname, file), 'utf-8');
+      const offenders: string[] = [];
+      let at = source.indexOf('upsertPrLogRow');
+      while (at !== -1) {
+        const window = source.slice(Math.max(0, at - 300), at + 300);
+        if (/malformed/.test(window)) offenders.push(window.replace(/\s+/g, ' ').trim());
+        at = source.indexOf('upsertPrLogRow', at + 1);
+      }
+      expect(
+        offenders,
+        `${file} still pairs upsertPrLogRow with a "malformed" claim:\n${offenders.join('\n---\n')}`,
+      ).toEqual([]);
+    }
   });
 });

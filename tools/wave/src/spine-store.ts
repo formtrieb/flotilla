@@ -324,8 +324,9 @@ export function renderDisclosureRow(d: Disclosure): string {
  *
  * The header + separator are scaffolded even with zero entries, for the same
  * reason renderSpine scaffolds the dispatch-log's fenced-YAML key: an empty
- * heading is not a write target. (`upsertPrLogRow` throws "table is malformed"
- * on a bare heading — this section does not repeat that.)
+ * heading is not a write target. (`upsertPrLogRow` now scaffolds its own table
+ * on a bare `## PR-Log` heading for the same reason — the two sections read a
+ * bare heading identically.)
  */
 export function renderDisclosuresSection(
   entries: readonly Disclosure[] = [],
@@ -449,8 +450,8 @@ export function ensureDisclosuresSection(source: string): string {
   if (existingSection) {
     // Present — but a heading ALONE is not a write target. Scaffold the header +
     // separator if they are missing, so `addDisclosure` is total. (`upsertPrLogRow`
-    // throws "table is malformed" in exactly this situation; this section does
-    // not repeat that trap.)
+    // does the same for a bare `## PR-Log` heading, so the two sections are
+    // total in the same way rather than one being a trap.)
     for (let i = existingSection.start + 1; i < existingSection.end; i++) {
       if (splitDisclosureRow(model.lines[i]).length > 0) return source;
     }
@@ -698,6 +699,12 @@ export interface SpineStore {
    */
   setRowIter(id: string, iter: number): void;
   setRowPrCell(id: string, prCell: string): void;
+  /**
+   * Upsert one `## PR-Log` row, keyed by id. A bare `## PR-Log` heading — what
+   * `renderSpine` gives every fresh spine — gets its six-column header and
+   * separator scaffolded first, so this is total on a spine that has never held
+   * a PR-Log row. A spine with no `## PR-Log` SECTION still throws.
+   */
   upsertPrLogRow(input: PrLogRowInput): void;
   /** The dispatch-log is the DURABLE branch home; Plan-Table.branch is derived-only. */
   upsertDispatchLogEntry(id: string, branch: string): void;

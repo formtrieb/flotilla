@@ -619,6 +619,46 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
       'Joins summary + verdict section + close phrase in the mechanics\' order, close phrase last so `host-pr`\'s reuse guard sees it. Exported for the same direct-pinning reason as its neighbour above.',
     PrBodyParts: 'The input shape of composePrBody directly above — unusable without it, and module-local for the same reason.',
   },
+  // ─── the done-reconcile terminator (issue #751) ──────────────────────────
+  //
+  // `close-row.ts` is a CLI-EDGE module, held to exactly the standard the
+  // `./route-tuple` block above sets and for the same reason: what a CONSUMER
+  // holds is the `close-row` VERB and the single JSON result it prints, not a
+  // TypeScript import path. Nothing outside this engine composes a
+  // done-reconcile of its own — the whole point of the verb is that the
+  // twelve-line shell program two skills carried as prose now exists once, in
+  // one place, in one order.
+  //
+  // The pure helpers below are exported for the same reason this file's other
+  // CLI-edge blocks export theirs: so `close-row.spec.ts` can pin each rule in
+  // a line rather than only through a whole run — and two of them earn it twice
+  // over. `upsertClosedByLine` is the read-then-upsert whose absence IS the
+  // defect this row exists to prevent (a second row landing must not delete the
+  // first row's line), and `resolveClosingPr` is the refusal that keeps a
+  // pre-fill link, a `<PR-URL pending>` placeholder or a bare sha from reaching
+  // the tracker as a closing "PR".
+  //
+  // The honest caveat the `./route-tuple` and `./compose-driver` blocks state,
+  // stated again: `src/index.ts` is outside this row's declared Files globs.
+  // Root-exporting this family would mint a six-symbol semver commitment no
+  // acceptance criterion asked for. The trigger to revisit is a consumer that
+  // lands a merged row from ITS OWN code rather than through the verb.
+  './close-row': {
+    runCloseRow:
+      "The `close-row` verb's runner. Its one call site is cli.ts's async interception, exactly as runRouteTuple/runComposeDriver are reached; a consumer drives it as a CLI subcommand and reads the one JSON result.",
+    CloseRowDeps:
+      'The injected seams the runner takes (store, spine io, sidecar reader, and the date a first PR-Log row is stamped with). Its purpose IS spec injection — production passes none of them — so a root export would advertise a testing surface as a consumer contract.',
+    renderClosedByLine:
+      "Renders the id-keyed `## Closed-by` line (`- **<id>** — <url>`). Exported beside its upsert because the two are a printer/parser pair (ADR-0016): the writer renders this shape and the upsert finds it back by the same prefix, and a spec that pinned only one of them would not pin the pairing.",
+    upsertClosedByLine:
+      "Read-then-upsert of ONE id-keyed line into a `## Closed-by` body — replace in place, else insert, never delete. It is what keeps a second landed row from wiping the first row's line, which is the whole defect this section's absence produced; exported so that property is pinnable directly rather than only through two full runs.",
+    ClosedByUpsert:
+      'The result shape of upsertClosedByLine directly above (`{ body, changed }`) — unusable without it, and module-local for the same reason it is.',
+    resolveClosingPr:
+      "Decides the URL a close is recorded with — the explicit flag, else the spine row's PR cell — and classifies it through the shipped `closed-by` classifier. Exported so each refusal class (pre-fill, placeholder, sha, prose, empty) is pinnable on its own rather than only through a whole refused run.",
+    ResolvedClosingPr:
+      'The result shape of resolveClosingPr directly above — it rides into the refusal message and the printed `prUrlSource` as plain data, which is the form a caller actually reads.',
+  },
   './route-cli': {
     renderSidecarBody:
       "The on-disk sidecar format — a heading over the fenced json the sidecar.ts reader parses. Exported for ONE in-engine caller: route-tuple's recovery step, which persists the same record from an in-memory payload. A consumer writes a sidecar by running `write-report`/`write-verdict`, which is the surface that also validates, reconciles and sweeps; handing it the renderer alone would be handing it the one part that does none of that.",

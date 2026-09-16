@@ -984,6 +984,20 @@ export interface PrLogRowInput {
 }
 
 /**
+ * The PR-Log table's header + separator, scaffolded into a `## PR-Log` section
+ * that holds no table yet. Six columns, matching {@link PrLogRowInput}'s six
+ * fields and the six {@link readPrLog} reads back — paired with the reader
+ * (ADR-0016), so a scaffolded table is one `readSpine` can parse.
+ *
+ * Kept beside the writer rather than in `renderSpine`: a fresh spine's PR-Log
+ * is a bare heading by design (a wave with no PRs has no table to show), and
+ * the table materialises at the first row, exactly as the `## Disclosures`
+ * section's `ensureDisclosuresSection` materialises its own.
+ */
+const PR_LOG_TABLE_HEADER = '| Created | ID | PR | Closes | Merged | Notes |';
+const PR_LOG_TABLE_SEP = '|---|---|---|---|---|---|';
+
+/**
  * Upsert a PR-Log row keyed by `id`.
  *
  * - If a real PR-Log row with that `id` exists, its line is replaced in place
@@ -991,6 +1005,18 @@ export interface PrLogRowInput {
  * - Otherwise the row is appended after the last existing PR-Log row (or after
  *   the placeholder "no PRs yet" row, which it replaces on first insert), so the
  *   surrounding sections stay byte-identical.
+ * - If the section holds no table at all — the BARE `## PR-Log` heading
+ *   {@link renderSpine} produces on every fresh spine — the six-column header
+ *   and separator are scaffolded first and the row lands under them.
+ *
+ * **That last case used to throw** (`"## PR-Log" table is malformed (no
+ * separator/header)`), which meant the library path could not write a fresh
+ * spine's PR-Log at all: 102 of 102 archived spines in this repo carry the
+ * section empty. A bare heading is not a malformed table, it is an
+ * un-materialised one — the same reading `ensureDisclosuresSection` has always
+ * taken of a bare `## Disclosures` heading, now applied here. Nothing else
+ * changes: a spine with NO `## PR-Log` section still throws, because inventing
+ * a section is a different act from filling one in.
  *
  * Throws if the spine has no `## PR-Log` section.
  */
@@ -1038,9 +1064,30 @@ export function upsertPrLogRow(source: string, input: PrLogRowInput): string {
 
   const insertAfter = lastDataLine !== -1 ? lastDataLine : separatorLine;
   if (insertAfter === -1) {
-    throw new Error(
-      'upsertPrLogRow: "## PR-Log" table is malformed (no separator/header).',
+    // No table to write into — the bare `## PR-Log` heading `renderSpine`
+    // produces. Scaffold the header + separator and land the row under them,
+    // AFTER whatever the section already says: the anchor is the last non-blank
+    // line in the section body (its own heading when the body is blank), so a
+    // hand-written explanatory paragraph keeps the top of the section and the
+    // table appears below it, separated by one blank line in the house style.
+    let anchor = section.start;
+    for (let i = section.start + 1; i < section.end; i++) {
+      if (model.lines[i].trim() !== '') anchor = i;
+    }
+    // Only pad the tail when the next line is not already blank — a section
+    // that ends in a blank line (every renderSpine-produced one does) keeps its
+    // single separator from the heading that follows.
+    const tail = model.lines[anchor + 1] === '' ? [] : [''];
+    model.lines.splice(
+      anchor + 1,
+      0,
+      '',
+      PR_LOG_TABLE_HEADER,
+      PR_LOG_TABLE_SEP,
+      newLine,
+      ...tail,
     );
+    return joinLines(model);
   }
   model.lines.splice(insertAfter + 1, 0, newLine);
   return joinLines(model);
