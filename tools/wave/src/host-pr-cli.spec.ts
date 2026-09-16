@@ -364,6 +364,80 @@ describe('host-pr status', () => {
     expect(code).toBe(0);
     expect(out()).toMatchObject({ ok: true, state: 'none' });
   });
+
+  // ─── title + body reach stdout: the three shapes, at the CLI edge ────────
+  //
+  // The adapter specs prove each shipped host READS them; these prove the verb
+  // PRINTS them, which is the surface a role that may not write actually holds.
+  // Read the calls assertion in each: the verb asks the host once, exactly as it
+  // did before these keys existed.
+
+  it('prints the live title and body of an open PR — one host call, no writes', async () => {
+    const { host, calls } = fakeHost({
+      status: {
+        state: 'open',
+        number: 42,
+        url: 'https://github.com/example-org/example-repo/pull/42',
+        mergeability: 'blocked',
+        title: 'the one-line form of the claim the body makes',
+        body: 'Paragraph one.\n\nParagraph two, with the falsification output quoted.',
+      },
+    });
+    const code = await runHostPr(['status', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({
+      ok: true,
+      verb: 'status',
+      state: 'open',
+      title: 'the one-line form of the claim the body makes',
+      body: 'Paragraph one.\n\nParagraph two, with the falsification output quoted.',
+    });
+    expect(calls).toEqual(['getPrStatus:b']);
+  });
+
+  it('state:none prints NEITHER key — absent, not null and not an empty string', async () => {
+    const { host } = fakeHost({ status: { state: 'none' } });
+    await runHostPr(['status', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    const json = out();
+    expect(json.state).toBe('none');
+    expect('title' in json).toBe(false);
+    expect('body' in json).toBe(false);
+  });
+
+  it('a host that surfaces neither leaves both keys absent, and the verb still succeeds', async () => {
+    // AC3's second half: a host that cannot read them degrades to absence, never
+    // to a failed verb. The fake stands in for exactly that host.
+    const { host } = fakeHost({ status: { state: 'open', number: 42, url: 'u', mergeability: 'clean' } });
+    const code = await runHostPr(['status', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    const json = out();
+    expect(code).toBe(0);
+    expect(json.state).toBe('open');
+    expect('title' in json).toBe(false);
+    expect('body' in json).toBe(false);
+  });
+
+  it('the body reaches stdout byte-for-byte — a close phrase on its own line survives the round trip', async () => {
+    // The operational point: a role checking "does this PR body carry the close
+    // phrase, on its own line" reads the answer here. A body flattened or
+    // re-wrapped on the way out would defeat that while still looking present.
+    const body = ['A summary paragraph.', '', 'Closes the row.'].join('\n');
+    const { host } = fakeHost({ status: { state: 'open', number: 42, url: 'u', mergeability: 'clean', body } });
+    await runHostPr(['status', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    expect(out().body).toBe(body);
+    expect(String(out().body).split('\n')).toEqual(['A summary paragraph.', '', 'Closes the row.']);
+  });
+
+  it('the status verb usage names the title/body read and its read-only, no-extra-call terms', async () => {
+    const { host } = fakeHost({});
+    // A missing --branch prints the VERB's own contract section (issue #505).
+    const code = await runHostPr(['status', '--remote', GITHUB_REMOTE], host);
+    expect(code).toBe(2);
+    expect(stderr).toContain('`title`');
+    expect(stderr).toContain('`body`');
+    expect(stderr).toMatch(/no extra host call/);
+    expect(stderr).toMatch(/Read-only/);
+  });
 });
 
 describe('host-pr arm', () => {

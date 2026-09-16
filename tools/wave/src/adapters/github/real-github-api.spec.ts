@@ -455,6 +455,114 @@ describe('RealGitHubApi', () => {
       expect('headSha' in status).toBe(false);
       expect('baseRef' in status).toBe(false);
     });
+
+    // ─── title + body: what the PR SAYS, not only where it is ──────────────
+    //
+    // Before these two keys, `status` answered where a PR was and never what it
+    // said, so an acceptance criterion about the PR BODY was unreachable from
+    // the one role contractually barred from writing to the host and from
+    // reaching it by a raw CLI (wave-shared Convention 7). The read is
+    // deliberately parasitic on the requests this method already makes — the
+    // request-count assertions below are the load-bearing half, because a
+    // correct-looking implementation that fetched the PR a second time would
+    // satisfy every value assertion here and nothing else would catch it.
+
+    it('surfaces the OPEN PR\'s title and body off the detail payload — at no extra request', async () => {
+      const { api, http } = makeApi((req) =>
+        req.url.includes('/pulls?')
+          ? { status: 200, json: [{ number: 7, state: 'open', merged_at: null, html_url: 'u7' }] }
+          : {
+              status: 200,
+              json: {
+                number: 7,
+                mergeable_state: 'clean',
+                draft: false,
+                title: 'fix(engine): the landing seam reads what a PR says',
+                body: 'The mutation that made the new check fail.\n\nCloses the row.',
+              },
+            },
+      );
+      expect(await api.getPrStatus('b')).toEqual({
+        state: 'open',
+        number: 7,
+        url: 'u7',
+        mergeability: 'clean',
+        title: 'fix(engine): the landing seam reads what a PR says',
+        body: 'The mutation that made the new check fail.\n\nCloses the row.',
+      });
+      // The list GET + the single-PR GET this method already made. A THIRD
+      // request here would mean the content was fetched rather than read.
+      expect(http.requests).toHaveLength(2);
+    });
+
+    it('a merged/closed PR surfaces them off the LIST payload — still exactly one request', async () => {
+      const { api, http } = makeApi(() => ({
+        status: 200,
+        json: [
+          {
+            number: 9,
+            state: 'closed',
+            merged_at: '2026-09-16T10:00:00Z',
+            html_url: 'u9',
+            title: 'landed title',
+            body: 'landed body',
+          },
+        ],
+      }));
+      expect(await api.getPrStatus('b')).toEqual({
+        state: 'merged',
+        number: 9,
+        url: 'u9',
+        title: 'landed title',
+        body: 'landed body',
+      });
+      expect(http.requests).toHaveLength(1);
+    });
+
+    it('state:none carries NEITHER key — there is no PR to have a title or a body', async () => {
+      const { api, http } = makeApi(() => ({ status: 200, json: [] }));
+      const status = await api.getPrStatus('nope');
+      expect(status).toEqual({ state: 'none' });
+      expect('title' in status).toBe(false);
+      expect('body' in status).toBe(false);
+      expect(http.requests).toHaveLength(1);
+    });
+
+    it('a payload that LACKS them leaves both keys absent — never an empty string', async () => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/pulls?')
+          ? { status: 200, json: [{ number: 7, state: 'open', merged_at: null, html_url: 'u7' }] }
+          : { status: 200, json: { mergeable_state: 'clean', draft: false } },
+      );
+      const status = await api.getPrStatus('b');
+      expect('title' in status).toBe(false);
+      expect('body' in status).toBe(false);
+    });
+
+    it('GitHub\'s `body: null` (a PR with no description) is ABSENCE, not `null` and not `\'\'`', async () => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/pulls?')
+          ? { status: 200, json: [{ number: 7, state: 'open', merged_at: null, html_url: 'u7' }] }
+          : { status: 200, json: { mergeable_state: 'clean', draft: false, title: 'T', body: null } },
+      );
+      const status = await api.getPrStatus('b');
+      expect(status.title).toBe('T');
+      expect('body' in status).toBe(false);
+    });
+
+    it('an EMPTY-STRING title/body is folded into absence — the two-valued contract', async () => {
+      // The departure from OpenPrRef's three-valued reading, pinned: `status`
+      // never emits `''`, so a caller can test `typeof status.body === 'string'`
+      // and know it holds text.
+      const { api } = makeApi((req) =>
+        req.url.includes('/pulls?')
+          ? { status: 200, json: [{ number: 7, state: 'open', merged_at: null, html_url: 'u7' }] }
+          : { status: 200, json: { mergeable_state: 'clean', draft: false, title: '', body: '' } },
+      );
+      const status = await api.getPrStatus('b');
+      expect('title' in status).toBe(false);
+      expect('body' in status).toBe(false);
+    });
   });
 
   // ─── getReportedChecks (the arm verb's check-ATTACH input) ────────────────

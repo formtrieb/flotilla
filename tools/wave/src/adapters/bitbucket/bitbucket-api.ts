@@ -366,6 +366,7 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
       return {
         state: merged !== undefined ? 'merged' : 'closed-unmerged',
         ...prIdentity(chosen),
+        ...prContent(chosen),
       };
     }
 
@@ -374,6 +375,10 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
       ...prIdentity(open),
       mergeability: await this.mergeabilityOf(open),
       ...prRefs(open),
+      // The same list entry `prIdentity`/`prRefs` read — one response, already
+      // in hand. `mergeabilityOf` above makes its own calls (branch
+      // restrictions, commit statuses) and this read adds none to them.
+      ...prContent(open),
     };
   }
 
@@ -934,6 +939,43 @@ function prIdentity(pr: Record<string, unknown>): { number?: number; url?: strin
   return {
     ...(typeof id === 'number' ? { number: id } : {}),
     ...(typeof href === 'string' && href.length > 0 ? { url: href } : {}),
+  };
+}
+
+/**
+ * A PR object's authored content — `title` + `body` — as PRESENT-ONLY keys
+ * (absent, non-string or EMPTY → omitted; `PrLandingStatus.title`/`body` are
+ * two-valued by contract and this verb never emits `''`).
+ *
+ * Read off the SAME list entry `prIdentity`/`prRefs` read: no request of its own.
+ *
+ * **Two accepted spellings for the body, and the reason is a documented
+ * discrepancy, not defensive guessing** (Atlassian's own OpenAPI document,
+ * `dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json`, read 2026-09-16):
+ *
+ *   - `description` — a plain string. It is NOT among the `pullrequest` schema's
+ *     listed `properties`, yet the create endpoint documents it in prose against
+ *     that very schema ("Other fields: `description` - a string"), and it is the
+ *     field `host-pr create` already writes and `findOpenPr` already reads back.
+ *     So the vendor's schema is incomplete here, not authoritative — the inverse
+ *     of the caution `docs/CAPABILITIES.md` records about permissive schemas.
+ *   - `summary.raw` — the shape the schema DOES list: `{ raw, markup, html }`,
+ *     where `raw` is documented as "The text as it was typed by a user", i.e.
+ *     the same authored text before rendering.
+ *
+ * `description` wins when both are present, because it is the field this engine
+ * writes; `summary.raw` is the fallback that keeps the read working against the
+ * documented representation. Neither present → absent, which the verb treats as
+ * "this host did not surface a body", never as a failure.
+ */
+function prContent(pr: Record<string, unknown>): { title?: string; body?: string } {
+  const title = pr.title;
+  const summary = pr.summary as Record<string, unknown> | undefined;
+  const raw = summary?.raw;
+  const body = typeof pr.description === 'string' ? pr.description : raw;
+  return {
+    ...(typeof title === 'string' && title.length > 0 ? { title } : {}),
+    ...(typeof body === 'string' && body.length > 0 ? { body } : {}),
   };
 }
 

@@ -159,6 +159,13 @@ import {
   type PlanTableRow as PlanTableRowFromRoot,
   type RowState as RowStateFromRoot,
   type Spine as SpineFromRoot,
+  // The landing-status type, whose SHAPE this row widens (`title?`/`body?`).
+  // Already root-reachable before this slice — named here because a widened
+  // shape crosses the barrel only if the barrel re-exports the declaration
+  // itself, and `tsc --noEmit` on the annotations below is the only assertion
+  // that can say so. Nothing enumerable changed: types are erased, so the
+  // runtime delta probe above is deliberately silent about this one.
+  type PrLandingStatus as PrLandingStatusFromRoot,
 } from './index';
 
 /** Write a package manifest to a fresh tmp dir and hand back its path. */
@@ -1871,5 +1878,65 @@ describe('the TERMINAL row-state partition is reachable from the PACKAGE ROOT (i
     // @ts-expect-error — a literal outside ROW_STATES is rejected by the type
     // gate at the ROOT surface too, not only inside the engine.
     expect(TERMINAL_ROW_STATES_FROM_ROOT.has('parkd')).toBe(false);
+  });
+});
+
+// ─── PrLandingStatus's widened shape crosses the barrel (row 777) ────────────
+//
+// The public-API half of the `host-pr status` title/body read, asserted where a
+// consumer meets it. `PrLandingStatus` was already root-exported; what is new is
+// its SHAPE — two optional string members. A shape change is invisible to both
+// of this file's other instruments: the identity probe compares runtime
+// bindings, and a type has none; the enumeration probe reads a namespace
+// object's own enumerable keys, and types are erased before there is one. Only
+// an annotation compiled against the ROOT import can fail, so that is the whole
+// assertion here, in this file's usual shape — `tsc --noEmit` is the check, and
+// the runtime expectations exist to prove real values flowed through the named
+// annotation rather than the annotation sitting on dead code.
+//
+// What is deliberately NOT asserted: any change to the root's VALUE surface. The
+// two keys are members of an existing declaration — nothing was exported,
+// renamed or retyped — which is why no baseline in this file moves.
+
+describe('PrLandingStatus carries title/body at the PACKAGE ROOT (row 777)', () => {
+  it('annotates an open PR that reports both, as the root type', () => {
+    const status: PrLandingStatusFromRoot = {
+      state: 'open',
+      number: 42,
+      url: 'https://example.invalid/pull/42',
+      mergeability: 'clean',
+      title: 'the one-line form of the claim the body makes',
+      body: 'A body a reader can check a criterion against.',
+    };
+    // Read back THROUGH the annotation: a member the root type did not declare
+    // would not survive the assignment above, and one declared as something
+    // other than `string | undefined` would not survive this read.
+    const title: string | undefined = status.title;
+    const body: string | undefined = status.body;
+    expect(title).toBe('the one-line form of the claim the body makes');
+    expect(body).toBe('A body a reader can check a criterion against.');
+  });
+
+  it('both members are OPTIONAL — a status without them is still the root type', () => {
+    // The compatibility half: every pre-existing consumer literal still checks.
+    // If either key had landed as required, neither line below would compile.
+    const none: PrLandingStatusFromRoot = { state: 'none' };
+    const open: PrLandingStatusFromRoot = {
+      state: 'open',
+      number: 1,
+      url: 'u',
+      mergeability: 'unknown',
+    };
+    expect('title' in none).toBe(false);
+    expect('body' in open).toBe(false);
+  });
+
+  it('neither is typed as nullable — absence is an absent KEY, never an explicit null', () => {
+    const status: PrLandingStatusFromRoot = { state: 'open', number: 1, url: 'u' };
+    // @ts-expect-error — `body?: string` does not admit `null`. A host with no
+    // body to report omits the key instead, which is the contract both shipped
+    // adapters implement and their specs pin.
+    status.body = null;
+    expect(status.body).toBeNull();
   });
 });
