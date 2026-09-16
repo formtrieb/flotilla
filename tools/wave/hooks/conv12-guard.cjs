@@ -47,6 +47,18 @@
  * 0 and lets the command through: same deliberate trade the echo-guard
  * records, a guard that bricks every Bash call on its own parse bug costs more
  * than the vector it closes.
+ *
+ * ## Distribution — why the copy goes to a TRACKED path, not the installed package
+ *
+ * Same rule as the Echo-Guard beside it, restated here rather than left only on
+ * that neighbour: `wave-setup`'s scaffold copies this script to a TRACKED path
+ * in the consumer repo, `.claude/hooks/conv12-guard.cjs`, and wires it into the
+ * SAME `hooks.PreToolUse` block the Echo-Guard entry joins. That destination is
+ * deliberately NOT the installed package's own copy — `node_modules` is
+ * gitignored, so a dispatched, worktree-isolated role, which checks out
+ * tracked files only, would never see a script left there. The exact scaffold
+ * commands, the `hooks.PreToolUse` JSON, and flotilla's own vendored exception
+ * live in the `wave-setup` skill's setup-mechanics reference, not here.
  */
 
 function findUnquotedExpansion(command) {

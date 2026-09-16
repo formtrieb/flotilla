@@ -168,6 +168,11 @@ const CONSUMER_SCAFFOLD_PAIRS: ReadonlyArray<{
     sourceForm: 'tools/wave/hooks/echo-guard.cjs',
     why: "wave-setup's Echo-Guard scaffold copies the packaged hook to this path in every consumer repo; flotilla's own tracked hooks block points at the vendored counterpart instead (the documented dogfood exception in setup-mechanics.md), so the consumer-side location is never created here.",
   },
+  {
+    consumerPath: '.claude/hooks/conv12-guard.cjs',
+    sourceForm: 'tools/wave/hooks/conv12-guard.cjs',
+    why: "wave-setup's guard-hooks scaffold copies this packaged hook to this path in every consumer repo, the same way and in the same hooks.PreToolUse block as its echo-guard.cjs neighbour; flotilla's own tracked hooks block points at the vendored counterpart instead (the documented dogfood exception in setup-mechanics.md), so the consumer-side location is never created here.",
+  },
 ];
 
 /**
@@ -1105,6 +1110,18 @@ describe('skill-reference-guard — class (b) extension: consumer-scaffold paths
     for (const ref of cited) expect(resolveCloneRootCitation(ref)).toBe(false);
   });
 
+  it('the live wave-setup documents cite the SECOND scaffolded hook bare too — scaffolding both the same way means citing both the same way (issue #762)', () => {
+    const cited = ALL_CITATIONS.filter((r) => r.target === '.claude/hooks/conv12-guard.cjs');
+    const files = new Set(cited.map((r) => r.file));
+    expect(
+      files,
+      'conv12-guard.cjs joined CONSUMER_SCAFFOLD_PAIRS but the docs never name the consumer-side ' +
+        'path — a hook that moves or vanishes from the docs must turn this red, not pass silently',
+    ).toContain('.claude/skills/wave-setup/SKILL.md');
+    expect(files).toContain('.claude/skills/wave-setup/reference/setup-mechanics.md');
+    for (const ref of cited) expect(resolveCloneRootCitation(ref)).toBe(false);
+  });
+
   it('every pair is still exempt for its stated reason — consumer path ABSENT, source form PRESENT', () => {
     expect(CONSUMER_SCAFFOLD_PAIRS.length).toBeGreaterThan(0);
     expect(
@@ -1136,9 +1153,12 @@ describe('skill-reference-guard — class (b) extension: consumer-scaffold paths
 
   it('the exemption is EXACT-MATCH, never a prefix — a dead sibling in the same scaffolded directory still fails', () => {
     // The narrowness is the whole safety property: an exempted directory would
-    // let a genuinely dead citation ride in beside the real one.
+    // let a genuinely dead citation ride in beside the real one. Deliberately
+    // NOT `conv12-guard.cjs` — that neighbour is itself a real
+    // CONSUMER_SCAFFOLD_PAIRS entry now, which would make this a positive case
+    // instead of the negative one the test name promises.
     const sibling = extractBarePathCitations(
-      'its neighbour `.claude/hooks/conv12-guard.cjs` ships alongside it\n',
+      'its neighbour `.claude/hooks/no-such-guard.cjs` ships alongside it\n',
       '.claude/skills/wave-setup/SKILL.md',
     );
     expect(sibling).toHaveLength(1);
