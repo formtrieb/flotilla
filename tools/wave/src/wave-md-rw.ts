@@ -184,11 +184,17 @@ export interface DispatchLogEntry {
   branch: string | null;
   /**
    * Actually-dispatched model id parsed from a `model <id>` token (ADR-0012),
-   * or `null`. Recorded by the driver at dispatch time as a re-tuning signal
-   * (`background-heavy → <model>`); `compose-driver` reads it back (via
-   * `modelByRow`) as the row's dispatched tier, taking precedence over
-   * `modelForRisk()` — so a mis-parse here is behavioural, not cosmetic
-   * (issue #767).
+   * or `null`. The Coordinator records it at dispatch time (`spine set-branch
+   * --model`) as the re-tuning signal `background-heavy → <model>`, and
+   * `compose-driver` reads it back (via `modelByRow`) as an **opaque
+   * pass-through**: whatever is recorded here is what reaches the composed
+   * row's `model`, byte-identically. The composer NEVER derives a model of its
+   * own — the engine owns the abstract tier (`heavy` / `standard`), the
+   * consumer owns the concrete id, and a row with nothing recorded here and no
+   * `--row-meta` override is REFUSED rather than defaulted (ADR-0012 Amendment
+   * 2026-09-16). So a mis-parse here is behavioural, not cosmetic, and it is
+   * now behavioural in the loud direction: the value cannot be silently
+   * replaced by a fallback (issue #767).
    */
   model: string | null;
   /** 0-indexed source line of this dispatch-log item. */
@@ -550,9 +556,10 @@ const LEGACY_BRANCH_REF = /\b(wave(?:-orch)?\/[^\s")]*-[^\s")]+)/;
 // class stays format-blind — the engine never constrains a model id
 // (ADR-0012). Caveat: dispatch-log entries are driver-written; prose
 // containing a standalone `model <word>` would still be captured — but
-// `.model` is NOT inert: `compose-driver` reads it via `modelByRow` as the
-// row's actually-dispatched tier, overriding `modelForRisk()`, so a mis-parse
-// here is behavioural, not cosmetic (issue #767).
+// `.model` is NOT inert: `compose-driver` reads it via `modelByRow` as an
+// OPAQUE PASS-THROUGH — the recorded value IS the composed row's model, and
+// the composer derives none of its own (ADR-0012 Amendment 2026-09-16) — so a
+// mis-parse here is behavioural, not cosmetic (issue #767).
 const MODEL_REF = /(?<=^|\s)model\s+([^\s")]+)/;
 
 function readDispatchLog(lines: string[]): DispatchLogEntry[] {

@@ -303,6 +303,22 @@ fi
 #     not record (exit 1, naming the row and `spine set-branch`), and its
 #     REQUIRED_ROW_FIELDS assertion refuses a missing/blank/"undefined" half
 #     of that row before any brief is composed.
+#   ^ `--model "$MODEL"` is the OTHER half of this write, and it is not optional.
+#     The engine derives this row's TIER from its Risk — an abstract marker,
+#     `heavy` for cross-feature-refactor / public-API-change and `standard`
+#     otherwise — and stops there. BINDING THAT TIER TO THIS CONSUMER'S CONCRETE
+#     MODEL IS THE COORDINATOR'S ACT, and this flag is where you record it:
+#     `compose-driver` reads the recorded value back as an OPAQUE PASS-THROUGH,
+#     byte-identical, onto the row's Worker and Reviewer alike, and derives none
+#     of its own. So a row with NO recorded model is REFUSED at compose time
+#     (exit 1, naming the row, its tier and this remedy) instead of being
+#     silently defaulted — the literal-id fallback that used to fill that gap is
+#     retired (ADR-0012 Amendment 2026-09-16). `--row-meta`'s per-row `model`
+#     key overrides this recording for one compose; formalising the tier→model
+#     binding as a config key is a deferred follow-on, so until it exists this
+#     flag IS the binding. $MODEL is the consumer's own choice of model id, read
+#     off the roster — no model name is spelled in the engine, in the shipped
+#     driver, or in this document.
 {{wave-cli}} issue-store transition "$ID" in-flight                     # coarse rung, second
 #   Verify the write: transition answers success with empty stdout (silent by
 #   design, #648) — the exit code alone says only "did not throw," never

@@ -1,24 +1,27 @@
 /**
  * skill-schema-drift.spec.ts — pins the inlined agent-boundary schema literals
  * in .claude/skills/wave-shared/SKILL.md to the exported engine consts, AND
- * guards the boundary-suitability of the separate, anyOf-free copy inlined in
- * .claude/skills/wave-start/reference/workflow-driver.md.
+ * guards the boundary-suitability of the separate, anyOf-free copy that lives in
+ * the SHIPPED DRIVER SCRIPT, tools/wave/driver/wave-start-inflight.js.
  *
- * The Workflow driver pastes a `const …_SCHEMA = {…}` literal into
- * `agent({ schema })` — a skill cannot `import` a TS const. Those literals are
- * hand-maintained COPIES of WORKER_REPORT_JSON_SCHEMA / REVIEWER_VERDICT_JSON_SCHEMA;
- * nothing else asserts the copies still equal the source. This spec extracts each
- * inlined literal by its stable fence comment, parses it, and deep-equals it to
- * the imported const. A drift (or a missing anchor) fails loud.
+ * The Workflow driver passes a `const …_SCHEMA = {…}` literal to
+ * `agent({ schema })` — a script in that sandbox cannot `import` a TS const. Those
+ * literals are maintained COPIES of WORKER_REPORT_JSON_SCHEMA /
+ * REVIEWER_VERDICT_JSON_SCHEMA; nothing else asserts the copies still equal the
+ * source. This spec extracts each inlined literal by its stable fence comment,
+ * parses it, and deep-equals it to the imported const. A drift (or a missing
+ * anchor) fails loud.
  *
  * A second, narrower concern lives alongside the drift pins (W5-F1, live: the
  * first Workflow dispatch of 2026-07-19-hardening-w5 failed instantly — "input_schema
  * does not support oneOf, allOf, or anyOf at the top level" — because the canonical
  * wave-shared `WORKER_REPORT_SCHEMA` literal, which carries a top-level `anyOf`, was
- * pasted verbatim into `agent({ schema })`). The driver's own copy in
- * workflow-driver.md deliberately omits that `anyOf`; this spec asserts that copy
- * stays free of any top-level `anyOf`/`oneOf`/`allOf`, with a negative control that
- * proves the assertion actually fires when a combinator is (re-)introduced — see
+ * pasted verbatim into `agent({ schema })`). The driver's own copy — in the shipped
+ * script named above, NOT in .claude/skills/wave-start/reference/workflow-driver.md,
+ * which reasons about that copy but has not carried it since issue #680 — deliberately
+ * omits that `anyOf`; this spec asserts the copy in the shipped script stays free of
+ * any top-level `anyOf`/`oneOf`/`allOf`, with a negative control that proves the
+ * assertion actually fires when a combinator is (re-)introduced — see
  * docs/retros/2026-07-19-hardening-w5.md (W5-F1) for the live incident.
  *
  * Pure test — zero production change. Ur precedent: issue #78 (wave-start/SKILL.md).
@@ -3192,5 +3195,88 @@ describe('skill-schema-drift — phase 3 teaches every cleanup.* config key (iss
         '  /** mentions ghostKey? and {@link alsoGhost} */\n  realKey?: string[];\n',
       ),
     ).toEqual(['realKey']);
+  });
+});
+
+describe('skill-schema-drift — every pointer to the anyOf-free copy names the SHIPPED DRIVER SCRIPT as its home (issue #753)', () => {
+  /**
+   * The anyOf-free `WORKER_REPORT_SCHEMA` copy moved out of
+   * `wave-start/reference/workflow-driver.md` and into the shipped driver script
+   * with issue #680. Four documents kept pointing a reader at the reference
+   * document for a literal that is no longer there — including this spec's own
+   * header. A pointer to a copy that moved is the cheapest kind of false
+   * teaching and the hardest to notice, so it gets a pin of its own.
+   *
+   * The premise is checked first and separately: the reference document really
+   * does NOT carry the literal. If it ever carries one again, THAT is the thing
+   * to learn, and this block says so instead of quietly asserting prose.
+   */
+  const SHIPPED_PATH = 'tools/wave/driver/wave-start-inflight.js';
+
+  const POINTERS: ReadonlyArray<{ label: string; path: string }> = [
+    { label: 'wave-shared/SKILL.md', path: SKILL_MD },
+    { label: 'wave-start/reference/workflow-driver.md', path: WORKFLOW_DRIVER_MD },
+    { label: 'skill-schema-drift.spec.ts (this file)', path: join(__dirname, 'skill-schema-drift.spec.ts') },
+  ];
+
+  it('PREMISE — the reference document carries no schema literal to point at', () => {
+    const md = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+    // It still REASONS about the copy...
+    expect(md).toContain('WORKER_REPORT_SCHEMA');
+    // ...but carries neither the literal's opener nor the fence anchor the
+    // drift pins use to find a real copy.
+    expect(md).not.toContain('const WORKER_REPORT_SCHEMA = {');
+    expect(md).not.toContain(DRIVER_WORKER_REPORT_ANCHOR);
+  });
+
+  it.each(POINTERS.map((p) => [p.label, p.path] as const))(
+    '%s names the shipped driver script as the copy\'s home',
+    (label, path) => {
+      const text = readFileSync(path, 'utf-8');
+      expect(text, `${label} never names ${SHIPPED_PATH}`).toContain(SHIPPED_PATH);
+    },
+  );
+
+  it('the wave-shared skill\'s TWO pointers each send the reader to the shipped script, not to the reference document', () => {
+    const md = readFileSync(SKILL_MD, 'utf-8');
+    // Pointer 1 — the "form to paste" note under the canonical literal.
+    expect(md).toMatch(/The anyOf-free copy lives in the SHIPPED DRIVER SCRIPT/);
+    // Pointer 2 — the pitfalls list.
+    expect(md).toMatch(/The anyOf-free copy is the one in the shipped driver script/);
+    // Neither still tells the reader the literal is in the reference document.
+    expect(md).not.toMatch(/anyOf-free driver copy in `?\.claude\/skills\/wave-start\/reference\/workflow-driver\.md`?/);
+    expect(md).not.toMatch(/Paste the anyOf-free driver copy in `workflow-driver\.md`/);
+  });
+
+  it("the reference document's own section says the copy is elsewhere, and no longer says it is pasted below", () => {
+    const md = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+    expect(md).toContain("## Why the shipped driver's `WORKER_REPORT_SCHEMA` drops `anyOf`");
+    expect(md).toMatch(/The copy this section reasons about lives in the shipped driver script/);
+    expect(md).toMatch(/nothing below is a literal to paste/);
+    // The stale phrasings, gone: the old heading, and "the copy pasted into
+    // agent({ schema }) BELOW".
+    expect(md).not.toContain("## Why this copy's `WORKER_REPORT_SCHEMA` drops `anyOf`");
+    expect(md).not.toMatch(/the copy pasted into `agent\(\{ schema \}\)` below/);
+    // The in-document cross-reference tracks the renamed heading.
+    expect(md).not.toMatch(/§Why this copy's `WORKER_REPORT_SCHEMA` drops `anyOf`/);
+  });
+
+  it("this spec's own header names the shipped script and marks the reference document as reasoning-only", () => {
+    const header = readFileSync(join(__dirname, 'skill-schema-drift.spec.ts'), 'utf-8').slice(0, 2200);
+    expect(header).toContain(SHIPPED_PATH);
+    expect(header).toMatch(/NOT in \.claude\/skills\/wave-start\/reference\/workflow-driver\.md/);
+    expect(header).not.toMatch(/anyOf-free copy inlined in\s+\*\s+\.claude\/skills\/wave-start\/reference\/workflow-driver\.md/);
+  });
+
+  it('NEGATIVE CONTROL — the pointer pin fires against a document that still sends the reader to the reference file', () => {
+    const stale = [
+      '**The form to paste into `agent({ schema })` is the anyOf-free driver copy in',
+      '`.claude/skills/wave-start/reference/workflow-driver.md`** (also named',
+      '`WORKER_REPORT_SCHEMA` there).',
+    ].join(' ');
+    // The "names the shipped script" pin: this text does not.
+    expect(stale).not.toContain(SHIPPED_PATH);
+    // And the stale-phrasing pin fires on it.
+    expect(stale).toMatch(/anyOf-free driver copy in `?\.claude\/skills\/wave-start\/reference\/workflow-driver\.md`?/);
   });
 });

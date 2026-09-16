@@ -5382,7 +5382,7 @@ describe('dor --id <id> — candidate-id derivation fail-safe null return (issue
 // WorkerReport): issue #151's suggested AC says a no-match row "fails the
 // gate". dor-gate.ts's own doc comment + its existing spec coverage
 // (dor-gate.spec.ts, gate 8 describe block) are unambiguous and pre-date this
-// issue: Gate 8 is advisory-only by design (FOR-127 AC2) — it WARNs, and
+// issue: Gate 8 is advisory-only by design (#127 AC2) — it WARNs, and
 // deliberately never FAILs, so a row with no automated gate stays dispatchable
 // rather than being blocked outright. Repo policy wins: these specs assert the
 // REAL (warn, not fail) status and document the divergence here rather than
@@ -5448,7 +5448,7 @@ describe('dor --id <id> --config <path> threads verify profiles into Gate 8 (FOR
 
   it(
     "reports warn — never deferred — when the row's Files match NO configured verify profile " +
-      '(advisory-only per repo policy, FOR-127 AC2 — see the judgment-call note above the ' +
+      '(advisory-only per repo policy, #127 AC2 — see the judgment-call note above the ' +
       'describe block; the row stays dispatchable, exit 0)',
     async () => {
       const store = tmpStore();

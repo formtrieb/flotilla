@@ -27,7 +27,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -620,11 +620,16 @@ describe('compose-driver — the derivations', () => {
     expect(branchFor('680', 'compose-driver-verb')).toBe('wave/680-compose-driver-verb');
   });
 
-  it('modelForRisk binds the heavy tier to the two heavy Risk classes only', () => {
-    expect(modelForRisk('public-API-change')).toBe('opus');
-    expect(modelForRisk('cross-feature-refactor')).toBe('opus');
-    expect(modelForRisk('mechanical')).toBe('sonnet');
-    expect(modelForRisk('isolated-refactor')).toBe('sonnet');
+  // Updated by the ADR-0012 Amendment 2026-09-16 row: this helper used to return
+  // the two brand literals and now returns the ABSTRACT tier marker. The
+  // full-coverage pin over all four default Risk values, plus the "no engine
+  // code maps a marker to an id" half, lives in its own appended describe block
+  // at the end of this file.
+  it('modelForRisk binds the heavy tier marker to the two heavy Risk classes only', () => {
+    expect(modelForRisk('public-API-change')).toBe('heavy');
+    expect(modelForRisk('cross-feature-refactor')).toBe('heavy');
+    expect(modelForRisk('mechanical')).toBe('standard');
+    expect(modelForRisk('isolated-refactor')).toBe('standard');
   });
 
   it('closePhraseFor follows the store kind (Convention 4)', () => {
@@ -2306,5 +2311,437 @@ describe('compose-driver — a `model`-shaped branch slug does not shadow the re
     const row = receipt.rows.find((r) => r.id === id);
     expect(row?.branch).toBe(`wave/${id}-delete-dead-board-vm`);
     expect(row?.model).toBe('sonnet');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-0012 Amendment 2026-09-16 — the engine derives a TIER, never a model id.
+//
+// Three separate claims, each with its own falsifiable pin:
+//   1. No model brand is spelled in the composer module or the shipped driver
+//      template — including the template's own `ISSUES` placeholder comment,
+//      which is the copy an operator READS even though nothing extracts it now.
+//   2. `modelForRisk` answers with the abstract marker only, for all four
+//      default Risk values, and nothing in the engine maps that marker to an id.
+//   3. A row's `model` is ECHOED from what the Coordinator recorded — row-meta
+//      first, then the spine dispatch-log entry — and a row with neither is
+//      refused before the script is written.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('compose-driver — no model brand is spelled in the engine or the shipped template (ADR-0012 Amendment 2026-09-16)', () => {
+  /**
+   * The two literals this amendment retired, each assembled at runtime from
+   * two halves so this spec file's OWN source does not spell either one. That
+   * is not cosmetic: the pin's whole claim is that a repo-wide search for
+   * these names lands on nothing in the engine, and a guard that writes them
+   * out would be the one hit a reader then has to explain away.
+   */
+  const RETIRED_LITERALS = [
+    { label: 'the heavy-tier brand', literal: `op${'us'}` },
+    { label: 'the standard-tier brand', literal: `sonn${'et'}` },
+  ].map(({ label, literal }) => ({
+    label,
+    literal,
+    pattern: new RegExp(`\\b${literal}\\b`, 'i'),
+  }));
+
+  /**
+   * Both sources the amendment binds: the composer that used to return the
+   * literals, and the shipped template that used to document them. Read from
+   * disk, so the pin sees what actually ships rather than what an import
+   * re-exports.
+   */
+  const SOURCES = [
+    { label: 'tools/wave/src/compose-driver.ts', text: readFileSync(join(__dirname, 'compose-driver.ts'), 'utf8') },
+    { label: 'tools/wave/driver/wave-start-inflight.js', text: TEMPLATE },
+  ] as const;
+
+  it('the scan actually has something to read (a guard over an empty string is green for the wrong reason)', () => {
+    for (const source of SOURCES) {
+      expect(source.text.length, source.label).toBeGreaterThan(1000);
+    }
+    // ...and both really do still talk about models, so "no hit" is a fact
+    // about the BRAND, never about the topic having vanished from the file.
+    for (const source of SOURCES) {
+      expect(source.text, source.label).toMatch(/\bmodel\b/);
+    }
+  });
+
+  it.each(SOURCES.map((s) => [s.label, s.text] as const))(
+    '%s contains neither retired model literal',
+    (label, text) => {
+      for (const { label: which, pattern } of RETIRED_LITERALS) {
+        expect(pattern.test(text), `${label} still spells ${which} (${pattern})`).toBe(false);
+      }
+    },
+  );
+
+  it("the template's ISSUES placeholder comment describes the model as recorded, not as a default to pick", () => {
+    const at = TEMPLATE.indexOf('const ISSUES = ');
+    expect(at).toBeGreaterThan(-1);
+    const rowLiteral = TEMPLATE.slice(at, TEMPLATE.indexOf('anchorSha:', at));
+    expect(rowLiteral).toMatch(/spine set-branch --model/);
+    expect(rowLiteral).toMatch(/REFUSES/);
+    // The abstract markers are named there; no id is.
+    expect(rowLiteral).toMatch(/`heavy`/);
+    expect(rowLiteral).toMatch(/`standard`/);
+  });
+
+  it('NEGATIVE CONTROL — the scan fires when either literal is re-introduced into either source', () => {
+    for (const { literal, pattern } of RETIRED_LITERALS) {
+      for (const source of SOURCES) {
+        const poisoned = `${source.text}\nconst RETUNE = '${literal}'\n`;
+        expect(pattern.test(poisoned), `${source.label} + ${literal}`).toBe(true);
+      }
+    }
+  });
+});
+
+describe('compose-driver — the Risk-derived helper returns an abstract tier marker and nothing maps it to an id (ADR-0012 Amendment 2026-09-16)', () => {
+  /** The four default Risk values, from ADR-0007's frozen enum. */
+  const DEFAULT_RISKS: Array<[string, string]> = [
+    ['mechanical', 'standard'],
+    ['isolated-refactor', 'standard'],
+    ['cross-feature-refactor', 'heavy'],
+    ['public-API-change', 'heavy'],
+  ];
+
+  it.each(DEFAULT_RISKS)('Risk `%s` derives the `%s` tier marker', (risk, tier) => {
+    expect(modelForRisk(risk)).toBe(tier);
+  });
+
+  it('answers only those two markers — there is no third value and no id-shaped one', () => {
+    const answers = new Set(DEFAULT_RISKS.map(([risk]) => modelForRisk(risk)));
+    expect([...answers].sort()).toEqual(['heavy', 'standard']);
+    // An unknown Risk falls to the standard marker rather than inventing one.
+    expect(modelForRisk('something-nobody-configured')).toBe('standard');
+  });
+
+  it('no engine code maps a tier marker to a model id — the composer never reads the helper for a row value', () => {
+    const composer = readFileSync(join(__dirname, 'compose-driver.ts'), 'utf8');
+    // The helper survives for ONE purpose: naming the tier inside the refusal.
+    const callSites = [...composer.matchAll(/modelForRisk\(/g)];
+    // one declaration + one use inside the refusal message
+    expect(callSites.length).toBeGreaterThan(0);
+    const refusalRegion = composer.slice(
+      composer.indexOf('const recordedModel ='),
+      composer.indexOf('const composed: DriverRow ='),
+    );
+    expect(refusalRegion).toContain('modelForRisk(view.risk)');
+    // ...and the row's own value is the recorded one, with no `??` fallback left.
+    expect(composer).toContain('model: recordedModel as string');
+    expect(composer).not.toMatch(/model:\s*meta\.model\s*\?\?\s*modelByRow/);
+  });
+});
+
+describe('compose-driver — a row with no recorded model is refused, end to end (ADR-0012 Amendment 2026-09-16)', () => {
+  let repoRoot: string;
+  let anchor: string;
+  let stdout: string;
+  let stderr: string;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const SLUG = '2026-09-16-echoed-model';
+  const HINT = 'echo-the-recorded-model';
+
+  /**
+   * One dispatchable row. `recordedModel` is written onto the dispatch-log
+   * entry exactly as `spine set-branch --model` writes it; passing `null`
+   * records the BRANCH and no model, which is the shape this refusal exists
+   * for — a spine that a Coordinator built without the flag.
+   */
+  async function seed(recordedModel: string | null): Promise<{
+    id: string;
+    spinePath: string;
+    configPath: string;
+  }> {
+    const store = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const id = await store.create({
+      title: 'Echo the recorded model',
+      filingHint: HINT,
+      risk: 'cross-feature-refactor',
+      worker: 'background-heavy',
+      files: ['tools/wave/**'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'the model is echoed', checked: false }],
+      bodySections: [{ heading: 'What to build', markdown: 'Echo it.' }],
+    });
+
+    let spine = renderSpine(
+      {
+        slug: SLUG,
+        description: 'echoed model',
+        coordinator: 'c',
+        model: 'm',
+        created: '2026-09-16',
+        lastUpdated: '2026-09-16',
+      },
+      [
+        {
+          id,
+          title: 'Echo the recorded model',
+          worker: 'background-heavy',
+          risk: 'cross-feature-refactor',
+        },
+      ],
+      { issues: [], cells: [] },
+      'ok',
+    );
+    spine = setRowState(spine, id, 'dispatched');
+    spine = upsertDispatchLogEntry(spine, id, `wave/${id}-${HINT}`);
+    if (recordedModel !== null) spine = upsertDispatchLogModel(spine, id, recordedModel);
+
+    const spinePath = join(repoRoot, '.flotilla', 'waves', `${SLUG}.md`);
+    mkdirSync(join(repoRoot, '.flotilla', 'waves'), { recursive: true });
+    writeFileSync(spinePath, spine, 'utf8');
+
+    const configPath = join(repoRoot, 'wave.config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: { cli: SOURCE_FORM_CLI, install: 'npm ci --prefix tools/wave' },
+        verify: { profiles: [] },
+      }),
+      'utf8',
+    );
+    return { id, spinePath, configPath };
+  }
+
+  function compose(spinePath: string, configPath: string, out: string, extra: string[] = []) {
+    return runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+      ...extra,
+    ]);
+  }
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'compose-driver-echoed-model-'));
+    execFileSync('git', ['-C', repoRoot, 'init', '-q']);
+    execFileSync('git', [
+      '-C', repoRoot,
+      '-c', 'user.email=t@example.invalid',
+      '-c', 'user.name=t',
+      'commit', '--allow-empty', '-q', '-m', 'anchor',
+    ]);
+    anchor = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    stdout = '';
+    stderr = '';
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      stdout += String(c);
+      return true;
+    });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('refuses a dispatch-log entry that records no model — naming the row, its tier and the remedy', async () => {
+    const { id, spinePath, configPath } = await seed(null);
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out);
+
+    expect(code).not.toBe(0);
+    expect(stderr).toContain(id);
+    // The row's Risk is cross-feature-refactor, so the refusal names the HEAVY
+    // tier marker — the abstract half the engine does own.
+    expect(stderr).toContain('heavy');
+    expect(stderr).toContain('spine set-branch');
+    expect(stderr).toContain('--model');
+    expect(stderr).toContain('--row-meta');
+    // "before anything is written" is the load-bearing half: no script exists.
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('POSITIVE CONTROL — the recorded model reaches the composed row byte-identically', async () => {
+    const recorded = 'consumer-chosen-model-id-9';
+    const { id, spinePath, configPath } = await seed(recorded);
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out);
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string }> };
+    expect(receipt.rows.find((r) => r.id === id)?.model).toBe(recorded);
+
+    const script = readFileSync(out, 'utf8');
+    const at = script.indexOf('const ISSUES = ');
+    const close = script.indexOf('\n]\n', at);
+    const rows = JSON.parse(script.slice(at + 'const ISSUES = '.length, close + 2)) as Array<
+      Record<string, unknown>
+    >;
+    expect(rows[0].model).toBe(recorded);
+  });
+
+  it('a `--row-meta` model outranks the dispatch-log entry, and rescues a spine that records none', async () => {
+    const { id, spinePath, configPath } = await seed(null);
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out, [
+      '--row-meta',
+      JSON.stringify({ [id]: { model: 'override-model-id' } }),
+    ]);
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string }> };
+    expect(receipt.rows.find((r) => r.id === id)?.model).toBe('override-model-id');
+  });
+});
+
+describe('compose-driver — the rendered Reviewer brief cites no policy clause it does not have (issue #753)', () => {
+  const rows = [row({ id: '42', slug: 'first' })];
+  const script = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows });
+
+  /** The two RENDERED briefs from one composed run — not the template's text. */
+  async function briefs(): Promise<{ worker: string; reviewer: string }> {
+    const { calls } = await runComposedDriver(script);
+    const at = (label: string) => calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+    const worker = at('worker:42');
+    const reviewer = at('review:42');
+    // Guard the fixture before any claim rests on it.
+    expect(worker).toContain('You are a Wave Worker');
+    expect(reviewer).toContain('You are the Wave Reviewer');
+    return { worker, reviewer };
+  }
+
+  it('the rendered Reviewer brief contains no "policy clause" citation at all', async () => {
+    const { reviewer } = await briefs();
+    expect(reviewer).not.toMatch(/policy clause/i);
+  });
+
+  it("attributes the guard's live rejection of the value-free presence test to the Reviewer brief's OWN rule", async () => {
+    const { reviewer } = await briefs();
+    // The sentence is still there — this row changed what it cites, not what it says.
+    expect(reviewer).toMatch(/exactly the command the guard has rejected outright, live, when a Worker ran it/);
+    // ...and it now points at the rule the Reviewer brief actually carries.
+    expect(reviewer).toMatch(/\*\*ONE BASH CALL PER STEP\*\* rule directly above \(wave-shared Convention 13\)/);
+    // The rule it names is genuinely in this brief, above that sentence.
+    const ruleAt = reviewer.indexOf('**ONE BASH CALL PER STEP** (wave-shared Convention 13)');
+    const citeAt = reviewer.indexOf('rejected outright, live, when a Worker ran it');
+    expect(ruleAt).toBeGreaterThan(-1);
+    expect(citeAt).toBeGreaterThan(ruleAt);
+  });
+
+  it('POSITIVE CONTROL — the rendered Worker brief, which DOES have the numbered list, still carries clauses 1–12', async () => {
+    const { worker } = await briefs();
+    expect(worker).toContain('## Policy clauses (obey verbatim)');
+    for (let n = 1; n <= 12; n += 1) {
+      expect(worker, `Worker brief lost policy clause ${n}`).toMatch(
+        new RegExp(`^${n}\\. `, 'm'),
+      );
+    }
+    // And the Worker brief's own citations of that list are untouched.
+    expect(worker).toMatch(/policy clause 11/);
+    expect(worker).toMatch(/policy clause 12/);
+  });
+
+  it('NEGATIVE CONTROL — the no-citation pin fires against a template that still carries the stale reference', async () => {
+    const stale = TEMPLATE.replace(
+      'the \\`\\$VAR\\`-expansion shape the **ONE BASH CALL PER STEP** rule directly above (wave-shared Convention 13) names',
+      '(policy clause 11 above)',
+    );
+    expect(stale).not.toEqual(TEMPLATE); // the replace actually matched
+    const { calls } = await runComposedDriver(
+      composeDriverScript({ template: stale, ...CONSTANTS, rows }),
+    );
+    const reviewer = calls.find((c) => String(c.opts.label) === 'review:42')?.brief ?? '';
+    expect(reviewer).toContain('You are the Wave Reviewer');
+    expect(reviewer).toMatch(/policy clause/i);
+  });
+});
+
+describe('compose-driver — the PR-create title is rendered single-quoted, and the row data stays plain (issue #776, folded into #753)', () => {
+  /**
+   * A title carrying every character that survives inside double quotes and
+   * should not: a backtick-quoted token (the LIVE failure — a title opening
+   * with one ran command substitution on its way to the host), a double quote,
+   * and a `$`.
+   */
+  const TRICKY_TITLE = 'fix: `spine set-branch` honours "--model" and the $MODEL it records';
+  /** A title carrying the ONE character single quotes cannot hold. */
+  const APOSTROPHE_TITLE = "fix: don't shadow the row's recorded model";
+
+  const rows = [
+    row({ id: '42', slug: 'tricky', prTitle: TRICKY_TITLE }),
+    row({ id: '43', slug: 'apostrophe', prTitle: APOSTROPHE_TITLE, siblingBranches: 'wave/42-tricky' }),
+  ];
+  const script = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows });
+
+  async function workerBrief(from: string, label: string): Promise<string> {
+    const { calls } = await runComposedDriver(from);
+    const brief = calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+    expect(brief).toContain('You are a Wave Worker');
+    return brief;
+  }
+
+  it('HEADLINE — the rule beside the command tells the Worker to run the line as printed and never re-quote', async () => {
+    const brief = await workerBrief(script, 'worker:42');
+    expect(brief).toMatch(/RUN THAT `--title` LINE EXACTLY AS PRINTED, AND NEVER RE-QUOTE THE TITLE/);
+    expect(brief).toMatch(/SINGLE-QUOTED shell word/);
+    // It names the escape idiom the Worker will see, so an odd-looking line
+    // reads as the escaping working rather than as a rendering bug.
+    expect(brief).toContain("'\\''");
+    // ...and it names why the double-quoted form was wrong.
+    expect(brief).toMatch(/inside DOUBLE quotes the shell still expands backticks/);
+  });
+
+  it('BODY — the rendered `--title` is single-quoted and carries the title verbatim; no double-quoted form survives', async () => {
+    const brief = await workerBrief(script, 'worker:42');
+    expect(brief).toContain(`--title '${TRICKY_TITLE}' \\`);
+    // The backtick, the double quote and the dollar sign are all inside the quotes.
+    expect(brief).toContain('`spine set-branch`');
+    expect(brief).toContain('"--model"');
+    expect(brief).toContain('$MODEL');
+    expect(brief).not.toMatch(/--title "/);
+  });
+
+  it("BODY — an inner single quote is escaped with the close-escape-reopen idiom, and nothing else in the title moves", async () => {
+    const brief = await workerBrief(script, 'worker:43');
+    const escaped = APOSTROPHE_TITLE.split("'").join("'\\''");
+    expect(brief).toContain(`--title '${escaped}' \\`);
+    // Sanity: the escaped form really is different from the plain one, so the
+    // assertion above is not vacuously equal to "the title, quoted".
+    expect(escaped).not.toEqual(APOSTROPHE_TITLE);
+  });
+
+  it('the ISSUES row data stays the PLAIN title — the quoting happens only where the shell line is rendered', () => {
+    const at = script.indexOf('const ISSUES = ');
+    expect(at).toBeGreaterThan(-1);
+    const close = script.indexOf('\n]\n', at);
+    const composed = JSON.parse(script.slice(at + 'const ISSUES = '.length, close + 2)) as Array<
+      Record<string, unknown>
+    >;
+    expect(composed.find((r) => r.id === '43')?.prTitle).toBe(APOSTROPHE_TITLE);
+    expect(composed.find((r) => r.id === '42')?.prTitle).toBe(TRICKY_TITLE);
+    // No escaping characters were added to the row data.
+    expect(String(composed.find((r) => r.id === '43')?.prTitle)).not.toContain("'\\''");
+  });
+
+  it('NEGATIVE CONTROL — the pins fail against a template that renders the double-quoted form', async () => {
+    const doubleQuoted = TEMPLATE.replace(
+      '--title ${sq(issue.prTitle)} \\\\',
+      '--title "${issue.prTitle}" \\\\',
+    );
+    expect(doubleQuoted).not.toEqual(TEMPLATE); // the replace actually matched
+    const brief = await workerBrief(
+      composeDriverScript({ template: doubleQuoted, ...CONSTANTS, rows }),
+      'worker:42',
+    );
+    expect(brief).toMatch(/--title "/);
+    expect(brief).not.toContain(`--title '${TRICKY_TITLE}' \\`);
   });
 });

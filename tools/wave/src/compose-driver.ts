@@ -201,9 +201,36 @@ export function branchFor(id: string, slug: string): string {
 /** The heavier Risk classes, whose rows bind the heavy model tier for BOTH roles (ADR-0007). */
 const HEAVY_RISKS = ['cross-feature-refactor', 'public-API-change'];
 
-/** The default model tier for a Risk, used only when the spine records none. */
+/**
+ * The two ABSTRACT tier markers — the whole model vocabulary this engine owns.
+ * Module-local on purpose: a consumer never names a tier by importing a const,
+ * it reads the marker off a refusal message or off its own `Worker` column
+ * (`background-heavy`), which is the same brand-free axis ADR-0012 put in the
+ * tracker label.
+ */
+const HEAVY_TIER = 'heavy';
+const STANDARD_TIER = 'standard';
+
+/**
+ * The tier a Risk derives — an ABSTRACT marker, and never a model id (ADR-0012
+ * Amendment 2026-09-16; ADR-0007's "zero engine surface").
+ *
+ * Risk→tier is genuinely engine-derivable: `Risk` is the load-bearing, frozen
+ * routing key (ADR-0007), and `heavy` is exactly the `-heavy` suffix the Worker
+ * vocabulary already carries. What is NOT engine-derivable is tier→model: the
+ * concrete id is a volatile, consumer-owned choice, and this function used to
+ * answer it anyway by returning a brand literal. That fallback is RETIRED — no
+ * engine code maps a marker to an id now. The composer echoes the model the
+ * Coordinator RECORDED (`spine set-branch --model`) and refuses a row that has
+ * none, naming this marker in the refusal so the operator can see which tier it
+ * is being asked to bind.
+ *
+ * The export keeps the name `modelForRisk`: that spelling is what
+ * `barrel-drift.spec.ts` allowlists as a module-local export, and renaming it
+ * is a barrel-touching change of its own.
+ */
 export function modelForRisk(risk: string): string {
-  return HEAVY_RISKS.includes(risk) ? 'opus' : 'sonnet';
+  return HEAVY_RISKS.includes(risk) ? HEAVY_TIER : STANDARD_TIER;
 }
 
 /**
@@ -986,13 +1013,33 @@ export async function runComposeDriver(
         }
       }
 
+      // The model is ECHOED, never derived (ADR-0012 Amendment 2026-09-16).
+      // Two sources, most specific first: the row's own `--row-meta` override,
+      // then the model the Coordinator recorded on this row's dispatch-log
+      // entry with `spine set-branch --model`. There is no third rung: the
+      // engine owns the abstract tier, the consumer owns the concrete id, and
+      // a literal-id fallback here was the engine quietly answering a question
+      // it has no standing to answer — brand-free is the rule ADR-0012 states,
+      // and a default that names a brand is still naming one.
+      const recordedModel = meta.model ?? modelByRow.get(row.id);
+      if (isMissingField(recordedModel)) {
+        throw new Error(
+          `compose-driver: row ${row.id} has no dispatched model recorded — its Risk ` +
+            `(${view.risk}) derives the ${modelForRisk(view.risk)} tier, but binding that tier to ` +
+            "THIS consumer's concrete model is the Coordinator's act, not the engine's. Record it " +
+            `with \`spine set-branch <spine> ${row.id} ${branch} --model <model>\` (wave-start step 5 ` +
+            'writes it for every dispatched row), or pass it for this compose as the `model` key of ' +
+            "this row's `--row-meta`, then re-compose.",
+        );
+      }
+
       const composed: DriverRow = {
         id: row.id,
         slug: rowSlug,
         worker: view.worker,
         risk: view.risk,
         iteration,
-        model: meta.model ?? modelByRow.get(row.id) ?? modelForRisk(view.risk),
+        model: recordedModel as string,
         anchorSha: anchor,
         coordinatorBranch,
         depsSetup: deps.command,
