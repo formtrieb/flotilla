@@ -145,6 +145,13 @@ import {
 } from './adapters/bitbucket/bitbucket-api';
 import { resolveCredential } from './credential-resolver';
 import { flag, printJson } from './cli-utils';
+import {
+  hasFlag,
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
 
 const VERBS = ['create', 'arm', 'merge', 'status', 'preflight'] as const;
 type Verb = (typeof VERBS)[number];
@@ -273,8 +280,51 @@ function fullUsageLines(): string[] {
  * docblock's own guarantee), stated here per verb so a caller never has to go
  * looking for that guarantee.
  */
-const VERB_CONTRACT: Record<Verb, readonly string[]> = {
-  create: [
+/**
+ * The flags every host-pr verb accepts, whatever it is. `--remote` overrides the
+ * `git remote get-url origin` default and is read on every path.
+ */
+const HOST_PR_COMMON_FLAGS = [
+  { canonical: '--remote', value: 'one', valueType: 'url' },
+  // Accepted and DISCARDED — the FOR-87/W25-F2 uniform-wrapper tolerance, the
+  // same precedent `credential-probe` and `worktree-cleanup` already carry. This
+  // verb group is store-BLIND (it probes the code host, never a tracker) and
+  // reads no wave config, but a Coordinator wrapper appends `--config <path>` to
+  // every engine invocation uniformly, and `wave-close --auto` runs the same
+  // command on a github, linear or markdown wave. Declaring it is what keeps
+  // ADR-0051's refusal from turning that tolerance into an exit 2; nothing here
+  // reads the value.
+  { canonical: '--config', value: 'one', valueType: 'path' },
+] as const satisfies readonly VerbContract['flags'][number][];
+
+/**
+ * Every host-pr verb's Verb contract (ADR-0051 decision 2), EXTENDING the
+ * per-verb usage table this file already carried (issue #505) rather than
+ * duplicating it: the `usage` array of each entry below IS that table's former
+ * value, byte for byte. What is new is everything around it — the flags with
+ * their canonical spellings and value kinds, the positional arity (none: every
+ * host-pr verb is all-flags), and the output class (JSON on every verb, which
+ * was already this module's own stated guarantee).
+ *
+ * This is the shape ADR-0051 decision 2 points at when it says the contract
+ * "lives in the verb's own `*-cli` module — the shape `host-pr`'s
+ * `VERB_CONTRACT` and `issue-store`'s op table already have".
+ */
+export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
+  create: {
+    verb: 'host-pr create',
+    flags: [
+      { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
+      { canonical: '--title', value: 'one', valueType: 'text', required: true },
+      { canonical: '--body', value: 'one', valueType: 'text' },
+      { canonical: '--body-file', value: 'one', valueType: 'path' },
+      { canonical: '--base', value: 'one', valueType: 'branch' },
+      { canonical: '--allow-close-phrase-loss', value: 'none', valueType: 'none' },
+      ...HOST_PR_COMMON_FLAGS,
+    ],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
     'usage: host-pr create --branch <branch> --title <title> (--body <body> | --body-file <path>) [--base <branch>] [--remote <url>] [--allow-close-phrase-loss]',
     '  Opens the PR for --branch (find-before-create): an existing OPEN PR is REUSED — and its title AND body',
     '  are RE-WRITTEN to the values you pass (last-writer-wins) — so this is NOT a read-only probe; use `status`',
@@ -285,44 +335,116 @@ const VERB_CONTRACT: Record<Verb, readonly string[]> = {
     '  --body has been refused in the field by an agent harness\'s isolation guard (not by every such guard), and',
     '  a long quoted argument is a quoting hazard everywhere. The close phrase must own its own line in the file.',
     'output: a single JSON object on stdout',
+    ],
+  },
+  arm: {
+    verb: 'host-pr arm',
+    flags: [
+      { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
+      { canonical: '--method', value: 'one', valueType: 'enum' },
+      { canonical: '--delete-branch', value: 'none', valueType: 'none' },
+      ...HOST_PR_COMMON_FLAGS,
+    ],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
+      `usage: host-pr arm --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
+      '  Lands the PR by deciding per-PR from its live merge state: pending checks → enable auto-merge; already clean → direct',
+      '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
+      'output: a single JSON object on stdout',
+    ],
+  },
+  merge: {
+    verb: 'host-pr merge',
+    flags: [
+      { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
+      { canonical: '--method', value: 'one', valueType: 'enum' },
+      { canonical: '--delete-branch', value: 'none', valueType: 'none' },
+      ...HOST_PR_COMMON_FLAGS,
+    ],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
+      `usage: host-pr merge --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
+      '  Merges the PR now, no arm intent (the caller has already decided). Idempotent. --delete-branch deletes',
+      '  the PR head branch after a successful merge (best-effort).',
+      'output: a single JSON object on stdout',
+    ],
+  },
+  status: {
+    verb: 'host-pr status',
+    flags: [
+      { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
+      // Accepted and validated (never silently downgraded) though `status`
+      // merges nothing: the router reads `--method` on all three landing verbs
+      // from one branch, and refusing it here would break a caller that appends
+      // it uniformly.
+      { canonical: '--method', value: 'one', valueType: 'enum' },
+      ...HOST_PR_COMMON_FLAGS,
+    ],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
+      'usage: host-pr status --branch <branch> [--remote <url>]',
+      '  Reports the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only — never writes.',
+      '  Also reports the PR\'s live `title` and `body` off that same response (no extra host call): absent on',
+      '  state none and wherever the host does not surface them, and never an empty string.',
+      'output: a single JSON object on stdout',
+    ],
+  },
+  preflight: {
+    verb: 'host-pr preflight',
+    flags: [...HOST_PR_COMMON_FLAGS],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
+      'usage: host-pr preflight [--remote <url>]   # no --branch — a repo-level probe',
+      '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks (plus',
+      '  create-credentials on bitbucket). Store-blind — identical on every store kind.',
+      'output: a single JSON object on stdout',
+    ],
+  },
+};
+
+/**
+ * The UNION of every host-pr verb's flags — used only to ask "was this flag
+ * present at all?" while deciding the CROSS-VERB refusals below
+ * (`--delete-branch` on `status`, `--body-file` on `arm`, …).
+ *
+ * Those refusals run BEFORE the generic undeclared-token refusal on purpose: a
+ * flag this verb group knows, on a verb that has no use for it, deserves the
+ * sentence that says WHICH verbs own it — `unknown flag --delete-branch — did
+ * you mean --branch?` would be a worse answer, not a better one. The generic
+ * refusal then catches everything the group does not know at all.
+ */
+const HOST_PR_ANY_CONTRACT: VerbContract = {
+  verb: 'host-pr',
+  flags: [
+    { canonical: '--branch', value: 'one', valueType: 'branch' },
+    { canonical: '--title', value: 'one', valueType: 'text' },
+    { canonical: '--body', value: 'one', valueType: 'text' },
+    { canonical: '--body-file', value: 'one', valueType: 'path' },
+    { canonical: '--base', value: 'one', valueType: 'branch' },
+    { canonical: '--allow-close-phrase-loss', value: 'none', valueType: 'none' },
+    { canonical: '--method', value: 'one', valueType: 'enum' },
+    { canonical: '--delete-branch', value: 'none', valueType: 'none' },
+    ...HOST_PR_COMMON_FLAGS,
   ],
-  arm: [
-    `usage: host-pr arm --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
-    '  Lands the PR by deciding per-PR from its live merge state: pending checks → enable auto-merge; already clean → direct',
-    '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
-    'output: a single JSON object on stdout',
-  ],
-  merge: [
-    `usage: host-pr merge --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
-    '  Merges the PR now, no arm intent (the caller has already decided). Idempotent. --delete-branch deletes',
-    '  the PR head branch after a successful merge (best-effort).',
-    'output: a single JSON object on stdout',
-  ],
-  status: [
-    'usage: host-pr status --branch <branch> [--remote <url>]',
-    '  Reports the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only — never writes.',
-    '  Also reports the PR\'s live `title` and `body` off that same response (no extra host call): absent on',
-    '  state none and wherever the host does not surface them, and never an empty string.',
-    'output: a single JSON object on stdout',
-  ],
-  preflight: [
-    'usage: host-pr preflight [--remote <url>]   # no --branch — a repo-level probe',
-    '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks (plus',
-    '  create-credentials on bitbucket). Store-blind — identical on every store kind.',
-    'output: a single JSON object on stdout',
-  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: fullUsageLines(),
 };
 
 /**
  * Render a usage error. With a KNOWN `verb`, prints ONLY that verb's own
- * contract section ({@link VERB_CONTRACT}) — never the full multi-verb dump
+ * contract section ({@link HOST_PR_CONTRACTS}) — never the full multi-verb dump
  * (issue #505: the `arm --pr` flag-typo misfire that answered a one-flag
  * mistake with the entire ~60-line usage). Without a known verb (none given,
  * or an unrecognized one) {@link fullUsageLines} is what teaches — the caller
  * hasn't told us which contract they meant yet.
  */
 function usage(message: string, verb?: Verb): number {
-  const contract = verb !== undefined ? VERB_CONTRACT[verb] : undefined;
+  const contract = verb !== undefined ? HOST_PR_CONTRACTS[verb].usage : undefined;
   process.stderr.write(
     [`error: ${message}`, ...(contract ?? fullUsageLines()), ''].join('\n'),
   );
@@ -334,10 +456,11 @@ function usage(message: string, verb?: Verb): number {
  * Coordinator makes (a plausible spelling: `land` for `arm`, `open` for
  * `create`). Keeps {@link fullUsageLines}'s full multi-verb dump byte-for-byte
  * (issue #505's teaching value for a caller who has named no verb we
- * recognise survives unchanged) and ADDS, sourced from {@link VERB_CONTRACT}
- * — the exact table {@link VERBS}/the switch above are typed against — one
- * line per verb naming its own usage (`VERB_CONTRACT[verb][0]`), so this list
- * cannot drift from what the router actually dispatches.
+ * recognise survives unchanged) and ADDS, sourced from
+ * {@link HOST_PR_CONTRACTS} — the exact table {@link VERBS}/the switch above
+ * are typed against — one line per verb naming its own usage
+ * (`HOST_PR_CONTRACTS[verb].usage[0]`), so this list cannot drift from what the
+ * router actually dispatches.
  */
 function usageUnknownVerb(verb: string): number {
   process.stderr.write(
@@ -346,7 +469,7 @@ function usageUnknownVerb(verb: string): number {
       ...fullUsageLines(),
       '',
       'verbs:',
-      ...VERBS.map((v) => `  ${VERB_CONTRACT[v][0]}`),
+      ...VERBS.map((v) => `  ${HOST_PR_CONTRACTS[v].usage[0]}`),
       '',
     ].join('\n'),
   );
@@ -379,23 +502,30 @@ export async function runHostPr(
   // ── Usage is decided FIRST — before any routing, host build, or network. ──
   const verb = args[0] as Verb | undefined;
   if (verb === undefined) return usage('a verb is required');
+  // `host-pr --help` — no verb named yet, so the answer is the whole multi-verb
+  // contract, on stdout, exit 0 (ADR-0051 decision 7). Before any routing, any
+  // credential resolve and any network call, as every usage decision here is.
+  if ((verb as string) === '--help') {
+    process.stdout.write([...fullUsageLines(), ''].join('\n'));
+    return 0;
+  }
   if (!VERBS.includes(verb)) {
     return usageUnknownVerb(verb);
   }
 
-  // `preflight` is a REPO-level probe — it takes no --branch (it reads required
-  // checks against the DEFAULT branch). Every other verb needs one.
-  const branch = flag(args, '--branch');
-  if (verb !== 'preflight' && (branch === undefined || branch.length === 0)) {
-    return usage('--branch <branch> is required', verb);
-  }
+  // `--help` is answered here, BEFORE any branch check, credential resolve or
+  // host build (ADR-0051 decision 7): a help request must never reach the
+  // network. The verb is already known, so the answer is that verb's own
+  // contract section rather than the full multi-verb dump.
+  const contract = HOST_PR_CONTRACTS[verb];
+  if (helpRequested(contract, args.slice(1))) return printVerbHelp(contract);
 
   // `--allow-close-phrase-loss` is create's deliberate-overwrite override: it
   // permits the ONE reuse rewrite the guard refuses (dropping the close phrase
   // the live PR body carries). Rejected on every other verb rather than silently
   // ignored — the same discipline `--delete-branch` gets below, and for the same
   // reason: a flag that looks accepted but does nothing is a footgun.
-  const allowClosePhraseLoss = args.includes('--allow-close-phrase-loss');
+  const allowClosePhraseLoss = hasFlag(HOST_PR_ANY_CONTRACT, args, 'allow-close-phrase-loss');
   if (allowClosePhraseLoss && verb !== 'create') {
     return usage(
       `--allow-close-phrase-loss is only supported by 'create' (it governs the reuse rewrite); '${verb}' never rewrites a PR body`,
@@ -408,12 +538,44 @@ export async function runHostPr(
   // `--allow-close-phrase-loss` and `--delete-branch` get, for the same reason:
   // a flag that looks accepted but does nothing is a footgun, and this one
   // would look like it had supplied a body to a verb that composes none.
-  const bodyFileGiven = args.includes('--body-file');
+  const bodyFileGiven = hasFlag(HOST_PR_ANY_CONTRACT, args, 'body-file');
   if (bodyFileGiven && verb !== 'create') {
     return usage(
       `--body-file is only supported by 'create' (it supplies the PR body); '${verb}' composes no PR body`,
       verb,
     );
+  }
+
+  // `--delete-branch` is a branch-hygiene flag (consumer KW-F6): on a
+  // successful `merge` it deletes the PR's remote head branch through the host
+  // API. `arm` accepts it too (issue #140, wiring the engine's own
+  // `ArmOptions.deleteBranch`, landed in #132): threaded through only on the
+  // decision paths that resolve to an IMMEDIATE merge (a `clean` PR, or a
+  // refused-arm controlled degrade) — `armPullRequest` itself defers the
+  // deletion (and says so in `reason`) when the decision instead ARMS and
+  // hands the merge to the host. Reject it on any other verb rather than
+  // silently ignore it (the arm-delete footgun).
+  const deleteBranch = hasFlag(HOST_PR_ANY_CONTRACT, args, 'delete-branch');
+  if (deleteBranch && verb !== 'merge' && verb !== 'arm') {
+    return usage(
+      `--delete-branch is only supported by 'arm' and 'merge' (branch-hygiene steps); '${verb}' does not delete branches`,
+      verb,
+    );
+  }
+
+  // The ONE refusal path (ADR-0051 decision 4), run AFTER the three cross-verb
+  // refusals above (each of which teaches which verbs own the flag) and BEFORE
+  // any required-flag read, host build, credential resolve or network call:
+  // anything this verb's contract does not declare — an unknown flag, a stray
+  // positional — exits 2 with this verb's own usage and never the group roster.
+  const refusal = refuseUndeclared(contract, args.slice(1));
+  if (refusal !== 0) return refusal;
+
+  // `preflight` is a REPO-level probe — it takes no --branch (it reads required
+  // checks against the DEFAULT branch). Every other verb needs one.
+  const branch = flag(args, contract, 'branch');
+  if (verb !== 'preflight' && (branch === undefined || branch.length === 0)) {
+    return usage('--branch <branch> is required', verb);
   }
 
   // `create`'s own required flags are decided here, before any host build or
@@ -425,7 +587,7 @@ export async function runHostPr(
   let body: string | undefined;
   let base = 'main';
   if (verb === 'create') {
-    title = flag(args, '--title');
+    title = flag(args, contract, 'title');
     if (title === undefined || title.length === 0) {
       return usage('--title <title> is required for create', verb);
     }
@@ -437,7 +599,7 @@ export async function runHostPr(
     // ways a caller can be ambiguous about which route they meant, and both
     // errors name BOTH flags — a message naming only the one they omitted
     // cannot teach a caller who passed the other one twice over.
-    const bodyInlineGiven = args.includes('--body');
+    const bodyInlineGiven = hasFlag(contract, args, 'body');
     if (bodyInlineGiven && bodyFileGiven) {
       return usage(
         'pass exactly ONE of --body <body> and --body-file <path> for create — both were given',
@@ -452,7 +614,7 @@ export async function runHostPr(
     }
 
     if (bodyFileGiven) {
-      const bodyFile = flag(args, '--body-file');
+      const bodyFile = flag(args, contract, 'body-file');
       if (bodyFile === undefined || bodyFile.length === 0) {
         return usage(
           '--body-file <path> needs a path (the file whose bytes become the PR body)',
@@ -483,7 +645,7 @@ export async function runHostPr(
         );
       }
     } else {
-      body = flag(args, '--body');
+      body = flag(args, contract, 'body');
       if (body === undefined || body.length === 0) {
         // The body carries the store-kind close phrase (Convention 4); an empty
         // one would open a PR that closes nothing. Refuse, do not default.
@@ -493,12 +655,12 @@ export async function runHostPr(
         );
       }
     }
-    base = flag(args, '--base') ?? 'main';
+    base = flag(args, contract, 'base') ?? 'main';
   }
 
   let method: MergeMethod = DEFAULT_MERGE_METHOD;
   if (verb === 'arm' || verb === 'merge' || verb === 'status') {
-    const rawMethod = flag(args, '--method');
+    const rawMethod = flag(args, contract, 'method');
     if (rawMethod !== undefined && !MERGE_METHODS.includes(rawMethod as MergeMethod)) {
       // Never silently downgrade to the default: a caller who asked for a merge
       // method flotilla does not know must be told, not quietly squash-merged.
@@ -510,26 +672,9 @@ export async function runHostPr(
     method = (rawMethod as MergeMethod) ?? DEFAULT_MERGE_METHOD;
   }
 
-  // `--delete-branch` is a branch-hygiene flag (consumer KW-F6): on a
-  // successful `merge` it deletes the PR's remote head branch through the host
-  // API. `arm` accepts it too (issue #140, wiring the engine's own
-  // `ArmOptions.deleteBranch`, landed in #132): threaded through only on the
-  // decision paths that resolve to an IMMEDIATE merge (a `clean` PR, or a
-  // refused-arm controlled degrade) — `armPullRequest` itself defers the
-  // deletion (and says so in `reason`) when the decision instead ARMS and
-  // hands the merge to the host. Reject it on any other verb rather than
-  // silently ignore it (the arm-delete footgun).
-  const deleteBranch = args.includes('--delete-branch');
-  if (deleteBranch && verb !== 'merge' && verb !== 'arm') {
-    return usage(
-      `--delete-branch is only supported by 'arm' and 'merge' (branch-hygiene steps); '${verb}' does not delete branches`,
-      verb,
-    );
-  }
-
   let remoteUrl: string;
   try {
-    remoteUrl = flag(args, '--remote') ?? gitRemoteUrl();
+    remoteUrl = flag(args, contract, 'remote') ?? gitRemoteUrl();
   } catch (err) {
     return usage(
       `could not read the git remote (pass --remote <url>): ${(err as Error).message}`,

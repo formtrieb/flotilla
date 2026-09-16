@@ -126,8 +126,17 @@ import type {
   PublishGoalUpdateInput,
 } from './adapters/issue-store';
 import type { ApplyTriageInput } from './contract';
-import { flag, printJson } from './cli-utils';
+import { flag, flagAll, printJson } from './cli-utils';
 import { resolveStore, resolveGoalContainer } from './cli-store';
+import {
+  helpRequested,
+  positionalsOf,
+  printVerbHelp,
+  refuseUndeclared,
+  type FlagContract,
+  type OutputClass,
+  type VerbContract,
+} from './verb-contract';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
 
@@ -135,15 +144,6 @@ const NA_KINDS: readonly NeedsAttentionPayload['kind'][] = [
   'recoverable-stop',
   'terminal-failure',
 ];
-
-/** Collect EVERY value of a repeated flag (flag() returns only the first). */
-function flagAll(args: string[], name: string): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length - 1; i++) {
-    if (args[i] === name) out.push(args[i + 1]);
-  }
-  return out;
-}
 
 /** Every op this runner dispatches — mirrors the switch's case labels exactly. */
 type Op =
@@ -178,6 +178,53 @@ const FULL_OP_LIST =
   'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-create-member|goal-frontier|goal-publish-update> [...args] [--config <path>]';
 
 /**
+ * `--config <path>` — the ONE flag every op of this group accepts. It selects
+ * the store config `resolveStore` builds from, and it is per verb rather than
+ * router-global (ADR-0051 decision 7) for the reason that decision gives: not
+ * every verb has a store, and a flag every verb pretended to accept would be a
+ * lie on the ones that resolve none.
+ */
+const CONFIG_FLAG: FlagContract = { canonical: '--config', value: 'one', valueType: 'path' };
+
+/** `--input <path>` on the ops that require a payload file. */
+const INPUT_REQUIRED: FlagContract = {
+  canonical: '--input',
+  value: 'one',
+  valueType: 'path',
+  required: true,
+};
+
+/** `--input <path>` on `goal-publish-update`, where it ADDS prose rather than satisfying the op. */
+const INPUT_OPTIONAL: FlagContract = { canonical: '--input', value: 'one', valueType: 'path' };
+
+/** `--patch <path>` on the two patch ops. */
+const PATCH_REQUIRED: FlagContract = {
+  canonical: '--patch',
+  value: 'one',
+  valueType: 'path',
+  required: true,
+};
+
+/**
+ * One op's shape, minus the verb name (which {@link ISSUE_STORE_CONTRACTS}
+ * derives from the table key, so the two can never disagree). `--config` is
+ * appended to every op here rather than repeated 26 times.
+ */
+function issueStoreOp(
+  positionals: number,
+  output: OutputClass,
+  flags: readonly FlagContract[],
+  usage: readonly string[],
+): Omit<VerbContract, 'verb'> {
+  return {
+    flags: [...flags, CONFIG_FLAG],
+    positionals: { kind: 'fixed', count: positionals },
+    output,
+    usage,
+  };
+}
+
+/**
  * Every op's own contract section (issue #505) — printed INSTEAD OF the full
  * op-list dump (`FULL_OP_LIST`) once the op is known, so a wrong or missing
  * flag on (say) `triage-apply` teaches ONLY `triage-apply`'s own shape, not
@@ -186,152 +233,309 @@ const FULL_OP_LIST =
  * file) carry a compact WORKED EXAMPLE of the shape inline (≤6 lines) —
  * `triage-apply`'s `{state, category, comment}` shape is the reference case:
  * discovering it used to cost a `contract.ts` read.
+ *
+ * ADR-0051 decision 2 EXTENDED this table rather than adding a second one
+ * beside it: the `usage` array of every entry below is that table's former
+ * value, byte for byte, and what is new is the declaration around it — the
+ * flags with their canonical spellings and value kinds, the positional arity
+ * (this group's positional grammar IS its canonical spelling — decision 6 gives
+ * a verb group no named twin), and the output class.
  */
-const OP_CONTRACT: Record<Op, readonly string[]> = {
-  create: [
-    'usage: issue-store create --input <CreateInput.json> [--config <path>]',
-    '  bare shape (ADR-0027):      { "title": "...", "filingHint": "...",',
-    '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
-    '  bare MAY also add (ADR-0044): "blockedBy": [{ "issue": 41 }] — realized natively (no Header-Block written)',
-    '  decorated ALSO adds:        "risk", "worker", "files": [...], "blockedBy": "none", "acceptanceCriteria": [...]',
-    'output: the opaque new id, as plain text (not JSON)',
-  ],
-  read: ['usage: issue-store read <id> [--config <path>]', 'output: the IssueView, as JSON'],
-  'parse-ref': [
-    'usage: issue-store parse-ref <id> [--config <path>]',
-    'output: the IssueRef {slug?, issue}, as JSON',
-  ],
-  annotate: [
-    'usage: issue-store annotate <id> --patch <AnnotatePatch.json> [--config <path>]',
-    '  input shape (every key optional — supply at least one): { "risk": "...", "worker": "...",',
-    '    "files": ["..."], "acceptanceCriteria": [{ "text": "...", "checked": false }],',
-    '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  amend: [
-    'usage: issue-store amend <id> --patch <AmendPatch.json> [--config <path>]',
-    '  input shape (title and/or sections — non-empty):',
-    '    { "title": "...", "sections": [{ "heading": "...", "markdown": "..." }] }',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  transition: [
-    `usage: issue-store transition <id> <${VALID_RUNGS.join('|')}> [--config <path>]`,
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  unclaim: [
-    'usage: issue-store unclaim <id> [--config <path>]',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  close: [
-    'usage: issue-store close <id> <prUrl> [--acked 0,2,3] [--config <path>]',
-    'output: the resulting ClosingState, as JSON — plus a stderr "STILL OPEN:" line',
-    '  whenever the tracker still reports the issue open after recording the closing facts',
-  ],
-  listOpen: ['usage: issue-store listOpen [--config <path>]', 'output: IssueView[], as JSON'],
-  listClaimed: [
-    'usage: issue-store listClaimed [--config <path>]',
-    'output: IssueView[], as JSON',
-  ],
-  publishDocument: [
-    'usage: issue-store publishDocument --input <PublishDocumentInput.json> [--config <path>]',
-    '  input shape: { "title": "...", "filingHint": "...",',
-    '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
-    'output: the opaque new PRD id, as plain text (not JSON)',
-  ],
-  readDocument: [
-    'usage: issue-store readDocument <id> [--config <path>]',
-    'output: the DocumentView, as JSON',
-  ],
-  listDocuments: [
-    'usage: issue-store listDocuments [--config <path>]',
-    'output: DocumentView[], as JSON',
-  ],
-  'triage-read': [
-    'usage: issue-store triage-read <id> [--config <path>]',
-    'output: the TriageView, as JSON',
-  ],
-  'triage-apply': [
-    'usage: issue-store triage-apply <id> --input <ApplyTriageInput.json> [--config <path>]',
-    '  input shape (every key optional — supply at least one):',
-    '    { "state": "...", "category": "...", "comment": "..." }',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  'triage-close': [
-    'usage: issue-store triage-close <id> --comment <text> [--config <path>]',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  flag: [
-    'usage: issue-store flag <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...] [--config <path>]',
-    '  example: flag 42 --kind recoverable-stop --question "Which branch?" --option main --option develop',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  'clear-flag': [
-    'usage: issue-store clear-flag <id> [--config <path>]',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  'read-closing': [
-    'usage: issue-store read-closing <id> [--config <path>]',
-    'output: the ClosingState, as JSON',
-  ],
-  'goal-create': [
-    'usage: issue-store goal-create --input <CreateGoalInput.json> [--config <path>]',
-    '  input shape: { "title": "...", "filingHint": "...", "description": "..." }',
-    '  the container comes from wave.config.json "store.goal.container" —',
-    '    github defaults to "milestone", markdown to its goal file, linear has NO default',
-    'output: the opaque new goal id, as plain text (not JSON)',
-  ],
-  'goal-read': [
-    'usage: issue-store goal-read <goalId> [--config <path>]',
-    'output: the GoalView {id, title, description, container, memberIds}, as JSON',
-  ],
-  'goal-list': [
-    'usage: issue-store goal-list [--config <path>]',
-    'output: GoalView[], as JSON',
-  ],
-  'goal-assign': [
-    'usage: issue-store goal-assign <goalId> <memberId> [--config <path>]',
-    "  <memberId>'s KIND follows the binding (ADR-0045): an issue id under",
-    '    "milestone" | "project" | "goal-file"; a PROJECT id under "initiative"',
-    'output: nothing on success (exit 0, empty stdout)',
-  ],
-  'goal-create-member': [
-    'usage: issue-store goal-create-member <goalId> --input <CreateGoalMemberInput.json> [--config <path>]',
-    '  input shape: { "title": "...", "filingHint": "...",',
-    '    "bodySections": [{ "heading": "...", "markdown": "..." }],',
-    '    "blockedBy": ["<memberId>", ...] }        ← optional; MEMBER ids, not refs',
-    '  mints a BARE direct member (no eligibility marker) and joins it in one act;',
-    '    the member KIND follows the binding — an issue, or a project under "initiative"',
-    'output: the opaque new member id, as plain text (not JSON)',
-  ],
-  'goal-frontier': [
-    'usage: issue-store goal-frontier <goalId> [--config <path>]',
-    'output: the GoalFrontier, as JSON — one reading per member',
-    '  (done | in-motion | actionable | blocked | unready), plus counts,',
-    '  the open remainder, and `complete`. Read-only: it never closes the goal.',
-  ],
-  'goal-publish-update': [
-    'usage: issue-store goal-publish-update <goalId> [--input <PublishGoalUpdateInput.json>] [--config <path>]',
-    '  --input is OPTIONAL: {"narrative"?, "health"?, "operatorNote"?}',
-    '  the ENGINE derives the frontier fresh and renders the accounting anchor;',
-    '    there is no way to supply, edit or omit it — that is the whole guarantee',
-    '  health is transcribed, never derived: pass an Operator-confirmed value or',
-    '    none at all. Omitted means the update publishes without one.',
-    '  needs a container with a native update surface (linear project/initiative);',
-    '    github and markdown refuse with GoalBindingError "unrealized-update-surface"',
-    'output: the GoalUpdateReceipt, as JSON — the update id and url, the exact',
-    '  body published, and the frontier the anchor was derived from',
-  ],
+const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = {
+  create: issueStoreOp(
+    0,
+    'product',
+    [INPUT_REQUIRED],
+    [
+      'usage: issue-store create --input <CreateInput.json> [--config <path>]',
+      '  bare shape (ADR-0027):      { "title": "...", "filingHint": "...",',
+      '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
+      '  bare MAY also add (ADR-0044): "blockedBy": [{ "issue": 41 }] — realized natively (no Header-Block written)',
+      '  decorated ALSO adds:        "risk", "worker", "files": [...], "blockedBy": "none", "acceptanceCriteria": [...]',
+      'output: the opaque new id, as plain text (not JSON)',
+    ],
+  ),
+  read: issueStoreOp(
+    1,
+    'json',
+    [],
+    ['usage: issue-store read <id> [--config <path>]', 'output: the IssueView, as JSON'],
+  ),
+  'parse-ref': issueStoreOp(
+    1,
+    'json',
+    [],
+    [
+      'usage: issue-store parse-ref <id> [--config <path>]',
+      'output: the IssueRef {slug?, issue}, as JSON',
+    ],
+  ),
+  annotate: issueStoreOp(
+    1,
+    'silent-write',
+    [PATCH_REQUIRED],
+    [
+      'usage: issue-store annotate <id> --patch <AnnotatePatch.json> [--config <path>]',
+      '  input shape (every key optional — supply at least one): { "risk": "...", "worker": "...",',
+      '    "files": ["..."], "acceptanceCriteria": [{ "text": "...", "checked": false }],',
+      '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  amend: issueStoreOp(
+    1,
+    'silent-write',
+    [PATCH_REQUIRED],
+    [
+      'usage: issue-store amend <id> --patch <AmendPatch.json> [--config <path>]',
+      '  input shape (title and/or sections — non-empty):',
+      '    { "title": "...", "sections": [{ "heading": "...", "markdown": "..." }] }',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  transition: issueStoreOp(
+    2,
+    'silent-write',
+    [],
+    [
+      `usage: issue-store transition <id> <${VALID_RUNGS.join('|')}> [--config <path>]`,
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  unclaim: issueStoreOp(
+    1,
+    'silent-write',
+    [],
+    [
+      'usage: issue-store unclaim <id> [--config <path>]',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  close: issueStoreOp(
+    2,
+    'json',
+    [{ canonical: '--acked', value: 'one', valueType: 'list' }],
+    [
+      'usage: issue-store close <id> <prUrl> [--acked 0,2,3] [--config <path>]',
+      'output: the resulting ClosingState, as JSON — plus a stderr "STILL OPEN:" line',
+      '  whenever the tracker still reports the issue open after recording the closing facts',
+    ],
+  ),
+  listOpen: issueStoreOp(
+    0,
+    'json',
+    [],
+    ['usage: issue-store listOpen [--config <path>]', 'output: IssueView[], as JSON'],
+  ),
+  listClaimed: issueStoreOp(
+    0,
+    'json',
+    [],
+    [
+      'usage: issue-store listClaimed [--config <path>]',
+      'output: IssueView[], as JSON',
+    ],
+  ),
+  publishDocument: issueStoreOp(
+    0,
+    'product',
+    [INPUT_REQUIRED],
+    [
+      'usage: issue-store publishDocument --input <PublishDocumentInput.json> [--config <path>]',
+      '  input shape: { "title": "...", "filingHint": "...",',
+      '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
+      'output: the opaque new PRD id, as plain text (not JSON)',
+    ],
+  ),
+  readDocument: issueStoreOp(
+    1,
+    'json',
+    [],
+    [
+      'usage: issue-store readDocument <id> [--config <path>]',
+      'output: the DocumentView, as JSON',
+    ],
+  ),
+  listDocuments: issueStoreOp(
+    0,
+    'json',
+    [],
+    [
+      'usage: issue-store listDocuments [--config <path>]',
+      'output: DocumentView[], as JSON',
+    ],
+  ),
+  'triage-read': issueStoreOp(
+    1,
+    'json',
+    [],
+    [
+      'usage: issue-store triage-read <id> [--config <path>]',
+      'output: the TriageView, as JSON',
+    ],
+  ),
+  'triage-apply': issueStoreOp(
+    1,
+    'silent-write',
+    [INPUT_REQUIRED],
+    [
+      'usage: issue-store triage-apply <id> --input <ApplyTriageInput.json> [--config <path>]',
+      '  input shape (every key optional — supply at least one):',
+      '    { "state": "...", "category": "...", "comment": "..." }',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  'triage-close': issueStoreOp(
+    1,
+    'silent-write',
+    [{ canonical: '--comment', value: 'one', valueType: 'text', required: true }],
+    [
+      'usage: issue-store triage-close <id> --comment <text> [--config <path>]',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  flag: issueStoreOp(
+    1,
+    'silent-write',
+    [
+      { canonical: '--kind', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--question', value: 'one', valueType: 'text', required: true },
+      { canonical: '--option', value: 'repeatable', valueType: 'text', required: true },
+    ],
+    [
+      'usage: issue-store flag <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...] [--config <path>]',
+      '  example: flag 42 --kind recoverable-stop --question "Which branch?" --option main --option develop',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  'clear-flag': issueStoreOp(
+    1,
+    'silent-write',
+    [],
+    [
+      'usage: issue-store clear-flag <id> [--config <path>]',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  'read-closing': issueStoreOp(
+    1,
+    'json',
+    [],
+    [
+      'usage: issue-store read-closing <id> [--config <path>]',
+      'output: the ClosingState, as JSON',
+    ],
+  ),
+  'goal-create': issueStoreOp(
+    0,
+    'product',
+    [INPUT_REQUIRED],
+    [
+      'usage: issue-store goal-create --input <CreateGoalInput.json> [--config <path>]',
+      '  input shape: { "title": "...", "filingHint": "...", "description": "..." }',
+      '  the container comes from wave.config.json "store.goal.container" —',
+      '    github defaults to "milestone", markdown to its goal file, linear has NO default',
+      'output: the opaque new goal id, as plain text (not JSON)',
+    ],
+  ),
+  'goal-read': issueStoreOp(
+    1,
+    'json',
+    [],
+    [
+      'usage: issue-store goal-read <goalId> [--config <path>]',
+      'output: the GoalView {id, title, description, container, memberIds}, as JSON',
+    ],
+  ),
+  'goal-list': issueStoreOp(
+    0,
+    'json',
+    [],
+    [
+      'usage: issue-store goal-list [--config <path>]',
+      'output: GoalView[], as JSON',
+    ],
+  ),
+  'goal-assign': issueStoreOp(
+    2,
+    'silent-write',
+    [],
+    [
+      'usage: issue-store goal-assign <goalId> <memberId> [--config <path>]',
+      "  <memberId>'s KIND follows the binding (ADR-0045): an issue id under",
+      '    "milestone" | "project" | "goal-file"; a PROJECT id under "initiative"',
+      'output: nothing on success (exit 0, empty stdout)',
+    ],
+  ),
+  'goal-create-member': issueStoreOp(
+    1,
+    'product',
+    [INPUT_REQUIRED],
+    [
+      'usage: issue-store goal-create-member <goalId> --input <CreateGoalMemberInput.json> [--config <path>]',
+      '  input shape: { "title": "...", "filingHint": "...",',
+      '    "bodySections": [{ "heading": "...", "markdown": "..." }],',
+      '    "blockedBy": ["<memberId>", ...] }        ← optional; MEMBER ids, not refs',
+      '  mints a BARE direct member (no eligibility marker) and joins it in one act;',
+      '    the member KIND follows the binding — an issue, or a project under "initiative"',
+      'output: the opaque new member id, as plain text (not JSON)',
+    ],
+  ),
+  'goal-frontier': issueStoreOp(
+    1,
+    'json',
+    [],
+    [
+      'usage: issue-store goal-frontier <goalId> [--config <path>]',
+      'output: the GoalFrontier, as JSON — one reading per member',
+      '  (done | in-motion | actionable | blocked | unready), plus counts,',
+      '  the open remainder, and `complete`. Read-only: it never closes the goal.',
+    ],
+  ),
+  'goal-publish-update': issueStoreOp(
+    1,
+    'json',
+    [INPUT_OPTIONAL],
+    [
+      'usage: issue-store goal-publish-update <goalId> [--input <PublishGoalUpdateInput.json>] [--config <path>]',
+      '  --input is OPTIONAL: {"narrative"?, "health"?, "operatorNote"?}',
+      '  the ENGINE derives the frontier fresh and renders the accounting anchor;',
+      '    there is no way to supply, edit or omit it — that is the whole guarantee',
+      '  health is transcribed, never derived: pass an Operator-confirmed value or',
+      '    none at all. Omitted means the update publishes without one.',
+      '  needs a container with a native update surface (linear project/initiative);',
+      '    github and markdown refuse with GoalBindingError "unrealized-update-surface"',
+      'output: the GoalUpdateReceipt, as JSON — the update id and url, the exact',
+      '  body published, and the frontier the anchor was derived from',
+    ],
+  ),
 };
 
 /**
- * Every registered op, in the order {@link OP_CONTRACT} declares them —
- * derived, never a second hand-typed roster (issue #650: the same discipline
- * `SPINE_OPS`/`Object.keys(SPINE_OP_ARGS)` already uses in spine-cli.ts).
- * `OP_CONTRACT` is `Record<Op, ...>`, so this list is exactly the `Op` union
- * the switch above dispatches — it cannot omit or invent an op without a
- * compile error.
+ * Every op's full Verb contract — the shapes above, each given the verb name
+ * the CALLER types (`issue-store <op>`) derived from its own table key, so the
+ * name and the declaration can never disagree.
+ *
+ * Root-exported (and collected by `cli.ts`'s aggregate reader) so the skill-side
+ * pin and the later Catalog read ONE thing.
  */
-const ALL_OPS = Object.keys(OP_CONTRACT) as Op[];
+export const ISSUE_STORE_CONTRACTS: Readonly<Record<Op, VerbContract>> =
+  Object.fromEntries(
+    (Object.keys(ISSUE_STORE_OP_SHAPES) as Op[]).map((op) => [
+      op,
+      { verb: `issue-store ${op}`, ...ISSUE_STORE_OP_SHAPES[op] },
+    ]),
+  ) as Readonly<Record<Op, VerbContract>>;
+
+/**
+ * Every registered op, in the order {@link ISSUE_STORE_CONTRACTS} declares them
+ * — derived, never a second hand-typed roster (issue #650: the same discipline
+ * `SPINE_OPS`/`Object.keys(SPINE_OP_ARGS)` already uses in spine-cli.ts).
+ * The table is `Record<Op, ...>`, so this list is exactly the `Op` union the
+ * switch below dispatches — it cannot omit or invent an op without a compile
+ * error.
+ */
+const ALL_OPS = Object.keys(ISSUE_STORE_CONTRACTS) as Op[];
 
 /**
  * Render a usage error. With a KNOWN `op`, prints ONLY that op's own contract
@@ -352,13 +556,13 @@ const ALL_OPS = Object.keys(OP_CONTRACT) as Op[];
  * read it back); the per-op block is additive.
  */
 function usage(message: string, op?: Op): number {
-  const contract = op !== undefined ? OP_CONTRACT[op] : undefined;
+  const contract = op !== undefined ? ISSUE_STORE_CONTRACTS[op].usage : undefined;
   const body =
     contract ?? [
       `usage: ${FULL_OP_LIST}`,
       '',
       'ops:',
-      ...ALL_OPS.map((o) => `  ${OP_CONTRACT[o][0]}`),
+      ...ALL_OPS.map((o) => `  ${ISSUE_STORE_CONTRACTS[o].usage[0]}`),
     ];
   process.stderr.write([`error: ${message}`, ...body, ''].join('\n'));
   return 2;
@@ -379,6 +583,44 @@ export async function runIssueStore(
   const op = args[0];
   if (op === undefined) return usage('an op is required');
 
+  // `issue-store --help` — no op named yet, so the answer is the whole op
+  // roster, on stdout, exit 0. It is answered HERE, ahead of `resolveStore`:
+  // asking this verb group for help used to build a tracker client and resolve
+  // a credential first (issue #758), because the op check lived in the switch's
+  // `default:` case at the far end of that call.
+  if (op === '--help') {
+    process.stdout.write(
+      [
+        `usage: ${FULL_OP_LIST}`,
+        '',
+        'ops:',
+        ...ALL_OPS.map((o) => `  ${ISSUE_STORE_CONTRACTS[o].usage[0]}`),
+        '',
+      ].join('\n'),
+    );
+    return 0;
+  }
+
+  // ── Everything decidable from argv alone is decided BEFORE the store ──────
+  //
+  // `resolveStore` builds a tracker client — on `github`/`linear` that resolves
+  // a credential and can reach the network. An unknown op, a `--help`, or an
+  // undeclared flag are all answerable without any of it, and used to pay for
+  // it anyway: the op check lived in the switch's `default:` case, i.e. AFTER
+  // the store was standing (issue #758, ADR-0051 decision 7).
+  const contract = ISSUE_STORE_CONTRACTS[op as Op] as VerbContract | undefined;
+  if (contract === undefined) return usage(`unknown op "${op}"`);
+  const opArgs = args.slice(1);
+  if (helpRequested(contract, opArgs)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, opArgs);
+  if (refusal !== 0) return refusal;
+
+  // The op's positional arguments, read through the contract rather than as raw
+  // `args[1]`/`args[2]`: the contract knows which tokens are a flag's VALUE, so
+  // `issue-store read --config wave.config.json 42` now finds `42` where the
+  // index form found `--config`.
+  const positionals = positionalsOf(contract, opArgs);
+
   const store = await resolveStore(args, injected);
 
   // One try/catch wraps the WHOLE switch: any store.* throw is a domain failure
@@ -390,7 +632,7 @@ export async function runIssueStore(
   try {
     switch (op) {
       case 'create': {
-        const inputPath = flag(args, '--input');
+        const inputPath = flag(args, contract, 'input');
         if (inputPath === undefined) return usage('create requires --input <path>', 'create');
         let input: CreateInput;
         try {
@@ -428,23 +670,23 @@ export async function runIssueStore(
       }
 
       case 'read': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('read requires an <id>', 'read');
         printJson(await store.read(id));
         return 0;
       }
 
       case 'parse-ref': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('parse-ref requires an <id>', 'parse-ref');
         printJson(store.parseRef(id)); // sync, pure; throws on a non-numeric id → caught as domain failure (1)
         return 0;
       }
 
       case 'annotate': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('annotate requires an <id>', 'annotate');
-        const patchPath = flag(args, '--patch');
+        const patchPath = flag(args, contract, 'patch');
         if (patchPath === undefined) return usage('annotate requires --patch <path>', 'annotate');
         let patch: AnnotatePatch;
         try {
@@ -457,9 +699,9 @@ export async function runIssueStore(
       }
 
       case 'amend': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('amend requires an <id>', 'amend');
-        const patchPath = flag(args, '--patch');
+        const patchPath = flag(args, contract, 'patch');
         if (patchPath === undefined) return usage('amend requires --patch <path>', 'amend');
         let patch: AmendPatch;
         try {
@@ -481,8 +723,8 @@ export async function runIssueStore(
       }
 
       case 'transition': {
-        const id = args[1];
-        const rung = args[2];
+        const id = positionals[0];
+        const rung = positionals[1];
         if (id === undefined) return usage('transition requires an <id>', 'transition');
         if (rung === undefined || !(VALID_RUNGS as readonly string[]).includes(rung)) {
           return usage(
@@ -495,18 +737,18 @@ export async function runIssueStore(
       }
 
       case 'unclaim': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('unclaim requires an <id>', 'unclaim');
         await store.unclaim(id);
         return 0;
       }
 
       case 'close': {
-        const id = args[1];
-        const prUrl = args[2];
+        const id = positionals[0];
+        const prUrl = positionals[1];
         if (id === undefined) return usage('close requires an <id>', 'close');
         if (prUrl === undefined) return usage('close requires a <prUrl>', 'close');
-        const ackedRaw = flag(args, '--acked');
+        const ackedRaw = flag(args, contract, 'acked');
         const acked =
           ackedRaw === undefined || ackedRaw.trim() === ''
             ? []
@@ -556,7 +798,7 @@ export async function runIssueStore(
       }
 
       case 'publishDocument': {
-        const inputPath = flag(args, '--input');
+        const inputPath = flag(args, contract, 'input');
         if (inputPath === undefined) {
           return usage('publishDocument requires --input <path>', 'publishDocument');
         }
@@ -575,7 +817,7 @@ export async function runIssueStore(
       }
 
       case 'readDocument': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('readDocument requires an <id>', 'readDocument');
         printJson(await store.readDocument(id));
         return 0;
@@ -587,16 +829,16 @@ export async function runIssueStore(
       }
 
       case 'triage-read': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('triage-read requires an <id>', 'triage-read');
         printJson(await store.readTriage(id));
         return 0;
       }
 
       case 'triage-apply': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('triage-apply requires an <id>', 'triage-apply');
-        const inputPath = flag(args, '--input');
+        const inputPath = flag(args, contract, 'input');
         if (inputPath === undefined) {
           return usage('triage-apply requires --input <path>', 'triage-apply');
         }
@@ -614,9 +856,9 @@ export async function runIssueStore(
       }
 
       case 'triage-close': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('triage-close requires an <id>', 'triage-close');
-        const comment = flag(args, '--comment');
+        const comment = flag(args, contract, 'comment');
         if (comment === undefined) {
           return usage('triage-close requires --comment <text>', 'triage-close');
         }
@@ -625,18 +867,18 @@ export async function runIssueStore(
       }
 
       case 'flag': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('flag requires an <id>', 'flag');
-        const kind = flag(args, '--kind');
+        const kind = flag(args, contract, 'kind');
         if (kind === undefined || !(NA_KINDS as readonly string[]).includes(kind)) {
           return usage(
             `flag requires --kind ∈ {${NA_KINDS.join(', ')}}; got "${kind ?? ''}"`,
             'flag',
           );
         }
-        const question = flag(args, '--question');
+        const question = flag(args, contract, 'question');
         if (question === undefined) return usage('flag requires --question <q>', 'flag');
-        const options = flagAll(args, '--option');
+        const options = flagAll(args, contract, 'option');
         if (options.length === 0) {
           return usage('flag requires at least one --option <o>', 'flag');
         }
@@ -649,14 +891,14 @@ export async function runIssueStore(
       }
 
       case 'clear-flag': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('clear-flag requires an <id>', 'clear-flag');
         await store.clearFlag(id);
         return 0;
       }
 
       case 'read-closing': {
-        const id = args[1];
+        const id = positionals[0];
         if (id === undefined) return usage('read-closing requires an <id>', 'read-closing');
         printJson(await store.readClosing(id));
         return 0;
@@ -672,7 +914,7 @@ export async function runIssueStore(
       // (exit 1) naming `store.goal.container`, never a silent container pick.
 
       case 'goal-create': {
-        const inputPath = flag(args, '--input');
+        const inputPath = flag(args, contract, 'input');
         if (inputPath === undefined) {
           return usage('goal-create requires --input <path>', 'goal-create');
         }
@@ -697,7 +939,7 @@ export async function runIssueStore(
       }
 
       case 'goal-read': {
-        const goalId = args[1];
+        const goalId = positionals[0];
         if (goalId === undefined) return usage('goal-read requires a <goalId>', 'goal-read');
         printJson(await store.readGoal(goalId, resolveGoalContainer(args, injected)));
         return 0;
@@ -709,8 +951,8 @@ export async function runIssueStore(
       }
 
       case 'goal-assign': {
-        const goalId = args[1];
-        const memberId = args[2];
+        const goalId = positionals[0];
+        const memberId = positionals[1];
         if (goalId === undefined) return usage('goal-assign requires a <goalId>', 'goal-assign');
         if (memberId === undefined) {
           return usage('goal-assign requires a <memberId>', 'goal-assign');
@@ -720,11 +962,11 @@ export async function runIssueStore(
       }
 
       case 'goal-create-member': {
-        const goalId = args[1];
+        const goalId = positionals[0];
         if (goalId === undefined) {
           return usage('goal-create-member requires a <goalId>', 'goal-create-member');
         }
-        const inputPath = flag(args, '--input');
+        const inputPath = flag(args, contract, 'input');
         if (inputPath === undefined) {
           return usage('goal-create-member requires --input <path>', 'goal-create-member');
         }
@@ -768,7 +1010,7 @@ export async function runIssueStore(
       }
 
       case 'goal-frontier': {
-        const goalId = args[1];
+        const goalId = positionals[0];
         if (goalId === undefined) {
           return usage('goal-frontier requires a <goalId>', 'goal-frontier');
         }
@@ -786,12 +1028,12 @@ export async function runIssueStore(
       // derived inside the store at write time, so not even the CLI — the one
       // surface a human types at directly — offers a way to hand one in.
       case 'goal-publish-update': {
-        const goalId = args[1];
+        const goalId = positionals[0];
         if (goalId === undefined) {
           return usage('goal-publish-update requires a <goalId>', 'goal-publish-update');
         }
         let updateInput: PublishGoalUpdateInput = {};
-        const inputPath = flag(args, '--input');
+        const inputPath = flag(args, contract, 'input');
         if (inputPath !== undefined) {
           try {
             updateInput = JSON.parse(readFileSync(inputPath, 'utf-8')) as PublishGoalUpdateInput;

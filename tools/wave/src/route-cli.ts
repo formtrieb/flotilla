@@ -81,6 +81,141 @@ import {
 } from './sidecar';
 import { transition, type IssueState } from './stop-condition-state-machine';
 import type { Risk } from './header-parser';
+import {
+  hasFlag,
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  resolveTwin,
+  type VerbContract,
+} from './verb-contract';
+
+/**
+ * The six verbs this module runs, each declaring its own contract beside its own
+ * runner (ADR-0051 decision 2).
+ *
+ * Two of ADR-0051's four measured axes are settled HERE, and this file is where
+ * the drift was most visible: `route-cli.ts` carried BOTH `--iter` and
+ * `--iteration` for one axis, in one file.
+ *
+ *   - **The iteration is `--iter`** (decision 3: the spelling of the family with
+ *     the most verbs — write-report, write-verdict, route-tuple, spine
+ *     add-disclosure). `route-verdict` keeps `--iteration` as its silent alias.
+ *   - **The directories are `--reports-dir` / `--verdicts-dir`** (decision 3: a
+ *     tie goes to the spelling that NAMES the thing — `--verdicts-dir` says
+ *     which directory, `--dir` does not). `--dir` stays as each write verb's
+ *     alias, and resolves to a DIFFERENT canonical on each of them: possible
+ *     only because a contract is per verb.
+ *
+ * `write-report` and `write-verdict` are two of decision 6's five named twins:
+ * the `<json-file>` a sibling verb would take as a flag is accepted as
+ * `--report-file` / `--verdict-file` (canonical) or as the leading positional
+ * (its alias), never as both.
+ */
+export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
+  'route-verdict': {
+    verb: 'route-verdict',
+    flags: [
+      // `--verdict` here is the ENUM — approve | changes-requested | question.
+      // It is the one spelling decision 5 keeps polymorphism-free by renaming
+      // the OTHER side: route-tuple's file path became `--verdict-file`.
+      { canonical: '--verdict', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--iter', aliases: ['--iteration'], value: 'one', valueType: 'int', required: true },
+      { canonical: '--risk', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--state', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--ruling', value: 'one', valueType: 'text' },
+    ],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
+      'usage: flotilla-engine route-verdict --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]',
+      '  --iteration is accepted as an alias of --iter.',
+      "  --ruling <text> is the Operator's stated reason for a Reviewer-only round ABOVE the",
+      '  re-dispatch cap, and the only thing that admits an iteration above it.',
+      'output: JSON — { event, outcome } (+ `ruled` on an above-cap ruled round)',
+    ],
+  },
+  'route-outcome': {
+    verb: 'route-outcome',
+    flags: [
+      { canonical: '--outcome', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--state', value: 'one', valueType: 'enum', required: true },
+    ],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    usage: [
+      'usage: flotilla-engine route-outcome --outcome <o> --state <s>',
+      'output: JSON — { event, outcome }',
+    ],
+  },
+  'validate-report': {
+    verb: 'validate-report',
+    flags: [],
+    positionals: { kind: 'fixed', count: 1, labels: ['<file>'] },
+    output: 'prose',
+    usage: [
+      'usage: flotilla-engine validate-report <file>',
+      'output: text ("valid"), not JSON; the errors[] on stderr when invalid',
+    ],
+  },
+  'validate-verdict': {
+    verb: 'validate-verdict',
+    flags: [],
+    positionals: { kind: 'fixed', count: 1, labels: ['<file>'] },
+    output: 'prose',
+    usage: [
+      'usage: flotilla-engine validate-verdict <file>',
+      'output: text ("valid"), not JSON; the errors[] on stderr when invalid',
+    ],
+  },
+  'write-report': {
+    verb: 'write-report',
+    flags: [
+      { canonical: '--report-file', value: 'one', valueType: 'path' },
+      { canonical: '--reports-dir', aliases: ['--dir'], value: 'one', valueType: 'dir', required: true },
+      { canonical: '--id', value: 'one', valueType: 'id', required: true },
+      { canonical: '--iter', value: 'one', valueType: 'int', required: true },
+    ],
+    positionals: { kind: 'fixed', count: 1, labels: ['<json-file>'] },
+    output: 'prose',
+    twin: [{ flag: '--report-file', label: '<json-file>' }],
+    usage: [
+      'usage: flotilla-engine write-report (--report-file <path> | <json-file>) --reports-dir <dir> --id <id> --iter <n>',
+      '  --dir is accepted as an alias of --reports-dir. The payload file is named EITHER',
+      '  by --report-file or as the leading positional — never both (a mixed call is a usage error).',
+      'output: text (the written file path), not JSON',
+    ],
+  },
+  'write-verdict': {
+    verb: 'write-verdict',
+    flags: [
+      { canonical: '--verdict-file', value: 'one', valueType: 'path' },
+      { canonical: '--verdicts-dir', aliases: ['--dir'], value: 'one', valueType: 'dir', required: true },
+      { canonical: '--id', value: 'one', valueType: 'id', required: true },
+      { canonical: '--iter', value: 'one', valueType: 'int', required: true },
+    ],
+    positionals: { kind: 'fixed', count: 1, labels: ['<json-file>'] },
+    output: 'prose',
+    twin: [{ flag: '--verdict-file', label: '<json-file>' }],
+    usage: [
+      'usage: flotilla-engine write-verdict (--verdict-file <path> | <json-file>) --verdicts-dir <dir> --id <id> --iter <n>',
+      '  --dir is accepted as an alias of --verdicts-dir. The payload file is named EITHER',
+      '  by --verdict-file or as the leading positional — never both (a mixed call is a usage error).',
+      'output: text (the written file path), not JSON',
+    ],
+  },
+};
+
+/**
+ * The shared entry gate for every verb in this module: answer `--help` from the
+ * contract (constructing nothing), then refuse anything the contract does not
+ * declare (ADR-0051 decision 4). Returns `null` when the call may proceed.
+ */
+function gate(contract: VerbContract, args: string[]): number | null {
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  return refusal === 0 ? null : refusal;
+}
 
 /**
  * `route-verdict --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]`.
@@ -98,21 +233,27 @@ import type { Risk } from './header-parser';
  * changes-requested lands on the cap-exhaustion STOP rather than buying a round.
  */
 export function runRouteVerdict(args: string[]): number {
-  const verdict = flag(args, '--verdict');
-  const iterationRaw = flag(args, '--iteration');
-  const risk = flag(args, '--risk');
-  const state = flag(args, '--state');
-  const ruling = flag(args, '--ruling');
+  const contract = ROUTE_CONTRACTS['route-verdict'];
+  const gated = gate(contract, args);
+  if (gated !== null) return gated;
+  const verdict = flag(args, contract, 'verdict');
+  // Resolves `--iter` (canonical) OR `--iteration` (the alias every existing
+  // skill invocation still spells) through the one contract — ADR-0051's
+  // iteration axis, settled.
+  const iterationRaw = flag(args, contract, 'iter');
+  const risk = flag(args, contract, 'risk');
+  const state = flag(args, contract, 'state');
+  const ruling = flag(args, contract, 'ruling');
   if (verdict === undefined || iterationRaw === undefined || risk === undefined || state === undefined) {
     process.stderr.write(
-      'error: route-verdict requires --verdict <v> --iteration <n> --risk <r> --state <s> [--ruling <text>]\n',
+      'error: route-verdict requires --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]\n',
     );
     return 2;
   }
   // A bare trailing `--ruling` reads as "no ruling" to the flag parser, which
   // would surface as the out-of-range refusal — a message about the iteration
   // for a mistake about the flag. Name the real fault instead.
-  if (ruling === undefined && args.includes('--ruling')) {
+  if (ruling === undefined && hasFlag(contract, args, 'ruling')) {
     process.stderr.write(
       "error: route-verdict: --ruling takes the Operator's reason as its value — the ruling IS the reason,\n" +
         '  so pass it as a quoted sentence a reader can quote back.\n',
@@ -141,8 +282,11 @@ export function runRouteVerdict(args: string[]): number {
  * outcome; transition throws on a corrupt state — both map to exit 1.
  */
 export function runRouteOutcome(args: string[]): number {
-  const outcomeArg = flag(args, '--outcome');
-  const state = flag(args, '--state');
+  const contract = ROUTE_CONTRACTS['route-outcome'];
+  const gated = gate(contract, args);
+  if (gated !== null) return gated;
+  const outcomeArg = flag(args, contract, 'outcome');
+  const state = flag(args, contract, 'state');
   if (outcomeArg === undefined || state === undefined) {
     process.stderr.write('error: route-outcome requires --outcome <o> --state <s>\n');
     return 2;
@@ -164,6 +308,9 @@ function runValidateFile(
   args: string[],
   validate: (v: unknown) => { valid: boolean; errors: string[] },
 ): number {
+  const contract = ROUTE_CONTRACTS[label];
+  const gated = gate(contract, args);
+  if (gated !== null) return gated;
   const file = args[0];
   if (file === undefined) {
     process.stderr.write(`error: ${label} requires a <file>\n`);
@@ -214,6 +361,13 @@ export type Reconciled =
 
 interface WriteSidecarSpec {
   label: 'write-report' | 'write-verdict';
+  /**
+   * The canonical spelling of this verb's target-directory flag —
+   * `reports-dir` or `verdicts-dir` (ADR-0051 decision 3). `--dir` is the alias
+   * of BOTH, resolving to a different canonical on each: possible only because
+   * a contract is per verb.
+   */
+  dirFlag: 'reports-dir' | 'verdicts-dir';
   /** Human-scan heading rendered above the fenced json (the reader ignores it). */
   heading: 'WorkerReport' | 'ReviewerVerdict';
   kind: 'report' | 'verdict';
@@ -303,13 +457,26 @@ export function renderSidecarBody(
  * under their own names.
  */
 function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
-  const file = args[0];
-  const dir = flag(args, '--dir');
-  const id = flag(args, '--id');
-  const iterRaw = flag(args, '--iter');
+  const contract = ROUTE_CONTRACTS[spec.label];
+  const gated = gate(contract, args);
+  if (gated !== null) return gated;
+
+  // The named twin (ADR-0051 decision 6): the payload file arrives EITHER as
+  // `--report-file`/`--verdict-file` (canonical) OR as the leading positional
+  // (its alias) — never as both. A mixed call reads, to its caller, as though
+  // both halves landed, which is precisely the class this refusal exists for.
+  const twin = resolveTwin(contract, args);
+  if (!twin.ok) {
+    process.stderr.write([`error: ${twin.error}`, ...contract.usage, ''].join('\n'));
+    return 2;
+  }
+  const file = twin.values[0];
+  const dir = flag(args, contract, spec.dirFlag);
+  const id = flag(args, contract, 'id');
+  const iterRaw = flag(args, contract, 'iter');
   if (file === undefined || dir === undefined || id === undefined || iterRaw === undefined) {
     process.stderr.write(
-      `error: ${spec.label} requires <json-file> --dir <dir> --id <id> --iter <n>\n`,
+      `error: ${spec.label} requires <json-file> --${spec.dirFlag} <dir> --id <id> --iter <n>\n`,
     );
     return 2;
   }
@@ -509,6 +676,7 @@ function noticeMissingPrUrl(payload: unknown): string | undefined {
 export function runWriteReport(args: string[]): number {
   return runWriteSidecar(args, {
     label: 'write-report',
+    dirFlag: 'reports-dir',
     heading: 'WorkerReport',
     kind: 'report',
     validate: validateWorkerReport,
@@ -521,6 +689,7 @@ export function runWriteReport(args: string[]): number {
 export function runWriteVerdict(args: string[]): number {
   return runWriteSidecar(args, {
     label: 'write-verdict',
+    dirFlag: 'verdicts-dir',
     heading: 'ReviewerVerdict',
     kind: 'verdict',
     validate: validateReviewerVerdict,

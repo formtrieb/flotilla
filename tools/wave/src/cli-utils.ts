@@ -13,13 +13,71 @@
  * reach the operator unmodified — informative to Node, not to the caller who
  * forgot `--config`. One transform, shared, so the teaching text cannot drift
  * per call site the way four independent catch blocks eventually would.
+ *
+ * ADR-0051 added the {@link VerbContract} overload of `flag()`. The exact
+ * `indexOf` form below is what an ALIAS cannot travel through: `--iteration`
+ * and `--iter` were two spellings of one axis, and only the verb that happened
+ * to spell it one way could read it. Passing a contract resolves every accepted
+ * spelling of one canonical flag — so a rename is a contract edit, not a
+ * search-and-replace across the runners.
  */
 
-/** Find the value of a named flag in an args array, or undefined. */
-export function flag(args: string[], name: string): string | undefined {
-  const idx = args.indexOf(name);
+import {
+  allValuesOf,
+  firstValueOf,
+  type VerbContract,
+} from './verb-contract';
+
+/**
+ * Find the value of a named flag in an args array, or undefined.
+ *
+ * Two forms:
+ *
+ *   - `flag(args, '--config')` — the EXACT form. One spelling, `indexOf`,
+ *     no alias resolution. Still correct for a flag whose contract declares no
+ *     aliases, and it is what every pre-ADR-0051 call site spells.
+ *   - `flag(args, CONTRACT, 'iter')` — the CONTRACT form (ADR-0051 decision 2).
+ *     Resolves `iter` to the contract's canonical `--iter` and then finds
+ *     whichever accepted spelling the caller actually typed (`--iter`,
+ *     `--iteration`, …), scanning left to right and stepping over the VALUE of
+ *     every value-taking flag, so `--text "--iter"` is never mistaken for the
+ *     flag itself. The name may be given bare (`'iter'`) or dashed (`'--iter'`).
+ */
+export function flag(args: string[], name: string): string | undefined;
+export function flag(
+  args: string[],
+  contract: VerbContract,
+  name: string,
+): string | undefined;
+export function flag(
+  args: string[],
+  nameOrContract: string | VerbContract,
+  name?: string,
+): string | undefined {
+  if (typeof nameOrContract !== 'string') {
+    return firstValueOf(nameOrContract, args, name as string);
+  }
+  const idx = args.indexOf(nameOrContract);
   if (idx === -1 || idx + 1 >= args.length) return undefined;
   return args[idx + 1];
+}
+
+/**
+ * EVERY value of a repeatable flag, under any accepted spelling, in argv order
+ * ({@link flag} returns only the first).
+ *
+ * The contract form is the only one offered: a repeatable flag is exactly the
+ * shape whose hand-rolled loops drifted (issue-store-cli's `flagAll`,
+ * conflict-map-cli's `partitionStoreArgs`, credential-probe-cli's `--var`
+ * branch — three loops, three different ideas about what to do with a missing
+ * value token).
+ */
+export function flagAll(
+  args: string[],
+  contract: VerbContract,
+  name: string,
+): string[] {
+  return allValuesOf(contract, args, name);
 }
 
 /** Write a value to stdout as pretty (2-space) JSON with a trailing newline. */

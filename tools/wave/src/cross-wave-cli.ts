@@ -32,6 +32,33 @@
 import { readFileSync } from 'node:fs';
 import { crossWaveCheck, type ScopedIssue } from './cross-wave';
 import { flag, printJson } from './cli-utils';
+import {
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
+
+/**
+ * `cross-wave`'s Verb contract (ADR-0051 decision 2), declared beside its
+ * runner. No axis of ADR-0051's four passes through this verb — `--candidates`
+ * and `--claimed` name things nothing else names — so the declaration is a
+ * straight statement of what the runner already read.
+ */
+export const CROSS_WAVE_CONTRACT: VerbContract = {
+  verb: 'cross-wave',
+  flags: [
+    { canonical: '--candidates', value: 'one', valueType: 'path', required: true },
+    { canonical: '--claimed', value: 'one', valueType: 'path', required: true },
+    { canonical: '--repo-root', value: 'one', valueType: 'dir' },
+  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: [
+    'usage: cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
+    'output: JSON — the CrossWaveResult (check `warnings`; they are non-fatal)',
+  ],
+};
 
 /**
  * Run the cross-wave check CLI.
@@ -40,14 +67,18 @@ import { flag, printJson } from './cli-utils';
  * @returns exit code: 0 success, 1 domain failure, 2 usage error
  */
 export function runCrossWave(args: string[]): number {
-  const candidatesPath = flag(args, '--candidates');
-  const claimedPath = flag(args, '--claimed');
+  if (helpRequested(CROSS_WAVE_CONTRACT, args)) return printVerbHelp(CROSS_WAVE_CONTRACT);
+  const refusal = refuseUndeclared(CROSS_WAVE_CONTRACT, args);
+  if (refusal !== 0) return refusal;
+
+  const candidatesPath = flag(args, CROSS_WAVE_CONTRACT, 'candidates');
+  const claimedPath = flag(args, CROSS_WAVE_CONTRACT, 'claimed');
   // No `?? process.cwd()` fallback (FOR-38) — an omitted --repo-root is
   // forwarded as `undefined` so crossWaveCheck/computeConflictMap can tell
   // "genuinely not supplied" apart from "supplied, happens to be cwd", and
   // degrade to the exact-pattern-text + warnings path instead of silently
   // guessing a root that may not correspond to where the Files globs live.
-  const repoRoot = flag(args, '--repo-root');
+  const repoRoot = flag(args, CROSS_WAVE_CONTRACT, 'repo-root');
 
   if (candidatesPath === undefined || claimedPath === undefined) {
     process.stderr.write(

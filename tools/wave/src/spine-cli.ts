@@ -166,6 +166,17 @@ import {
   type ConflictMap,
 } from './wave-md-rw';
 import { flag, printJson } from './cli-utils';
+import {
+  hasFlag,
+  helpRequested,
+  positionalsOf,
+  printVerbHelp,
+  refuseUndeclared,
+  type FlagContract,
+  type OutputClass,
+  type PositionalArity,
+  type VerbContract,
+} from './verb-contract';
 
 /**
  * THE op vocabulary of this runner — every op it dispatches, in the order the
@@ -192,8 +203,13 @@ const SPINE_OP_ARGS: Readonly<Record<string, string>> = {
   // ONE entry, TWO forms — the wave-scoped alternative (ADR-0038) is additive,
   // so it is advertised on the same line rather than as a second op name (which
   // would change the `available:` vocabulary the FOR-11 guard reads back).
+  // ADR-0051 decision 5 renamed the wave-scoped switch to `--wave-scoped` (the
+  // glossary's own word, ADR-0038), because `--wave` was a spine PATH on
+  // worktree-cleanup and a BOOLEAN here — one spelling, two value types, in a
+  // surface a Coordinator reads flag-by-flag. `--wave` stays accepted as this
+  // op's silent alias, so every existing invocation still resolves.
   'add-disclosure':
-    '<spine-path> (<row-id> --iter <n> | --wave) --source <worker|reviewer|coordinator> --text <t>',
+    '<spine-path> (<row-id> --iter <n> | --wave-scoped) --source <worker|reviewer|coordinator> --text <t>',
   'set-disposition': `<spine-path> <disclosure-ref> <${DISPOSITION_VOCABULARY}>`,
   'check-disclosures': '<spine-path>',
   'human-gated': '<spine-path> [--workers <a,b>]',
@@ -214,32 +230,115 @@ function printUsage(): void {
 }
 
 /**
- * Every `add-disclosure` flag that CONSUMES the token after it. Named once so
- * {@link hasBareFlag} can step over those values instead of matching inside
- * them.
+ * The unknown-op refusal. DERIVED from `SPINE_OP_ARGS`, never transcribed —
+ * this message IS the dispatch vocabulary, and cli.spec.ts's FOR-11 guard reads
+ * it back at runtime to prove the router's own usage line names every op of it.
+ *
+ * Issue #650 — the summary line survives byte-for-byte (the FOR-11 guard's
+ * regex captures only up to the first newline); the block below it is one line
+ * per SPINE_OPS entry rendered the SAME way `printUsage()` renders it (`spine
+ * <op> <args>`, straight off `SPINE_OP_ARGS`) — so a misspelled op
+ * (`transition` for `set-row-state`) gets the whole vocabulary with each op's
+ * own arg shape, not just a comma-separated list of bare names to re-guess
+ * from.
+ *
+ * It moved out of the dispatch switch's `default:` case and up to the top of
+ * {@link runSpine} (ADR-0051 decision 4): an unknown op is answerable from argv
+ * alone, and answering it there means no spine is read and no store is built
+ * first. The text is unchanged.
  */
-const ADD_DISCLOSURE_VALUE_FLAGS: readonly string[] = ['--iter', '--source', '--text'];
+function usageUnknownOp(op: string): number {
+  process.stderr.write(
+    [
+      `unknown op: ${op}; available: ${SPINE_OPS.join(', ')}`,
+      '',
+      'ops:',
+      ...SPINE_OPS.map((o) => `  spine ${o} ${SPINE_OP_ARGS[o]}`),
+      '',
+    ].join('\n'),
+  );
+  return 2;
+}
 
 /**
- * True when `name` appears as a BOOLEAN flag of its own — not as the VALUE of a
- * value-taking flag. `args.includes('--wave')` would read
- * `--text "--wave"` as a mode switch and silently discard the operator's row
- * scope; the `--text` of a disclosure is free prose lifted from an agent's
- * report, so "no operator would ever type that" is not a guarantee this parser
- * gets to make. Same reason `flag()` reads a value positionally rather than by
- * scanning: argv is positional, and pretending otherwise is where the quiet
- * bugs live.
+ * Every spine op's Verb contract (ADR-0051 decision 2), DERIVED from
+ * {@link SPINE_OP_ARGS} rather than declared a second time: the `usage` line of
+ * each entry is exactly the line {@link printUsage} prints, so the contract and
+ * the advertising surface cannot drift the way two hand-maintained rosters
+ * eventually would (the FOR-11 live-gate finding, applied one level up).
+ *
+ * A verb GROUP gets no named twin (decision 6): `spine <op> <spine-path> <id> …`
+ * is one grammar, invoked over sixty times by the skills, and a second grammar
+ * per group would breed the next misgrip class. So every op below declares its
+ * positional arity and nothing is promoted to a flag.
  */
-function hasBareFlag(args: string[], name: string): boolean {
-  for (let i = 0; i < args.length; i++) {
-    if (ADD_DISCLOSURE_VALUE_FLAGS.includes(args[i])) {
-      i += 1; // skip that flag's value — it is data, never a flag
-      continue;
-    }
-    if (args[i] === name) return true;
-  }
-  return false;
+const SPINE_OP_SHAPES: Readonly<
+  Record<string, { positionals: PositionalArity; output: OutputClass; flags: readonly FlagContract[] }>
+> = {
+  create: { positionals: fixed(2), output: 'silent-write', flags: [] },
+  // Prints the spine SOURCE — the artifact itself, not a report about it.
+  read: { positionals: fixed(1), output: 'product', flags: [] },
+  'set-row-state': { positionals: fixed(3), output: 'silent-write', flags: [] },
+  'set-row-iter': { positionals: fixed(3), output: 'silent-write', flags: [] },
+  'set-row-pr': { positionals: fixed(3), output: 'silent-write', flags: [] },
+  'set-branch': {
+    positionals: fixed(3),
+    output: 'silent-write',
+    flags: [{ canonical: '--model', value: 'one', valueType: 'text' }],
+  },
+  'replace-closed-by': { positionals: fixed(2), output: 'silent-write', flags: [] },
+  'set-status': { positionals: fixed(2), output: 'silent-write', flags: [] },
+  'add-disclosure': {
+    // <spine-path> plus, in the row-scoped form only, <row-id>. The wave-scoped
+    // form takes the path alone.
+    positionals: fixed(2),
+    // Prints the disclosure-ref it minted — the thing `set-disposition`
+    // addresses, so stdout IS the product.
+    output: 'product',
+    flags: [
+      { canonical: '--iter', value: 'one', valueType: 'int' },
+      { canonical: '--wave-scoped', aliases: ['--wave'], value: 'none', valueType: 'none' },
+      { canonical: '--source', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--text', value: 'one', valueType: 'text', required: true },
+    ],
+  },
+  'set-disposition': { positionals: fixed(3), output: 'silent-write', flags: [] },
+  // Both gates print prose and answer by EXIT CODE; wave-close reads the code.
+  'check-disclosures': { positionals: fixed(1), output: 'prose', flags: [] },
+  'human-gated': {
+    positionals: fixed(1),
+    output: 'json',
+    flags: [{ canonical: '--workers', value: 'one', valueType: 'list' }],
+  },
+  'check-awaiting-human': {
+    positionals: fixed(1),
+    output: 'prose',
+    flags: [{ canonical: '--workers', value: 'one', valueType: 'list' }],
+  },
+};
+
+function fixed(count: number): PositionalArity {
+  return { kind: 'fixed', count };
 }
+
+/**
+ * The spine group's contracts, keyed by op — the shapes above joined to the
+ * usage line {@link SPINE_OP_ARGS} already owned.
+ *
+ * Root-exported (and collected by `cli.ts`'s aggregate reader) so the skill-side
+ * pin and the later Catalog read ONE thing.
+ */
+export const SPINE_CONTRACTS: Readonly<Record<string, VerbContract>> =
+  Object.fromEntries(
+    Object.keys(SPINE_OP_SHAPES).map((op) => [
+      op,
+      {
+        verb: `spine ${op}`,
+        ...SPINE_OP_SHAPES[op],
+        usage: [`usage: spine ${op} ${SPINE_OP_ARGS[op]}`],
+      },
+    ]),
+  );
 
 // ─── the human lane (ADR-0012) ───────────────────────────────────────────────
 //
@@ -271,8 +370,8 @@ interface HumanLaneRow {
  * An explicitly EMPTY `--workers ''` is honoured as the empty set (a fully
  * trimmed vocabulary holds nothing) rather than silently re-defaulting.
  */
-function humanGatedWorkerSet(args: string[]): readonly string[] {
-  const raw = flag(args, '--workers');
+function humanGatedWorkerSet(contract: VerbContract, args: string[]): readonly string[] {
+  const raw = flag(args, contract, 'workers');
   if (raw === undefined) return [HUMAN_GATED_WORKER];
   return raw
     .split(',')
@@ -320,8 +419,9 @@ function readHumanLane(
  *   2 — missing <spine-path>
  */
 function runSpineHumanGated(args: string[], io: SpineIo): number {
-  const spinePath = args[0];
-  if (!spinePath || spinePath.startsWith('--')) {
+  const contract = SPINE_CONTRACTS['human-gated'];
+  const spinePath = positionalsOf(contract, args)[0];
+  if (!spinePath) {
     process.stderr.write(
       [
         'error: spine human-gated requires a <spine-path>',
@@ -331,7 +431,7 @@ function runSpineHumanGated(args: string[], io: SpineIo): number {
     );
     return 2;
   }
-  const workers = humanGatedWorkerSet(args);
+  const workers = humanGatedWorkerSet(contract, args);
   let rows: HumanLaneRow[];
   try {
     rows = readHumanLane(resolve(spinePath), workers, io);
@@ -375,8 +475,9 @@ function runSpineHumanGated(args: string[], io: SpineIo): number {
  *   2 — missing <spine-path>
  */
 function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
-  const spinePath = args[0];
-  if (!spinePath || spinePath.startsWith('--')) {
+  const contract = SPINE_CONTRACTS['check-awaiting-human'];
+  const spinePath = positionalsOf(contract, args)[0];
+  if (!spinePath) {
     process.stderr.write(
       [
         'error: spine check-awaiting-human requires a <spine-path>',
@@ -386,7 +487,7 @@ function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
     );
     return 2;
   }
-  const workers = humanGatedWorkerSet(args);
+  const workers = humanGatedWorkerSet(contract, args);
   const abs = resolve(spinePath);
   let rows: HumanLaneRow[];
   try {
@@ -428,12 +529,45 @@ function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
 
 export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number {
   const op = args[0];
+  if (op === undefined) {
+    printUsage();
+    return 2;
+  }
+
+  // `spine --help` — no op named yet, so the answer is the whole op roster, on
+  // stdout, exit 0 (ADR-0051 decision 7).
+  if (op === '--help') {
+    process.stdout.write(
+      ['usage:', ...SPINE_OPS.map((o) => `  spine ${o} ${SPINE_OP_ARGS[o]}`), ''].join('\n'),
+    );
+    return 0;
+  }
+
+  // ── The op's contract decides everything argv alone can decide ────────────
+  //
+  // An unknown op, a `--help`, and any undeclared flag or stray positional are
+  // all answered here, before the spine is read or any store is constructed
+  // (ADR-0051 decision 4 + 7). The unknown-op message is byte-identical to the
+  // `default:` case it replaces — cli.spec.ts's FOR-11 guard reads it back at
+  // runtime to prove the router's own usage line names every op of it.
+  const contract = SPINE_CONTRACTS[op];
+  if (contract === undefined) return usageUnknownOp(op);
+  const opArgs = args.slice(1);
+  if (helpRequested(contract, opArgs)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, opArgs);
+  if (refusal !== 0) return refusal;
+
+  // Positionals read through the contract, so a flag's VALUE can never be
+  // mistaken for one (`--text "--wave"` is prose, and always was — this is the
+  // same step-over the hand-rolled `hasBareFlag` used to perform for one flag,
+  // now performed for every op by one reader).
+  const positionals = positionalsOf(contract, opArgs);
 
   // `create` renders a NEW spine — there is no existing file to load, so it
   // cannot use the shared createSpineStore(path) path below.
   if (op === 'create') {
-    const outPath = args[1];
-    const payloadFile = args[2];
+    const outPath = positionals[0];
+    const payloadFile = positionals[1];
     if (!outPath || !payloadFile) {
       printUsage();
       return 2;
@@ -472,7 +606,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       : runSpineCheckAwaitingHuman(laneArgs, io);
   }
 
-  const path = args[1];
+  const path = positionals[0];
 
   if (!op || !path) {
     printUsage();
@@ -485,8 +619,8 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
   // createSpineStore/apply/store.flush() flow below (which would otherwise
   // flush the STORE's pristine, unmutated source over this op's own write).
   if (op === 'set-row-iter') {
-    const id = args[2];
-    const iterRaw = args[3];
+    const id = positionals[1];
+    const iterRaw = positionals[2];
     if (!id || iterRaw === undefined) {
       printUsage();
       return 2;
@@ -570,8 +704,8 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
 
     case 'set-row-state': {
-      const id = args[2];
-      const state = args[3];
+      const id = positionals[1];
+      const state = positionals[2];
       if (!id || !state) {
         printUsage();
         return 2;
@@ -590,8 +724,8 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
 
     case 'set-row-pr': {
-      const id = args[2];
-      const prCell = args[3];
+      const id = positionals[1];
+      const prCell = positionals[2];
       if (!id || prCell === undefined) {
         printUsage();
         return 2;
@@ -601,7 +735,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
 
     case 'replace-closed-by': {
-      const bodyFile = args[2];
+      const bodyFile = positionals[1];
       if (!bodyFile) {
         printUsage();
         return 2;
@@ -624,16 +758,15 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
       // the Resume-Metadata dispatch-log — resume() joins worktrees to rows by
       // this branch. Optional `--model <m>` co-records the dispatched model
       // (ADR-0012). Mirrors set-row-pr's exit semantics (0/1/2).
-      const id = args[2];
-      const branch = args[3];
+      const id = positionals[1];
+      const branch = positionals[2];
       if (!id || !branch) {
         printUsage();
         return 2;
       }
       let model: string | undefined;
-      const mi = args.indexOf('--model');
-      if (mi !== -1) {
-        model = args[mi + 1];
+      if (hasFlag(contract, args, 'model')) {
+        model = flag(args, contract, 'model');
         if (!model) {
           printUsage();
           return 2;
@@ -647,7 +780,7 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
 
     case 'set-status': {
-      const status = args[2];
+      const status = positionals[1];
       if (!status) {
         printUsage();
         return 2;
@@ -663,23 +796,30 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
 
     case 'add-disclosure': {
-      const rowId = args[2];
-      const iterRaw = flag(args, '--iter');
-      const sourceRaw = flag(args, '--source');
-      const text = flag(args, '--text');
+      const rowId = positionals[1];
+      const iterRaw = flag(args, contract, 'iter');
+      const sourceRaw = flag(args, contract, 'source');
+      const text = flag(args, contract, 'text');
 
       // ── The wave-scoped form (ADR-0038), additive on this same op ──────────
       // Both forms need `--source` + `--text`; only this one is legal WITHOUT a
       // <row-id> and WITHOUT `--iter`, and mixing the two spellings is a usage
       // error rather than a silent preference for one of them.
-      if (hasBareFlag(args, '--wave')) {
+      //
+      // `hasFlag` resolves BOTH spellings of the switch — the canonical
+      // `--wave-scoped` and its `--wave` alias (ADR-0051 decision 5) — and steps
+      // over every value-taking flag while it looks, so `--text "--wave"` stays
+      // prose. That step-over used to be this file's own `hasBareFlag`, with its
+      // own hand-listed table of which flags carry a value; the contract now
+      // states that per flag, so the list cannot go stale when a flag is added.
+      if (hasFlag(contract, args, 'wave-scoped')) {
         if (sourceRaw === undefined || text === undefined) {
           printUsage();
           return 2;
         }
-        if ((rowId !== undefined && !rowId.startsWith('--')) || iterRaw !== undefined) {
+        if (rowId !== undefined || iterRaw !== undefined) {
           process.stderr.write(
-            'error: --wave takes no <row-id> and no --iter — pass --wave alone with --source and --text to add a wave-scoped disclosure\n',
+            'error: --wave-scoped takes no <row-id> and no --iter — pass --wave-scoped alone with --source and --text to add a wave-scoped disclosure\n',
           );
           return 2;
         }
@@ -695,12 +835,11 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
         break;
       }
 
-      // A `--`-prefixed token in the positional slot means <row-id> was OMITTED
-      // and the first flag slid into its place — a usage error, not a domain
-      // one ("no Plan-Table row with id --iter" would be a baffling exit 1).
+      // An omitted <row-id> no longer lets the first flag slide into its slot —
+      // the contract-aware positional read never yields a flag token — so this
+      // guard is now simply "the row-scoped form needs all four".
       if (
         !rowId ||
-        rowId.startsWith('--') ||
         iterRaw === undefined ||
         sourceRaw === undefined ||
         text === undefined
@@ -730,8 +869,8 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
 
     case 'set-disposition': {
-      const ref = args[2];
-      const disposition = args[3];
+      const ref = positionals[1];
+      const disposition = positionals[2];
       if (!ref || !disposition) {
         printUsage();
         return 2;
@@ -743,27 +882,10 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
     }
 
     default:
-      // DERIVED from `SPINE_OP_ARGS`, never transcribed — this message IS the
-      // dispatch vocabulary, and cli.spec.ts's FOR-11 guard reads it back at
-      // runtime to prove the router's own usage line names every op of it.
-      //
-      // Issue #650 — the summary line above survives byte-for-byte (the
-      // FOR-11 guard's regex captures only up to the first newline); what is
-      // NEW is the block below it, one line per SPINE_OPS entry rendered the
-      // SAME way `printUsage()` renders it (`spine <op> <args>`, straight off
-      // `SPINE_OP_ARGS`) — so a misspelled op (`transition` for
-      // `set-row-state`) gets the whole vocabulary with each op's own arg
-      // shape, not just a comma-separated list of bare names to re-guess from.
-      process.stderr.write(
-        [
-          `unknown op: ${op}; available: ${SPINE_OPS.join(', ')}`,
-          '',
-          'ops:',
-          ...SPINE_OPS.map((o) => `  spine ${o} ${SPINE_OP_ARGS[o]}`),
-          '',
-        ].join('\n'),
-      );
-      return 2;
+      // Unreachable: `SPINE_CONTRACTS[op]` is resolved at the top of this
+      // function and an unknown op returns {@link usageUnknownOp} there, before
+      // any spine is read. Kept as the exhaustiveness floor.
+      return usageUnknownOp(op);
   }
 
   // ── Store construction + the (possibly throwing) mutation + flush. A throw
