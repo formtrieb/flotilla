@@ -10,7 +10,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runIssueStore } from './issue-store-cli';
+import { ISSUE_STORE_CONTRACTS, runIssueStore } from './issue-store-cli';
+import type { VerbContract } from './verb-contract';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
@@ -19,8 +20,10 @@ import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
 import type {
   CreateInput,
   ClosingState,
+  CreateGoalInput,
   GoalContainer,
   GoalUpdateReceipt,
+  IssueStore,
   PublishGoalUpdateInput,
 } from './adapters/issue-store';
 import type { IssueView } from './contract';
@@ -1507,4 +1510,459 @@ describe('issue-store-cli — goal ops', () => {
     await runIssueStore(['goal-list'], store);
     expect(errCaptured).not.toContain('unknown op');
   });
+});
+
+// ─── ADR-0051 decision 7 / #648 — the nine silent writes answer `--json` ─────
+//
+// Nine ops used to document *output: nothing on success (exit 0, empty stdout)*.
+// The exit code was the whole contract, so a failed write and a successful one
+// printed exactly the same thing, and the only positive evidence that a write
+// landed AS INTENDED was a second read (#648, measured live across twelve
+// writes). Each now prints one receipt under the router-global `--json` row V1
+// landed: `{ op, id, sent }` — what the engine HANDED THE STORE.
+//
+// These cases are the ADR-0035 pin: the receipt shape is contract from the day
+// it lands, so every one of the nine is fixed here, across all three shipped
+// stores, rather than left to settle later. The receipt is a CLI PROJECTION and
+// not a store fact — which is exactly why the conformance suite gains no cell
+// for it and this file carries the whole pin.
+
+/** The nine `silent-write` ops, in the order the contract table declares them. */
+const SILENT_WRITE_OPS = [
+  'annotate',
+  'amend',
+  'transition',
+  'unclaim',
+  'triage-apply',
+  'triage-close',
+  'flag',
+  'clear-flag',
+  'goal-assign',
+] as const;
+
+/**
+ * A linear store bound to `project` for BOTH goal ops this block uses.
+ *
+ * Needed for the same reason {@link ProjectBoundLinearStore} above is: an
+ * INJECTED store makes `resolveGoalContainer` return `undefined` on purpose
+ * (there is no config file in these tests), and the linear store deliberately
+ * has no default binding. The subject here is the RECEIPT, not the binding
+ * resolution, which has its own case further up. Nothing in production is
+ * overridden — the binding is supplied exactly where the CLI would have passed a
+ * configured one.
+ */
+class ProjectBoundGoalLinearStore extends LinearIssuesStore {
+  async createGoal(input: CreateGoalInput, container?: GoalContainer): Promise<string> {
+    return super.createGoal(input, container ?? 'project');
+  }
+
+  async assignToGoal(
+    goalId: string,
+    memberId: string,
+    container?: GoalContainer,
+  ): Promise<void> {
+    return super.assignToGoal(goalId, memberId, container ?? 'project');
+  }
+}
+
+/**
+ * Record every method call made THROUGH this object, in order, while delegating
+ * to the real one.
+ *
+ * Two different levels of the same question are asked with it below: wrapped
+ * around the STORE it answers "did the CLI make a second call to build the
+ * receipt?", and wrapped around a tracker API it answers "did `--json` change
+ * what went over the wire?". Both are the negative control a planted read-back
+ * has to get past, and neither depends on inspecting the receipt's contents.
+ */
+function recordCalls<T extends object>(target: T): { proxy: T; calls: string[] } {
+  const calls: string[] = [];
+  const proxy = new Proxy(target, {
+    get(t, prop) {
+      const value = (t as unknown as Record<string | symbol, unknown>)[prop];
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]): unknown => {
+        calls.push(String(prop));
+        return (value as (...a: unknown[]) => unknown).apply(t, args);
+      };
+    },
+  }) as T;
+  return { proxy, calls };
+}
+
+function writeJsonFile(prefix: string, value: unknown): string {
+  const p = join(mkdtempSync(join(tmpdir(), prefix)), 'payload.json');
+  writeFileSync(p, JSON.stringify(value), 'utf-8');
+  return p;
+}
+
+/**
+ * The annotate patch these cases send. `parent` is deliberately OMITTED: the
+ * receipt must then omit it too, which is the "a field that went out as nothing
+ * did not go out" half of the shape, asserted by `toEqual` against this very
+ * object.
+ */
+const RECEIPT_ANNOTATE_PATCH = {
+  risk: 'isolated-refactor',
+  worker: 'background',
+  files: ['cms/site/snippets/new.php'],
+  acceptanceCriteria: [{ text: 'snippet renders', checked: false }],
+  bodySections: [{ heading: 'Notes', markdown: 'render it' }],
+};
+
+const RECEIPT_AMEND_PATCH = {
+  title: 'A sharper title',
+  sections: [{ heading: 'Notes', markdown: 'sharpened' }],
+};
+
+const RECEIPT_TRIAGE_INPUT = {
+  state: 'needs-info',
+  category: 'bug',
+  comment: 'repro?',
+};
+
+interface ReceiptIds {
+  readonly issueId: string;
+  readonly goalId: string;
+}
+
+interface ReceiptCase {
+  readonly op: (typeof SILENT_WRITE_OPS)[number];
+  /** argv WITHOUT `--json` — the receipt case appends it, the default case does not. */
+  argv(ids: ReceiptIds): string[];
+  /** The exact JSON the receipt case parses back. */
+  receipt(ids: ReceiptIds): unknown;
+}
+
+const RECEIPT_CASES: readonly ReceiptCase[] = [
+  {
+    op: 'annotate',
+    argv: (ids) => [
+      'annotate',
+      ids.issueId,
+      '--patch',
+      writeJsonFile('rcpt-ann-', RECEIPT_ANNOTATE_PATCH),
+    ],
+    receipt: (ids) => ({
+      op: 'annotate',
+      id: ids.issueId,
+      sent: RECEIPT_ANNOTATE_PATCH,
+    }),
+  },
+  {
+    op: 'amend',
+    argv: (ids) => [
+      'amend',
+      ids.issueId,
+      '--patch',
+      writeJsonFile('rcpt-amd-', RECEIPT_AMEND_PATCH),
+    ],
+    receipt: (ids) => ({ op: 'amend', id: ids.issueId, sent: RECEIPT_AMEND_PATCH }),
+  },
+  {
+    op: 'transition',
+    argv: (ids) => ['transition', ids.issueId, 'queued'],
+    receipt: (ids) => ({
+      op: 'transition',
+      id: ids.issueId,
+      sent: { rung: 'queued' },
+    }),
+  },
+  {
+    op: 'unclaim',
+    argv: (ids) => ['unclaim', ids.issueId],
+    receipt: (ids) => ({ op: 'unclaim', id: ids.issueId, sent: {} }),
+  },
+  {
+    op: 'triage-apply',
+    argv: (ids) => [
+      'triage-apply',
+      ids.issueId,
+      '--input',
+      writeJsonFile('rcpt-tri-', RECEIPT_TRIAGE_INPUT),
+    ],
+    receipt: (ids) => ({
+      op: 'triage-apply',
+      id: ids.issueId,
+      // the comment's TEXT is not here: what was invisible is whether one went
+      // out at all, and that is the fact the receipt states
+      sent: { state: 'needs-info', category: 'bug', commentPosted: true },
+    }),
+  },
+  {
+    op: 'triage-close',
+    argv: (ids) => ['triage-close', ids.issueId, '--comment', 'out of scope'],
+    receipt: (ids) => ({
+      op: 'triage-close',
+      id: ids.issueId,
+      sent: { commentPosted: true },
+    }),
+  },
+  {
+    op: 'flag',
+    argv: (ids) => [
+      'flag',
+      ids.issueId,
+      '--kind',
+      'recoverable-stop',
+      '--question',
+      'Which branch?',
+      '--option',
+      'main',
+      '--option',
+      'develop',
+    ],
+    receipt: (ids) => ({
+      op: 'flag',
+      id: ids.issueId,
+      sent: {
+        kind: 'recoverable-stop',
+        question: 'Which branch?',
+        options: ['main', 'develop'],
+      },
+    }),
+  },
+  {
+    op: 'clear-flag',
+    argv: (ids) => ['clear-flag', ids.issueId],
+    receipt: (ids) => ({ op: 'clear-flag', id: ids.issueId, sent: {} }),
+  },
+  {
+    op: 'goal-assign',
+    argv: (ids) => ['goal-assign', ids.goalId, ids.issueId],
+    receipt: (ids) => ({
+      // the id is the MEMBER — the entity the join writes to — and the goal it
+      // was joined to is the sent field
+      op: 'goal-assign',
+      id: ids.issueId,
+      sent: { goalId: ids.goalId },
+    }),
+  },
+];
+
+/**
+ * Register the whole receipt pin against ONE shipped store.
+ *
+ * Called three times below, unchanged — the receipt is a CLI projection, so it
+ * must read identically whichever store is underneath, and three identical
+ * registrations is how that is asserted rather than asserted about.
+ */
+function runReceiptPin(label: string, makeStore: () => IssueStore): void {
+  describe(`issue-store-cli — silent-write receipts (${label})`, () => {
+    let outSpy: ReturnType<typeof vi.spyOn>;
+    let errSpy: ReturnType<typeof vi.spyOn>;
+    let out: string;
+
+    beforeEach(() => {
+      out = '';
+      outSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array): boolean => {
+          out += chunk.toString();
+          return true;
+        });
+      errSpy = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation((): boolean => true);
+    });
+
+    afterEach(() => {
+      outSpy.mockRestore();
+      errSpy.mockRestore();
+    });
+
+    /** A fresh store per case, seeded through the STORE (never the CLI, whose stdout is the subject). */
+    async function seed(store: IssueStore): Promise<ReceiptIds> {
+      const issueId = await store.create(INPUT);
+      const goalId = await store.createGoal({ title: 'Ship it', filingHint: 'ship-it' });
+      return { issueId, goalId };
+    }
+
+    for (const c of RECEIPT_CASES) {
+      it(`${c.op} --json prints exactly ONE receipt of what the engine sent`, async () => {
+        const store = makeStore();
+        const ids = await seed(store);
+        out = '';
+
+        const code = await runIssueStore([...c.argv(ids), '--json'], store);
+
+        expect(code).toBe(0); // exit codes unchanged — `--json` moves none of them
+        // toEqual, never toMatchObject: a receipt carrying ANY field beyond what
+        // went out — a read-back status, a native state, a tracker url — fails
+        // here, which is what makes "never what the tracker now reads" a check.
+        expect(JSON.parse(out)).toEqual(c.receipt(ids));
+        // ONE receipt, not one per field and not one per store call
+        expect(out.trimEnd().split('\n').filter((l) => l === '}')).toHaveLength(1);
+      });
+
+      it(`${c.op} WITHOUT --json prints nothing at all — byte-identical to before`, async () => {
+        const store = makeStore();
+        const ids = await seed(store);
+        out = '';
+
+        const code = await runIssueStore(c.argv(ids), store);
+
+        expect(code).toBe(0);
+        // Byte equality against the empty string, not a "does not look like
+        // JSON" check: a pin that would also pass against a receipt printed by
+        // default is not a pin.
+        expect(out).toBe('');
+      });
+    }
+  });
+}
+
+runReceiptPin('markdown-fs', () => tmpStore());
+runReceiptPin(
+  'github',
+  () => new GitHubIssuesStore({ api: new InMemoryGitHubApi() }),
+);
+runReceiptPin(
+  'linear',
+  () => new ProjectBoundGoalLinearStore({ api: new InMemoryLinearApi() }),
+);
+
+describe('issue-store-cli — a receipt says what was SENT, never what the tracker reads', () => {
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let out: string;
+
+  beforeEach(() => {
+    out = '';
+    outSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        out += chunk.toString();
+        return true;
+      });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((): boolean => true);
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  // ── the planted-read-back control ──────────────────────────────────────────
+  //
+  // Convention 11 falsification for this block: plant a read-back in
+  // issue-store-cli.ts's `transition` case —
+  //
+  //     writeReceipt(wantJson, 'transition', id, {
+  //       rung,
+  //       status: (await store.read(id)).status,
+  //     });
+  //
+  // — and this case fails twice over: `calls` becomes ['transition', 'read'],
+  // and the parsed receipt carries a `status` key `toEqual` refuses. Restoring
+  // the line makes it pass again. The observed failing output is in this row's
+  // report.
+  it('a planted read-back is visible as a SECOND store call, before it is visible in the receipt', async () => {
+    const { proxy, calls } = recordCalls<IssueStore>(tmpStore());
+    const id = await proxy.create(INPUT);
+    calls.length = 0;
+    out = '';
+
+    expect(await runIssueStore(['transition', id, 'queued', '--json'], proxy)).toBe(0);
+
+    // exactly one store call — the write itself. Nothing was read back to build
+    // the receipt, because everything in it was already in hand.
+    expect(calls).toEqual(['transition']);
+    expect(JSON.parse(out)).toEqual({
+      op: 'transition',
+      id,
+      sent: { rung: 'queued' },
+    });
+    // the tracker's own reading of the row is knowable here and deliberately absent
+    expect(out).not.toContain('status');
+  });
+
+  it('`--json` adds no network call: the api call sequence is IDENTICAL with and without it', async () => {
+    // The same question one level down. The store-call control above proves the
+    // CLI added no call; this proves the wire did not move either.
+    const bare = recordCalls(new InMemoryGitHubApi());
+    const json = recordCalls(new InMemoryGitHubApi());
+    const bareStore = new GitHubIssuesStore({ api: bare.proxy });
+    const jsonStore = new GitHubIssuesStore({ api: json.proxy });
+    const bareId = await bareStore.create(INPUT);
+    const jsonId = await jsonStore.create(INPUT);
+    bare.calls.length = 0;
+    json.calls.length = 0;
+    out = '';
+
+    expect(await runIssueStore(['transition', bareId, 'queued'], bareStore)).toBe(0);
+    expect(await runIssueStore(['transition', jsonId, 'queued', '--json'], jsonStore)).toBe(0);
+
+    expect(bare.calls.length).toBeGreaterThan(0); // the control is measuring something
+    expect(json.calls).toEqual(bare.calls);
+  });
+
+  it('a REFUSED write still exits non-zero and prints no receipt — both refusal families', async () => {
+    // usage refusal (exit 2): an unlisted rung, `--json` present
+    out = '';
+    expect(
+      await runIssueStore(['transition', 'x#01', 'nonsense', '--json'], tmpStore()),
+    ).toBe(2);
+    expect(out).toBe('');
+
+    // domain refusal (exit 1): the store throws on an id it cannot find
+    out = '';
+    expect(
+      await runIssueStore(['transition', 'x#99', 'queued', '--json'], tmpStore()),
+    ).toBe(1);
+    expect(out).toBe('');
+  });
+
+  it('a write the store refuses prints no receipt for a PAYLOAD op either', async () => {
+    // amend with a reserved heading is the store's own refusal (exit 1); the
+    // receipt sits after the await, so there is nothing to print.
+    const store = tmpStore();
+    const id = await store.create(INPUT);
+    const patch = writeJsonFile('rcpt-bad-', {
+      sections: [{ heading: 'Acceptance criteria', markdown: 'nope' }],
+    });
+    out = '';
+
+    expect(await runIssueStore(['amend', id, '--patch', patch, '--json'], store)).toBe(1);
+    expect(out).toBe('');
+  });
+
+  it('the nine ops ARE the `silent-write` class row V1 declared — no tenth, no omission', () => {
+    const contracts = ISSUE_STORE_CONTRACTS as unknown as Record<string, VerbContract>;
+    for (const op of SILENT_WRITE_OPS) {
+      expect(contracts[op].output, `${op} is not silent-write`).toBe('silent-write');
+    }
+    const declared = Object.entries(contracts)
+      .filter(([, c]) => c.output === 'silent-write')
+      .map(([op]) => op)
+      .sort();
+    expect(declared).toEqual([...SILENT_WRITE_OPS].sort());
+  });
+
+  // ── each op's usage line names its receipt shape ───────────────────────────
+  const USAGE_FRAGMENTS: Readonly<Record<string, readonly string[]>> = {
+    annotate: ['sent names the header fields written', 'acceptanceCriteria?, bodySections?'],
+    amend: ['sent: { title?, sections? }'],
+    transition: ['sent: { rung } }'],
+    unclaim: ['sent: {} }'],
+    'triage-apply': ['sent: { state?, category?, commentPosted } }'],
+    'triage-close': ['sent: { commentPosted } }'],
+    flag: ['sent: { kind, question, options } }'],
+    'clear-flag': ['sent: {} }'],
+    'goal-assign': ['id: <memberId>', 'sent: { goalId, container? } }'],
+  };
+
+  it.each(SILENT_WRITE_OPS)(
+    "%s's own contract section names its receipt shape",
+    async (op) => {
+      out = '';
+      // `--help` answers off the contract itself and never builds a store, so
+      // this reads the very lines a caller sees on a usage error.
+      expect(await runIssueStore([op, '--help'], tmpStore())).toBe(0);
+      expect(out).toContain('--json receipt:');
+      for (const fragment of USAGE_FRAGMENTS[op]) expect(out).toContain(fragment);
+      // and the default output is still stated, unchanged
+      expect(out).toContain('output: nothing on success (exit 0, empty stdout)');
+    },
+  );
 });

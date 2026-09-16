@@ -41,10 +41,10 @@
  *              0 body chars on the tracker.
  *   read     <id>                                  → prints the IssueView (JSON)
  *   parse-ref <id>                                 → prints the IssueRef {slug?, issue} (JSON)
- *   annotate <id> --patch <AnnotatePatch.json>     → decorates an existing issue (ADR-0010); nothing on stdout
- *   amend    <id> --patch <AmendPatch.json>        → amends title / free-prose sections (ADR-0025); nothing on stdout
- *   transition <id> <queued|in-flight|in-review>   → writes one claim rung; nothing on stdout
- *   unclaim  <id>                                  → drops the claim (queued→available); nothing on stdout
+ *   annotate <id> --patch <AnnotatePatch.json>     → decorates an existing issue (ADR-0010); nothing on stdout (a receipt with --json)
+ *   amend    <id> --patch <AmendPatch.json>        → amends title / free-prose sections (ADR-0025); nothing on stdout (a receipt with --json)
+ *   transition <id> <queued|in-flight|in-review>   → writes one claim rung; nothing on stdout (a receipt with --json)
+ *   unclaim  <id>                                  → drops the claim (queued→available); nothing on stdout (a receipt with --json)
  *   close    <id> <prUrl> [--acked 0,2,3]          → records closing facts (done-reconcile; FOR-13 doneState fallback),
  *              then probes + prints the resulting ClosingState (JSON, same
  *              shape as `read-closing`) and — whenever that probe still reads
@@ -59,10 +59,10 @@
  *   readDocument <id>                              → prints the DocumentView (JSON)
  *   listDocuments                                  → prints DocumentView[] (JSON)
  *   triage-read <id>                               → prints the TriageView (JSON)
- *   triage-apply <id> --input <ApplyTriageInput.json> → set state/category, post comment (ADR-0015); nothing on stdout
- *   triage-close <id> --comment <text>             → wontfix + native close (ADR-0015); nothing on stdout
- *   flag     <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...]  → raises needs-attention (ADR-0006); nothing on stdout
- *   clear-flag <id>                                → clears needs-attention; nothing on stdout
+ *   triage-apply <id> --input <ApplyTriageInput.json> → set state/category, post comment (ADR-0015); nothing on stdout (a receipt with --json)
+ *   triage-close <id> --comment <text>             → wontfix + native close (ADR-0015); nothing on stdout (a receipt with --json)
+ *   flag     <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...]  → raises needs-attention (ADR-0006); nothing on stdout (a receipt with --json)
+ *   clear-flag <id>                                → clears needs-attention; nothing on stdout (a receipt with --json)
  *
  * Goal facet ops (ADR-0044 / ADR-0045). Each addresses the native container
  * bound by `store.goal.container` in wave.config.json — GitHub defaults to
@@ -77,7 +77,7 @@
  *   goal-create --input <CreateGoalInput.json>     → prints the opaque goal id (text, not JSON)
  *   goal-read <goalId>                             → prints the GoalView (JSON)
  *   goal-list                                      → prints GoalView[] (JSON)
- *   goal-assign <goalId> <memberId>                → joins a member by curation; nothing on stdout
+ *   goal-assign <goalId> <memberId>                → joins a member by curation; nothing on stdout (a receipt with --json)
  *   goal-create-member <goalId> --input <CreateGoalMemberInput.json>
  *                                                  → mints a BARE direct member and joins it in
  *              one act; prints the opaque new member id (text, not JSON). The
@@ -98,6 +98,22 @@
  *
  * There is deliberately NO goal-close op and NO goal-dispatch op: the facet
  * exposes neither, so neither has a runner here (sight, never permission).
+ *
+ * `--json` on a SILENT WRITE (ADR-0051 decision 7, #648's settled shape). The
+ * nine ops tagged "nothing on stdout" above — annotate, amend, transition,
+ * unclaim, flag, clear-flag, triage-apply, triage-close, goal-assign — are this
+ * group's `silent-write` output class, and each answers the router-global
+ * `--json` with exactly ONE receipt:
+ *
+ *     { "op": "<op>", "id": "<id>", "sent": { ...what the engine sent... } }
+ *
+ * A receipt says what was SENT, never what the tracker now reads. Every value in
+ * `sent` is one this runner already held before it called the store, so no op
+ * gains a read-back and none gains a second network call to produce one — see
+ * {@link WriteReceipt}. Without `--json` the stdout of all nine stays
+ * byte-identical to what it has always been (empty), and `--json` never changes
+ * an exit code: a refused write still exits non-zero and prints no receipt. Each
+ * op's own contract section below names its receipt shape.
  *
  * Exit codes:
  *   0 — success (result on stdout — see the per-op output-format tag above)
@@ -129,6 +145,7 @@ import type { ApplyTriageInput } from './contract';
 import { flag, flagAll, printJson } from './cli-utils';
 import { resolveStore, resolveGoalContainer } from './cli-store';
 import {
+  hasFlag,
   helpRequested,
   positionalsOf,
   printVerbHelp,
@@ -280,6 +297,8 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
       '    "files": ["..."], "acceptanceCriteria": [{ "text": "...", "checked": false }],',
       '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent } — sent names the header fields written:',
+      '    risk?, worker?, parent?, files?, acceptanceCriteria?, bodySections?',
     ],
   ),
   amend: issueStoreOp(
@@ -291,6 +310,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
       '  input shape (title and/or sections — non-empty):',
       '    { "title": "...", "sections": [{ "heading": "...", "markdown": "..." }] }',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent: { title?, sections? } } — what was written',
     ],
   ),
   transition: issueStoreOp(
@@ -300,6 +320,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     [
       `usage: issue-store transition <id> <${VALID_RUNGS.join('|')}> [--config <path>]`,
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent: { rung } } — the rung swapped to',
     ],
   ),
   unclaim: issueStoreOp(
@@ -309,6 +330,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     [
       'usage: issue-store unclaim <id> [--config <path>]',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent: {} } — the id IS the whole call',
     ],
   ),
   close: issueStoreOp(
@@ -383,6 +405,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
       '  input shape (every key optional — supply at least one):',
       '    { "state": "...", "category": "...", "comment": "..." }',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent: { state?, category?, commentPosted } }',
     ],
   ),
   'triage-close': issueStoreOp(
@@ -392,6 +415,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     [
       'usage: issue-store triage-close <id> --comment <text> [--config <path>]',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent: { commentPosted } }',
     ],
   ),
   flag: issueStoreOp(
@@ -406,6 +430,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
       'usage: issue-store flag <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...] [--config <path>]',
       '  example: flag 42 --kind recoverable-stop --question "Which branch?" --option main --option develop',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent: { kind, question, options } }',
     ],
   ),
   'clear-flag': issueStoreOp(
@@ -415,6 +440,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     [
       'usage: issue-store clear-flag <id> [--config <path>]',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id, sent: {} } — the id IS the whole call',
     ],
   ),
   'read-closing': issueStoreOp(
@@ -465,6 +491,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
       "  <memberId>'s KIND follows the binding (ADR-0045): an issue id under",
       '    "milestone" | "project" | "goal-file"; a PROJECT id under "initiative"',
       'output: nothing on success (exit 0, empty stdout)',
+      '  --json receipt: { op, id: <memberId>, sent: { goalId, container? } }',
     ],
   ),
   'goal-create-member': issueStoreOp(
@@ -568,6 +595,84 @@ function usage(message: string, op?: Op): number {
   return 2;
 }
 
+// ─── The `--json` receipt of a silent write (ADR-0051 decision 7, #648) ─────
+
+/**
+ * What one `silent-write` op answers `--json` with: the op, the id it addressed,
+ * and `sent` — the fields this runner HANDED THE STORE.
+ *
+ * **A receipt states what was SENT, never what the tracker now reads.** Every
+ * value in `sent` is one this runner already held before it called the store, so
+ * no op gains a read-back and none gains a second network call to produce one.
+ * That is the whole guarantee, and it is the same one `GoalUpdateReceipt` makes
+ * one facet over (ADR-0046) — the house precedent this shape follows rather than
+ * a second one invented beside it.
+ *
+ * What it deliberately does NOT carry: the resulting status, the native state,
+ * the tracker's own copy of the issue. Those are READINGS, and a reading here
+ * would be a second call whose answer could differ from what went out — the one
+ * claim a receipt exists not to make. The gap it closes is narrower and real: a
+ * failed write and a successful one printed exactly the same thing (nothing), so
+ * the only positive evidence a write landed as intended was a second read.
+ *
+ * `sent` is EMPTY for the two ops that carry no payload at all (`unclaim`,
+ * `clear-flag`): the id IS the whole call, and an empty object says exactly
+ * that. Naming a resulting state there would be a claim about the store's own
+ * config-governed target (`unclaimTarget`), not about what this runner sent.
+ *
+ * Contract from the day it lands (ADR-0035): `issue-store-cli.spec.ts` pins
+ * every one of the nine shapes across all three shipped stores. Deliberately
+ * MODULE-LOCAL rather than exported — a receipt is a CLI projection, not a store
+ * fact, and the package-root barrel every exported symbol must reach is outside
+ * this row's declared Files globs.
+ */
+interface WriteReceipt {
+  /** The op as the caller spelled it — the switch's own case label. */
+  readonly op: Op;
+  /**
+   * The id the write addressed. For the eight issue-scoped ops that is the
+   * `<id>` positional; for `goal-assign` it is the MEMBER, because the member is
+   * what the join writes to and the goal it was joined to is the sent field.
+   */
+  readonly id: string;
+  /** What the engine handed the store — never a value read back after the write. */
+  readonly sent: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * `fields` minus every key whose value is `undefined` — a field the caller did
+ * not supply is ABSENT from the receipt rather than present as `null`. The
+ * receipt names what went out, and a key that went out as nothing did not go
+ * out.
+ */
+function sentFields(fields: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  );
+}
+
+/**
+ * Print one {@link WriteReceipt} when `--json` was passed, and NOTHING when it
+ * was not — so the default stdout of all nine silent writes stays byte-identical
+ * to what it has always been (empty, exit 0).
+ *
+ * Every call site sits AFTER its `await store.*(...)` has resolved, which is
+ * what makes the other half of decision 7's promise structural rather than
+ * asserted: a refused write throws past this line into the runner's outer catch,
+ * which exits 1 having printed no receipt. `--json` therefore never changes an
+ * exit code and never prints on a failure.
+ */
+function writeReceipt(
+  wantJson: boolean,
+  op: Op,
+  id: string,
+  sent: Record<string, unknown>,
+): void {
+  if (!wantJson) return;
+  const receipt: WriteReceipt = { op, id, sent };
+  printJson(receipt);
+}
+
 /**
  * Run the issue-store CLI.
  *
@@ -620,6 +725,13 @@ export async function runIssueStore(
   // `issue-store read --config wave.config.json 42` now finds `42` where the
   // index form found `--config`.
   const positionals = positionalsOf(contract, opArgs);
+
+  // `--json` is router-global (ADR-0051 decision 7) and this group's nine
+  // `silent-write` ops are where it MEANS something: each prints one receipt of
+  // what the engine sent. Read through the SAME contract-aware scan the
+  // positionals came from, so a `--question "--json"` prose value can never be
+  // mistaken for the flag itself.
+  const wantJson = hasFlag(contract, opArgs, 'json');
 
   const store = await resolveStore(args, injected);
 
@@ -695,6 +807,19 @@ export async function runIssueStore(
           return usage(`cannot read --patch ${patchPath}: ${(err as Error).message}`, 'annotate');
         }
         await store.annotate(id, patch);
+        writeReceipt(
+          wantJson,
+          'annotate',
+          id,
+          sentFields({
+            risk: patch.risk,
+            worker: patch.worker,
+            parent: patch.parent,
+            files: patch.files,
+            acceptanceCriteria: patch.acceptanceCriteria,
+            bodySections: patch.bodySections,
+          }),
+        );
         return 0;
       }
 
@@ -719,6 +844,12 @@ export async function runIssueStore(
           return usage('amend requires a non-empty patch (title and/or sections)', 'amend');
         }
         await store.amend(id, patch);
+        writeReceipt(
+          wantJson,
+          'amend',
+          id,
+          sentFields({ title: patch.title, sections: patch.sections }),
+        );
         return 0;
       }
 
@@ -733,6 +864,7 @@ export async function runIssueStore(
           );
         }
         await store.transition(id, rung as ClaimRung);
+        writeReceipt(wantJson, 'transition', id, { rung });
         return 0;
       }
 
@@ -740,6 +872,9 @@ export async function runIssueStore(
         const id = positionals[0];
         if (id === undefined) return usage('unclaim requires an <id>', 'unclaim');
         await store.unclaim(id);
+        // No payload at all: the id IS the call. The state the store lands on is
+        // its own `unclaimTarget`, a config fact this runner never sent.
+        writeReceipt(wantJson, 'unclaim', id, {});
         return 0;
       }
 
@@ -852,6 +987,20 @@ export async function runIssueStore(
           );
         }
         await store.applyTriage(id, input);
+        // `commentPosted` rather than the comment's text, and it mirrors the rule
+        // all three adapters share: a comment goes out iff `comment` is present.
+        // The text is prose the caller already holds; whether a comment was
+        // actually posted is the fact that was invisible.
+        writeReceipt(
+          wantJson,
+          'triage-apply',
+          id,
+          sentFields({
+            state: input.state,
+            category: input.category,
+            commentPosted: input.comment !== undefined,
+          }),
+        );
         return 0;
       }
 
@@ -863,6 +1012,10 @@ export async function runIssueStore(
           return usage('triage-close requires --comment <text>', 'triage-close');
         }
         await store.closeUnplanned(id, comment);
+        // `--comment` is required, so a comment always goes out. The unplanned
+        // STATE this lands on is the store's own triage schema, not something
+        // this runner sent — so it is not in the receipt.
+        writeReceipt(wantJson, 'triage-close', id, { commentPosted: true });
         return 0;
       }
 
@@ -887,6 +1040,7 @@ export async function runIssueStore(
           question,
           options,
         });
+        writeReceipt(wantJson, 'flag', id, { kind, question, options });
         return 0;
       }
 
@@ -894,6 +1048,7 @@ export async function runIssueStore(
         const id = positionals[0];
         if (id === undefined) return usage('clear-flag requires an <id>', 'clear-flag');
         await store.clearFlag(id);
+        writeReceipt(wantJson, 'clear-flag', id, {});
         return 0;
       }
 
@@ -957,7 +1112,17 @@ export async function runIssueStore(
         if (memberId === undefined) {
           return usage('goal-assign requires a <memberId>', 'goal-assign');
         }
-        await store.assignToGoal(goalId, memberId, resolveGoalContainer(args, injected));
+        const assignContainer = resolveGoalContainer(args, injected);
+        await store.assignToGoal(goalId, memberId, assignContainer);
+        // The id is the MEMBER — the entity the join writes to — and the goal it
+        // was joined to is the sent field. `container` is present only when one
+        // was actually passed to the store; an absent binding sent nothing.
+        writeReceipt(
+          wantJson,
+          'goal-assign',
+          memberId,
+          sentFields({ goalId, container: assignContainer }),
+        );
         return 0;
       }
 
