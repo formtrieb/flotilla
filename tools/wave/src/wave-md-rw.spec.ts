@@ -1598,3 +1598,74 @@ describe('human-gated rows — the dispatch-time human lane', () => {
     expect(humanHeldRowIds(spine)).toEqual([]);
   });
 });
+
+// ─── issue #767: MODEL_REF must not match a `model`-shaped BRANCH slug ───────
+//
+// `\bmodel` treats a hyphen as a word boundary too, so on a branch ref ending
+// in the word `model` (`wave/FOR-462-delete-old-board-view-model`, an
+// ordinary thing to name a row after) the regex matched the embedded `model`
+// inside the slug — one token early — and captured the literal word `model`
+// instead of the tier recorded after it. `branchesByIssueId` and the branch
+// itself were unaffected; only the model tier was misread, and
+// `compose-driver` reads that value as the row's dispatched tier (see
+// compose-driver.spec.ts's own end-to-end regression for this issue), so the
+// mis-parse was behavioural, not cosmetic. Self-contained block — no existing
+// assertion in this file is reshaped.
+describe('dispatch-log model parsing stays clear of a `model`-shaped branch slug (issue #767)', () => {
+  it('a branch ref ending in the word `model`, written through the real writers, still parses to the recorded tier', () => {
+    let spine = spineWithDispatchLog(['131 → agent wf_aaa dispatched']);
+    spine = upsertDispatchLogEntry(spine, '131', 'wave/FOR-462-delete-old-board-view-model');
+    spine = upsertDispatchLogModel(spine, '131', 'sonnet');
+    const entry = readSpine(spine).dispatchLog.find((e) => e.id === '131');
+    expect(entry?.branch).toBe('wave/FOR-462-delete-old-board-view-model');
+    expect(entry?.model).toBe('sonnet');
+  });
+
+  it('CONTROL — a branch ref that does NOT contain the word still parses the same tier', () => {
+    let spine = spineWithDispatchLog(['131 → agent wf_aaa dispatched']);
+    spine = upsertDispatchLogEntry(spine, '131', 'wave/FOR-463-delete-dead-board-vm');
+    spine = upsertDispatchLogModel(spine, '131', 'sonnet');
+    const entry = readSpine(spine).dispatchLog.find((e) => e.id === '131');
+    expect(entry?.branch).toBe('wave/FOR-463-delete-dead-board-vm');
+    expect(entry?.model).toBe('sonnet');
+  });
+
+  it('CONTROL — a branch ref carrying `model` MID-slug also parses the recorded tier', () => {
+    let spine = spineWithDispatchLog(['131 → agent wf_aaa dispatched']);
+    spine = upsertDispatchLogEntry(spine, '131', 'wave/7-model-migration');
+    spine = upsertDispatchLogModel(spine, '131', 'sonnet');
+    const entry = readSpine(spine).dispatchLog.find((e) => e.id === '131');
+    expect(entry?.branch).toBe('wave/7-model-migration');
+    expect(entry?.model).toBe('sonnet');
+  });
+
+  it('re-tuning on the `…-view-model` entry replaces the token in place: line count unchanged, branch unchanged, exactly one `model <id>` token, reader sees the new tier', () => {
+    let spine = spineWithDispatchLog(['131 → agent wf_aaa dispatched']);
+    spine = upsertDispatchLogEntry(spine, '131', 'wave/FOR-462-delete-old-board-view-model');
+    const before = upsertDispatchLogModel(spine, '131', 'haiku');
+    const after = upsertDispatchLogModel(before, '131', 'sonnet');
+
+    expect(after.split('\n')).toHaveLength(before.split('\n').length);
+    const entry = readSpine(after).dispatchLog.find((e) => e.id === '131');
+    expect(entry?.branch).toBe('wave/FOR-462-delete-old-board-view-model');
+    expect(entry?.model).toBe('sonnet');
+    // Exactly one `model <id>` token in the raw entry — anchored on
+    // whitespace, not `\b`, so the embedded `model` inside the branch slug
+    // (preceded by a hyphen, not whitespace) is not itself counted as a token.
+    expect(entry?.raw.match(/(?<=^|\s)model\s+[^\s")]+/g)).toEqual(['model sonnet']);
+
+    // Re-writing the same tier is a byte-identical no-op.
+    expect(upsertDispatchLogModel(after, '131', 'sonnet')).toBe(after);
+  });
+
+  it('the free-text "(sonnet)" note and a `remodel <x>` substring still do not parse as a model token', () => {
+    const spine = readSpine(
+      spineWithDispatchLog([
+        '131 → agent wf_aaa (sonnet) remodel foo branch wave/131-alpha dispatched',
+      ]),
+    );
+    const entry = spine.dispatchLog.find((e) => e.id === '131');
+    expect(entry?.model).toBeNull();
+    expect(entry?.branch).toBe('wave/131-alpha');
+  });
+});

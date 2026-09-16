@@ -145,7 +145,10 @@ export interface DispatchLogEntry {
   /**
    * Actually-dispatched model id parsed from a `model <id>` token (ADR-0012),
    * or `null`. Recorded by the driver at dispatch time as a re-tuning signal
-   * (`background-heavy → <model>`); the engine never parses or acts on its value.
+   * (`background-heavy → <model>`); `compose-driver` reads it back (via
+   * `modelByRow`) as the row's dispatched tier, taking precedence over
+   * `modelForRisk()` — so a mis-parse here is behavioural, not cosmetic
+   * (issue #767).
    */
   model: string | null;
   /** 0-indexed source line of this dispatch-log item. */
@@ -495,12 +498,22 @@ const BRANCH_REF = /\bbranch\s+([^\s")]+)/;
 // which must stay unmatched.
 const LEGACY_BRANCH_REF = /\b(wave(?:-orch)?\/[^\s")]*-[^\s")]+)/;
 // A structured `model <id>` token (ADR-0012). The literal keyword + whitespace
-// is required, so `(sonnet)` and substrings like `remodel` are NOT matched. The
-// value class stays format-blind — the engine never constrains a model id
-// (ADR-0012). Caveat: dispatch-log entries are driver-written; prose containing a
-// standalone `model <word>` would be captured, but `.model` is inert (no engine
-// path consumes it), so a mis-parse is cosmetic, not behavioural.
-const MODEL_REF = /\bmodel\s+([^\s")]+)/;
+// is required, so `(sonnet)` and substrings like `remodel` are NOT matched.
+// Anchored on a WHITESPACE (or string-start) lookbehind rather than `\b`:
+// `\b` treats a hyphen as a word boundary too, so on a branch ref ending in
+// `…-model` (a slug like `delete-old-board-view-model` is an ordinary thing
+// to name a row after) `\bmodel` matched the embedded `model` inside the
+// slug, one token early, and captured the literal word `model` instead of
+// the tier that followed it (issue #767). The lookbehind is zero-width, so
+// it does not consume the boundary character — `.replace()` re-tuning still
+// leaves any preceding whitespace untouched, exactly as `\b` did. The value
+// class stays format-blind — the engine never constrains a model id
+// (ADR-0012). Caveat: dispatch-log entries are driver-written; prose
+// containing a standalone `model <word>` would still be captured — but
+// `.model` is NOT inert: `compose-driver` reads it via `modelByRow` as the
+// row's actually-dispatched tier, overriding `modelForRisk()`, so a mis-parse
+// here is behavioural, not cosmetic (issue #767).
+const MODEL_REF = /(?<=^|\s)model\s+([^\s")]+)/;
 
 function readDispatchLog(lines: string[]): DispatchLogEntry[] {
   const section = findSection(lines, 'Resume-Metadata');
