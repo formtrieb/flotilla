@@ -69,7 +69,7 @@ import {
   type GoalFrontier,
   type GoalMemberFacts,
 } from '../goal-frontier';
-import { serializeBareBody, upsertSection } from './body-codec';
+import { serializeBareBody, upsertSection, appendBodySections } from './body-codec';
 
 const STATUS_FIELD = 'Status';
 const CLOSED_BY_FIELD = 'Closed-by';
@@ -273,7 +273,12 @@ export class MarkdownFsStore implements IssueStore {
     if (patch.acceptanceCriteria !== undefined) {
       source = upsertAcSection(source, patch.acceptanceCriteria);
     }
-    // bodySections: append each as a `## heading` section (verbatim).
+    // bodySections: append each as a `## heading` section (verbatim) via the
+    // codec's `appendBodySections` (./body-codec) — the same function github
+    // and linear route through, so all three refuse a heading that collides
+    // with a managed Header-Block section (Files/Blocked by/Unblocks/
+    // Acceptance criteria) identically, rather than this store carrying a
+    // second, more permissive copy of that rule locally.
     if (patch.bodySections !== undefined) {
       source = appendBodySections(source, patch.bodySections);
     }
@@ -1213,18 +1218,6 @@ function upsertAcSection(
   const body = ['', ...items, ''];
   lines.splice(acStart + 1, end - (acStart + 1), ...body);
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
-}
-
-/** Append each free-prose `## heading` section verbatim at the end of the doc. */
-function appendBodySections(
-  source: string,
-  sections: { heading: string; markdown: string }[],
-): string {
-  let out = source.replace(/\n+$/, '');
-  for (const s of sections) {
-    out += `\n\n## ${s.heading}\n\n${s.markdown.trimEnd()}`;
-  }
-  return out + '\n';
 }
 
 /**
