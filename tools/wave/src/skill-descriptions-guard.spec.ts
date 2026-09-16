@@ -788,8 +788,9 @@ describe('skill-descriptions-guard — the listing a consumer reads first carrie
 
   it('the two never-model-invoked surfaces carry no trigger phrases, deliberately', () => {
     // Pinned so the empty entries above read as a decision rather than a gap.
-    // `wave-shared` is loaded by name by its siblings and says so in its own
-    // frontmatter; the Reviewer agent is dispatched by wave-start, never chosen.
+    // `wave-shared` is read via a sibling-path file read by its siblings and
+    // says so in its own frontmatter; the Reviewer agent is dispatched by
+    // wave-start, never chosen.
     expect(REQUIRED_TRIGGER_PHRASES['.claude/skills/wave-shared/SKILL.md']).toEqual([]);
     expect(REQUIRED_TRIGGER_PHRASES[REVIEWER_AGENT_REL]).toEqual([]);
     const waveShared = readFileSync(join(REPO_ROOT, '.claude/skills/wave-shared/SKILL.md'), 'utf-8');
