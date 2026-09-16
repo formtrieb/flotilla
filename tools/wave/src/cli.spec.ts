@@ -5256,6 +5256,117 @@ describe('dor --id <id> — Gate 5 resolves declared blockers through the store'
   });
 });
 
+// ─── Gate 5 candidate-id derivation — fail-safe null return spec (issue #780) ─
+//
+// `candidateIdFor` (in cli.ts, just above `resolveDeclaredBlockers`) has two
+// independent fail-safe arms that return `null` rather than a candidate id:
+// the own-id self-check (the row's own id must end in the decimal rendering of
+// its own issue number) and the round-trip veto (the derived candidate must
+// invert back through the store's own `parseRef` to the very ref asked for).
+// Neither arm was exercised by a shipped spec before this row: every id shape
+// the three shipped stores emit happens to satisfy the self-check, so the arm
+// is unreachable by construction on the current adapters. A Reviewer probe on
+// wave row 750 exercised it once, at review time, and that evidence was never
+// captured as a test (issue #780's own Gap — the fail-safe is precisely what
+// makes the forward id-parse defensible against the ADR-0001 "id is opaque"
+// decision, so its absence of coverage matters more than its size suggests).
+//
+// These specs drive the REAL `dor --id` entry point with a hand-built fake
+// `IssueStore` (never `MarkdownFsStore`, whose ids never reach this arm) so
+// the id shape is fully under the spec's control, and assert the closing
+// probe is never reached on either arm — across the two id shapes that DO
+// carry a trailing number (numeric/GitHub, prefixed/Linear — reachable only
+// via the round-trip veto) plus the shape that does not (reachable via the
+// self-check). `candidateIdFor` and `resolveDeclaredBlockers` are untouched by
+// this row; only this describe block is new.
+describe('dor --id <id> — candidate-id derivation fail-safe null return (issue #780)', () => {
+  /** A same-slug single-blocker view, echoing back whatever id it was read as. */
+  function blockedView(id: string, blockerIssue: number): IssueView {
+    return {
+      id,
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/foo.ts'],
+      blockedBy: [{ issue: blockerIssue }],
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+      status: 'available',
+    };
+  }
+
+  it('DEFERS — own-id self-check arm: an id with no trailing decimal run (parseRef still resolves it)', async () => {
+    const readClosing = vi.fn(async () => {
+      throw new Error('readClosing must not be reached');
+    });
+    const store = {
+      read: async (id: string) => blockedView(id, 41),
+      // The store's own id format does not carry a trailing number at all —
+      // `parseRef` still yields an issue number for it (a store is free to
+      // invert an id by any means of its own), so `own` resolves fine and the
+      // failure is purely the self-check's own-id-shape mismatch.
+      parseRef: () => ({ issue: 7 }),
+      readClosing,
+    } as unknown as IssueStore;
+
+    const code = await runDorById(['--id', 'row-alpha'], store);
+
+    expect(code).toBe(0); // a deferral never flips overall to FAIL
+    expect(stdoutBuf).toMatch(/deferred\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/pass\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/fail\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).toMatch(
+      /does not render 41 from the row's own id "row-alpha"/,
+    );
+    expect(readClosing).not.toHaveBeenCalled();
+  });
+
+  it('DEFERS — round-trip veto arm: a numeric/GitHub-shaped own id whose derived candidate inverts to a different issue', async () => {
+    const readClosing = vi.fn(async () => {
+      throw new Error('readClosing must not be reached');
+    });
+    const store = {
+      read: async (id: string) => blockedView(id, 41),
+      // The own id ("42") ends in its own issue number, so the self-check
+      // passes and a candidate ("41") is derived — but this store's
+      // `parseRef` inverts EVERY OTHER id to issue 999, never the number
+      // asked for, so the round-trip veto is what kills it.
+      parseRef: (id: string) => (id === '42' ? { issue: 42 } : { issue: 999 }),
+      readClosing,
+    } as unknown as IssueStore;
+
+    const code = await runDorById(['--id', '42'], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/deferred\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/pass\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/fail\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).toMatch(/does not render 41 from the row's own id "42"/);
+    expect(readClosing).not.toHaveBeenCalled();
+  });
+
+  it('DEFERS — round-trip veto arm: a prefixed/Linear-shaped own id whose derived candidate inverts to a different issue', async () => {
+    const readClosing = vi.fn(async () => {
+      throw new Error('readClosing must not be reached');
+    });
+    const store = {
+      read: async (id: string) => blockedView(id, 41),
+      parseRef: (id: string) =>
+        id === 'FOR-42' ? { issue: 42 } : { issue: 999 },
+      readClosing,
+    } as unknown as IssueStore;
+
+    const code = await runDorById(['--id', 'FOR-42'], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(/deferred\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/pass\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).not.toMatch(/fail\s+blocked-by-chain-resolves/);
+    expect(stdoutBuf).toMatch(
+      /does not render 41 from the row's own id "FOR-42"/,
+    );
+    expect(readClosing).not.toHaveBeenCalled();
+  });
+});
+
 // ─── Gate 8 (verify-profile-coverage) threading — FOR-151 ────────────────────
 //
 // The defect: `runDor`/`runDorById` built a `ValidateOptions`/`ValidateViewOptions`
