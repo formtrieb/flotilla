@@ -63,7 +63,7 @@ Pure, near-zero project literals, already vitest-tested. **This is the only surf
 | `ff-guard` | fast-forward decision = pure ancestry math |
 | `merge-order` (algorithm) | stacked-branch topological sort + cycle guard over abstract `PR[]` |
 | `conflict-map` (`computeConflictMap` core) | pure glob-intersection set math over `IssueGlobs[]` — **the universal value** |
-| `files-drift` (algorithm) | path-prefix set arithmetic; the runtime guarantor of declared-scope (see §7) |
+| `files-drift` (algorithm + CLI verb) | path-prefix set arithmetic over a markdown issue file's declared globs; no caller in the skill pipeline (see §9) |
 | `worktree-cleanup` | `list → plan → execute`, dirty-never-removed invariant |
 
 Plus the **contract type** `IssueView` (§5) and a `validateHeaderBlock(view, schema)` predicate (the enum-vocabulary lives in config, not the code).
@@ -214,11 +214,11 @@ The conflict-map is **wave-agnostic** — `computeConflictMap` takes *any* `Issu
 Five parts interlock:
 1. **conflict-map (global)** — disjointness over all claimed work, *planned* up front.
 2. **claim-state (queued/in-flight at the tracker)** — the cross-wave coordination ledger.
-3. **files-drift** — the *own-lane* runtime guard: it catches a worker leaving **its own** declared globs (per-issue, reviewer-side), so the *planned* disjointness still describes reality. It does **not** compare two workers against each other.
+3. **the Reviewer's diff-against-declared-globs check** — the *own-lane* runtime guard: run by hand at review time, it catches a worker leaving **its own** declared globs (per-issue, reviewer-side), so the *planned* disjointness still describes reality. It does **not** compare two workers against each other. (`files-drift` computes the identical path-prefix arithmetic for a markdown issue file, but no skill, agent definition, or driver calls it — the Reviewer's own hand-run check is what actually holds this lane.)
 4. **sibling merge-tree check (the *cross-branch* runtime guard)** — a **reviewer-layer** responsibility (the Ur's reviewer-brief **input #7** = the sibling in-flight branches; the reviewer `git merge-tree`s the branch-under-review against each sibling and surfaces predicted conflicts as an advisory). This is what catches two *overlapping or drifted* branches colliding **at merge**, and it informs the merge-order. Pure `git merge-tree` → stack/tracker-agnostic, transfers verbatim; **not** GitHub-redundant — GitHub only detects conflicts against `main` *after* a sibling has landed, whereas this predicts pairwise sibling conflicts *before* either merges. **Must be carried into the generic skill rewrite — not dropped as the Ur's reviewer ceremony** (see §10 / M1-PRD §2h).
 5. **wave-plan heuristics** — "how much per wave," now cross-wave-aware.
 
-Parts 3 and 4 are distinct runtime guards: **files-drift = "did *this* worker stay in its lane"**; **sibling merge-tree = "will *this* branch collide with the *other* in-flight branches at merge"** (the preventive form of the Q6 rebase-train — it lets `wave-close` serialize colliding siblings before the conflict bites).
+Parts 3 and 4 are distinct runtime guards: **the Reviewer's diff-against-declared-globs check = "did *this* worker stay in its lane"**; **sibling merge-tree = "will *this* branch collide with the *other* in-flight branches at merge"** (the preventive form of the Q6 rebase-train — it lets `wave-close` serialize colliding siblings before the conflict bites).
 
 **The edge of the promise.** The cross-wave parallel-safety check (`crossWaveCheck`) reasons over exactly two axes: declared-file overlap (part 1's `computeConflictMap`) and declared blocking relations (intra-wave `Blocked-by` membership). Both axes presuppose the candidate already exists with a declared `Files` list and a resolvable `blockedBy` reference — a specified unit of work the map can draw a cell around. A dependency class sits outside both axes by construction: work where resolving one piece reshapes *what the other piece even is*, before either has anything yet to declare — a decision still being made, not yet sliced into a candidate with globs or a blocker to point at. The map does not miss this class through a defect in either axis; the second piece simply does not exist yet to intersect against. That is not a gap to close — it is the clean edge of the value promise itself: cross-wave conflict and parallelism reasoning over *specified* work. Decision-stage dependencies are a different question than the one this check answers.
 

@@ -12,7 +12,7 @@ By 2026-07-28 the dominant planning constraint was a 7-row clique: `#81 · #116 
 ## Considered Options
 
 - **Index with per-add line appends** (rejected) — same split, but `SKILL.md` enumerates the references; every convention add is again a shared-file conflict, merely smaller.
-- **Section-aware conflict map** (rejected) — an engine remodel with a new drift definition, solving with machinery what a file layout solves for free; `files-drift`'s file-level guarantee stays simple.
+- **Section-aware conflict map** (rejected) — an engine remodel with a new drift definition, solving with machinery what a file layout solves for free; `files-drift`'s file-level guarantee stays simple. *(2026-09-16 amendment: that guarantee is held at runtime by the Reviewer's own diff-against-declared-globs check, run by hand — `files-drift` computes the identical arithmetic but is invoked by no skill, agent definition, or driver; issue #754.)*
 - **Serial single-row waves, no split** (rejected) — buys seven close ceremonies now and leaves every future convention change in the same trap.
 
 ## Consequences
