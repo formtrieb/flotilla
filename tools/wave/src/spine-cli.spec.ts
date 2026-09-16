@@ -806,10 +806,10 @@ describe('spine-cli — `--json` receipts on the silent writes (ADR-0051 decisio
     // caller's spaces inside the cell; the reader trims every cell it parses.
     // The receipt still says what the caller wrote.
     const padded = writeTmpSpine();
-    const PADDED_CELL = '  #42  ';
+    const PADDED_CELL = '  pr 42 landed  ';
     expect(run(['set-row-pr', padded, ROW_ID, PADDED_CELL, '--json']).code).toBe(0);
     expect(receiptOf(stdoutOut).written).toEqual({ pr: PADDED_CELL });
-    expect(readSpine(readFileSync(padded, 'utf-8')).planTable[0].prCell).toBe('#42');
+    expect(readSpine(readFileSync(padded, 'utf-8')).planTable[0].prCell).toBe('pr 42 landed');
   });
 
   it('a receipt costs NO extra read of the spine — the write is not re-read to describe itself', () => {
