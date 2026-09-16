@@ -1,0 +1,71 @@
+# A verb declares its own contract — one canonical spelling per flag, silent aliases, and a refusal for everything undeclared
+
+The engine CLI grew verb by verb, and each verb spelled its flags the way its neighbour happened to at the time. #763 measured the result at 2.4.0 and the grill re-measured it at `53261e0` (2026-09-16, after the two hub-truth waves and 2.5.0): the drift had not grown — the interim mini-rule on FOR-374 ("a new verb or flag takes the spelling of the family it extends and opens no new axis") passed its first live control when `close-row` (#751) took `--spine --id --config --repo-root --verdicts-dir` from the route-tuple family — but nothing had shrunk either, and nothing *enforced* the mini-rule but prose.
+
+| Measure at `53261e0` | Value |
+|---|---|
+| Surface | 27 top-level verbs; verb groups `spine` (13 ops), `issue-store` (21 ops), `host-pr` (5 verbs) |
+| Distinct `--flag` spellings in the engine sources | 73, of which ~59 are CLI flags (the rest are git-subprocess flags inside probes) |
+| The iteration | `--iter` (write-report, write-verdict, route-tuple, spine add-disclosure) · `--iteration` (route-verdict; `route-cli.ts` carries both in one file) · positional (`spine set-row-iter`) |
+| The spine path | `--spine` (resume, compose-driver, route-tuple, close-row) · `--wave` (worktree-cleanup) · positional (merge-order, every `spine` op) |
+| The verdicts directory | `--verdicts-dir` (route-tuple, compose-driver, close-row) · `--verdicts` (resume) · `--dir` (write-verdict) · positional (verdict-acked, render-verdict) |
+| The reports directory | `--reports-dir` (route-tuple, compose-driver) · `--reports` (resume) · `--dir` (write-report) |
+| Polymorphic spellings | `--verdict` = a file path on route-tuple, an enum on route-verdict, in adjacent usage lines · `--wave` = a spine path on worktree-cleanup, a boolean ("wave-scoped") on `spine add-disclosure` |
+| Unknown flags | refused with exit 2 by 4 verbs (worktree-cleanup, version, credential-probe, host-pr); silently ignored by the other 23 |
+| Output form | 8 verbs print prose (dor in both forms, files-drift, config validate, validate-report, validate-verdict, write-report, write-verdict, render-verdict); 15 write ops print nothing on success (9 `issue-store` ops, 6 `spine` ops) |
+| Who reads the contract | `flag()` is an exact `indexOf`; each verb knows its flags only implicitly in its runner; usage text is hand-written in four places; the four refusing verbs each keep their own list |
+| Consumers | the skills invoke 80 distinct verb/op/flag prefixes; 23 skill, agent and driver files carry a spelling this record turns into an alias; no spec pins an invocation's spelling — the drift specs pin literals and constants, never how a verb is called |
+| The misfire counter (FOR-374's success measure) | self-reported in close reports; the repository holds three `misfires: 0` lines and no trended baseline |
+
+Two facts shaped the shape of the answer. The class fails *silently with a plausible spelling* (`host-pr arm --pr`, #505): a warning would not have caught it, because the house reads exit codes, not prose, and a pulse reads nothing else. And the cost of the wrong answer is repeated in every place that has to know a verb's flags — parser, refusal, `--help` (#758), the generated catalog (FOR-374) — so the only fix that does not add a fifth copy is one that makes the four read one thing. That is the ADR-0016 lesson (printer paired with parser) applied to the whole surface.
+
+## Decision
+
+1. **Canonical spelling plus aliases, additive, 2.x. No 3.0 window, dated or undated.** Four axes with two or three spellings each and two polymorphic flags do not earn a major, and every consumer pays a bump per version regardless of its number. The 3.0 candidates that exist (exit-code unification from #759, `files-drift` retirement from the #707 grill, the absolute-prefix refusal folded into #761) each hang on another decision; a major assembled from them now would be exactly the wishlist major ADR-0035 rejected. The alias rows of the table below *are* the removal list a later major reads; this record promises no such major.
+
+2. **One Verb contract per verb, declared beside its runner, aggregated by the router.** A verb's contract lists its flags — each with one canonical spelling and any aliases, the kind of value it takes, whether it repeats, whether it is required — its positional arity (fixed or variadic), and its output class (prose · JSON · silent write · product). Four readers and nothing else know what a verb accepts: the parser (`flag()` resolves aliases through the contract), the refusal (anything undeclared), `--help` (prints the contract, constructs no store), and the Catalog (emits the contracts). The contract lives in the verb's own `*-cli` module — the shape `host-pr`'s `VERB_CONTRACT` and `issue-store`'s op table already have — never in one central file; the router only collects. The hand-written usage lines are rendered from the contract or drift-pinned against it; a spec holds every `'--x'` literal in the engine sources to its verb's contract, so "no flag without a declaration" is structure, not prose.
+
+3. **The family rule names the canonical spelling.** Canonical is the spelling of the family with the most verbs on the day of this record; a tie goes to the spelling that names the thing (`--verdicts-dir` says which directory, `--dir` does not). The rule is what a future flag applies — an Ask-sidecar directory is `--asks-dir` without a grill. Applied:
+
+   | Axis | Canonical | Aliases (accepted, silent) |
+   |---|---|---|
+   | iteration | `--iter` | `--iteration` (route-verdict) |
+   | spine path | `--spine` | `--wave` (worktree-cleanup); positional (merge-order) |
+   | verdicts directory | `--verdicts-dir` | `--verdicts` (resume); `--dir` (write-verdict); positional (verdict-acked, render-verdict) |
+   | reports directory | `--reports-dir` | `--reports` (resume); `--dir` (write-report) |
+   | issue id, named form | `--id` | positional (verdict-acked, render-verdict) |
+   | anchor | `--anchor` | none — `--base` is the PR base branch, a different thing |
+
+   `--dir` resolves to a different canonical on the two write verbs; that is possible only because the contract is per verb.
+
+4. **Everything a contract does not declare is refused, exit 2, on every verb — flags and stray positionals alike.** Not a warning: a stderr line is prose no Coordinator loop and no pulse reads, and a swallowed flag is the false pass the gates already forbid ("deferred, never pass"). Exit 2 already *means* usage on four verbs; nothing is re-meant. The refusal names the verb, the token, and the nearest declared flag ("unknown flag `--itr` — did you mean `--iter`?"), then prints that one verb's contract, never the router's whole roster (the #505 lesson). A caller whose typo passed with exit 0 yesterday gets exit 2 tomorrow: **minor with an Upgrading heads-up**, the shape #750 landed in (a gate that can now fail where it deferred). Aliases and the refusal land in the same release, so no near-synonym is refused for a day.
+
+5. **A file-path flag is spelled `--<thing>-file` wherever any verb spells `--<thing>` for the value itself** — the `host-pr create --body | --body-file` precedent — **and no canonical spelling carries two value types across verbs**, asserted by the drift spec over the aggregated contracts. Applied: route-tuple `--verdict-file` (alias `--verdict`) and `--report-file` (alias `--report`); route-verdict keeps `--verdict` for the enum; `spine add-disclosure --wave-scoped` (alias `--wave`; the glossary's own word, ADR-0038); worktree-cleanup `--spine` (alias `--wave`). After this `--wave` is an alias everywhere and canonical nowhere.
+
+6. **Named twins only for the five top-level verbs whose positional names what a sibling takes as a flag**: merge-order `--spine`; verdict-acked `--verdicts-dir --id`; render-verdict `--verdicts-dir --id --anchor`; write-report `--report-file --reports-dir --id --iter`; write-verdict `--verdict-file --verdicts-dir --id --iter`. The named form is canonical (four verbs use it, one the positional); the positional stays as an alias; all-positional or all-named, mixed is a usage error ("exactly one body route"). **A verb group's positional grammar is its canonical spelling and gets no twin** — `spine <op> <spine-path> <id> …` and `issue-store <op> <id> …` are one grammar each, invoked over sixty times by the skills; a second grammar per group would breed the next misgrip class.
+
+7. **One router-global `--json`, no `--receipt`.** Every verb accepts `--json`; the contract's output class gives it its meaning: a prose verb prints the same result as JSON; a silent write prints a *receipt* — the op, the id, the fields applied: what the engine sent, never what the tracker now reads (the `GoalUpdateReceipt` precedent, #648's settled shape); a JSON verb accepts it and does nothing. `render-verdict` (its markdown is the product) and `files-drift` (`--json` prints only its embedded block) are output classes, not special cases in code. The default output stays byte-identical, `--json` never changes an exit code, and every new JSON shape is contract from the day it ships. `--json` and `--help` are the only two router-global flags; `--config` stays per verb because not every verb has a store.
+
+8. **An alias is silent.** No stderr note, no result field, and the word "deprecated" appears nowhere — it promises a removal this record does not date. The canonical mark has three structural carriers: `--help`, the Catalog, and the drift spec that pins skills and driver to canonical. A consumer learns once, in the release's Upgrading section. A contract records one bit per spelling — canonical or not — and no since/until/reason.
+
+9. **The skills, the agents, and the driver template are rewritten to canonical in the same wave, under two pins.** Source-side: every `'--x'` literal in the engine sources is in its verb's contract. Skill-side: every `{{wave-cli}}` invocation under `.claude/skills/`, `.claude/agents/` and in the shipped driver resolves to a contract — verb exists, op exists, flags declared — *and* uses canonical spellings, which also catches verb-level misgrips (`set-row-state` for `transition`). The skill-side pin is FOR-374's point 2, pulled forward out of the catalog: the rewrite touches 23 files, and without the pin in the same diff the next skill edit brings an alias back while the catalog has no date. The catalog keeps what only it can do — emit the contracts as JSON (point 1), let mechanics references cite instead of respell (point 3), mark canonical verbs among verb pairs (point 5).
+
+10. **The mini-rule is promoted.** FOR-374's interim prose rule becomes decisions 3 and 5, enforced by the Verb contract and the two drift specs (ADR-0034: structure, with the prose walk-back — the FOR-374 sentence retires when the wave lands).
+
+## Considered Options
+
+- **A deliberate 3.0 with a removal list** (rejected) — disproportionate to four axes, blocked on three other decisions, and the wishlist-major ADR-0035 already refused; the alias table gives a later major its list for free.
+- **An unknown-flag *warning*, refusal in the next major** (rejected) — needs the date decision 1 withholds, and a warning is the prose the house does not read; the four refusing verbs already set exit 2 as the meaning.
+- **One central contract module** (rejected) — a six-hundred-line hub every verb row would touch, against the two per-verb tables that already exist and the helper docblock's own rule that usage stays local.
+- **Named twins on every positional** (rejected) — thirty-four ops in two verb groups would gain a second grammar each; the misgrip the twins fix exists only where a top-level verb's positional collides with a sibling's flag.
+- **`--receipt` beside `--json`** (rejected) — a second spelling for "machine-readable result" is a new axis, the thing the mini-rule forbids; #648 itself offered `--json` as the alternative.
+- **A stderr note or a `deprecated` mark on alias use** (rejected) — treats a sanctioned spelling as a half-forbidden one, is noise for humans and nothing for machines, and promises a removal without a date.
+
+## Consequences
+
+- **Glossary:** a new group `### Engine surface` — **Verb contract**, **Catalog**, **Canonical spelling**, **Alias** — and the "alias" ambiguity resolved: unqualified "alias" is the spelling sense; the invocation-form sense **Dual-form** avoids stays avoided, and the router's usage text stops calling the direct module paths aliases (a code change, in the wave). `version`'s `--version` is an Alias in the resolved sense.
+- **ADR-0035** is amended: refusing a previously swallowed flag is minor with a heads-up; an alias is additive; every `--json` shape is contract at birth; the Catalog is the contract's machine-readable form.
+- **FOR-374** is amended (point 2 lands in the alias wave; the mini-rule is promoted; the catalog emits the Verb contracts); **#648** (no `--receipt`; `--json` on the fifteen silent writes); **#758** and **#759** (their rows print and refuse from the contract; #759's exit-code unification stays a major and stays out).
+- **The wave** is decided in the same grill and filed as bare rows: the contract row lands alone first, the per-group receipt rows and the skills rewrite run in parallel, the `cli.ts` hub rows run serially. It follows the ADR-0050 corpus wave, not beside it — the skills rewrite and the corpus walk-backs touch the same reference files. The canonical names are longer than the aliases they replace; if the corpus wave has pinned its byte ceilings first, the alias wave raises them in its own diff and says so (ADR-0050's rule, applied as written).
+- **Headless v1's** roughly ten verbs and flags are born into this vocabulary: named by decisions 3 and 5, declared in a contract, pinned by the specs — no grill per flag.
+- No engine change lands with this record. It closes no issue by merge phrase and lands Coordinator-direct (ADR-0033); #763 closes when it has merged.
