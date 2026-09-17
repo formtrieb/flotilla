@@ -173,60 +173,57 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: **RAISED by the ADR-0051 canonical-spelling rewrite**, in the
- * diff that causes the growth, as the ratchet requires. That rewrite replaces
- * every alias spelling in the shipped corpus with its canonical one, and the
- * canonical name is the longer of the pair nearly everywhere:
- * `--dir`→`--reports-dir`/`--verdicts-dir`, `--wave`→`--spine`/`--wave-scoped`,
- * `--report`→`--report-file`, and each positional twin gains its flag name
- * outright (`verdict-acked <dir> <id>` → `verdict-acked --verdicts-dir <dir>
- * --id <id>`). Only `--iteration`→`--iter` shortens. Measured over this
- * population, net: **158,779 B → 158,998 B (+219 B)**.
+ * Why this number: **RATCHETED down**, closing the loop the vocabulary wave
+ * left open. Row 824 (ADR-0051's canonical-spelling rewrite) raised this
+ * ceiling by one full KB — the finest step the whole-KB-boundary rule admits —
+ * to fit a +219 B growth it could not apply literally. That row's own
+ * iteration-2 review called the raise precautionary rather than load-bearing:
+ * the wave closed with the measure 1,002 B under the raised ceiling, headroom
+ * nobody was reading, not a budget anyone had spent. This row is that
+ * promised ratchet (spine disclosure 824.12, dispositioned here as issue #858).
  *
- * Why raise at all, when +219 still fits: the ADR-0050 ratchet row that set the
- * previous value left 221 B of headroom, so this diff spends all but **2 B** of
- * it. A ceiling two bytes from red is not a budget, it is a tripwire on the next
- * sentence anyone writes in `wave-shared/`, and it would fire on a diff that has
- * nothing to do with this rewrite. The step is one full KB rather than the 219 B
- * measured because the constant sits on a whole-KB boundary by rule (asserted
- * below) and a kilobyte is the finest step that boundary admits; 160,000 is the
- * next one up from the new rounded measure, and leaves 1,002 B.
+ * Measured **158,998 B** over 18 files at commit
+ * `9e2e237b7759f68ce6a161164783c79476a1a508` (`git rev-parse HEAD` on this
+ * row's branch tip, before this row's own edit — the same anchor the
+ * vocabulary wave's last reading printed), rounded UP to the next full KB
+ * (1 KB = 1000 B): **159,000 B**. That happens to be the value this constant
+ * held before row 824's precautionary raise — not a rollback of that raise,
+ * but this wave's landed measure rounding to the same boundary.
  *
- * Previously: this was the ratchet row's number (ADR-0050's last), which lowered
- * the constant to that wave's landed result instead of leaving the bytes alone —
- * 158,779 B measured on `main` after every other row of the wave (#806–#814) had
- * landed, rounded up to the next full KB. Row 1 of that wave pinned 204,000
- * (measured 203,927); the walk-back rows lowered the bytes and left the constant
- * alone; the ratchet row closed the loop. Lowering is still free: the next
- * ratchet row takes this back down to its own landed measure.
+ * Previously: 160,000 B (row 824's precautionary raise, above), and before
+ * that 159,000 B — the ADR-0050 wave's own closing ratchet row (#815),
+ * measured at 158,779 B on that wave's landed `main` and rounded up the same
+ * way. Lowering a ceiling is still free: the next ratchet row takes this back
+ * down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 160_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 159_000;
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the ADR-0051 canonical-spelling rewrite**, in the
- * diff that causes the growth, as the ratchet requires — the same cause as the
- * constant above, over the wider population (the standing load plus the step
- * load, `evidence/` excluded). Measured over this population:
- * **1,217,102 B → 1,217,645 B (+543 B)**. One full KB again, for the same reason
- * the number above moves by one: the whole-KB boundary admits no finer step.
+ * Why this number: **RE-MEASURED, unchanged** — the same ratchet row as the
+ * constant above (issue #858), following row 797 iteration 4's own disclosure:
+ * "54 B headroom; the ceiling constant lives in the engine guard spec, outside
+ * a prose-only row's globs, so the raise or ratchet must come from a later
+ * row." Row 797 spent nearly all of the 563 B headroom the vocabulary wave's
+ * row 824 opened, writing the states-table and store-preflight prose it was
+ * asked to write; nothing after it in that wave grew this population further.
  *
- * Here the raise is load-bearing outright, and the reason is a SIBLING row, not
- * this one. Read alone, +543 still fits (1,217,645 < 1,218,000). But this
- * population is shared, and row #762 — `wave-setup` scaffolding both guard hooks
- * — landed on `main` after this branch was cut, adding **792 B** to the same
- * files (`wave-setup/SKILL.md` +46, `wave-setup/reference/setup-mechanics.md`
- * +746). The number CI measures is the merge of the two: 1,217,102 + 543 + 792 =
- * **1,218,437 B**, which is over the old 1,218,000 and under the new 1,219,000
- * with 563 B to spare. A ceiling has to hold at the merge, not only on the
- * branch that raises it.
+ * Measured **1,218,946 B** over 57 files at commit
+ * `9e2e237b7759f68ce6a161164783c79476a1a508` (`git rev-parse HEAD` on this
+ * row's branch tip, before this row's own edit — the same anchor the
+ * vocabulary wave's last reading printed), rounded UP to the next full KB
+ * (1 KB = 1000 B): **1,219,000 B** — the rule does not move this ceiling. A
+ * ratchet row is obliged to check whether the rounding rule moves the number,
+ * not to move it regardless; here it does not, and 54 B of headroom remains
+ * for sibling row #842 to spend on `wave-start/reference/start-mechanics.md`.
  *
- * Previously: this was the ratchet row's number (ADR-0050's last) — 1,217,102 B
- * measured on `main` after every other row of the wave (#806–#814) had landed,
- * rounded up to the next full KB. Row 1 of that wave pinned 1,293,000 (measured
- * 1,292,393); the walk-back rows lowered the bytes and left the constant alone;
- * the ratchet row closed the loop. Lowering is still free.
+ * Previously: this was the ADR-0051 wave's own raise — row 824, over the same
+ * cause as the constant above, from 1,218,000 B (the ADR-0050 wave's closing
+ * ratchet row, #815, measured at 1,217,102 B) to this 1,219,000 B, made
+ * load-bearing by sibling row #762 landing +792 B on the same population
+ * after row 824's own branch was cut. Lowering a ceiling is still free; this
+ * row found nothing to lower.
  */
 const LOADED_CORPUS_CEILING_BYTES = 1_219_000;
 
