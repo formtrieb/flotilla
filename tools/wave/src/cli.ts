@@ -563,6 +563,9 @@ import {
   printVerbHelp,
   refuseUndeclared,
   resolveTwin,
+  type FlagContract,
+  type FlagValueType,
+  type OutputClass,
   type VerbContract,
 } from './verb-contract';
 import {
@@ -851,11 +854,16 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { canonical: '--branches', value: 'one', valueType: 'list' },
       { canonical: '--config', value: 'one', valueType: 'path' },
     ],
-    positionals: { kind: 'fixed', count: 1, labels: ['<repo-root>'] },
+    // The repo-root slot is OPTIONAL — a bare `--dry-run`, a `--spine` or a
+    // `--branches` call names its target another way — so the arity declares a
+    // floor of zero and a rendered usage line brackets it.
+    positionals: { kind: 'fixed', count: 1, min: 0, labels: ['<repo-root>'] },
     output: 'json',
     usage: [
       'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--spine <spine>] [--branches <b1,b2>] [--orphans] [--detached] [--config <path>]   # prints JSON',
       '  --wave is accepted as an alias of --spine.',
+      '  --detached also sweeps REGISTERED detached-HEAD scratch checkouts under the',
+      '  worktrees root (the E2BIG population); --dry-run previews the same plan.',
     ],
   },
   'verdict-acked': {
@@ -1024,123 +1032,269 @@ function renderResult(issuePath: string, result: DorResult): string {
   return lines.join('\n');
 }
 
+// ─── The roster, RENDERED from the contracts (issue #758) ────────────────────
+//
+// Every line of the router's whole-CLI usage below is built from a Verb
+// contract — its flags, its positional arity, its named-twin slots and its
+// output class — and none of it is typed out by hand any more.
+//
+// The gap this closes was measurable rather than stylistic. The roster used to
+// be ~50 hand-maintained lines describing the same verbs the contracts already
+// describe, and a hand-maintained description of a parser drifts from it: the
+// `compose-driver` line named ten of the verb's thirteen flags and silently
+// omitted `--template`, `--reports-dir` and `--verdicts-dir` — three flags the
+// parser has always read — while `store-preflight`'s line omitted `--expect`
+// and the label-creating switch. Nothing could catch that, because the roster
+// was the only place those lines existed. Rendered from `contract.flags`, an
+// omission is no longer expressible: a flag the parser reads is a flag the
+// roster prints, and the only way to drop one from the usage is to drop it from
+// the contract, which is the same edit as dropping it from the parser.
+//
+// What the roster deliberately no longer carries is a SECOND copy of a verb's
+// prose. Each verb's own contract section — printed by `<verb> --help` and by
+// every refusal — is where the detail lives (the `--title` precedence rule, the
+// `--body-file` guidance, the `--detached` sweep population); the roster names
+// every verb and every group op with its full argument shape and sends the
+// reader there. That is what removed the last hand-copied paragraph pairs.
+
+/** The placeholder a flag's VALUE is printed as, from its declared value TYPE. */
+const VALUE_PLACEHOLDER: Readonly<Record<FlagValueType, string>> = {
+  none: '',
+  path: '<path>',
+  dir: '<dir>',
+  id: '<id>',
+  int: '<n>',
+  text: '<text>',
+  enum: '<value>',
+  sha: '<sha>',
+  url: '<url>',
+  branch: '<branch>',
+  version: '<version>',
+  list: '<a,b>',
+  json: '<json>',
+};
+
 /**
- * The router's whole-CLI usage, as lines.
+ * One flag as a caller types it: the CANONICAL spelling first (ADR-0051
+ * decision 8 — an alias is silent, and naming it inline would advertise two
+ * spellings of one flag), its value placeholder, and the repeat form on a
+ * repeatable flag.
+ */
+function flagForm(f: FlagContract): string {
+  const placeholder = VALUE_PLACEHOLDER[f.valueType];
+  const head = placeholder === '' ? f.canonical : `${f.canonical} ${placeholder}`;
+  return f.value === 'repeatable' ? `${head} [${head} ...]` : head;
+}
+
+/**
+ * The positional segment of a signature.
+ *
+ * A named-twin verb (ADR-0051 decision 6) renders as the alternation it really
+ * is — `(--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)` — because on
+ * those verbs the positionals ARE the flags, spelled the other way, and listing
+ * both segments separately would read as a verb that takes four arguments.
+ */
+function positionalForm(contract: VerbContract): string {
+  const twin = contract.twin ?? [];
+  if (twin.length > 0) {
+    const named = twin
+      .map((slot) => {
+        const f = contract.flags.find((c) => c.canonical === slot.flag);
+        return f === undefined ? slot.flag : flagForm(f);
+      })
+      .join(' ');
+    return `(${named} | ${twin.map((s) => s.label).join(' ')})`;
+  }
+  const arity = contract.positionals;
+  if (arity.kind === 'variadic') {
+    const label = arity.label ?? '<arg>';
+    return arity.min === 0 ? `[${label} ...]` : `${label} [${label} ...]`;
+  }
+  if (arity.count === 0) return '';
+  const labels =
+    arity.labels ?? Array.from({ length: arity.count }, (_, i) => `<arg${i + 1}>`);
+  const required = arity.min ?? arity.count;
+  return labels.map((label, i) => (i < required ? label : `[${label}]`)).join(' ');
+}
+
+/**
+ * The whole argument shape of one verb: its positionals, then its REQUIRED
+ * flags, then its optional ones in brackets.
+ *
+ * Positionals lead because a verb group's positional grammar is its canonical
+ * spelling (`issue-store triage-apply <id> --input <path>`, decision 6's "no
+ * named twin for a group"), and a required flag leads an optional one because
+ * that is the order a caller has to satisfy them in.
+ */
+function signatureForm(contract: VerbContract): string {
+  const twinFlags = new Set((contract.twin ?? []).map((s) => s.flag));
+  const rest = contract.flags.filter((f) => !twinFlags.has(f.canonical));
+  return [
+    positionalForm(contract),
+    ...rest.filter((f) => f.required === true).map(flagForm),
+    ...rest.filter((f) => f.required !== true).map((f) => `[${flagForm(f)}]`),
+  ]
+    .filter((segment) => segment !== '')
+    .join(' ');
+}
+
+/** What a verb's stdout IS, as the inline note the roster line ends with. */
+const OUTPUT_NOTE: Readonly<Record<OutputClass, string>> = {
+  prose: 'prints text, not JSON',
+  json: 'prints JSON',
+  'silent-write': 'prints nothing on success — the write IS the result',
+  product: 'prints the artifact itself, not a report about it',
+};
+
+/**
+ * One verb's — or one group op's — roster line: the rendered signature, then the
+ * output class as an inline note, then the aliases named ONCE, then the verb's
+ * own `--json` clause where its contract states one.
+ *
+ * That last clause is what row V5's `jsonFormNote()` used to do from OUTSIDE the
+ * renderer, on eight hand-written roster lines. It is absorbed into the renderer
+ * here and that helper is gone — one mechanism renders the roster, and the
+ * `--json` shape is part of what it renders rather than a second thing bolted
+ * onto lines it did not build. It stays DERIVED either way: a verb whose
+ * contract declares no `--json` line gets no clause, so the roster can never
+ * promise a JSON form a verb does not have (`spine check-disclosures` and
+ * `check-awaiting-human` are prose verbs that row V5 deliberately left alone).
+ */
+function rosterLine(contract: VerbContract): string {
+  const signature = signatureForm(contract);
+  const invocation = `  flotilla-engine ${contract.verb}${signature === '' ? '' : ` ${signature}`}`;
+  const aliases = contract.flags.flatMap((f) =>
+    (f.aliases ?? []).map((alias) => `${alias} → ${f.canonical}`),
+  );
+  const aliasNote = aliases.length === 0 ? '' : `; aliases: ${aliases.join(', ')}`;
+  return `${invocation}   # ${OUTPUT_NOTE[contract.output]}${aliasNote}${jsonClause(contract)}`;
+}
+
+/**
+ * A verb's own `--json` clause, off its contract — the whole clause, including
+ * the continuation lines a long shape wraps onto.
+ *
+ * "Whole clause" is the half that needed saying: `issue-store annotate` states
+ * its receipt over two lines and the second one carries the field list, so
+ * taking the first line alone would end the roster's sentence on a colon and
+ * drop exactly the part a caller was reading for. A continuation is recognised
+ * structurally — a following line indented DEEPER than the `--json` line
+ * itself — never by counting lines.
+ */
+function jsonClause(contract: VerbContract): string {
+  const at = contract.usage.findIndex((l) => l.trimStart().startsWith('--json'));
+  if (at === -1) return '';
+  const indent = contract.usage[at].length - contract.usage[at].trimStart().length;
+  const clause = [contract.usage[at]];
+  for (const line of contract.usage.slice(at + 1)) {
+    if (line.trim() === '' || line.length - line.trimStart().length <= indent) break;
+    clause.push(line);
+  }
+  return `; ${clause.map((l) => l.trim()).join(' ')}`;
+}
+
+/**
+ * The roster's closing prose — about the CLI as a whole, not about any one
+ * verb, which is why it is the only text here that is not rendered from a
+ * contract.
+ */
+const USAGE_TRAILER: readonly string[] = [
+  // ADR-0051's glossary consequence, as a code change: "alias" is now the
+  // SPELLING sense — one canonical flag spelling plus the near-synonyms it
+  // silently accepts. A direct module invocation is not a second spelling of
+  // a flag; it is a second way of reaching the same runner, which the
+  // glossary's `Dual-form` entry is the word for. Calling it an alias here
+  // made the one term the whole record turns on ambiguous at the surface a
+  // stranger reads first.
+  '  Every engine verb is reachable as a subcommand of THIS CLI. The direct',
+  '  module invocations below still route to the same runners; the subcommand',
+  '  form is the contract — prefer the form listed above:',
+  '    npx tsx tools/wave/src/resume-cli.ts ...            -> the `resume` subcommand',
+  '    npx tsx tools/wave/src/cli-store.ts preflight ...   -> the `store-preflight` subcommand',
+  '    npx tsx tools/wave/src/spine-cli.ts <op> ...        -> the `spine` subcommand',
+  '',
+  '  Every verb accepts --json and --help (ADR-0051). --help prints that one',
+  "  verb's contract and constructs no store and no host. Every flag has ONE",
+  '  canonical spelling; the near-synonyms a verb used to take are accepted as',
+  '  silent aliases, and anything a verb does not declare exits 2.',
+  '',
+];
+
+/**
+ * The router's whole-CLI usage, as lines — one rendered line per verb and per
+ * group op, in the router's own dispatch order.
  *
  * Split out from {@link printUsage} (which still writes them to stderr on a
  * misinvocation) so a bare `flotilla-engine --help` can write the SAME text to
  * stdout and exit 0 — a help request is an answer, not an error, and answering
  * on stderr with exit 2 is how a `--help` ends up unreadable in a pipeline.
- */
-/**
- * The `--json` clause of one verb's OWN contract section, as a suffix for that
- * verb's line in the roster below — `'; --json: …'`, or `''` for a verb whose
- * contract declares none.
  *
- * DERIVED, never transcribed (ADR-0051 decision 7, row V5). Row V5 gives eight
- * prose/product verbs a JSON form, and each of them is described in exactly two
- * places: its contract's `usage` (what `--help` and every refusal print) and its
- * line in this roster (what a stranger reaching for a misinvocation reads
- * first). A hand-copied second sentence is how those two come to describe
- * different shapes — so the roster reads the contract's own line instead of
- * restating it, and a later row that changes a shape changes one string.
- *
- * Row #758 replaces this roster with one rendered wholesale from the contracts;
- * this helper is the same principle applied to the eight lines that needed it
- * now, and it goes away with the rest of the hand-written roster.
+ * `KNOWN_SUBCOMMANDS` drives the order and `verbContracts()` supplies the text,
+ * so a verb that is dispatched but undeclared would crash this function rather
+ * than quietly go unlisted — the same "the roster IS the dispatch table"
+ * discipline `SUBCOMMAND_PURPOSE`'s typing enforces at compile time.
  */
-function jsonFormNote(contract: VerbContract): string {
-  const line = contract.usage.find((l) => l.trimStart().startsWith('--json'));
-  return line === undefined ? '' : `; ${line.trim()}`;
-}
-
 function usageLines(): string[] {
-  return [
-      'usage:',
-      // Every line below carries an inline OUTPUT-FORMAT note (issue #505 —
-      // the `dor`-prints-text surprise class: five sibling verbs print JSON,
-      // and nothing said which of the others didn't) — text/JSON/nothing, so a
-      // caller knows how to consume a verb's stdout without probing it first.
-      '  flotilla-engine <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL per issue), not JSON',
-      `  flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL + gate lines), not JSON${jsonFormNote(ROUTER_VERB_CONTRACTS.dor)}`,
-      '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints text, same as the file form — and answers --json with the same envelope, holding one issue',
-      `  flotilla-engine files-drift <issue-path> <sha-range>   # prints text, with a JSON block embedded at the end${jsonFormNote(ROUTER_VERB_CONTRACTS['files-drift'])}`,
-      '  flotilla-engine merge-order (--spine <path> | <wave-md-path>)   # prints JSON',
-      '  flotilla-engine closed-by <closed-by-line>   # prints JSON',
-      '  flotilla-engine detect-host <remote-url>   # prints JSON',
-      '  flotilla-engine worktree-cleanup (--dry-run | --spine <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]   # prints JSON',
-      '    --detached   also sweep REGISTERED detached-HEAD scratch checkouts under the worktrees root (the E2BIG population); --dry-run previews the same plan',
-      '  flotilla-engine conflict-map <issue-path> [<issue-path> ...]   # prints JSON',
-      '  flotilla-engine conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints JSON',
-      '  flotilla-engine cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]   # prints JSON',
-      '  flotilla-engine host-pr <create|arm|merge|status|preflight> --branch <b> [--remote <url>] [--method <m>]   # prints JSON on every verb (see `host-pr <verb>`\'s own usage error for that verb\'s contract)',
-      '    host-pr create --branch <b> --title <t> (--body <body> | --body-file <path>) [--base <branch>] [--allow-close-phrase-loss]   # exactly one body route; --body-file reads the file verbatim — reach for it whenever the body runs past one paragraph (a multi-paragraph --body has been refused in the field by a worktree-isolation guard, though not by every such guard, and a long quoted argument is a quoting hazard everywhere else)',
-      '  flotilla-engine issue-store <op> [...args] [--config <path>]   # per-op output — most read ops print JSON, create/publishDocument print the plain id as text, several mutation ops print nothing on success (see `issue-store <op>`\'s own usage error for that op\'s contract)',
-      // This ONE line must name every op spine-cli's own dispatch table reports
-      // — cli.spec.ts's FOR-11 guard reads the first `flotilla-engine spine `
-      // line and asserts each real op appears in it. Detail lines may follow.
-      '  flotilla-engine spine <create|read|set-row-state|set-row-iter|set-row-pr|set-branch|replace-closed-by|set-status|add-disclosure|set-disposition|check-disclosures|human-gated|check-awaiting-human> <spine-path> [...args]   # per-op output — mostly JSON on reads; several write ops print nothing or a bare id/ref on success',
-      '    spine add-disclosure <spine-path> <row-id> --iter <n> --source <worker|reviewer|coordinator> --text <t>   # ADR-0027: capture at verdict-routing',
-      '    spine add-disclosure <spine-path> --wave-scoped --source <worker|reviewer|coordinator> --text <t>   # ADR-0038: wave-scoped capture — no row, no iteration; the window runs to the archive',
-      `    spine set-disposition <spine-path> <disclosure-ref> <${DISPOSITION_VOCABULARY.replace(/ \| /g, '|')}>`,
-      '    spine check-disclosures <spine-path>   # fail-closed archive gate: exit != 0 iff an `open` disclosure remains',
-      // The ADR-0012 human-lane pair. Dispatched by spine-cli's own table like
-      // every other spine op (issue #366 folded them out of this file's `spine`
-      // case), so the FOR-11 guard above already forces them onto the one-line
-      // op list; these two lines add the per-op detail an operator needs.
-      '    spine human-gated <spine-path> [--workers <a,b>]   # ADR-0012: list the wave\'s human lane (JSON); empty is a legitimate answer, never a gate',
-      '    spine check-awaiting-human <spine-path> [--workers <a,b>]   # fail-closed archive gate: exit != 0 iff a human-gated row still holds a live claim',
-      `  flotilla-engine config validate <path>   # prints text (a one-line ok/error message), not JSON${jsonFormNote(CONFIG_CONTRACTS.validate)}`,
-      '  flotilla-engine resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [--repo-root <dir>] [--marker <m>] [--force]   # prints JSON',
-      '  flotilla-engine store-preflight [--config <path>]   # prints JSON',
-      '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
-      '  flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha> [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>] [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>] [--row-meta <json|path>]   # writes the Workflow driver script to --out; prints a JSON receipt',
-      '  flotilla-engine route-tuple --spine <spine> --id <id> --iter <n> --report-file <path> --verdict-file <path> --anchor <sha> [--config <path>] [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>] [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]   # the whole post-return sequence for one row; prints one JSON result',
-      // The catalog used to list `[--title <text>]` with no semantics at all,
-      // while the verb's OWN usage text carried the preserve-on-reuse rule — so
-      // the one surface a stranger reaches first said the least about the one
-      // flag that silently renames somebody else's PR. Same wording as
-      // route-tuple's usage(), deliberately (issue #724).
-      '    --title <text> RENAMES the PR. Without it, a REUSE preserves the live PR title byte-identically (the Worker opened it and named its own change), exactly as the body preserves the live PR body; a CREATE falls back to the spine row title with bare tracker ids stripped. The result reports which of the three it used as `titleSource` (flag | live-pr | row).',
-      '  flotilla-engine close-row --spine <spine> --id <id> [--pr-url <url>] [--config <path>] [--repo-root <dir>] [--verdicts-dir <dir>]   # the done-reconcile for one merged row; prints one JSON result',
-      '    Writes the row\'s `## PR-Log` and `## Closed-by` lines (read-then-upsert, keyed by id — a second row never deletes the first one\'s line), BOTH before the tracker close, then derives the met-AC indexes from the MAX-iter valid verdict sidecar and calls close with them. It does not decide whether the PR merged; it refuses a PR cell that is not a real PR URL.',
-      '  flotilla-engine route-verdict --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]   # prints JSON',
-      '    --ruling "<the Operator\'s reason>" is the ONLY thing that admits an iteration ABOVE the re-dispatch cap — the Operator-ruled, Reviewer-only round. Without it an above-cap iteration stays refused; with it the result names the ruled cell and quotes the ruling. Accepted by route-tuple too, for the same round.',
-      '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
-      `  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON${jsonFormNote(ROUTE_CONTRACTS['validate-report'])}`,
-      `  flotilla-engine validate-verdict <file>   # prints text ("valid"), not JSON${jsonFormNote(ROUTE_CONTRACTS['validate-verdict'])}`,
-      `  flotilla-engine write-report (--report-file <path> | <json-file>) --reports-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON${jsonFormNote(ROUTE_CONTRACTS['write-report'])}`,
-      `  flotilla-engine write-verdict (--verdict-file <path> | <json-file>) --verdicts-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON${jsonFormNote(ROUTE_CONTRACTS['write-verdict'])}`,
-      '  flotilla-engine verdict-acked (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)   # prints JSON',
-      `  flotilla-engine render-verdict (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>) --anchor <sha>   # prints text (the rendered markdown), not JSON${jsonFormNote(ROUTER_VERB_CONTRACTS['render-verdict'])}`,
-      '  flotilla-engine version [--expect <plugin-version>]   # ADR-0032: the engine version, and the lockstep comparison (alias: --version); prints JSON',
-      '',
-      `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
-      '',
-      // ADR-0051's glossary consequence, as a code change: "alias" is now the
-      // SPELLING sense — one canonical flag spelling plus the near-synonyms it
-      // silently accepts. A direct module invocation is not a second spelling of
-      // a flag; it is a second way of reaching the same runner, which the
-      // glossary's `Dual-form` entry is the word for. Calling it an alias here
-      // made the one term the whole record turns on ambiguous at the surface a
-      // stranger reads first.
-      '  Every engine verb is reachable as a subcommand of THIS CLI. The direct',
-      '  module invocations below still route to the same runners; the subcommand',
-      '  form is the contract — prefer the form listed above:',
-      '    npx tsx tools/wave/src/resume-cli.ts ...            -> the `resume` subcommand',
-      '    npx tsx tools/wave/src/cli-store.ts preflight ...   -> the `store-preflight` subcommand',
-      '    npx tsx tools/wave/src/spine-cli.ts <op> ...        -> the `spine` subcommand',
-      '',
-      '  Every verb accepts --json and --help (ADR-0051). --help prints that one',
-      '  verb\'s contract and constructs no store and no host. Every flag has ONE',
-      '  canonical spelling; the near-synonyms a verb used to take are accepted as',
-      '  silent aliases, and anything a verb does not declare exits 2.',
-      '',
+  const all = verbContracts();
+  const lines: string[] = [
+    'usage:',
+    // The verb-LESS form: `flotilla-engine <issue-path> ...` runs the readiness
+    // gate with no subcommand token at all (the legacy positional form). It has
+    // no contract of its own because it is not a verb — so its argument shape is
+    // rendered from `dor`'s contract, which is the runner it reaches.
+    `  flotilla-engine ${positionalForm(all.dor)}   # the verb-less readiness gate — ${OUTPUT_NOTE[all.dor.output]}`,
   ];
+  for (const verb of KNOWN_SUBCOMMANDS) {
+    const group = VERB_GROUP_CONTRACTS[verb];
+    if (group === undefined) {
+      lines.push(rosterLine(all[verb]));
+      continue;
+    }
+    // A verb GROUP is listed op by op: `issue-store <op> [...args]` used to
+    // stand for twenty-six contracts and send the reader to a misinvocation to
+    // discover any of them.
+    for (const op of Object.keys(group)) lines.push(rosterLine(all[`${verb} ${op}`]));
+  }
+  lines.push('', `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`, '', ...USAGE_TRAILER);
+  return lines;
 }
 
 function printUsage(): void {
   process.stderr.write(usageLines().join('\n'));
+}
+
+/**
+ * ONE verb's own usage, on stderr, exit 2 — the answer to a subcommand invoked
+ * with no arguments at all (issue #758).
+ *
+ * Before this, every such call fell back to {@link printUsage}: a bare
+ * `flotilla-engine route-verdict` answered with the whole-CLI block, and the one
+ * verb the caller had actually named was three lines of eighty. The contract's
+ * own section is the focused answer, and it is the SAME text that verb's
+ * `--help` and every one of its refusals print — the printer row 821 installed,
+ * reached from one more place rather than reimplemented.
+ */
+function printVerbUsage(contract: VerbContract): number {
+  process.stderr.write([...contract.usage, ''].join('\n'));
+  return 2;
+}
+
+/**
+ * The focused answer for a verb GROUP invoked with no op: that group's own
+ * roster, rendered from its ops' contracts, and nothing about any other verb.
+ */
+function printGroupUsage(group: string): number {
+  const all = verbContracts();
+  const ops = Object.keys(VERB_GROUP_CONTRACTS[group]);
+  process.stderr.write(
+    [
+      `usage: flotilla-engine ${group} <${ops.join('|')}> [...args]`,
+      ...ops.map((op) => rosterLine(all[`${group} ${op}`])),
+      `  \`${group} <op> --help\` prints that one op's contract.`,
+      '',
+    ].join('\n'),
+  );
+  return 2;
 }
 
 function runDor(paths: string[]): number {
@@ -1579,7 +1733,10 @@ function runFilesDrift(args: string[]): number {
     process.stderr.write(
       [
         'error: files-drift requires two arguments',
-        'usage: flotilla-engine files-drift <issue-path> <sha-range>   # prints text, with a JSON block embedded at the end',
+        // The CONTRACT's own section (issue #758) — this used to be a second,
+        // hand-written copy of its first line, which is how a usage text comes
+        // to describe a verb its parser no longer matches.
+        ...contract.usage,
         '',
       ].join('\n'),
     );
@@ -1736,7 +1893,7 @@ function runClosedBy(args: string[]): number {
     process.stderr.write(
       [
         'error: closed-by requires one argument',
-        'usage: flotilla-engine closed-by <closed-by-line>   # prints JSON',
+        ...contract.usage,
         '',
       ].join('\n'),
     );
@@ -1768,7 +1925,7 @@ function runDetectHost(args: string[]): number {
     process.stderr.write(
       [
         'error: detect-host requires one argument',
-        'usage: flotilla-engine detect-host <remote-url>   # prints JSON',
+        ...contract.usage,
         '',
       ].join('\n'),
     );
@@ -3213,9 +3370,14 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     // the invocation an operator reaches for when nothing else on the machine
     // is configured yet. Printing usage instead would make the verb unusable
     // exactly where it is needed most.
+    //
+    // What it prints, since issue #758, is THAT verb's own contract section —
+    // not the whole-CLI block. Nineteen verbs used to answer a bare invocation
+    // with a roster of every other verb in the engine; a caller who has already
+    // named the one they want is owed its arguments, not the catalog.
     if (rest.length === 0 && first !== 'version') {
-      printUsage();
-      return 2;
+      if (VERB_GROUP_CONTRACTS[first] !== undefined) return printGroupUsage(first);
+      return printVerbUsage(verbContracts()[first]);
     }
     // Route known subcommands.
     switch (first as Subcommand) {

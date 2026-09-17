@@ -118,6 +118,7 @@ export const CREDENTIAL_PROBE_CONTRACT: VerbContract = {
     'usage:',
     '  credential-probe --all                          # probe every CONFIGURED credential',
     '  credential-probe --var <VAR> [--var <VAR> ...]  # probe exactly these (e.g. GITHUB_TOKEN)',
+    '  --config <path> is accepted and IGNORED (uniform-wrapper tolerance); this probe reads only the environment.',
     'output: JSON — the value-free CredentialProbeReport; never a secret',
   ],
 };
@@ -320,12 +321,17 @@ export function probeCredentials(
   return { ok: failed.length === 0, probed, failed };
 }
 
+/**
+ * This verb's usage: its CONTRACT section first (issue #758 — the invocation
+ * forms and the output line used to be typed out a second time right here, and
+ * a second copy is how one of them comes to omit a flag), then the operational
+ * warning and the exit codes, which are this runner's own and belong to no
+ * other surface.
+ */
 function printUsage(): void {
   process.stderr.write(
     [
-      'usage:',
-      '  credential-probe --all                          # probe every CONFIGURED credential',
-      '  credential-probe --var <VAR> [--var <VAR> ...]  # probe exactly these (e.g. GITHUB_TOKEN)',
+      ...CREDENTIAL_PROBE_CONTRACT.usage,
       '',
       '  Answers "can every configured credential be resolved right now?" by exit',
       '  code. It runs each configured <VAR>_CMD through the engine resolver and',

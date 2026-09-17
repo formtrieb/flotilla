@@ -116,8 +116,14 @@ export const CONFIG_CONTRACTS: Readonly<Record<string, VerbContract>> = {
   },
 };
 
+/**
+ * The group's roster. Issue #758: it used to be a hand-written `config validate
+ * <path>` — a third spelling of a line the contract already owns — and it is
+ * the op's own contract section now, so a flag this group learns to read cannot
+ * go unmentioned here.
+ */
 function printUsage(): void {
-  process.stderr.write(['usage:', '  config validate <path>', ''].join('\n'));
+  process.stderr.write([...CONFIG_CONTRACTS.validate.usage, ''].join('\n'));
 }
 
 /**
@@ -538,8 +544,7 @@ export function runConfig(args: string[]): number {
   const op = args[0];
   // `config --help` — the group has one op, so its roster IS that op's usage.
   if (op === '--help') {
-    process.stdout.write(['usage:', '  config validate <path>', ''].join('\n'));
-    return 0;
+    return printVerbHelp(CONFIG_CONTRACTS.validate);
   }
   if (op !== 'validate') {
     printUsage();

@@ -84,7 +84,9 @@ export function runCrossWave(args: string[]): number {
     process.stderr.write(
       [
         'error: --candidates and --claimed are required',
-        'usage: cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
+        // The CONTRACT's own section (issue #758), not a second copy of its
+        // first line: one place states what this verb accepts.
+        ...CROSS_WAVE_CONTRACT.usage,
         '',
       ].join('\n'),
     );

@@ -380,23 +380,41 @@ function usageUnknownOp(op: string): number {
 const SPINE_OP_SHAPES: Readonly<
   Record<string, { positionals: PositionalArity; output: OutputClass; flags: readonly FlagContract[] }>
 > = {
-  create: { positionals: fixed(2), output: 'silent-write', flags: [] },
+  create: { positionals: fixed('<out-path>', '<payload-file>'), output: 'silent-write', flags: [] },
   // Prints the spine SOURCE — the artifact itself, not a report about it.
-  read: { positionals: fixed(1), output: 'product', flags: [] },
-  'set-row-state': { positionals: fixed(3), output: 'silent-write', flags: [] },
-  'set-row-iter': { positionals: fixed(3), output: 'silent-write', flags: [] },
-  'set-row-pr': { positionals: fixed(3), output: 'silent-write', flags: [] },
+  read: { positionals: fixed('<spine-path>'), output: 'product', flags: [] },
+  'set-row-state': {
+    positionals: fixed('<spine-path>', '<id>', '<state>'),
+    output: 'silent-write',
+    flags: [],
+  },
+  'set-row-iter': {
+    positionals: fixed('<spine-path>', '<id>', '<n>'),
+    output: 'silent-write',
+    flags: [],
+  },
+  'set-row-pr': {
+    positionals: fixed('<spine-path>', '<id>', '<pr-cell>'),
+    output: 'silent-write',
+    flags: [],
+  },
   'set-branch': {
-    positionals: fixed(3),
+    positionals: fixed('<spine-path>', '<id>', '<branch>'),
     output: 'silent-write',
     flags: [{ canonical: '--model', value: 'one', valueType: 'text' }],
   },
-  'replace-closed-by': { positionals: fixed(2), output: 'silent-write', flags: [] },
-  'set-status': { positionals: fixed(2), output: 'silent-write', flags: [] },
+  'replace-closed-by': {
+    positionals: fixed('<spine-path>', '<body-file>'),
+    output: 'silent-write',
+    flags: [],
+  },
+  'set-status': { positionals: fixed('<spine-path>', '<status>'), output: 'silent-write', flags: [] },
   'add-disclosure': {
     // <spine-path> plus, in the row-scoped form only, <row-id>. The wave-scoped
-    // form takes the path alone.
-    positionals: fixed(2),
+    // form takes the path alone — so the second slot is declared optional
+    // (`min: 1`), which is what keeps a rendered usage line from advertising a
+    // row id the wave-scoped form must NOT carry.
+    positionals: { ...fixed('<spine-path>', '<row-id>'), min: 1 },
     // Prints the disclosure-ref it minted — the thing `set-disposition`
     // addresses, so stdout IS the product.
     output: 'product',
@@ -407,23 +425,35 @@ const SPINE_OP_SHAPES: Readonly<
       { canonical: '--text', value: 'one', valueType: 'text', required: true },
     ],
   },
-  'set-disposition': { positionals: fixed(3), output: 'silent-write', flags: [] },
+  'set-disposition': {
+    positionals: fixed('<spine-path>', '<disclosure-ref>', `<${DISPOSITION_VOCABULARY}>`),
+    output: 'silent-write',
+    flags: [],
+  },
   // Both gates print prose and answer by EXIT CODE; wave-close reads the code.
-  'check-disclosures': { positionals: fixed(1), output: 'prose', flags: [] },
+  'check-disclosures': { positionals: fixed('<spine-path>'), output: 'prose', flags: [] },
   'human-gated': {
-    positionals: fixed(1),
+    positionals: fixed('<spine-path>'),
     output: 'json',
     flags: [{ canonical: '--workers', value: 'one', valueType: 'list' }],
   },
   'check-awaiting-human': {
-    positionals: fixed(1),
+    positionals: fixed('<spine-path>'),
     output: 'prose',
     flags: [{ canonical: '--workers', value: 'one', valueType: 'list' }],
   },
 };
 
-function fixed(count: number): PositionalArity {
-  return { kind: 'fixed', count };
+/**
+ * A fixed positional arity that NAMES its slots (issue #758).
+ *
+ * It used to take a count. The count is still what the refusal measures a stray
+ * token against — it falls out of the list — but a usage line rendered from the
+ * contract has to say WHICH slot it is asking for, and `<arg2>` is not an answer
+ * an operator can act on.
+ */
+function fixed(...labels: readonly string[]): PositionalArity {
+  return { kind: 'fixed', count: labels.length, labels };
 }
 
 /**
@@ -453,7 +483,7 @@ export const SPINE_CONTRACTS: Readonly<Record<string, VerbContract>> =
             ? []
             : [
                 `  --json: one receipt on stdout, after the write lands — ${RECEIPT_SHAPES[op]}`,
-                '          without it this op prints nothing, exactly as before.',
+                '          Without it this op prints nothing, exactly as before.',
               ]),
         ],
       },

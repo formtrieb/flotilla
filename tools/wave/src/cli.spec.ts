@@ -46,7 +46,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, mainAsync, runDorById, findRepoRoot } from './cli';
+import { main, mainAsync, runDorById, findRepoRoot, verbContracts } from './cli';
+// Issue #758: the roster is rendered FROM the contracts, so its expectations are
+// derived from the contracts too — `canonicalFlagTokens` is the engine's own
+// answer to "which spellings does this verb declare", never a list retyped here.
+import { canonicalFlagTokens } from './verb-contract';
 // Imported ONLY to reach `route-tuple`'s own usage() text (issue #743's
 // catalog/usage agreement check below) — a bare `runRouteTuple([])` hits its
 // first missing-flag check and writes that text to stderr, exactly the way
@@ -387,7 +391,7 @@ describe('no-args invocation', () => {
 // equality is what makes this bidirectional: a change to either side's
 // wording of that fragment breaks the equality, regardless of which side
 // moved.
-describe('printUsage — the route-tuple `--title` catalog line agrees with route-tuple\'s own usage text (issue #743)', () => {
+describe('the route-tuple `--title` CONTRACT section agrees with route-tuple\'s own usage text (issue #743)', () => {
   const FRAGMENT_START = 'Without it, a REUSE preserves the live PR title';
   const FRAGMENT_END = '(flag | live-pr | row).';
 
@@ -409,9 +413,18 @@ describe('printUsage — the route-tuple `--title` catalog line agrees with rout
   }
 
   it('states the identical precedence rule and titleSource vocabulary — asserted from both directions', async () => {
-    const catalogCode = main([]);
-    expect(catalogCode).toBe(2);
-    const catalogFragment = titleFlagFragment(stderrBuf);
+    // Issue #758 moved the catalog half of this pair. The router's roster is
+    // rendered from the contracts now and carries no verb's prose at all, so
+    // the second copy this guard was written against no longer sits there —
+    // it sits where it always belonged, in the verb's OWN contract section,
+    // which `route-tuple --help` prints and every refusal for that verb
+    // reprints. That is still a REAL second source (the contract lives in
+    // verb-contract.ts, the usage text in route-tuple.ts), so the guard keeps
+    // its whole point: two independently-maintained statements of one fact,
+    // compared from both directions, never a third hand-copied string here.
+    const catalogCode = await mainAsync(['route-tuple', '--help']);
+    expect(catalogCode).toBe(0);
+    const catalogFragment = titleFlagFragment(stdoutBuf);
 
     stderrBuf = ''; // the same global stderr spy captures the next call too
     const verbCode = await runRouteTuple([], {});
@@ -421,8 +434,8 @@ describe('printUsage — the route-tuple `--title` catalog line agrees with rout
     // Two directions, not one opaque equality: each fragment must contain the
     // other, which together are exactly as strong as equality and fail
     // independently readably depending on which side actually drifted.
-    expect(catalogFragment, 'catalog no longer contains the verb\'s own wording').toContain(verbFragment);
-    expect(verbFragment, 'the verb\'s usage text no longer contains the catalog\'s own wording').toContain(catalogFragment);
+    expect(catalogFragment, 'the contract no longer contains the verb\'s own wording').toContain(verbFragment);
+    expect(verbFragment, 'the verb\'s usage text no longer contains the contract\'s own wording').toContain(catalogFragment);
   });
 });
 
@@ -5866,7 +5879,7 @@ function parseAvailableList(text: string): string[] {
 }
 
 describe('FOR-11 — top-level usage derives from the real dispatch tables', () => {
-  it('every real `spine` op (from spine-cli\'s own dispatch table) appears in the top-level usage line for `spine`', () => {
+  it('every real `spine` op (from spine-cli\'s own dispatch table) resolves to a contract in the aggregate', () => {
     // Trigger spine-cli's own `default:` case — its "available: ..." message
     // IS the actual dispatch table, not a copy of it.
     const code = runSpine(['__unknown_op__', '/some/spine/path.md']);
@@ -5874,14 +5887,27 @@ describe('FOR-11 — top-level usage derives from the real dispatch tables', () 
     const realOps = parseAvailableList(stderrBuf);
     expect(realOps.length).toBeGreaterThan(0);
 
-    stderrBuf = ''; // fresh capture for the top-level usage output
-    main([]);
-    const spineUsageLine = stderrBuf
-      .split('\n')
-      .find((l) => l.includes('flotilla-engine spine '));
-    expect(spineUsageLine).toBeDefined();
+    // Issue #758: this used to read ONE hand-maintained roster line — the
+    // `flotilla-engine spine <op1|op2|…>` string — and assert each real op
+    // appeared as a substring of it. That line is gone: the roster is rendered
+    // from the contracts now, one line per op, so reading it back would only
+    // ask the renderer whether it rendered. The claim FOR-11 actually cares
+    // about is one level up and survives the change intact — every op the
+    // dispatch table knows DECLARES a contract, which is what makes it
+    // advertised, `--help`-able and refusable. That is asserted against the
+    // aggregate directly.
+    const aggregate = verbContracts();
     for (const op of realOps) {
-      expect(spineUsageLine).toContain(op);
+      expect(aggregate[`spine ${op}`], `spine ${op} declares no contract`).toBeDefined();
+    }
+
+    // …and the rendered roster still names every one of them, because it is
+    // built from that same aggregate — asserted as a consequence, not as the
+    // ground truth.
+    stderrBuf = '';
+    main([]);
+    for (const op of realOps) {
+      expect(stderrBuf).toContain(`flotilla-engine spine ${op} `);
     }
   });
 
@@ -6201,16 +6227,15 @@ describe('the human-lane ops are dispatched by spine-cli\'s ONE table (issue #36
     // from the table FOR-11 AC2 derives from, so that guard was structurally
     // blind to them. They are in that table now, so FOR-11 AC2 covers them — and
     // this asserts exactly that, rather than re-checking the strings by hand.
+    // Issue #758: each op has its OWN rendered roster line, so "named in the
+    // top-level usage" is now a line per op rather than a token inside one.
     const ops = spineCliOps();
     stderrBuf = '';
     main([]);
-    const spineUsageLine = stderrBuf
-      .split('\n')
-      .find((l) => l.includes('flotilla-engine spine '));
-    expect(spineUsageLine).toBeDefined();
     for (const op of ['human-gated', 'check-awaiting-human']) {
       expect(ops).toContain(op);
-      expect(spineUsageLine).toContain(op);
+      expect(verbContracts()[`spine ${op}`]).toBeDefined();
+      expect(stderrBuf).toContain(`flotilla-engine spine ${op} <spine-path>`);
     }
   });
 
@@ -6334,16 +6359,28 @@ describe('host-pr subcommand routing', () => {
     expect(stderrBuf).toContain('--body-file');
   });
 
-  it('the top-level usage names the create body routes, so a caller can find --body-file without probing', () => {
+  it('the top-level usage names the create body routes, so a caller can find --body-file without probing', async () => {
+    // Issue #758 re-pin, and a deliberate split of one claim into two. The
+    // roster line is rendered from the contract, so it names BOTH routes by
+    // construction — with the placeholder each flag's declared value type gives
+    // it (`--body <text>`, not the roster's old hand-written `<body>`). What the
+    // roster no longer carries is the paragraph saying WHEN to reach for the
+    // file; that prose belongs to the verb and is asserted where it now lives,
+    // on `host-pr create --help`, which is one keystroke from the roster line
+    // and is reprinted by every refusal this verb makes.
     main([]); // zero args → printUsage()
     const line = stderrBuf
       .split('\n')
       .find((l) => l.includes('host-pr create --branch'))!;
     expect(line).toBeDefined();
-    expect(line).toContain('--body <body>');
+    expect(line).toContain('--body <text>');
     expect(line).toContain('--body-file <path>');
-    // …and it says WHEN to reach for it, not merely that it exists.
-    expect(line).toMatch(/one paragraph/);
+
+    stdoutBuf = '';
+    expect(await mainAsync(['host-pr', 'create', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('--body <body>');
+    expect(stdoutBuf).toContain('--body-file <path>');
+    expect(stdoutBuf).toMatch(/one paragraph/);
   });
 
   it("the host-pr purpose line names both body routes (the unknown-subcommand answer)", () => {
@@ -6730,8 +6767,22 @@ describe('credential-probe subcommand routing (ADR-0029)', () => {
   });
 
   it('the top-level usage lists credential-probe with both selection forms', () => {
+    // Issue #758 re-pin: the roster line is rendered from the contract, so the
+    // two selection flags are listed as the optional flags they are declared to
+    // be rather than as a hand-written `(--all | --var <VAR>)` alternation. The
+    // alternation itself is still taught — by the verb's OWN contract section,
+    // which is what `--help` and every refusal print, and which this asserts
+    // second so the pair cannot silently lose it.
     main([]);
-    expect(stderrBuf).toMatch(/flotilla-engine credential-probe \(--all \| --var <VAR>/);
+    const line = stderrBuf.split('\n').find((l) => l.includes('flotilla-engine credential-probe'))!;
+    expect(line).toBeDefined();
+    expect(line).toContain('[--all]');
+    expect(line).toContain('[--var <text> [--var <text> ...]]');
+
+    stdoutBuf = '';
+    expect(main(['credential-probe', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('credential-probe --all');
+    expect(stdoutBuf).toContain('credential-probe --var <VAR> [--var <VAR> ...]');
   });
 
   it('end-to-end through main(): a REAL resolving lookup exits 0 and prints no secret', () => {
@@ -6831,8 +6882,12 @@ describe('version subcommand routing (ADR-0032)', () => {
   });
 
   it('the top-level usage lists the verb and its --expect flag', () => {
+    // Issue #758 re-pin: `<plugin-version>` was the hand-written roster's own
+    // placeholder; the rendered line prints the placeholder for the flag's
+    // DECLARED value type (`version`), which is the one a reader can trace back
+    // to the contract.
     main([]);
-    expect(stderrBuf).toMatch(/flotilla-engine version \[--expect <plugin-version>\]/);
+    expect(stderrBuf).toMatch(/flotilla-engine version \[--expect <version>\]/);
     expect(stderrBuf).toMatch(/available subcommands: .*\bversion\b/);
   });
 
@@ -7948,14 +8003,19 @@ describe('render-verdict --json (row V5) — class `product`, so the flag is ine
 });
 
 describe('the router roster names each JSON form beside the prose note (row V5)', () => {
-  // Rendered from each verb's OWN contract (`jsonFormNote`), never transcribed —
-  // so this pin fails if the roster and the contract ever describe two shapes.
+  // Rendered from each verb's OWN contract, never transcribed — so this pin
+  // fails if the roster and the contract ever describe two shapes. Issue #758
+  // moved that derivation INSIDE the roster renderer (row V5's standalone
+  // `jsonFormNote()` helper is gone, as its own comment asked), and collapsed
+  // `dor`'s two hand-written roster lines into the one signature its single
+  // contract describes — so the `--id` form is a flag on that line now, not a
+  // line of its own.
   it('names it on every one of the eight verbs this row covers', () => {
     main([]); // zero args → printUsage()
     const lineFor = (needle: string) => stderrBuf.split('\n').find((l) => l.includes(needle))!;
 
-    expect(lineFor('flotilla-engine dor [--config')).toContain('--json: the same result as JSON');
-    expect(lineFor('flotilla-engine dor --id')).toContain('--json');
+    expect(lineFor('flotilla-engine dor <issue-path>')).toContain('--json: the same result as JSON');
+    expect(lineFor('flotilla-engine dor <issue-path>')).toContain('[--id <id>]');
     expect(lineFor('flotilla-engine files-drift')).toContain('--json: ONLY that block');
     expect(lineFor('flotilla-engine config validate')).toContain('--json: the same verdict as JSON');
     expect(lineFor('flotilla-engine validate-report')).toContain('{ verb, file, valid, errors }');
@@ -7974,5 +8034,370 @@ describe('the router roster names each JSON form beside the prose note (row V5)'
     expect(main(['files-drift', '--help'])).toBe(0);
     const contractLine = stdoutBuf.split('\n').find((l) => l.trimStart().startsWith('--json'))!;
     expect(rosterLine).toContain(contractLine.trim());
+  });
+});
+
+// ─── the roster is RENDERED from the contracts (issue #758) ──────────────────
+//
+// The router's whole-CLI usage used to be ~50 hand-maintained lines describing
+// the same verbs the Verb contracts already describe, and a hand-maintained
+// description of a parser drifts from it in exactly one direction: something
+// the parser reads goes unmentioned. Three measured instances at the anchor —
+// `compose-driver` naming ten of its thirteen flags, `store-preflight` naming
+// one of its three, `host-pr status` naming neither `--method` nor `--config`.
+//
+// Rendered, an omission is no longer EXPRESSIBLE, and that is what the first
+// test below asserts: for every verb and every group op in the aggregate, every
+// canonical flag the contract declares appears on that verb's roster line. It
+// is a structural check over the whole surface, not a list of the three lines
+// that happened to be wrong — the same discipline verb-contract-drift.spec.ts
+// applies to the flag literals themselves.
+
+describe('the roster renders every verb and every group op from its contract (issue #758)', () => {
+  /** The roster, as the router prints it on a bare invocation. */
+  function roster(): string[] {
+    stderrBuf = '';
+    expect(main([])).toBe(2);
+    return stderrBuf.split('\n');
+  }
+
+  /** The one roster line that invokes `verb` — never a prefix of another verb. */
+  function lineFor(lines: string[], verb: string): string {
+    const matches = lines.filter(
+      (l) => l.startsWith(`  flotilla-engine ${verb} `) || l.trimEnd() === `  flotilla-engine ${verb}`,
+    );
+    expect(matches, `expected exactly one roster line for \`${verb}\``).toHaveLength(1);
+    return matches[0];
+  }
+
+  it('names EVERY canonical flag of EVERY contract — the omission class, closed by construction', () => {
+    const lines = roster();
+    const missing: string[] = [];
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const line = lineFor(lines, verb);
+      for (const flagToken of canonicalFlagTokens(contract)) {
+        // Word-boundary, so `--report` does not pass by riding inside
+        // `--report-file`: a flag is named when its own spelling is a token.
+        if (!new RegExp(`(?<![\\w-])${flagToken}(?![\\w-])`).test(line)) {
+          missing.push(`${verb}: ${flagToken}`);
+        }
+      }
+    }
+    expect(missing.join('\n')).toBe('');
+  });
+
+  it('lists one line per top-level verb AND one per group op — no `<op>` stands in for a table', () => {
+    const lines = roster();
+    const keys = Object.keys(verbContracts());
+    expect(keys.length).toBeGreaterThan(60);
+    for (const verb of keys) expect(lineFor(lines, verb)).toBeDefined();
+    // The four group tokens no longer get a line of their own that stands for
+    // their ops — every op is there by name.
+    for (const op of ['issue-store goal-frontier', 'spine set-status', 'host-pr preflight', 'config validate']) {
+      expect(lineFor(lines, op)).toBeDefined();
+    }
+  });
+
+  it('the driver-composition line carries the three flags it used to omit, by construction', () => {
+    // The ticket's named defect. Asserted against the CONTRACT rather than a
+    // transcribed list of thirteen spellings: what makes the omission
+    // impossible is that the line is built from `contract.flags`, so the
+    // expectation is built from the same place.
+    const line = lineFor(roster(), 'compose-driver');
+    for (const flagToken of canonicalFlagTokens(verbContracts()['compose-driver'])) {
+      expect(line).toContain(flagToken);
+    }
+    for (const flagToken of ['--template', '--reports-dir', '--verdicts-dir']) {
+      expect(line).toContain(flagToken);
+    }
+  });
+
+  it('spells the CANONICAL flag first and names each alias exactly once', () => {
+    const lines = roster();
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const line = lineFor(lines, verb);
+      const aliases = contract.flags.flatMap((f) => (f.aliases ?? []).map((a) => [a, f.canonical]));
+      if (aliases.length === 0) {
+        expect(line, `${verb} declares no alias`).not.toContain('; aliases: ');
+        continue;
+      }
+      for (const [alias, canonical] of aliases) {
+        expect(line).toContain(`${alias} → ${canonical}`);
+        // Named ONCE: in the alias note, never a second time in the signature.
+        // Token-wise, because `--reports` is a PREFIX of the canonical
+        // `--reports-dir` standing right there — a plain substring test reads
+        // the canonical spelling as its own alias and fails on a correct line.
+        const signature = line.slice(0, line.indexOf('   # '));
+        expect(
+          new RegExp(`(?<![\\w-])${alias}(?![\\w-])`).test(signature),
+          `${verb} spells ${alias} in its signature`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("ends every line with the verb's declared output class as an inline note", () => {
+    const lines = roster();
+    const NOTE: Record<string, string> = {
+      prose: 'prints text, not JSON',
+      json: 'prints JSON',
+      'silent-write': 'prints nothing on success',
+      product: 'prints the artifact itself',
+    };
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      expect(lineFor(lines, verb)).toContain(`   # ${NOTE[contract.output]}`);
+    }
+  });
+
+  it('never prints an unnamed positional slot — every declared slot has a label', () => {
+    // The renderer falls back to `<arg1>` when a contract declares a positional
+    // count and no names for it. That fallback exists so a new contract cannot
+    // crash the roster; a line that actually SHOWS it is a contract that has
+    // not said what its arguments are, which is the same defect as a missing
+    // flag one column over.
+    for (const line of roster()) {
+      expect(line).not.toMatch(/<arg\d+>/);
+    }
+  });
+
+  it('the roster has no second copy of a verb\'s prose — the contract section is the one place', () => {
+    // Row V5's `jsonFormNote()` is absorbed into the renderer, and the last
+    // hand-copied paragraph pairs (`--title`'s precedence rule, `--body-file`'s
+    // guidance) are gone from the roster. What proves the absorption is that
+    // the `--json` clause a roster line carries is BYTE-IDENTICAL to the one
+    // that verb's own `--help` prints.
+    const line = lineFor(roster(), 'write-verdict');
+    stdoutBuf = '';
+    expect(main(['write-verdict', '--help'])).toBe(0);
+    const contractClause = stdoutBuf.split('\n').find((l) => l.trimStart().startsWith('--json'))!;
+    expect(contractClause).toBeDefined();
+    expect(line).toContain(contractClause.trim());
+  });
+});
+
+// ─── a flag the parser reads is named in the verb's OWN usage too ────────────
+//
+// The roster guard above closes the omission class for the roster. This closes
+// it for the other surface a caller reads — the verb's own contract section,
+// which `--help` prints and every refusal reprints. Both halves are needed:
+// rendering the roster cannot fix a contract section that never mentioned
+// `--method`, and `host-pr status`'s did not.
+//
+// The same check runs over the positional LABELS, because a slot the parser
+// counts and the usage does not name is the same defect one column over.
+
+describe('every contract section names every flag the parser reads (issue #758)', () => {
+  it('names every canonical flag the contract declares', () => {
+    const missing: string[] = [];
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const text = contract.usage.join('\n');
+      for (const flagToken of canonicalFlagTokens(contract)) {
+        if (!new RegExp(`(?<![\\w-])${flagToken}(?![\\w-])`).test(text)) {
+          missing.push(`${verb}: ${flagToken}`);
+        }
+      }
+    }
+    expect(missing.join('\n')).toBe('');
+  });
+
+  it('names every positional slot it declares a label for', () => {
+    const missing: string[] = [];
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const text = contract.usage.join('\n');
+      const arity = contract.positionals;
+      const labels =
+        arity.kind === 'variadic'
+          ? arity.label === undefined
+            ? []
+            : [arity.label]
+          : (arity.labels ?? []);
+      for (const label of [...labels, ...(contract.twin ?? []).map((t) => t.label)]) {
+        if (!text.includes(label)) missing.push(`${verb}: ${label}`);
+      }
+    }
+    expect(missing.join('\n')).toBe('');
+  });
+});
+
+// ─── the zero-argument answer is THAT verb's usage (issue #758) ──────────────
+
+describe('a subcommand invoked with no arguments gets its own usage, not the whole CLI', () => {
+  // The eleven verbs the ticket measured falling back to the whole-CLI block,
+  // plus the two the router reaches through the same guard.
+  const VERBS = [
+    'route-verdict',
+    'route-outcome',
+    'write-report',
+    'write-verdict',
+    'conflict-map',
+    'cross-wave',
+    'resume',
+    'credential-probe',
+    'validate-report',
+    'validate-verdict',
+    'verdict-acked',
+    'render-verdict',
+    'dor',
+    'files-drift',
+    'merge-order',
+    'closed-by',
+    'detect-host',
+    'worktree-cleanup',
+  ];
+
+  for (const verb of VERBS) {
+    it(`\`${verb}\` with no arguments prints its own contract section and nothing else`, () => {
+      expect(main([verb])).toBe(2);
+      // Its OWN usage — the same text `--help` prints…
+      expect(stderrBuf).toContain(verbContracts()[verb].usage[0]);
+      // …and NOT the whole-CLI block, whose two tells are the roster trailer
+      // and a sibling verb that has nothing to do with this call.
+      expect(stderrBuf).not.toContain('available subcommands:');
+      expect(stderrBuf).not.toContain('flotilla-engine issue-store goal-frontier');
+      expect(stdoutBuf).toBe('');
+    });
+  }
+
+  it('a verb GROUP with no op gets THAT group\'s ops, not every verb in the engine', () => {
+    expect(main(['config'])).toBe(2);
+    expect(stderrBuf).toContain('usage: flotilla-engine config <validate> [...args]');
+    expect(stderrBuf).toContain('flotilla-engine config validate <path>');
+    expect(stderrBuf).not.toContain('available subcommands:');
+    expect(stderrBuf).not.toContain('flotilla-engine spine ');
+  });
+
+  it('`spine` with no op lists the spine ops and no other verb', () => {
+    expect(main(['spine'])).toBe(2);
+    expect(stderrBuf).toContain('flotilla-engine spine set-row-state <spine-path> <id> <state>');
+    expect(stderrBuf).toContain('flotilla-engine spine check-disclosures <spine-path>');
+    expect(stderrBuf).not.toContain('flotilla-engine issue-store ');
+    expect(stderrBuf).not.toContain('available subcommands:');
+  });
+
+  it('a BARE invocation still gets the whole roster — the router IS what is being asked about', () => {
+    expect(main([])).toBe(2);
+    expect(stderrBuf).toContain('available subcommands:');
+  });
+
+  it('`version` keeps its exemption: a bare call is that verb\'s primary form', () => {
+    expect(main(['version'])).toBe(0);
+    expect(JSON.parse(stdoutBuf)).toHaveProperty('version');
+  });
+});
+
+// ─── row 821's two guarantees, ASSERTED here rather than re-implemented ──────
+//
+// `--help` interception before any store or host is constructed, and the
+// unknown-flag refusal, are row 821's and are on `main`. This row renders the
+// text those mechanisms print, so what it owes is a pin that neither moved —
+// stated as this row's own spec (the issue's fifth acceptance criterion) rather
+// than left to the specs that installed them.
+
+describe('issue #758 asserts row 821: --help reaches no store, an undeclared flag exits 2', () => {
+  it('`issue-store --help` answers with the op roster and never resolves a store', async () => {
+    // No injected store and no config in reach: if this call resolved a store
+    // it would throw — or, on a configured machine, reach the tracker, which is
+    // the network probe the ticket measured. Exit 0 with the roster on stdout
+    // is the proof that the interception still runs first.
+    const code = await mainAsync(['issue-store', '--help']);
+    expect(code).toBe(0);
+    expect(stdoutBuf).toContain('usage: issue-store <create|read|');
+    expect(stderrBuf).toBe('');
+  });
+
+  it('`store-preflight --help` answers without resolving a store either', async () => {
+    const code = await mainAsync(['store-preflight', '--help']);
+    expect(code).toBe(0);
+    expect(stdoutBuf).toContain('usage: store-preflight');
+    expect(stderrBuf).toBe('');
+  });
+
+  it('an undeclared flag still exits 2 with that verb\'s own usage and a did-you-mean', () => {
+    expect(main(['worktree-cleanup', '--dry-runn'])).toBe(2);
+    expect(stderrBuf).toContain('error: worktree-cleanup: unknown flag --dry-runn');
+    expect(stderrBuf).toContain('did you mean --dry-run?');
+    // That refusal prints the VERB's usage, never the roster — the #505 rule.
+    expect(stderrBuf).not.toContain('available subcommands:');
+  });
+});
+
+// ─── what moved, pinned line by line (issue #758) ────────────────────────────
+//
+// The roster stopped carrying verb prose, and three runners stopped carrying a
+// hand-written copy of their own first usage line. Neither is a deletion: the
+// prose moved into the contract that owns it, and the runners print that
+// contract now. Each move is pinned here so "default prose changed only where
+// the rendered usage replaced the hand-written one" is a claim with a test
+// behind it rather than a sentence in a report.
+
+describe('the prose the roster used to hold now lives in the contract that owns it (issue #758)', () => {
+  it('worktree-cleanup teaches the --detached sweep population on its own usage', () => {
+    // It used to be a roster detail line under the verb, reachable only by
+    // provoking the whole-CLI dump.
+    expect(main(['worktree-cleanup', '--help'])).toBe(0);
+    expect(stdoutBuf).toMatch(/--detached also sweeps REGISTERED detached-HEAD scratch checkouts/);
+    expect(stdoutBuf).toMatch(/E2BIG population/);
+    expect(stdoutBuf).toContain('--wave is accepted as an alias of --spine.');
+  });
+
+  it('host-pr status states both accepted-and-discarded tolerances it never named', async () => {
+    // `--method` and `--config` are read by the parser on this verb and were in
+    // neither its usage line nor its prose — the omission class, found by the
+    // contract-section guard above rather than by reading.
+    expect(await mainAsync(['host-pr', 'status', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('--method');
+    expect(stdoutBuf).toContain('--config <path>');
+    expect(stdoutBuf).toMatch(/store-blind/);
+  });
+
+  it('credential-probe states its --config tolerance', () => {
+    expect(main(['credential-probe', '--help'])).toBe(0);
+    expect(stdoutBuf).toMatch(/--config <path> is accepted and IGNORED/);
+  });
+
+  it('`files-drift` answers a missing argument with its CONTRACT section, not a private copy of it', () => {
+    // Reached with ONE positional, so the router's zero-argument guard is not
+    // what answers — this is the runner's own missing-argument branch, which
+    // used to carry a hand-written copy of the verb's first usage line.
+    expect(main(['files-drift', 'only-one-argument'])).toBe(2);
+    expect(stderrBuf).toContain('error: files-drift requires two arguments');
+    // Byte-identical to what `--help` prints, which is the whole claim: one
+    // text, two doors.
+    for (const line of verbContracts()['files-drift'].usage) expect(stderrBuf).toContain(line);
+  });
+
+  for (const verb of ['closed-by', 'detect-host'] as const) {
+    it(`\`${verb}\` answers an argument-less call with its CONTRACT section`, () => {
+      // These two take a single positional and no flags, so "no argument" and
+      // "no arguments at all" are the same call: the router's focused zero-arg
+      // answer gets there first, and it prints the same contract section the
+      // runner's own branch now prints. One text either way is the point.
+      expect(main([verb])).toBe(2);
+      for (const line of verbContracts()[verb].usage) expect(stderrBuf).toContain(line);
+    });
+  }
+
+  it('`config validate` with no path answers with the op\'s contract section', () => {
+    expect(main(['config', 'validate'])).toBe(2);
+    for (const line of verbContracts()['config validate'].usage) expect(stderrBuf).toContain(line);
+  });
+
+  it("the host-pr group dump's per-verb signatures are each verb's own contract line", async () => {
+    // It used to carry a shortened second copy of each signature, headed by a
+    // comment asserting the group takes NO --config — while every verb of the
+    // group declares it and the parser accepts it. Derived, the denial is not
+    // expressible: each line IS the contract's, `--config` included.
+    expect(await mainAsync(['host-pr'])).toBe(2);
+    for (const verb of ['create', 'arm', 'merge', 'status', 'preflight']) {
+      const contractLine = verbContracts()[`host-pr ${verb}`].usage[0].replace(/^usage: /, '');
+      expect(stderrBuf).toContain(contractLine);
+      expect(contractLine).toContain('--config <path>');
+    }
+    expect(stderrBuf).not.toContain('deliberately NO --config');
+  });
+
+  it('`cross-wave` missing a required flag answers with its contract section', () => {
+    expect(main(['cross-wave', '--candidates', '/x.json'])).toBe(2);
+    for (const line of verbContracts()['cross-wave'].usage) expect(stderrBuf).toContain(line);
   });
 });

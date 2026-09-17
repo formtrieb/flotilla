@@ -1167,12 +1167,27 @@ describe('cli.ts routes the disclosure verbs (ADR-0027 wiring)', () => {
   });
 
   it('the router usage advertises BOTH capture forms on the one op', () => {
+    // Issue #758 re-pin: the roster line is now RENDERED from this op's
+    // contract, so the two forms are no longer two hand-written spellings
+    // printed side by side — they are one signature in which the row slot is
+    // bracketed (the arity's `min: 1`, the wave-scoped form's floor) and the
+    // wave-scoped switch is an optional flag. Both forms are still reachable
+    // from the one line, which is what this test has always been about.
     expect(main([])).toBe(2);
     const usage = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    // The row-scoped spelling is still advertised verbatim…
-    expect(usage).toContain('spine add-disclosure <spine-path> <row-id> --iter <n>');
-    // …and the wave-scoped one is advertised beside it, not instead of it.
-    expect(usage).toContain('spine add-disclosure <spine-path> --wave');
+    const line = usage.split('\n').find((l: string) => l.includes('spine add-disclosure'))!;
+    expect(line).toBeDefined();
+    // The row-scoped spelling: the optional row slot plus its iteration flag…
+    expect(line).toContain('spine add-disclosure <spine-path> [<row-id>]');
+    expect(line).toContain('[--iter <n>]');
+    // …and the wave-scoped one beside it, not instead of it.
+    expect(line).toContain('[--wave-scoped]');
+    // The op's OWN contract section still spells the alternation out in full —
+    // the roster names every flag, the contract teaches which go together.
+    expect(main(['spine', 'add-disclosure', '--help'])).toBe(0);
+    expect(stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('')).toContain(
+      'spine add-disclosure <spine-path> (<row-id> --iter <n> | --wave-scoped)',
+    );
   });
 });
 
