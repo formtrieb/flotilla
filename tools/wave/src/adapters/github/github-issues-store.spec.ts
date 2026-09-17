@@ -120,6 +120,28 @@ describe('GitHubIssuesStore — GitHub-specific mapping', () => {
     expect((await store.read(id)).status).toBe('done');
   });
 
+  it('the closing probe derives the same class for a `duplicate` close as for a `not_planned` one', async () => {
+    // `GhStateReason` carries GitHub's fifth documented value since ADR-0020's
+    // 2026-09-17 note, READ-side. This is the pin that the widening changed
+    // nothing downstream of the seam: `readClosing` (ADR-0005) answers on
+    // closing-PR EVIDENCE, and a close reason — whichever of the five it is —
+    // is not evidence. Both issues below are closed with no PR linked, so both
+    // are `closed-unknown`: absence of evidence, never a rejection (W2-F1c).
+    const duplicate = await store.create(baseInput());
+    const notPlanned = await store.create(baseInput());
+    await api.nativeClose(Number(duplicate), 'duplicate');
+    await api.nativeClose(Number(notPlanned), 'not_planned');
+
+    expect(await store.readClosing(duplicate)).toEqual(await store.readClosing(notPlanned));
+    expect(await store.readClosing(duplicate)).toEqual({ state: 'closed-unknown' });
+    // The reason itself did survive onto the substrate — so the equality above
+    // is the probe ignoring a distinction that IS there, not one that was lost.
+    expect((await api.getIssue(Number(duplicate))).stateReason).toBe('duplicate');
+    // …and the coarse projection collapses it exactly like the not_planned case
+    // one test up (ADR-0002): a duplicate close is still `done`.
+    expect((await store.read(duplicate)).status).toBe('done');
+  });
+
   it('read() status precedence picks the highest rung if two wave labels coexist (partial transition)', async () => {
     const id = await store.create(baseInput());
     // simulate a crashed transition that left both labels

@@ -215,3 +215,48 @@ describe('InMemoryGitHubApi milestones (the Goal container substrate, ADR-0044)'
     expect(Date.parse(after as string)).toBeGreaterThan(Date.parse(before as string));
   });
 });
+
+// ── the close reason the fake records, and the class the probe derives from it ─
+//
+// `GhStateReason` carries GitHub's fifth documented value, `duplicate`
+// (read-side; see the type's own doc and ADR-0020's 2026-09-17 note). The fake
+// is the conformance substrate every store-level case runs against, so the value
+// has to survive a round-trip through it — and, just as importantly, has to
+// change NOTHING about what the closing probe answers: that probe reads
+// closing-PR EVIDENCE, never the close reason, so a duplicate close and a
+// not-planned close are one class to it.
+describe('InMemoryGitHubApi close reasons (ADR-0020 note 2026-09-17)', () => {
+  it("records a `duplicate` close as `duplicate` — the round-trip keeps GitHub's fifth value", async () => {
+    const api = new InMemoryGitHubApi();
+    const { number } = await api.createIssue({ title: 't', body: '', labels: [] });
+    await api.nativeClose(number, 'duplicate');
+    const issue = await api.getIssue(number);
+    expect(issue.state).toBe('closed');
+    expect(issue.stateReason).toBe('duplicate');
+  });
+
+  it('getClosingState answers the SAME class for a duplicate close as for a not_planned one', async () => {
+    const api = new InMemoryGitHubApi();
+    const duplicate = await api.createIssue({ title: 'dup', body: '', labels: [] });
+    const notPlanned = await api.createIssue({ title: 'np', body: '', labels: [] });
+    await api.nativeClose(duplicate.number, 'duplicate');
+    await api.nativeClose(notPlanned.number, 'not_planned');
+
+    // Neither carries closing-PR evidence, so both are `closed-unknown` —
+    // absence of evidence, never a rejection (W2-F1c).
+    expect(await api.getClosingState(duplicate.number)).toEqual(
+      await api.getClosingState(notPlanned.number),
+    );
+    expect(await api.getClosingState(duplicate.number)).toEqual({ state: 'closed-unknown' });
+
+    // The control that makes the equality above mean something: the probe DOES
+    // discriminate — on evidence. Record a merged PR against the
+    // duplicate-closed issue and its class moves, while its close reason has not.
+    await api.setClosingPr(duplicate.number, { merged: true, url: 'https://example.test/pull/9' });
+    expect(await api.getClosingState(duplicate.number)).toEqual({
+      state: 'merged',
+      prUrl: 'https://example.test/pull/9',
+    });
+    expect((await api.getIssue(duplicate.number)).stateReason).toBe('duplicate');
+  });
+});

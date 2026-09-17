@@ -91,6 +91,46 @@ describe('RealGitHubApi', () => {
     await expect(api.addLabel(7, 'x')).rejects.toBeInstanceOf(GitHubApiError);
   });
 
+  // ── `duplicate` is a READ-side value of the close reason ───────────────────
+  //
+  // GitHub's REST "Update an issue" reference documents `state_reason` as
+  // `completed | not_planned | duplicate | reopened | null`, and its issue
+  // RESPONSE object carries the same enum (vendor reference read 2026-09-17).
+  // `GhStateReason` used to spell four of the five, so a close made in GitHub's
+  // own duplicate flow reached this seam as `null` — "no reason recorded", a
+  // claim the tracker never made. The two cases below are the read and the
+  // write halves of that correction, and they deliberately disagree with each
+  // other: the type carries five values, the write path sends two.
+  it('getIssue maps a `duplicate` close to `duplicate`, not to null', async () => {
+    const { api } = makeApi(() => ({
+      status: 200,
+      json: { number: 7, title: 'X', body: 'Y', labels: [], state: 'closed', state_reason: 'duplicate' },
+    }));
+    expect(await api.getIssue(7)).toEqual({
+      number: 7, title: 'X', body: 'Y', labels: [], state: 'closed', stateReason: 'duplicate',
+    });
+  });
+
+  it('a state_reason GitHub does not document still lands as null — the ladder narrows, it does not widen', async () => {
+    // The negative control for the case above: the read ladder gained exactly
+    // one member, and anything outside the documented enum is still narrowed
+    // away rather than carried through as an unknown string.
+    const { api } = makeApi(() => ({
+      status: 200,
+      json: { number: 7, title: 'X', body: '', labels: [], state: 'closed', state_reason: 'invented' },
+    }));
+    expect((await api.getIssue(7)).stateReason).toBeNull();
+  });
+
+  it('nativeClose still WRITES only completed / not_planned — `duplicate` is dropped, not forwarded', async () => {
+    // flotilla has no verb that closes an issue as a duplicate, so widening the
+    // READ type must not widen what goes over the wire. The request body below
+    // carries no `state_reason` at all, exactly as `nativeClose(7, null)` does.
+    const { api, http } = makeApi(() => ({ status: 200, json: {} }));
+    await api.nativeClose(7, 'duplicate');
+    expect(JSON.parse(http.requests[0].body!)).toEqual({ state: 'closed' });
+  });
+
   it('nativeClose PATCHes state=closed with state_reason', async () => {
     const { api, http } = makeApi(() => ({ status: 200, json: {} }));
     await api.nativeClose(7, 'not_planned');

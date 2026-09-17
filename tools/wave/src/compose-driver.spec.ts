@@ -688,6 +688,37 @@ describe('compose-driver — the derivations', () => {
     expect(stripBareIds('ship the verb', '680')).toBe('ship the verb');
   });
 
+  it("stripBareIds takes an ATTACHED possessive with the id — no dangling `'s` survives", () => {
+    // The fixture is the LIVE title of the row that exposed this: the composed
+    // PR title was rendered from it, the Worker ran the rendered line verbatim
+    // (its policy says to), and the PR opened reading
+    // `(ADR-0051 decision 7, 's settled shape)` until it was renamed by hand at
+    // landing. The expectation below is the whole possessive PHRASE minus its
+    // possessive — the bare noun the sentence meant before the id was in it.
+    const LIVE_TITLE =
+      'The nine silent issue-store write ops answer `--json` with a receipt of ' +
+      "what the engine sent — never a read-back (ADR-0051 decision 7, #648's settled shape)";
+    expect(stripBareIds(LIVE_TITLE, '822')).toBe(
+      'The nine silent issue-store write ops answer `--json` with a receipt of ' +
+        'what the engine sent — never a read-back (ADR-0051 decision 7, settled shape)',
+    );
+    // No fragment of the possessive survives ANYWHERE in the result — the
+    // assertion above already fails on one, but this states the property the row
+    // was filed for rather than leaving it implied by one long string compare.
+    expect(stripBareIds(LIVE_TITLE, '822')).not.toContain("'s");
+
+    // The typographic apostrophe is the same token in the spelling a tracker's
+    // own editor produces, and the LITERAL-id branch takes its possessive too —
+    // neither is a `#<digits>` token, so each is its own path through the strip.
+    expect(stripBareIds('carry #648’s settled shape', '822')).toBe('carry settled shape');
+    expect(stripBareIds("honour 822's own scope line", '822')).toBe('honour own scope line');
+
+    // DETACHED, and therefore none of the strip's business: an `'s` that is not
+    // an id's inflection is prose, and a title-mangling default is worse than a
+    // title the Coordinator overrides (this function's own narrowness rule).
+    expect(stripBareIds("the row's own title", '822')).toBe("the row's own title");
+  });
+
   it('depsSetupFrom picks the first install command, and answers empty when there is none', () => {
     expect(
       depsSetupFrom([{ command: 'npm ci --prefix tools/wave' }, { command: 'vitest run' }]),

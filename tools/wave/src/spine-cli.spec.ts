@@ -8,7 +8,13 @@ import { runSpine, SPINE_CONTRACTS } from './spine-cli';
 // this module's ops now flow through (issue #77).
 import { main } from './cli';
 import { readSpine, HUMAN_GATED_WORKER } from './wave-md-rw';
-import { readDisclosures, WAVE_SCOPE_ITER_CELL } from './spine-store';
+import {
+  readDisclosures,
+  WAVE_SCOPE_ITER_CELL,
+  createSpineStore,
+  defaultSpineIo,
+  type SpineStore,
+} from './spine-store';
 
 const FIXTURE = readFileSync(
   join(__dirname, '__fixtures__/minimal-spine.md'),
@@ -845,6 +851,138 @@ describe('spine-cli — `--json` receipts on the silent writes (ADR-0051 decisio
     expect(reads).toEqual(['WAVE.md']);
     expect(writes).toEqual(['WAVE.md']);
     expect(receiptOf(stdoutOut).written).toEqual({ iter: 3 });
+  });
+
+  // ── the store seam: the as-written claim, made falsifiable ─────────────────
+  //
+  // The two pins above each have a stated blind spot, and both are about the
+  // SAME hole. The io counter proves no second FILE read happened — a re-parse
+  // routed through `store.spine()` reads no file, so it cannot see one. The
+  // value comparison separates a receipt from a re-parse only on an input where
+  // the reader is not the writer's inverse (the padded cell, whose spaces the
+  // parser trims); on an ORDINARY unpadded, pipe-free cell the two agree, and
+  // agreement is not evidence.
+  //
+  // `runSpine`'s third parameter is the store seam that closes both. The cell
+  // below is deliberately the easy case — no padding, no pipe, nothing the
+  // round-trip would alter — so the ONLY thing separating "what the caller
+  // wrote" from "what the spine now parses as" is the substituted store.
+  const ORDINARY_CELL = '[#42](https://example.test/pull/42) — a plain title';
+
+  /**
+   * A store that writes for real and refuses to be READ.
+   *
+   * Every accessor a re-parse could reach — the parsed spine, the source, the
+   * per-row state, the dispatch-log join, the disclosure readers — throws.
+   * `setRowPrCell` and `flush` delegate untouched, because the write must still
+   * land: a pin that proves the receipt by breaking the write would prove
+   * nothing. Internal calls inside the real store go to the target directly
+   * (`spineStoreFromSource` closes over its own `src`), so `flush()` is
+   * unaffected by the trap in front of it.
+   */
+  const REPARSE_TRIPWIRE = 'tripwire: the receipt read the spine back';
+  const READ_BACK_METHODS = [
+    'spine',
+    'source',
+    'reload',
+    'rowState',
+    'branchesByIssueId',
+    'disclosures',
+    'openDisclosures',
+  ];
+  function throwOnRead(real: SpineStore): SpineStore {
+    return new Proxy(real, {
+      get(target, prop, receiver) {
+        if (READ_BACK_METHODS.includes(String(prop))) {
+          return () => {
+            throw new Error(`${REPARSE_TRIPWIRE} (${String(prop)})`);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  }
+
+  /** The same seam, used the other way: readers that answer, and answer WRONG. */
+  function lieOnRead(real: SpineStore): SpineStore {
+    const LIE = 'a cell the caller never wrote';
+    return new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === 'spine') {
+          return () => {
+            const parsed = real.spine();
+            return {
+              ...parsed,
+              planTable: parsed.planTable.map((r) => ({ ...r, prCell: LIE })),
+            };
+          };
+        }
+        if (prop === 'source') return () => LIE;
+        if (prop === 'rowState') return () => LIE;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  }
+
+  it('a store whose every read THROWS still yields the receipt — so nothing read the spine to build it', () => {
+    const path = writeTmpSpine();
+    stdoutOut = '';
+    stderrOut = '';
+
+    const code = runSpine(
+      ['set-row-pr', path, ROW_ID, ORDINARY_CELL, '--json'],
+      defaultSpineIo(),
+      (p, io) => throwOnRead(createSpineStore(p, io)),
+    );
+
+    // Had anything re-read the spine to compose the receipt, the tripwire would
+    // have thrown into the runner's catch: exit 1, empty stdout, the message on
+    // stderr. All three of the next assertions would fail.
+    expect(code).toBe(0);
+    expect(stderrOut).toBe('');
+    expect(receiptOf(stdoutOut)).toEqual({
+      op: 'set-row-pr',
+      spine: resolve(path),
+      id: ROW_ID,
+      written: { pr: ORDINARY_CELL },
+    });
+    // The write itself landed — the trap sits only in front of the readers.
+    expect(readSpine(readFileSync(path, 'utf-8')).planTable[0].prCell).toBe(ORDINARY_CELL);
+  });
+
+  it('a store whose reads LIE is not believed — the receipt is still the caller\'s own string', () => {
+    // The throwing store proves no read happened. This one proves what the
+    // receipt would have said if one had: on this ordinary cell a re-parse is
+    // indistinguishable by value, unless the thing being re-parsed disagrees.
+    const path = writeTmpSpine();
+    stdoutOut = '';
+
+    const code = runSpine(
+      ['set-row-pr', path, ROW_ID, ORDINARY_CELL, '--json'],
+      defaultSpineIo(),
+      (p, io) => lieOnRead(createSpineStore(p, io)),
+    );
+
+    expect(code).toBe(0);
+    expect(receiptOf(stdoutOut).written).toEqual({ pr: ORDINARY_CELL });
+    expect(JSON.stringify(receiptOf(stdoutOut))).not.toContain('a cell the caller never wrote');
+  });
+
+  it('the trap is ARMED — the same store makes a read-back path fail loudly', () => {
+    // The control for the two cases above: a store that throws on every read is
+    // only evidence if such a read really would blow up. `spine read` is the one
+    // op whose whole job is `store.source()`, and it goes through the same seam.
+    const path = writeTmpSpine();
+    stdoutOut = '';
+    stderrOut = '';
+
+    const code = runSpine(['read', path], defaultSpineIo(), (p, io) =>
+      throwOnRead(createSpineStore(p, io)),
+    );
+
+    expect(code).toBe(1);
+    expect(stdoutOut).toBe('');
+    expect(stderrOut).toContain(REPARSE_TRIPWIRE);
   });
 
   it('set-branch prints { branch }, and { branch, model } only when --model was passed', () => {
