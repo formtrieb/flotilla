@@ -685,6 +685,75 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
   version: 'Print the engine package version, optionally checked against --expect (ADR-0032).',
 };
 
+// ─── `--json` on this file's two prose verbs (ADR-0051 decision 7, row V5) ───
+//
+// **ONE table, two readers** — the same discipline `RECEIPT_SHAPES` established
+// one module over (spine-cli.ts): the shape advertised by `--help` and by every
+// refusal is rendered from the SAME constant the runner builds its answer to, so
+// an advertised shape and an emitted shape cannot drift. The half a caller
+// cannot see until it has already made the call is the emitted one, which is
+// exactly why the advertised one may not be a hand-transcribed copy of it.
+//
+// `--json` REPLACES the prose; it never rides beside it. Without the flag both
+// verbs print today's bytes, and neither one's exit code moves either way — a
+// failing readiness gate still exits 1, with its JSON.
+
+/** The shape `dor --json` prints, in BOTH of the verb's forms. */
+const DOR_JSON_SHAPE =
+  '{ verb, overall, issues: [ { issue, overall, gates: [ { name, status, reason? } ] } ] }';
+
+/**
+ * The shape `files-drift --json` prints: the block this verb has ALWAYS embedded
+ * at the end of its prose, and nothing else. `--json` adds no field and renames
+ * none — it only drops the human framing around a block that was already there,
+ * which is why this verb needed no new decision of its own (row V1 declared it).
+ */
+const FILES_DRIFT_JSON_SHAPE = '{ status, driftedFiles, rationale, projectScopes }';
+
+/**
+ * One issue's readiness answer, as `dor --json` renders it.
+ *
+ * `issue` is the very token the prose header's second column carries — the
+ * resolved PATH on the file form, the row ID on the `--id` form — so the two
+ * renderings name the same subject and neither derives a second identity for it.
+ *
+ * `gates` is the gate list VERBATIM off the `DorResult`: `status` keeps the
+ * gate's own four-value vocabulary (`pass` · `warn` · `fail` · `deferred`), so
+ * the deferred/pass distinction the prose draws with `⊘` versus `✓` survives the
+ * crossing rather than being flattened into a boolean. `reason` is absent when
+ * the gate gave none — a key that carries nothing did not carry anything.
+ *
+ * Module-local on purpose: this is a CLI projection of `DorResult`, not a second
+ * engine type, and a new exported symbol here would have to reach `index.ts`
+ * (outside this row's declared Files globs — the same constraint config-cli.ts's
+ * warning collector records).
+ */
+interface DorJsonIssue {
+  readonly issue: string;
+  readonly overall: 'PASS' | 'FAIL';
+  readonly gates: readonly { name: string; status: string; reason?: string }[];
+}
+
+/** `dor --json`'s whole answer: every issue asked about, plus the roll-up. */
+interface DorJsonResult {
+  readonly verb: 'dor';
+  readonly overall: 'PASS' | 'FAIL';
+  readonly issues: readonly DorJsonIssue[];
+}
+
+/** One {@link DorJsonIssue} off a `DorResult` — the gate list, verbatim. */
+function dorJsonIssue(issue: string, result: DorResult): DorJsonIssue {
+  return {
+    issue,
+    overall: result.overall,
+    gates: result.gates.map((gate) => ({
+      name: gate.name,
+      status: gate.status,
+      ...(gate.reason !== undefined ? { reason: gate.reason } : {}),
+    })),
+  };
+}
+
 /**
  * The Verb contracts of the verbs whose RUNNERS live in this file (ADR-0051
  * decision 2: a contract lives beside its runner; the router only collects).
@@ -718,6 +787,7 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '       flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]',
       '  The --id form reads the issue from the IssueStore and takes NO positional.',
       'output: text (PASS/FAIL + gate lines), not JSON',
+      `  --json: the same result as JSON, in BOTH forms — ${DOR_JSON_SHAPE}`,
     ],
   },
   'files-drift': {
@@ -728,6 +798,7 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     usage: [
       'usage: flotilla-engine files-drift <issue-path> <sha-range>',
       'output: text, with a JSON block embedded at the end',
+      `  --json: ONLY that block — ${FILES_DRIFT_JSON_SHAPE}`,
     ],
   },
   'merge-order': {
@@ -823,6 +894,7 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       'usage: flotilla-engine render-verdict (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>) --anchor <sha>',
       '  The directory and the id are ALL named or ALL positional; --anchor is always named.',
       'output: text (the rendered markdown), not JSON',
+      '  --json: accepted and IGNORED — output class `product`, so the markdown IS the result.',
     ],
   },
   version: {
@@ -960,6 +1032,28 @@ function renderResult(issuePath: string, result: DorResult): string {
  * stdout and exit 0 — a help request is an answer, not an error, and answering
  * on stderr with exit 2 is how a `--help` ends up unreadable in a pipeline.
  */
+/**
+ * The `--json` clause of one verb's OWN contract section, as a suffix for that
+ * verb's line in the roster below — `'; --json: …'`, or `''` for a verb whose
+ * contract declares none.
+ *
+ * DERIVED, never transcribed (ADR-0051 decision 7, row V5). Row V5 gives eight
+ * prose/product verbs a JSON form, and each of them is described in exactly two
+ * places: its contract's `usage` (what `--help` and every refusal print) and its
+ * line in this roster (what a stranger reaching for a misinvocation reads
+ * first). A hand-copied second sentence is how those two come to describe
+ * different shapes — so the roster reads the contract's own line instead of
+ * restating it, and a later row that changes a shape changes one string.
+ *
+ * Row #758 replaces this roster with one rendered wholesale from the contracts;
+ * this helper is the same principle applied to the eight lines that needed it
+ * now, and it goes away with the rest of the hand-written roster.
+ */
+function jsonFormNote(contract: VerbContract): string {
+  const line = contract.usage.find((l) => l.trimStart().startsWith('--json'));
+  return line === undefined ? '' : `; ${line.trim()}`;
+}
+
 function usageLines(): string[] {
   return [
       'usage:',
@@ -968,9 +1062,9 @@ function usageLines(): string[] {
       // and nothing said which of the others didn't) — text/JSON/nothing, so a
       // caller knows how to consume a verb's stdout without probing it first.
       '  flotilla-engine <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL per issue), not JSON',
-      '  flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL + gate lines), not JSON',
-      '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints text, same as the file form',
-      '  flotilla-engine files-drift <issue-path> <sha-range>   # prints text, with a JSON block embedded at the end',
+      `  flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]   # prints text (PASS/FAIL + gate lines), not JSON${jsonFormNote(ROUTER_VERB_CONTRACTS.dor)}`,
+      '  flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]   # non-file: read from the IssueStore; prints text, same as the file form — and answers --json with the same envelope, holding one issue',
+      `  flotilla-engine files-drift <issue-path> <sha-range>   # prints text, with a JSON block embedded at the end${jsonFormNote(ROUTER_VERB_CONTRACTS['files-drift'])}`,
       '  flotilla-engine merge-order (--spine <path> | <wave-md-path>)   # prints JSON',
       '  flotilla-engine closed-by <closed-by-line>   # prints JSON',
       '  flotilla-engine detect-host <remote-url>   # prints JSON',
@@ -996,7 +1090,7 @@ function usageLines(): string[] {
       // op list; these two lines add the per-op detail an operator needs.
       '    spine human-gated <spine-path> [--workers <a,b>]   # ADR-0012: list the wave\'s human lane (JSON); empty is a legitimate answer, never a gate',
       '    spine check-awaiting-human <spine-path> [--workers <a,b>]   # fail-closed archive gate: exit != 0 iff a human-gated row still holds a live claim',
-      '  flotilla-engine config validate <path>   # prints text (a one-line ok/error message), not JSON',
+      `  flotilla-engine config validate <path>   # prints text (a one-line ok/error message), not JSON${jsonFormNote(CONFIG_CONTRACTS.validate)}`,
       '  flotilla-engine resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [--repo-root <dir>] [--marker <m>] [--force]   # prints JSON',
       '  flotilla-engine store-preflight [--config <path>]   # prints JSON',
       '  flotilla-engine credential-probe (--all | --var <VAR> [--var <VAR> ...])   # ADR-0029: value-free auth probe — never prints a secret; prints JSON',
@@ -1013,12 +1107,12 @@ function usageLines(): string[] {
       '  flotilla-engine route-verdict --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]   # prints JSON',
       '    --ruling "<the Operator\'s reason>" is the ONLY thing that admits an iteration ABOVE the re-dispatch cap — the Operator-ruled, Reviewer-only round. Without it an above-cap iteration stays refused; with it the result names the ruled cell and quotes the ruling. Accepted by route-tuple too, for the same round.',
       '  flotilla-engine route-outcome --outcome <o> --state <s>   # prints JSON',
-      '  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON',
-      '  flotilla-engine validate-verdict <file>   # prints text ("valid"), not JSON',
-      '  flotilla-engine write-report (--report-file <path> | <json-file>) --reports-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
-      '  flotilla-engine write-verdict (--verdict-file <path> | <json-file>) --verdicts-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON',
+      `  flotilla-engine validate-report <file>   # prints text ("valid"), not JSON${jsonFormNote(ROUTE_CONTRACTS['validate-report'])}`,
+      `  flotilla-engine validate-verdict <file>   # prints text ("valid"), not JSON${jsonFormNote(ROUTE_CONTRACTS['validate-verdict'])}`,
+      `  flotilla-engine write-report (--report-file <path> | <json-file>) --reports-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON${jsonFormNote(ROUTE_CONTRACTS['write-report'])}`,
+      `  flotilla-engine write-verdict (--verdict-file <path> | <json-file>) --verdicts-dir <dir> --id <id> --iter <n>   # prints text (the written file path), not JSON${jsonFormNote(ROUTE_CONTRACTS['write-verdict'])}`,
       '  flotilla-engine verdict-acked (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)   # prints JSON',
-      '  flotilla-engine render-verdict (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>) --anchor <sha>   # prints text (the rendered markdown), not JSON',
+      `  flotilla-engine render-verdict (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>) --anchor <sha>   # prints text (the rendered markdown), not JSON${jsonFormNote(ROUTER_VERB_CONTRACTS['render-verdict'])}`,
       '  flotilla-engine version [--expect <plugin-version>]   # ADR-0032: the engine version, and the lockstep comparison (alias: --version); prints JSON',
       '',
       `available subcommands: ${KNOWN_SUBCOMMANDS.join(', ')}`,
@@ -1099,8 +1193,19 @@ function runDor(paths: string[]): number {
   // `issuePath` it already receives. The `ValidateOptions.trackerUpdatedAt`
   // override exists for a caller that holds a better answer; the CLI does not,
   // so it passes none.
+  // ADR-0051 decision 7, row V5. Read through the SAME contract-aware scan the
+  // positionals came from, so a flag's VALUE can never be mistaken for the flag.
+  const wantJson = hasFlag(contract, paths, 'json');
+
   let anyFail = false;
   const outputs: string[] = [];
+  // The prose and the JSON are built SIDE BY SIDE rather than one being rendered
+  // from the other, and deliberately: the unreadable-file block below is
+  // hand-written prose that `renderResult` does NOT reproduce byte-for-byte (it
+  // spaces the reason with two spaces, this line with one), so rendering the
+  // prose through a shared path to gain the JSON would have silently changed the
+  // default output of the one case a caller reaches when a file is missing.
+  const records: DorJsonIssue[] = [];
 
   for (const arg of filePaths) {
     const issuePath = resolve(arg);
@@ -1110,17 +1215,30 @@ function runDor(paths: string[]): number {
       source = readFileSync(issuePath, 'utf-8');
     } catch (err) {
       anyFail = true;
-      outputs.push(
-        `FAIL  ${issuePath}\n  ✗ fail  read-issue-file — ${(err as Error).message}`,
-      );
+      const reason = (err as Error).message;
+      outputs.push(`FAIL  ${issuePath}\n  ✗ fail  read-issue-file — ${reason}`);
+      records.push({
+        issue: issuePath,
+        overall: 'FAIL',
+        gates: [{ name: 'read-issue-file', status: 'fail', reason }],
+      });
       continue;
     }
     const result = validateIssue({ repoRoot, issuePath, source, verify });
     if (result.overall === 'FAIL') anyFail = true;
     outputs.push(renderResult(issuePath, result));
+    records.push(dorJsonIssue(issuePath, result));
   }
 
-  process.stdout.write(outputs.join('\n\n') + '\n');
+  const overall: DorJsonResult['overall'] = anyFail ? 'FAIL' : 'PASS';
+  if (wantJson) {
+    const answer: DorJsonResult = { verb: 'dor', overall, issues: records };
+    printJson(answer);
+  } else {
+    process.stdout.write(outputs.join('\n\n') + '\n');
+  }
+  // The flag chose a RENDERING, never a verdict: this line is the one it was
+  // going to return either way.
   return anyFail ? 1 : 0;
 }
 
@@ -1237,7 +1355,20 @@ export async function runDorById(
     ...(verify !== undefined ? { verify } : {}),
     blockerResolutions,
   });
-  process.stdout.write(renderResult(id, result) + '\n');
+  // The SAME `{ verb, overall, issues: [...] }` envelope the file form prints,
+  // holding one record (ADR-0051 decision 7, row V5). One shape across both
+  // forms is the point: a Coordinator that reads `dor --json` should not have to
+  // know which form produced the answer before it can parse it.
+  if (hasFlag(contract, args, 'json')) {
+    const answer: DorJsonResult = {
+      verb: 'dor',
+      overall: result.overall,
+      issues: [dorJsonIssue(id, result)],
+    };
+    printJson(answer);
+  } else {
+    process.stdout.write(renderResult(id, result) + '\n');
+  }
   return result.overall === 'FAIL' ? 1 : 0;
 }
 
@@ -1395,20 +1526,34 @@ function renderDriftResult(result: DriftResult): string {
   }
 
   lines.push('', '--- JSON output ---');
-  lines.push(
-    JSON.stringify(
-      {
-        status: result.status,
-        driftedFiles: result.driftedFiles,
-        rationale: result.rationale,
-        projectScopes: result.projectScopes,
-      },
-      null,
-      2,
-    ),
-  );
+  lines.push(JSON.stringify(driftJsonBlock(result), null, 2));
 
   return lines.join('\n');
+}
+
+/**
+ * THE block `files-drift` has always embedded at the end of its prose — now with
+ * one owner, because `--json` prints the same object on its own (row V5's second
+ * acceptance criterion, and the reason this verb is an output CLASS rather than
+ * a special case: the machine-readable answer already existed, wrapped in human
+ * framing a parser had to cut off first).
+ *
+ * Extracted rather than duplicated: two literals of one shape is exactly how the
+ * `--json` answer and the embedded block would come to disagree about a field a
+ * later row adds to only one of them.
+ */
+function driftJsonBlock(result: DriftResult): {
+  status: DriftResult['status'];
+  driftedFiles: DriftResult['driftedFiles'];
+  rationale: DriftResult['rationale'];
+  projectScopes: DriftResult['projectScopes'];
+} {
+  return {
+    status: result.status,
+    driftedFiles: result.driftedFiles,
+    rationale: result.rationale,
+    projectScopes: result.projectScopes,
+  };
 }
 
 /**
@@ -1424,7 +1569,13 @@ function runFilesDrift(args: string[]): number {
   if (helpRequested(contract, args)) return printVerbHelp(contract);
   const refusal = refuseUndeclared(contract, args);
   if (refusal !== 0) return refusal;
-  if (args.length < 2) {
+  const wantJson = hasFlag(contract, args, 'json');
+  // Read through the contract rather than off `args[0]`/`args[1]`: with a
+  // router-global flag now MEANING something here, `files-drift --json <path>
+  // <range>` would otherwise have validated `"--json"` as the issue file. Same
+  // fix, same reason, as the `--config` splice `runDor` reads past above.
+  const positionals = positionalsOf(contract, args);
+  if (positionals.length < 2) {
     process.stderr.write(
       [
         'error: files-drift requires two arguments',
@@ -1435,7 +1586,7 @@ function runFilesDrift(args: string[]): number {
     return 2;
   }
 
-  const [issuePath, shaRange] = args;
+  const [issuePath, shaRange] = positionals;
   const resolvedPath = resolve(issuePath);
   const repoRoot = findRepoRoot(resolvedPath);
 
@@ -1456,7 +1607,12 @@ function runFilesDrift(args: string[]): number {
     repoRoot,
   });
 
-  process.stdout.write(renderDriftResult(result) + '\n');
+  // Class `prose` with an embedded block: `--json` prints ONLY the block, so a
+  // caller stops having to cut the human framing off the front of it. The exit
+  // code below is untouched either way — a cross-project drift still exits 2
+  // with its JSON.
+  if (wantJson) printJson(driftJsonBlock(result));
+  else process.stdout.write(renderDriftResult(result) + '\n');
 
   switch (result.status) {
     case 'clean':
@@ -2884,6 +3040,13 @@ function runRenderVerdict(args: string[]): number {
   if (helpRequested(contract, args)) return printVerbHelp(contract);
   const refusal = refuseUndeclared(contract, args);
   if (refusal !== 0) return refusal;
+  // `--json` is ACCEPTED AND IGNORED here, and that is the output class doing
+  // its job rather than an omission (ADR-0051 decision 7, row V5). This verb is
+  // class `product`: the markdown it prints is the artifact a PR body carries,
+  // not a report about one, so there is no second machine-readable rendering of
+  // it to offer. Wrapping the markdown in a JSON string would hand a caller the
+  // same bytes with an escaping problem added. Nothing below reads the flag —
+  // the router-global declaration is the whole of its acceptance.
 
   // Named twin (ADR-0051 decision 6), same as `verdict-acked` above. `--anchor`
   // is NOT part of the twin: it has no positional spelling on any verb, so it
