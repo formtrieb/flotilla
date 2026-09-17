@@ -561,6 +561,24 @@ export function runIssueStoreConformance(
       await expect(store.annotate('definitely#99', { risk: 'mechanical' })).rejects.toThrow();
     });
 
+    it('annotate() rejects a bodySections heading that collides with a managed Header-Block section', async () => {
+      // The store-parity gap this cell pins: `files`/`acceptanceCriteria`
+      // REPLACE their modeled section on annotate, but `bodySections` APPENDS —
+      // and an appended `## Files` (etc.) would either shadow, or be shadowed
+      // by, the modeled Header-Block section on read, the same forged-section
+      // hazard create()'s bare-bodySections guard above refuses. All three
+      // shipped stores must route a decorate-mode bodySections append through
+      // the SAME refusal, so this cell (not one store's own spec file) is
+      // where the parity is pinned.
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput());
+      for (const reserved of ['Files', 'Blocked by', 'Unblocks', 'Acceptance criteria']) {
+        await expect(
+          store.annotate(id, { bodySections: [{ heading: reserved, markdown: 'x' }] }),
+        ).rejects.toThrow(/managed section/i);
+      }
+    });
+
     // ── amend (ADR-0025 — the authored-content facet: title + free prose) ──
     //
     // The tracker-agnostic half of FOR-33. Read-back rides `readTriage()`'s
