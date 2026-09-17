@@ -7,12 +7,20 @@
  * mechanical helpers are shared.
  *
  * {@link describeConfigLoadError} (issue #505) joined them for the same reason:
- * every `loadWaveConfig` call site in the CLI edge (`resolveStore`,
- * `runStorePreflight`, `dor --config`, `worktree-cleanup --config`, …) used to
- * let a missing file's raw `ENOENT: no such file or directory, open '...'`
+ * a missing file's raw `ENOENT: no such file or directory, open '...'` used to
  * reach the operator unmodified — informative to Node, not to the caller who
- * forgot `--config`. One transform, shared, so the teaching text cannot drift
- * per call site the way four independent catch blocks eventually would.
+ * forgot `--config`.
+ *
+ * ITS OWN CALLERS (corrected 2026-09-16, issue #759 — this used to claim four
+ * call sites when it has one): the sole direct caller is `loadConfigOrTeach`
+ * in `cli-store.ts`, which every `resolveStore` and `runStorePreflight`
+ * invocation runs through — so those two ARE guarded by this transform.
+ * `dor --config` and `worktree-cleanup --config` (both in `cli.ts`) are NOT:
+ * each rewrites its own `loadWaveConfig` failure inline, in its own wording
+ * (`could not load --config <path>: <message>`), independently of this
+ * function and of each other. Unifying those two onto this helper — so a
+ * rename of the teaching text cannot drift per call site the way independent
+ * catch blocks do — is future work, not a change this doc correction makes.
  *
  * ADR-0051 added the {@link VerbContract} overload of `flag()`. The exact
  * `indexOf` form below is what an ALIAS cannot travel through: `--iteration`

@@ -4960,6 +4960,19 @@ describe('P7.1 router wiring — conflict-map', () => {
     main(['conflict-map']);
     expect(stderrBuf).not.toMatch(/unknown subcommand/);
   });
+
+  // issue #759: a nonexistent issue path used to reach the operator as
+  // `loadIssueGlobs`'s bare `readFileSync` ENOENT (unguarded in
+  // `runConflictMap`), falling through to `mainAsync`'s generic catch-all.
+  // Now it is caught at the source and prefixed, matching `files-drift`'s own
+  // "could not read issue file" wording — same failure, same name. The exit
+  // code is UNCHANGED: this call already resolved to 1 via the catch-all, and
+  // stays 1 (never 2) — unifying exit codes is out of scope (ADR-0035).
+  it('a nonexistent issue path gets a prefixed "could not read issue file" message, still exit 1', () => {
+    const code = main(['conflict-map', '/definitely/does-not-exist/issue.md']);
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/^error: could not read issue file: .*ENOENT/);
+  });
 });
 
 // ─── conflict-map --id: async store-form disambiguation (ADR-0014 parity) ───
