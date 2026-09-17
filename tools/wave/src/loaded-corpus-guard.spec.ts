@@ -201,31 +201,36 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 159_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RE-MEASURED, unchanged** — the same ratchet row as the
- * constant above (issue #858), following row 797 iteration 4's own disclosure:
- * "54 B headroom; the ceiling constant lives in the engine guard spec, outside
- * a prose-only row's globs, so the raise or ratchet must come from a later
- * row." Row 797 spent nearly all of the 563 B headroom the vocabulary wave's
- * row 824 opened, writing the states-table and store-preflight prose it was
- * asked to write; nothing after it in that wave grew this population further.
+ * Why this number: **RAISED by row #842**, in the diff that causes the growth,
+ * as the ratchet requires. Row #858 (the prior ratchet, below) left 54 B of
+ * headroom over its own anchor measure — 1,218,946 B against the 1,219,000 B
+ * ceiling — and its own comment named this row by number as the one meant to
+ * spend it, on `wave-start/reference/start-mechanics.md`. This row's step 7c
+ * reading clause adds 922 B to that file, landing the population at
+ * **1,219,868 B**, 868 B past that headroom. One full KB is the finest step
+ * the whole-KB-boundary rule admits, so the ceiling moves from 1,219,000 B to
+ * **1,220,000 B**.
  *
- * Measured **1,218,946 B** over 57 files at commit
- * `9e2e237b7759f68ce6a161164783c79476a1a508` (`git rev-parse HEAD` on this
- * row's branch tip, before this row's own edit — the same anchor the
- * vocabulary wave's last reading printed), rounded UP to the next full KB
- * (1 KB = 1000 B): **1,219,000 B** — the rule does not move this ceiling. A
- * ratchet row is obliged to check whether the rounding rule moves the number,
- * not to move it regardless; here it does not, and 54 B of headroom remains
- * for sibling row #842 to spend on `wave-start/reference/start-mechanics.md`.
+ * At anchor commit `3b4b8c4efc9ead706933c3cfd8ecc12578d1a3f9` (`git rev-parse
+ * HEAD` on this row's branch tip, before this row's own edit — unchanged from
+ * row #858's own anchor below, since nothing touched `.claude/skills/**` or
+ * `.claude/agents/` in the two commits between them) the population still
+ * measured **1,218,946 B**. This row's own edit is what moves it: measured
+ * **1,219,868 B** over the same 57 files with the step 7c clause applied,
+ * rounded UP to the next full KB (1 KB = 1000 B): **1,220,000 B**. (A
+ * self-referential SHA naming this row's own landing commit is not printable
+ * here — the hash covers the file's own bytes, so editing the comment to
+ * state it changes it; the anchor above is the closest fixed point that is
+ * actually verifiable.)
  *
- * Previously: this was the ADR-0051 wave's own raise — row 824, over the same
- * cause as the constant above, from 1,218,000 B (the ADR-0050 wave's closing
- * ratchet row, #815, measured at 1,217,102 B) to this 1,219,000 B, made
- * load-bearing by sibling row #762 landing +792 B on the same population
- * after row 824's own branch was cut. Lowering a ceiling is still free; this
- * row found nothing to lower.
+ * Previously: 1,219,000 B — row #858's ratchet, re-measured unchanged at
+ * 1,218,946 B at anchor `9e2e237b7759f68ce6a161164783c79476a1a508`, over the
+ * same cause as the constant above (the ADR-0051 wave's row 824 raise, made
+ * load-bearing by sibling row #762 — see that row's own history for the
+ * chain back to the ADR-0050 wave's 1,218,000 B). Lowering a ceiling is still
+ * free; the next ratchet row takes this back down to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_219_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_220_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

@@ -705,6 +705,21 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #   the scoped --branches escape hatch (cli.ts) — tears down ONLY this row's
 #   registered worktree; sibling rows' worktrees are untouched.
 
+#   Read the answer: this call's OWN exit code, never through a pipeline — a
+#   pipeline reports only the last command's status, so a non-zero
+#   worktree-cleanup hides behind a zero `tee` (the same rule the triage
+#   mechanics state for `triage-apply`).
+#     - Exit 1 with this worktree under `erroredStillListed` is the harness
+#       write-deny shape (survivors exclusively under denied paths,
+#       `manualRecovery` present) — wave-close phase 3 is the reading guide
+#       for that shape, not restated here. The registration still stands,
+#       and the iteration-2 checkout WILL hit it. Tearing a full-checkout
+#       worktree down under that deny is an Operator act with the sandbox
+#       off — never delegated to an agent (the capability ruling) — or the
+#       manual recovery the message names.
+#     - Dispatch iteration 2 only once `git worktree list` no longer shows
+#       the branch.
+
 #   then re-dispatch the same Worker at iteration 2 with changes-requested items
 #   appended. The iteration-2 brief's workspace setup is a TRACKING-FREE
 #   checkout of the now-free branch (workflow-driver.md `workerBrief()`,
