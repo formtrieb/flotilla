@@ -29,8 +29,7 @@
  * `*-cli.ts` module declares its own verbs' contracts; `cli.ts` declares the
  * verbs whose runners are in `cli.ts`; the router only COLLECTS them into the
  * aggregate `verbContracts()` reads. This module owns the TYPE and the
- * machinery, not the declarations — with the one stated exception at the bottom
- * of this file (see {@link DISPLACED_VERB_CONTRACTS}).
+ * machinery, not the declarations.
  *
  * ## Why exit 2 and not a warning
  *
@@ -92,23 +91,6 @@ export interface FlagContract {
   readonly valueType: FlagValueType;
   /** True when the verb refuses without it. Reporting only; runners still check. */
   readonly required?: boolean;
-  /**
-   * The spelling the RUNNER still reads, when it differs from the canonical one.
-   *
-   * Set on exactly two flags in the whole aggregate — `route-tuple`'s
-   * `--report-file` and `--verdict-file` — because ADR-0051 decision 5 renames
-   * them while `route-tuple.ts` is outside this row's declared Files globs and
-   * therefore cannot be rewritten here. {@link normalizeForRunner} performs the
-   * translation at the router, so the CALLER sees the canonical spelling (and
-   * the alias) exactly as decision 5 specifies and the unrewritten runner keeps
-   * reading the token it knows.
-   *
-   * It is a bridge with a deletion date, not a second naming axis: the follow-up
-   * row that rewrites those runners deletes both entries and this field with
-   * them. Nothing else may use it — the drift spec asserts the aggregate carries
-   * at most the two.
-   */
-  readonly runnerToken?: string;
 }
 
 /**
@@ -397,42 +379,6 @@ export function positionalsOf(
   return scanArgs(contract, args).positionals;
 }
 
-/**
- * Rewrite every accepted flag spelling in `args` to the one token the RUNNER
- * reads — the canonical spelling, or {@link FlagContract.runnerToken} where a
- * runner outside this row's declared Files globs has not been rewritten yet.
- *
- * Values are never touched: the walk steps over the value of every value-taking
- * flag, so `--text "--verdict"` stays prose.
- *
- * A no-op for every verb whose runner already reads canonical spellings, which
- * is all but one of them.
- */
-export function normalizeForRunner(
-  contract: VerbContract,
-  args: readonly string[],
-): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const token = args[i];
-    if (!token.startsWith('--')) {
-      out.push(token);
-      continue;
-    }
-    const f = flagContractForToken(contract, token);
-    if (f === undefined) {
-      out.push(token);
-      continue;
-    }
-    out.push(f.runnerToken ?? f.canonical);
-    if (f.value !== 'none' && i + 1 < args.length) {
-      out.push(args[i + 1]);
-      i++;
-    }
-  }
-  return out;
-}
-
 // ─── The refusal ─────────────────────────────────────────────────────────────
 
 /** Why a call was refused, before it is rendered. */
@@ -699,127 +645,3 @@ export function allValuesOf(
   }
   return out;
 }
-
-// ─── The three contracts whose runner is outside this row's declared Files ───
-
-/**
- * `compose-driver`, `route-tuple` and `close-row` — declared HERE, and only
- * here, because their runners live in `compose-driver.ts`, `route-tuple.ts` and
- * `close-row.ts`, none of which is a `*-cli.ts` module and none of which is
- * inside this row's declared Files globs.
- *
- * **This is a stated exception to ADR-0051 decision 2, not a reinterpretation of
- * it.** Every other verb's contract is declared beside its runner; these three
- * could not be without an out-of-glob touch, which is a scope decision for the
- * Coordinator rather than one a Worker makes on its own. The follow-up is
- * mechanical and one row wide: move each block into its own module's file, with
- * no change to its content, and delete this section.
- *
- * Nothing about the machinery depends on them being here — `cli.ts` collects
- * them exactly as it collects every other module's, and the drift spec maps
- * `route-tuple.ts` to the `route-tuple` verb regardless of where the contract
- * text sits.
- */
-export const DISPLACED_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
-  'compose-driver': {
-    verb: 'compose-driver',
-    flags: [
-      { canonical: '--spine', value: 'one', valueType: 'path', required: true },
-      { canonical: '--out', value: 'one', valueType: 'path', required: true },
-      { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
-      { canonical: '--config', value: 'one', valueType: 'path' },
-      { canonical: '--repo-root', value: 'one', valueType: 'dir' },
-      { canonical: '--reviewer-agent', value: 'one', valueType: 'text' },
-      { canonical: '--plugin-manifest', value: 'one', valueType: 'path' },
-      { canonical: '--coordinator-branch', value: 'one', valueType: 'branch' },
-      { canonical: '--deps-setup', value: 'one', valueType: 'text' },
-      { canonical: '--row-meta', value: 'one', valueType: 'json' },
-      { canonical: '--template', value: 'one', valueType: 'path' },
-      { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
-      { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
-    ],
-    positionals: { kind: 'fixed', count: 0 },
-    output: 'json',
-    usage: [
-      'usage: flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha>',
-      '         [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>]',
-      '         [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>]',
-      '         [--row-meta <json|path>] [--template <path>] [--reports-dir <dir>] [--verdicts-dir <dir>]',
-      'output: a single JSON receipt on stdout; the driver script is written to --out',
-    ],
-  },
-  'route-tuple': {
-    verb: 'route-tuple',
-    flags: [
-      { canonical: '--spine', value: 'one', valueType: 'path', required: true },
-      { canonical: '--id', value: 'one', valueType: 'id', required: true },
-      { canonical: '--iter', value: 'one', valueType: 'int', required: true },
-      // ADR-0051 decision 5: a file-path flag is `--<thing>-file` wherever any
-      // verb spells `--<thing>` for the value itself. route-verdict keeps
-      // `--verdict` for the ENUM, so the path form here is renamed and the old
-      // spelling survives as this verb's alias.
-      {
-        canonical: '--report-file',
-        aliases: ['--report'],
-        value: 'one',
-        valueType: 'path',
-        required: true,
-        runnerToken: '--report',
-      },
-      {
-        canonical: '--verdict-file',
-        aliases: ['--verdict'],
-        value: 'one',
-        valueType: 'path',
-        required: true,
-        runnerToken: '--verdict',
-      },
-      { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
-      { canonical: '--config', value: 'one', valueType: 'path' },
-      { canonical: '--title', value: 'one', valueType: 'text' },
-      { canonical: '--repo-root', value: 'one', valueType: 'dir' },
-      { canonical: '--remote', value: 'one', valueType: 'url' },
-      { canonical: '--base', value: 'one', valueType: 'branch' },
-      { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
-      { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
-      { canonical: '--ruling', value: 'one', valueType: 'text' },
-    ],
-    positionals: { kind: 'fixed', count: 0 },
-    output: 'json',
-    usage: [
-      'usage: flotilla-engine route-tuple --spine <spine> --id <id> --iter <n>',
-      '         --report-file <path> --verdict-file <path> --anchor <sha> --config <cfg>',
-      '         [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>]',
-      '         [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]',
-      '  --title renames the PR. Without it, a REUSE preserves the live PR title',
-      '  byte-identically (the Worker opened it and named its own change), exactly as',
-      '  the body preserves the live PR body; a CREATE falls back to the spine row',
-      '  title with bare tracker ids stripped. The result reports which of the three',
-      '  it used as `titleSource` (flag | live-pr | row).',
-      "  --ruling is the Operator's stated reason for a Reviewer-only round ABOVE the",
-      '  re-dispatch cap, and the only thing that admits an --iter above it.',
-      'output: a single JSON result on stdout',
-    ],
-  },
-  'close-row': {
-    verb: 'close-row',
-    flags: [
-      { canonical: '--spine', value: 'one', valueType: 'path', required: true },
-      { canonical: '--id', value: 'one', valueType: 'id', required: true },
-      { canonical: '--pr-url', value: 'one', valueType: 'url' },
-      { canonical: '--config', value: 'one', valueType: 'path' },
-      { canonical: '--repo-root', value: 'one', valueType: 'dir' },
-      { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
-    ],
-    positionals: { kind: 'fixed', count: 0 },
-    output: 'json',
-    usage: [
-      'usage: flotilla-engine close-row --spine <spine> --id <id> [--pr-url <url>]',
-      '         [--config <cfg>] [--repo-root <dir>] [--verdicts-dir <dir>]',
-      '  Lands ONE merged row: upserts its `## PR-Log` row and its `## Closed-by`',
-      '  line, derives the met-AC indexes from the MAX-iter valid verdict sidecar,',
-      "  then calls the store's close(id, prUrl, acked).",
-      'output: a single JSON result on stdout',
-    ],
-  },
-};

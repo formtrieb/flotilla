@@ -47,6 +47,12 @@ import { loadWaveConfig, type WaveConfig } from './wave-config';
 import { readSpine, HUMAN_GATED_WORKER } from './wave-md-rw';
 import { verifyCommands, type VerifyCommand } from './verify';
 import { resolveStore } from './cli-store';
+import {
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
 
 // ─── The shipped template ─────────────────────────────────────────────────────
 
@@ -793,6 +799,42 @@ export interface RowMeta {
   model?: string;
 }
 
+/**
+ * `compose-driver`'s Verb contract (ADR-0051 decision 2) — declared here,
+ * beside its runner, like every other verb's. It moved here from
+ * `verb-contract.ts`'s central map of the three verbs whose runner module is
+ * not a `*-cli.ts` module (ADR-0051 row 1's stated exception) in the
+ * mechanical follow-up row that deleted that exception; the content is
+ * unchanged.
+ */
+export const COMPOSE_DRIVER_CONTRACT: VerbContract = {
+  verb: 'compose-driver',
+  flags: [
+    { canonical: '--spine', value: 'one', valueType: 'path', required: true },
+    { canonical: '--out', value: 'one', valueType: 'path', required: true },
+    { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
+    { canonical: '--config', value: 'one', valueType: 'path' },
+    { canonical: '--repo-root', value: 'one', valueType: 'dir' },
+    { canonical: '--reviewer-agent', value: 'one', valueType: 'text' },
+    { canonical: '--plugin-manifest', value: 'one', valueType: 'path' },
+    { canonical: '--coordinator-branch', value: 'one', valueType: 'branch' },
+    { canonical: '--deps-setup', value: 'one', valueType: 'text' },
+    { canonical: '--row-meta', value: 'one', valueType: 'json' },
+    { canonical: '--template', value: 'one', valueType: 'path' },
+    { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
+    { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
+  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: [
+    'usage: flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha>',
+    '         [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>]',
+    '         [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>]',
+    '         [--row-meta <json|path>] [--template <path>] [--reports-dir <dir>] [--verdicts-dir <dir>]',
+    'output: a single JSON receipt on stdout; the driver script is written to --out',
+  ],
+};
+
 function usage(message: string): number {
   process.stderr.write(
     `error: ${message}\n` +
@@ -868,6 +910,10 @@ export async function runComposeDriver(
   args: string[],
   injected?: IssueStore,
 ): Promise<number> {
+  if (helpRequested(COMPOSE_DRIVER_CONTRACT, args)) return printVerbHelp(COMPOSE_DRIVER_CONTRACT);
+  const contractRefusal = refuseUndeclared(COMPOSE_DRIVER_CONTRACT, args);
+  if (contractRefusal !== 0) return contractRefusal;
+
   const spinePath = flag(args, '--spine');
   const outPath = flag(args, '--out');
   const anchor = flag(args, '--anchor');

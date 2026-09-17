@@ -150,6 +150,12 @@ import {
 } from './worker-report-schema';
 import { loadWaveConfig, type WaveConfig } from './wave-config';
 import type { PlanTableRow } from './wave-md-rw';
+import {
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
 
 // ─── The printed shape ───────────────────────────────────────────────────────
 
@@ -393,6 +399,69 @@ function fsSidecarWriter(dir: string, file: string, content: string): void {
 }
 
 // ─── Usage + small readers ───────────────────────────────────────────────────
+
+/**
+ * `route-tuple`'s Verb contract (ADR-0051 decision 2) — declared here, beside
+ * its runner, like every other verb's. It moved here from `verb-contract.ts`'s
+ * central map of the three verbs whose runner module is not a `*-cli.ts`
+ * module (ADR-0051 row 1's stated exception) in the mechanical follow-up row
+ * that deleted that exception AND the flag-contract bridge field decision 5's
+ * rename needed while this module was out of glob: this runner now reads
+ * `--report-file`/`--verdict-file` itself (via the contract form of
+ * {@link flag}, which resolves the alias too), so no bridge is needed. The
+ * content is otherwise unchanged.
+ */
+export const ROUTE_TUPLE_CONTRACT: VerbContract = {
+  verb: 'route-tuple',
+  flags: [
+    { canonical: '--spine', value: 'one', valueType: 'path', required: true },
+    { canonical: '--id', value: 'one', valueType: 'id', required: true },
+    { canonical: '--iter', value: 'one', valueType: 'int', required: true },
+    // ADR-0051 decision 5: a file-path flag is `--<thing>-file` wherever any
+    // verb spells `--<thing>` for the value itself. route-verdict keeps
+    // `--verdict` for the ENUM, so the path form here is renamed and the old
+    // spelling survives as this verb's alias.
+    {
+      canonical: '--report-file',
+      aliases: ['--report'],
+      value: 'one',
+      valueType: 'path',
+      required: true,
+    },
+    {
+      canonical: '--verdict-file',
+      aliases: ['--verdict'],
+      value: 'one',
+      valueType: 'path',
+      required: true,
+    },
+    { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
+    { canonical: '--config', value: 'one', valueType: 'path' },
+    { canonical: '--title', value: 'one', valueType: 'text' },
+    { canonical: '--repo-root', value: 'one', valueType: 'dir' },
+    { canonical: '--remote', value: 'one', valueType: 'url' },
+    { canonical: '--base', value: 'one', valueType: 'branch' },
+    { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
+    { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
+    { canonical: '--ruling', value: 'one', valueType: 'text' },
+  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: [
+    'usage: flotilla-engine route-tuple --spine <spine> --id <id> --iter <n>',
+    '         --report-file <path> --verdict-file <path> --anchor <sha> --config <cfg>',
+    '         [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>]',
+    '         [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]',
+    '  --title renames the PR. Without it, a REUSE preserves the live PR title',
+    '  byte-identically (the Worker opened it and named its own change), exactly as',
+    '  the body preserves the live PR body; a CREATE falls back to the spine row',
+    '  title with bare tracker ids stripped. The result reports which of the three',
+    '  it used as `titleSource` (flag | live-pr | row).',
+    "  --ruling is the Operator's stated reason for a Reviewer-only round ABOVE the",
+    '  re-dispatch cap, and the only thing that admits an --iter above it.',
+    'output: a single JSON result on stdout',
+  ],
+};
 
 function usage(message: string): number {
   process.stderr.write(
@@ -643,11 +712,15 @@ function loadSidecars(input: {
  * to log and continue past.
  */
 export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): Promise<number> {
+  if (helpRequested(ROUTE_TUPLE_CONTRACT, args)) return printVerbHelp(ROUTE_TUPLE_CONTRACT);
+  const contractRefusal = refuseUndeclared(ROUTE_TUPLE_CONTRACT, args);
+  if (contractRefusal !== 0) return contractRefusal;
+
   const spinePath = flag(args, '--spine');
   const id = flag(args, '--id');
   const iterRaw = flag(args, '--iter');
-  const reportPath = flag(args, '--report');
-  const verdictPath = flag(args, '--verdict');
+  const reportPath = flag(args, ROUTE_TUPLE_CONTRACT, 'report-file');
+  const verdictPath = flag(args, ROUTE_TUPLE_CONTRACT, 'verdict-file');
   const anchor = flag(args, '--anchor');
 
   if (!spinePath) return usage('route-tuple requires --spine <spine>');

@@ -1543,7 +1543,6 @@ export {
 // Additive (Minor, ADR-0035): every name below is new.
 export {
   ROUTER_GLOBAL_FLAGS,
-  DISPLACED_VERB_CONTRACTS,
   routerGlobalFlag,
   flagContractForToken,
   resolveFlagContract,
@@ -1555,7 +1554,6 @@ export {
   scanArgs,
   hasFlag,
   positionalsOf,
-  normalizeForRunner,
   checkUndeclared,
   renderRefusal,
   describeArity,
@@ -1601,6 +1599,13 @@ export { CONFLICT_MAP_CONTRACT } from './conflict-map-cli';
 export { CONFIG_CONTRACTS } from './config-cli';
 export { CREDENTIAL_PROBE_CONTRACT } from './credential-probe-cli';
 export { STORE_PREFLIGHT_CONTRACT } from './cli-store';
+// These three moved here from `verb-contract.ts`'s central map of the three
+// verbs whose runner module is not a `*-cli.ts` module (ADR-0051 row 1's
+// stated exception) in the mechanical follow-up row that deleted that
+// exception.
+export { COMPOSE_DRIVER_CONTRACT } from './compose-driver';
+export { ROUTE_TUPLE_CONTRACT } from './route-tuple';
+export { CLOSE_ROW_CONTRACT } from './close-row';
 
 // The repeatable-flag reader that joined `flag()` in cli-utils (ADR-0051): three
 // hand-rolled loops (issue-store's `flagAll`, conflict-map's
