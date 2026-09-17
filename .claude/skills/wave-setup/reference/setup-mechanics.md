@@ -55,6 +55,7 @@ Each check reports `pass` / `fail` / `not-applicable`; the report `ok` is `true`
 |---|---|---|---|
 | `tracker-host-integration` | n/a (GitHub is its own host) | **probed** — Linear↔GitHub integration installed? (n/a when `states.doneState` is set — the FOR-13 fallback) | n/a |
 | `state-catalog` | **probed** (issue #131) — GitHub's claims *are* labels, which is exactly why they need verifying: every label the wave reads or writes must exist in the repository — the eligibility set, `risk/*` (four), `worker/*` (four), the three `wave/*` claim rungs and `wave/needs-attention` (thirteen on a fresh repo with the defaults). A `fail` names each missing label in `detail`; re-run with `--create-missing-labels` (above) to create exactly that set through the engine's own credential, or, when that credential cannot create labels, create them once by hand (`gh label create <name>` per name, or the repository's label settings) and re-run | **probed** — the team catalog covers every state name the wave will `setState` to, read off the EFFECTIVE `states` map (this consumer's overrides merged over the defaults), never off the defaults alone: the three claim rungs (defaults `Todo`/`In Progress`/`In Review`), the unclaim target (default `Backlog`) and the unplanned target (default `Canceled`) — each of the five configurable, each verified under whatever name this consumer configured — plus `doneState` when set | n/a |
+| `goalBinding` (a FIELD beside `checks` — advisory, never moves `ok`) | `milestone` | **no default** — an undeclared `store.goal.container` reads `advisory`/`unbound` | `goal-file` |
 
 The report is JSON on stdout:
 
@@ -65,7 +66,8 @@ The report is JSON on stdout:
   "checks": [
     { "name": "tracker-host-integration", "status": "pass", "detail": "…" },
     { "name": "state-catalog", "status": "fail", "detail": "Configured workflow states missing from the team catalog: \"In Review\". Create them in Linear (or fix the states map) before running a wave." }
-  ]
+  ],
+  "goalBinding": { "status": "advisory", "failure": "unbound", "detail": "…" }
 }
 ```
 
@@ -261,14 +263,14 @@ This is not a second scaffold form — it produces the identical `./node_modules
 |---|---|---|
 | `queued` | `"Todo"` | `transition(id, 'queued')` — the soft claim a wave takes at plan time |
 | `inFlight` | `"In Progress"` | `transition(id, 'in-flight')` — a dispatched row |
-| `inReview` | `"In Review"` | `transition(id, 'in-review')` — a row whose PR is open |
+| `inReview` | `"In Review"` — the one a stock team must CREATE | `transition(id, 'in-review')` — a row whose PR is open |
 | `unclaimTarget` | `"Backlog"` | `unclaim()` — where a RELEASED claim is parked; also the cosmetic `applyTriage()` move that clears Linear's native `Triage` inbox column |
-| `unplanned` | `"Canceled"` | `closeUnplanned()` — Linear's native `not_planned` column, where an issue closed as not-planned lands |
+| `unplanned` | `"Canceled"` | `closeUnplanned()` — Linear's `Canceled` CATEGORY: the rung flotilla calls `unplanned` and GitHub closes as `not_planned` |
 | `doneState` | *none* — see below | the opt-in FOR-13 fallback: a forced transition once the wave has confirmed the PR merged |
 
-Every key is optional and declared only when this consumer's column is named something else — `{"states": {"unclaimTarget": "Todo"}}` is a complete, valid block (and is the live DSW21 shape: that team parks unclaimed work in `Todo`, not `Backlog`). The five with defaults are all verified against the live team catalog by `store-preflight`'s `state-catalog` check, each under the name this config gives it; `doneState` is checked only when set.
+Linear ships `Backlog > Todo > In Progress > Done > Canceled` — four of the five defaults are that set verbatim, and `In Review` is the Started-category exception marked above. Every key is optional and declared only when this consumer's column is named something else — `{"states": {"unclaimTarget": "Todo"}}` is a complete, valid block (and is the live DSW21 shape: that team parks unclaimed work in `Todo`, not `Backlog`). The five with defaults are all verified against the live team catalog by `store-preflight`'s `state-catalog` check, each under the name this config gives it; `doneState` is checked only when set.
 
-`unclaimTarget` and `unplanned` were honoured at runtime from the adapter's first day but stayed **out of the typed config and out of this table** until issue #755 — the factory passes `states` through whole and the adapter merges it over its defaults, so they worked by accident of that merge. Typing them changed no behaviour; it made a typo in either key a compile error for a TypeScript author annotating the block against `LinearStateMapConfig`, and gave the shape one documented place. That check lives only in the type. `config validate` still tolerates an unknown key under `states` — the block has no loader validator, by design — and nothing downstream catches one either: the `state-catalog` probe checks the EFFECTIVE map, where a misspelled key simply left the default in place, so it verifies `Backlog` and passes. Hand-written JSON gets no typo check from any tier; read the six keys off the table above rather than trusting a validator to bounce a misspelling. A config already setting either key keeps working byte-for-byte.
+`unclaimTarget` and `unplanned` were honoured at runtime from the adapter's first day but stayed **out of the typed config and out of this table** until issue #755 — the factory passes `states` through whole and the adapter merges it over its defaults, so they worked by accident of that merge. Typing them changed no behaviour; it made a typo in either key a compile error for a TypeScript author annotating the block against `LinearStateMapConfig`, and gave the shape one documented place. `config validate` WARNS on an unknown key under `states`, naming the six it declares, and still exits 0 — reported, never refused. The `state-catalog` probe stays blind to one: it checks the EFFECTIVE map, where a misspelled key simply left the default in place, so it verifies `Backlog` and passes. A config already setting either key keeps working byte-for-byte.
 
 #### `states.doneState` — the opt-in no-integration fallback (FOR-13)
 
@@ -487,7 +489,7 @@ This value is not consumer-specific — it is the SAME string for every Node con
 }
 ```
 
-Before writing this config, walk through the SKILL.md "Linear operational preconditions" checklist with the consumer (GitHub integration installed, `Fixes <TEAM-NN>` PR-body convention, PR-route discipline, `Backlog` vs `Todo` team convention) — none of it is engine-checkable, so `config validate` passing does not mean these hold.
+Before writing this config, walk through the SKILL.md "Linear operational preconditions" checklist with the consumer (GitHub integration installed, `Fixes <TEAM-NN>` PR-body convention, PR-route discipline, the `states.unclaimTarget`-vs-`states.queued` team convention) — none of it is engine-checkable, so `config validate` passing does not mean these hold.
 
 #### linear store, no Linear↔GitHub integration (the opt-in `doneState` fallback, FOR-13)
 

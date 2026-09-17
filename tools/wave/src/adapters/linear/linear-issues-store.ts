@@ -231,7 +231,12 @@ export interface LinearStateMap {
   inReview: string;
   /** Where `unclaim()` parks a released claim (`Backlog`). */
   unclaimTarget: string;
-  /** The native `not_planned` state `closeUnplanned()` moves to (`Canceled`). */
+  /**
+   * Where `closeUnplanned()` moves an issue (`Canceled`) — the state in
+   * Linear's `Canceled` status CATEGORY that flotilla's `unplanned` rung maps
+   * to, and that GitHub reaches with its own `not_planned` issue
+   * `state_reason`. `not_planned` is GitHub's token, never a Linear one.
+   */
   unplanned: string;
   /**
    * Optional opt-in fallback done-state name (FOR-13). NO default — undefined
@@ -945,7 +950,9 @@ export class LinearIssuesStore implements IssueStore {
 
   async closeUnplanned(id: string, comment: string): Promise<void> {
     // Apply the schema's unplanned triage LABEL + comment, then natively close by
-    // moving to the `Canceled` workflow STATE — Linear's `not_planned` (ADR-0020).
+    // moving to the `Canceled` workflow STATE — the Linear `Canceled`-category
+    // state flotilla's `unplanned` rung maps to, the same rung GitHub closes with
+    // its `not_planned` reason. That token is GitHub's, not Linear's (ADR-0020).
     await this.applyTriage(id, { state: this.triageSchema.unplannedState, comment });
     await this.api.setState(id, this.states.unplanned);
   }
