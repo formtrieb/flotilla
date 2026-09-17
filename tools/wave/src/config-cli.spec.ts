@@ -615,3 +615,137 @@ describe('config validate — the summary line reports what the loader actually 
     expect(stderrBuf).toBe('');
   });
 });
+
+// ─── row V5 — `config validate --json` (ADR-0051 decision 7) ────────────────
+//
+// The verb is output class `prose` and its result is DATA: ok-or-error, the
+// message, and — since issue #761 — the warnings the loader reads past. A
+// Coordinator or a pulse that needed the verdict used to parse the one prose
+// line and the `warning:` lines off two different streams; this is that result,
+// keyed.
+//
+// Contract from landing (ADR-0035): the shape below is pinned here, the default
+// output is pinned byte-identically beside it, and the exit code is asserted on
+// every case — `--json` chose a rendering, never a verdict.
+
+/** The parsed `config validate --json` answer. */
+interface ConfigJsonAnswer {
+  verb: string;
+  config: string;
+  ok: boolean;
+  message: string;
+  warnings: { block: string; path: string; kind: string; message: string }[];
+}
+
+describe('config validate --json (row V5)', () => {
+  it('prints { verb, config, ok, message, warnings } on stdout and NOTHING on stderr', () => {
+    const path = writeConfig({ store: { kind: 'markdown', repoRoot: '/x', slug: 's' } });
+    expect(runConfig(['validate', path, '--json'])).toBe(0);
+    const answer = JSON.parse(stdoutBuf) as ConfigJsonAnswer;
+    expect(answer).toEqual({
+      verb: 'config validate',
+      config: path,
+      ok: true,
+      message: `"${path}" is a valid wave config (store.kind=markdown)`,
+      warnings: [],
+    });
+    expect(stderrBuf).toBe('');
+  });
+
+  it("`message` is the prose line's own sentence — one summary, two renderings", () => {
+    const path = writeConfig({
+      store: { kind: 'linear', team: 'EX', goal: { container: 'initiative' } },
+      verify: { profiles: [{ name: 'x', appliesTo: ['**'], commands: [{ command: 'true' }] }] },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    const prose = stdoutBuf;
+    stdoutBuf = '';
+    stderrBuf = '';
+    expect(runConfig(['validate', path, '--json'])).toBe(0);
+    const answer = JSON.parse(stdoutBuf) as ConfigJsonAnswer;
+    expect(prose).toBe(`ok: ${answer.message}\n`);
+  });
+
+  it("carries the issue-#761 warnings INSIDE the answer, with the loader's four keys", () => {
+    const path = writeConfig({ store: { kind: 'github', eligibilty: ['x'] }, unknownTop: 1 });
+    expect(runConfig(['validate', path, '--json'])).toBe(0);
+    const answer = JSON.parse(stdoutBuf) as ConfigJsonAnswer;
+    expect(answer.ok).toBe(true);
+    expect(answer.warnings).toHaveLength(2);
+    for (const w of answer.warnings) {
+      expect(Object.keys(w).sort()).toEqual(['block', 'kind', 'message', 'path']);
+      expect(typeof w.message).toBe('string');
+    }
+    expect(answer.warnings.map((w) => w.kind)).toEqual(['unknown-key', 'unknown-key']);
+    expect(answer.warnings.map((w) => w.path)).toEqual(['unknownTop', 'store.eligibilty']);
+  });
+
+  it('renders the SAME findings the prose form puts on stderr — same count, same messages', () => {
+    const path = writeConfig({
+      store: { kind: 'github', eligibilty: ['x'] },
+      engine: { cli: './node_modules/.bin/flotilla-engine --config /abs/wave.config.json' },
+    });
+    expect(runConfig(['validate', path])).toBe(0);
+    const prose = warningLines();
+    expect(prose.length).toBeGreaterThan(1);
+    stdoutBuf = '';
+    stderrBuf = '';
+    expect(runConfig(['validate', path, '--json'])).toBe(0);
+    const answer = JSON.parse(stdoutBuf) as ConfigJsonAnswer;
+    expect(answer.warnings.map((w) => w.message)).toEqual(prose);
+    // …and stderr is now silent, because the findings rode INSIDE the answer.
+    expect(stderrBuf).toBe('');
+  });
+
+  it('an INVALID config answers ok:false with the loader\'s own message, still exit 1', () => {
+    const path = writeConfig({ store: { kind: 'nonsense' } });
+    // The prose form first, to capture the message the loader actually threw.
+    expect(runConfig(['validate', path])).toBe(1);
+    const proseError = stderrBuf.trim().slice('error: '.length);
+    stdoutBuf = '';
+    stderrBuf = '';
+
+    expect(runConfig(['validate', path, '--json'])).toBe(1);
+    const answer = JSON.parse(stdoutBuf) as ConfigJsonAnswer;
+    expect(answer.ok).toBe(false);
+    expect(answer.message).toBe(proseError);
+    // A refused load never reached the collector, so nothing was found.
+    expect(answer.warnings).toEqual([]);
+    expect(stderrBuf).toBe('');
+  });
+
+  it('NEGATIVE CONTROL: without --json both streams are byte-identical to today', () => {
+    const path = writeConfig({ store: { kind: 'github', eligibilty: ['x'] } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stdoutBuf).toBe(
+      `ok: "${path}" is a valid wave config (store.kind=github, 1 warning(s))\n`,
+    );
+    expect(stderrBuf.startsWith('warning: ')).toBe(true);
+    expect(stdoutBuf).not.toContain('"ok"');
+  });
+
+  it('`--json` AHEAD of the op is read as the op and exits 2 — the group grammar, pinned', () => {
+    // The positional-grammar decision this row took deliberately. `config` is
+    // one of four verb GROUPS, and on all four the op token comes first; making
+    // this ONE group accept the flag ahead of its op would buy a private
+    // grammar nobody could generalise from. The usage says so in words; this
+    // says so in behaviour.
+    const path = writeConfig({ store: { kind: 'github' } });
+    expect(runConfig(['--json', 'validate', path])).toBe(2);
+    expect(stdoutBuf).toBe('');
+    expect(stderrBuf).toMatch(/usage/);
+    // …and the very same call with the flag AFTER the op is accepted.
+    stdoutBuf = '';
+    stderrBuf = '';
+    expect(runConfig(['validate', path, '--json'])).toBe(0);
+  });
+
+  it('the usage names the JSON form beside the prose note, and states where the flag goes', () => {
+    expect(runConfig(['validate', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('output: text (a one-line ok/error message), not JSON');
+    expect(stdoutBuf).toContain(
+      '--json: the same verdict as JSON, warnings included — { verb, config, ok, message, warnings: [ { block, path, kind, message } ] }',
+    );
+    expect(stdoutBuf).toContain('--json FOLLOWS the op');
+  });
+});

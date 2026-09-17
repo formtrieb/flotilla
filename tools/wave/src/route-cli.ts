@@ -31,9 +31,13 @@
  *   0 — valid ("valid" on stdout)
  *   1 — invalid (the errors[] on stderr)
  *   2 — usage / unreadable-or-unparseable file
+ *   `--json` prints `{ verb, file, valid, errors }` on stdout instead of the
+ *   prose, on both the 0 and the 1 outcome, and moves neither code.
  *
  * write-report / write-verdict exit codes (mirror validate-*):
- *   0 — written (absolute path of the written file on stdout). A `notice:` line
+ *   0 — written (absolute path of the written file on stdout; `--json` prints
+ *       `{ verb, path, id, iter }` there instead, and the notice:/warning:
+ *       findings below stay on stderr either way). A `notice:` line
  *       on stderr means a decorated `report.issue` was NORMALIZED on the way in,
  *       or that a FINISHING report reached the write with no usable `prUrl`
  *       (issue #556 — a finding about the report, never a refusal of it);
@@ -84,11 +88,77 @@ import type { Risk } from './header-parser';
 import {
   hasFlag,
   helpRequested,
+  positionalsOf,
   printVerbHelp,
   refuseUndeclared,
   resolveTwin,
   type VerbContract,
 } from './verb-contract';
+
+// ─── `--json` on this module's four prose verbs (ADR-0051 decision 7, V5) ────
+//
+// **ONE table, two readers**, the discipline `RECEIPT_SHAPES` established in
+// spine-cli.ts: each shape below is rendered into its verb's own `usage` (what
+// `--help` and every refusal print, and what cli.ts's roster reads back through
+// `jsonFormNote`) AND is the shape the runner builds. An advertised shape and an
+// emitted shape maintained separately are two vocabularies that can disagree,
+// and the emitted one is the half a caller cannot see until after the call.
+//
+// `--json` REPLACES the prose answer; it never rides beside it. Without the flag
+// all four print today's bytes exactly, and the flag moves no exit code: an
+// invalid payload still exits 1 — with its errors in the JSON rather than as the
+// `invalid:` block on stderr.
+//
+// What deliberately does NOT move onto stdout with the flag: the `notice:` and
+// `warning:` lines the two write verbs emit. Those are findings ABOUT the record
+// and its directory, not the result of the call, they are already on stderr, and
+// a caller reading stdout as JSON keeps reading them exactly where it did.
+
+/** The shape each prose verb here answers `--json` with. ONE owner per verb. */
+const JSON_SHAPES: Readonly<Record<string, string>> = {
+  'validate-report': '{ verb, file, valid, errors }',
+  'validate-verdict': '{ verb, file, valid, errors }',
+  // The three facts a caller needs in order to find the record again: WHERE it
+  // landed, and the (id, iter) pair the sidecar reader resolves it by. `path` is
+  // the very string the prose form prints, so the two renderings never name two
+  // different files.
+  'write-report': '{ verb, path, id, iter }',
+  'write-verdict': '{ verb, path, id, iter }',
+};
+
+/** The `usage` line each of those four carries, rendered from {@link JSON_SHAPES}. */
+function jsonUsageLine(verb: keyof typeof JSON_SHAPES & string, note: string): string {
+  return `  --json: ${note} — ${JSON_SHAPES[verb]}`;
+}
+
+/**
+ * What `validate-report` / `validate-verdict` answer `--json` with.
+ *
+ * `errors` is present on BOTH outcomes — `[]` when the payload validated. An
+ * empty list is not a claim the receipt cannot support (the way a `"model":
+ * null` would be, one module over): it says zero errors, which is exactly what
+ * was found. A caller therefore reads `.errors` without first branching on
+ * `.valid`.
+ */
+interface ValidateJsonResult {
+  readonly verb: string;
+  readonly file: string;
+  readonly valid: boolean;
+  readonly errors: readonly string[];
+}
+
+/**
+ * What `write-report` / `write-verdict` answer `--json` with — printed only
+ * AFTER the bytes are on disk, which is what makes "never changes an exit code"
+ * structural rather than asserted: every refusal above the write returns before
+ * this shape is built, so a failed run prints no receipt at all.
+ */
+interface WriteSidecarJsonResult {
+  readonly verb: string;
+  readonly path: string;
+  readonly id: string;
+  readonly iter: number;
+}
 
 /**
  * The six verbs this module runs, each declaring its own contract beside its own
@@ -156,6 +226,7 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     usage: [
       'usage: flotilla-engine validate-report <file>',
       'output: text ("valid"), not JSON; the errors[] on stderr when invalid',
+      jsonUsageLine('validate-report', 'the same answer as JSON on stdout, valid or not'),
     ],
   },
   'validate-verdict': {
@@ -166,6 +237,7 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     usage: [
       'usage: flotilla-engine validate-verdict <file>',
       'output: text ("valid"), not JSON; the errors[] on stderr when invalid',
+      jsonUsageLine('validate-verdict', 'the same answer as JSON on stdout, valid or not'),
     ],
   },
   'write-report': {
@@ -184,6 +256,8 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  --dir is accepted as an alias of --reports-dir. The payload file is named EITHER',
       '  by --report-file or as the leading positional — never both (a mixed call is a usage error).',
       'output: text (the written file path), not JSON',
+      jsonUsageLine('write-report', 'the same path, with the id and iteration it was filed under'),
+      '  The notice:/warning: findings stay on stderr under --json — they are about the record, not the result.',
     ],
   },
   'write-verdict': {
@@ -202,6 +276,8 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  --dir is accepted as an alias of --verdicts-dir. The payload file is named EITHER',
       '  by --verdict-file or as the leading positional — never both (a mixed call is a usage error).',
       'output: text (the written file path), not JSON',
+      jsonUsageLine('write-verdict', 'the same path, with the id and iteration it was filed under'),
+      '  The notice:/warning: findings stay on stderr under --json — they are about the record, not the result.',
     ],
   },
 };
@@ -311,7 +387,11 @@ function runValidateFile(
   const contract = ROUTE_CONTRACTS[label];
   const gated = gate(contract, args);
   if (gated !== null) return gated;
-  const file = args[0];
+  const wantJson = hasFlag(contract, args, 'json');
+  // Read through the contract rather than off `args[0]`: now that a
+  // router-global flag MEANS something here, `validate-report --json <file>`
+  // would otherwise have tried to open `"--json"` as the payload.
+  const file = positionalsOf(contract, args)[0];
   if (file === undefined) {
     process.stderr.write(`error: ${label} requires a <file>\n`);
     return 2;
@@ -320,10 +400,27 @@ function runValidateFile(
   try {
     value = JSON.parse(readFileSync(file, 'utf-8'));
   } catch (err) {
+    // An unreadable file is a USAGE error (exit 2), not a validation answer, so
+    // it stays prose on stderr under --json too: there is no `valid` verdict to
+    // report about a payload that was never read. Same rule the silent-write
+    // receipts follow — a refusal prints no receipt.
     process.stderr.write(`error: cannot read/parse ${file}: ${(err as Error).message}\n`);
     return 2;
   }
   const result = validate(value);
+  if (wantJson) {
+    const answer: ValidateJsonResult = {
+      verb: label,
+      file,
+      valid: result.valid,
+      errors: result.errors,
+    };
+    printJson(answer);
+    // The same line the prose form returns: the flag chose a rendering, not a
+    // verdict — an invalid payload still exits 1, now with its errors ON STDOUT
+    // inside the answer rather than as the `invalid:` block on stderr.
+    return result.valid ? 0 : 1;
+  }
   if (result.valid) {
     process.stdout.write('valid\n');
     return 0;
@@ -535,7 +632,16 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     process.stderr.write(`error: ${spec.label}: cannot write ${target}: ${(err as Error).message}\n`);
     return 2;
   }
-  process.stdout.write(target + '\n');
+  // ADR-0051 decision 7, row V5: the written path, the id and the iteration —
+  // built only HERE, after the bytes have landed, so a refused write can never
+  // print one. The prose form's single line is the same `target` string, so the
+  // two renderings never name two different files.
+  if (hasFlag(contract, args, 'json')) {
+    const answer: WriteSidecarJsonResult = { verb: spec.label, path: target, id, iter };
+    printJson(answer);
+  } else {
+    process.stdout.write(target + '\n');
+  }
   const finding = spec.postWriteNotice?.(payload);
   if (finding) {
     process.stderr.write(`notice: ${spec.label}: ${finding}\n`);

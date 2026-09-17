@@ -7656,3 +7656,323 @@ describe('host-pr status usage names the title/body read (row 777)', () => {
     expect(statusSection).toMatch(/never an empty string/i);
   });
 });
+
+// ─── row V5 — `--json` on this file's prose/product verbs (ADR-0051 dec. 7) ──
+//
+// Three verbs of the eight this row covers live in cli.ts: `dor` (class `prose`,
+// in BOTH its forms), `files-drift` (class `prose`, with a JSON block it has
+// always embedded) and `render-verdict` (class `product`). The block below pins,
+// for each of them:
+//
+//   1. the `--json` SHAPE — contract from landing (ADR-0035), so a Coordinator
+//      or a pulse can key on it without probing;
+//   2. the DEFAULT output, byte-identically — the flag adds a rendering, it
+//      never edits the one that was already there;
+//   3. that `--json` moves NO exit code — the negative control the row's body
+//      names by hand: a failing gate still exits 1, WITH its JSON.
+//
+// The classes come from row V1's Verb contract and are read there rather than
+// re-decided here: `files-drift` is `prose` with the note that `--json` prints
+// only the embedded block, and `render-verdict` is `product`, which is why its
+// pin below asserts the flag changes nothing at all.
+
+/** The parsed `dor --json` answer, for the assertions below. */
+interface DorJsonAnswer {
+  verb: string;
+  overall: string;
+  issues: {
+    issue: string;
+    overall: string;
+    gates: { name: string; status: string; reason?: string }[];
+  }[];
+}
+
+describe('dor --json (row V5) — the readiness gate answers as JSON in both forms', () => {
+  it('the FILE form prints { verb, overall, issues[] } and nothing else', () => {
+    const code = main(['dor', '--json', issueFile]);
+    expect(code).toBe(0);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    expect(answer.verb).toBe('dor');
+    expect(answer.overall).toBe('PASS');
+    expect(answer.issues).toHaveLength(1);
+    expect(answer.issues[0].issue).toBe(issueFile);
+    expect(answer.issues[0].overall).toBe('PASS');
+    expect(stderrBuf).toBe('');
+  });
+
+  it('carries every gate with its own name, status and reason — the PROSE gate list, verbatim', () => {
+    // Derived from the prose rather than transcribed: the two renderings are
+    // two views of ONE result, and a spec that hard-codes the gate roster is a
+    // spec that goes stale the day a gate is added.
+    main(['dor', issueFile]);
+    const proseGates = stdoutBuf
+      .split('\n')
+      .slice(1)
+      .filter((l) => l.startsWith('  '))
+      .map((l) => l.trim().split(/\s+/)[2]);
+    stdoutBuf = '';
+
+    main(['dor', '--json', issueFile]);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    expect(answer.issues[0].gates.map((g) => g.name)).toEqual(proseGates);
+    for (const gate of answer.issues[0].gates) {
+      expect(['pass', 'warn', 'fail', 'deferred']).toContain(gate.status);
+    }
+  });
+
+  it('keeps the deferred/pass distinction the gate carries — never flattened to a boolean', () => {
+    main(['dor', '--json', issueFile]);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    const statuses = new Set(answer.issues[0].gates.map((g) => g.status));
+    // This fixture reaches both: the working-tree gates defer without a repo
+    // checkout, and the self-content gates pass. A shape that said only
+    // "ok: true/false" could not tell an operator which of the two it was.
+    expect(statuses.has('deferred')).toBe(true);
+    expect(statuses.has('pass')).toBe(true);
+  });
+
+  it('omits `reason` on a gate that gave none — a key that carried nothing did not carry anything', () => {
+    main(['dor', '--json', issueFile]);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    const withReason = answer.issues[0].gates.filter((g) => 'reason' in g);
+    const without = answer.issues[0].gates.filter((g) => !('reason' in g));
+    expect(withReason.length).toBeGreaterThan(0);
+    expect(without.length).toBeGreaterThan(0);
+    for (const g of withReason) expect(typeof g.reason).toBe('string');
+  });
+
+  it('answers ONE envelope for several issue paths, with the roll-up over all of them', () => {
+    const missing = join(root, 'no-such-file.md');
+    const code = main(['dor', '--json', issueFile, missing]);
+    // A gate FAILED, so the code is 1 — the flag chose a rendering, not a verdict.
+    expect(code).toBe(1);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    expect(answer.overall).toBe('FAIL');
+    expect(answer.issues.map((i) => i.issue)).toEqual([issueFile, missing]);
+    expect(answer.issues[0].overall).toBe('PASS');
+    // The unreadable file is reported as its own gate, not as a missing record.
+    expect(answer.issues[1].gates).toEqual([
+      { name: 'read-issue-file', status: 'fail', reason: expect.stringContaining('ENOENT') },
+    ]);
+  });
+
+  it('NEGATIVE CONTROL: a failing gate still exits non-zero WITH its JSON', () => {
+    const code = main(['dor', '--json', join(root, 'no-such-file.md')]);
+    expect(code).toBe(1);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    expect(answer.overall).toBe('FAIL');
+  });
+
+  it("NEGATIVE CONTROL: without --json, dor prints TODAY'S prose, byte for byte", () => {
+    main(['dor', issueFile]);
+    const before = stdoutBuf;
+    expect(before).toMatch(/^PASS {2}/);
+    expect(before.endsWith('\n')).toBe(true);
+    expect(before).not.toContain('{');
+    stdoutBuf = '';
+    // …and the SAME call again is the same bytes, so the pin above is a pin.
+    main(['dor', issueFile]);
+    expect(stdoutBuf).toBe(before);
+  });
+
+  it('the --id form answers the SAME envelope, holding one issue', async () => {
+    const store = tmpStore();
+    const id = await store.create(DOR_INPUT);
+
+    const code = await runDorById(['--id', id, '--json'], store);
+    expect(code).toBe(0);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    expect(answer.verb).toBe('dor');
+    expect(answer.overall).toBe('PASS');
+    expect(answer.issues).toHaveLength(1);
+    // The subject is the ROW ID here and the path on the file form — exactly
+    // what each form's prose header carries in its second column.
+    expect(answer.issues[0].issue).toBe(id);
+    expect(answer.issues[0].gates.length).toBeGreaterThan(0);
+  });
+
+  it('the --id form: a content-gate FAIL still exits 1, with the failing gate named in the JSON', async () => {
+    const store = fakeStore(async (id) => ({
+      id,
+      risk: 'mechanical',
+      worker: 'background-sonnet', // retired Ur value — not in the default set
+      files: ['src/foo.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+      status: 'available',
+    }));
+
+    const code = await runDorById(['--id', '42', '--json'], store);
+    expect(code).toBe(1);
+    const answer = JSON.parse(stdoutBuf) as DorJsonAnswer;
+    expect(answer.overall).toBe('FAIL');
+    expect(answer.issues[0].gates.some((g) => g.status === 'fail')).toBe(true);
+  });
+
+  it("NEGATIVE CONTROL: the --id form without --json prints TODAY'S prose", async () => {
+    const store = tmpStore();
+    const id = await store.create(DOR_INPUT);
+    await runDorById(['--id', id], store);
+    expect(stdoutBuf).toMatch(new RegExp(`^PASS\\s+${id}`, 'm'));
+    expect(stdoutBuf).not.toContain('"verb"');
+  });
+
+  it('the --id form still refuses a stray positional under --json — the flag is not a way past the arity', async () => {
+    const store = tmpStore();
+    const id = await store.create(DOR_INPUT);
+    const code = await runDorById(['--id', id, '--json', 'stray.md'], store);
+    expect(code).toBe(2);
+    expect(stderrBuf).toContain('unexpected argument "stray.md"');
+  });
+
+  it("dor's own usage names the JSON form beside the prose note", () => {
+    expect(main(['dor', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('output: text (PASS/FAIL + gate lines), not JSON');
+    expect(stdoutBuf).toContain('--json: the same result as JSON, in BOTH forms');
+    expect(stdoutBuf).toContain(
+      '{ verb, overall, issues: [ { issue, overall, gates: [ { name, status, reason? } ] } ] }',
+    );
+  });
+});
+
+describe('files-drift --json (row V5) — the embedded block, and only the block', () => {
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReturnValue('some/file.ts\n');
+  });
+
+  it('prints ONLY the JSON block — no status line, no rationale prose, no framing', () => {
+    const code = main(['files-drift', issueFile, 'abc..def', '--json']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutBuf) as { status: string; driftedFiles: string[] };
+    expect(parsed.status).toBe('clean');
+    expect(parsed.driftedFiles).toEqual([]);
+    expect(stdoutBuf).not.toContain('--- JSON output ---');
+    expect(stdoutBuf).not.toContain('✓ clean');
+    expect(stderrBuf).toBe('');
+  });
+
+  it('is byte-identical to the block the prose form embeds — one owner, two renderings', () => {
+    main(['files-drift', issueFile, 'abc..def']);
+    const embedded = stdoutBuf.split('--- JSON output ---\n')[1];
+    stdoutBuf = '';
+    main(['files-drift', issueFile, 'abc..def', '--json']);
+    // The prose form's trailing newline is the one the renderer appends; the
+    // --json form's is printJson's. Compare the JSON text itself.
+    expect(stdoutBuf.trim()).toBe(embedded.trim());
+  });
+
+  it('reads the two positionals through the CONTRACT, so --json may lead', () => {
+    // Before this row `args[0]` was the issue path outright, so a leading
+    // `--json` would have been validated as an issue FILE.
+    const code = main(['files-drift', '--json', issueFile, 'abc..def']);
+    expect(code).toBe(0);
+    expect((JSON.parse(stdoutBuf) as { status: string }).status).toBe('clean');
+  });
+
+  it('NEGATIVE CONTROL: a cross-project drift still exits 2, with its JSON', () => {
+    vi.mocked(execFileSync).mockReturnValue('some/file.ts\nother-project/unrelated.ts\n');
+    const code = main(['files-drift', issueFile, 'abc..def', '--json']);
+    expect(code).toBe(2);
+    expect((JSON.parse(stdoutBuf) as { status: string }).status).toBe('cross-project-drift');
+  });
+
+  it("NEGATIVE CONTROL: without --json the prose form prints TODAY'S bytes — framing included", () => {
+    main(['files-drift', issueFile, 'abc..def']);
+    expect(stdoutBuf).toMatch(/^✓ clean\n/);
+    expect(stdoutBuf).toContain('\n--- JSON output ---\n');
+    expect(stdoutBuf.endsWith('\n')).toBe(true);
+  });
+
+  it("files-drift's own usage names the JSON form beside the prose note", () => {
+    expect(main(['files-drift', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('output: text, with a JSON block embedded at the end');
+    expect(stdoutBuf).toContain(
+      '--json: ONLY that block — { status, driftedFiles, rationale, projectScopes }',
+    );
+  });
+});
+
+describe('render-verdict --json (row V5) — class `product`, so the flag is inert', () => {
+  let renderDir: string;
+  let renderVerdictsDir: string;
+
+  beforeEach(() => {
+    renderDir = mkdtempSync(join(tmpdir(), 'render-verdict-json-'));
+    renderVerdictsDir = join(renderDir, 'verdicts');
+  });
+
+  afterEach(() => {
+    rmSync(renderDir, { recursive: true, force: true });
+  });
+
+  function writeVerdictSidecar(): void {
+    const payloadFile = join(renderDir, 'v1.json');
+    writeFileSync(payloadFile, JSON.stringify(verdictAckedPayload()), 'utf-8');
+    expect(
+      main([
+        'write-verdict', payloadFile, '--dir', renderVerdictsDir, '--id', 'FOR-16', '--iter', '1',
+      ]),
+    ).toBe(0);
+    stdoutBuf = '';
+  }
+
+  it('accepts --json and IGNORES it: the markdown is byte-identical either way', () => {
+    writeVerdictSidecar();
+    expect(main(['render-verdict', renderVerdictsDir, 'FOR-16', '--anchor', RENDER_ANCHOR])).toBe(0);
+    const plain = stdoutBuf;
+    stdoutBuf = '';
+    expect(
+      main(['render-verdict', renderVerdictsDir, 'FOR-16', '--anchor', RENDER_ANCHOR, '--json']),
+    ).toBe(0);
+    expect(stdoutBuf).toBe(plain);
+    expect(stdoutBuf).toMatch(/^## Reviewer verdict/);
+    // Not a JSON document, and deliberately not one: the markdown IS the result.
+    expect(() => JSON.parse(stdoutBuf) as unknown).toThrow();
+  });
+
+  it('a MISS still exits 1 under --json, and still says so on stderr', () => {
+    writeVerdictSidecar();
+    const code = main([
+      'render-verdict', renderVerdictsDir, 'FOR-999', '--anchor', RENDER_ANCHOR, '--json',
+    ]);
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/no verdict sidecar found/);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it("render-verdict's own usage states the class, so nobody files the inertness as a gap", () => {
+    expect(main(['render-verdict', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('--json: accepted and IGNORED');
+    expect(stdoutBuf).toContain('product');
+  });
+});
+
+describe('the router roster names each JSON form beside the prose note (row V5)', () => {
+  // Rendered from each verb's OWN contract (`jsonFormNote`), never transcribed —
+  // so this pin fails if the roster and the contract ever describe two shapes.
+  it('names it on every one of the eight verbs this row covers', () => {
+    main([]); // zero args → printUsage()
+    const lineFor = (needle: string) => stderrBuf.split('\n').find((l) => l.includes(needle))!;
+
+    expect(lineFor('flotilla-engine dor [--config')).toContain('--json: the same result as JSON');
+    expect(lineFor('flotilla-engine dor --id')).toContain('--json');
+    expect(lineFor('flotilla-engine files-drift')).toContain('--json: ONLY that block');
+    expect(lineFor('flotilla-engine config validate')).toContain('--json: the same verdict as JSON');
+    expect(lineFor('flotilla-engine validate-report')).toContain('{ verb, file, valid, errors }');
+    expect(lineFor('flotilla-engine validate-verdict')).toContain('{ verb, file, valid, errors }');
+    expect(lineFor('flotilla-engine write-report')).toContain('{ verb, path, id, iter }');
+    expect(lineFor('flotilla-engine write-verdict')).toContain('{ verb, path, id, iter }');
+    expect(lineFor('flotilla-engine render-verdict')).toContain('accepted and IGNORED');
+  });
+
+  it("each roster note is the verb's own contract line, not a second copy of it", () => {
+    main([]);
+    const rosterLine = stderrBuf
+      .split('\n')
+      .find((l) => l.includes('flotilla-engine files-drift'))!;
+    stderrBuf = '';
+    expect(main(['files-drift', '--help'])).toBe(0);
+    const contractLine = stdoutBuf.split('\n').find((l) => l.trimStart().startsWith('--json'))!;
+    expect(rosterLine).toContain(contractLine.trim());
+  });
+});

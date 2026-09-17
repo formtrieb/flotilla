@@ -1033,3 +1033,284 @@ describe('write verbs → resume seam (AC-3)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ─── row V5 — `--json` on this module's four prose verbs (ADR-0051 dec. 7) ───
+//
+// Four of the eight verbs this row covers live here, all output class `prose`
+// and all with a result that is DATA: the two schema validators answer `valid`
+// or the schema errors, and the two sidecar writers answer with the path they
+// wrote, the id and the iteration. Before this row a caller that wanted the
+// errors had to read them off STDERR as prose, and a caller that wanted the id
+// it had just passed had to keep it.
+//
+// Each shape is contract from landing (ADR-0035): pinned below, with the default
+// output pinned byte-identically beside it and the exit code asserted on every
+// case — the flag chose a rendering, never a verdict.
+
+/** Capture stdout AND stderr for one call, so "what moved where" is assertable. */
+function captureBoth(): { out: () => string; err: () => string; restore: () => void } {
+  const outChunks: string[] = [];
+  const errChunks: string[] = [];
+  const o = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+    outChunks.push(typeof c === 'string' ? c : c.toString());
+    return true;
+  });
+  const e = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+    errChunks.push(typeof c === 'string' ? c : c.toString());
+    return true;
+  });
+  return {
+    out: () => outChunks.join(''),
+    err: () => errChunks.join(''),
+    restore: () => {
+      o.mockRestore();
+      e.mockRestore();
+    },
+  };
+}
+
+describe('validate-report / validate-verdict --json (row V5)', () => {
+  const validReport = {
+    outcome: 'done', issue: '1-x', branch: 'w/1-x', commitShas: ['abc1234'],
+    filesChanged: { new: 1, modified: 0, renamed: 0 },
+    tests: '20/20 green', lint: 'clean', judgmentCalls: [], reviewerFocusItems: [],
+  };
+
+  it('a VALID payload answers { verb, file, valid: true, errors: [] }, exit 0', () => {
+    const dir = tmp();
+    const f = join(dir, 'report.json');
+    writeFileSync(f, JSON.stringify(validReport));
+    const c = captureBoth();
+    const code = runValidateReport([f, '--json']);
+    c.restore();
+    rmSync(dir, { recursive: true, force: true });
+    expect(code).toBe(0);
+    expect(JSON.parse(c.out())).toEqual({
+      verb: 'validate-report',
+      file: f,
+      valid: true,
+      errors: [],
+    });
+    // The prose `valid` line is REPLACED, not printed beside the JSON.
+    expect(c.out()).not.toContain('valid\n');
+    expect(c.err()).toBe('');
+  });
+
+  it('an INVALID payload carries the schema errors ON STDOUT and still exits 1', () => {
+    const dir = tmp();
+    const f = join(dir, 'bad.json');
+    writeFileSync(f, JSON.stringify({ ...validReport, outcome: 'shipped' }));
+
+    // The prose form first, so the expectation is DERIVED from the validator
+    // rather than transcribed from it.
+    const prose = captureBoth();
+    expect(runValidateReport([f])).toBe(1);
+    prose.restore();
+    const proseErrors = prose
+      .err()
+      .split('\n')
+      .filter((l) => l.startsWith('  - '))
+      .map((l) => l.slice('  - '.length));
+    expect(proseErrors.length).toBeGreaterThan(0);
+
+    const c = captureBoth();
+    const code = runValidateReport([f, '--json']);
+    c.restore();
+    rmSync(dir, { recursive: true, force: true });
+    expect(code).toBe(1); // the flag moved no exit code
+    const answer = JSON.parse(c.out()) as { valid: boolean; errors: string[] };
+    expect(answer.valid).toBe(false);
+    expect(answer.errors).toEqual(proseErrors);
+    // …and the `invalid:` block no longer duplicates them on stderr.
+    expect(c.err()).toBe('');
+  });
+
+  it('validate-verdict answers the same shape under its own verb name', () => {
+    const dir = tmp();
+    const f = join(dir, 'verdict.json');
+    writeFileSync(f, JSON.stringify(writtenVerdict));
+    const c = captureBoth();
+    const code = runValidateVerdict([f, '--json']);
+    c.restore();
+    rmSync(dir, { recursive: true, force: true });
+    expect(code).toBe(0);
+    expect(JSON.parse(c.out())).toEqual({
+      verb: 'validate-verdict',
+      file: f,
+      valid: true,
+      errors: [],
+    });
+  });
+
+  it('reads the <file> through the CONTRACT, so --json may lead', () => {
+    // Before this row the payload was `args[0]` outright, so a leading `--json`
+    // would have been opened as the file.
+    const dir = tmp();
+    const f = join(dir, 'report.json');
+    writeFileSync(f, JSON.stringify(validReport));
+    const c = captureBoth();
+    const code = runValidateReport(['--json', f]);
+    c.restore();
+    rmSync(dir, { recursive: true, force: true });
+    expect(code).toBe(0);
+    expect((JSON.parse(c.out()) as { valid: boolean }).valid).toBe(true);
+  });
+
+  it('an UNREADABLE file stays a usage error — exit 2, prose on stderr, no answer', () => {
+    // Not a validation outcome: nothing was read, so there is no `valid` verdict
+    // to report about it. Same rule the silent-write receipts follow — a refusal
+    // prints no receipt.
+    const c = captureBoth();
+    const code = runValidateReport(['/nonexistent/nope.json', '--json']);
+    c.restore();
+    expect(code).toBe(2);
+    expect(c.out()).toBe('');
+    expect(c.err()).toMatch(/cannot read\/parse/);
+  });
+
+  it("NEGATIVE CONTROL: without --json both verbs print TODAY'S bytes", () => {
+    const dir = tmp();
+    const ok = join(dir, 'report.json');
+    const bad = join(dir, 'bad.json');
+    writeFileSync(ok, JSON.stringify(validReport));
+    writeFileSync(bad, JSON.stringify({ ...validReport, outcome: 'shipped' }));
+
+    const good = captureBoth();
+    expect(runValidateReport([ok])).toBe(0);
+    good.restore();
+    expect(good.out()).toBe('valid\n');
+    expect(good.err()).toBe('');
+
+    const worse = captureBoth();
+    expect(runValidateReport([bad])).toBe(1);
+    worse.restore();
+    expect(worse.out()).toBe('');
+    expect(worse.err().startsWith('invalid:\n  - ')).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('write-report / write-verdict --json (row V5)', () => {
+  it('answers { verb, path, id, iter } — the written path, and the pair it was filed under', () => {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'payload.json');
+    writeFileSync(f, JSON.stringify(writtenReport));
+    const c = captureBoth();
+    const code = runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1', '--json']);
+    c.restore();
+    expect(code).toBe(0);
+    expect(JSON.parse(c.out())).toEqual({
+      verb: 'write-report',
+      path: join(reportsDir, 'FOR-6-1.md'),
+      id: 'FOR-6',
+      iter: 1,
+    });
+    // `iter` is a NUMBER, not the string the caller typed — a consumer that
+    // compares iterations should not have to coerce it first.
+    expect(typeof (JSON.parse(c.out()) as { iter: unknown }).iter).toBe('number');
+    // …and the record really is on disk under that name.
+    expect(readSidecars(reportsDir, join(dir, 'verdicts'), fsReader).reportFor('FOR-6')?.iter).toBe(1);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('`path` is the very string the prose form prints — one file, two renderings', () => {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'payload.json');
+    writeFileSync(f, JSON.stringify(writtenReport));
+
+    const prose = captureBoth();
+    expect(runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1'])).toBe(0);
+    prose.restore();
+
+    const c = captureBoth();
+    expect(runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1', '--json'])).toBe(0);
+    c.restore();
+    expect((JSON.parse(c.out()) as { path: string }).path).toBe(prose.out().trim());
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('write-verdict answers the same shape under its own verb name', () => {
+    const dir = tmp();
+    const verdictsDir = join(dir, 'verdicts');
+    const f = join(dir, 'verdict.json');
+    writeFileSync(f, JSON.stringify(writtenVerdict));
+    const c = captureBoth();
+    const code = runWriteVerdict([f, '--dir', verdictsDir, '--id', 'FOR-6', '--iter', '2', '--json']);
+    c.restore();
+    expect(code).toBe(0);
+    expect(JSON.parse(c.out())).toEqual({
+      verb: 'write-verdict',
+      path: join(verdictsDir, 'FOR-6-2.md'),
+      id: 'FOR-6',
+      iter: 2,
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('NEGATIVE CONTROL: an invalid payload still exits 1 and prints NO answer — nothing written', () => {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'bad.json');
+    writeFileSync(f, JSON.stringify({ ...writtenReport, outcome: 'shipped' }));
+    const c = captureBoth();
+    const code = runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1', '--json']);
+    c.restore();
+    expect(code).toBe(1);
+    // The receipt is built AFTER the bytes land, so a refused write can never
+    // print one — structural, not asserted by the runner.
+    expect(c.out()).toBe('');
+    expect(readSidecars(reportsDir, join(dir, 'verdicts'), fsReader).reportFor('FOR-6')).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('the notice:/warning: findings STAY on stderr under --json — they are about the record, not the result', () => {
+    // A finishing report with no usable prUrl (issue #556): the sidecar lands,
+    // the notice fires. Under --json stdout must be exactly one JSON document —
+    // a caller piping it into a parser cannot also be handed prose.
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'payload.json');
+    const { prUrl: _dropped, ...noPrUrl } = writtenReport;
+    writeFileSync(f, JSON.stringify(noPrUrl));
+    const c = captureBoth();
+    const code = runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1', '--json']);
+    c.restore();
+    expect(code).toBe(0);
+    expect(() => JSON.parse(c.out()) as unknown).not.toThrow();
+    expect(c.err()).toMatch(/^notice: write-report: /);
+    expect(c.out()).not.toContain('notice:');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("NEGATIVE CONTROL: without --json the write verbs print TODAY'S single path line", () => {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const f = join(dir, 'payload.json');
+    writeFileSync(f, JSON.stringify(writtenReport));
+    const c = captureBoth();
+    expect(runWriteReport([f, '--dir', reportsDir, '--id', 'FOR-6', '--iter', '1'])).toBe(0);
+    c.restore();
+    expect(c.out()).toBe(join(reportsDir, 'FOR-6-1.md') + '\n');
+    expect(c.err()).toBe('');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("each verb's own usage names the JSON form beside the prose note", () => {
+    for (const [run, verb, shape] of [
+      [runValidateReport, 'validate-report', '{ verb, file, valid, errors }'],
+      [runValidateVerdict, 'validate-verdict', '{ verb, file, valid, errors }'],
+      [runWriteReport, 'write-report', '{ verb, path, id, iter }'],
+      [runWriteVerdict, 'write-verdict', '{ verb, path, id, iter }'],
+    ] as [(a: string[]) => number, string, string][]) {
+      const c = captureBoth();
+      expect(run(['--help'])).toBe(0);
+      c.restore();
+      expect(c.out()).toContain(`flotilla-engine ${verb}`);
+      expect(c.out()).toContain('not JSON');
+      expect(c.out()).toContain(`--json: `);
+      expect(c.out()).toContain(shape);
+    }
+  });
+});

@@ -19,6 +19,13 @@
  * above {@link collectConfigWarnings}.
  *
  * Exit codes: 0 valid (warnings included) · 1 invalid/unreadable · 2 usage.
+ *
+ * `--json` (ADR-0051 decision 7, row V5) prints `{ verb, config, ok, message,
+ * warnings }` on stdout INSTEAD of the prose line, with the warnings above
+ * carried inside it rather than as `warning:` lines on stderr. Without the flag
+ * every byte of both streams is what it has always been, and the flag moves no
+ * exit code: an invalid config still exits 1, with `ok: false` and the loader's
+ * own message. The flag follows the op (`config validate <path> --json`).
  */
 
 import { loadWaveConfig, type WaveConfig } from './wave-config';
@@ -28,13 +35,59 @@ import type { VerifyConfig } from './verify';
 // here is not the loader validating the role that ADR-0044 decision 4 keeps
 // store-side.
 import { parseGoalContainer } from './adapters/issue-store';
+import { printJson } from './cli-utils';
 import {
+  hasFlag,
   helpRequested,
   positionalsOf,
   printVerbHelp,
   refuseUndeclared,
   type VerbContract,
 } from './verb-contract';
+
+/**
+ * The shape `config validate --json` prints (ADR-0051 decision 7, row V5).
+ *
+ * ONE constant, two readers — the verb's own `usage` below renders from it (so
+ * `--help`, every refusal, and cli.ts's roster line all advertise it) and
+ * {@link runConfig} builds exactly it. A shape advertised separately from the
+ * shape emitted is two vocabularies that can disagree, and the emitted one is
+ * the half a caller cannot see until it has already made the call.
+ */
+const VALIDATE_JSON_SHAPE = '{ verb, config, ok, message, warnings: [ { block, path, kind, message } ] }';
+
+/**
+ * What `config validate --json` answers with.
+ *
+ * `ok` is the verdict the exit code already carries; `message` is the one
+ * sentence the prose line carries MINUS its `ok: `/`error: ` prefix — the same
+ * string, so the two renderings never say two different things; `warnings` is
+ * the issue-#761 finding list VERBATIM, each record with the four keys
+ * {@link ConfigWarning} declares, because a `--json` caller that had to re-parse
+ * `warning:` lines off stderr would be exactly where this row found it.
+ *
+ * `warnings` is `[]` rather than absent on the error outcome, and that is a
+ * statement about the run, not a claim about the config: a refused load never
+ * reaches the warning collector, so nothing was found — which is what an empty
+ * list says. A stable shape is what lets a caller read `.warnings` without first
+ * branching on `.ok`.
+ *
+ * `config` is the path AS THE CALLER SPELLED IT, matching the prose line, and is
+ * deliberately not named `path`: `warnings[].path` is a dotted CONFIG KEY, and
+ * two keys named `path` meaning two different things in one object is the kind
+ * of surface a reader has to test rather than read.
+ *
+ * Module-local: a receipt is a CLI projection, and a new exported symbol here
+ * would have to reach `index.ts` — outside this row's declared Files globs, the
+ * same constraint the warning collector above records.
+ */
+interface ConfigValidateJsonResult {
+  readonly verb: string;
+  readonly config: string;
+  readonly ok: boolean;
+  readonly message: string;
+  readonly warnings: readonly ConfigWarning[];
+}
 
 /**
  * `config validate`'s Verb contract (ADR-0051 decision 2), declared beside its
@@ -54,6 +107,11 @@ export const CONFIG_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     usage: [
       'usage: config validate <path>',
       'output: text (a one-line ok/error message), not JSON',
+      `  --json: the same verdict as JSON, warnings included — ${VALIDATE_JSON_SHAPE}`,
+      '  --json FOLLOWS the op: `config validate <path> --json`. Ahead of it,',
+      '  `config --json validate <path>` reads --json as the op and exits 2 — the',
+      '  group grammar is `config <op> …`, and it is the same on spine, issue-store',
+      '  and host-pr.',
     ],
   },
 };
@@ -497,20 +555,63 @@ export function runConfig(args: string[]): number {
     printUsage();
     return 2;
   }
+  // ADR-0051 decision 7, row V5. Read through the SAME contract-aware scan the
+  // path came from. Note the position: `--json` is read AFTER the op token was
+  // matched above, which is the whole of the positional-grammar decision this
+  // verb's usage states — `config --json validate <path>` never reaches here,
+  // because `--json` was taken as the op and refused. Accepting it ahead of the
+  // op on THIS group alone would make `config --json validate` work while
+  // `spine --json read` (same shape, same router, different module) still
+  // exited 2, and one group's private grammar is a worse surface than one rule
+  // that holds across all four.
+  const wantJson = hasFlag(contract, opArgs, 'json');
   try {
     const config = loadWaveConfig(path);
+    const warnings = collectConfigWarnings(config);
+    // ONE message, two renderings: the prose line prefixes it with `ok: `, the
+    // JSON carries it under `message`. Building it once is what keeps the two
+    // from drifting into two different summaries of one config.
+    const message = `"${path}" is a valid wave config (${summarySegments(config, warnings).join(', ')})`;
+    if (wantJson) {
+      // Under --json the findings ride INSIDE the answer rather than as
+      // `warning:` lines on stderr — a caller that asked for one machine-readable
+      // result should not have to re-parse prose off a second stream to get the
+      // half of it that says what is wrong.
+      const answer: ConfigValidateJsonResult = {
+        verb: contract.verb,
+        config: path,
+        ok: true,
+        message,
+        warnings,
+      };
+      printJson(answer);
+      return 0;
+    }
     // The non-fatal findings, on stderr, BEFORE the ok line on stdout: a human
     // reads them above the verdict, and a caller that pipes stdout keeps reading
     // exactly the one line it always read. Never an exit code — see the section
     // banner above for why every one of these is a warning.
-    const warnings = collectConfigWarnings(config);
     for (const warning of warnings) process.stderr.write(`warning: ${warning.message}\n`);
-    process.stdout.write(
-      `ok: "${path}" is a valid wave config (${summarySegments(config, warnings).join(', ')})\n`,
-    );
+    process.stdout.write(`ok: ${message}\n`);
     return 0;
   } catch (err) {
-    process.stderr.write(`error: ${(err as Error).message}\n`);
+    const message = (err as Error).message;
+    if (wantJson) {
+      // A refused load never reached the warning collector, so `warnings` is
+      // empty — a statement about this run, not a claim that the config has
+      // none. The exit code is the one the prose form returns: --json chose a
+      // rendering, never a verdict.
+      const answer: ConfigValidateJsonResult = {
+        verb: contract.verb,
+        config: path,
+        ok: false,
+        message,
+        warnings: [],
+      };
+      printJson(answer);
+      return 1;
+    }
+    process.stderr.write(`error: ${message}\n`);
     return 1;
   }
 }
