@@ -9,6 +9,66 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.7.0] — 2026-09-17
+
+Every engine verb now declares its own contract ([ADR-0051](docs/adr/0051-a-verb-declares-its-own-contract-one-canonical-spelling-per-flag-silent-aliases-and-a-refusal-for-everything-undeclared.md)): one canonical spelling per flag, every old spelling a silent alias, exit 2 for anything undeclared, `--help` on every verb, `--json` receipts on the silent write ops. The text a Coordinator loads is a pinned, guarded measure ([ADR-0050](docs/adr/0050-the-loaded-corpus-is-a-pinned-measure-and-a-rules-enforcement-tier-decides-its-reading-class.md)): −42 KB standing load, −70 KB corpus, 171 KB moved into `evidence/` files no dispatch loads. Three waves, 27 rows. Nothing removed.
+
+### Upgrading
+
+1. **Plugin/marketplace:** update the plugin to 2.7.0. Marketplace listing unchanged.
+2. **Engine pin:** `@formtrieb/flotilla-engine` 2.6.0 → 2.7.0. Vendored form: re-copy `tools/wave/`.
+3. **Config keys:** none added or changed.
+4. **Hook re-copy:** none — `hooks/` is unchanged. The setup scaffold now writes **both** guard hooks into one `hooks.PreToolUse` block; a consumer set up before 2.7.0 carries only the Echo-Guard and re-runs that step to add the Convention-12 guard (#762).
+5. **Allowlist parity:** none.
+6. **Behaviour heads-ups** (same input, different outcome):
+   - An undeclared flag exits 2 on every verb, naming the nearest declared spelling. Every spelling that worked in 2.6.0 still works (#821).
+   - An unknown op with an unreadable config exits 2, not 1 (#758).
+   - `--help` is answered by every verb and op — stdout, exit 0. The zero-arg router prints the named verb's usage instead of the whole roster; two roster placeholders changed (`--body <text>`, `--expect <version>`) (#758).
+   - `--json` goes **after** the op on every group (`config validate <path> --json`); before it, it is read as the op and exits 2. The six prose verbs (`dor`, `config validate`, `validate-report`, `validate-verdict`, `write-report`, `write-verdict`) answer `--json` as JSON; their `notice:`/`warning:` findings stay on stderr (#825).
+   - Nine `issue-store` and seven `spine` write ops answer `--json` with a receipt of what was sent or written. Without `--json` they print nothing, as before (#822, #823).
+   - `config validate` prints one `warning:` line per unknown key or non-object value on stderr; the `ok:` line grows conditional segments; `store-preflight`'s JSON gains a `goalBinding` key (#761).
+   - `conflict-map` (path form) and `config validate` answer a missing file with `merge-order`'s prefixed one-line shape (#759).
+   - The markdown store refuses a reserved heading (`## Files`, `## Acceptance criteria`) in `bodySections`, like the other stores (#760).
+   - `GhStateReason` carries `duplicate`: the GitHub adapter reads a duplicate-closed issue as that instead of `null`, and `read-closing` derives the same class as `not_planned`. The write path still sends only `completed` / `not_planned` (#851).
+7. **Implementer heads-ups** (additive; nothing renamed or removed): the Verb-contract surface is root-exported — the types (`VerbContract`, `FlagContract`, `PositionalArity`, `OutputClass`, …), the readers (`scanArgs`, `checkUndeclared`, `refuseUndeclared`, `printVerbHelp`, …), `verbContracts()`, `contractForArgv()`, every module's `*_CONTRACT(S)` constant, and `flagAll` (#821, #844). Optional members: `StorePreflightReport.goalBinding?` (#761), `PositionalArity.fixed.min?` (#758), `GhStateReason` gains `duplicate`, and `runSpine` takes an optional third parameter — a store factory defaulting to `createSpineStore` (#851).
+
+### Added
+
+- ADR-0051 — a verb declares its own contract; amendment to ADR-0035; glossary group **Engine surface** (#763, PR #826).
+- Verb contracts on all 68 verbs and ops, beside their runners, with a drift spec that proves every routed subcommand has exactly one (#821, #844).
+- Receipts under `--json` for the 16 silent write ops (#822, #823).
+- `--help` everywhere; the router roster rendered from the contracts; a guard that every contract section names every parser flag — it found three real omissions (#758).
+- The six prose verbs under `--json` (#825).
+- Skills, agents and the shipped driver invoke every verb by its canonical spelling, pinned by a spec (#824).
+- ADR-0050 implemented: `**Enforced by:**` line on every convention file; the standing load and the loaded corpus as two pinned byte ceilings in `loaded-corpus-guard.spec.ts`, ratcheted to the landed measure at each wave's close (#806, #815, #858).
+- Eleven `evidence/` files: derivations and incident histories out of the files a dispatch loads (Conventions 4, 8, 12, 13; wave-close phase 3; wave-start driver and start mechanics). wave-close's phase files are step load (PRs #831–#838).
+- `wave-setup` scaffolds both guard hooks (#762).
+- `config validate` warns on what it used to read past; `store-preflight` exercises the goal binding (#761).
+- wave-start step 7c says how to read the scoped sweep's answer: exit 1 plus `erroredStillListed` is a denied removal, not an empty selection; teardown under the write-deny is an Operator act (#842).
+
+### Changed
+
+- Standing load 200,915 → 158,998 B; loaded corpus 1,289,381 → 1,219,868 B (measured by the guard on the release commit's parent).
+- Exit codes and output channels — see Upgrading 6.
+
+### Fixed
+
+- The still-open close line tells the reader what to do instead of naming a maintainer-only file (#801).
+- `issue-store annotate` usage states replace-vs-append per key (#760).
+- Linear wording: `not_planned` is GitHub's, `In Review` is not a stock Linear status, `Backlog`/`Todo` are configured names (#797).
+- ADR-0051's table: 45 group ops not 39, `host-pr` was never an unknown-flag refuser, `--json` position settled, usage-rendering status stated (#845).
+- Convention 12's promoted prose paid back (#809).
+- Missing-file messages unified; `describeConfigLoadError` docblock names its caller (#759).
+- Six residues: the `goal-assign` receipt's `container` key is pinned; the spine receipts are proven not a re-parse through an injectable store; two stale "silently tolerated" sentences (`wave-config.ts`, ADR-0020) now say `config validate` warns; the Convention 8 evidence file cites the current heading; the bare-id strip no longer leaves a dangling `'s` in a PR title (#851).
+
+### Not yet proven
+
+- The Catalog (contracts as JSON) is decided, not built; no out-of-tree reader of the exported contracts yet.
+- Each verb's own usage section is hand-written and guarded, not rendered (#856); the two spine gates answer `--json` with their exit code only (#859).
+- The ceilings sit at 2 B (standing load) and 132 B (corpus) headroom by design — the next prose row pays in its own diff.
+- Unchanged since 2.6.0: Bitbucket `host-pr status` title/body (#816), driver-template parse gate (#819), `close-row` on a tracked `.flotilla/`, the Linear retry window, the readiness gate's fail arm, `capability-gated` end-to-end, the `sandbox` block's reach, the Reviewer-only cell above cap, the inherited-WIP retry, the clean-room probe, `files-drift` (#707), headless.
+- Filed bare or ready from the closes: #828, #830, #840, #856, #859.
+
 ## [2.6.0] — 2026-09-16
 
 **The release that gives every fact one owner.** One wave since 2.5.0 — seven rows, five

@@ -57,7 +57,9 @@ before doing anything else.** Do not tag first and discover this afterwards.
    below before opening it.
 
 3. **Update `CHANGELOG.md`** in that same PR. The entry describes what a consumer gets,
-   including what is not yet proven — see the existing entry for the tone. This step also
+   including what is not yet proven — kept short and scannable: a few sentences up top,
+   then one line per change with its issue number (the 2.7.0 entry is the model; the
+   2.5.0 and 2.6.0 entries are the length to avoid). This step also
    produces the entry's `### Upgrading` section, the per-release consumer checklist — see
    [The Upgrading checklist](#the-upgrading-checklist) below for the template and where
    each item's answer comes from. If an `## [Unreleased]` section sits at the top (design
