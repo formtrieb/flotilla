@@ -1233,7 +1233,6 @@ const SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT = [
 const VERB_CONTRACT_FAMILY_ADDED_AT_ROOT = [
   // The machinery (verb-contract.ts)
   'ROUTER_GLOBAL_FLAGS',
-  'DISPLACED_VERB_CONTRACTS',
   'routerGlobalFlag',
   'flagContractForToken',
   'resolveFlagContract',
@@ -1245,7 +1244,6 @@ const VERB_CONTRACT_FAMILY_ADDED_AT_ROOT = [
   'scanArgs',
   'hasFlag',
   'positionalsOf',
-  'normalizeForRunner',
   'checkUndeclared',
   'renderRefusal',
   'describeArity',
@@ -1269,6 +1267,9 @@ const VERB_CONTRACT_FAMILY_ADDED_AT_ROOT = [
   'CONFIG_CONTRACTS',
   'CREDENTIAL_PROBE_CONTRACT',
   'STORE_PREFLIGHT_CONTRACT',
+  'COMPOSE_DRIVER_CONTRACT',
+  'ROUTE_TUPLE_CONTRACT',
+  'CLOSE_ROW_CONTRACT',
   // The repeatable-flag reader that joined `flag()` in cli-utils
   'flagAll',
 ].sort();

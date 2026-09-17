@@ -555,10 +555,8 @@ import {
 import { findScratchRoot } from './find-repo-root';
 import { flag, printJson } from './cli-utils';
 import {
-  DISPLACED_VERB_CONTRACTS,
   hasFlag,
   helpRequested,
-  normalizeForRunner,
   positionalsOf,
   printVerbHelp,
   refuseUndeclared,
@@ -581,9 +579,9 @@ import {
   engineVersionExitCode,
 } from './cli-store';
 import { runResume, RESUME_CONTRACT } from './resume-cli';
-import { runComposeDriver } from './compose-driver';
-import { runRouteTuple } from './route-tuple';
-import { runCloseRow } from './close-row';
+import { runComposeDriver, COMPOSE_DRIVER_CONTRACT } from './compose-driver';
+import { runRouteTuple, ROUTE_TUPLE_CONTRACT } from './route-tuple';
+import { runCloseRow, CLOSE_ROW_CONTRACT } from './close-row';
 import type { IssueStore } from './adapters/issue-store';
 import type { IssueRef } from './contract';
 import { readSidecars, type SidecarReader } from './sidecar';
@@ -933,10 +931,11 @@ const VERB_GROUP_CONTRACTS: Readonly<Record<string, Readonly<Record<string, Verb
 };
 
 /**
- * The top-level verbs whose contracts are declared in their OWN `*-cli` module
- * (or, for the three whose runner module is outside this row's declared Files
- * globs, in `verb-contract.ts` — see {@link DISPLACED_VERB_CONTRACTS}). The
- * router only collects.
+ * The top-level verbs whose contracts are declared in their OWN module — every
+ * runner's contract lives beside it (ADR-0051 decision 2; the three that used
+ * to be a stated exception in `verb-contract.ts` moved beside their runners in
+ * `compose-driver.ts`, `route-tuple.ts` and `close-row.ts`). The router only
+ * collects.
  */
 const DELEGATED_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
   'conflict-map': CONFLICT_MAP_CONTRACT,
@@ -945,7 +944,9 @@ const DELEGATED_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
   'store-preflight': STORE_PREFLIGHT_CONTRACT,
   'credential-probe': CREDENTIAL_PROBE_CONTRACT,
   ...ROUTE_CONTRACTS,
-  ...DISPLACED_VERB_CONTRACTS,
+  'compose-driver': COMPOSE_DRIVER_CONTRACT,
+  'route-tuple': ROUTE_TUPLE_CONTRACT,
+  'close-row': CLOSE_ROW_CONTRACT,
 };
 
 /**
@@ -3545,32 +3546,6 @@ export function main(argv: string[] = process.argv.slice(2)): number {
  * deterministic non-zero exit instead of depending on the runtime's unhandled-
  * rejection default.
  */
-/**
- * The contract gate for the three verbs whose RUNNER module sits outside this
- * row's declared Files globs (`compose-driver.ts`, `route-tuple.ts`,
- * `close-row.ts` — see {@link DISPLACED_VERB_CONTRACTS}).
- *
- * It does here, at the router, exactly what every other verb's runner does for
- * itself: answers `--help` from the contract before any store or host is built,
- * refuses anything the contract does not declare, and then hands the runner an
- * argv whose flags are spelled the way that runner reads them
- * ({@link normalizeForRunner} — the only place the two `runnerToken` bridges
- * are used, so `route-tuple --verdict-file <p>` reaches an unrewritten runner
- * that still looks for `--verdict`).
- *
- * `code` is `null` when the call may proceed; `args` is what to pass on.
- */
-function gateDisplacedVerb(
-  verb: keyof typeof DISPLACED_VERB_CONTRACTS,
-  args: string[],
-): { code: number | null; args: string[] } {
-  const contract = DISPLACED_VERB_CONTRACTS[verb];
-  if (helpRequested(contract, args)) return { code: printVerbHelp(contract), args };
-  const refusal = refuseUndeclared(contract, args);
-  if (refusal !== 0) return { code: refusal, args };
-  return { code: null, args: normalizeForRunner(contract, args) };
-}
-
 export async function mainAsync(
   argv: string[] = process.argv.slice(2),
   injected?: IssueStore,
@@ -3601,10 +3576,10 @@ export async function mainAsync(
     // case itself: a bare `compose-driver` has no meaningful default —
     // --spine/--out/--anchor are all required — and its own usage names all
     // three, which is a better answer than the router's whole-CLI usage dump.
+    // `runComposeDriver` gates `--help` and undeclared flags off its own
+    // contract, exactly as every other runner does for itself.
     if (argv[0] === 'compose-driver') {
-      const gated = gateDisplacedVerb('compose-driver', argv.slice(1));
-      if (gated.code !== null) return gated.code;
-      return await runComposeDriver(gated.args, injected);
+      return await runComposeDriver(argv.slice(1), injected);
     }
     // `route-tuple` is async twice over — it talks to the code HOST
     // (find-before-create, the status re-query) and it resolves a store (the
@@ -3612,11 +3587,11 @@ export async function mainAsync(
     // `compose-driver` above. The interception bypasses `main()`'s zero-arg
     // guard, which is deliberate: a bare `route-tuple` has six required flags
     // and the runner's own usage names all six, which teaches far better than
-    // the router's whole-CLI dump.
+    // the router's whole-CLI dump. `runRouteTuple` gates `--help` and
+    // undeclared flags off its own contract, exactly as every other runner
+    // does for itself.
     if (argv[0] === 'route-tuple') {
-      const gated = gateDisplacedVerb('route-tuple', argv.slice(1));
-      if (gated.code !== null) return gated.code;
-      return await runRouteTuple(gated.args, injected ? { store: injected } : {});
+      return await runRouteTuple(argv.slice(1), injected ? { store: injected } : {});
     }
     // `close-row` resolves a store — the done-reconcile ends in the tracker's
     // own `close(id, prUrl, acked)` — so it is intercepted here like
@@ -3624,10 +3599,10 @@ export async function mainAsync(
     // deliberately: a bare `close-row` has two required flags and the runner's
     // own usage names both, plus the refusal rule for a PR cell that is not a
     // real PR URL — which teaches far better than the router's whole-CLI dump.
+    // `runCloseRow` gates `--help` and undeclared flags off its own contract,
+    // exactly as every other runner does for itself.
     if (argv[0] === 'close-row') {
-      const gated = gateDisplacedVerb('close-row', argv.slice(1));
-      if (gated.code !== null) return gated.code;
-      return await runCloseRow(gated.args, injected ? { store: injected } : {});
+      return await runCloseRow(argv.slice(1), injected ? { store: injected } : {});
     }
     // `dor --id <id>` is the store-backed (async) form; bare `dor <path>...`
     // stays in the sync `main()`. The `--id` flag is the disambiguator (ADR-0014).

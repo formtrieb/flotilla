@@ -41,7 +41,6 @@ import {
   hasFlag,
   helpRequested,
   nearestDeclared,
-  normalizeForRunner,
   positionalsOf,
   refuseUndeclared,
   renderRefusal,
@@ -49,7 +48,6 @@ import {
   resolveTwin,
   ROUTER_GLOBAL_FLAGS,
   scanArgs,
-  DISPLACED_VERB_CONTRACTS,
   type VerbContract,
 } from './verb-contract';
 import { flag, flagAll } from './cli-utils';
@@ -268,31 +266,6 @@ describe('the named twins (ADR-0051 decision 6)', () => {
   });
 });
 
-describe('normalizeForRunner — the two runnerToken bridges', () => {
-  it('rewrites the canonical spelling to the token an unrewritten runner reads', () => {
-    const contract = DISPLACED_VERB_CONTRACTS['route-tuple'];
-    expect(
-      normalizeForRunner(contract, ['--verdict-file', '/v.json', '--report-file', '/r.json']),
-    ).toEqual(['--verdict', '/v.json', '--report', '/r.json']);
-  });
-
-  it('rewrites the ALIAS to the same token — one spelling reaches the runner', () => {
-    const contract = DISPLACED_VERB_CONTRACTS['route-tuple'];
-    expect(normalizeForRunner(contract, ['--verdict', '/v.json'])).toEqual([
-      '--verdict',
-      '/v.json',
-    ]);
-  });
-
-  it('leaves values and undeclared tokens alone', () => {
-    const contract = DISPLACED_VERB_CONTRACTS['close-row'];
-    expect(normalizeForRunner(contract, ['--id', '--verdict-file'])).toEqual([
-      '--id',
-      '--verdict-file',
-    ]);
-  });
-});
-
 describe('the aggregate reader', () => {
   it('keys every contract by exactly what a caller types', () => {
     const all = verbContracts();
@@ -482,11 +455,12 @@ describe('NEGATIVE CONTROL 4 — every old spelling still resolves, identically'
     expect(resolveFlagContract(verdict, 'reports-dir')).toBeUndefined();
   });
 
-  it('route-tuple --verdict === --verdict-file, all the way to the runner\'s own spelling', () => {
+  it('route-tuple --verdict === --verdict-file, and --report === --report-file', () => {
     const contract = verbContracts()['route-tuple'];
-    expect(normalizeForRunner(contract, ['--verdict', '/v.json'])).toEqual(
-      normalizeForRunner(contract, ['--verdict-file', '/v.json']),
-    );
+    expect(flag(['--verdict', '/v.json'], contract, 'verdict-file')).toBe('/v.json');
+    expect(flag(['--verdict-file', '/v.json'], contract, 'verdict-file')).toBe('/v.json');
+    expect(flag(['--report', '/r.json'], contract, 'report-file')).toBe('/r.json');
+    expect(flag(['--report-file', '/r.json'], contract, 'report-file')).toBe('/r.json');
   });
 });
 

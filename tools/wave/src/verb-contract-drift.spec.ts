@@ -120,11 +120,13 @@ function opsOf(prefix: string): string[] {
 /**
  * Which verbs' contracts a CLI module's flag literals may draw on.
  *
- * `verb-contract.ts` appears because it holds the contracts of the three verbs
- * whose runner module is outside the declaring row's Files globs
- * (`DISPLACED_VERB_CONTRACTS`); when a later row moves those three beside their
- * runners, this entry shrinks to the two router globals and nothing else here
- * changes.
+ * `verb-contract.ts` carries no verb's contract any more — the three that were
+ * once a stated exception here (`compose-driver`, `route-tuple`, `close-row`,
+ * ADR-0051 row 1's central displaced-contracts map) moved beside their own
+ * runners in the mechanical follow-up row that deleted that exception. Its
+ * entry stays on the map because it still carries the two router-global flag
+ * literals (`--json`, `--help`), which every module's `declared` set already
+ * includes regardless of its verb list — so an empty list is enough.
  */
 const MODULE_VERBS: Readonly<Record<string, readonly string[]>> = {
   'cli.ts': [
@@ -159,7 +161,7 @@ const MODULE_VERBS: Readonly<Record<string, readonly string[]>> = {
   'compose-driver.ts': ['compose-driver'],
   'route-tuple.ts': ['route-tuple'],
   'close-row.ts': ['close-row'],
-  'verb-contract.ts': ['compose-driver', 'route-tuple', 'close-row'],
+  'verb-contract.ts': [],
 };
 
 /**
@@ -286,19 +288,6 @@ describe('verb-contract drift — one canonical spelling, one value type', () =>
       }
     }
     expect(bad.join('\n')).toBe('');
-  });
-
-  it('the runnerToken bridge is used by exactly the two flags ADR-0051 needed it for', () => {
-    // A deletion date made checkable: `runnerToken` exists only because
-    // `route-tuple.ts` was outside the declaring row's Files globs and could not
-    // be rewritten to read the renamed spellings. Nothing else may reach for it.
-    const bridged: string[] = [];
-    for (const [verb, contract] of Object.entries(AGGREGATE)) {
-      for (const f of contract.flags) {
-        if (f.runnerToken !== undefined) bridged.push(`${verb} ${f.canonical}`);
-      }
-    }
-    expect(bridged.sort()).toEqual(['route-tuple --report-file', 'route-tuple --verdict-file']);
   });
 });
 

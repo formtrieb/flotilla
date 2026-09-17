@@ -91,6 +91,12 @@ import { readSidecars, type SidecarReader } from './sidecar';
 import { createSpineStore, defaultSpineIo, type SpineIo, type SpineStore } from './spine-store';
 import { loadWaveConfig, type WaveConfig } from './wave-config';
 import type { PlanTableRow, PrLogRowInput } from './wave-md-rw';
+import {
+  helpRequested,
+  printVerbHelp,
+  refuseUndeclared,
+  type VerbContract,
+} from './verb-contract';
 // The printed step vocabulary is `route-tuple`'s, imported rather than
 // re-declared: both verbs print a `steps[]` a Coordinator reads the same way,
 // and two copies of the same three-word union is how they drift apart.
@@ -269,6 +275,35 @@ const fsSidecarReader: SidecarReader = {
 
 // ─── Usage ───────────────────────────────────────────────────────────────────
 
+/**
+ * `close-row`'s Verb contract (ADR-0051 decision 2) — declared here, beside
+ * its runner, like every other verb's. It moved here from `verb-contract.ts`'s
+ * central map of the three verbs whose runner module is not a `*-cli.ts`
+ * module (ADR-0051 row 1's stated exception) in the mechanical follow-up row
+ * that deleted that exception; the content is unchanged.
+ */
+export const CLOSE_ROW_CONTRACT: VerbContract = {
+  verb: 'close-row',
+  flags: [
+    { canonical: '--spine', value: 'one', valueType: 'path', required: true },
+    { canonical: '--id', value: 'one', valueType: 'id', required: true },
+    { canonical: '--pr-url', value: 'one', valueType: 'url' },
+    { canonical: '--config', value: 'one', valueType: 'path' },
+    { canonical: '--repo-root', value: 'one', valueType: 'dir' },
+    { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
+  ],
+  positionals: { kind: 'fixed', count: 0 },
+  output: 'json',
+  usage: [
+    'usage: flotilla-engine close-row --spine <spine> --id <id> [--pr-url <url>]',
+    '         [--config <cfg>] [--repo-root <dir>] [--verdicts-dir <dir>]',
+    '  Lands ONE merged row: upserts its `## PR-Log` row and its `## Closed-by`',
+    '  line, derives the met-AC indexes from the MAX-iter valid verdict sidecar,',
+    "  then calls the store's close(id, prUrl, acked).",
+    'output: a single JSON result on stdout',
+  ],
+};
+
 function usage(message: string): number {
   process.stderr.write(
     `error: ${message}\n` +
@@ -327,6 +362,10 @@ function stillOpenLine(id: string, prUrl: string): string {
  *       URL. Nothing is written to the spine or the store on any of them.
  */
 export async function runCloseRow(args: string[], deps: CloseRowDeps = {}): Promise<number> {
+  if (helpRequested(CLOSE_ROW_CONTRACT, args)) return printVerbHelp(CLOSE_ROW_CONTRACT);
+  const contractRefusal = refuseUndeclared(CLOSE_ROW_CONTRACT, args);
+  if (contractRefusal !== 0) return contractRefusal;
+
   const spinePath = flag(args, '--spine');
   const id = flag(args, '--id');
 
