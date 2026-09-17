@@ -600,7 +600,20 @@ export function runConfig(args: string[]): number {
     process.stdout.write(`ok: ${message}\n`);
     return 0;
   } catch (err) {
-    const message = (err as Error).message;
+    // issue #759: a nonexistent <path> used to reach the operator as
+    // `loadWaveConfig`'s bare `readFileSync` ENOENT, unprefixed — informative to
+    // Node, not to the caller who mistyped a path. Only ENOENT is rewritten
+    // (the same restraint `describeConfigLoadError` in cli-utils.ts takes):
+    // every OTHER `loadWaveConfig` failure (malformed JSON, unknown store kind,
+    // …) already names its own fix and passes through unchanged, below and
+    // pinned by the specs beside this block. The prefix echoes `merge-order`'s
+    // "could not read wave file" (cli.ts) — both name the file that would not
+    // read. Exit code is unchanged: an invalid/unreadable config already
+    // exited 1 here; re-meaning it would be a major under ADR-0035.
+    const isEnoent = (err as NodeJS.ErrnoException).code === 'ENOENT';
+    const message = isEnoent
+      ? `could not read config file: ${(err as Error).message}`
+      : (err as Error).message;
     if (wantJson) {
       // A refused load never reached the warning collector, so `warnings` is
       // empty — a statement about this run, not a claim that the config has

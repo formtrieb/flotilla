@@ -120,6 +120,19 @@ describe('config validate', () => {
     expect(runConfig(['validate'])).toBe(2);
   });
 
+  // issue #759: a <path> that does not RESOLVE (as opposed to being absent
+  // from argv, the case above) used to reach the operator as
+  // `loadWaveConfig`'s bare `readFileSync` ENOENT, unprefixed. Now it is
+  // rewritten to name what was being read, matching `merge-order`'s own
+  // "could not read wave file" wording (cli.ts) — same failure, same name.
+  // Exit code is UNCHANGED: an invalid/unreadable config already exited 1
+  // here, and stays 1 — unifying exit codes is out of scope (ADR-0035).
+  it('a nonexistent <path> gets a prefixed "could not read config file" message, still exit 1', () => {
+    const code = runConfig(['validate', '/definitely/does-not-exist/wave.config.json']);
+    expect(code).toBe(1);
+    expect(stderrBuf).toMatch(/^error: could not read config file: .*ENOENT/);
+  });
+
   it('exits 2 (usage) for an unknown op', () => {
     expect(runConfig(['frobnicate', 'x'])).toBe(2);
   });
@@ -712,6 +725,23 @@ describe('config validate --json (row V5)', () => {
     // A refused load never reached the collector, so nothing was found.
     expect(answer.warnings).toEqual([]);
     expect(stderrBuf).toBe('');
+  });
+
+  // issue #759: same prefixed-ENOENT fix as the prose-form pin above, read
+  // through --json — the rendering differs, the message must not.
+  it('a nonexistent <path> under --json carries the SAME prefixed message, still exit 1', () => {
+    const missing = '/definitely/does-not-exist/wave.config.json';
+    expect(runConfig(['validate', missing])).toBe(1);
+    const proseError = stderrBuf.trim().slice('error: '.length);
+    stdoutBuf = '';
+    stderrBuf = '';
+
+    expect(runConfig(['validate', missing, '--json'])).toBe(1);
+    const answer = JSON.parse(stdoutBuf) as ConfigJsonAnswer;
+    expect(answer.ok).toBe(false);
+    expect(answer.message).toBe(proseError);
+    expect(answer.message).toMatch(/^could not read config file: .*ENOENT/);
+    expect(answer.warnings).toEqual([]);
   });
 
   it('NEGATIVE CONTROL: without --json both streams are byte-identical to today', () => {

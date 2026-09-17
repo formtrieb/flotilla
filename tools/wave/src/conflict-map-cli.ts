@@ -101,7 +101,8 @@ export const CONFLICT_MAP_CONTRACT: VerbContract = {
  * @param args - CLI argument list (typically `process.argv.slice(2)`), issue
  *   file paths only. The store form (`--id`) is intercepted upstream (mainAsync)
  *   and dispatched to {@link runConflictMapById}; it never reaches here.
- * @returns exit code: 0 success, 1 no readable issues, 2 missing args
+ * @returns exit code: 0 success, 1 an issue file could not be read (ENOENT) or
+ *   no readable issues, 2 missing args
  */
 export function runConflictMap(args: string[]): number {
   if (helpRequested(CONFLICT_MAP_CONTRACT, args)) return printVerbHelp(CONFLICT_MAP_CONTRACT);
@@ -116,7 +117,26 @@ export function runConflictMap(args: string[]): number {
 
   const absPaths = paths.map((arg) => resolve(arg));
   const repoRoot = findScratchRoot(absPaths[0]);
-  const inputs = loadIssueGlobs(absPaths);
+  // issue #759: `loadIssueGlobs` used to run unguarded here, so a nonexistent
+  // path's raw `readFileSync` ENOENT reached the operator through mainAsync's
+  // generic catch-all — informative to Node, not to the caller who mistyped a
+  // path. Only ENOENT is rewritten (the same restraint `describeConfigLoadError`
+  // takes in cli-utils.ts): every OTHER failure `loadIssueGlobs` could throw
+  // already names its own fix and passes through unchanged. The prefix matches
+  // `files-drift`'s own "could not read issue file" wording (cli.ts) — both
+  // verbs read an issue file, so both name the failure the same way. Exit code
+  // is unchanged: this call already resolved to 1 (mainAsync's catch-all),
+  // never to be re-meant to 2 — that would be a major under ADR-0035.
+  let inputs: IssueGlobs[];
+  try {
+    inputs = loadIssueGlobs(absPaths);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    process.stderr.write(
+      `error: could not read issue file: ${(err as Error).message}\n`,
+    );
+    return 1;
+  }
 
   if (inputs.length === 0) {
     process.stderr.write(
