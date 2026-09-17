@@ -424,6 +424,15 @@ export class RealGitHubApi implements GitHubApi {
 
   async nativeClose(number: number, reason: GhStateReason = 'completed'): Promise<void> {
     const body: Record<string, unknown> = { state: 'closed' };
+    // THE WRITE VOCABULARY IS NARROWER THAN THE TYPE, ON PURPOSE. GitHub accepts
+    // five `state_reason` values and {@link GhStateReason} now spells all five,
+    // because the READ side must be able to report what it found. flotilla still
+    // WRITES exactly two: `completed` (the ordinary close) and `not_planned`
+    // (the `unplanned` rung). There is no verb that closes an issue as a
+    // duplicate or reopens one through this method, so the two remaining values
+    // are dropped here rather than forwarded — the narrowing lives at the write
+    // site, where it can be read beside the request it shapes, and not in the
+    // type, where it would cost the read side the distinction it needs.
     if (reason === 'completed' || reason === 'not_planned') body.state_reason = reason;
     const res = await this.send('PATCH', `${this.base()}/issues/${number}`, body);
     if (res.status !== 200) throw new GitHubApiError(res.status, 'nativeClose');
@@ -1085,7 +1094,20 @@ function toGhIssue(json: unknown): GhIssue {
     body: typeof o.body === 'string' ? o.body : '',
     labels,
     state: o.state === 'closed' ? 'closed' : 'open',
-    stateReason: reason === 'completed' || reason === 'not_planned' || reason === 'reopened' ? reason : null,
+    // The READ half of {@link GhStateReason}, and it lists every value GitHub's
+    // own issue response enumerates (`completed | not_planned | duplicate |
+    // reopened | null`, vendor reference read 2026-09-17). `duplicate` used to
+    // fall through this ladder to `null` — a close made in GitHub's duplicate
+    // flow reaching the seam as "no reason recorded", which is a claim the
+    // tracker never made. Anything genuinely unrecognised still lands as `null`,
+    // the same defensive narrow every other field here does.
+    stateReason:
+      reason === 'completed' ||
+      reason === 'not_planned' ||
+      reason === 'duplicate' ||
+      reason === 'reopened'
+        ? reason
+        : null,
     ...(updatedAt !== undefined ? { updatedAt } : {}),
   };
 }

@@ -134,11 +134,24 @@ export interface GitHubStoreConfig {
  * already sets `unclaimTarget: "Todo"`. Typing them changes no behaviour; it
  * makes a typo in either key a COMPILE error for a TypeScript author who
  * annotates the block against this interface, and gives the documented shape
- * one place to be read off. It does NOT make `config validate` see that typo —
- * that check lives only in the type. Additive (Minor, ADR-0035): no key here was
- * renamed, removed or re-typed, and the loader gains no new refusal for
- * `states` — an unknown key under `states` is as silently tolerated today as it
- * was yesterday.
+ * one place to be read off. Additive (Minor, ADR-0035): no key here was
+ * renamed, removed or re-typed, and the LOADER gains no new refusal for
+ * `states`.
+ *
+ * WHAT `config validate` SEES (corrected 2026-09-17). The compile error is no
+ * longer the only reading of a typo, and the sentence this replaces — "an
+ * unknown key under `states` is as silently tolerated today as it was
+ * yesterday" — was true when it was written and stopped being true when issue
+ * #761's warnings landed. `config validate` now REPORTS an unknown key under
+ * `states`, naming the six keys this interface declares — `queued`, `inFlight`,
+ * `inReview`, `unclaimTarget`, `unplanned`, `doneState` — so a config carrying
+ * `unclaimTargets` comes back one line away from the spelling that works. It is
+ * a WARNING and not a refusal, and it moves no exit code: the verb still exits
+ * 0 on it, because `wave.config.json` is a semver contract (ADR-0035) and a new
+ * refusal on a config that validates today would be a major. So the two
+ * readings are complementary, not redundant — the type catches it at compile
+ * time for an author who annotates the block, the warning catches it at
+ * validate time for the config file itself.
  */
 export interface LinearStateMapConfig {
   queued?: string;    // default 'Todo'

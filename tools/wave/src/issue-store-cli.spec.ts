@@ -1843,6 +1843,95 @@ describe('issue-store-cli — a receipt says what was SENT, never what the track
     errSpy.mockRestore();
   });
 
+  // ── the `container` half of the goal-assign receipt ────────────────────────
+  //
+  // The `sent: { goalId }` pin above is registered three times, once per shipped
+  // store, and every one of them INJECTS its store — which makes
+  // `resolveGoalContainer` return `undefined` by design (cli-store.ts: with a
+  // store injected there is no config path to read, so the injected store
+  // applies its own rule). The `container?` key the usage line advertises was
+  // therefore documented and unreached: no automated case ever took the branch
+  // that fills it, and a receipt shape is contract from landing (ADR-0035).
+  //
+  // This case takes it, on the only path that can: a real `--config` and NO
+  // injected store, so the binding resolves exactly the way a live invocation
+  // resolves it.
+  it('goal-assign names the CONTAINER it sent, when the config binds one', async () => {
+    const SLUG = '2026-09-17-goal-container';
+    const repoRoot = mkdtempSync(join(tmpdir(), 'is-goal-repo-'));
+    mkdirSync(join(repoRoot, '.scratch'), { recursive: true });
+    const configPath = join(
+      mkdtempSync(join(tmpdir(), 'is-goal-config-')),
+      'wave.config.json',
+    );
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG, goal: { container: 'goal-file' } },
+      }),
+      'utf-8',
+    );
+
+    // Seeded THROUGH a store built on the same coordinates the config names, so
+    // the ids below are the ones the CLI's own resolved store will find.
+    const seed = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const issueId = await seed.create(INPUT);
+    const goalId = await seed.createGoal({ title: 'Ship it', filingHint: 'ship-it' });
+    out = '';
+
+    const code = await runIssueStore([
+      'goal-assign',
+      goalId,
+      issueId,
+      '--json',
+      '--config',
+      configPath,
+    ]);
+
+    expect(code).toBe(0);
+    // toEqual, like every other receipt case: the container is a key of `sent`
+    // and nothing else moved into the shape with it.
+    expect(JSON.parse(out)).toEqual({
+      op: 'goal-assign',
+      id: issueId,
+      sent: { goalId, container: 'goal-file' },
+    });
+    // …and the join it reports genuinely landed.
+    expect((await seed.readGoal(goalId)).memberIds).toContain(issueId);
+  });
+
+  it('…and a config that binds NO container sends none — the key is absent, never null', async () => {
+    // The negative control for the case above, on the same path: same runner,
+    // same store kind, one key removed from the config. `sentFields` drops an
+    // undefined value rather than emitting `container: null`, which would be a
+    // claim about a binding this call never passed.
+    const SLUG = '2026-09-17-goal-unbound';
+    const repoRoot = mkdtempSync(join(tmpdir(), 'is-goal-repo2-'));
+    mkdirSync(join(repoRoot, '.scratch'), { recursive: true });
+    const configPath = join(
+      mkdtempSync(join(tmpdir(), 'is-goal-config2-')),
+      'wave.config.json',
+    );
+    writeFileSync(
+      configPath,
+      JSON.stringify({ store: { kind: 'markdown', repoRoot, slug: SLUG } }),
+      'utf-8',
+    );
+    const seed = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const issueId = await seed.create(INPUT);
+    const goalId = await seed.createGoal({ title: 'Ship it', filingHint: 'ship-it' });
+    out = '';
+
+    expect(
+      await runIssueStore(['goal-assign', goalId, issueId, '--json', '--config', configPath]),
+    ).toBe(0);
+    expect(JSON.parse(out)).toEqual({
+      op: 'goal-assign',
+      id: issueId,
+      sent: { goalId },
+    });
+  });
+
   // ── the planted-read-back control ──────────────────────────────────────────
   //
   // Convention 11 falsification for this block: plant a read-back in

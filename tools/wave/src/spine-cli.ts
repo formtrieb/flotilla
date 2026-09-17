@@ -146,6 +146,13 @@
  * cell rather than the caller's, and those two differ exactly where a receipt
  * earns its keep (a PR cell whose title the writer preserved).
  *
+ * That claim is FALSIFIABLE FROM OUTSIDE, which it was not at first: {@link
+ * runSpine} takes the store it mutates through a seam (its third parameter), so
+ * a caller can hand it a store whose readers throw or lie and watch what the
+ * receipt does. See that function's own doc for why the earlier two pins — an
+ * `io.read` counter and a padded-cell value comparison — each leave a gap this
+ * one closes.
+ *
  * Default output is unchanged: without `--json` all seven still print NOTHING,
  * pinned byte-identically in spine-cli.spec.ts. Exit codes are untouched, and a
  * refused write — a bad state token (2), an unknown row id or a refused
@@ -176,6 +183,7 @@ import {
   DISPOSITION_VOCABULARY,
   WAVE_SCOPE_ITER_CELL,
   type SpineIo,
+  type SpineStore,
   type DisclosureSource,
   defaultSpineIo,
 } from './spine-store';
@@ -677,7 +685,37 @@ function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
   return 1;
 }
 
-export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number {
+/**
+ * Run one `spine` op.
+ *
+ * `io` is the file seam every op reads and writes the spine through.
+ *
+ * `makeStore` is the STORE seam of the receipted write flow, and it exists for
+ * one reason: to make "the receipt is what the caller wrote, never a re-parse"
+ * falsifiable from the outside (ADR-0051 decision 7).
+ *
+ * The two pins that came before it each have a stated blind spot. Counting
+ * `io.read`/`io.write` through an injected {@link SpineIo} proves no SECOND FILE
+ * read happened — but a re-parse routed through `store.spine()` reads no file at
+ * all, so that counter cannot see it. Comparing a receipt against a parsed
+ * read-back separates them only on an input where the reader is not the writer's
+ * inverse (a padded cell, whose spaces the parser trims); on an ordinary
+ * unpadded, pipe-free cell the two values agree, and agreement is not evidence.
+ * Substituting the store closes both: a store whose readers THROW turns any
+ * re-parse into an exit 1 with nothing on stdout, and one whose readers LIE
+ * turns it into a receipt carrying the lie — on the same ordinary input where
+ * the value comparison has nothing to say.
+ *
+ * Scoped deliberately to the flow below that COMPOSES RECEIPTS. `check-disclosures`
+ * builds its own store a few lines up and keeps doing so: it is a gate whose
+ * answer is its exit code, it emits no receipt, and it has no claim of this kind
+ * to prove. Widening the seam to it would be surface bought for nothing.
+ */
+export function runSpine(
+  args: string[],
+  io: SpineIo = defaultSpineIo(),
+  makeStore: (path: string, io: SpineIo) => SpineStore = createSpineStore,
+): number {
   const op = args[0];
   if (op === undefined) {
     printUsage();
@@ -1076,7 +1114,10 @@ export function runSpine(args: string[], io: SpineIo = defaultSpineIo()): number
   // ── Store construction + the (possibly throwing) mutation + flush. A throw
   // here is a domain failure (bad row id, missing section) → clean exit 1.
   try {
-    const store = createSpineStore(path, io);
+    // Through the seam, not through `createSpineStore` directly — see
+    // {@link runSpine}'s own doc for why this one construction is substitutable
+    // and `check-disclosures`' is not.
+    const store = makeStore(path, io);
     apply(store);
     // `read` is non-mutating; flushing it is a harmless byte-identical no-op.
     if (op !== 'read') store.flush();

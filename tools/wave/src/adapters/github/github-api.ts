@@ -28,8 +28,26 @@ export type GhState = 'open' | 'closed';
  * `deriveStatus` maps ANY `closed` issue to `done`, so this reason is NOT
  * consulted (a `not_planned` close still projects to `done`). Kept on the
  * substrate for fidelity / possible future use, not for the done-derivation.
+ *
+ * THE FIVE VALUES ARE GITHUB'S, READ-SIDE. GitHub's REST "Update an issue"
+ * endpoint documents `state_reason` as `completed | not_planned | duplicate |
+ * reopened | null`, and its issue RESPONSE object carries the same enum (read
+ * from the vendor's own reference, 2026-09-17). This type used to spell four of
+ * them, omitting `duplicate` — so a close a human made in GitHub's own
+ * duplicate flow projected onto this seam as `null`, i.e. as "no reason
+ * recorded", which is a different claim from the one the tracker was making.
+ * A seam that narrows its substrate should narrow it on purpose; this one was
+ * narrowing it by omission, so `duplicate` is in.
+ *
+ * ADDITIVE, AND READ-SIDE ONLY (ADR-0035, Minor). The WRITE path is unmoved:
+ * `nativeClose` sends `completed` or `not_planned` and nothing else, because
+ * flotilla has no verb that closes an issue as a duplicate — see the guard in
+ * `RealGitHubApi.nativeClose`, which states that narrowing rather than relying
+ * on this type to enforce it. And the closing probe (ADR-0005) does not branch
+ * on this field at all: it reads closing-PR EVIDENCE, so a `duplicate` close
+ * derives exactly what a `not_planned` close derives.
  */
-export type GhStateReason = 'completed' | 'not_planned' | 'reopened' | null;
+export type GhStateReason = 'completed' | 'not_planned' | 'duplicate' | 'reopened' | null;
 
 /** The raw GitHub issue substrate the store projects onto an IssueView. */
 export interface GhIssue {

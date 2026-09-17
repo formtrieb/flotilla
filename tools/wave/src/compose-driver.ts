@@ -276,12 +276,25 @@ export function closePhraseFor(storeKind: string, id: string): string {
  * row's own literal id, never a general `<TEAM>-<digits>` sweep — that shape
  * also matches `ADR-0041`, and a title-mangling default is worse than a title
  * the Coordinator overrides through `--row-meta`.
+ *
+ * **An ATTACHED POSSESSIVE goes with the id, and that is not cosmetic.** A live
+ * title read `… (ADR-0051 decision 7, #648's settled shape)`; removing the
+ * `#648` alone left `(ADR-0051 decision 7, 's settled shape)`, which the Worker
+ * ran verbatim — its policy says to — so the PR opened under a title carrying a
+ * grammatical fragment until it was renamed by hand at landing. `'s` is not text
+ * the author wrote ABOUT something else: it is the id's own inflection, and a
+ * strip that takes the noun and leaves its suffix produces a string no reader
+ * can repair. So the possessive is consumed WITH the token, by both branches
+ * below, in the straight (`'`) and the typographic (`’`) spelling — and only
+ * when it is ATTACHED, so a quoted `'s` standing on its own elsewhere in a title
+ * is untouched. What is left is the bare phrase (`… settled shape)`), which is
+ * what the sentence meant before the id was in it.
  */
 export function stripBareIds(title: string, id: string): string {
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return title
-    .replace(/#\d+/g, '')
-    .replace(new RegExp(`(^|[\\s(\\[])${escaped}(?=$|[\\s):\\]—-])`, 'g'), '$1')
+    .replace(/#\d+(?:['’]s)?/g, '')
+    .replace(new RegExp(`(^|[\\s(\\[])${escaped}(?:['’]s)?(?=$|[\\s):\\]—-])`, 'g'), '$1')
     .replace(/^[\s:—–-]+/, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
