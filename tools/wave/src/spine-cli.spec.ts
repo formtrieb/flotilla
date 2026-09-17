@@ -1056,6 +1056,11 @@ describe('spine-cli — `--json` receipts on the silent writes (ADR-0051 decisio
       expect(stdout).toContain('--json');
       // And it says what the DEFAULT still is, on the same surface.
       expect(stdout).toContain('prints nothing');
+      // The continuation sentence, pinned WHOLE and capital-first (issue #758):
+      // the roster folds this line onto the receipt line with a single space,
+      // so a lowercase `without it` runs straight out of the shape braces
+      // instead of opening a sentence. No spec held the wording before.
+      expect(stdout).toContain('Without it this op prints nothing, exactly as before.');
     }
   });
 
