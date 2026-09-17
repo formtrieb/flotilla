@@ -47,7 +47,7 @@ Three sentences of this ADR — and the `wave-setup` tables and `wave-config`/ad
 
 Checked against the vendors themselves rather than from memory:
 
-- **Linear** — its workflow documentation (<https://linear.app/docs/configuring-workflows>) names the status **categories** `Backlog`, `Unstarted`, `Started`, `Completed`, `Canceled`, `Duplicate` and `Triage`, gives the shipped default workflow as `Backlog > Todo > In Progress > Done > Canceled`, and carries **no `not_planned` vocabulary anywhere**.
-- **GitHub** — `not_planned` is a value of the issue `state_reason` body parameter on the REST "Update an issue" endpoint (`completed | not_planned | duplicate | reopened | null`), which is exactly how this repo's own `GhStateReason` types it.
+- **Linear** — its workflow documentation (<https://linear.app/docs/configuring-workflows>) enumerates six status **categories** — `Backlog`, `Unstarted`, `Started`, `Completed`, `Canceled`, `Duplicate` — and names `Triage` apart from that list, as "an additional status category that acts as an Inbox for your team"; it gives the shipped default workflow as `Backlog > Todo > In Progress > Done > Canceled`, and carries **no `not_planned` vocabulary anywhere**.
+- **GitHub** — `not_planned` is a value of the issue `state_reason` body parameter on the REST "Update an issue" endpoint, documented as `completed | not_planned | duplicate | reopened | null`; this repo's own `GhStateReason` types the subset it consumes, `completed | not_planned | reopened | null`.
 
 So read the unplanned rung as one CROSS-TRACKER mapping: **flotilla's `unplanned` rung ↔ Linear's `Canceled` status category ↔ GitHub's `not_planned` state reason**. Every prose site that names the default now says that instead of naming a GitHub token as a Linear column. Wording only — no config value, no default and no adapter behaviour changed by this amendment.

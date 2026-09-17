@@ -160,9 +160,10 @@ export interface LinearStateMapConfig {
    * flotilla's `unplanned` rung ↔ Linear's `Canceled` status category ↔
    * GitHub's `not_planned` issue `state_reason`. `not_planned` is GITHUB
    * vocabulary — Linear's own workflow documentation
-   * (https://linear.app/docs/configuring-workflows) names its status categories
-   * `Backlog`, `Unstarted`, `Started`, `Completed`, `Canceled`, `Duplicate` and
-   * `Triage`, and carries no `not_planned` anywhere.
+   * (https://linear.app/docs/configuring-workflows) enumerates six status
+   * categories — `Backlog`, `Unstarted`, `Started`, `Completed`, `Canceled`,
+   * `Duplicate` — and names `Triage` apart from that list, as an additional
+   * category that acts as a team inbox. It carries no `not_planned` anywhere.
    *
    * Written by `LinearIssuesStore.closeUnplanned()`, which applies the schema's
    * unplanned triage label and then moves the issue here. Set it only for a
