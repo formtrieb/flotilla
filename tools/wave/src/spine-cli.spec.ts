@@ -1056,6 +1056,11 @@ describe('spine-cli — `--json` receipts on the silent writes (ADR-0051 decisio
       expect(stdout).toContain('--json');
       // And it says what the DEFAULT still is, on the same surface.
       expect(stdout).toContain('prints nothing');
+      // The continuation sentence, pinned WHOLE and capital-first (issue #758):
+      // the roster folds this line onto the receipt line with a single space,
+      // so a lowercase `without it` runs straight out of the shape braces
+      // instead of opening a sentence. No spec held the wording before.
+      expect(stdout).toContain('Without it this op prints nothing, exactly as before.');
     }
   });
 
@@ -1167,12 +1172,27 @@ describe('cli.ts routes the disclosure verbs (ADR-0027 wiring)', () => {
   });
 
   it('the router usage advertises BOTH capture forms on the one op', () => {
+    // Issue #758 re-pin: the roster line is now RENDERED from this op's
+    // contract, so the two forms are no longer two hand-written spellings
+    // printed side by side — they are one signature in which the row slot is
+    // bracketed (the arity's `min: 1`, the wave-scoped form's floor) and the
+    // wave-scoped switch is an optional flag. Both forms are still reachable
+    // from the one line, which is what this test has always been about.
     expect(main([])).toBe(2);
     const usage = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
-    // The row-scoped spelling is still advertised verbatim…
-    expect(usage).toContain('spine add-disclosure <spine-path> <row-id> --iter <n>');
-    // …and the wave-scoped one is advertised beside it, not instead of it.
-    expect(usage).toContain('spine add-disclosure <spine-path> --wave');
+    const line = usage.split('\n').find((l: string) => l.includes('spine add-disclosure'))!;
+    expect(line).toBeDefined();
+    // The row-scoped spelling: the optional row slot plus its iteration flag…
+    expect(line).toContain('spine add-disclosure <spine-path> [<row-id>]');
+    expect(line).toContain('[--iter <n>]');
+    // …and the wave-scoped one beside it, not instead of it.
+    expect(line).toContain('[--wave-scoped]');
+    // The op's OWN contract section still spells the alternation out in full —
+    // the roster names every flag, the contract teaches which go together.
+    expect(main(['spine', 'add-disclosure', '--help'])).toBe(0);
+    expect(stdoutSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('')).toContain(
+      'spine add-disclosure <spine-path> (<row-id> --iter <n> | --wave-scoped)',
+    );
   });
 });
 

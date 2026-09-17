@@ -226,16 +226,23 @@ const PATCH_REQUIRED: FlagContract = {
  * One op's shape, minus the verb name (which {@link ISSUE_STORE_CONTRACTS}
  * derives from the table key, so the two can never disagree). `--config` is
  * appended to every op here rather than repeated 26 times.
+ *
+ * The first argument NAMES this op's positional slots rather than counting them
+ * (issue #758). The count still falls out of the list — it is what the refusal
+ * measures a stray token against — but a rendered usage line needs to say WHICH
+ * slot it is asking for, and a group's positional grammar IS its canonical
+ * spelling (ADR-0051 decision 6 gives a verb group no named twin), so the slot
+ * names are contract data here rather than prose in the usage text beside it.
  */
 function issueStoreOp(
-  positionals: number,
+  positionals: readonly string[],
   output: OutputClass,
   flags: readonly FlagContract[],
   usage: readonly string[],
 ): Omit<VerbContract, 'verb'> {
   return {
     flags: [...flags, CONFIG_FLAG],
-    positionals: { kind: 'fixed', count: positionals },
+    positionals: { kind: 'fixed', count: positionals.length, labels: positionals },
     output,
     usage,
   };
@@ -260,7 +267,7 @@ function issueStoreOp(
  */
 const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = {
   create: issueStoreOp(
-    0,
+    [],
     'product',
     [INPUT_REQUIRED],
     [
@@ -273,13 +280,13 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   read: issueStoreOp(
-    1,
+    ['<id>'],
     'json',
     [],
     ['usage: issue-store read <id> [--config <path>]', 'output: the IssueView, as JSON'],
   ),
   'parse-ref': issueStoreOp(
-    1,
+    ['<id>'],
     'json',
     [],
     [
@@ -288,7 +295,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   annotate: issueStoreOp(
-    1,
+    ['<id>'],
     'silent-write',
     [PATCH_REQUIRED],
     [
@@ -305,7 +312,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   amend: issueStoreOp(
-    1,
+    ['<id>'],
     'silent-write',
     [PATCH_REQUIRED],
     [
@@ -317,7 +324,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   transition: issueStoreOp(
-    2,
+    ['<id>', `<${VALID_RUNGS.join('|')}>`],
     'silent-write',
     [],
     [
@@ -327,7 +334,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   unclaim: issueStoreOp(
-    1,
+    ['<id>'],
     'silent-write',
     [],
     [
@@ -337,7 +344,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   close: issueStoreOp(
-    2,
+    ['<id>', '<prUrl>'],
     'json',
     [{ canonical: '--acked', value: 'one', valueType: 'list' }],
     [
@@ -347,13 +354,13 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   listOpen: issueStoreOp(
-    0,
+    [],
     'json',
     [],
     ['usage: issue-store listOpen [--config <path>]', 'output: IssueView[], as JSON'],
   ),
   listClaimed: issueStoreOp(
-    0,
+    [],
     'json',
     [],
     [
@@ -362,7 +369,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   publishDocument: issueStoreOp(
-    0,
+    [],
     'product',
     [INPUT_REQUIRED],
     [
@@ -373,7 +380,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   readDocument: issueStoreOp(
-    1,
+    ['<id>'],
     'json',
     [],
     [
@@ -382,7 +389,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   listDocuments: issueStoreOp(
-    0,
+    [],
     'json',
     [],
     [
@@ -391,7 +398,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'triage-read': issueStoreOp(
-    1,
+    ['<id>'],
     'json',
     [],
     [
@@ -400,7 +407,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'triage-apply': issueStoreOp(
-    1,
+    ['<id>'],
     'silent-write',
     [INPUT_REQUIRED],
     [
@@ -412,7 +419,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'triage-close': issueStoreOp(
-    1,
+    ['<id>'],
     'silent-write',
     [{ canonical: '--comment', value: 'one', valueType: 'text', required: true }],
     [
@@ -422,7 +429,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   flag: issueStoreOp(
-    1,
+    ['<id>'],
     'silent-write',
     [
       { canonical: '--kind', value: 'one', valueType: 'enum', required: true },
@@ -437,7 +444,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'clear-flag': issueStoreOp(
-    1,
+    ['<id>'],
     'silent-write',
     [],
     [
@@ -447,7 +454,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'read-closing': issueStoreOp(
-    1,
+    ['<id>'],
     'json',
     [],
     [
@@ -456,7 +463,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'goal-create': issueStoreOp(
-    0,
+    [],
     'product',
     [INPUT_REQUIRED],
     [
@@ -468,7 +475,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'goal-read': issueStoreOp(
-    1,
+    ['<goalId>'],
     'json',
     [],
     [
@@ -477,7 +484,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'goal-list': issueStoreOp(
-    0,
+    [],
     'json',
     [],
     [
@@ -486,7 +493,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'goal-assign': issueStoreOp(
-    2,
+    ['<goalId>', '<memberId>'],
     'silent-write',
     [],
     [
@@ -498,7 +505,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'goal-create-member': issueStoreOp(
-    1,
+    ['<goalId>'],
     'product',
     [INPUT_REQUIRED],
     [
@@ -512,7 +519,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'goal-frontier': issueStoreOp(
-    1,
+    ['<goalId>'],
     'json',
     [],
     [
@@ -523,7 +530,7 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
     ],
   ),
   'goal-publish-update': issueStoreOp(
-    1,
+    ['<goalId>'],
     'json',
     [INPUT_OPTIONAL],
     [

@@ -60,8 +60,14 @@ const USAGE_LINES = [
   '  paths and --id cannot be mixed in one call.',
 ];
 
+/**
+ * This verb's usage, off its CONTRACT (issue #758) rather than off the raw
+ * `USAGE_LINES` the contract is built from: the contract is the whole section —
+ * the invocation forms AND the output line — and printing the prefix left the
+ * one surface a caller reads on a misinvocation quieter than `--help`.
+ */
 function writeUsage(): void {
-  process.stderr.write(USAGE_LINES.join('\n') + '\n');
+  process.stderr.write(CONFLICT_MAP_CONTRACT.usage.join('\n') + '\n');
 }
 
 /**

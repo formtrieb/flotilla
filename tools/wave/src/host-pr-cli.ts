@@ -201,15 +201,20 @@ const MERGE_METHODS: MergeMethod[] = ['squash', 'merge', 'rebase'];
  */
 function fullUsageLines(): string[] {
   return [
-    // NB: deliberately NO --config. host-pr talks to the code HOST, not the
-    // tracker, so there is no store to build and no wave.config.json to read.
-    `usage: host-pr <${VERBS.join('|')}> [--branch <branch>] [--remote <url>]`,
-    `         create: --branch <branch> --title <title> (--body <body> | --body-file <path>) [--base <branch>] [--allow-close-phrase-loss]`,
-    `                 (a WRITE: the PR body carries the store-kind close phrase, and a reuse rewrites both fields)`,
-    `         arm: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
-    `         merge: --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch]`,
-    `         status: --branch <branch> [--method <${MERGE_METHODS.join('|')}>]`,
-    `         preflight: (no --branch — a repo-level probe)`,
+    // The per-verb signatures below are each verb's OWN contract line (issue
+    // #758), not a second shortened copy of it. The copy they replace said
+    // "deliberately NO --config" and listed none — while every verb of this
+    // group declares `--config` and the parser accepts it (store-blind, so the
+    // value is read by nothing). A usage text that DENIES a flag its parser
+    // takes is the omission class at its loudest, and it is not expressible
+    // from here any more.
+    `usage: host-pr <${VERBS.join('|')}>`,
+    ...VERBS.flatMap((v) => [
+      `         ${HOST_PR_CONTRACTS[v].usage[0].replace(/^usage: /, '')}`,
+      ...(v === 'create'
+        ? ['                 (a WRITE: the PR body carries the store-kind close phrase, and a reuse rewrites both fields)']
+        : []),
+    ]),
     '',
     '  create    Open the PR for --branch (find-before-create): an existing OPEN PR on the branch is reused',
     '            (never duplicated) and a missing one is created. Requires --title, plus EXACTLY ONE of',
@@ -251,7 +256,7 @@ function fullUsageLines(): string[] {
     '            On bitbucket it also reports create-credentials — an ADVISORY (it never changes the exit code)',
     '            stating whether BITBUCKET_EMAIL is set, because `host-pr create` refuses without it while the',
     '            landing verbs do not, and a wave calls create on every row.',
-    '            Store-blind (no --config, no --branch) — identical on every store kind.',
+    '            Store-blind (no --branch; --config is accepted and ignored) — identical on every store kind.',
     '            Output: a single JSON object on stdout.',
     '',
     '  --remote defaults to `git remote get-url origin`.',
@@ -325,7 +330,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
     usage: [
-    'usage: host-pr create --branch <branch> --title <title> (--body <body> | --body-file <path>) [--base <branch>] [--remote <url>] [--allow-close-phrase-loss]',
+    'usage: host-pr create --branch <branch> --title <title> (--body <body> | --body-file <path>) [--base <branch>] [--remote <url>] [--allow-close-phrase-loss] [--config <path>]',
     '  Opens the PR for --branch (find-before-create): an existing OPEN PR is REUSED — and its title AND body',
     '  are RE-WRITTEN to the values you pass (last-writer-wins) — so this is NOT a read-only probe; use `status`',
     '  for that. A reuse that would drop the live body\'s close phrase is REFUSED (exit 1, reuse-refused) unless',
@@ -348,7 +353,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
     usage: [
-      `usage: host-pr arm --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
+      `usage: host-pr arm --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>] [--config <path>]`,
       '  Lands the PR by deciding per-PR from its live merge state: pending checks → enable auto-merge; already clean → direct',
       '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
       'output: a single JSON object on stdout',
@@ -365,7 +370,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
     usage: [
-      `usage: host-pr merge --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>]`,
+      `usage: host-pr merge --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>] [--config <path>]`,
       '  Merges the PR now, no arm intent (the caller has already decided). Idempotent. --delete-branch deletes',
       '  the PR head branch after a successful merge (best-effort).',
       'output: a single JSON object on stdout',
@@ -385,7 +390,10 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
     usage: [
-      'usage: host-pr status --branch <branch> [--remote <url>]',
+      `usage: host-pr status --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--remote <url>] [--config <path>]`,
+      '  --method is accepted and validated here though `status` merges nothing: the router reads it on all',
+      '  three landing verbs from one branch. --config is accepted and IGNORED on every host-pr verb (this',
+      '  group is store-blind); a Coordinator wrapper appends it to every engine invocation uniformly.',
       '  Reports the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only — never writes.',
       '  Also reports the PR\'s live `title` and `body` off that same response (no extra host call): absent on',
       '  state none and wherever the host does not surface them, and never an empty string.',
@@ -398,7 +406,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
     usage: [
-      'usage: host-pr preflight [--remote <url>]   # no --branch — a repo-level probe',
+      'usage: host-pr preflight [--remote <url>] [--config <path>]   # no --branch — a repo-level probe',
       '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks (plus',
       '  create-credentials on bitbucket). Store-blind — identical on every store kind.',
       'output: a single JSON object on stdout',

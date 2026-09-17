@@ -117,9 +117,24 @@ export interface FlagContract {
  * `fixed` names its slots so the refusal can say which one a stray token would
  * have been; `variadic` states the floor (`dor <path> [<path> ...]` is
  * `{ kind: 'variadic', min: 1 }`).
+ *
+ * `fixed.min` is how many of those slots the verb REQUIRES — `count` is the
+ * ceiling the refusal measures against, `min` the floor a rendered usage line
+ * reads to decide which slots are bracketed. It defaults to `count` (every slot
+ * required) and is declared only where a slot is genuinely optional:
+ * `worktree-cleanup [<repo-root>]` takes one slot and requires none, and
+ * `spine add-disclosure <spine-path> [<row-id>]` requires the path alone
+ * because its wave-scoped form carries no row. Without it a rendered line would
+ * advertise an optional slot as mandatory — the mirror image of the omission
+ * this row exists to make impossible.
  */
 export type PositionalArity =
-  | { readonly kind: 'fixed'; readonly count: number; readonly labels?: readonly string[] }
+  | {
+      readonly kind: 'fixed';
+      readonly count: number;
+      readonly labels?: readonly string[];
+      readonly min?: number;
+    }
   | { readonly kind: 'variadic'; readonly min: number; readonly label?: string };
 
 /**
