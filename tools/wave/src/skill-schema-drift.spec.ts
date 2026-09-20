@@ -1224,6 +1224,135 @@ describe('skill-schema-drift — the re-dispatch section documents the checkout 
   });
 });
 
+// ─── #828 — the credential-helper writeback's benign `fatal:` line ───────────
+//
+// Companion to compose-driver.spec.ts's rendered-brief suite for the same
+// issue: THIS suite reads the shipped TEMPLATE directly (no compose, no
+// runComposedDriver), and scopes every assertion to the one site it is about
+// via `contractRegion` — because the same literal line, `fatal: failed to
+// store: 100001`, is meaningful at three different call sites in the same
+// file, and a whole-file `toContain` cannot tell a region-scoped drift from
+// an accidental match anywhere else in the ~3000-line template.
+
+describe('skill-schema-drift — the credential-helper writeback fatal line is named and ruled benign at all three sites, region-scoped (issue #828)', () => {
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
+
+  /** Site 1: the iteration-1 Worker's `git reset --hard` block, step 2. */
+  function iter1FetchRegion(js: string): string {
+    return contractRegion(
+      js,
+      'driver/wave-start-inflight.js WORKSPACE_SETUP_ITER1 fetch clause',
+      'READ THIS FIRST — every line here is inherited WIP',
+      'An UNTRACKED leftover survives',
+    );
+  }
+
+  /** Site 2: the re-dispatch Worker's `git checkout -B … FETCH_HEAD` block, step 2. */
+  function redispatchFetchRegion(js: string): string {
+    return contractRegion(
+      js,
+      'driver/wave-start-inflight.js WORKSPACE_SETUP_REDISPATCH fetch clause',
+      'hand via',
+      '(The Coordinator already deregistered the iteration-1 worktree that held',
+    );
+  }
+
+  /** Site 3: the Reviewer's `## Resolve the branch` fetch into `refs/review/<id>`. */
+  function reviewerFetchRegion(js: string): string {
+    return contractRegion(
+      js,
+      'driver/wave-start-inflight.js reviewerBrief resolve-the-branch fetch clause',
+      'git fetch origin ${issue.branch}:refs/review/${issue.id} 2>&1 | tail -3',
+      'git rev-parse refs/review/${issue.id}',
+    );
+  }
+
+  /**
+   * The raw template escapes every inline-code backtick as `` \` `` (it is
+   * itself a JS template-literal source, read here as plain text rather than
+   * evaluated) — collapse that escaping so content assertions can use
+   * ordinary backtick-quoted text instead of re-deriving the source's own
+   * escaping in every pattern. Used for every CONTENT check below; the raw
+   * (still-escaped) form is kept for the negative controls, which slice the
+   * unevaluated template text itself.
+   */
+  function deescaped(region: string): string {
+    return region.replace(/\\`/g, '`');
+  }
+
+  const FATAL_LINE = 'fatal: failed to store: 100001';
+  const allSites = () =>
+    [iter1FetchRegion(driverJs), redispatchFetchRegion(driverJs), reviewerFetchRegion(driverJs)].map(deescaped);
+
+  it('names the literal fatal line inside all three scoped regions', () => {
+    for (const region of allSites()) {
+      expect(region).toContain(FATAL_LINE);
+    }
+  });
+
+  it('attributes it to the credential helper writeback under the harness write-deny, never to the fetch itself, in all three regions', () => {
+    for (const region of allSites()) {
+      expect(region).toMatch(
+        /credential helper failed to write the token back to the\s+keychain under the harness write-deny/,
+      );
+      expect(region).toMatch(/the fetch's own operation still\s+completed/);
+    }
+  });
+
+  it('states the fetch succeeded when its own ref line printed, with the site-specific ref shape', () => {
+    const [iter1, redispatch, reviewer] = allSites();
+    expect(iter1).toMatch(/ref line printed \(`-> FETCH_HEAD`\), the ref arrived/);
+    expect(redispatch).toMatch(/ref line printed \(`-> FETCH_HEAD`\), the ref arrived/);
+    expect(reviewer).toMatch(/ref line printed \(`-> refs\/review\/\$\{issue\.id\}`\), the ref\s+arrived/);
+  });
+
+  it('says proceed without reporting blocked — Worker sites skip a `judgmentCalls` disclosure, the Reviewer site skips a finding', () => {
+    const [iter1, redispatch, reviewer] = allSites();
+    // The clause line-wraps inside the template's three-space-indented prose,
+    // so a plain `toContain` on the joined sentence fails on the newline the
+    // source itself has there — `\s+` stands in for that join.
+    const workerProceed = /This is not a reason to report `blocked`,\s+and it needs no `judgmentCalls` disclosure\./;
+    const reviewerProceed = /This is not a reason to report `blocked`, and it is not a finding to\s+disclose\./;
+    expect(iter1).toMatch(workerProceed);
+    expect(redispatch).toMatch(workerProceed);
+    expect(reviewer).toMatch(reviewerProceed);
+  });
+
+  it('does not widen into the `-u` upstream-config write or the half-applied-checkout mirror case (both explicitly out of scope for this row)', () => {
+    for (const region of allSites()) {
+      expect(region).not.toMatch(/upstream-config write/);
+      expect(region).not.toMatch(/HALF-APPL/i);
+    }
+  });
+
+  it('NEGATIVE CONTROL — each region pin fails loud when its own start anchor is gone', () => {
+    expect(() => iter1FetchRegion('# nothing here\n')).toThrow(
+      /contract region start anchor missing in driver\/wave-start-inflight\.js WORKSPACE_SETUP_ITER1 fetch clause/,
+    );
+    expect(() => redispatchFetchRegion('# nothing here\n')).toThrow(
+      /contract region start anchor missing in driver\/wave-start-inflight\.js WORKSPACE_SETUP_REDISPATCH fetch clause/,
+    );
+    expect(() => reviewerFetchRegion('# nothing here\n')).toThrow(
+      /contract region start anchor missing in driver\/wave-start-inflight\.js reviewerBrief resolve-the-branch fetch clause/,
+    );
+  });
+
+  it('NEGATIVE CONTROL — removing the clause from the iteration-1 region alone is observable there, and only there', () => {
+    const headline = 'A \\`' + FATAL_LINE + '\\` line printed by that fetch is benign —';
+    const clauseStart = driverJs.indexOf(headline);
+    expect(clauseStart).toBeGreaterThan(-1);
+    const clauseEnd = driverJs.indexOf('An UNTRACKED leftover survives', clauseStart);
+    expect(clauseEnd).toBeGreaterThan(clauseStart);
+    const stripped = driverJs.slice(0, clauseStart) + driverJs.slice(clauseEnd);
+    expect(stripped).not.toEqual(driverJs); // the slice actually removed something
+
+    expect(iter1FetchRegion(stripped)).not.toContain(FATAL_LINE);
+    // The other two regions are untouched by a strip scoped to site 1 alone.
+    expect(redispatchFetchRegion(stripped)).toContain(FATAL_LINE);
+    expect(reviewerFetchRegion(stripped)).toContain(FATAL_LINE);
+  });
+});
+
 describe('skill-schema-drift — the SIDECAR-WRITE NOTICE header mention matches the real log call shape (kind + id, issue #577 rider)', () => {
   const driverMd = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
 
