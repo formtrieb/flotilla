@@ -94,6 +94,8 @@
  *                     rejects a grep-the-markdown gate explicitly). Non-mutating,
  *                     and it needs its own exit code, so it is handled ahead of
  *                     the generic store/apply/flush flow (which always returns 0).
+ *                     `--json` adds the LIST of what holds it — see the
+ *                     gate-answer section at the bottom of this header.
  *
  * ── The human lane (ADR-0012) ─────────────────────────────────────────────────
  *   human-gated       LISTING. Emits one JSON object describing the wave's human
@@ -102,7 +104,8 @@
  *   check-awaiting-human
  *                     The SECOND fail-closed archive gate, shaped exactly like
  *                     `check-disclosures`: exit != 0 iff a human-gated row still
- *                     holds the live `queued` claim nothing ever released.
+ *                     holds the live `queued` claim nothing ever released. Same
+ *                     `--json` answer, same three keys.
  *
  * Both were introduced on `cli.ts`'s `spine` router case rather than here — the
  * slice that added them had `cli.ts` in its declared file scope and this file
@@ -164,6 +167,33 @@
  * cell to carry. `add-disclosure` was never silent — it prints the ref it
  * minted (which is why `--json` leaves it alone here); the remaining ops are
  * readers, and the prose ones get their `--json` in their own row.
+ *
+ * ── `--json` on the two prose-class GATES (Operator ruling 2026-09-20) ───────
+ *
+ * That "own row" is this one. `check-disclosures` and `check-awaiting-human`
+ * are the two ops that still answered `--json` with nothing beyond their exit
+ * code, and nothing was wrong with that: their exit code IS their machine
+ * answer, and `wave-close` has only ever read the code. What it could not tell
+ * a caller is WHAT is holding the gate — so a headless pulse reading
+ * `quiescent` by machine (ADR-0048) had to re-parse the spine for a fact the
+ * gate had just computed.
+ *
+ * With `--json` each prints exactly ONE object IN PLACE OF its prose:
+ *
+ *   { "ok": false, "verb": "spine check-disclosures",
+ *     "holding": ["01.1", "wave.2"] }
+ *
+ * `holding` carries BARE IDS — open disclosure refs for the first gate, row
+ * ids for the second — and `ok` mirrors the exit code. The shapes live in
+ * {@link GATE_JSON_SHAPES}; {@link printGateAnswer} is the only builder, and
+ * its doc carries the rest of the reasoning (including why an unreadable spine
+ * prints no JSON at all).
+ *
+ * Additive and opt-in: without the flag both gates print the same prose bytes
+ * they always did, both keep the `prose` output class, and no exit code moves
+ * on any path — so the only thing that changed for an existing caller is that
+ * `--json`, which used to be a silent no-op on these two, now says something.
+ * That is the heads-up this row carries.
  *
  * Exit codes:
  *   0 — success (for `check-disclosures`: the archive gate is clear)
@@ -294,6 +324,40 @@ const RECEIPT_SHAPES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * THE `--json` vocabulary of this runner's two PROSE-class GATES: the answer
+ * each prints INSTEAD of its prose when the router-global flag is passed
+ * (ADR-0051 decision 7, Operator ruling 2026-09-20).
+ *
+ * Same ONE-table discipline as {@link RECEIPT_SHAPES} one block up —
+ * {@link SPINE_CONTRACTS} renders each gate's `--json` usage line from it, and
+ * {@link printGateAnswer} is the only thing that builds one — and for the same
+ * reason: a shape advertised separately from the shape emitted is two
+ * vocabularies that can disagree, and the emitted half is the one a caller
+ * cannot see until it has already made the call.
+ *
+ * WHY these two grew an answer at all. Their exit code was always the machine
+ * verdict, and both are read by exit code alone at the archive gate — nothing
+ * was wrong. What the code could not say is WHAT is holding them, which left a
+ * headless pulse re-parsing the spine for a fact the gate had just computed
+ * (ADR-0048's `quiescent` read). `holding` is that fact, and nothing more.
+ *
+ * The keys ARE the two gates; no other op in this runner is one. `human-gated`
+ * is absent on purpose — it is a LISTING whose output class is already `json`,
+ * so the flag has nothing to switch there.
+ */
+const GATE_JSON_SHAPES: Readonly<Record<string, string>> = {
+  // The `ref` of every still-open disclosure, in spine order — `<row-id>.<n>`
+  // row-scoped, `wave.<n>` wave-scoped (ADR-0038).
+  'check-disclosures': '{ ok, verb, holding: [<open disclosure refs, spine order>] }',
+  // The ids of the rows still `planned` under a human-gated Worker — exactly
+  // `spine human-gated`'s own `awaitingHumanIds` for the same spine and the
+  // same `--workers`, because both are the one `awaitingHuman` projection
+  // (see {@link readHumanLane}) filtered the one way. A gate and a listing with
+  // two ideas of who is holding the same wave is the drift that pairing forecloses.
+  'check-awaiting-human': '{ ok, verb, holding: [<row ids awaiting a human>] }',
+};
+
+/**
  * One `--json` receipt: what a silent write put into the spine.
  *
  * `id` is present exactly on the four ops that address a Plan-Table ROW;
@@ -330,6 +394,41 @@ function printReceipt(
       ? { op, spine: resolve(spinePath), written }
       : { op, spine: resolve(spinePath), id, written };
   printJson(receipt);
+}
+
+/**
+ * Print one prose-class GATE's `--json` answer, and return the exit code that
+ * answer describes.
+ *
+ * Three keys, decided by the row and pinned by spec: `ok`, `verb`, `holding`.
+ *
+ *   - `--json` REPLACES the prose; it never rides beside it. That is the stance
+ *     `config validate` and `validate-report` already take, and it is what lets
+ *     a caller read stdout as one JSON document without first stripping a
+ *     human-facing block off the front of it.
+ *   - `ok` MIRRORS the returned exit code rather than being a second verdict
+ *     computed beside it: both fall out of `holding.length`, so the two can
+ *     never disagree about the same call.
+ *   - `verb` carries BOTH tokens (`spine check-disclosures`) — the way every
+ *     contract in this file spells a group op, and the way the JSON-class
+ *     sibling `spine human-gated` already answers.
+ *   - `holding` carries BARE IDS — a disclosure ref, a row id — never records.
+ *     That follows the `awaitingHumanIds` precedent this runner already ships,
+ *     and it is the additive direction: a richer shape can arrive later under a
+ *     NEW key, whereas a key once shipped can never be taken back (ADR-0035).
+ *
+ * Nothing calls this on a refusal path, and that is the load-bearing half.
+ * A missing `<spine-path>` returns 2 before any read; an unreadable or corrupt
+ * spine leaves through its gate's own catch with `error:` on stderr and NOTHING
+ * on stdout. A `{ ok: false, holding: [] }` there would be indistinguishable,
+ * to the very pulse this answer exists for, from "the spine was read and
+ * nothing holds the gate, but the call was not ok" — so the unreadable case
+ * stays silent on stdout rather than inventing a shape it cannot honestly fill
+ * (Coordinator ruling 2026-09-21, the row-825 rule).
+ */
+function printGateAnswer(op: string, holding: readonly string[]): number {
+  printJson({ ok: holding.length === 0, verb: `spine ${op}`, holding });
+  return holding.length === 0 ? 0 : 1;
 }
 
 function printUsage(): void {
@@ -439,6 +538,9 @@ const SPINE_OP_SHAPES: Readonly<
     flags: [],
   },
   // Both gates print prose and answer by EXIT CODE; wave-close reads the code.
+  // Under `--json` they ALSO return the list of what holds them
+  // ({@link GATE_JSON_SHAPES}) — additive and opt-in, so the class stays
+  // `prose`: the default rendering is still text, and no exit code moves.
   'check-disclosures': { positionals: fixed('<spine-path>'), output: 'prose', flags: [] },
   'human-gated': {
     positionals: fixed('<spine-path>'),
@@ -492,6 +594,13 @@ export const SPINE_CONTRACTS: Readonly<Record<string, VerbContract>> =
             : [
                 `  --json: one receipt on stdout, after the write lands — ${RECEIPT_SHAPES[op]}`,
                 '          Without it this op prints nothing, exactly as before.',
+              ]),
+          ...(GATE_JSON_SHAPES[op] === undefined
+            ? []
+            : [
+                `  --json: what HOLDS this gate, in place of the prose — ${GATE_JSON_SHAPES[op]}`,
+                '          `ok` mirrors the exit code; the flag moves no exit code and, without it,',
+                '          this gate prints exactly the prose it always printed.',
               ]),
         ],
       },
@@ -627,6 +736,9 @@ function runSpineHumanGated(args: string[], io: SpineIo): number {
  * Fail-closed in both directions, exactly like `spine check-disclosures`: a held
  * row blocks the archive, and so does a spine that cannot be read or parsed.
  *
+ * `--json` replaces the prose below with {@link GATE_JSON_SHAPES}'s answer —
+ * the held row ids, nothing else — and moves none of the exit codes.
+ *
  * Exit codes:
  *   0 — no human-gated row holds a live claim; the archive gate is CLEAR
  *   1 — at least one row is awaiting a human, OR the spine is unreadable
@@ -656,6 +768,19 @@ function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
   }
 
   const awaiting = rows.filter((r) => r.awaitingHuman);
+
+  // The machine answer, built BESIDE the prose from the same read (the row-825
+  // pattern): one `readHumanLane` call feeds both renderings, and `holding` is
+  // the very projection `spine human-gated` reports as `awaitingHumanIds`, so
+  // the gate and the listing cannot name two different sets of holders for one
+  // spine and one `--workers`.
+  if (hasFlag(contract, args, 'json')) {
+    return printGateAnswer(
+      'check-awaiting-human',
+      awaiting.map((r) => r.id),
+    );
+  }
+
   if (awaiting.length === 0) {
     process.stdout.write(
       `awaiting-human: 0 of ${rows.length} human-gated rows — archive gate CLEAR\n`,
@@ -707,9 +832,11 @@ function runSpineCheckAwaitingHuman(args: string[], io: SpineIo): number {
  * the value comparison has nothing to say.
  *
  * Scoped deliberately to the flow below that COMPOSES RECEIPTS. `check-disclosures`
- * builds its own store a few lines up and keeps doing so: it is a gate whose
- * answer is its exit code, it emits no receipt, and it has no claim of this kind
- * to prove. Widening the seam to it would be surface bought for nothing.
+ * builds its own store a few lines up and keeps doing so: it emits no receipt,
+ * and it has no claim of this kind to prove. Its `--json` answer is not one
+ * either — a gate reports what it READ (the open refs), where a receipt reports
+ * what the caller WROTE, and only the second is the claim a substitutable store
+ * exists to falsify. Widening the seam to it would be surface bought for nothing.
  */
 export function runSpine(
   args: string[],
@@ -855,6 +982,13 @@ export function runSpine(
     try {
       const store = createSpineStore(path, io);
       const open = store.openDisclosures();
+      // The machine answer, built BESIDE the prose from the same read (the
+      // row-825 pattern): the one `openDisclosures()` above feeds both
+      // renderings, so the two can never name different holders of one gate.
+      // Placed after that read on purpose — an unreadable spine has already
+      // thrown into the catch below, which is what keeps a refusal silent on
+      // stdout (see {@link printGateAnswer}).
+      if (wantsReceipt) return printGateAnswer(op, open.map((d) => d.ref));
       const total = store.disclosures().length;
       if (open.length === 0) {
         process.stdout.write(
