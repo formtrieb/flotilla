@@ -120,7 +120,7 @@ Each sibling gets its own **stable named ref** — `refs/review/sib/<sibling-id>
 |---|---|---|
 | `predicted-clean` | on `origin`, tip **≠** `$ANCHOR`, `git merge-tree` reports no `<<<<<<<` | **yes** — two real diffs were merged and did not collide |
 | `predicted-conflict` | `git merge-tree` reports `<<<<<<<` | **yes** — name the file(s) |
-| `not-on-origin` | `git fetch` cannot resolve the branch | **no** — that Worker has not pushed yet |
+| `not-on-origin` | `git fetch` cannot resolve the branch | **no** — not pushed, or landed and gone |
 | `at-anchor` | the fetched tip **equals the wave-anchor SHA the brief carries** | **no** — see below |
 
 ### `at-anchor` is VACUOUS — never report it as clean

@@ -54,7 +54,7 @@ import {
 } from './compose-driver';
 import type { VerifyCommand } from './verify';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
-import { HUMAN_GATED_WORKER, renderSpine, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel } from './wave-md-rw';
+import { HUMAN_GATED_WORKER, readSpine, renderSpine, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel } from './wave-md-rw';
 import { addDisclosureToSource, setDispositionInSource } from './spine-store';
 
 const TEMPLATE = readFileSync(DRIVER_TEMPLATE_PATH, 'utf8');
@@ -2923,5 +2923,350 @@ describe('compose-driver — the PR-create title is rendered single-quoted, and 
     );
     expect(brief).toMatch(/--title "/);
     expect(brief).not.toContain(`--title '${TRICKY_TITLE}' \\`);
+  });
+});
+
+// ─── issue #791: the sibling denominator is WAVE-WIDE, not compose-wide ──────
+//
+// A wave whose Conflict-Map has overlap cells is run in ROUNDS: its rows are
+// flipped `dispatched` and composed one round at a time. The denominator used
+// to be "the rows dispatchable in THIS compose", so every earlier round's rows
+// — already at `pr-created`, and the siblings most likely to collide, because
+// sharing files is exactly why they were serialised — were invisible to every
+// later round's Reviewer. Live: wave `2026-09-16-hub-truth-and-checklist` round
+// 2 named one sibling and reported 1/1 clean while a round-1 row sat on the
+// same three files; rounds 3 and 4 composed an EMPTY denominator and reported
+// "0/0 — vacuously satisfied".
+//
+// The fixture below is AC1's, built once and read by most cases: the five row
+// states that decide membership, plus the annotation and sentinel cases.
+describe('compose-driver — the sibling denominator spans the WAVE, not this compose (issue #791)', () => {
+  let repoRoot: string;
+  let anchor: string;
+  let stdout: string;
+  let stderr: string;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const SLUG = '2026-09-21-rounds';
+
+  /** The composer's own no-siblings sentinel — the exact bytes AC3 pins. */
+  const NO_SIBLINGS = '(none — no sibling branches in this wave)';
+
+  /**
+   * One roster row's shape in this fixture, keyed by a stable LETTER because
+   * the markdown store mints the real ids (`<wave-slug>#NN`) and the composer
+   * refuses any branch that is not `wave/<that id>-<slug>`. `branchSlug: null`
+   * means the spine records no dispatch-log branch for the row at all — the
+   * `planned` case.
+   */
+  interface FixtureRow {
+    key: string;
+    state: string;
+    branchSlug: string | null;
+  }
+
+  /** The branch the fixture recorded for `key`, rebuilt the way the spine has it. */
+  function branchOf(storeIds: Map<string, string>, key: string, branchSlug: string): string {
+    return `wave/${storeIds.get(key) as string}-${branchSlug}`;
+  }
+
+  /**
+   * Seed a spine whose Plan-Table carries `rows` in order. Every row is created
+   * in the store (only a dispatchable row is ever `store.read`, but creating
+   * them all keeps the fixture honest about what a real wave looks like), and
+   * every row that carries a branch gets a dispatch-log entry and a recorded
+   * model — exactly what `spine set-branch [--model]` writes at dispatch.
+   */
+  async function seed(rows: readonly FixtureRow[]): Promise<{
+    spinePath: string;
+    configPath: string;
+    storeIds: Map<string, string>;
+  }> {
+    const store = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const storeIds = new Map<string, string>();
+    for (const r of rows) {
+      const id = await store.create({
+        title: `Row ${r.key}`,
+        filingHint: `row-${r.key}`,
+        risk: 'cross-feature-refactor',
+        worker: 'background-heavy',
+        files: ['tools/wave/**'],
+        blockedBy: 'none',
+        acceptanceCriteria: [{ text: `row ${r.key} is done`, checked: false }],
+        bodySections: [{ heading: 'What to build', markdown: `Build row ${r.key}.` }],
+      });
+      storeIds.set(r.key, id);
+    }
+
+    let spine = renderSpine(
+      {
+        slug: SLUG,
+        description: 'rounds',
+        coordinator: 'c',
+        created: '2026-09-21',
+        lastUpdated: '2026-09-21',
+        model: 'm',
+      },
+      rows.map((r) => ({
+        id: storeIds.get(r.key) as string,
+        title: `Row ${r.key}`,
+        worker: 'background-heavy',
+        risk: 'cross-feature-refactor',
+      })),
+      { issues: [], cells: [] },
+      'ok',
+    );
+    for (const r of rows) {
+      const id = storeIds.get(r.key) as string;
+      spine = setRowState(spine, id, r.state as Parameters<typeof setRowState>[2]);
+      if (r.branchSlug) {
+        spine = upsertDispatchLogEntry(spine, id, branchOf(storeIds, r.key, r.branchSlug));
+        spine = upsertDispatchLogModel(spine, id, 'opus');
+      }
+    }
+
+    const spinePath = join(repoRoot, '.flotilla', 'waves', `${SLUG}.md`);
+    mkdirSync(join(repoRoot, '.flotilla', 'waves'), { recursive: true });
+    writeFileSync(spinePath, spine, 'utf8');
+
+    const configPath = join(repoRoot, 'wave.config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: { cli: SOURCE_FORM_CLI },
+        verify: {
+          profiles: [
+            {
+              name: 'engine',
+              appliesTo: ['tools/wave/**'],
+              commands: [{ command: 'npm ci --prefix tools/wave' }],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    return { spinePath, configPath, storeIds };
+  }
+
+  /** Compose, and hand back the ISSUES array the driver script carries. */
+  async function compose(
+    spinePath: string,
+    configPath: string,
+    extra: readonly string[] = [],
+  ): Promise<Array<Record<string, unknown>>> {
+    const out = join(repoRoot, 'driver.js');
+    const code = await runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+      ...extra,
+    ]);
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    const script = readFileSync(out, 'utf8');
+    const at = script.indexOf('const ISSUES = ');
+    expect(at).toBeGreaterThan(-1);
+    const close = script.indexOf('\n]\n', at);
+    return JSON.parse(script.slice(at + 'const ISSUES = '.length, close + 2)) as Array<
+      Record<string, unknown>
+    >;
+  }
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'compose-driver-siblings-'));
+    execFileSync('git', ['-C', repoRoot, 'init', '-q']);
+    execFileSync('git', [
+      '-C', repoRoot,
+      '-c', 'user.email=t@example.invalid',
+      '-c', 'user.name=t',
+      'commit', '--allow-empty', '-q', '-m', 'anchor',
+    ]);
+    anchor = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    stdout = '';
+    stderr = '';
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      stdout += String(c);
+      return true;
+    });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  // AC1's fixture, exactly: A `pr-created` with a branch, B `dispatched`,
+  // C `parked` with a branch, D `abandoned`, E `planned` with no branch.
+  // D is given a branch too — the AC does not say it has none, and an
+  // `abandoned` row with NO branch would already be excluded by the branch
+  // test, leaving the state exclusion untested. With a branch, only the state
+  // can explain its absence.
+  const AC1_ROWS: readonly FixtureRow[] = [
+    { key: 'A', state: 'pr-created', branchSlug: 'first-round' },
+    { key: 'B', state: 'dispatched', branchSlug: 'second-round' },
+    { key: 'C', state: 'parked', branchSlug: 'parked' },
+    { key: 'D', state: 'abandoned', branchSlug: 'abandoned' },
+    { key: 'E', state: 'planned', branchSlug: null },
+  ];
+
+  it("AC1 — the dispatched row's denominator is the earlier round's PR branch, annotated, and nothing else", async () => {
+    const { spinePath, configPath, storeIds } = await seed(AC1_ROWS);
+    const issues = await compose(spinePath, configPath);
+    // Only B is dispatchable, so only B is composed.
+    expect(issues).toHaveLength(1);
+    expect(issues[0].siblingBranches).toBe(
+      `${branchOf(storeIds, 'A', 'first-round')} (pr-created)`,
+    );
+    // Said again as exclusions, so a future widening cannot pass by accident.
+    const value = String(issues[0].siblingBranches);
+    expect(value).not.toContain(branchOf(storeIds, 'C', 'parked'));
+    expect(value).not.toContain(branchOf(storeIds, 'D', 'abandoned'));
+    // …and a row never names ITSELF as its own sibling.
+    expect(value).not.toContain(branchOf(storeIds, 'B', 'second-round'));
+  });
+
+  it('NEGATIVE CONTROL — AC1: the pre-change roster-only rule would have produced the sentinel', async () => {
+    // The rule this row replaced, re-implemented here over the SAME spine the
+    // compose read: siblings = the OTHER rows dispatchable in this compose,
+    // unannotated. Over AC1's fixture that set is EMPTY, so the old rule
+    // composed the no-siblings sentinel for B — and the round-1 PR branch, the
+    // one sibling that genuinely shares files with it, was never named.
+    const { spinePath, configPath, storeIds } = await seed(AC1_ROWS);
+    const spine = readSpine(readFileSync(spinePath, 'utf8'));
+    const DISPATCHABLE = ['dispatched', 're-dispatched'];
+    const rosterOnly = spine.planTable
+      .filter((r) => DISPATCHABLE.includes(String(r.state)))
+      .map((r) => ({ id: r.id, branch: r.branch ?? '' }));
+    const bId = storeIds.get('B') as string;
+    const oldSiblings = rosterOnly.filter((r) => r.id !== bId).map((r) => r.branch);
+    expect(oldSiblings).toEqual([]);
+    const oldValue = oldSiblings.length ? oldSiblings.join(', ') : NO_SIBLINGS;
+    expect(oldValue).toBe(NO_SIBLINGS);
+
+    // …and the shipped rule, over the same spine, does not.
+    const issues = await compose(spinePath, configPath);
+    expect(issues[0].siblingBranches).not.toBe(oldValue);
+    expect(issues[0].siblingBranches).toBe(
+      `${branchOf(storeIds, 'A', 'first-round')} (pr-created)`,
+    );
+  });
+
+  it('AC2 — two dispatched rows name each other `(dispatched)`; `(re-dispatched)` and `(failed)` annotate too', async () => {
+    const { spinePath, configPath, storeIds } = await seed([
+      { key: 'A', state: 'dispatched', branchSlug: 'one' },
+      { key: 'B', state: 'dispatched', branchSlug: 'two' },
+      { key: 'C', state: 're-dispatched', branchSlug: 'three' },
+      { key: 'D', state: 'failed', branchSlug: 'four' },
+    ]);
+    const issues = await compose(spinePath, configPath);
+    const byId = new Map(issues.map((i) => [String(i.id), i]));
+    const a = byId.get(storeIds.get('A') as string);
+    const b = byId.get(storeIds.get('B') as string);
+    const c = byId.get(storeIds.get('C') as string);
+    const bA = `${branchOf(storeIds, 'A', 'one')} (dispatched)`;
+    const bB = `${branchOf(storeIds, 'B', 'two')} (dispatched)`;
+    const bC = `${branchOf(storeIds, 'C', 'three')} (re-dispatched)`;
+    const bD = `${branchOf(storeIds, 'D', 'four')} (failed)`;
+    // A, B and C are all dispatchable; D (`failed`) is not composed, but its
+    // live branch IS in everyone's denominator — the Coordinator's 2026-09-21
+    // ruling: it may yet land through a ruled round.
+    expect(issues).toHaveLength(3);
+    expect(a?.siblingBranches).toBe([bB, bC, bD].join(', '));
+    expect(b?.siblingBranches).toBe([bA, bC, bD].join(', '));
+    expect(c?.siblingBranches).toBe([bA, bB, bD].join(', '));
+  });
+
+  it('AC2 — each entry still opens with the branch token, so the refs/review/sib fetch instruction parses', async () => {
+    const { spinePath, configPath } = await seed(AC1_ROWS);
+    const issues = await compose(spinePath, configPath);
+    for (const entry of String(issues[0].siblingBranches).split(', ')) {
+      expect(entry.split(' ')[0]).toMatch(/^wave\//);
+      expect(entry).toMatch(/^wave\/\S+ \([a-z-]+\)$/);
+    }
+  });
+
+  it('AC3 — with no other branch-bearing row the value is exactly the sentinel', async () => {
+    const { spinePath, configPath } = await seed([
+      { key: 'A', state: 'dispatched', branchSlug: 'alone' },
+      { key: 'B', state: 'parked', branchSlug: 'parked' },
+      { key: 'C', state: 'planned', branchSlug: null },
+    ]);
+    const issues = await compose(spinePath, configPath);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].siblingBranches).toBe(NO_SIBLINGS);
+  });
+
+  it('AC3 — a `--row-meta` siblingBranches override reaches the composed row byte-identically', async () => {
+    const OVERRIDE = 'wave/999-hand-written (whatever the Coordinator says)';
+    const { spinePath, configPath, storeIds } = await seed(AC1_ROWS);
+    const issues = await compose(spinePath, configPath, [
+      '--row-meta',
+      JSON.stringify({ [storeIds.get('B') as string]: { siblingBranches: OVERRIDE } }),
+    ]);
+    expect(issues[0].siblingBranches).toBe(OVERRIDE);
+  });
+
+  it('AC4 — the composed Reviewer brief carries the renamed header and the per-annotation not-on-origin sentence', async () => {
+    const { spinePath, configPath, storeIds } = await seed(AC1_ROWS);
+    const out = join(repoRoot, 'driver.js');
+    expect(
+      await runComposeDriver([
+        '--spine', spinePath,
+        '--config', configPath,
+        '--repo-root', repoRoot,
+        '--anchor', anchor,
+        '--out', out,
+        '--reviewer-agent', 'flotilla:wave-reviewer',
+      ]),
+    ).toBe(0);
+    const { calls } = await runComposedDriver(readFileSync(out, 'utf8'));
+    const bId = storeIds.get('B') as string;
+    const brief = calls.find((c) => String(c.opts.label) === `review:${bId}`)?.brief ?? '';
+    // The renamed header — "in-flight" was never the membership rule and is now
+    // plainly wrong, since an earlier round's landed PR is on the list.
+    expect(brief).toContain(
+      'Sibling branches in this wave (your merge-tree denominator): ' +
+        `${branchOf(storeIds, 'A', 'first-round')} (pr-created)`,
+    );
+    expect(brief).not.toContain('Sibling in-flight branches:');
+    // …and the sentence that tells the Reviewer what the annotation means.
+    expect(brief).toMatch(/Each entry reads .*<branch> \(<state>\).*fact about the SPINE/);
+    expect(brief).toMatch(/\(pr-created\).*may already have landed/s);
+    expect(brief).toMatch(/\(failed\).*is on the list on purpose/s);
+  });
+
+  it('AC5 — the receipt per-row key set is unchanged by this row', async () => {
+    // The receipt is a PUBLIC surface (the verb's JSON contract). This row
+    // deliberately adds nothing to it: a `siblings` key here would make the
+    // change a public-API-change and pull in the verb-contract specs. Pinned as
+    // the exact key list so a later "helpful" addition fails here first.
+    const { spinePath, configPath } = await seed(AC1_ROWS);
+    await compose(spinePath, configPath);
+    const receipt = JSON.parse(stdout) as { rows: Array<Record<string, unknown>> };
+    expect(receipt.rows).toHaveLength(1);
+    expect(Object.keys(receipt.rows[0]).sort()).toEqual([
+      'branch',
+      'depsSetupSource',
+      'id',
+      'iteration',
+      'model',
+      'risk',
+      'scopeGrants',
+      'slug',
+      'worker',
+    ]);
   });
 });

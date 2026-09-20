@@ -930,7 +930,7 @@ function reviewerBrief(issue, report) {
 Branch: \`${issue.branch}\`
 Risk class: \`${issue.risk}\`   (dispatch is universal — Risk does NOT gate whether you run)
 Wave anchor SHA (diff base — NOT main): \`${issue.anchorSha}\`
-Sibling in-flight branches: ${issue.siblingBranches}
+Sibling branches in this wave (your merge-tree denominator): ${issue.siblingBranches}
 
 ## Resolve the branch — a stable named ref, never \`FETCH_HEAD\`
 
@@ -1009,7 +1009,19 @@ the DENOMINATOR, and every branch on it gets exactly ONE outcome: \`predicted-cl
 B's Worker is still running while row A's Reviewer already runs — so a sibling may simply not
 be on \`origin\` when you reach for it. Partial coverage is ordinary and honest; what is not
 honest is a verdict that reports the conflicts it found and stays silent about the siblings it
-never reached. **\`at-anchor\` is the sharp one:** a sibling branch that IS on \`origin\` but
+never reached.
+
+**Each entry reads \`<branch> (<state>)\`, and that state is a fact about the SPINE, never about \`origin\`.**
+The list is WAVE-WIDE, not this round's dispatch: a wave whose Conflict-Map has overlap cells is run in
+ROUNDS, and the siblings serialised into an earlier round are the ones most likely to collide with you —
+sharing files with this row is precisely why they were serialised away from it. So read the annotation
+before you read a failed fetch. A \`(dispatched)\` or \`(re-dispatched)\` sibling may simply not have been
+pushed yet — its Worker is still running. A \`(pr-created)\` or \`(approved)\` one may already have landed
+and had its branch deleted. A \`(failed)\` one is on the list on purpose: that branch is live and may yet
+land through a ruled round. In every one of those cases the outcome you record is the same —
+\`not-on-origin\`, which is UNCOVERED and is never \`predicted-clean\` — but the annotation is what lets
+your coverage line say WHY, and which siblings are worth re-running before landing.
+**\`at-anchor\` is the sharp one:** a sibling branch that IS on \`origin\` but
 whose tip still EQUALS this row's wave anchor SHA (\`${issue.anchorSha}\`) has an empty diff, so
 \`git merge-tree\` exits 0 and prints one tree hash — byte-identical to a genuinely clean
 prediction. Nothing in that output tells them apart. So per sibling, \`git fetch origin <branch>:refs/review/sib/<sibling-id>\`
