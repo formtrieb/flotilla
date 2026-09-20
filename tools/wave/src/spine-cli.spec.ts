@@ -1751,3 +1751,317 @@ describe('spine-cli dispatches the human lane (issue #366 — the fold)', () => 
     expect(JSON.parse(stdout).awaitingHumanIds).toEqual(['11']);
   });
 });
+
+// ─── `--json` on the two prose-class GATES (issue 859, ADR-0051 decision 7) ──
+//
+// `check-disclosures` and `check-awaiting-human` were the two ops that still
+// answered `--json` with nothing beyond their exit code — measured that way by
+// row 825 of the vocabulary wave. Nothing was wrong with it: the exit code IS
+// each gate's machine answer, and `wave-close` has only ever read the code.
+// What the code could not say is WHAT holds the gate, which left a headless
+// pulse reading `quiescent` (ADR-0048) re-parsing the spine for a fact the gate
+// had just computed.
+//
+// With `--json` each prints ONE object IN PLACE OF its prose:
+// `{ ok, verb, holding: [...] }` — bare ids, `ok` mirroring the exit code.
+//
+// Every shape below is CONTRACT FROM LANDING (ADR-0035): these assertions are
+// the pin, so a later change to a key name or a value is a spec failure rather
+// than a silent break of a caller that parses them.
+
+describe('spine-cli — `--json` on the two prose-class gates (issue 859)', () => {
+  let stdoutOut = '';
+  let stderrOut = '';
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stdoutOut = '';
+    stderrOut = '';
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: unknown) => {
+      stdoutOut += String(c);
+      return true;
+    });
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: unknown) => {
+      stderrOut += String(c);
+      return true;
+    });
+  });
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  /** Run one op and hand back everything an operator can observe. */
+  function run(args: string[]): { code: number; stdout: string; stderr: string } {
+    stdoutOut = '';
+    stderrOut = '';
+    const code = runSpine(args);
+    return { code, stdout: stdoutOut, stderr: stderrOut };
+  }
+
+  /** A spine carrying one row-scoped and one wave-scoped OPEN disclosure. */
+  function writeBlockedSpine(): string {
+    const path = writeTmpSpine();
+    expect(
+      runSpine([
+        'add-disclosure', path, ROW_ID, '--iter', '1', '--source', 'worker', '--text', 'row-scoped gap',
+      ]),
+    ).toBe(0);
+    expect(
+      runSpine([
+        'add-disclosure', path, '--wave-scoped', '--source', 'coordinator', '--text', 'wave-scoped gap',
+      ]),
+    ).toBe(0);
+    return path;
+  }
+
+  // ── The two answers ──────────────────────────────────────────────────────
+
+  it('check-disclosures --json on a CLEAR spine: { ok: true, verb, holding: [] }, exit 0', () => {
+    const { code, stdout } = run(['check-disclosures', writeTmpSpine(), '--json']);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      ok: true,
+      verb: 'spine check-disclosures',
+      holding: [],
+    });
+    // The prose is REPLACED, not joined to it: stdout is one JSON document.
+    expect(stdout).not.toContain('archive gate CLEAR');
+    expect(stdout.endsWith('\n')).toBe(true);
+  });
+
+  it('check-disclosures --json lists the OPEN refs in spine order, wave-scoped as `wave.<n>`, exit 1', () => {
+    const { code, stdout } = run(['check-disclosures', writeBlockedSpine(), '--json']);
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({
+      ok: false,
+      verb: 'spine check-disclosures',
+      holding: ['01.1', 'wave.1'],
+    });
+    expect(stdout).not.toContain('archive gate BLOCKED');
+    expect(stdout).not.toContain('disposition each:');
+  });
+
+  it('a DISPOSITIONED entry leaves `holding`, and the last one flips `ok`', () => {
+    // The gate never judges quality — a dispositioned entry simply stops
+    // holding it, whichever of the five values it took.
+    const path = writeBlockedSpine();
+    expect(runSpine(['set-disposition', path, '01.1', 'filed:#158'])).toBe(0);
+    expect(JSON.parse(run(['check-disclosures', path, '--json']).stdout)).toEqual({
+      ok: false,
+      verb: 'spine check-disclosures',
+      holding: ['wave.1'],
+    });
+
+    expect(runSpine(['set-disposition', path, 'wave.1', 'dropped:noise, not a gap'])).toBe(0);
+    const cleared = run(['check-disclosures', path, '--json']);
+    expect(cleared.code).toBe(0);
+    expect(JSON.parse(cleared.stdout)).toEqual({
+      ok: true,
+      verb: 'spine check-disclosures',
+      holding: [],
+    });
+  });
+
+  it('check-awaiting-human --json returns the held row ids, exit 1', () => {
+    const { code, stdout } = run(['check-awaiting-human', writeHumanLaneSpine(), '--json']);
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({
+      ok: false,
+      verb: 'spine check-awaiting-human',
+      holding: ['11'],
+    });
+    expect(stdout).not.toContain('archive gate BLOCKED');
+  });
+
+  it("check-awaiting-human's `holding` IS human-gated's `awaitingHumanIds`, --workers included", () => {
+    // Derived by RUNNING the listing, never transcribed. Both ops read one
+    // `awaitingHuman` projection; this is the assertion that says an edit
+    // cannot give them two ideas of who is holding the same wave.
+    const path = writeHumanLaneSpine();
+    const listed = JSON.parse(run(['human-gated', path]).stdout).awaitingHumanIds;
+    expect(JSON.parse(run(['check-awaiting-human', path, '--json']).stdout).holding).toEqual(listed);
+    expect(listed).toEqual(['11']); // non-vacuity: two empty lists prove nothing
+
+    // …and the same equality under a substituted Worker vocabulary, where the
+    // engine default matches nothing at all.
+    const none = run(['check-awaiting-human', path, '--workers', 'needs-a-human', '--json']);
+    expect(none.code).toBe(0);
+    expect(JSON.parse(none.stdout)).toEqual({
+      ok: true,
+      verb: 'spine check-awaiting-human',
+      holding: [],
+    });
+    expect(
+      JSON.parse(run(['human-gated', path, '--workers', 'needs-a-human']).stdout).awaitingHumanIds,
+    ).toEqual([]);
+  });
+
+  // ── `holding` carries BARE IDS, and exactly three keys ───────────────────
+
+  it('the answer has exactly three keys, in the order the contract names them', () => {
+    // Bare ids, not records (Coordinator ruling 2026-09-21): a richer shape can
+    // arrive later under a NEW key, and a key once shipped can never be taken
+    // back (ADR-0035). Key ORDER is pinned too — JSON.stringify preserves
+    // insertion order, and an answer a human skims should open the same way.
+    for (const [op, path] of [
+      ['check-disclosures', writeBlockedSpine()],
+      ['check-awaiting-human', writeHumanLaneSpine()],
+    ] as const) {
+      const answer = JSON.parse(run([op, path, '--json']).stdout) as Record<string, unknown>;
+      expect(Object.keys(answer), 'wrong keys on ' + op).toEqual(['ok', 'verb', 'holding']);
+      for (const held of answer.holding as unknown[]) {
+        expect(typeof held, 'non-string in holding on ' + op).toBe('string');
+      }
+    }
+  });
+
+  it('the shape each gate ADVERTISES is the shape it PRINTS — derived from the contract', () => {
+    // One table, two readers (the RECEIPT_SHAPES discipline): the keys are read
+    // off the verb's own `--json` usage line at runtime, never transcribed
+    // here, so a shape advertised without being emitted fails by name.
+    const keysOf = (op: string): string[] => {
+      const line = SPINE_CONTRACTS[op].usage.find((l) => l.trimStart().startsWith('--json'))!;
+      const shape = line.slice(line.indexOf('{'));
+      // Up to the first `[`: past it the text describes what the LIST holds,
+      // not further keys of the object.
+      const head = shape.slice(0, shape.indexOf('['));
+      return [...head.matchAll(/(\w+)/g)].map((m) => m[1]);
+    };
+    for (const [op, path] of [
+      ['check-disclosures', writeBlockedSpine()],
+      ['check-awaiting-human', writeHumanLaneSpine()],
+    ] as const) {
+      expect(keysOf(op), 'advertised keys differ from printed keys on ' + op).toEqual(
+        Object.keys(JSON.parse(run([op, path, '--json']).stdout) as Record<string, unknown>),
+      );
+    }
+  });
+
+  // ── NEGATIVE CONTROL: the default rendering is untouched ─────────────────
+
+  it('WITHOUT --json both gates print exactly the prose they always printed', () => {
+    // Byte-exact pins on the CLEAR line of each gate, and on the BLOCKED
+    // opener, so the additive claim is falsifiable rather than asserted. The
+    // full BLOCKED bodies are pinned by the sections above and in cli.spec.ts.
+    expect(run(['check-disclosures', writeTmpSpine()]).stdout).toBe(
+      'disclosures: 0 open of 0 — archive gate CLEAR\n',
+    );
+
+    const blocked = run(['check-disclosures', writeBlockedSpine()]);
+    expect(blocked.code).toBe(1);
+    expect(blocked.stdout.split('\n')[0]).toBe('disclosures: 2 open of 2 — archive gate BLOCKED');
+    expect(() => JSON.parse(blocked.stdout) as unknown).toThrow();
+
+    const held = run(['check-awaiting-human', writeHumanLaneSpine()]);
+    expect(held.code).toBe(1);
+    expect(held.stdout.split('\n')[0]).toBe(
+      'awaiting-human: 1 of 1 human-gated rows — archive gate BLOCKED (see .claude/skills/wave-close/reference/phase-6-archive.md)',
+    );
+    expect(() => JSON.parse(held.stdout) as unknown).toThrow();
+  });
+
+  // ── Refusals print NO JSON at all ────────────────────────────────────────
+
+  it.each(['check-disclosures', 'check-awaiting-human'] as const)(
+    '`%s --json` on an UNREADABLE spine prints nothing on stdout — exit 1, `error:` on stderr',
+    (op) => {
+      // The row-825 rule, and it is not a taste call: `{ ok: false, holding: [] }`
+      // here would be indistinguishable, to the pulse this answer exists for,
+      // from "the spine WAS read and nothing holds the gate".
+      const { code, stdout, stderr } = run([op, join(tmpdir(), 'no-such-spine-859.md'), '--json']);
+      expect(code).toBe(1);
+      expect(stdout).toBe('');
+      expect(stderr).toContain('error:');
+    },
+  );
+
+  it.each(['check-disclosures', 'check-awaiting-human'] as const)(
+    '`%s --json` with no <spine-path> is usage 2 with no JSON',
+    (op) => {
+      const { code, stdout } = run([op, '--json']);
+      expect(code).toBe(2);
+      expect(stdout).toBe('');
+    },
+  );
+
+  it('exit codes are unchanged by --json on every path of both gates', () => {
+    const cases: readonly (readonly [readonly string[], number])[] = [
+      [['check-disclosures', writeTmpSpine()], 0],
+      [['check-disclosures', writeBlockedSpine()], 1],
+      [['check-disclosures', join(tmpdir(), 'no-such-spine-859-codes.md')], 1],
+      [['check-disclosures'], 2],
+      [['check-awaiting-human', writeHumanLaneSpine()], 1],
+      [['check-awaiting-human', writeHumanLaneSpine(), '--workers', 'needs-a-human'], 0],
+      [['check-awaiting-human', join(tmpdir(), 'no-such-spine-859-codes.md')], 1],
+      [['check-awaiting-human'], 2],
+    ];
+    for (const [args, expected] of cases) {
+      expect(run([...args]).code, args.join(' ') + ' changed exit code').toBe(expected);
+      expect(run([...args, '--json']).code, args.join(' ') + ' --json changed exit code').toBe(
+        expected,
+      );
+    }
+  });
+
+  // ── The flag is read as a FLAG, never as data ────────────────────────────
+
+  it('a `--workers` whose VALUE is "--json" does not switch the mode', () => {
+    // The contract-aware scan steps over a value-taking flag's value, so the
+    // mode switch can never be triggered by a Worker token that happens to
+    // spell it — the same step-over the `--text "--json"` pin holds one
+    // section up.
+    const { code, stdout } = run([
+      'check-awaiting-human', writeHumanLaneSpine(), '--workers', '--json',
+    ]);
+    expect(code).toBe(0);
+    expect(stdout).toContain('archive gate CLEAR');
+    expect(() => JSON.parse(stdout) as unknown).toThrow();
+  });
+
+  it('a LEADING --json is still read as the op and refused, exit 2 — the group grammar', () => {
+    // `spine` is one of four verb GROUPS and on all four the op token comes
+    // first. Giving this one group a private grammar would buy a shape nobody
+    // could generalise from.
+    const { code, stdout, stderr } = run(['--json', 'check-disclosures', writeTmpSpine()]);
+    expect(code).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('unknown op: --json');
+  });
+
+  // ── The advertising surface, and the router ──────────────────────────────
+
+  it.each(['check-disclosures', 'check-awaiting-human'] as const)(
+    '`%s --help` names the --json shape and keeps the class statement',
+    (op) => {
+      const { code, stdout } = run([op, '--help']);
+      expect(code).toBe(0);
+      expect(stdout).toContain('--json: what HOLDS this gate');
+      expect(stdout).toContain('{ ok, verb, holding:');
+      expect(stdout).toContain('`ok` mirrors the exit code');
+      // A GATE is not a silent write: it must not advertise a receipt, and the
+      // existing pin one section up reads that same phrase back.
+      expect(stdout).not.toContain('one receipt on stdout');
+    },
+  );
+
+  it.each(['check-disclosures', 'check-awaiting-human'] as const)(
+    '`%s --json` is byte-identical through the router and through this runner',
+    (op) => {
+      // The skills spell it `main(['spine', …])`; the router forwards argv
+      // verbatim, and this is the assertion that says so for the gate answers.
+      const path = op === 'check-disclosures' ? writeBlockedSpine() : writeHumanLaneSpine();
+      const direct = run([op, path, '--json']);
+
+      stdoutOut = '';
+      stderrOut = '';
+      const viaRouterCode = main(['spine', op, path, '--json']);
+
+      expect(viaRouterCode).toBe(direct.code);
+      expect(stdoutOut).toBe(direct.stdout);
+      expect(stderrOut).toBe(direct.stderr);
+      expect(direct.stdout.length).toBeGreaterThan(0); // non-vacuity
+    },
+  );
+});

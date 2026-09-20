@@ -6186,6 +6186,126 @@ describe('spine check-awaiting-human — the fail-closed archive gate (issue #32
     expect(main(['spine', 'check-awaiting-human'])).toBe(2);
     expect(stderrBuf).toMatch(/requires a <spine-path>/);
   });
+
+  // ── `--json`: the gate returns what HOLDS it (issue 859) ──────────────────
+  //
+  // Reached through the ROUTER here — `main(['spine', …])` — because that is
+  // the spelling every skill and every pulse uses, and the surface a caller
+  // sees. spine-cli.spec.ts pins the same answer against the runner directly,
+  // plus the shapes and the refusal paths.
+  //
+  // The gate's exit code was always its machine verdict; what it could not say
+  // is WHICH rows hold it, which left a headless `quiescent` read (ADR-0048)
+  // re-parsing the spine for a fact this gate had just computed.
+
+  it('--json returns the HELD row ids instead of the prose, exit unchanged', () => {
+    const code = main(['spine', 'check-awaiting-human', writeHumanLaneSpine(), '--json']);
+
+    expect(code).toBe(1);
+    expect(JSON.parse(stdoutBuf)).toEqual({
+      ok: false,
+      verb: 'spine check-awaiting-human',
+      holding: ['11'],
+    });
+    // The prose is REPLACED, not joined: stdout is one JSON document, so a
+    // caller never has to strip a human-facing block off the front of it.
+    expect(stdoutBuf).not.toContain('archive gate BLOCKED');
+    expect(stdoutBuf).not.toContain('PARK + UNCLAIM');
+  });
+
+  it('--json on a CLEAR wave is `ok: true` with an empty `holding`, exit 0', () => {
+    const code = main([
+      'spine',
+      'check-awaiting-human',
+      writeHumanLaneSpine([
+        '| 10 | Ordinary AFK row | background | mechanical | quick-verify | — | pr-created | 1 | — |',
+      ]),
+      '--json',
+    ]);
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdoutBuf)).toEqual({
+      ok: true,
+      verb: 'spine check-awaiting-human',
+      holding: [],
+    });
+    expect(stdoutBuf).not.toContain('archive gate CLEAR');
+  });
+
+  it('NEGATIVE CONTROL — a PARKED and a RELEASED gated row are absent from `holding`', () => {
+    // The two shapes the gate deliberately does not fire on (ADR-0022, and the
+    // released row) must not appear in the list either — a `holding` that named
+    // a row the exit code says is not holding anything would be worse than no
+    // list at all.
+    const rows = [
+      `| 11 | Awaiting | ${HUMAN_GATED_WORKER} | mechanical | quick-verify | — | planned | 1 | — |`,
+      `| 12 | Parked | ${HUMAN_GATED_WORKER} | mechanical | quick-verify | — | parked | 1 | — |`,
+      `| 13 | Released | ${HUMAN_GATED_WORKER} | mechanical | quick-verify | — | dispatched | 1 | — |`,
+    ];
+    expect(main(['spine', 'check-awaiting-human', writeHumanLaneSpine(rows), '--json'])).toBe(1);
+    expect(JSON.parse(stdoutBuf).holding).toEqual(['11']);
+  });
+
+  it('`holding` IS `human-gated`\'s `awaitingHumanIds` — same spine, same --workers', () => {
+    // Derived by RUNNING the listing, never transcribed: the two ops read one
+    // `awaitingHuman` projection, and this is the assertion that says a future
+    // edit cannot give them two ideas of who holds the wave.
+    const path = writeHumanLaneSpine([
+      '| 30 | gated on a human | needs-a-human | mechanical | quick-verify | — | planned | 1 | — |',
+      '| 31 | also gated | needs-a-human | mechanical | quick-verify | — | planned | 1 | — |',
+      '| 32 | released | needs-a-human | mechanical | quick-verify | — | dispatched | 1 | — |',
+    ]);
+
+    expect(main(['spine', 'human-gated', path, '--workers', 'needs-a-human'])).toBe(0);
+    const listed = JSON.parse(stdoutBuf).awaitingHumanIds;
+
+    stdoutBuf = '';
+    expect(
+      main(['spine', 'check-awaiting-human', path, '--workers', 'needs-a-human', '--json']),
+    ).toBe(1);
+    expect(JSON.parse(stdoutBuf).holding).toEqual(listed);
+    // Non-vacuity: an empty lane on both sides would satisfy the equality and
+    // prove nothing about the projection they share.
+    expect(listed).toEqual(['30', '31']);
+  });
+
+  it('--json prints NO JSON on an unreadable spine (exit 1) and none on a missing path (exit 2)', () => {
+    // The row-825 rule, and the reason it is not a taste call: a
+    // `{ ok: false, holding: [] }` here would be indistinguishable, to the very
+    // pulse this answer exists for, from "the spine WAS read and nothing holds
+    // the gate". Silence on stdout is the only honest answer.
+    expect(
+      main(['spine', 'check-awaiting-human', join(root, 'no-such-spine.md'), '--json']),
+    ).toBe(1);
+    expect(stdoutBuf).toBe('');
+    expect(stderrBuf).toMatch(/error:/);
+
+    stdoutBuf = '';
+    stderrBuf = '';
+    expect(main(['spine', 'check-awaiting-human', '--json'])).toBe(2);
+    expect(stdoutBuf).toBe('');
+    expect(stderrBuf).toMatch(/requires a <spine-path>/);
+  });
+
+  it('the group roster line keeps its prefix and GAINS the --json clause, for both gates', () => {
+    // The structural carrier (Coordinator ruling 2026-09-21): no ADR edit, the
+    // roster and `--help` are where the two gates now advertise their answer.
+    // Rendered from each op's own contract by cli.ts's roster renderer, so this
+    // fails if the advertised shape and the contract ever describe two things.
+    main([]); // zero args → the whole-CLI roster on stderr
+    const lineFor = (needle: string) => stderrBuf.split('\n').find((l) => l.includes(needle))!;
+
+    for (const op of ['check-disclosures', 'check-awaiting-human']) {
+      const line = lineFor(`flotilla-engine spine ${op} `);
+      // The prefix the prose class already carried is untouched…
+      expect(line, `\`spine ${op}\` lost its prose-class note`).toContain('# prints text, not JSON');
+      // …and the clause is new beside it.
+      expect(line, `\`spine ${op}\` roster line has no --json clause`).toContain(
+        '--json: what HOLDS this gate',
+      );
+      expect(line).toContain('{ ok, verb, holding:');
+    }
+  });
 });
 
 describe('the human-lane ops are dispatched by spine-cli\'s ONE table (issue #366 — the fold)', () => {
