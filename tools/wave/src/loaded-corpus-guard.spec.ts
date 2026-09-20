@@ -605,11 +605,16 @@ describe('loaded-corpus-guard — the two pinned reading-class measures', () => 
       expect(file.split('/')).not.toContain(EVIDENCE_DIR_NAME);
     }
     // The exclusion is real rather than vacuous: the walker DOES skip an
-    // evidence/ directory when one exists. Proven against a synthetic tree
-    // below (`the evidence/ exclusion is load-bearing`), because no evidence/
-    // directory exists in the clone yet — the walk-back rows create the first.
+    // evidence/ directory when one exists — `wave-close/evidence/`,
+    // `wave-shared/evidence/`, `wave-start/evidence/` and, as of issue #734,
+    // `wave-setup/evidence/` all carry real files today, so this is a STRICT
+    // inequality against the live clone, not a synthetic-only proof. The
+    // synthetic-tree predicate below (`the evidence/ exclusion is
+    // load-bearing`) stays as the permanent, file-independent control for the
+    // path SHAPE, so the exclusion is still provably general — not "true
+    // because these four directories happen to exist right now".
     const withEvidence = SKILL_DIRS.flatMap((dir) => listMarkdown(dir, false));
-    expect(withEvidence.length).toBeGreaterThanOrEqual(LOADED_CORPUS_FILES.length);
+    expect(withEvidence.length).toBeGreaterThan(LOADED_CORPUS_FILES.length);
   });
 
   it('the shared standing load is within its pinned ceiling', () => {
@@ -650,11 +655,12 @@ describe('loaded-corpus-guard — the two pinned reading-class measures', () => 
   });
 
   it('the evidence/ exclusion is load-bearing — the walker skips such a directory where one exists', () => {
-    // No evidence/ directory exists in the clone yet, so the exclusion is
-    // proven against the `.claude/skills` tree itself with the flag flipped:
-    // `listMarkdown(dir, false)` is the same walker with the skip disabled, and
-    // the two results are identical TODAY. What the predicate below pins is the
-    // skip itself, on the path shape the walk-back rows will create.
+    // Several evidence/ directories are real in the clone today (the test
+    // above already exercises the walker against them as a strict
+    // inequality). This predicate stays as a permanent, path-shape-only
+    // control (no file read, no clone dependency) so a FUTURE evidence/ path
+    // under a skill that does not carry one yet is covered identically —
+    // `isShippedInstructionFile` must read the shape, not a fixed allowlist.
     expect(isShippedInstructionFile('.claude/skills/wave-start/evidence/driver-history.md')).toBe(false);
     const asCorpusPath = '.claude/skills/wave-start/evidence/driver-history.md'.split('/');
     expect(asCorpusPath).toContain(EVIDENCE_DIR_NAME);
