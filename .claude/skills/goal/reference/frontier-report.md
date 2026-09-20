@@ -35,8 +35,8 @@ How to turn one `goal-frontier` answer into the status pass's report. The skill 
 |---|---|---|---|
 | `done` | closed on the tracker — a project's own `completed`/`canceled` status, the mirror of an issue's terminal state | "finished" | none |
 | `in-motion` | carries a wave claim (or a needs-a-human flag raised over one); for a project member, ALSO the project's own `started`/`paused` status | "a batch has already taken this one" — or, for a project, "somebody moved it" | the batch holding it, or whoever moved the project |
-| `actionable` | ready, unblocked, unclaimed — for a project member, at least one OPEN issue inside carries the eligibility marker | "ready to be picked up in the next batch" | the next planning pass |
 | `blocked` | at least one dependency nothing has resolved | "waiting on X" — **name X** | whatever it waits on |
+| `actionable` | ready, unblocked, unclaimed — for a project member, at least one OPEN issue inside carries the eligibility marker | "ready to be picked up in the next batch" | the next planning pass |
 | `unready` | carries no readiness marker at all — an issue with no planning header, or a project with no eligible open issue inside (an EMPTY project reads this way too, for exactly the same reason a bare ticket does) | "still just a placeholder — nobody can pick it up until it is written up" | for an issue: sharpen it, `triage` then `to-issues`. For a project: triage and decorate an issue *inside* it — the project itself has nothing on it to sharpen |
 
 Two rules the ladder settles, worth knowing before you second-guess a reading:

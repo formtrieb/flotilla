@@ -1265,13 +1265,18 @@ export class LinearIssuesStore implements IssueStore {
    * opaque id when one is missing, so a store that could not name a member
    * publishes a less readable anchor rather than an incomplete one.
    *
-   * Health is `input.health` or nothing — where "nothing" includes the empty
-   * string, which is the transport's own rule read back up to this gate so the
-   * receipt cannot claim a health the wire dropped. There is no branch below that
-   * can put a value there, and deliberately no read of the container's own health
-   * to fall back on: that value is the vendor's roll-up of the most recent update,
-   * which is what this pass is about to write, so falling back to it would publish
-   * this station's previous output as if it were a fresh human judgment.
+   * Health is `input.health.trim()` or nothing — where "nothing" includes the
+   * empty string AND a whitespace-only one, which is the transport's own rule
+   * read back up to this gate so the receipt cannot claim a health the wire
+   * dropped. A padded-but-real value (`' atRisk '`) is not absence: it is sent,
+   * and reported back, trimmed — trim-to-absence, not refuse (a whitespace-only
+   * health previously failed loudly at the vendor; it now publishes without
+   * one, by construction, rather than by widening the wire-rejection surface).
+   * There is no branch below that can put a value there, and deliberately no
+   * read of the container's own health to fall back on: that value is the
+   * vendor's roll-up of the most recent update, which is what this pass is
+   * about to write, so falling back to it would publish this station's
+   * previous output as if it were a fresh human judgment.
    */
   async publishGoalUpdate(
     goalId: string,
@@ -1303,8 +1308,15 @@ export class LinearIssuesStore implements IssueStore {
     // claiming a health that was never sent. One rule, applied at all three sites
     // the value passes through: this gate, the transport, and the in-memory fake
     // that stands in for it.
-    const health =
-      typeof input.health === 'string' && input.health !== '' ? { health: input.health } : {};
+    //
+    // TRIMMED, not merely gated on `''`: a whitespace-only value (`' '`, `'\t'`)
+    // is exactly as absent as `''` — none of them are members of the vendor's
+    // enum — so trimming first and then testing for emptiness catches both. A
+    // genuinely non-empty but padded value (`' atRisk '`) is not absence; it
+    // travels trimmed, so the receipt reports the same value the wire received
+    // rather than a padded string the vendor would reject.
+    const trimmedHealth = typeof input.health === 'string' ? input.health.trim() : '';
+    const health = trimmedHealth !== '' ? { health: trimmedHealth } : {};
     const result =
       role === 'initiative'
         ? await this.api.createInitiativeUpdate({ initiativeId: goalId, body, ...health })

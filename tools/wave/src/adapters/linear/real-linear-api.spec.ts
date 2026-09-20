@@ -956,6 +956,38 @@ describe('RealLinearApi', () => {
       expect(sent?.health).toBe('atRisk');
     });
 
+    it('a WHITESPACE-ONLY health is an OMITTED KEY, and a PADDED one is sent TRIMMED (#633)', async () => {
+      let sent: Record<string, unknown> | undefined;
+      const { api } = makeApi({
+        GetProject: () => ({ status: 200, json: { data: { project: projectNode } } }),
+        CreateProjectUpdate: (req) => {
+          sent = (req.variables as { input: Record<string, unknown> }).input;
+          return {
+            status: 200,
+            json: {
+              data: { projectUpdateCreate: { success: true, projectUpdate: { id: 'upd-1' } } },
+            },
+          };
+        },
+      });
+
+      // A single space is not a member of the vendor's health enum any more
+      // than `''` is: sending it verbatim would be a wire-level rejection, so
+      // it is absence exactly the way the empty string is.
+      await api.createProjectUpdate({ projectId: 'prj-1', body: 'b', health: ' ' });
+      expect(sent && 'health' in sent).toBe(false);
+      expect(sent).toEqual({ projectId: 'prj-1', body: 'b' });
+
+      // A tab-only value: the same rule, a different whitespace character.
+      await api.createProjectUpdate({ projectId: 'prj-1', body: 'b', health: '\t' });
+      expect(sent && 'health' in sent).toBe(false);
+
+      // A padded but genuinely non-empty value is not absence — trimmed, not
+      // dropped, and never sent with its padding intact.
+      await api.createProjectUpdate({ projectId: 'prj-1', body: 'b', health: ' atRisk ' });
+      expect(sent?.health).toBe('atRisk');
+    });
+
     it('createInitiativeUpdate sends initiativeId — the OTHER surface, not the project one', async () => {
       const { api } = makeApi({
         GetInitiative: () => ({
