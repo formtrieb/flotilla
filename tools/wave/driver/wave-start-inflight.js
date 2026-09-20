@@ -607,6 +607,12 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    git status --porcelain      # MUST be empty
    git rev-parse HEAD          # MUST equal ${issue.anchorSha}
    \`\`\`
+   A \`fatal: failed to store: 100001\` line printed by that fetch is benign —
+   proceed. The git credential helper failed to write the token back to the
+   keychain under the harness write-deny; the fetch's own operation still
+   completed, so if its ref line printed (\`-> FETCH_HEAD\`), the ref arrived and
+   the reset above already used it. This is not a reason to report \`blocked\`,
+   and it needs no \`judgmentCalls\` disclosure.
    An UNTRACKED leftover survives \`git reset --hard\`, and a \`??\` line is the one thing
    that second \`git status\` may still print — only once you have decided it above: a path
    your own work will rewrite anyway is discarded the moment your file write lands on it; a
@@ -735,6 +741,12 @@ const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) —
    git status --porcelain      # MUST be empty
    git rev-parse HEAD          # MUST equal ${issue.iteration1HeadSha || 'the fetched branch tip (see step 2)'}
    \`\`\`
+   A \`fatal: failed to store: 100001\` line printed by that fetch is benign —
+   proceed. The git credential helper failed to write the token back to the
+   keychain under the harness write-deny; the fetch's own operation still
+   completed, so if its ref line printed (\`-> FETCH_HEAD\`), the ref arrived and
+   the checkout above already used it. This is not a reason to report \`blocked\`,
+   and it needs no \`judgmentCalls\` disclosure.
    (The Coordinator already deregistered the iteration-1 worktree that held
    this branch before this dispatch — start-mechanics.md step 7d — so this
    checkout is never blocked by a stale worktree registration.)
@@ -927,6 +939,12 @@ Sibling in-flight branches: ${issue.siblingBranches}
 \`\`\`bash
 git fetch origin ${issue.branch}:refs/review/${issue.id} 2>&1 | tail -3
 \`\`\`
+A \`fatal: failed to store: 100001\` line printed by that fetch is benign —
+proceed. The git credential helper failed to write the token back to the
+keychain under the harness write-deny; the fetch's own operation still
+completed, so if its ref line printed (\`-> refs/review/${issue.id}\`), the ref
+arrived. This is not a reason to report \`blocked\`, and it is not a finding to
+disclose.
 \`\`\`bash
 git rev-parse refs/review/${issue.id}
 \`\`\`
