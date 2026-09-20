@@ -482,6 +482,25 @@ describe('InMemoryLinearApi update surfaces (the mirror-pass substrate, ADR-0046
     expect(real.health).toBe('onTrack');
   });
 
+  it('a WHITESPACE-ONLY health is stored as an ABSENT KEY, and a PADDED one is stored TRIMMED (#633)', async () => {
+    const api = new InMemoryLinearApi();
+    const { id: projectId } = await api.createProject({ name: 'M3', description: '' });
+
+    // A single space or a tab is not a member of the vendor's health enum any
+    // more than `''` is — it is absence wearing whitespace, and the fake must
+    // model the same rule the transport applies at the wire.
+    await api.createProjectUpdate({ projectId, body: 'a', health: ' ' });
+    await api.createProjectUpdate({ projectId, body: 'b', health: '\t' });
+    // A padded but genuinely non-empty value is not absence — it is trimmed
+    // and stored, never dropped and never stored with its padding intact.
+    await api.createProjectUpdate({ projectId, body: 'c', health: ' atRisk ' });
+
+    const [spaceOnly, tabOnly, padded] = api.publishedUpdates();
+    expect('health' in spaceOnly).toBe(false);
+    expect('health' in tabOnly).toBe(false);
+    expect(padded.health).toBe('atRisk');
+  });
+
   it('refuses to publish against a container that does not exist', async () => {
     const api = new InMemoryLinearApi();
     await expect(api.createProjectUpdate({ projectId: 'nope', body: 'x' })).rejects.toThrow(

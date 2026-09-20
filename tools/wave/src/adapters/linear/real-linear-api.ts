@@ -1578,9 +1578,17 @@ function toLinearProject(raw: Record<string, unknown>): LinearProject {
  * through. The empty-string guard is part of the same rule: `''` is not a member
  * of the vendor's enum, so treating it as absence keeps a caller's empty field
  * from becoming a wire rejection that reads like a flotilla bug.
+ *
+ * **Trimmed, not merely emptied.** A whitespace-only value (`' '`, `'\t'`) is
+ * exactly as absent as `''` — neither is a member of the vendor's enum — so
+ * this trims first and tests the result, catching both. A padded but genuinely
+ * non-empty value (`' atRisk '`) is not absence: it is sent trimmed, never with
+ * its padding intact. Trim-to-absence, not refuse — the same rule extended by
+ * construction, not a new failure mode.
  */
 function healthIfSupplied(health: string | undefined): { health?: string } {
-  return typeof health === 'string' && health !== '' ? { health } : {};
+  const trimmed = typeof health === 'string' ? health.trim() : '';
+  return trimmed !== '' ? { health: trimmed } : {};
 }
 
 /**
