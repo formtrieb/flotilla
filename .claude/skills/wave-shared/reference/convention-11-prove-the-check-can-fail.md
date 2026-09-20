@@ -59,10 +59,6 @@ The [ADR-0004 Amendment 2026-07-28](../../../../docs/adr/0004-ac-ground-truth-is
 
 Convention 11 is the Worker-side dual. The role that already has the code inverted and the harness warm produces the evidence, instead of leaving the Reviewer to reconstruct it from a cold start. The two are independent: a Reviewer's probe does not excuse a missing Worker falsification, and a Worker's falsification does not excuse the Reviewer from its own re-verification.
 
-### Where the clause lives
-
-`workerBrief()`'s policy-clauses list (`.claude/skills/wave-start/reference/workflow-driver.md`) — the text a Worker actually receives — plus the directed read in `reviewerBrief()`'s `## Your checks`. The Coordinator's compose-and-routing duties are in `.claude/skills/wave-start/reference/start-mechanics.md`. This section documents the convention those encode.
-
 ### Live occurrences (evidence)
 
 A hand-written brief clause produced the strongest single falsification any wave has produced; a shipped gate that only ever answered `deferred` went uncaught until a human recalculated coverage by hand; and a voluntary control-case run by a Reviewer is the practice this convention now asks of the Worker one stage earlier (history: `../evidence/convention-11-prove-the-check-can-fail.md`, read via the sibling-path read when actually wanted, ADR-0040).

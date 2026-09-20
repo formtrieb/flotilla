@@ -761,6 +761,24 @@ function runGoalFacetConformance(
       expect(real.health).toBe('onTrack');
     });
 
+    it('a WHITESPACE-ONLY health is absence too, and a PADDED one reaches the receipt TRIMMED (#633)', async () => {
+      const { h, store } = await fresh();
+      if (!h.hasUpdateSurface) return;
+      const goalId = await makeGoal(h, store, 'Ship the mirror');
+
+      // A single space (or a tab) is not a member of the vendor's health enum
+      // any more than `''` is — the same absence, spelled with whitespace.
+      const spaceOnly = await store.publishGoalUpdate(goalId, { health: ' ' }, h.binding);
+      expect('health' in spaceOnly).toBe(false);
+      const tabOnly = await store.publishGoalUpdate(goalId, { health: '\t' }, h.binding);
+      expect('health' in tabOnly).toBe(false);
+
+      // A padded but genuinely non-empty value is not absence: it travels
+      // trimmed, and the receipt reports the same trimmed value that was sent.
+      const padded = await store.publishGoalUpdate(goalId, { health: ' atRisk ' }, h.binding);
+      expect(padded.health).toBe('atRisk');
+    });
+
     it('the narrative rides ABOVE the anchor, and the operator note is attributed inside it', async () => {
       const { h, store } = await fresh();
       if (!h.hasUpdateSurface) return;
@@ -1120,6 +1138,31 @@ describe('the initiative binding is realized on linear and refused elsewhere', (
     const [published] = api.publishedUpdates();
     expect('health' in published).toBe(false);
     expect('health' in receipt).toBe(false);
+  });
+
+  it('a WHITESPACE-ONLY health reaches the wire as NO KEY, and a PADDED one arrives trimmed — receipt matches the fake (#633)', async () => {
+    const api = new InMemoryLinearApi();
+    const store = new LinearIssuesStore({ api });
+    const goalId = await store.createGoal({ title: 'Milestone 3', filingHint: 'm3' }, 'initiative');
+
+    const spaceReceipt = await store.publishGoalUpdate(goalId, { health: ' ' }, 'initiative');
+    const tabReceipt = await store.publishGoalUpdate(goalId, { health: '\t' }, 'initiative');
+    const paddedReceipt = await store.publishGoalUpdate(
+      goalId,
+      { health: ' atRisk ' },
+      'initiative',
+    );
+
+    const [spaceSent, tabSent, paddedSent] = api.publishedUpdates();
+    expect('health' in spaceSent).toBe(false);
+    expect('health' in spaceReceipt).toBe(false);
+    expect('health' in tabSent).toBe(false);
+    expect('health' in tabReceipt).toBe(false);
+    // The receipt's contract is that it reports what was SENT — so it must
+    // equal the fake's own recording for the same call, not merely "some
+    // trimmed value".
+    expect(paddedSent.health).toBe('atRisk');
+    expect(paddedReceipt.health).toBe(paddedSent.health);
   });
 
   it('GITHUB still refuses an initiative binding — `unrealized-container`, before any write', async () => {

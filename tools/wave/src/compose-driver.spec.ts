@@ -1444,6 +1444,149 @@ describe('compose-driver — the re-dispatch checkout can half-apply under the h
   });
 });
 
+// ─── #828 — the credential-helper writeback's benign `fatal:` line ───────────
+//
+// The harness denies a dispatched agent write access to the git credential
+// helper's keychain store, so `git fetch`'s WRITEBACK fails and prints
+// `fatal: failed to store: 100001` while the fetch's own OPERATION — the ref
+// arrived, `FETCH_HEAD` (or, at the Reviewer's site, `refs/review/<id>`)
+// updated — completes regardless. Nothing in the brief used to say so, so a
+// dispatched Worker or Reviewer had exactly two honest, costly responses to
+// the unexplained `fatal:` line: stop and report `blocked`, or proceed and
+// disclose it as a judgment call. The clause below pre-empts both, at all
+// three composed sites — the iteration-1 Worker setup, the re-dispatch
+// Worker setup, and the Reviewer's own resolve-the-branch fetch.
+//
+// The `-u` upstream-config write line and the half-applied-checkout mirror
+// case (both named in the issue) are DELIBERATELY out of scope for this row —
+// the negative-scope test below guards that boundary too.
+
+describe('compose-driver — the credential-helper writeback fatal line is named and ruled benign at all three sites (issue #828)', () => {
+  const FATAL_LINE = 'fatal: failed to store: 100001';
+  /** Matches the RENDERED brief (plain backticks — the template's `\` escapes are gone once `new Function` evaluates it). */
+  const FATAL_HEADLINE = 'A `' + FATAL_LINE + '` line printed by that fetch is benign —';
+  /** Matches the RAW template text (the source's own `\`` escaping survives a plain `readFileSync`) — used only against `TEMPLATE` below, never against a rendered brief. */
+  const FATAL_HEADLINE_RAW = 'A \\`' + FATAL_LINE + '\\` line printed by that fetch is benign —';
+  const MECHANISM =
+    /credential helper failed to write the token back to the\s+keychain under the harness write-deny/;
+  // The clause line-wraps inside the template (three-space-indented prose), so
+  // the rendered brief carries a literal `\n   ` where the source line broke —
+  // `\s+` stands in for that at each such join, never a plain space.
+  const WORKER_PROCEED = /This is not a reason to report `blocked`,\s+and it needs no `judgmentCalls` disclosure\./;
+  const REVIEWER_PROCEED = /This is not a reason to report `blocked`, and it is not a finding to\s+disclose\./;
+
+  /** One iteration-1 row and one re-dispatch row, from ONE composed script. */
+  const rows828 = [
+    row({ id: '42', slug: 'first' }),
+    row({ id: '43', slug: 'second', iteration: 2, siblingBranches: 'wave/42-first' }),
+  ];
+  const script828 = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows: rows828 });
+
+  async function briefs828(
+    from = script828,
+  ): Promise<{ iter1: string; redispatch: string; reviewer: string }> {
+    const { calls } = await runComposedDriver(from);
+    const briefAt = (label: string) => calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+    const iter1 = briefAt('worker:42');
+    const redispatch = briefAt('worker:43');
+    const reviewer = briefAt('review:42');
+    // Guard the fixture before any claim rests on it: three DIFFERENT
+    // composed blocks, not one counted three times.
+    expect(iter1).not.toBe('');
+    expect(redispatch).toContain('## Workspace setup (do first) — RE-DISPATCH');
+    expect(iter1).not.toContain('RE-DISPATCH');
+    expect(reviewer).toContain('## Resolve the branch');
+    return { iter1, redispatch, reviewer };
+  }
+
+  it('names the literal fatal line and rules it benign at all three composed sites', async () => {
+    const { iter1, redispatch, reviewer } = await briefs828();
+    for (const brief of [iter1, redispatch, reviewer]) {
+      expect(brief).toContain(FATAL_LINE);
+      expect(brief).toContain(FATAL_HEADLINE);
+      expect(brief).toMatch(MECHANISM);
+    }
+  });
+
+  it('states the fetch succeeded when its own ref line printed — `-> FETCH_HEAD` at the two Worker sites', async () => {
+    const { iter1, redispatch } = await briefs828();
+    for (const brief of [iter1, redispatch]) {
+      expect(brief).toMatch(/ref line printed \(`-> FETCH_HEAD`\), the ref arrived/);
+    }
+  });
+
+  it('states the fetch succeeded when its own ref line printed — `-> refs/review/<id>` at the Reviewer site', async () => {
+    const { reviewer } = await briefs828();
+    expect(reviewer).toMatch(/ref line printed \(`-> refs\/review\/42`\), the ref\s+arrived/);
+  });
+
+  it('says proceed without reporting blocked and without a disclosure, at every site', async () => {
+    const { iter1, redispatch, reviewer } = await briefs828();
+    expect(iter1).toMatch(WORKER_PROCEED);
+    expect(redispatch).toMatch(WORKER_PROCEED);
+    expect(reviewer).toMatch(REVIEWER_PROCEED);
+  });
+
+  /** The clause paragraph only, sliced out of a rendered brief — so a check
+   * that some OTHER topic is absent is scoped to what this row actually
+   * wrote, not to the whole brief (which legitimately mentions `-u` in
+   * Termination step 2, unrelated to this clause). */
+  function claimClauseIn(brief: string): string {
+    const at = brief.indexOf(FATAL_HEADLINE);
+    expect(at).toBeGreaterThan(-1);
+    const end = brief.indexOf('\n\n', at);
+    expect(end).toBeGreaterThan(at);
+    return brief.slice(at, end);
+  }
+
+  it('does not widen into the `-u` upstream-config write or the half-applied-checkout mirror case (both out of scope for this row)', async () => {
+    const { iter1, redispatch, reviewer } = await briefs828();
+    for (const brief of [iter1, redispatch, reviewer]) {
+      const clause = claimClauseIn(brief);
+      expect(clause).not.toContain('-u');
+      expect(clause).not.toMatch(/HALF-APPL/i);
+    }
+  });
+
+  it("no other workspace-setup wording moved — the #731 and #778 clauses' own headlines still render byte-identical", async () => {
+    const { redispatch } = await briefs828();
+    // Re-asserted here, over THIS row's own fixture, so a regression in this
+    // row's edit — not just the #731/#778 rows' own fixtures — would be
+    // caught by the row that could actually cause it.
+    expect(redispatch).toContain(
+      '**IF THE CHECKOUT HALF-APPLIES UNDER THE HARNESS WRITE-DENY, HEAD LANDING IS NOT PROOF THE WORKING TREE FOLLOWED IT — and this is NOT the harness-retry-of-a-re-dispatch case (that one is #745\'s, ruled with no clause).**',
+    );
+  });
+
+  it('NEGATIVE CONTROL — stripping the clause from the iteration-1 site alone fails the pin there and only there (Convention 11)', async () => {
+    // First occurrence of the headline in the raw template is the
+    // iteration-1 site (it renders before the re-dispatch and Reviewer
+    // clauses in file order) — `indexOf` with a plain string target finds
+    // only that first match, so slicing it out is a TARGETED removal. Uses
+    // the RAW (escaped-backtick) form because `TEMPLATE` here is unevaluated
+    // source text, never the rendered brief.
+    const clauseStart = TEMPLATE.indexOf(FATAL_HEADLINE_RAW);
+    expect(clauseStart).toBeGreaterThan(-1);
+    const clauseEnd = TEMPLATE.indexOf('An UNTRACKED leftover survives', clauseStart);
+    expect(clauseEnd).toBeGreaterThan(clauseStart);
+    const stripped = TEMPLATE.slice(0, clauseStart) + TEMPLATE.slice(clauseEnd);
+    expect(stripped).not.toEqual(TEMPLATE); // the slice actually removed something
+
+    const { iter1, redispatch, reviewer } = await briefs828(
+      composeDriverScript({ template: stripped, ...CONSTANTS, rows: rows828 }),
+    );
+    // The site the strip targeted no longer carries the clause — this is the
+    // FAIL state the earlier positive test would hit without this row's fix.
+    expect(iter1).not.toContain(FATAL_HEADLINE);
+    expect(iter1).not.toContain(FATAL_LINE);
+    // …while the other two sites, untouched by the strip, still carry it —
+    // proving the removal was targeted, not a template-wide loss, and that
+    // the three pins above are independent rather than one pin in disguise.
+    expect(redispatch).toContain(FATAL_HEADLINE);
+    expect(reviewer).toContain(FATAL_HEADLINE);
+  });
+});
+
 describe('compose-driver — the scope-grant projection reads the spine, never a hand-authored field (ADR-0041)', () => {
   function spineWithGrant(text: string): string {
     const base = renderSpine(

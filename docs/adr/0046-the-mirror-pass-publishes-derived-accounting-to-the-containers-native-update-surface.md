@@ -27,3 +27,7 @@ ADR-0045 decision 6 deferred the "health write-mirror" — publishing the goal s
 - **CONTEXT.md gains the Mirror pass entry** (this PR).
 - **Consumer note (server pilot):** initiative updates will exist in that workspace for the first time; the read-skills there (activity-summary, stakeholder-pdf) may want to recognize the anchor's provenance line. The consumer's "nobody hand-writes initiative updates" convention stays literally true — the mirror is precisely not hand-written.
 - This ADR lands Coordinator-direct (ADR-0033: it closes no issue).
+
+## Amendment 2026-09-21 — Decision 3's empty-frontier sentence narrows to a goal with at least one member
+
+*Operator ruling, 2026-08-16.* Decision 3's closing sentence — "On an empty frontier the anchor carries the accounting sentence verbatim" — now reads as a superset of what ships: the renderer gates that sentence on the goal having at least one member. A goal with **zero** members publishes the no-members-yet sentence alone, never the completion sentence, following the status-pass reference's own precedent of distinguishing empty membership from completion (`frontier-report.md`, "Empty membership vs. completion"). The decision is otherwise unchanged: on any frontier with at least one member, the accounting sentence still fires verbatim on `complete`, unedited and unsuppressible by the caller.

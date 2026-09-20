@@ -557,6 +557,12 @@ export class InMemoryLinearApi implements LinearApi {
    * when the key is omitted (the read-stamp's unsettled item (c)): that behaviour
    * is unmeasured, and a fake that invented it would be pinning a guess as if it
    * were evidence — the exact error the stamp exists to stop.
+   *
+   * **TRIMMED, not merely emptied.** A whitespace-only value (`' '`, `'\t'`) is
+   * exactly as absent as `''` at the wire, so this trims first and tests the
+   * result — the same widening the transport and the store gate both apply, so
+   * all three sites keep agreeing. A padded but genuinely non-empty value
+   * (`' atRisk '`) is stored trimmed, matching what the real transport sends.
    */
   private recordUpdate(
     surface: 'project' | 'initiative',
@@ -564,14 +570,13 @@ export class InMemoryLinearApi implements LinearApi {
     input: LinearUpdateInput,
   ): LinearUpdateResult {
     const id = `upd-${++this.updateCounter}`;
+    const trimmedHealth = typeof input.health === 'string' ? input.health.trim() : '';
     this.updates.push({
       id,
       surface,
       containerId,
       body: input.body,
-      ...(typeof input.health === 'string' && input.health !== ''
-        ? { health: input.health }
-        : {}),
+      ...(trimmedHealth !== '' ? { health: trimmedHealth } : {}),
     });
     return { id, url: `https://linear.test/updates/${id}` };
   }
