@@ -1691,6 +1691,21 @@ function fakePosture(
   };
 }
 
+/**
+ * The empty environment every `preflight` test below injects.
+ *
+ * Not sugar, and not optional: since the GitHub report gained `pr-create-token`
+ * this verb resolves the CREATE credential from `deps.env` and, when it
+ * resolves, PROBES the host with it. A test that left `env` to default would
+ * read the real `process.env` — and on a machine that happens to export
+ * `GITHUB_TOKEN` it would issue two live requests from a unit test. With an
+ * empty environment the credential cannot resolve, the check grades `unknown`,
+ * and no request is made; a test that wants to grade the probe injects an
+ * `http` fixture AND a token, which is what the block at the bottom of this
+ * file does.
+ */
+const NO_CREDS_ENV = {} as NodeJS.ProcessEnv;
+
 /** A posture that throws if touched — proves routing rejects a host BEFORE probing. */
 const throwingPosture: LandingPosture = {
   async canMergePullRequests() {
@@ -1705,19 +1720,27 @@ const throwingPosture: LandingPosture = {
 };
 
 describe('host-pr preflight — code-host posture, store-blind', () => {
-  it('github: reports the three code-host checks + exit 0 on a healthy posture', async () => {
+  it('github: reports the three posture checks then the create-verb check + exit 0 on a healthy posture', async () => {
     const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: NO_CREDS_ENV,
       posture: fakePosture({ canMerge: true, autoMerge: 'on', required: { state: 'present', contexts: ['ci/test'], detail: 'one check' } }),
     });
     expect(code).toBe(0);
     const o = out();
     expect(o).toMatchObject({ ok: true, verb: 'preflight', host: 'github' });
     const names = (o.checks as { name: string }[]).map((c) => c.name);
-    expect(names).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+    // EXTENDED, not weakened: the three posture names and their order are the
+    // shipped claim and are asserted exactly as before; `pr-create-token` is
+    // appended fourth on this host.
+    expect(names.slice(0, 3)).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+    expect(names).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks', 'pr-create-token']);
   });
 
   it('takes NO --branch (a repo-level probe) — succeeds without one', async () => {
-    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, { posture: fakePosture() });
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: NO_CREDS_ENV,
+      posture: fakePosture(),
+    });
     expect(code).toBe(0);
     expect(out()).toMatchObject({ verb: 'preflight' });
   });
@@ -1730,6 +1753,7 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
     // `not-applicable` the store-preflight reported. Passing an ignored --config
     // does not change the answer.
     const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE, '--config', 'irrelevant.json'], undefined, {
+      env: NO_CREDS_ENV,
       posture: fakePosture(),
     });
     expect(code).toBe(0);
@@ -1737,11 +1761,13 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
       'pr-merge-token',
       'allow-auto-merge',
       'required-checks',
+      'pr-create-token',
     ]);
   });
 
   it('exit 1 when a check FAILs — allow-auto-merge OFF with required checks present', async () => {
     const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: NO_CREDS_ENV,
       posture: fakePosture({ autoMerge: 'off', required: { state: 'present', contexts: ['ci/test'], detail: 'one check' } }),
     });
     expect(code).toBe(1);
@@ -1752,6 +1778,7 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
 
   it('exit 0 on an UNKNOWN allow-auto-merge — the token cannot see it, which never blocks', async () => {
     const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: NO_CREDS_ENV,
       posture: fakePosture({ autoMerge: 'unknown', required: { state: 'unknown', contexts: [], detail: 'needs admin' } }),
     });
     expect(code).toBe(0);
@@ -1759,7 +1786,10 @@ describe('host-pr preflight — code-host posture, store-blind', () => {
   });
 
   it('an unknown host (GitLab) → exit 1, adapter-not-implemented, and the posture is NEVER probed', async () => {
-    const code = await runHostPr(['preflight', '--remote', UNKNOWN_REMOTE], undefined, { posture: throwingPosture });
+    const code = await runHostPr(['preflight', '--remote', UNKNOWN_REMOTE], undefined, {
+      env: NO_CREDS_ENV,
+      posture: throwingPosture,
+    });
     expect(code).toBe(1);
     expect(out()).toMatchObject({ ok: false, code: 'adapter-not-implemented', host: 'unknown' });
   });
@@ -1890,8 +1920,12 @@ describe('host-pr preflight — the create-credentials advisory (BITBUCKET_EMAIL
       });
       expect(code).toBe(0);
       const names = (out().checks as { name: string }[]).map((c) => c.name);
-      // Byte-identical to the shipped GitHub report: three checks, same order.
-      expect(names).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+      // The three posture checks, same order; GitHub's own create-verb check is
+      // `pr-create-token` and never `create-credentials`, whatever
+      // BITBUCKET_EMAIL says (neither env here carries a GITHUB_TOKEN, so the
+      // probe grades `unknown` and issues nothing).
+      expect(names).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks', 'pr-create-token']);
+      expect(names).not.toContain('create-credentials');
     }
   });
 
@@ -1926,5 +1960,245 @@ describe('host-pr preflight — the create-credentials advisory (BITBUCKET_EMAIL
     // anywhere in the report would be the damaging kind.
     expect(stdout).not.toContain('wave-fixture@example.test');
     expect(stdout).not.toContain('preflight-probe-not-a-credential');
+  });
+});
+
+// ─── host-pr arm → the three no-evidence causes, through the CLI ─────────────
+//
+// The consumer report this closes was written from the ARM VERB'S OUTPUT, not
+// from a unit test: an operator read `host-pr arm`'s printed `reason` beside
+// `host-pr preflight`'s printed `checks` in one session and found them saying
+// opposite things about the same repository. So the distinction is asserted
+// where it was read — argv to JSON — and not only in the pure refinement's own
+// spec.
+//
+// All three fixtures arm a PR the host reports `clean`. In every one the
+// LANDING is unchanged — a direct merge, exactly as before — and only the
+// reason differs. That is the shape of the fix: the message was wrong, the
+// merge was not.
+
+/**
+ * A {@link fakeHost} that ALSO carries the two optional `CheckAttachReader`
+ * reads, so `asCheckAttachReader` narrows it. The two `*Throws` affordances are
+ * what drive causes 2 and 3 — a read that fails is the whole subject here.
+ */
+function attachAwareHost(opts: {
+  required?: RequiredChecksInfo;
+  requiredThrows?: string;
+  reportedThrows?: Error;
+}): LandingHost {
+  const base = fakeHost({
+    status: {
+      state: 'open',
+      number: 42,
+      url: 'https://github.com/example-org/example-repo/pull/42',
+      mergeability: 'clean',
+      headSha: 'c0ffee1',
+      baseRef: 'main',
+    },
+  }).host;
+  const host = base as LandingHost & {
+    getRequiredChecks(branch?: string): Promise<RequiredChecksInfo>;
+    getReportedChecks(ref: string): Promise<unknown[]>;
+  };
+  host.getRequiredChecks = async () => {
+    if (opts.requiredThrows !== undefined) throw new Error(opts.requiredThrows);
+    return opts.required ?? { state: 'present', contexts: ['ci/test'], detail: 'one check' };
+  };
+  host.getReportedChecks = async () => {
+    if (opts.reportedThrows !== undefined) throw opts.reportedThrows;
+    return [];
+  };
+  return host;
+}
+
+describe('host-pr arm — the unverified-merge reason names WHICH cause fired (consumer report 2026-09-04)', () => {
+  const armWith = async (host: LandingHost): Promise<string> => {
+    stdout = '';
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ verb: 'arm', outcome: 'merged' });
+    return String(out().reason);
+  };
+
+  it('cause 1 — the adapter implements NEITHER read, and the reason says exactly that', async () => {
+    // A plain LandingHost: `asCheckAttachReader` finds no reader. This is the
+    // one cause that genuinely IS a statement about the host — and it is the
+    // statement the old single sentence made on all three.
+    const reason = await armWith(fakeHost({ status: openPr('clean') }).host);
+    expect(reason).toContain('NOT verified against the required-check names:');
+    expect(reason).toMatch(/implements neither of the two reads/);
+  });
+
+  it("cause 2 — the required-checks read answered BLIND, and the reason carries that read's own detail", async () => {
+    const reason = await armWith(
+      attachAwareHost({
+        required: { state: 'unknown', contexts: [], detail: 'both reads were unavailable (HTTP 403)' },
+      }),
+    );
+    expect(reason).toMatch(/required-checks read answered but was BLIND/);
+    expect(reason).toContain('both reads were unavailable (HTTP 403)');
+  });
+
+  it('cause 3 — the REPORTS read failed, and the reason carries status, operation, host message and endpoint', async () => {
+    // The most likely live trigger, and the one the old sentence hid entirely:
+    // a token without Checks read. The fix is a token scope, which an operator
+    // can only reach for if the message names the endpoint that refused.
+    const reason = await armWith(
+      attachAwareHost({
+        reportedThrows: Object.assign(new Error('Resource not accessible by personal access token'), {
+          status: 403,
+          op: 'getReportedChecks',
+          endpoint: 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs',
+        }),
+      }),
+    );
+    expect(reason).toMatch(/reported-checks read FAILED/);
+    expect(reason).toContain('HTTP 403');
+    expect(reason).toContain('`getReportedChecks`');
+    expect(reason).toContain('Resource not accessible by personal access token');
+    expect(reason).toContain('GET /repos/{owner}/{repo}/commits/{ref}/check-runs');
+  });
+
+  it('the three printed reasons DIFFER from each other and from the bare-null sentence', async () => {
+    const readerAbsent = await armWith(fakeHost({ status: openPr('clean') }).host);
+    const requiredBlind = await armWith(
+      attachAwareHost({ required: { state: 'unknown', contexts: [], detail: 'blind' } }),
+    );
+    const reportsFailed = await armWith(
+      attachAwareHost({
+        reportedThrows: Object.assign(new Error('Forbidden'), {
+          status: 403,
+          op: 'getReportedChecks',
+          endpoint: 'GET /repos/{owner}/{repo}/commits/{ref}/status',
+        }),
+      }),
+    );
+    const BARE_NULL_CLAUSE =
+      'this host could not report which checks are required, or which have reported for the head commit';
+
+    expect(new Set([readerAbsent, requiredBlind, reportsFailed]).size).toBe(3);
+    for (const reason of [readerAbsent, requiredBlind, reportsFailed]) {
+      // Each keeps the prefix a reader greps for and the disclosure it ends on…
+      expect(reason).toContain('NOT verified against the required-check names:');
+      expect(reason).toMatch(/the host's word alone/);
+      // …and none of them is the undifferentiated sentence any more.
+      expect(reason).not.toContain(BARE_NULL_CLAUSE);
+    }
+  });
+});
+
+// ─── host-pr preflight → the pr-create-token probe, wired ────────────────────
+//
+// The wiring half: `deps.env` resolving the CREATE credential (not the landing
+// one), `deps.http` reaching the probe, the check landing in the printed JSON,
+// and the exit code staying exactly where the three posture checks put it. The
+// GRADING is host-pr.spec.ts's job, as with every other check.
+
+const CREATE_TOKEN_ENV = { GITHUB_TOKEN: 'tok-create-fixture' } as NodeJS.ProcessEnv;
+
+describe('host-pr preflight — the pr-create-token probe (the GitHub create right)', () => {
+  /** Answer the identity read 200, and the open-PR list read as the test says. */
+  function probe(list: HttpResponse): { http: HttpProbe; seen: HttpRequest[] } {
+    const seen: HttpRequest[] = [];
+    return {
+      seen,
+      http: {
+        async request(req: HttpRequest): Promise<HttpResponse> {
+          seen.push(req);
+          return req.url === 'https://api.github.com/user'
+            ? { status: 200, json: { login: 'octo-fixture' } }
+            : list;
+        },
+      },
+    };
+  }
+
+  const checkNamed = (name: string) =>
+    (out().checks as { name: string; status: string; detail: string }[]).find((c) => c.name === name);
+
+  it('a token that can list PRs → `pass`, exit 0, and the probe used the CREATE credential form', async () => {
+    const { http, seen } = probe({ status: 200, json: [] });
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: CREATE_TOKEN_ENV,
+      http,
+      posture: fakePosture({ canMerge: true, autoMerge: 'on' }),
+    });
+    expect(code).toBe(0);
+    expect(checkNamed('pr-create-token')?.status).toBe('pass');
+    // `x-access-token:<token>` — what `createCredsFor` builds for `create`, and
+    // never the landing adapter's Bearer credential. This is the wiring claim:
+    // the verb resolved the CREATE credential, not the one arm/merge use.
+    expect(seen.map((r) => r.auth)).toEqual([
+      'x-access-token:tok-create-fixture',
+      'x-access-token:tok-create-fixture',
+    ]);
+    // …and the repository it probed is the one `--remote` names.
+    expect(seen[1].url).toContain('/repos/example-org/example-repo/pulls?state=open&head=');
+  });
+
+  it('a 403 on the list read → `advisory`, and the EXIT CODE is unchanged (the row never blocks a wave)', async () => {
+    const { http } = probe({ status: 403, json: { message: 'Resource not accessible by integration' } });
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: CREATE_TOKEN_ENV,
+      http,
+      posture: fakePosture({ canMerge: true, autoMerge: 'on' }),
+    });
+    // The live shape from the consumer wave: everything else green, create
+    // refused. `ok` stays true and the exit stays 0 — a land-only consumer must
+    // not be refused — and the DETAIL carries the whole weight.
+    expect(code).toBe(0);
+    expect(out().ok).toBe(true);
+    const check = checkNamed('pr-create-token');
+    expect(check?.status).toBe('advisory');
+    expect(check?.detail).toMatch(/Pull requests permission/);
+    expect(check?.detail).toMatch(/fails at each row's termination step/);
+  });
+
+  it('never prints the token, on either verdict', async () => {
+    for (const list of [{ status: 200, json: [] }, { status: 403, json: {} }] as HttpResponse[]) {
+      stdout = '';
+      await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+        env: CREATE_TOKEN_ENV,
+        http: probe(list).http,
+        posture: fakePosture({ canMerge: true }),
+      });
+      expect(stdout).not.toContain('tok-create-fixture');
+    }
+  });
+
+  it('with NO resolvable credential it grades `unknown` and issues NO request — a probe that cannot run says so', async () => {
+    // The shape every other preflight test in this file runs under, asserted
+    // once as a property: an empty environment means the create credential
+    // cannot resolve, so there is nothing to probe with and nothing is sent.
+    const { http, seen } = probe({ status: 200, json: [] });
+    const code = await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+      env: NO_CREDS_ENV,
+      http,
+      posture: fakePosture({ canMerge: true }),
+    });
+    expect(code).toBe(0);
+    expect(checkNamed('pr-create-token')?.status).toBe('unknown');
+    expect(seen).toEqual([]);
+  });
+
+  it('bitbucket is untouched: still create-credentials fourth, and the GitHub probe is never issued there', async () => {
+    const { http, seen } = probe({ status: 200, json: [] });
+    const code = await runHostPr(['preflight', '--remote', BITBUCKET_REMOTE], undefined, {
+      env: {
+        BITBUCKET_TOKEN: 'tok-bb-fixture',
+        BITBUCKET_EMAIL: 'wave-fixture@example.test',
+      } as NodeJS.ProcessEnv,
+      http,
+      posture: fakePosture({ canMerge: true }),
+    });
+    expect(code).toBe(0);
+    expect((out().checks as { name: string }[]).map((c) => c.name)).toEqual([
+      'pr-merge-token',
+      'allow-auto-merge',
+      'required-checks',
+      'create-credentials',
+    ]);
+    expect(seen).toEqual([]);
   });
 });

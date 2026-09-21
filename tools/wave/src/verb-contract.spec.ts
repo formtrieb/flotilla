@@ -542,6 +542,30 @@ describe('the four verbs that refused before ADR-0051 refuse through the one pat
     });
   }
 
+  it("host-pr preflight's OWN contract section names the five checks it can report", async () => {
+    // The contract section is what `--help` prints and what every refusal on
+    // this verb reprints, so it is the surface a caller reaches first. The
+    // create-verb checks are host-CONDITIONAL — a GitHub caller never sees
+    // `create-credentials` in output and a Bitbucket caller never sees
+    // `pr-create-token` — which makes the contract the only place either name
+    // is discoverable from the other host.
+    const usage = verbContracts()['host-pr preflight'].usage.join('\n');
+    for (const name of [
+      'pr-merge-token',
+      'allow-auto-merge',
+      'required-checks',
+      'create-credentials',
+      'pr-create-token',
+    ]) {
+      expect(usage, `host-pr preflight's contract omits ${name}`).toContain(name);
+    }
+
+    // …and `--help` really does print it (the contract is not a shelf object).
+    const c = capture();
+    expect(await mainAsync(['host-pr', 'preflight', '--help'])).toBe(0);
+    expect(c.out()).toContain('pr-create-token');
+  });
+
   it('host-pr keeps its cross-verb refusals, which teach more than a did-you-mean', async () => {
     const c = capture();
     const code = await mainAsync(['host-pr', 'status', '--branch', 'b', '--delete-branch']);

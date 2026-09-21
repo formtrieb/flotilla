@@ -8533,4 +8533,22 @@ describe('the prose the roster used to hold now lives in the contract that owns 
     expect(main(['cross-wave', '--candidates', '/x.json'])).toBe(2);
     for (const line of verbContracts()['cross-wave'].usage) expect(stderrBuf).toContain(line);
   });
+
+  it("the host-pr group dump names every check `preflight` reports, `pr-create-token` included", async () => {
+    // A preflight report a caller cannot find the names of is a report they
+    // have to run the verb to discover. The GitHub create-right check is the
+    // newest of the five and the easiest to leave unmentioned — it is
+    // host-conditional, so a reader on Bitbucket never sees it in output at
+    // all. The usage text is where they learn it exists.
+    expect(await mainAsync(['host-pr'])).toBe(2);
+    for (const name of [
+      'pr-merge-token',
+      'allow-auto-merge',
+      'required-checks',
+      'create-credentials',
+      'pr-create-token',
+    ]) {
+      expect(stderrBuf).toContain(name);
+    }
+  });
 });
