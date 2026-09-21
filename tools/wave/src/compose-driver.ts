@@ -43,7 +43,7 @@ import type { IssueStore } from './adapters/issue-store';
 import type { IssueView, TriageView } from './contract';
 import { flag, printJson } from './cli-utils';
 import { readDisclosures } from './spine-store';
-import { loadWaveConfig, type WaveConfig } from './wave-config';
+import { loadWaveConfig, type ModelsConfig, type WaveConfig } from './wave-config';
 import { readSpine, HUMAN_GATED_WORKER, type PlanTableRow } from './wave-md-rw';
 import { verifyCommands, type VerifyCommand } from './verify';
 import { resolveStore } from './cli-store';
@@ -219,24 +219,67 @@ const STANDARD_TIER = 'standard';
 
 /**
  * The tier a Risk derives — an ABSTRACT marker, and never a model id (ADR-0012
- * Amendment 2026-09-16; ADR-0007's "zero engine surface").
+ * Amendments 2026-09-16 and 2026-09-21; ADR-0007's "zero engine surface").
  *
  * Risk→tier is genuinely engine-derivable: `Risk` is the load-bearing, frozen
  * routing key (ADR-0007), and `heavy` is exactly the `-heavy` suffix the Worker
  * vocabulary already carries. What is NOT engine-derivable is tier→model: the
  * concrete id is a volatile, consumer-owned choice, and this function used to
  * answer it anyway by returning a brand literal. That fallback is RETIRED — no
- * engine code maps a marker to an id now. The composer echoes the model the
- * Coordinator RECORDED (`spine set-branch --model`) and refuses a row that has
- * none, naming this marker in the refusal so the operator can see which tier it
- * is being asked to bind.
+ * engine code maps a marker to an id. What the marker is FOR is naming a place
+ * the consumer can answer: the refusal below quotes it, and it is the key this
+ * row's `models.<tier>` block is looked up under. Reading a consumer's own
+ * config at that key is not the engine knowing an id — the value is a string
+ * the consumer wrote, carried opaquely, exactly like a recorded `--model`.
  *
- * The export keeps the name `modelForRisk`: that spelling is what
- * `barrel-drift.spec.ts` allowlists as a module-local export, and renaming it
- * is a barrel-touching change of its own.
+ * NAMED `tierForRisk` since 2026-09-21. It answered with a tier from the moment
+ * the literal fallback was retired, but kept its old model-shaped spelling for
+ * one wave because the barrel-drift allowlist pinned that spelling and the
+ * allowlist sat outside the retiring row's declared globs. The row that owns
+ * both renamed it, so the name now says what the function returns.
  */
-export function modelForRisk(risk: string): string {
+export function tierForRisk(risk: string): string {
   return HEAVY_RISKS.includes(risk) ? HEAVY_TIER : STANDARD_TIER;
+}
+
+/**
+ * The model this consumer binds to a tier marker, or `undefined` when its
+ * `models` block declares none (ADR-0012 Amendment 2026-09-21).
+ *
+ * Deliberately a lookup and not a map literal: there are exactly two tiers, the
+ * caller already holds the marker {@link tierForRisk} answered, and a
+ * `Record<string, string>` indexed by an unvalidated marker would quietly
+ * answer `undefined` for a typo'd third tier instead of being unable to express
+ * one.
+ */
+function configuredTierModel(models: ModelsConfig | undefined, tier: string): string | undefined {
+  if (!models) return undefined;
+  return tier === HEAVY_TIER ? models.heavy : models.standard;
+}
+
+/**
+ * The Scribe stage's model, as the compose-time constant the shipped template
+ * carries: `models.scribe`, else `models.standard`, else `''`.
+ *
+ * `''` is not "no model" — it is "this compose states none", and the template
+ * reads it as such: its stage binds `SCRIBE_MODEL || issue.model`, so an
+ * undeclared `models` block puts the Scribe on the row's own recorded model
+ * rather than on an omitted `model` key. **The chain may not bottom out in an
+ * omission** (Coordinator ruling 2026-09-21): a stage dispatched with no
+ * `model` re-inherits whatever model is coordinating the session, per stage —
+ * the cost regression ADR-0007's 2026-07-31 amendment closed for the Reviewer,
+ * and the one thing a Scribe binding must not reopen while retiring the last
+ * brand literal in the shipped driver.
+ *
+ * `standard` before the row model, and not the other way round, because the
+ * Scribe is a FIXED CHEAP STAGE: it writes one sidecar file from a payload it
+ * is handed. A consumer that declared a standard tier has already said what its
+ * ordinary work costs, and a heavy row's expensive model is the last thing this
+ * stage wants to inherit.
+ */
+function scribeModelFrom(models: ModelsConfig | undefined): string {
+  if (!models) return '';
+  return (models.scribe ?? models.standard ?? '').trim();
 }
 
 /**
@@ -341,6 +384,21 @@ export interface DepsSetupResolution {
 function availableStep(value: string | undefined): string | null {
   const trimmed = value?.trim() ?? '';
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * One rung of the row-model ladder, as an ANSWER or `null` (ADR-0012 Amendment
+ * 2026-09-21).
+ *
+ * {@link availableStep}'s sibling, and deliberately not that function: an
+ * install step is absent-or-present, while a model id can also arrive as the
+ * LITERAL STRING `"undefined"` — what a hand-built `--row-meta` template
+ * renders for a key it could not fill. {@link isMissingField} is the predicate
+ * that already knows all three shapes, and it is the one the row-field
+ * assertion applies to this same value one screen later.
+ */
+function availableModel(value: string | undefined): string | null {
+  return isMissingField(value) ? null : (value as string).trim();
 }
 
 /**
@@ -764,12 +822,23 @@ export interface ComposeDriverScriptInput {
   reportsDir: string;
   verdictsDir: string;
   reviewerAgent: string;
+  /**
+   * The Scribe stage's model (ADR-0012 Amendment 2026-09-21) — what
+   * {@link scribeModelFrom} read off this consumer's `models` block.
+   *
+   * OPTIONAL, and that is a compatibility decision rather than a shrug: this is
+   * a root-exported input type, so a direct caller written against the
+   * five-constant shape must keep compiling (Minor, ADR-0035). Absent composes
+   * `''`, which the template reads as "this compose states no Scribe model" and
+   * falls back per row to `issue.model` — never to an omitted `model` key.
+   */
+  scribeModel?: string;
   rows: DriverRow[];
 }
 
 /**
  * The whole substitution, and the only place the template is edited. Everything
- * outside the five constants and the `ISSUES` array is carried through
+ * outside the six constants and the `ISSUES` array is carried through
  * byte-for-byte — which is what makes "the composed script is the template with
  * its constants filled" a checkable claim rather than a hope.
  */
@@ -780,6 +849,11 @@ export function composeDriverScript(input: ComposeDriverScriptInput): string {
   src = fillStringConst(src, 'REPORTS_DIR', input.reportsDir);
   src = fillStringConst(src, 'VERDICTS_DIR', input.verdictsDir);
   src = fillStringConst(src, 'REVIEWER_AGENT', input.reviewerAgent);
+  // The sixth, and the one whose value may legitimately be empty. It is filled
+  // through the SAME helper as the other five — so a template that lost its
+  // `const SCRIBE_MODEL = '…'` line is refused loud rather than composing a
+  // script whose Scribe silently re-inherits the session model.
+  src = fillStringConst(src, 'SCRIBE_MODEL', input.scribeModel ?? '');
 
   const needle = 'const ISSUES = ';
   const at = src.indexOf(needle);
@@ -1147,23 +1221,37 @@ export async function runComposeDriver(
         }
       }
 
-      // The model is ECHOED, never derived (ADR-0012 Amendment 2026-09-16).
-      // Two sources, most specific first: the row's own `--row-meta` override,
-      // then the model the Coordinator recorded on this row's dispatch-log
-      // entry with `spine set-branch --model`. There is no third rung: the
-      // engine owns the abstract tier, the consumer owns the concrete id, and
-      // a literal-id fallback here was the engine quietly answering a question
-      // it has no standing to answer — brand-free is the rule ADR-0012 states,
-      // and a default that names a brand is still naming one.
-      const recordedModel = meta.model ?? modelByRow.get(row.id);
-      if (isMissingField(recordedModel)) {
+      // The model is ECHOED, never derived (ADR-0012 Amendments 2026-09-16 and
+      // 2026-09-21). THREE sources, most specific first: the row's own
+      // `--row-meta` override, then the model the Coordinator recorded on this
+      // row's dispatch-log entry with `spine set-branch --model`, then this
+      // consumer's standing `models.<tier>` binding. Every rung is a value the
+      // CONSUMER wrote, carried opaquely — the third is the one the 2026-09-16
+      // amendment deferred, and adding it is not the literal-id fallback coming
+      // back: that fallback was the ENGINE naming a brand in its own source,
+      // and nothing below names one.
+      //
+      // A BLANK IS NOT AN ANSWER at any rung — the same rule `resolveDepsSetup`
+      // states for the install step, and for the same reason: an explicit `""`
+      // that outranked a real binding would silently compose a row no dispatch
+      // can use. `isMissingField` also rejects the literal string `"undefined"`,
+      // which is what a `--row-meta` built by a template renders for an absent
+      // key.
+      const tier = tierForRisk(view.risk);
+      const resolvedModel =
+        availableModel(meta.model) ??
+        availableModel(modelByRow.get(row.id)) ??
+        availableModel(configuredTierModel(config.models, tier));
+      if (resolvedModel === null) {
         throw new Error(
           `compose-driver: row ${row.id} has no dispatched model recorded — its Risk ` +
-            `(${view.risk}) derives the ${modelForRisk(view.risk)} tier, but binding that tier to ` +
-            "THIS consumer's concrete model is the Coordinator's act, not the engine's. Record it " +
-            `with \`spine set-branch <spine> ${row.id} ${branch} --model <model>\` (wave-start step 5 ` +
-            'writes it for every dispatched row), or pass it for this compose as the `model` key of ' +
-            "this row's `--row-meta`, then re-compose.",
+            `(${view.risk}) derives the ${tier} tier, but binding that tier to ` +
+            "THIS consumer's concrete model is the consumer's act, not the engine's. Three places " +
+            'can answer it, most specific first: the `model` key of this row\'s `--row-meta`; the ' +
+            `model recorded on its dispatch-log entry with \`spine set-branch <spine> ${row.id} ` +
+            `${branch} --model <model>\` (wave-start step 5 writes it for every dispatched row); or ` +
+            `the standing \`models.${tier}\` binding in this consumer's wave config. Record one of ` +
+            'them, then re-compose.',
         );
       }
 
@@ -1173,7 +1261,7 @@ export async function runComposeDriver(
         worker: view.worker,
         risk: view.risk,
         iteration,
-        model: recordedModel as string,
+        model: resolvedModel,
         anchorSha: anchor,
         coordinatorBranch,
         depsSetup: deps.command,
@@ -1203,6 +1291,12 @@ export async function runComposeDriver(
       rows.push(composed);
     }
 
+    // Read ONCE per compose, not per row: `models` is a config-level fact, so
+    // the Scribe's binding cannot differ between rows — the one place it varies
+    // is the template's own per-row `|| issue.model` fallback, which only fires
+    // when this string is empty.
+    const scribeModel = scribeModelFrom(config.models);
+
     const script = composeDriverScript({
       template,
       repoRoot,
@@ -1210,6 +1304,7 @@ export async function runComposeDriver(
       reportsDir: flag(args, '--reports-dir') ?? join(repoRoot, '.flotilla', 'waves', slug, 'reports'),
       verdictsDir: flag(args, '--verdicts-dir') ?? join(repoRoot, '.flotilla', 'waves', slug, 'verdicts'),
       reviewerAgent: reviewer.name,
+      scribeModel,
       rows,
     });
 
@@ -1230,6 +1325,11 @@ export async function runComposeDriver(
       reviewerAgentForm: reviewer.form,
       pluginName: reviewer.pluginName,
       waveCli: `NODE_USE_ENV_PROXY=1 ${engineCli}`,
+      // What the Scribe stage will run on, or `null` when this consumer's
+      // config states nothing and the template's per-row fallback applies —
+      // the same reason every row's `model` is on the receipt: an operator
+      // reads which model each dispatch bound, rather than inferring it.
+      scribeModel: scribeModel === '' ? null : scribeModel,
       rows: rows.map((r) => ({
         id: r.id,
         slug: r.slug,

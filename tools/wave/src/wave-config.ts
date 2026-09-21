@@ -828,6 +828,136 @@ export function normalizeEngineInstall(
   return trimmedBinding(value);
 }
 
+// ─── the tier→model-id binding: `models` (ADR-0012 Amendment 2026-09-21) ─────
+//
+// The engine derives an ABSTRACT TIER from a row's Risk — `heavy` for
+// `cross-feature-refactor` / `public-API-change`, `standard` otherwise — and has
+// never been allowed to know which concrete model that tier means (ADR-0012).
+// Binding tier→id is the CONSUMER's act. Until now the only place to record it
+// was per row, at dispatch time (`spine set-branch --model`); this block is the
+// standing, repo-level answer the 2026-09-16 amendment deferred and the
+// 2026-09-21 amendment un-defers.
+//
+// TOP-LEVEL, not `engine.models`. `engine` is the binding that says HOW to
+// invoke this engine (ADR-0032); a model id says nothing about invocation and
+// everything about what a dispatch costs. The 2026-09-16 amendment spelled the
+// deferred key `models: { heavy, standard }` and this is that key, with the
+// Scribe's own stage added.
+//
+// STILL BRAND-FREE IN THE ENGINE. Nothing here names a model: the keys are the
+// engine's own abstract markers and the VALUES are strings the consumer writes.
+// The composer reads them as an opaque pass-through, exactly as it reads a
+// recorded `--model`, so no model id is spelled in `tools/wave/` either way.
+//
+// ADDITIVE (Minor, ADR-0035): absent `models` composes exactly what it composed
+// before the key existed — the per-row recorded model, and a refusal when a row
+// has none. The one behaviour a consumer feels without declaring anything is
+// the Scribe stage's, and that is a consequence of retiring the last brand
+// literal rather than of this key (see {@link ModelsConfig.scribe}).
+
+/**
+ * The `models` block of a wave config — this consumer's tier→model-id binding
+ * (ADR-0012 Amendment 2026-09-21).
+ *
+ * EVERY KEY OPTIONAL, and the block itself optional. A consumer that records a
+ * model per row (`spine set-branch --model`, what `wave-start` step 5 has
+ * always written) needs none of them; a consumer that wants one standing answer
+ * declares the two tiers; a consumer that only wants the Scribe pinned to a
+ * cheap tier declares `scribe` alone. Each key answers on its own.
+ *
+ * A declared key must be a NON-EMPTY string. An empty binding is not "unbound",
+ * it is a binding that cannot be dispatched — the same reading `engine.cli`
+ * takes of its own empty value, and the reason the loader refuses it rather
+ * than reading it as absence.
+ */
+export interface ModelsConfig {
+  /**
+   * The model a `heavy`-tier row binds — the tier `cross-feature-refactor` and
+   * `public-API-change` derive (ADR-0007). Read by `compose-driver` as the
+   * THIRD and weakest rung of the row-model ladder: `--row-meta`'s `model`
+   * first, then the model recorded on the row's dispatch-log entry, then this.
+   */
+  heavy?: string;
+  /** The model every other Risk's row binds — the `standard` tier, same ladder. */
+  standard?: string;
+  /**
+   * The model the Scribe stage runs on — the fixed, cheap sidecar-writing stage
+   * of the shipped driver, which is a stage constant rather than a Risk-derived
+   * tier and so has a key of its own.
+   *
+   * ITS OWN CHAIN, and it does not end in "omit the key": `models.scribe`, else
+   * `models.standard`, else the row's own recorded model. The driver's own
+   * comment says why the chain may not bottom out in an absent `model` key —
+   * a stage dispatched with no model re-inherits whatever model happens to be
+   * coordinating the session, per stage, which is the cost regression ADR-0007's
+   * amendment closed for the Reviewer and this key closes for the Scribe.
+   *
+   * This is the ONE key whose absence changes behaviour against 2.7.0: the
+   * stage used to carry a hard-coded cheap-tier brand literal, which ADR-0012
+   * forbids in engine source. A consumer that wants the Scribe on a cheap tier
+   * declares it here.
+   */
+  scribe?: string;
+}
+
+/** The keys {@link ModelsConfig} declares — the closed set a refusal names. */
+const MODELS_KEYS = ['heavy', 'standard', 'scribe'] as const;
+
+/** The closed set, spelled out for the author of a refused config. */
+const MODELS_CLOSED_SET =
+  'the declarable model bindings are "heavy" (the tier cross-feature-refactor / public-API-change rows derive), ' +
+  '"standard" (the tier every other Risk derives) and "scribe" (the driver\'s fixed sidecar-writing stage), ' +
+  'each a non-empty model-id string chosen by this consumer (ADR-0012 Amendment 2026-09-21)';
+
+/**
+ * Validate a `models` block — the SHAPE only, never the ids.
+ *
+ * A model id is an opaque, consumer-owned string: the engine has no vocabulary
+ * to grade it against and acquiring one would be the brand knowledge ADR-0012
+ * keeps out of here. So what is refused is exactly what is unusable — a block
+ * that is not a block, and a declared key that is not a non-empty string.
+ *
+ * An UNKNOWN key under `models` is deliberately NOT refused here, the same way
+ * an unknown key under `store.states` is not: `config validate` reports it as a
+ * warning naming the closed set (issue #761's tier), so a config carrying
+ * `models.scribes` comes back one line away from the spelling that works.
+ *
+ * This DOES add a refusal the loader did not have — legitimately, and for the
+ * reason every previous new key's refusal was legitimate (`verify.…needs`,
+ * `cleanup.disposableNames`, `engine.install`): no config validating today can
+ * carry a meaningful `models` block, because nothing read one until this row.
+ * A malformed value is therefore new text, not a config anyone is running, and
+ * the fail-loud-at-author-time principle applies to it unchanged.
+ */
+function validateModels(value: unknown, block = 'models'): void {
+  if (value === undefined) return;
+  // The DOTTED PATH goes inside the quotes — `wave config "models.heavy"`, the
+  // spelling `config validate`'s own warnings use for a nested key — so the
+  // message names a path an author can search their file for.
+  const label = (key?: string): string => `wave config "${key ? `${block}.${key}` : block}"`;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    const got = value === null ? 'null' : Array.isArray(value) ? 'an array' : `a ${typeof value}`;
+    throw new Error(`${label()} must be an object — got ${got}. ${MODELS_CLOSED_SET}.`);
+  }
+  const models = value as Record<string, unknown>;
+  for (const key of MODELS_KEYS) {
+    const declared: unknown = models[key];
+    if (declared === undefined) continue;
+    if (typeof declared !== 'string') {
+      const got = declared === null ? 'null' : Array.isArray(declared) ? 'an array' : `a ${typeof declared}`;
+      throw new Error(
+        `${label(key)} must be a model-id string — got ${got}. ${MODELS_CLOSED_SET}.`,
+      );
+    }
+    if (declared.trim().length === 0) {
+      throw new Error(
+        `${label(key)} must be a NON-EMPTY model-id string — an empty binding is not "unbound", ` +
+          `it is a binding no dispatch can use. Omit the key entirely to leave this tier unbound. ${MODELS_CLOSED_SET}.`,
+      );
+    }
+  }
+}
+
 export interface WaveConfig {
   store: StoreConfig;
   /** Optional inline verify profile (ADR-0016). No DEFAULT_VERIFY — verify is purely consumer config. */
@@ -840,6 +970,12 @@ export interface WaveConfig {
    * it did before the field existed.
    */
   engine?: EngineConfig;
+  /**
+   * Optional tier→model-id binding (ADR-0012 Amendment 2026-09-21) — see
+   * {@link ModelsConfig}. Additive: omit the whole `models` key and every row
+   * binds the model its Coordinator recorded, exactly as before.
+   */
+  models?: ModelsConfig;
 }
 
 /**
@@ -863,8 +999,11 @@ export interface WaveConfig {
  * both additions to this schema have been strictly additive: no key here has
  * ever been renamed, removed or re-typed, which is what lets an existing
  * consumer config keep validating unchanged (the `wave.config` schema is a
- * semver contract). `engine.install` (issue #717) is the newest entry on that
- * list, validated by the same rule as `engine.cli` below.
+ * semver contract). `models` (ADR-0012 Amendment 2026-09-21) is the newest
+ * entry on that list, validated by {@link validateModels} — the block's SHAPE
+ * only, because a model id is an opaque consumer-owned string the engine has no
+ * vocabulary to grade; `engine.install` (issue #717) precedes it, validated by
+ * the same rule as `engine.cli` below.
  * `store.goal.container` (ADR-0044) is the one addition this function
  * deliberately does NOT validate: its refusal ladder is store-side, for the
  * reason spelled out above {@link MarkdownStoreConfig}. The key survives the
@@ -964,6 +1103,25 @@ export function loadWaveConfig(path: string): WaveConfig {
     if (cli !== undefined) (engine as { cli?: string }).cli = cli;
     const install = normalizeEngineInstall((engine as { install?: unknown }).install);
     if (install !== undefined) (engine as { install?: string }).install = install;
+  }
+
+  // ADR-0012 Amendment 2026-09-21 — the tier→model-id binding. Absent `models`
+  // is valid and means "nothing standing is declared"; a present one must be an
+  // object whose declared keys are non-empty strings. An UNKNOWN key inside it
+  // is a `config validate` warning, not a refusal here (see validateModels).
+  const models = (raw as { models?: unknown }).models;
+  if (models !== undefined) {
+    validateModels(models);
+    // Hand the caller the NORMALIZED ids, for the same reason `engine.cli`
+    // above is normalized: `raw` is a fresh JSON.parse result owned by this
+    // function, and every reader of `config.models` — `config validate`'s
+    // report, the composer's row-model ladder — should get the exact string
+    // that will be dispatched, not one a stray space changes.
+    const block = models as Record<string, unknown>;
+    for (const key of MODELS_KEYS) {
+      const declared = block[key];
+      if (typeof declared === 'string') block[key] = declared.trim();
+    }
   }
 
   return raw as WaveConfig;

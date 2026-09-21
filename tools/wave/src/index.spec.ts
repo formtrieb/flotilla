@@ -128,6 +128,11 @@ import {
   // ROOT-ONLY, so neither has to name a type the barrel does not offer.
   buildStore as buildStoreFromRoot,
   type WaveConfig as WaveConfigFromRoot,
+  // ADR-0012 Amendment 2026-09-21 — the tier→model-id block, this slice's ONE
+  // root addition and a type-only one. Named here for the compile-time half of
+  // the pairing: an annotation against a type the barrel does not re-export
+  // fails `tsc --noEmit` before a single `it` runs.
+  type ModelsConfig as ModelsConfigFromRoot,
   // issue #338 — the command-line advisory family, plus the count-advisory pair
   // it was asymmetric with. The count side was already root-reachable before
   // this slice; it is named here so the closed asymmetry can be asserted from
@@ -2010,5 +2015,49 @@ describe('PrLandingStatus carries title/body at the PACKAGE ROOT (row 777)', () 
     // adapters implement and their specs pin.
     status.body = null;
     expect(status.body).toBeNull();
+  });
+});
+
+// ─── ADR-0012 Amendment 2026-09-21 — `ModelsConfig` reaches the root ─────────
+//
+// The tier→model-id block's WHOLE root surface, and the reason it gets a block
+// here rather than only in `wave-config.spec.ts`: the claim is as much about
+// what did NOT arrive. The key ships a type and nothing else — no validator, no
+// typed error, no runtime constant — so the enumeration baseline above must be
+// unmoved by this slice, and a stowaway value riding along with the type is
+// exactly what that baseline exists to catch.
+
+describe('the tier→model-id block reaches the PACKAGE ROOT as a TYPE, and moves no runtime name (ADR-0012)', () => {
+  it('annotates a whole WaveConfig from the root, with each key optional', () => {
+    // Compile-time half — `tsc --noEmit` is the assertion. A `models` the
+    // barrel did not re-export, or one whose keys were required, fails here
+    // rather than in a consumer's build.
+    const onlyScribe: ModelsConfigFromRoot = { scribe: 'consumer-scribe-id' };
+    const empty: ModelsConfigFromRoot = {};
+    const config: WaveConfigFromRoot = {
+      store: { kind: 'github' },
+      models: { heavy: 'consumer-heavy-id', standard: 'consumer-standard-id' },
+    };
+    expect(onlyScribe.scribe).toBe('consumer-scribe-id');
+    expect(Object.keys(empty)).toEqual([]);
+    expect(config.models?.heavy).toBe('consumer-heavy-id');
+  });
+
+  it('a WaveConfig with NO models key still checks — the field is optional', () => {
+    // The additive guarantee at the type level: every consumer literal written
+    // before this key existed must still compile against the same root type.
+    const before: WaveConfigFromRoot = { store: { kind: 'github' } };
+    expect(before.models).toBeUndefined();
+  });
+
+  it('brings no runtime name with it — the enumerated root surface is unchanged', () => {
+    // A type is erased, so "the root gained a type" and "the root gained
+    // nothing at runtime" are the same claim measured two ways. The count
+    // baseline above is the one that would fail on a stowaway.
+    expect(Object.keys(rootExports)).toHaveLength(ROOT_RUNTIME_EXPORT_COUNT_NOW);
+    expect(Object.keys(rootExports)).not.toContain('ModelsConfig');
+    // Non-vacuity: the namespace really does carry names, so the absence above
+    // is a reading of the surface rather than of an empty object.
+    expect(Object.keys(rootExports).length).toBeGreaterThan(100);
   });
 });

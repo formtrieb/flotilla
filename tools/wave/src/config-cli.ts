@@ -4,7 +4,8 @@
  *
  * Store-INDEPENDENT: it calls loadWaveConfig (which validates `store`, `verify`
  * — including each command's ADR-0049 `needs` declaration against its closed set
- * of three — `cleanup` and the ADR-0032 `engine.cli` / `engine.install` bindings)
+ * of three — `cleanup`, the ADR-0032 `engine.cli` / `engine.install` bindings and
+ * the ADR-0012 `models` tier→model-id block)
  * but never buildStore, so it validates a `github` config too — buildStore throws
  * the pre-P8 GitHub deferral, loadWaveConfig does not. This is how `wave-setup`
  * proves a freshly-written config loads (ADR-0016 skill-half grill 2026-06-18).
@@ -201,7 +202,7 @@ const STORE_KEYS: Readonly<Record<'markdown' | 'github' | 'linear', readonly str
   github: ['kind', 'eligibility', 'goal'],
   linear: ['kind', 'team', 'project', 'eligibility', 'states', 'categoryLabels', 'goal'],
 };
-const TOP_LEVEL_KEYS: readonly string[] = ['store', 'verify', 'cleanup', 'engine'];
+const TOP_LEVEL_KEYS: readonly string[] = ['store', 'verify', 'cleanup', 'engine', 'models'];
 const STORE_GOAL_KEYS: readonly string[] = ['container'];
 /** The claim rungs plus the two non-rung write targets and the opt-in done state. */
 const STORE_STATES_KEYS: readonly string[] = [
@@ -214,6 +215,13 @@ const STORE_STATES_KEYS: readonly string[] = [
 ];
 const CLEANUP_KEYS: readonly string[] = ['disposableNames', 'extraRoots'];
 const ENGINE_KEYS: readonly string[] = ['cli', 'install'];
+/**
+ * The tier→model-id bindings (ADR-0012 Amendment 2026-09-21). The two Risk-
+ * derived tier markers plus the driver's fixed Scribe stage — the loader
+ * refuses a non-object block and a bad VALUE, so what is left for this table is
+ * exactly the misspelled KEY, which would otherwise bind nothing in silence.
+ */
+const MODELS_KEYS: readonly string[] = ['heavy', 'standard', 'scribe'];
 const VERIFY_KEYS: readonly string[] = ['profiles'];
 const VERIFY_PROFILE_KEYS: readonly string[] = ['name', 'appliesTo', 'commands'];
 // `needs` is deliberately absent from the walk below: its keys are a CLOSED set
@@ -453,6 +461,14 @@ function collectConfigWarnings(config: WaveConfig): ConfigWarning[] {
     collectAbsoluteArgvWords(typeof engine.install === 'string' ? engine.install : undefined, 'engine.install', out);
   }
 
+  // ADR-0012 Amendment 2026-09-21 — the tier→model-id block. `isPlainObject`
+  // rather than `expectShape`, for the same reason `verify`/`cleanup`/`engine`
+  // above use it: the loader already REFUSES a non-object `models`, and
+  // re-reporting a refusal as a warning would be a second, weaker owner of one
+  // rule.
+  const models = raw.models;
+  if (isPlainObject(models)) collectUnknownKeys(models, 'models', MODELS_KEYS, out);
+
   return out;
 }
 
@@ -535,6 +551,17 @@ function summarySegments(config: WaveConfig, warnings: readonly ConfigWarning[])
   // is half the answer.
   if (config.engine?.cli) segments.push(`engine.cli: ${config.engine.cli}`);
   if (config.engine?.install) segments.push(`engine.install: ${config.engine.install}`);
+
+  // ADR-0012 Amendment 2026-09-21 — the BOUND VALUES, for the same reason the
+  // two engine bindings above report theirs: an operator reads this line to
+  // confirm which model each tier resolves to, and "models: present" would
+  // confirm nothing. Conditional like every other segment, so a config that
+  // declares no `models` prints the line it printed before this key existed.
+  const models = raw.models;
+  if (isPlainObject(models)) {
+    const pairs = renderPairs(models, MODELS_KEYS);
+    if (pairs !== '') segments.push(`models: ${pairs}`);
+  }
 
   if (warnings.length > 0) segments.push(`${warnings.length} warning(s)`);
   return segments;

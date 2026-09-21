@@ -174,6 +174,7 @@ Same discipline as the GitHub table above: neither preflight substitutes for che
 | `verify` | no | `VerifyConfig` — omit entirely if the consumer has no build gate |
 | `cleanup` | no | `CleanupConfig` — omit entirely unless this consumer's toolchain leaves build output inside a worktree |
 | `engine` | no | `EngineConfig` — `{ cli?: string }` (ADR-0032); see below |
+| `models` | no | `ModelsConfig` — `{ heavy?, standard?, scribe? }`, this consumer's standing tier→model-id binding (ADR-0012 Amendment 2026-09-21); see below |
 
 ### `EngineConfig`
 
@@ -223,6 +224,20 @@ npm install
 ```
 
 This is not a second scaffold form — it produces the identical `./node_modules/.bin/flotilla-engine` binary and the identical `{ "engine": { "cli": "./node_modules/.bin/flotilla-engine", "install": "npm ci" } }` config value as the ordinary Node-consumer path above. **The install command is recorded the same way on both paths: as `engine.install`.** The only difference is that this install is a **new** step rather than one more line inside an install the consumer already runs — so on the non-Node path it comes FIRST in whatever `install` names, ahead of the consumer's own build install, so `engine.cli` resolves before the row's first engine call. Where a consumer needs both, record them as one plain argv command list, never two fused with `&&` (the plain-argv rule refuses that outright, and wave-shared Convention 13 forbids it a tier earlier); if the two genuinely cannot be expressed as one argv command, that is the case for `--deps-setup` at compose time, which sits one precedence level above `engine.install`. The engine needs a Node runtime regardless of what this consumer builds — this manifest makes that already-true prerequisite explicit and worktree-resolvable, not a new one.
+
+### `ModelsConfig` — the tier→model-id binding (ADR-0012 Amendment 2026-09-21)
+
+| Key | Required | Shape |
+|---|---|---|
+| `heavy` | no | a non-empty model-id string — what a `cross-feature-refactor` / `public-API-change` row binds for BOTH its Worker and its Reviewer |
+| `standard` | no | a non-empty model-id string — what every other Risk's row binds, and the Scribe stage's own fallback |
+| `scribe` | no | a non-empty model-id string — the driver's fixed sidecar-writing stage, a stage constant rather than a Risk-derived tier |
+
+The engine derives an abstract **tier** from a row's Risk and has never been allowed to know which model that tier means (ADR-0012); this block is where the consumer says. **It is the third and weakest rung of the row-model ladder** — `compose-driver` takes `--row-meta`'s per-row `model` first, then the model recorded on the row's dispatch-log entry by `spine set-branch --model`, then `models.<tier>`. A blank answers at no rung, and a row none of the three answers for is still refused at compose time with all three named: declaring the block does not replace `--model`, it removes the need to pass it every wave.
+
+`models.scribe` is the one key with a behaviour of its own: the Scribe stage binds `models.scribe`, else `models.standard`, else the row's own recorded model — never an omitted model, because a stage dispatched without one silently re-inherits whatever model coordinates the session. Declare it to keep that stage cheap; it carried a hard-coded cheap-tier id until this key existed, the brand-in-a-durable-artefact ADR-0012 forbids.
+
+Absent `models`, and an absent key inside it, mean "nothing standing is declared". A **present** key must be a non-empty string: the loader refuses a non-object block, a non-string value and an empty id, each naming the dotted key (`wave config "models.heavy"`), and grades nothing about the id itself — a model id is opaque and consumer-owned. A misspelled key (`models.scribes`) is a `config validate` WARNING naming the three declared keys, never a refusal; that verb also echoes the bound values on its `ok:` line.
 
 ### The shared `store.goal` block (every store kind)
 

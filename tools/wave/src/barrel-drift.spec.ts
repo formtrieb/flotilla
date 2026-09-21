@@ -514,7 +514,7 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     runComposeDriver:
       "The `compose-driver` verb's runner. Its one call site is cli.ts's async interception, exactly as runResume/runIssueStore are reached; a consumer drives it as a CLI subcommand and reads the JSON receipt.",
     composeDriverScript:
-      'The pure substitution — template plus five constants plus ISSUES in, finished script out. Exported so compose-driver.spec.ts can compare it against an independently re-implemented expectation; the verb is the consumer-facing form.',
+      'The pure substitution — template plus six constants plus ISSUES in, finished script out. Exported so compose-driver.spec.ts can compare it against an independently re-implemented expectation; the verb is the consumer-facing form.',
     ComposeDriverScriptInput:
       'The input shape of composeDriverScript directly above — unusable without it, and module-local for the same reason.',
     DRIVER_TEMPLATE_PATH:
@@ -533,8 +533,8 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
       'The compose-time human-gate / foreground refusal — two refusals with two remedies, so two messages. Exported for the same field-by-field spec reason as its neighbour above.',
     branchFor:
       'The `wave/<id>-<slug>` formula, in one place, so the receipt and the shipped script cannot disagree with the Coordinator\'s own `spine set-branch` write (ADR-0021).',
-    modelForRisk:
-      'The Risk → model-tier default used only when the spine records no dispatched model (ADR-0007 Amendment). A consumer states its tiers in its own roster, never by calling this.',
+    tierForRisk:
+      "The Risk → ABSTRACT TIER MARKER derivation — `heavy` for cross-feature-refactor / public-API-change, `standard` otherwise (ADR-0007 Amendment 2026-07-31, ADR-0012 Amendment 2026-09-16). It answers with a marker and never a model id: the composer reads it to name the tier inside its no-model REFUSAL and to pick which key of the consumer's own `models` block to read. A consumer binds its tiers in `wave.config.json`'s `models` block or per row with `spine set-branch --model`, never by calling this. (Renamed from `modelForRisk` by ADR-0012's 2026-09-21 amendment: the old spelling described the retired literal-id fallback, and this allowlist entry was what pinned it in place.)",
     closePhraseFor:
       'The store-kind close phrase (wave-shared Convention 4). Exported so the spec pins all three store kinds; the verb is what a caller actually runs.',
     stripBareIds:
