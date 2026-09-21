@@ -272,7 +272,10 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * **1,226 B**, landing the class at **159,535 B** over the same 18 files, so the
  * ceiling moves to that sum rounded UP to the next full KB (1 KB = 1000 B):
  * **160,000 B**. The 465 B of headroom that leaves is a fact about the rounding
- * rule, not a budget.
+ * rule, not a budget. (Issue #911, the row that closes that correction's four
+ * disclosed residues, spent 391 B of it on the same file and left this constant
+ * alone — 159,926 B is still inside 160,000 B. Its sibling below did have to
+ * ratchet; the live sums are printed on every run either way.)
  *
  * Previously: 159,000 B — row #858's ratchet to its own landed measure of
  * 158,998 B, closing the loop row 824 (ADR-0051's canonical-spelling rewrite)
@@ -287,29 +290,60 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 160_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the same Convention 13 Catalog correction that
- * raises the constant above**, in the diff that causes the growth. The shared
- * standing load is a SUBSET of this population, so the one
- * `wave-shared/reference/convention-13-one-bash-call-per-step.md` edit moves both
- * measures by the same bytes and both ceilings ratchet in this one diff — the
- * reasoning for the edit itself is on that constant and is not repeated here.
- * The probe matrix that backs it went to the `evidence/` sibling, which this
- * population excludes by definition and which therefore costs nothing here.
+ * Why this number: **RAISED by the row that closes the four residues the
+ * Convention 13 Catalog correction left behind** (issue #911), in the diff that
+ * causes the growth. One of those residues is a claim that over-reaches its
+ * evidence — the corrected entry said the SAME 46-B body was refused through all
+ * three destinations, when only two of the three legs carry it — and correcting
+ * it costs more words than making it did: the entry now separates the pair that
+ * shares a body (which is what establishes that the redirect target is not part
+ * of the trigger) from the third leg that does not, and restates the conclusion
+ * as resting on the pair. The other reference-file bytes are a probe command
+ * re-rendered to match the matrix verbatim and one pointer word. Everything
+ * bulky — the three-way refusal-string drift table, the measurement that no
+ * engine matcher depends on that string, the per-leg body detail — went to the
+ * `evidence/` sibling, which this population excludes by definition and which
+ * therefore costs nothing here.
  *
- * At anchor commit `b9e3c4201f3d57bd44f49db7ef6649e0261e53eb` (`git rev-parse
+ * At anchor commit `c0355f8b255a4487ae21fe820430b17487a59873` (`git rev-parse
  * HEAD` on this row's branch tip, before this row's own edit) the population
- * measured **1,224,896 B** over 57 files — 104 B under the 1,225,000 B ceiling
- * the `models`-config row left. This row's own edit adds **1,226 B**, landing the
- * population at **1,226,122 B** over the same 57 files, so the ceiling moves to
- * that sum rounded UP to the next full KB (1 KB = 1000 B): **1,227,000 B**.
- * (A self-referential SHA naming this row's own landing commit is not printable
- * here — the hash covers the file's own bytes — so the anchor above is the
- * closest verifiable fixed point.)
+ * measured **1,226,890 B** over 57 files — 110 B under the 1,227,000 B ceiling
+ * the Catalog correction left. This row's single
+ * `wave-shared/reference/convention-13-one-bash-call-per-step.md` edit adds
+ * **391 B**, landing the population at **1,227,281 B** over the same 57 files, so
+ * the ceiling moves to that sum rounded UP to the next full KB (1 KB = 1000 B):
+ * **1,228,000 B**. The shared standing load is NOT raised: the same 391 B land it
+ * at 159,926 B against its unchanged 160,000 B ceiling, which had 465 B free.
  *
- * Previously: 1,225,000 B — the `models`-config row's raise, whose own
- * reasoning is kept below (in ITS voice, so "this row" there means that row)
- * because the chain back through #858 to the ADR-0050 wave is what makes each
- * step auditable.
+ * Previously: 1,227,000 B — the Convention 13 Catalog correction's own raise,
+ * whose reasoning is kept below (in ITS voice, so "this row" there means that
+ * row) because the chain back through the `models`-config row and #858 to the
+ * ADR-0050 wave is what makes each step auditable.
+ *
+ * > Why this number: **RAISED by the same Convention 13 Catalog correction that
+ * > raises the constant above**, in the diff that causes the growth. The shared
+ * > standing load is a SUBSET of this population, so the one
+ * > `wave-shared/reference/convention-13-one-bash-call-per-step.md` edit moves
+ * > both measures by the same bytes and both ceilings ratchet in this one diff —
+ * > the reasoning for the edit itself is on that constant and is not repeated
+ * > here. The probe matrix that backs it went to the `evidence/` sibling, which
+ * > this population excludes by definition and which therefore costs nothing
+ * > here.
+ * >
+ * > At anchor commit `b9e3c4201f3d57bd44f49db7ef6649e0261e53eb` (`git rev-parse
+ * > HEAD` on this row's branch tip, before this row's own edit) the population
+ * > measured **1,224,896 B** over 57 files — 104 B under the 1,225,000 B ceiling
+ * > the `models`-config row left. This row's own edit adds **1,226 B**, landing
+ * > the population at **1,226,122 B** over the same 57 files, so the ceiling
+ * > moves to that sum rounded UP to the next full KB (1 KB = 1000 B):
+ * > **1,227,000 B**. (A self-referential SHA naming this row's own landing commit
+ * > is not printable here — the hash covers the file's own bytes — so the anchor
+ * > above is the closest verifiable fixed point.)
+ * >
+ * > Previously: 1,225,000 B — the `models`-config row's raise, whose own
+ * > reasoning is kept below (in ITS voice, so "this row" there means that row)
+ * > because the chain back through #858 to the ADR-0050 wave is what makes each
+ * > step auditable.
  *
  * > Why this number: **RAISED by the row that ships the `models` config key**
  * > (ADR-0012 Amendment 2026-09-21), in the diff that causes the growth, as the
@@ -357,11 +391,11 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 160_000;
  * > chain back to the ADR-0050 wave's 1,218,000 B).
  *
  * Lowering a ceiling is still free; the next ratchet row takes this back down
- * to its own landed measure. This raise leaves 878 B of headroom, which is a
+ * to its own landed measure. This raise leaves 719 B of headroom, which is a
  * fact about the rounding rule rather than a budget — the next row that adds
  * reading cost raises again, in its own diff.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_227_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_228_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
