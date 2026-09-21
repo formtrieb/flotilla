@@ -530,7 +530,7 @@ export const ISSUE_STORE_CONTRACTS: Readonly<Record<Op, VerbContract>> =
 /**
  * Every registered op, in the order {@link ISSUE_STORE_CONTRACTS} declares them
  * — derived, never a second hand-typed roster (issue #650: the same discipline
- * `SPINE_OPS`/`Object.keys(SPINE_OP_ARGS)` already uses in spine-cli.ts).
+ * `SPINE_OPS` (itself `Object.keys(SPINE_CONTRACTS)`) uses in spine-cli.ts).
  * The table is `Record<Op, ...>`, so this list is exactly the `Op` union the
  * switch below dispatches — it cannot omit or invent an op without a compile
  * error.

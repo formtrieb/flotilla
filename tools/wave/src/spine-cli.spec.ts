@@ -1501,7 +1501,7 @@ describe('the awaiting-human archive-gate citation is fixed, and the fix is scop
 // ─── the advertised op vocabulary is DERIVED, not transcribed (issue #366) ────
 //
 // Both of this runner's advertising surfaces — `printUsage()` and the `default:`
-// case's `available:` list — are rendered from the single `SPINE_OP_ARGS` table.
+// case's `available:` list — are rendered from the single `SPINE_CONTRACTS` table.
 // Before that table each carried its own hand-typed copy of the op names, which
 // is the drift the FOR-11 live-gate retro found (`set-status` advertised in one
 // place and not the other). These specs read both surfaces back at RUNTIME and
@@ -1545,7 +1545,7 @@ describe('spine-cli — the op vocabulary is one list, advertised twice', () => 
   it('advertises the ADR-0012 human-lane pair alongside every pre-existing op', () => {
     // The claim the fold has to make good on: after moving `human-gated` and
     // `check-awaiting-human` off the router, THIS runner is the one that names
-    // them. Remove either from `SPINE_OP_ARGS` and this fails by name.
+    // them. Remove either from `SPINE_OP_SHAPES` and this fails by name.
     const advertised = ops();
     expect(advertised).toContain('human-gated');
     expect(advertised).toContain('check-awaiting-human');

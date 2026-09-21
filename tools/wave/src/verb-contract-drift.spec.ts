@@ -454,9 +454,12 @@ export function alternationsIn(section: readonly string[]): string[] {
 
 describe('verb-contract drift — every rendered alternation maps to a declaration', () => {
   /**
-   * What a contract DECLARES an alternation for: one per `groups` entry, plus
-   * one for a named twin (the positional form against the named one, ADR-0051
-   * decision 6 — the relationship the renderer has always drawn).
+   * What a contract DECLARES an alternation for: one per `groups` entry —
+   * contract-level, or declared on a {@link VerbForm} instead (issue #892;
+   * `signatureSegments` reads `form?.groups ?? decl.groups ?? []`, so a form
+   * that declares its own group is rendered from THAT, not the contract's) —
+   * plus one for a named twin (the positional form against the named one,
+   * ADR-0051 decision 6 — the relationship the renderer has always drawn).
    *
    * A value VOCABULARY is deliberately not counted. `--method
    * <squash|merge|rebase>` and `issue-store transition <queued|in-flight|
@@ -467,8 +470,12 @@ describe('verb-contract drift — every rendered alternation maps to a declarati
    */
   function declaredAlternationCount(contract: VerbContract): number {
     const groups = (contract.groups ?? []).length;
+    const formGroups = (contract.forms ?? []).reduce(
+      (n, form) => n + (form.groups?.length ?? 0),
+      0,
+    );
     const twin = contract.twin === undefined || contract.twin.length === 0 ? 0 : 1;
-    return groups + twin;
+    return groups + formGroups + twin;
   }
 
   it('renders one alternation per declaration, and declares one per alternation', () => {
@@ -569,6 +576,20 @@ describe('verb-contract drift — every rendered alternation maps to a declarati
     expect(rendered).toEqual(['x | y']);
     expect(declaredAlternationCount(handWritten)).toBe(0);
     expect(rendered.length).not.toBe(declaredAlternationCount(handWritten));
+
+    // (d) a group declared INSIDE a form, not at the contract level (issue
+    // #892). No shipped verb does this today — every current form falls back
+    // to the contract's own `groups` — so this fixture is what pins the
+    // counter against the day one does: a group declared only on `form.groups`
+    // renders exactly as a contract-level one does (`signatureSegments` reads
+    // `form?.groups ?? decl.groups ?? []`), and the count has to follow it
+    // there.
+    const formGrouped = defineVerb({
+      ...base,
+      forms: [{ groups: [{ kind: 'exactly-one', branches: [['--a'], ['--b']] }] }],
+    });
+    expect(alternationsIn(renderInvocations(formGrouped))).toHaveLength(1);
+    expect(declaredAlternationCount(formGrouped)).toBe(1);
   });
 });
 
