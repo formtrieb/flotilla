@@ -69,7 +69,12 @@ import {
   type GoalFrontier,
   type GoalMemberFacts,
 } from '../goal-frontier';
-import { serializeBareBody, upsertSection, appendBodySections } from './body-codec';
+import {
+  serializeBareBody,
+  upsertSection,
+  appendBodySections,
+  assertAcceptanceCriteriaShape,
+} from './body-codec';
 
 const STATUS_FIELD = 'Status';
 const CLOSED_BY_FIELD = 'Closed-by';
@@ -252,6 +257,13 @@ export class MarkdownFsStore implements IssueStore {
 
   // ── annotate (ADR-0010 decorate write-path) ───────────────────────────────
   async annotate(id: string, patch: AnnotatePatch): Promise<void> {
+    // Entry-shape validation BEFORE anything is written (#871) — the same
+    // whole-patch-first discipline `amend` below applies with
+    // `validateAmendPatch`. The rule lives in the codec rather than beside
+    // `upsertAcSection` here, so all three shipped stores refuse the identical
+    // shape instead of this one carrying a second, more permissive copy of it
+    // (the same stance the `appendBodySections` note a few lines down records).
+    assertAcceptanceCriteriaShape(patch.acceptanceCriteria, 'annotate');
     const located = await this.locate(id);
     if (!located) throw new Error(`Issue not found: ${id}`);
     let source = await readFile(located.path, 'utf-8');

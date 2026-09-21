@@ -359,6 +359,10 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     BodyInput:
       'Same adapter-internal body-codec class as ParsedBody above — the serializer input shape.',
     appendBodySections: 'Adapter-internal body-codec helper (see ParsedBody above).',
+    assertAcceptanceCriteriaShape:
+      "Adapter-internal body-codec RULE (#871) — the acceptance-criteria entry-shape refusal all three shipped stores call as the first statement of annotate, and the issue-store CLI calls before it hands the patch on. Module-local for the same reason its neighbours are: it validates the adapter's wire shape, not the engine's IssueView contract. A consumer meets it by running `issue-store annotate` and reading its exit code, never by importing the predicate.",
+    AcceptanceCriteriaShapeError:
+      'The typed rejection assertAcceptanceCriteriaShape throws (see above) — the discriminator the CLI narrows on to classify a caller-input bug as exit 2 rather than a store failure. Adapter-internal alongside the predicate that throws it.',
     parentToLine: 'Adapter-internal body-codec helper (see ParsedBody above).',
     parseBody: 'Adapter-internal body-codec helper (see ParsedBody above).',
     replaceSection: 'Adapter-internal body-codec helper (see ParsedBody above).',

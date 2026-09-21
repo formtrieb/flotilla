@@ -42,6 +42,19 @@
  *   read     <id>                                  → prints the IssueView (JSON)
  *   parse-ref <id>                                 → prints the IssueRef {slug?, issue} (JSON)
  *   annotate <id> --patch <AnnotatePatch.json>     → decorates an existing issue (ADR-0010); nothing on stdout (a receipt with --json)
+ *              An `acceptanceCriteria` entry that is not a
+ *              `{ text: string, checked: boolean }` object — most
+ *              plausibly a bare string, the shorter spelling the type
+ *              never allowed — is a usage error (exit 2, #871), refused
+ *              before any write reaches the store. Left unrefused it
+ *              exited 0 having overwritten every criterion's text with
+ *              the four characters `undefined`: silent, total, and with
+ *              no undo, since the checklist it replaced is gone. The
+ *              rule itself lives in the codec
+ *              (`assertAcceptanceCriteriaShape`), which all three
+ *              shipped stores also call as the first statement of
+ *              `annotate`, so a caller reaching `store.annotate`
+ *              directly gets the identical refusal.
  *   amend    <id> --patch <AmendPatch.json>        → amends title / free-prose sections (ADR-0025); nothing on stdout (a receipt with --json)
  *   transition <id> <queued|in-flight|in-review>   → writes one claim rung; nothing on stdout (a receipt with --json)
  *   unclaim  <id>                                  → drops the claim (queued→available); nothing on stdout (a receipt with --json)
@@ -129,6 +142,10 @@
 
 import { readFileSync } from 'node:fs';
 import { classifyCreateInput, CreateInputError } from './adapters/issue-store';
+import {
+  assertAcceptanceCriteriaShape,
+  AcceptanceCriteriaShapeError,
+} from './adapters/body-codec';
 import type {
   IssueStore,
   CreateInput,
@@ -299,6 +316,9 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
       '  files/acceptanceCriteria REPLACE the modeled section when supplied; bodySections',
       '    APPENDS instead — annotating the same heading twice duplicates it, and the read',
       '    path returns the FIRST match, silently shadowing the newer one',
+      '  each acceptanceCriteria entry MUST be a { "text": string, "checked": boolean } object —',
+      '    a bare string ("..." instead of { "text": "..." }) is REFUSED (exit 2), never written',
+      '    as the four characters `undefined`',
     ],
     outputNote: 'nothing on success (exit 0, empty stdout)',
     json: {
@@ -785,6 +805,26 @@ export async function runIssueStore(
           patch = JSON.parse(readFileSync(patchPath, 'utf-8')) as AnnotatePatch;
         } catch (err) {
           return usage(`cannot read --patch ${patchPath}: ${(err as Error).message}`, 'annotate');
+        }
+        // Whole-patch ENTRY-SHAPE validation BEFORE the write (#871), the same
+        // discipline `create`/`amend` above already apply. `acceptanceCriteria`
+        // is typed `{ text, checked }[]`; a patch whose entries are plain
+        // strings used to sail through here, and every renderer downstream read
+        // `.text` off a string and wrote the four characters `undefined` as the
+        // criterion — exit 0, empty stderr, no undo. This layer OWNS NONE of
+        // that rule: it lives in the codec's `assertAcceptanceCriteriaShape`,
+        // where all three shipped stores call it as the first statement of
+        // `annotate` too, so a non-CLI caller inherits the identical refusal
+        // instead of routing around a predicate that only ever ran here (the
+        // #309 stance, one field over). All this layer decides is the exit code
+        // and the stderr line — hence the catch narrows on the TYPED error;
+        // anything else is not a caller-input verdict and must not be laundered
+        // into a usage message.
+        try {
+          assertAcceptanceCriteriaShape(patch.acceptanceCriteria, 'annotate');
+        } catch (err) {
+          if (err instanceof AcceptanceCriteriaShapeError) return usage(err.message, 'annotate');
+          throw err;
         }
         await store.annotate(id, patch);
         writeReceipt(
