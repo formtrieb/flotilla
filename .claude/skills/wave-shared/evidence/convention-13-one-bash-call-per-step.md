@@ -272,6 +272,51 @@ Entry 5 recorded in 2026-08-09, so the harness's own message has been re-worded 
 (The "git operations" clause is still the boilerplate tail Entries 1 and 5 already noted: no probe
 below ran a git command.)
 
+#### The recorded refusal string has drifted — and nothing in the engine depends on it
+
+Three recordings of "the" refusal message now sit in this repo, and no two of them are the same
+string:
+
+| recorded | wording |
+|---|---|
+| 2026-08-09 (Entry 5) | `…too complex to verify that it stays inside the worktree; break it into plain, separate commands. Refusing to run it — …git operations must target its own worktree. Run the equivalent from <worktree-path> without the redirect.` |
+| 2026-09-21 (Entry 2, above) | `…too complex to verify that it stays inside the worktree. Refusing to run it — …git operations must target its own worktree. Split it into plain, separate commands and run them from <worktree-path>.` |
+| 2026-09-22 (this row's dispatch) | `…but this command runs node with a value computed at runtime (the variable TMPDIR) (a computed argument goes after the script or --) where it cannot tell which operand is the program, next to an operand or input computed at runtime in a plain command, so what it runs cannot be shown not to be git. Refusing to run it — …git operations must target its own worktree. Run the plain command from <worktree-path>.` |
+
+Between the first two, the remedy clause moved (from before `Refusing to run it` to after the
+git-operations tail), its wording changed (`break it into` → `Split it into … and run them from`),
+the clause separator changed (`;` → `.`), and the trailing `without the redirect` clause disappeared.
+The third is not a re-wording of a fixed string at all: it is **generated per refused shape**, naming
+the offending construct (`the variable TMPDIR`) and the specific reason inline. It was produced
+live in this row's own dispatch by `cp <driver> "$TMPDIR/wsi-check.mjs" && node --check …`, and it is
+a fourth independent confirmation of Entry 1's `$VAR`-expansion discriminator as a side effect.
+
+**So the drift is a DOCUMENTATION fact, not a live breakage.** Nothing in flotilla matches on this
+string. Measured in this dispatch, at the row's anchor commit:
+
+```bash
+grep -rl "isolated in the worktree" tools/wave/   # → no matches
+grep -rl "Split it into plain"      tools/wave/   # → no matches
+grep -rl "too complex to verify"    tools/wave/   # → tools/wave/driver/wave-start-inflight.js
+```
+
+The single hit is the driver's Worker- and Reviewer-brief PROSE — clause 11's mechanism (b) and the
+Coordinator's own copy — which *describes* the refusal to a human reader in its own words and
+performs no matching. The engine proper (`tools/wave/src/**`) contains the phrase zero times: no
+parser, no classifier, no test fixture and no skill reads or compares this text. Repo-wide, the only
+other occurrences are this file, the reference sibling, and
+`evidence/convention-08-secret-safe-briefs.md` — all prose.
+
+**The standing rule this settles:** never write a matcher against the harness's refusal wording, in
+the engine or in a hook. It is a moving target across harness versions *and* now demonstrably
+shape-dependent within one version. Recognise a refusal by what your call did NOT do — no output, no
+exit status, nothing pending — and by this catalog's shapes, never by the words that came back.
+
+**A note on how probe 11 is rendered.** The Catalog entry cites probe 11 as
+`` echo '{ "sections": { … } }' `` — byte-identical to the matrix row below, ellipsis included. An
+earlier rendering shortened it to `` echo '{ "a": 1 }' ``, a literal no probe ran; the matrix is the
+record and the entry now quotes it rather than paraphrasing it.
+
 **The matrix.** "brace at" is the position of the first `{` inside the heredoc BODY (the line after
 the `<<'EOF'` line is body line 1). Byte offsets marked ≈ are computed from the command text; the
 two unmarked ones were measured with `grep -bo '{'` on the file the accepted probe actually wrote.
@@ -303,10 +348,17 @@ two unmarked ones were measured with `grep -bo '{'` on the file the accepted pro
 
 **What the matrix establishes.**
 
-- **The redirect target is not part of the trigger.** Probe 7 refused with no redirect at all and
-  probe 5 refused through an interpreter reading stdin, against probe 2's file redirect — same body,
-  three destinations, one answer. This is the half of the old entry that was wrong, and it is the
-  half the field's `python3 -` occurrence had already contradicted.
+- **The redirect target is not part of the trigger — and that rests on TWO legs, not three.**
+  Probes 2 and 7 carry the IDENTICAL 46-B body and differ in exactly one thing: probe 2 appends to a
+  file, probe 7 writes to stdout with no redirect at all. One body, two destinations, one answer —
+  that pair on its own is the whole argument, and it is sound on its own. **Probe 5 is a third
+  destination but NOT the same body:** its `python3 -` heredoc carries a ~75-B dict literal, not the
+  46-B JSON object, so it cannot isolate the redirect the way the 2/7 pair does. What probe 5
+  establishes is the NEXT bullet's point — the tool is not part of the trigger either. Stated as
+  "the same body through three destinations" (as this entry's first correction did, and as the
+  pull-request body that landed it did) the claim over-reaches by one leg while the conclusion it
+  supports does not. This is the half of the old entry that was wrong, and it is the half the field's
+  `python3 -` occurrence had already contradicted.
 - **The tool is not part of it either** — `cat` and `python3` both refused (probes 2, 5, 7) and both
   ran (probes 1, 3, 4, 8, 9, 10).
 - **Size is not the discriminator.** A 3,309-B brace-free append ran (probe 3), as did a 1,838-B
@@ -348,6 +400,17 @@ settle it.** Until then, keep following Entry 1.
 **Occurrence:** wave `2026-09-16-engine-truth-and-verbs`, spine disclosures `772.4` and row 755
 iteration 1, carved out of issue #800 at triage on 2026-09-21 and re-reproduced at issue #869's own
 dispatch.
+
+**Residues closed on 2026-09-22 (issue #911).** The correction above landed with four disclosed
+loose ends, each fixed in that one follow-up row rather than carried: (1) the new Worker-brief clause
+is now pinned by `tools/wave/src/skill-schema-drift.spec.ts` beside the clause-10 and prUrl pins, on
+the shipped driver asset, with a negative control that deletes the clause and watches the pin fail,
+and a second render-level pin in `tools/wave/src/compose-driver.spec.ts` on the brief a live dispatch
+actually receives; (2) the driver's own sidecar-write step no longer called the refused shape
+"heredoc-to-file-with-braces" — the half this entry refuted — and now names the trigger this entry
+records; (3) the refusal-string drift is recorded above, together with the measurement that no engine
+matcher depends on it; (4) the "same body through three destinations" over-reach is corrected in both
+the Catalog entry and the bullet below.
 
 ### Entry 3 — heredoc commit message, full reproduction
 

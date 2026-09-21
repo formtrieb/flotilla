@@ -3326,6 +3326,48 @@ describe('compose-driver — the rendered Reviewer brief cites no policy clause 
   });
 });
 
+describe("compose-driver — the RENDERED Worker brief carries Convention 13's fourth-shape clause (issue #911)", () => {
+  const rows = [row({ id: '42', slug: 'first' })];
+
+  /**
+   * The clause's two halves as they read AFTER rendering — the template escapes
+   * its backticks (`\`{\``), the composed brief does not, so a pin written
+   * against the TEMPLATE text would not catch a rendering that mangled them.
+   * That is the whole reason this pin is here and not only in
+   * `skill-schema-drift.spec.ts`, which reads the asset: that spec proves the
+   * clause survives EDITING, this one proves it survives COMPOSITION and lands
+   * in the copy a live dispatch is actually handed.
+   */
+  const TRIGGER = 'a heredoc whose body carries a literal `{` or `}` near its head';
+  const REMEDY = '**PREFER YOUR FILE-EDITING TOOL OVER A SHELL HEREDOC FOR EVERY CONTENT WRITE YOU MAKE**';
+
+  async function workerBrief(template: string): Promise<string> {
+    const { calls } = await runComposedDriver(
+      composeDriverScript({ template, ...CONSTANTS, rows }),
+    );
+    const brief = calls.find((c) => String(c.opts.label) === 'worker:42')?.brief ?? '';
+    expect(brief).toContain('You are a Wave Worker'); // guard the fixture before any claim rests on it
+    return brief;
+  }
+
+  it('the trigger and its remedy both reach the dispatched brief', async () => {
+    const worker = await workerBrief(TEMPLATE);
+    expect(worker).toContain(TRIGGER);
+    expect(worker).toContain(REMEDY);
+  });
+
+  it('NEGATIVE CONTROL — a template with the clause cut renders a brief without it', async () => {
+    const cut = TEMPLATE.replace(
+      /\*\*A FOURTH SHAPE is refused the same way[\s\S]*?for its own payload\./,
+      '',
+    );
+    expect(cut).not.toEqual(TEMPLATE); // the replace actually matched
+    const worker = await workerBrief(cut);
+    expect(worker).not.toContain(TRIGGER);
+    expect(worker).not.toContain(REMEDY);
+  });
+});
+
 describe('compose-driver — the PR-create title is rendered single-quoted, and the row data stays plain (issue #776, folded into #753)', () => {
   /**
    * A title carrying every character that survives inside double quotes and

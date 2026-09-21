@@ -1272,8 +1272,10 @@ normalizes that one itself and tells you it did.)
    the sidecar directory flag. Prefer your file-writing TOOL over a shell heredoc: it takes
    the path directly — WITHOUT those quotes, which are the shell spelling and not part
    of the filename — creates the parent directory, and involves no shell at all, which
-   also sidesteps the heredoc-to-file-with-braces shape Convention 13's Catalog records
-   as refused (and every JSON payload carries braces by construction). If you do use a
+   also sidesteps the shape Convention 13's Catalog entry 2 records as refused: a heredoc
+   whose BODY carries a literal \`{\` or \`}\` near its head, refused whatever it writes to —
+   a file, stdout with no redirect at all, or an interpreter reading stdin — and every JSON
+   payload carries braces on its first line by construction. If you do use a
    heredoc, its redirect target is that same path, quoted —
    \`cat > "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" <<'EOF'\` — and
    the directory must already exist, from an equally quoted

@@ -626,6 +626,101 @@ describe('skill-schema-drift — the Documented-Form duty is briefed, not only s
   });
 });
 
+// ─── Convention 13's FOURTH shape, and the remedy that came with it ─────────
+//
+// Convention 13's Catalog entry 2 was corrected on 2026-09-21: the refused
+// shape is a heredoc whose BODY carries a literal `{`/`}` near its head, and
+// the redirect target — the half the old entry named as half the trigger — is
+// not part of it at all (22 live probes; a `cat` writing to stdout with no
+// redirect refused the identical body a `cat >>` append did).
+//
+// The clause's field value is the REMEDY that shipped with it: prefer the
+// file-editing tool for EVERY content write, not only for the sidecar payload
+// the step further down already covered. Two Workers in one wave each
+// rediscovered that surface by trial; the clause exists so a third does not.
+//
+// It shipped UNPINNED — the correcting row's own declared globs held neither
+// this spec nor the composer's, and it disclosed the gap rather than reaching
+// outside them. This block closes it, sliced to the clause's own span for the
+// same reason as every sibling above: the driver is a ~1,300-line file that
+// says "heredoc" and "file-editing tool" in several other places, so a
+// whole-file scan would stay green with the clause deleted.
+
+describe("skill-schema-drift — the Worker brief carries Convention 13's FOURTH shape and its remedy (issue #911)", () => {
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
+
+  const CLAUSE_START = '**A FOURTH SHAPE is refused the same way';
+  const CLAUSE_END = '\n\n12. NEVER ESCALATE YOUR OWN PERMISSIONS';
+  const REMEDY_HEAD = '**PREFER YOUR FILE-EDITING TOOL OVER A SHELL HEREDOC FOR EVERY CONTENT WRITE YOU MAKE**';
+
+  /** Policy clause 11's fourth-shape passage, sliced to itself. */
+  function fourthShapeClause(js: string): string {
+    return contractRegion(
+      js,
+      'driver/wave-start-inflight.js workerBrief policy clause 11 fourth-shape passage',
+      CLAUSE_START,
+      CLAUSE_END,
+    );
+  }
+
+  it('names the trigger — a brace near the HEAD of a heredoc BODY', () => {
+    const clause = fourthShapeClause(driverJs);
+    expect(clause).toContain('heredoc whose body carries a literal');
+    expect(clause).toContain('near its head');
+  });
+
+  it('states what the trigger is NOT — the redirect target, the tool, the payload size', () => {
+    // The corrected half. A copy that names the shape but keeps the old
+    // "redirects straight to a file" framing sends a Worker hunting for a
+    // redirect to remove, which is exactly the move the probe matrix falsified.
+    const clause = fourthShapeClause(driverJs);
+    expect(clause).toMatch(/neither the redirect target nor the tool/);
+    expect(clause).toMatch(/not payload size either/);
+    expect(clause).toContain('no brace-bearing heredoc can be predicted safe from its own text');
+  });
+
+  it('carries the REMEDY, and carries it as the GENERAL rule', () => {
+    // The load-bearing half, and the half a shortening edit takes first. A
+    // clause that names an unpredictable refusal and stops there leaves a
+    // Worker with nowhere to go; the remedy is the whole point, and its
+    // GENERALITY (every content write, not just the sidecar payload) is what
+    // the correction actually bought.
+    const clause = fourthShapeClause(driverJs);
+    expect(clause).toContain(REMEDY_HEAD);
+    expect(clause).toMatch(/not a local convenience of the sidecar-write step/);
+  });
+
+  it('NEGATIVE CONTROL — cutting the clause out of the asset makes the pin FAIL, shown not asserted', () => {
+    // The clause is removed from the real asset text — the pre-correction
+    // state, byte for byte — and the pins above are re-run against the result.
+    const without = driverJs.replace(CLAUSE_START + fourthShapeClause(driverJs), '');
+    expect(without).not.toEqual(driverJs); // the replace actually matched
+    expect(without).not.toContain(REMEDY_HEAD);
+    expect(() => fourthShapeClause(without)).toThrow(
+      /contract region start anchor missing in driver\/wave-start-inflight\.js workerBrief policy clause 11 fourth-shape passage/,
+    );
+  });
+
+  it('NEGATIVE CONTROL — keeping the clause but dropping the remedy fails ONLY the remedy pin', () => {
+    // The subtler regression, and the reason the remedy pin is its own
+    // assertion: a shortening edit that keeps the interesting finding and
+    // drops the boring instruction leaves every trigger pin green.
+    const from = driverJs.indexOf(REMEDY_HEAD);
+    expect(from).toBeGreaterThan(-1);
+    const to = driverJs.indexOf(CLAUSE_END, from);
+    expect(to).toBeGreaterThan(from);
+    const gutted = driverJs.slice(0, from) + driverJs.slice(to);
+    expect(gutted).not.toEqual(driverJs);
+
+    const clause = fourthShapeClause(gutted);
+    // The trigger half survives untouched…
+    expect(clause).toContain('near its head');
+    expect(clause).toMatch(/neither the redirect target nor the tool/);
+    // …and only the remedy pin notices.
+    expect(clause).not.toContain(REMEDY_HEAD);
+  });
+});
+
 // ─── the prUrl passage stays RESIDUAL, and points at the engine gate ────────
 //
 // Issue #556 promoted the `prUrl`-on-a-finishing-outcome invariant from prose
