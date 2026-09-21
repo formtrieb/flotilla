@@ -53,12 +53,10 @@
  * This guard polices **the engine's own sources**: every production TypeScript
  * module under `tools/wave/src/`, plus the shipped non-TypeScript assets
  * (`bin/`, `hooks/`, `driver/`). It **deliberately does not police consumer or
- * operator bash** — a skill's prose, a Coordinator's hand-typed command, a
- * script an operator authors and runs with `bash <file>`. That surface is
- * exactly where the exposure lives, and it is governed by a documented rule
- * (Convention 12's invocation-form section), not by a test: the engine cannot
- * see, gate, or lint the commands a human or an agent types at a terminal, and
- * a guard that pretended otherwise would be a false assurance.
+ * operator bash** — member 1 of the unmodelled set in the Guard declaration
+ * below, where that boundary and its reason are stated in full. It is carried
+ * in the refusal message too, so nobody reads a green run as a promise about
+ * that surface.
  *
  * ## Why this is a SEMANTIC scan and never a text search
  *
@@ -84,9 +82,8 @@
  *
  * If a future module wrapped `execFileSync` in a helper (`runGit(args)`), a
  * `gh` call routed through that helper would present a non-literal program
- * argument at the real spawner. It does not slip through: it lands in the
- * DYNAMIC bucket, which must be explicitly allowlisted with a reason. The
- * guard's failure mode is "you must write down why", never silence.
+ * argument at the real spawner. It does not slip through — see the Guard
+ * declaration below for where a non-verdict lands and why.
  *
  * Path note: this file lives at `tools/wave/src/`, so `__dirname` is the
  * engine's own source root — the same anchor every guard in this family uses.
@@ -97,6 +94,66 @@ import { basename, join, resolve } from 'node:path';
 import ts from 'typescript';
 import fastGlob from 'fast-glob';
 import { describe, it, expect } from 'vitest';
+
+// ─── Guard declaration (ADR-0052) ────────────────────────────────────────────
+
+/**
+ * **Subject.** Two populations, read two different ways: every production
+ * TypeScript module under `tools/wave/src/`, read through the TypeScript
+ * compiler API as child-process CALL SITES (never as text); and the shipped
+ * `bin/`, `hooks/` and `driver/` JavaScript assets, read as text for a
+ * `child_process` import.
+ *
+ * **Resolution bias — BLOCKS.** A spawn whose program this guard cannot
+ * resolve statically does not pass quietly: it lands in the DYNAMIC bucket
+ * and must be named in {@link DYNAMIC_SPAWN_ALLOWLIST} with a reason, so the
+ * failure mode is "write down why", never silence. The same direction runs
+ * through the shell-line reader: {@link commandWordsOf} over-approximates at
+ * every segment boundary on purpose. The reason is specific to this subject.
+ * A `gh` spawn is invisible by construction — it works on the author's
+ * machine, in CI and in review, and fails only inside a dispatched agent's
+ * nested shell context, which is the one place no human is watching. An
+ * over-approximation here fails loudly at `npm test` and gets corrected in
+ * the same sitting; an under-approximation ships a guard whose green run is a
+ * promise it never checked, which is the failure this whole file exists to
+ * refuse. The cost is real and accepted: a future wrapper around
+ * `execFileSync` turns this red until someone writes a sentence about it.
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **Consumer and operator bash — the largest member, and a DECLARED
+ *     scope boundary rather than a gap.** A skill's prose, a Coordinator's
+ *     hand-typed command, a script an operator runs with `bash <file>`: that
+ *     is where the exposure actually lives, and the engine can neither see
+ *     nor lint it. It is governed by Convention 12's invocation-form rule.
+ *     The refusal message says so itself, so a green run is never read as a
+ *     promise about that surface.
+ *  2. **Shell grammar, wherever a shell line is read.**
+ *     {@link commandWordsOf} splits on operators and substitution openings;
+ *     it strips quotes only at token EDGES and models no heredoc, no
+ *     backslash escape, no expansion. A program name arriving as `$TOOL`, or
+ *     a shell function or alias resolved at runtime, is not a command word
+ *     this reader can see.
+ *  3. **Anything not statically knowable at the call site.**
+ *     {@link literalStringOf} resolves string literals and string-literal
+ *     types only — a template literal with an interpolation, a value read
+ *     from config, a computed member expression. Those become
+ *     `resolved: false` and are governed by the blocking bias above, not by
+ *     a verdict about what they run.
+ *  4. **Spread elements in an argv array.** {@link literalElementsOf} skips
+ *     `ts.isSpreadElement`, so `execFileSync('bash', ['-c', ...parts])`
+ *     contributes no command words.
+ *  5. **Spawns that do not go through `node:child_process`.** The callee must
+ *     resolve, through the import-alias chain, to an export of that module.
+ *     A spawn inside a dependency, a `node:worker_threads` path, or a spawn
+ *     reached through a runtime `require` built from string concatenation is
+ *     not in the call-site set at all.
+ *  6. **The shipped non-TypeScript assets, beyond one regex.** They are
+ *     checked for a `child_process` IMPORT in either spelling — not parsed.
+ *     The assertion over them is deliberately the stronger, cheaper one
+ *     ("they spawn nothing"), so the unmodelled detail below it never gets a
+ *     chance to matter while that holds.
+ */
 
 // ─── the production module surface ───────────────────────────────────────────
 
@@ -357,9 +414,8 @@ const NON_COMMAND_PREFIXES = new Set([
  * OVER-approximating at the segment boundaries (it splits on every operator and
  * substitution opening that can start a new command) and deliberately
  * conservative about what counts as a command word (leading assignments and
- * shell keywords are skipped). A guard that over-approximates fails loudly and
- * is corrected; one that under-approximates is silent, which is the failure
- * mode this whole file exists to refuse.
+ * shell keywords are skipped) — the declared resolution bias above, applied
+ * here.
  *
  * The engine's live tree reaches this function ZERO times — it spawns argv-form
  * only — so its behaviour is pinned entirely by the permanent controls below.

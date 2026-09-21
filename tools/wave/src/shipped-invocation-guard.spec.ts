@@ -77,29 +77,13 @@ import { flagContractForToken, type VerbContract } from './verb-contract';
  *   neither a flag nor a positional; reading it as a positional would fire rule
  *   5 on every abbreviated citation in the corpus.
  *
- * What is deliberately NOT here is a per-file or per-line exemption table.
- * One prose sentence in `wave-start/reference/start-mechanics.md` used to read
- * "every {{wave-cli}} call in the steps above" — a mention wearing an
- * invocation's shape, with `call` sitting where a verb goes. It was rewritten to
- * name the subject ("every engine-CLI call") rather than exempted, because the
- * alternative is a table that grows one row per future sentence and silently
- * covers a real misgrip the day someone adds the wrong row. The failure message
- * below says so at the moment it fires.
+ * What is deliberately NOT here is a per-file or per-line exemption table —
+ * see the Guard declaration below, which states that with the live sentence
+ * it was decided over.
  *
- * ## What this spec does NOT check
- *
- * **Positional ARITY, beyond rule 5.** Shipped prose abbreviates
- * (`issue-store flag "$ID" …`), and a documentation excerpt that omits a
- * required flag is not a wrong spelling. The refusal in
- * {@link checkUndeclared} is the runtime's job; this spec's subject is how a
- * call is SPELLED.
- *
- * **Values.** A placeholder, a shell variable, a quoted path — anything in a
- * value position passes untouched, which is exactly what ADR-0051 decision 9
- * requires ("Placeholder tokens are values, not flags"). The walk steps OVER
- * the value of every value-taking flag, so `--text "--wave"` can never be read
- * as a flag — the same step-over `scanArgs()` performs, and the same live bug it
- * was written for.
+ * What this spec does NOT check is declared as its **Unmodelled set**, in the
+ * Guard declaration below, beside the resolution bias that says where a shape
+ * it cannot parse lands.
  */
 
 /** The repo root. This spec lives at `tools/wave/src/`, three levels down. */
@@ -131,6 +115,73 @@ const INVOCATION_MARKERS = ['{{wave-cli}}', '${WAVE_CLI}', 'wave_cli'] as const;
 
 /** The verb groups: a group token plus an op token address one contract. */
 const VERB_GROUPS = ['host-pr', 'issue-store', 'spine', 'config'] as const;
+
+// ---------------------------------------------------------------------------
+// Guard declaration (ADR-0052)
+// ---------------------------------------------------------------------------
+
+/**
+ * **Subject.** Every line of every shipped skill and agent markdown file and
+ * of the shipped driver template that carries one of
+ * {@link INVOCATION_MARKERS} in command position — read as an argv, by a
+ * hand-rolled tokenizer, and resolved against the router's real Verb
+ * contracts.
+ *
+ * **Resolution bias — PASSES.** Text this guard cannot resolve to one
+ * contract is not judged. A marker out of command position, a bare mention, a
+ * schematic verb or op (`<verb>`, `${…}`, `[…]`, `triage-*`), an elision
+ * (`…`): each is recognized as NOT an invocation and produces no candidate,
+ * and {@link tokenizeInvocation} stops at the first shell operator or
+ * unbalanced `)` rather than guessing what belongs to this command.
+ *
+ * The reason is specific to this subject. The corpus is PROSE about a CLI as
+ * much as it is calls to one, and the two wear the same characters. A guard
+ * that resolved every marker-shaped thing would not merely be noisy — it
+ * would invent failures on sentences that spell no invocation at all, and the
+ * repair available to an author facing one is to reword documentation until
+ * the scanner is happy, which is documentation damage dressed as a fix. The
+ * cost of passing is real and bounded: a genuine misgrip hidden inside a
+ * shape this reader declines to parse ships unflagged, and the two remaining
+ * carriers of the canonical mark (`--help` and the Catalog) are what stand
+ * behind it.
+ *
+ * **What the bias is NOT allowed to become: a per-file or per-line exemption
+ * table.** One prose sentence in `wave-start/reference/start-mechanics.md`
+ * used to read "every {{wave-cli}} call in the steps above" — a mention
+ * wearing an invocation's shape, with `call` where a verb goes. It was
+ * rewritten to name its subject ("every engine-CLI call") rather than
+ * exempted, because a
+ * table grows one row per future sentence and silently covers a real misgrip
+ * the day someone adds the wrong row. Every rule above describes what the
+ * TEXT IS; the failure message says so at the moment it fires.
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **Positional ARITY, beyond rule 5.** Shipped prose abbreviates
+ *     (`issue-store flag "$ID" …`), and a documentation excerpt that omits a
+ *     required flag is not a wrong SPELLING. The runtime's own refusal is
+ *     what holds arity; this guard's subject is how a call is spelled.
+ *  2. **Values.** A placeholder, a shell variable, a quoted path — anything
+ *     in a value position passes untouched, which is what ADR-0051 decision 9
+ *     requires ("Placeholder tokens are values, not flags"). The walk steps
+ *     OVER the value of every value-taking flag, so `--text "--wave"` can
+ *     never be read as a flag — the same step-over `scanArgs()` performs, and
+ *     the same live bug it was written for.
+ *  3. **Shell grammar beyond {@link tokenizeInvocation}'s own rules.** It
+ *     honours and strips quotes, un-escapes a markdown-escaped metacharacter,
+ *     tracks `<…>` and `( )` nesting, and stops at an operator. It models no
+ *     heredoc, no `$( )` substitution as a nested command line, no variable
+ *     expansion and no alias. An invocation assembled at runtime from a
+ *     variable is not read as one.
+ *  4. **Markdown structure.** The scan is per line, with an inline code span
+ *     closing an occurrence and a trailing `\` continuing it. A fenced block
+ *     is not distinguished from prose, and an invocation wrapped across a
+ *     line break by anything other than that continuation is truncated at the
+ *     line end.
+ *  5. **Every marker spelling not in {@link INVOCATION_MARKERS}.** A consumer
+ *     document invoking the engine by a literal path, or by a fourth binding
+ *     name, is not in the population at all.
+ */
 
 // ---------------------------------------------------------------------------
 // Finding the invocations

@@ -22,9 +22,8 @@
  *   with the rung vocabulary CLOSED to the Enforcement-Tier ladder (engine
  *   refusal · schema boundary · drift-spec · hook · brief prose · reference
  *   doc). Four mechanical predicates, and only mechanical ones — the residual
- *   FORM of a promoted rule's prose is deliberately not mechanised (a heading
- *   whitelist is defeated by writing under an allowed heading, and Conventions
- *   4 and 12 legitimately carry rule content in sub-sections):
+ *   FORM of a promoted rule's prose is deliberately not mechanised (member 1
+ *   of the Unmodelled set in the Guard declaration below):
  *
  *     - exactly one declaration per convention file, directly under the heading;
  *     - every rung word comes from the closed ladder;
@@ -120,6 +119,84 @@ const EVIDENCE_DIR_NAME = 'evidence';
 const CONTRIBUTOR_README = '.claude/skills/README.md';
 
 const CONVENTION_REFERENCE_DIR = '.claude/skills/wave-shared/reference';
+
+// ─── Guard declaration (ADR-0052) ────────────────────────────────────────────
+
+/**
+ * **Subject.** The same markdown population `skill-reference-guard.spec.ts`
+ * reads, asked a different question: the BYTE SIZE of every `.md` under
+ * `.claude/skills/` and `.claude/agents/` (minus `evidence/`), the single
+ * `**Enforced by:**` line in each convention reference file, and — by regex,
+ * per sentence — prose in a shipped instruction file that tells a reader to
+ * go and read a `docs/…` path at runtime.
+ *
+ * **Resolution bias — BLOCKS.** A convention file whose declaration line this
+ * reader cannot resolve to exactly one well-formed declaration fails: zero
+ * lines, two lines, a line not directly under the heading, an off-ladder rung
+ * word, a rung naming nothing, a rung whose artifact shape disagrees with it,
+ * or a backticked path that does not resolve in the clone. None of those
+ * degrade to "no declaration found, carry on" —
+ * {@link declarationOf} returns `null` and the assertion on it is what goes
+ * red.
+ *
+ * The reason is what this line IS. Under ADR-0034 the declaration is the
+ * residual left behind after a rule's prose was cut down, and its whole value
+ * is that a reader can trust it without checking: an unreadable or absent
+ * declaration is a rule whose rung is unstated, and two of them are two
+ * answers to one question. A declaration naming a hook that has since been
+ * deleted would otherwise quietly become a lie that reads exactly like the
+ * truth. The two byte ceilings take the same direction from the other
+ * side — a sum over files that cannot be read throws at `statSync`, never
+ * silently shrinks toward passing — and floor counts
+ * ({@link MIN_CONVENTION_FILES} and its siblings) refuse the other silent
+ * green, a population that emptied.
+ *
+ * One branch resolves toward passing and it is a DECIDED pass: a `docs/…`
+ * path inside a markdown LINK target is excluded from the dependency
+ * direction rule by construction, because a citation is a pointer to *why*
+ * and is the Evidence class working as designed. It is the rule's subject
+ * boundary, not a shape the reader failed to parse.
+ *
+ * **The bias above is NOT uniform across this file's four rules, and that is
+ * declared rather than smoothed over.** Rules (1) and (2) block, as stated.
+ * Rules (3) and (4) — the dependency direction and the maintainer-only
+ * citation — are single regexes over prose, and prose they do not recognize
+ * yields no finding and therefore passes: see members 4 and 5 of the
+ * Unmodelled set. Writing the bias down is what surfaced that split; it is
+ * NOT corrected here, because correcting it would change a verdict set. The
+ * divergence is filed as a finding instead.
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **The residual FORM of a promoted rule's prose.** Deliberately not
+ *     mechanised: a heading whitelist is defeated by writing under an allowed
+ *     heading, and Conventions 4 and 12 legitimately carry rule content in
+ *     sub-sections. Only the four mechanical predicates above are checked.
+ *  2. **Whether a declared rung is TRUE.** The check is that the rung word is
+ *     on the closed ladder, that its artifact has the shape the rung implies,
+ *     and that the path resolves. Nothing here opens the named spec or hook
+ *     to confirm it enforces the rule the convention states.
+ *  3. **Markdown grammar.** {@link extractDeclarations} matches a line
+ *     prefix; {@link sitsDirectlyUnderHeading} counts blank lines. Neither
+ *     knows a fence from prose, so a declaration line quoted inside a code
+ *     block counts as a second declaration — which is the blocking bias
+ *     above, not a silent pass.
+ *  4. **English, in the dependency direction rule.**
+ *     {@link DOCS_READ_INSTRUCTION} is a verb list, a 60-character window and
+ *     a path shape. An instruction to read a `docs/…` file phrased with a
+ *     verb outside {@link READ_VERB}, or with the path further than that
+ *     window from the verb, or split across a sentence boundary, is not
+ *     found. A false NEGATIVE is the direction this member leans.
+ *  5. **Spelling, in the maintainer-only citation rule.** {@link citesPath}
+ *     builds one regex per named file and tolerates leading `../` hops.
+ *     A consumer pointed at a maintainer document by a rephrased title, a
+ *     moved path, or a link whose text names it without its path is not
+ *     found. This member leans the same way as member 4.
+ *  6. **Everything outside the two populations.** `evidence/` files, the
+ *     contributor README, `docs/` itself, and every non-markdown shipped
+ *     asset contribute to no measure and are read by no rule. A run that
+ *     reads bytes from outside them is a cost this guard does not see.
+ */
 
 // ─── populations ─────────────────────────────────────────────────────────────
 
@@ -577,10 +654,9 @@ interface DocsReadInstruction {
 
 /**
  * Sentences that *instruct* a read of `docs/`. A markdown LINK target is
- * excluded by construction: a path inside `](…)` is a citation — a pointer to
- * *why* — and citations stay allowed and stay checked by the existing
- * resolution predicate. What this finds is the other shape: prose or a command
- * telling a reader to go and read a contributor document at runtime.
+ * excluded by construction — the declared-pass branch above. What this finds
+ * is the other shape: prose or a command telling a reader to go and read a
+ * contributor document at runtime.
  */
 function docsReadInstructions(md: string, file: string): DocsReadInstruction[] {
   const out: DocsReadInstruction[] = [];
