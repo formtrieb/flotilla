@@ -46,6 +46,7 @@ import {
 import { GitHubIssuesStore } from './adapters/github/github-issues-store';
 import { InMemoryGitHubApi } from './adapters/github/github-api-fake';
 import type { IssueStore } from './adapters/issue-store';
+import { stillOpenLine } from './issue-store-cli';
 import { renderSidecarBody } from './route-cli';
 import { readSpine, renderSpine, setRowPrCell, setRowState } from './wave-md-rw';
 import type { SpineIo } from './spine-store';
@@ -704,41 +705,22 @@ describe('close-row', () => {
     });
 
     /**
-     * The anti-drift guard for the copied sentence. `issue-store-cli.ts` owns
-     * the `STILL OPEN:` line; collapsing the two renderings into one constant
-     * is its own separate slice (#800). Until that lands, what CAN be asserted
-     * without a shared home is that the sentence that module ships and the
-     * sentence this verb ships are the same sentence — read off its source, so
-     * a reworded original fails here rather than drifting in silence.
-     *
-     * The extraction takes the whole template literal, from its opening
-     * backtick to the `\n` that terminates it, rather than splitting on a
-     * phrase from the prose — a reword then still compares the FULL sentence
-     * instead of quietly shortening the window it compares (#801, which
-     * reworded the tail).
+     * The two renderings can no longer drift apart, because there is only one
+     * of them (#800): `issue-store-cli.ts` exports `stillOpenLine` and this
+     * verb calls that same function rather than carrying its own copy. What
+     * this pins is that the call site is wired to the shared renderer for
+     * these exact inputs — a regression here would mean `close-row` built its
+     * own line again (by inlining, or by a stale re-copy), not that the
+     * shared renderer changed underneath it (`issue-store-cli.spec.ts` pins
+     * that renderer's own literal text).
      */
-    it('the STILL OPEN sentence is byte-identical to the one `issue-store close` ships', async () => {
+    it("close-row's STILL OPEN line equals the shared `stillOpenLine(id, prUrl)` for the same inputs", async () => {
       await runCloseRow(argv(idA, ['--verdicts-dir', verdictsDir]), deps());
       const mine = stderr
         .split('\n')
         .find((l) => l.startsWith('STILL OPEN:'))!;
       expect(mine).toBeDefined();
-
-      // The owning module's source, with its string-concatenation seams and
-      // template placeholders normalised away — what is left is the prose.
-      const owner = readFileSync(join(__dirname, 'issue-store-cli.ts'), 'utf-8');
-      const theirs = owner
-        .slice(owner.indexOf('`STILL OPEN: issue '))
-        .split('\\n`')[0]
-        .replace(/`\s*\+\s*`/g, '')
-        .replace(/\$\{id\}/g, idA)
-        .replace(/\$\{prUrl\}/g, prA)
-        .replace(/^`/, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      // Whole sentence, not a prefix of one: equality, so a tail either module
-      // grows or loses on its own is caught too.
-      expect(mine.replace(/\s+/g, ' ').trim()).toBe(theirs);
+      expect(mine + '\n').toBe(stillOpenLine(idA, prA));
     });
   });
 

@@ -3575,6 +3575,24 @@ describe('skill-schema-drift — the host-seam clause teaches the status title/b
   }
 
   /**
+   * Convention 7's "the seam covers READS" paragraph — the copy that actually
+   * carries the `gh pr view` refusal (the status bullet above does not; a
+   * file-wide `toMatch` against `convention07Md` was passing off a DIFFERENT
+   * paragraph's `never raw \`gh\`` — issue #800 item 5). Scoped the same way
+   * as every sibling region in this block, so a restructure that moves or
+   * guts this paragraph fails loud rather than the assertion quietly matching
+   * whatever else in the file still says `gh`.
+   */
+  function conventionSeamReadsParagraph(md: string): string {
+    return contractRegion(
+      md,
+      'convention-07-host-landing-seam.md (seam covers reads)',
+      '**The seam covers READS',
+      '\n\nNone take `--config`',
+    );
+  }
+
+  /**
    * The reviewerBrief's SECRET-SAFE clause — the third copy, and the only one a
    * dispatched Reviewer is actually handed.
    *
@@ -3640,8 +3658,23 @@ describe('skill-schema-drift — the host-seam clause teaches the status title/b
     // All three copies must still name `gh` as refused.
     expect(agentCheck2(reviewerAgentMd)).toMatch(/gh pr view/);
     expect(agentDisciplineHostBullet(reviewerAgentMd)).toMatch(/gh pr view/);
-    expect(convention07Md).toMatch(/never raw `gh`/);
+    expect(conventionSeamReadsParagraph(convention07Md)).toMatch(/gh pr view/);
     expect(driverSecretSafeClause(driverJs)).toMatch(/gh pr view/);
+  });
+
+  it('NEGATIVE CONTROL — emptying the seam-covers-reads region fails the raw-gh assertion', () => {
+    // Anchors adjacent, nothing between — the vacuous-pass failure mode this
+    // whole file guards for. contractRegion throws before the /gh pr view/
+    // assertion above ever gets to run against a gutted paragraph, rather
+    // than silently passing on an empty region.
+    expect(() =>
+      contractRegion(
+        '**The seam covers READS\n\nNone take `--config`',
+        'synthetic',
+        '**The seam covers READS',
+        '\n\nNone take `--config`',
+      ),
+    ).toThrow(/EMPTY in synthetic/);
   });
 
   it('NEGATIVE CONTROL — the predicate fires on text that names the fields but drops the qualification', () => {

@@ -659,6 +659,18 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     ResolvedClosingPr:
       'The result shape of resolveClosingPr directly above — it rides into the refusal message and the printed `prUrlSource` as plain data, which is the form a caller actually reads.',
   },
+  // `stillOpenLine` used to be TWO renderings of the same sentence — this
+  // module's own `close` case, and a private byte-for-byte copy inside
+  // `close-row.ts` (issue #800). Exporting it once and having `close-row`
+  // import it is what retires the copy; module-local for the same reason
+  // `./close-row`'s own pure helpers directly above are: its one out-of-module
+  // caller reads it as a function call, never as a CLI subcommand of its own,
+  // and a root export would mint a semver commitment for a sentence no
+  // acceptance criterion asks a consumer to import.
+  './issue-store-cli': {
+    stillOpenLine:
+      "The `STILL OPEN:` stderr line both `issue-store close` and `close-row` write when the post-close probe still reads `open` (#399). Exported for its one sibling caller, close-row.ts, so the two verbs' stderr line is the same rendering rather than two copies that can reword independently (#800).",
+  },
   './route-cli': {
     renderSidecarBody:
       "The on-disk sidecar format — a heading over the fenced json the sidecar.ts reader parses. Exported for ONE in-engine caller: route-tuple's recovery step, which persists the same record from an in-memory payload. A consumer writes a sidecar by running `write-report`/`write-verdict`, which is the surface that also validates, reconciles and sweeps; handing it the renderer alone would be handing it the one part that does none of that.",

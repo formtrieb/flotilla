@@ -114,8 +114,8 @@
  *                    Everything else is deleted and counted; a delete that FAILS
  *                    forces exit 1 like every other incomplete outcome, while the
  *                    three refusals never do. A wave whose EVERY row is terminal
- *                    (pr-created | approved | failed | abandoned | parked) now
- *                    sweeps its OWN refs at its own close (issue #748): before
+ *                    ({@link TERMINAL_ROW_STATES}) now sweeps its OWN refs at its
+ *                    own close (issue #748): before
  *                    it, every ref a wave produced belonged to one of its own
  *                    rows, so all of them read `live-row` and became sweepable
  *                    only at the NEXT wave's close. The verdict is WAVE-level,

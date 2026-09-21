@@ -1016,6 +1016,7 @@ const PR_LOG_TABLE_SEP = '|---|---|---|---|---|---|';
  *   {@link renderSpine} produces on every fresh spine — the six-column header
  *   and separator are scaffolded first and the row lands under them.
  *
+ * <!-- retraction-anchor:start -->
  * **That last case used to throw** (`"## PR-Log" table is malformed (no
  * separator/header)`), which meant the library path could not write a fresh
  * spine's PR-Log at all: 102 of 102 archived spines in this repo carry the
@@ -1024,6 +1025,7 @@ const PR_LOG_TABLE_SEP = '|---|---|---|---|---|---|';
  * taken of a bare `## Disclosures` heading, now applied here. Nothing else
  * changes: a spine with NO `## PR-Log` section still throws, because inventing
  * a section is a different act from filling one in.
+ * <!-- retraction-anchor:end -->
  *
  * Throws if the spine has no `## PR-Log` section.
  */
