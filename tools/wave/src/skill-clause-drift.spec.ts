@@ -1102,8 +1102,14 @@ describe("skill-clause-drift — wave-resume step 5 levels with wave-close phase
   it('negative control — a reordered recovery step fails the ordering predicate', () => {
     const block = extractRecoveryBlock(resumeSkill);
     // Swap steps 1 and 3's marker text so the re-pull now precedes the reset —
-    // the same three tokens present, in the wrong order.
-    const PLACEHOLDER = ' STEP-SWAP ';
+    // the same three tokens present, in the wrong order. The placeholder must
+    // be a string the Recovery block can never legitimately contain (or the
+    // final `.replace(PLACEHOLDER, ...)` below could match the wrong
+    // occurrence), so it is wrapped in the Unicode Private Use Area (U+E000)
+    // rather than NUL bytes — U+E000 cannot occur in shipped prose or in
+    // the quoted commands, but unlike NUL it leaves this spec readable by
+    // plain `grep`/`file` as text, not classified as binary data (#867).
+    const PLACEHOLDER = '\uE000STEP-SWAP\uE000';
     const reordered = block
       .replace('git reset --hard HEAD', PLACEHOLDER)
       .replace('git pull --ff-only origin main', 'git reset --hard HEAD')
