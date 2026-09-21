@@ -211,6 +211,58 @@
  * `git ls-remote --exit-code` never exits 0 with empty stdout, a genuine
  * no-match is always the structural exit-2 case above.
  *
+ * ── a probe whose TRANSPORT is blocked can never conclude (issue #876) ───────
+ *
+ * The `probe-failed` refusal above is correct and is not weakened by anything
+ * in this section: a sweep that deleted on an unreadable probe would be a
+ * worse defect than the one this section fixes. What was wrong is that the
+ * refusal could be PERMANENT and unnamed.
+ *
+ * MEASURED, by two coordinator sessions in two repositories on the same
+ * evening, on two engine versions (2.4.0 and 2.6.0 — so not a version gap;
+ * the transport is the common factor). Both consumers' `origin` is an SSH
+ * URL; both harnesses block SSH. Every `wave/*` branch came back skipped with
+ * `branch-probe-failed`:
+ *
+ *     Command failed: git ls-remote --exit-code --heads origin wave/<row>
+ *     ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Broken pipe
+ *     fatal: Could not read from remote repository.
+ *
+ * In the same run the `worktree-wf_*` branches WERE deleted — they fire on the
+ * worktree-gone signal, not the remote probe, which is what isolates the probe
+ * as the cause. Sharpening it: in one of the two repositories the remote
+ * branch had ALREADY been deleted by the merge, so the branch was genuinely
+ * orphaned and was still skipped. The probe cannot tell "the branch still
+ * exists" from "I cannot reach the remote", and the sweep reports overall
+ * success either way — so branch hygiene never completes on that consumer
+ * form, every close, forever, and nothing in the report says why. Both
+ * operators ended up verifying remote state over a transport that does work
+ * (one over HTTPS, one through the host's API) and deleting by hand.
+ *
+ * TWO changes, deliberately independent:
+ *
+ *   1. A SECOND ATTEMPT over a transport the sandbox does not block. When the
+ *      probe over `origin` does not conclude and `origin` is an SSH URL with
+ *      an unambiguous HTTPS spelling ({@link httpsMirrorOf}), the same ref is
+ *      asked for again over that spelling — the manual fallback, automated.
+ *      An authoritative answer there is the answer, by the same exit-2 rule;
+ *      the transport changed, the `gone` criterion did not. The second attempt
+ *      is NOT gated on the classifier below, so a failure text this build does
+ *      not recognize cannot cost a consumer the remedy.
+ *   2. A DISTINCT REASON when it still cannot conclude.
+ *      {@link BranchHygieneSkipReason} gains
+ *      `'branch-probe-transport-blocked'` for the case where the probe never
+ *      reached the remote at all — the kind that does not clear on the next
+ *      close — while every other failure keeps `'branch-probe-failed'`
+ *      unchanged. The classification abstains toward the original reason (see
+ *      {@link TRANSPORT_BLOCKED_PROBE_SIGNATURES} for subject, resolution bias
+ *      and unmodelled set), so an unrecognized text behaves exactly as it did
+ *      before this ticket.
+ *
+ * What is NOT changed, and is pinned by a negative control in the spec: no
+ * classification, no second attempt and no transport can turn a failure into
+ * `gone`. A branch whose remote state is unknown is still never deleted.
+ *
  * ── errored-still-listed — a THIRD ENOTEMPTY-family removal form (FOR-73 —
  *    W18-F1) ─────────────────────────────────────────────────────────────────
  *
@@ -2634,7 +2686,9 @@ function runBranchHygiene(
       } else if (probe.status === 'probe-failed') {
         skipped.push({
           branch: dispatchBranch,
-          reason: 'branch-probe-failed',
+          // issue #876 — a probe that never reached the remote is named as
+          // such; anything else keeps the original reason verbatim.
+          reason: branchHygieneSkipReasonFor(probe),
           detail: probe.reason,
         });
       }
@@ -5004,7 +5058,9 @@ function computeOrphanBranchSweepPlan(ops: OrphanBranchSweepOps): OrphanBranchSw
       } else if (probe.status === 'probe-failed') {
         branchHygieneSkipped.push({
           branch,
-          reason: 'branch-probe-failed',
+          // issue #876 — same vocabulary as the per-removal skip site, via the
+          // one mapper, so a consumer never sees two names for one probe.
+          reason: branchHygieneSkipReasonFor(probe),
           detail: probe.reason,
         });
       }
@@ -5922,24 +5978,80 @@ export function defaultRedispatchCleanupOps(repoRoot: string): RedispatchCleanup
  * distinguishable from a probe that simply could not complete
  * (`'probe-failed'`) — the latter is NEVER treated as evidence of deletion,
  * no matter how empty its output looked.
+ *
+ * `probe-failed` additionally carries an OPTIONAL `cause` (issue #876): the
+ * failure's *kind*, as opposed to `reason`'s free text. It exists because one
+ * failure kind — the remote could not be REACHED at all — is permanent on a
+ * consumer form rather than flaky, and a caller that cannot tell it apart from
+ * a one-off network blip reports "sweep succeeded" forever while the branches
+ * pile up. See the file-level "a probe whose transport is blocked" section for
+ * the measurement. `cause` is OPTIONAL on purpose: {@link BranchHygieneOps} is
+ * a seam consumers implement, and every existing implementation (and every
+ * test double) that returns a bare `{ status, reason }` stays valid and is
+ * read exactly as it is today — an absent `cause` means "this probe did not
+ * classify", which the callers below treat identically to `'unclassified'`.
  */
 export type RemoteRefProbeResult =
   | { status: 'gone' }
   | { status: 'present' }
-  | { status: 'probe-failed'; reason: string };
+  | {
+      status: 'probe-failed';
+      reason: string;
+      /**
+       * `'transport-blocked'` — the probe never reached the remote: the
+       * transport itself refused, was cut, or could not be opened (an SSH
+       * dispatch cut under a sandbox, an unresolvable host, a refused
+       * connection, a timeout). This is the kind that does not clear on a
+       * retry when the harness is the thing blocking the transport.
+       *
+       * `'unclassified'` — the probe failed and this seam could not say in
+       * which kind. NEVER a synonym for "not transport": it is an abstention,
+       * and it resolves to the pre-existing generic reason so behaviour is
+       * exactly what it was before this field existed.
+       *
+       * Neither value can ever influence deletion. `probe-failed` is
+       * `probe-failed`: the branch is left alone in both cases.
+       */
+      cause?: 'transport-blocked' | 'unclassified';
+    };
 
 /**
  * Machine-readable cause recorded on {@link CleanupResult.branchHygieneSkipped}
- * (FOR-62 coordinator resolution) — today the only member is the case where
- * rule (b)'s remote-ref probe itself FAILED (network/transport error) rather
- * than authoritatively confirming the branch present or gone. This is
- * deliberately NOT recorded for the pre-existing "no evidence at all" refusal
- * (all three signals came back negative/absent) — that stays the silent,
- * unremarkable no-op it always was; only an inconclusive PROBE is surfaced,
- * because that is the one outcome a human/caller cannot already infer from
- * "the branch didn't move".
+ * (FOR-62 coordinator resolution) — the case where rule (b)'s remote-ref probe
+ * itself FAILED rather than authoritatively confirming the branch present or
+ * gone. This is deliberately NOT recorded for the pre-existing "no evidence at
+ * all" refusal (all three signals came back negative/absent) — that stays the
+ * silent, unremarkable no-op it always was; only an inconclusive PROBE is
+ * surfaced, because that is the one outcome a human/caller cannot already
+ * infer from "the branch didn't move".
+ *
+ * TWO members since issue #876, and the split is the whole point of that
+ * ticket:
+ *
+ *   • `'branch-probe-failed'` — the original, unchanged in meaning: the probe
+ *     failed and the failure was not identified as a blocked transport. The
+ *     ordinary reading is still "try again"; a flaky remote clears.
+ *   • `'branch-probe-transport-blocked'` — the probe never REACHED the remote.
+ *     On a consumer whose harness blocks the transport `origin` is configured
+ *     with, this does not clear on the next close, or the one after: the sweep
+ *     reports success and leaves every `wave/*` branch behind, every close,
+ *     forever. Measured in two repositories on two engine versions in one
+ *     evening (see the file-level section). A caller that treats it as a blip
+ *     is the reason branch hygiene silently never completed there.
+ *
+ * ADDITIVE, and additive in the direction that is safe to ignore: the two
+ * members answer the SAME question (this branch was left in place because its
+ * probe did not conclude) and a consumer that never distinguishes them keeps
+ * exactly today's behaviour minus the string equality. A consumer that
+ * exhaustively switches on this union must add the second arm — that is the
+ * public-API cost, taken deliberately, because the alternative (a second key
+ * beside `branchHygieneSkipped`, the ADR-0042-Amendment shape) is reserved for
+ * a genuinely different question, and "the probe did not conclude" is not one.
+ * Deferral got its own key precisely because it is NOT a skip; this is.
  */
-export type BranchHygieneSkipReason = 'branch-probe-failed';
+export type BranchHygieneSkipReason =
+  | 'branch-probe-failed'
+  | 'branch-probe-transport-blocked';
 
 /**
  * One `wave/*` branch that local-branch hygiene left in place because its
@@ -6002,6 +6114,225 @@ export interface BranchHygieneOps {
    * already absent (idempotent no-op).
    */
   deleteBranch(branch: string): void;
+}
+
+// ─── The remote probe's transport (issue #876) ───────────────────────────────
+//
+// Everything from here to `defaultBranchHygieneOps` serves one measured
+// defect: `git ls-remote origin <branch>` inherits whatever transport `origin`
+// is configured with, and on a consumer whose `origin` is an SSH URL under an
+// agent harness that blocks SSH, that transport can NEVER complete. The sweep
+// then does the right thing for the wrong reason — it refuses to delete a
+// branch it cannot prove is gone — and reports overall success, so branch
+// hygiene never completes and nothing says why. See the file-level section.
+//
+// Two independent halves, deliberately not coupled:
+//
+//   1. THE REMEDY — `httpsMirrorOf`, a second probe over a transport the
+//      sandbox does not block. It runs whenever the first probe failed to
+//      conclude AND `origin` is an SSH URL that has an unambiguous HTTPS
+//      spelling. It is NOT gated on the classifier below, so the classifier's
+//      blind spots cannot cost a consumer the remedy.
+//   2. THE LABEL — `classifyProbeFailure`, which decides only what the
+//      residual failure is CALLED. It never decides whether to probe again and
+//      it never decides whether to delete.
+
+/**
+ * Failure texts that identify a probe which never reached the remote — the
+ * `'transport-blocked'` kind. In the spirit of ADR-0052 (this is not one of
+ * the ten Guards, but the same three declarations are what make a classifier
+ * readable):
+ *
+ *   • SUBJECT — the message text of a FAILED `git ls-remote`, and nothing
+ *     else. Never the branch, never the exit status (exit `2` is git's own
+ *     authoritative no-match and is handled before this is ever consulted).
+ *   • RESOLUTION BIAS — abstain to `'unclassified'`, which maps to the
+ *     pre-existing `'branch-probe-failed'`. A text this list does not
+ *     recognize produces exactly the behaviour that shipped before issue
+ *     #876. The bias is chosen this way because the new reason is a CLAIM
+ *     about a consumer's permanent configuration; claiming it wrongly sends
+ *     an operator to reconfigure a remote over a blip.
+ *   • UNMODELLED SET — git and ssh messages under a non-English locale (the
+ *     probe pins `LC_ALL=C` so its own calls are in scope, but a message
+ *     relayed verbatim from a proxy or a credential helper is not); a proxy
+ *     that answers the connection with an HTTP error body rather than
+ *     refusing it; a credential helper that fails before any transport is
+ *     opened; any transport refusal whose wording is not below. All of those
+ *     abstain.
+ *
+ * Matched case-insensitively against the raw message. Deliberately absent:
+ * a bare `Operation not permitted` (the seatbelt wording) — it is also the
+ * wording of an unrelated filesystem refusal, and on its own it does not say
+ * a transport was involved.
+ */
+const TRANSPORT_BLOCKED_PROBE_SIGNATURES: readonly string[] = [
+  // ssh, cut or refused mid-dispatch — the exact text the field report carried.
+  'ssh_dispatch_run_fatal',
+  'could not read from remote repository',
+  'connection closed by remote host',
+  'connection reset by peer',
+  'broken pipe',
+  'kex_exchange_identification',
+  'host key verification failed',
+  'permission denied (publickey',
+  'ssh: connect to host',
+  'ssh: could not resolve hostname',
+  // https/git transport, unreachable.
+  'could not resolve host',
+  'failed to connect to',
+  'unable to access',
+  'connection timed out',
+  'connection refused',
+  'network is unreachable',
+  'etimedout',
+];
+
+/**
+ * Which kind of failure a non-authoritative probe hit — see
+ * {@link TRANSPORT_BLOCKED_PROBE_SIGNATURES} for the subject, the bias and the
+ * unmodelled set. Pure text classification: it reads nothing, calls nothing,
+ * and decides nothing except the label.
+ */
+function classifyProbeFailure(message: string): 'transport-blocked' | 'unclassified' {
+  const haystack = message.toLowerCase();
+  return TRANSPORT_BLOCKED_PROBE_SIGNATURES.some((sig) => haystack.includes(sig))
+    ? 'transport-blocked'
+    : 'unclassified';
+}
+
+/**
+ * The HTTPS spelling of an SSH git remote URL, or `null` when there is no
+ * UNAMBIGUOUS one. This is the remedy half of issue #876: a probe that could
+ * not complete over `origin`'s own transport is retried against this URL,
+ * which is the transport both field operators fell back to by hand.
+ *
+ * Translated:
+ *   • scp-like  `git@host:owner/repo.git`      → `https://host/owner/repo.git`
+ *   • explicit  `ssh://git@host/owner/repo.git` → `https://host/owner/repo.git`
+ *               (a custom SSH port is DROPPED — an ssh port number says
+ *               nothing about where https listens, and carrying it over would
+ *               invent a URL the operator never configured)
+ *
+ * `null` — no mirror attempted — for everything else, and each `null` is a
+ * decision rather than an oversight:
+ *   • an `https://`/`http://` origin — the probe already ran over that exact
+ *     transport, so a second identical call can only fail identically;
+ *   • `git://`, `file://`, a bare local path, a relative path — no HTTPS
+ *     spelling exists to derive;
+ *   • any URL whose host or path this cannot read off with certainty.
+ *
+ * The mirror is a READ over a different transport to the same host and path.
+ * It cannot delete anything, and its answer is used exactly like `origin`'s
+ * would have been — `gone` only on git's own exit `2`.
+ */
+function httpsMirrorOf(remoteUrl: string): string | null {
+  const url = remoteUrl.trim();
+  if (url.length === 0) return null;
+
+  // Explicit ssh:// (and its git+ssh alias). Host may carry a :port to drop.
+  const explicit = /^(?:git\+)?ssh:\/\/(?:[^@/]*@)?([^/:]+)(?::\d+)?\/(.+)$/i.exec(url);
+  if (explicit !== null) {
+    const [, host, path] = explicit;
+    return `https://${host}/${path.replace(/^\/+/, '')}`;
+  }
+
+  // scp-like `user@host:path` — no scheme, and the FIRST colon separates host
+  // from path. A colon-free string, or one with a scheme, is not this shape.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    const scpLike = /^(?:[^@/\s]+@)?([^@/:\s]+):(?!\/)(.+)$/.exec(url);
+    if (scpLike !== null) {
+      const [, host, path] = scpLike;
+      // A Windows drive letter (`C:\repos\x`) reads as scp-like; a single
+      // character before the colon is never a hostname worth trusting.
+      if (host.length > 1) return `https://${host}/${path.replace(/^\/+/, '')}`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * One `git ls-remote --exit-code --heads <remote> <branch>` attempt, mapped
+ * onto {@link RemoteRefProbeResult} by git's own exit status and by nothing
+ * else. `remote` is either the literal `origin` (the configured transport) or
+ * a URL (the HTTPS mirror) — `ls-remote` accepts both in the same position,
+ * which is what lets the second attempt reuse this verbatim rather than
+ * growing a parallel code path whose `gone` rule could drift from this one.
+ *
+ * The returned `probe-failed` carries NO `cause`; classifying is the caller's
+ * job, because the caller is the one that knows which of the two attempts it
+ * is looking at.
+ *
+ * `LC_ALL=C` pins git's and ssh's own wording so
+ * {@link TRANSPORT_BLOCKED_PROBE_SIGNATURES} reads the text it declares.
+ * `GIT_TERMINAL_PROMPT=0` keeps a hygiene sweep from ever sitting on a
+ * credential prompt nobody is there to answer — it fails fast instead, which
+ * a `probe-failed` already models correctly.
+ *
+ * Two points checked against `git-ls-remote(1)` itself rather than recalled,
+ * because the second one is what makes the HTTPS mirror possible at all:
+ *   • `--exit-code` — "Exit with status 2 when no matching refs are found in
+ *     the remote repository." That is the ONLY `gone`, and it is a property of
+ *     the command, not of the transport: exit 2 means the same thing over
+ *     HTTPS as over SSH. Live-verified against a real remote while this
+ *     landed (exit 0 for an existing branch, exit 2 for an absent one).
+ *   • `<repository>` — "can be either a URL or the name of a remote". The
+ *     mirror is passed in that same positional slot, which is the documented
+ *     form and not a trick.
+ *
+ * DELIBERATE DIVERGENCE from the current documentation, kept on purpose:
+ * `git-ls-remote(1)` now calls `--heads` a deprecated synonym of `--branches`
+ * that "may be removed in the future". The spelling is unchanged here because
+ * (a) modernizing it is a different ticket with a different blast radius —
+ * `--branches` postdates `--heads` by many releases and this engine states no
+ * git floor — and (b) an existing spec pins this exact argv. When the floor is
+ * ever declared, both call sites move together.
+ */
+function lsRemoteProbe(
+  repoRoot: string,
+  remote: string,
+  branch: string,
+): RemoteRefProbeResult {
+  try {
+    execFileSync('git', ['ls-remote', '--exit-code', '--heads', remote, branch], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      timeout: 15_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' },
+    });
+    // Exit 0 is git's own "at least one matching ref found" signal —
+    // `present` UNCONDITIONALLY. Real `git ls-remote --exit-code` never exits
+    // 0 with empty stdout (a true no-match is always the `2` exit handled in
+    // the catch below), so there is no stdout-length case to infer from here;
+    // doing so would contradict the exit-code-is-the-only-authority contract
+    // this function documents (FOR-62 iter-2 fix).
+    return { status: 'present' };
+  } catch (err) {
+    const exitStatus = (err as { status?: unknown }).status;
+    if (exitStatus === 2) return { status: 'gone' };
+    return { status: 'probe-failed', reason: describeError(err) };
+  }
+}
+
+/**
+ * Map one non-authoritative {@link RemoteRefProbeResult} onto the
+ * caller-visible {@link BranchHygieneSkipReason} (issue #876). The single
+ * place the two skip sites — per-removal {@link runBranchHygiene} and the
+ * standalone {@link computeOrphanBranchSweepPlan} — agree on the vocabulary,
+ * so a consumer sees the same reason for the same probe whichever path
+ * reached it.
+ *
+ * An absent `cause` (every pre-#876 seam implementation and every older test
+ * double) reads as `'unclassified'` and therefore as the original reason —
+ * the widened union is invisible to anything that did not opt in.
+ */
+function branchHygieneSkipReasonFor(probe: {
+  cause?: 'transport-blocked' | 'unclassified';
+}): BranchHygieneSkipReason {
+  return probe.cause === 'transport-blocked'
+    ? 'branch-probe-transport-blocked'
+    : 'branch-probe-failed';
 }
 
 /**
@@ -6069,29 +6400,45 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
       // that could not authoritatively answer and is always `probe-failed`,
       // never `gone` — the gone-vs-failure distinction is carried by the exit
       // status itself, not inferred from whether stdout happened to be empty.
-      try {
-        execFileSync(
-          'git',
-          ['ls-remote', '--exit-code', '--heads', 'origin', branch],
-          {
-            cwd: repoRoot,
-            encoding: 'utf-8',
-            timeout: 15_000,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          },
-        );
-        // Exit 0 is git's own "at least one matching ref found" signal —
-        // `present` UNCONDITIONALLY. Real `git ls-remote --exit-code` never
-        // exits 0 with empty stdout (a true no-match is always the `2` exit
-        // handled in the catch below), so there is no stdout-length case to
-        // infer from here; doing so would contradict the exit-code-is-the-
-        // only-authority contract this function documents (FOR-62 iter-2 fix).
-        return { status: 'present' };
-      } catch (err) {
-        const exitStatus = (err as { status?: unknown }).status;
-        if (exitStatus === 2) return { status: 'gone' };
-        return { status: 'probe-failed', reason: describeError(err) };
+      //
+      // Issue #876 adds a second attempt and a label, and changes NEITHER of
+      // the two authoritative answers above: `gone` is still exit `2` and
+      // nothing else, on whichever transport produced it.
+      const viaOrigin = lsRemoteProbe(repoRoot, 'origin', branch);
+      if (viaOrigin.status !== 'probe-failed') return viaOrigin;
+
+      // The remedy (issue #876). `origin`'s own transport did not conclude.
+      // When `origin` is an SSH URL with an unambiguous HTTPS spelling, ask
+      // the SAME host for the SAME ref over that spelling instead — the
+      // transport both field operators fell back to by hand after the sweep
+      // skipped a branch whose remote had in fact already been deleted.
+      // Attempted on ANY inconclusive first result, never gated on the
+      // classifier: a text signature this build does not recognize must not
+      // cost a consumer the second attempt.
+      const mirror = httpsMirrorOf(shellGit(['remote', 'get-url', 'origin'], repoRoot));
+      if (mirror !== null) {
+        const viaMirror = lsRemoteProbe(repoRoot, mirror, branch);
+        // An authoritative answer over the mirror IS the answer — `present`
+        // and `gone` mean exactly what they mean over `origin`, because the
+        // mirror addresses the same host and path.
+        if (viaMirror.status !== 'probe-failed') return viaMirror;
+        // Both transports failed. The label is still the FIRST failure's —
+        // that is the one describing the transport this consumer configured,
+        // which is what an operator has to act on — and the mirror's own text
+        // rides along in `reason` so the report shows that the second attempt
+        // happened and what it said.
+        return {
+          status: 'probe-failed',
+          reason: `${viaOrigin.reason} (https mirror probe of ${mirror} also failed: ${viaMirror.reason})`,
+          cause: classifyProbeFailure(viaOrigin.reason),
+        };
       }
+
+      return {
+        status: 'probe-failed',
+        reason: viaOrigin.reason,
+        cause: classifyProbeFailure(viaOrigin.reason),
+      };
     },
     deleteBranch(branch: string): void {
       try {

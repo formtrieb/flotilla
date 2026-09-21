@@ -10090,3 +10090,382 @@ describe('a gutted tree re-reads EXHAUSTED on the next run, real git/fs (issue #
     expect(plan.skipped[0].blockingPaths?.otherTracked).toContain('README.md');
   });
 });
+
+// ─── 30. The remote probe's transport (issue #876) ───────────────────────────
+//
+// Field report, measured by two coordinator sessions in two repositories on
+// two engine versions in one evening: with an SSH `origin` under a harness
+// that blocks SSH, every `wave/*` branch comes back skipped
+// `branch-probe-failed`, the sweep reports overall success, and branch
+// hygiene therefore NEVER completes on that consumer form — every close,
+// forever. In one of the two repositories the remote branch had already been
+// deleted by the merge, so the branch was genuinely orphaned and was still
+// skipped: the probe cannot tell "the branch still exists" from "I cannot
+// reach the remote".
+//
+// These fixtures drive a probe that fails exactly the way the field reported
+// (FIELD_SSH_PROBE_FAILURE below is the verbatim error text) and pin three
+// things: what the sweep now DOES about it (a second attempt over a transport
+// the sandbox does not block), what it SAYS when that still cannot conclude
+// (a distinct reason, not the generic one), and — the negative control that
+// must survive every one of these — that nothing here can make the sweep
+// delete a branch it cannot prove is gone.
+describe('the remote probe transport (issue #876)', () => {
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+  });
+
+  /**
+   * The verbatim failure the field report carried, from the repository whose
+   * remote branch had ALREADY been deleted by the merge.
+   */
+  const FIELD_SSH_PROBE_FAILURE = [
+    'Command failed: git ls-remote --exit-code --heads origin wave/DES-197-flow-tests-ci',
+    'ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Broken pipe',
+    'fatal: Could not read from remote repository.',
+  ].join('\n');
+
+  /** How one `git ls-remote` attempt behaves in a fixture. */
+  type ProbeOutcome = 'present' | 'gone' | { fail: string };
+
+  function runOutcome(outcome: ProbeOutcome): string {
+    if (outcome === 'present') {
+      return 'a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\trefs/heads/wave/x\n';
+    }
+    if (outcome === 'gone') {
+      // git's own documented `--exit-code` no-match status. The remote WAS
+      // reached; it reported no matching ref.
+      const err = new Error('') as NodeJS.ErrnoException & { status?: number };
+      err.status = 2;
+      throw err;
+    }
+    const err = new Error(outcome.fail) as NodeJS.ErrnoException & { status?: number };
+    err.status = 128;
+    throw err;
+  }
+
+  /**
+   * Drive the mocked `execFileSync` for one `probeRemoteRef` call, dispatching
+   * on the argv the implementation actually passes. Records every `git`
+   * invocation so a test can assert which transports were tried — and, just as
+   * importantly, which were NOT.
+   */
+  function gitProbeHarness(spec: {
+    /** What `git remote get-url origin` prints; `null` makes that call fail. */
+    originUrl: string | null;
+    /** The attempt against the literal remote name `origin`. */
+    origin: ProbeOutcome;
+    /**
+     * The attempt against a URL. Omitted means the fixture does not expect a
+     * second attempt at all — if one happens anyway the harness throws a
+     * distinctive error rather than silently answering.
+     */
+    mirror?: ProbeOutcome;
+  }): { calls: string[][] } {
+    const calls: string[][] = [];
+    asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
+      const argv = (args[1] as string[]) ?? [];
+      calls.push(argv);
+      if (argv[0] === 'remote' && argv[1] === 'get-url') {
+        if (spec.originUrl === null) throw new Error("fatal: No such remote 'origin'");
+        return `${spec.originUrl}\n`;
+      }
+      if (argv[0] === 'ls-remote') {
+        const remote = argv[3];
+        if (remote === 'origin') return runOutcome(spec.origin);
+        if (spec.mirror === undefined) {
+          throw new Error(`UNEXPECTED second ls-remote against ${String(remote)}`);
+        }
+        return runOutcome(spec.mirror);
+      }
+      return '';
+    });
+    return { calls };
+  }
+
+  /** Every `git ls-remote` argv the harness recorded, in order. */
+  function lsRemoteTargets(calls: string[][]): string[] {
+    return calls.filter((a) => a[0] === 'ls-remote').map((a) => a[3]);
+  }
+
+  // ── AC1, first limb: the probe reads remote state successfully ────────────
+
+  it('AC1: an SSH origin whose probe is cut the way the field reported is retried over the HTTPS spelling of the SAME remote, and an authoritative "no matching ref" there IS the answer — { status: "gone" }', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: 'gone',
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    // The sharpened field case: the remote branch really was already deleted.
+    // Before this ticket the answer was `probe-failed` and the branch stayed
+    // behind; now the sweep learns what the operator had to learn by hand.
+    expect(result).toEqual({ status: 'gone' });
+    expect(lsRemoteTargets(calls)).toEqual([
+      'origin',
+      'https://github.com/acme/consumer-repo.git',
+    ]);
+  });
+
+  it('AC1: the same second attempt reports a still-PRESENT remote ref as `present` — a transport change never changes what the answer means', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: 'present',
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    expect(result).toEqual({ status: 'present' });
+    expect(lsRemoteTargets(calls)).toHaveLength(2);
+  });
+
+  it('an explicit ssh:// origin translates too, and a custom SSH PORT is dropped — an ssh port number says nothing about where https listens', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'ssh://git@git.example.com:2222/acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: 'gone',
+    });
+
+    expect(defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x')).toEqual({
+      status: 'gone',
+    });
+    expect(lsRemoteTargets(calls)[1]).toBe('https://git.example.com/acme/consumer-repo.git');
+  });
+
+  it('a WORKING transport costs nothing: an authoritative first answer never reads the origin URL and never opens a second connection', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: 'gone',
+      // No `mirror` — a second attempt here would throw inside the harness.
+    });
+
+    expect(defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x')).toEqual({
+      status: 'gone',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe('ls-remote');
+  });
+
+  // ── AC1, second limb: a distinct, documented reason ───────────────────────
+
+  it('AC1/AC2: when BOTH transports fail, the result is `probe-failed` with cause `transport-blocked` — distinct from the generic failure — and the reason carries the field text AND the second attempt', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: { fail: 'fatal: unable to access: proxy refused' },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    expect(result.status).toBe('probe-failed');
+    const failed = result as { status: 'probe-failed'; reason: string; cause?: string };
+    expect(failed.cause).toBe('transport-blocked');
+    expect(failed.reason).toContain('ssh_dispatch_run_fatal');
+    expect(failed.reason).toContain('https://github.com/acme/consumer-repo.git');
+    expect(failed.reason).toContain('proxy refused');
+    expect(lsRemoteTargets(calls)).toHaveLength(2);
+  });
+
+  it('AC2: an origin that is ALREADY https gets no second attempt — the same transport twice can only fail twice — but the failure is still named `transport-blocked`', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'https://github.com/acme/consumer-repo.git',
+      origin: { fail: "fatal: unable to access 'https://github.com/acme/consumer-repo.git/': Could not resolve host: github.com" },
+      // No `mirror` — a second attempt would throw inside the harness.
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    expect((result as { cause?: string }).cause).toBe('transport-blocked');
+    expect(lsRemoteTargets(calls)).toEqual(['origin']);
+  });
+
+  it('a local/`file://`-style origin derives no HTTPS spelling and is not invented one', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: '/srv/git/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+    });
+
+    expect(defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x').status).toBe(
+      'probe-failed',
+    );
+    expect(lsRemoteTargets(calls)).toEqual(['origin']);
+  });
+
+  it('an origin URL that cannot even be read (no such remote) still classifies the first failure — the remedy being unavailable never suppresses the diagnosis', () => {
+    gitProbeHarness({
+      originUrl: null,
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect((result as { cause?: string }).cause).toBe('transport-blocked');
+  });
+
+  // ── The classifier's declared resolution bias: abstain to the old reason ──
+
+  it('ABSTENTION: a failure text the signature list does not model is `unclassified`, NOT `transport-blocked` — the bias resolves to exactly the pre-#876 behaviour', () => {
+    gitProbeHarness({
+      originUrl: 'https://github.com/acme/consumer-repo.git',
+      origin: { fail: 'error: object file .git/objects/ab/cdef is empty' },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect((result as { cause?: string }).cause).toBe('unclassified');
+  });
+
+  it('ABSTENTION: `git` itself missing is NOT a blocked transport — no transport was ever opened, so the claim is not made', () => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => {
+      throw new Error('spawnSync git ENOENT');
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect((result as { cause?: string }).cause).toBe('unclassified');
+  });
+
+  // ── AC3, the negative control, stated at the level that matters ───────────
+
+  it('AC3 NEGATIVE CONTROL: no transport, no second attempt and no classification can produce `gone` — only git\'s own exit 2 does, and neither attempt gave one', () => {
+    gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: { fail: FIELD_SSH_PROBE_FAILURE },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/876-x');
+
+    expect(result.status).not.toBe('gone');
+    expect(result.status).toBe('probe-failed');
+  });
+});
+
+// ─── 30b. What the sweep DOES and SAYS about a blocked transport (issue #876) ─
+
+describe('the sweep under a blocked probe transport (issue #876)', () => {
+  const FIELD_DETAIL =
+    'ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Broken pipe';
+
+  function sweepOps(probe: RemoteRefProbeResult): {
+    ops: OrphanBranchSweepOps;
+    deleteSpy: ReturnType<typeof vi.fn>;
+  } {
+    const deleteSpy = vi.fn();
+    return {
+      deleteSpy,
+      ops: {
+        listLocalBranches: () => ['main', 'wave/876-blocked'],
+        currentBranch: () => 'main',
+        listCheckedOutBranches: () => new Set<string>(),
+        listLiveWorktreeBasenames: () => new Set<string>(),
+        probeRemoteRef: () => probe,
+        deleteBranch: deleteSpy,
+      },
+    };
+  }
+
+  it('AC2: a transport-blocked probe is recorded as `branch-probe-transport-blocked`, carrying the probe\'s own detail — the sweep SAYS which failure it hit', () => {
+    const { ops } = sweepOps({
+      status: 'probe-failed',
+      reason: FIELD_DETAIL,
+      cause: 'transport-blocked',
+    });
+
+    const result = sweepOrphanBranches({ ops });
+
+    const expected: BranchHygieneSkip = {
+      branch: 'wave/876-blocked',
+      reason: 'branch-probe-transport-blocked',
+      detail: FIELD_DETAIL,
+    };
+    expect(result.branchHygieneSkipped).toEqual([expected]);
+  });
+
+  it('AC3 NEGATIVE CONTROL: the sweep still deletes nothing it cannot prove is gone — the branch survives a transport-blocked probe, and deleteBranch is never called', () => {
+    const { ops, deleteSpy } = sweepOps({
+      status: 'probe-failed',
+      reason: FIELD_DETAIL,
+      cause: 'transport-blocked',
+    });
+
+    const result = sweepOrphanBranches({ ops });
+
+    expect(result.branchesDeleted).toEqual([]);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(planOrphanBranchSweep({ ops }).toDelete).toEqual([]);
+  });
+
+  it('AC3 NEGATIVE CONTROL: an `unclassified` failure is equally undeletable — the new vocabulary changed the NAME, never the refusal', () => {
+    const { ops, deleteSpy } = sweepOps({
+      status: 'probe-failed',
+      reason: 'error: object file is empty',
+      cause: 'unclassified',
+    });
+
+    const result = sweepOrphanBranches({ ops });
+
+    expect(result.branchesDeleted).toEqual([]);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(result.branchHygieneSkipped).toEqual([
+      {
+        branch: 'wave/876-blocked',
+        reason: 'branch-probe-failed',
+        detail: 'error: object file is empty',
+      },
+    ]);
+  });
+
+  it('BACKWARD COMPATIBILITY: a seam implementation that predates the `cause` field (none returned) still reads as `branch-probe-failed` — the widened union is invisible to anything that did not opt in', () => {
+    const { ops } = sweepOps({ status: 'probe-failed', reason: 'network error' });
+
+    expect(sweepOrphanBranches({ ops }).branchHygieneSkipped).toEqual([
+      {
+        branch: 'wave/876-blocked',
+        reason: 'branch-probe-failed',
+        detail: 'network error',
+      },
+    ]);
+  });
+
+  it('the PER-REMOVAL hygiene path names it identically — one probe, one vocabulary, whichever site reached it', () => {
+    const { remover } = fakeRemover();
+    const wt: WorktreeEntry = {
+      path: '/repo/.claude/worktrees/wf_876-a',
+      branch: 'wave/876-blocked',
+      head: 'a'.repeat(40),
+      dirty: false,
+    };
+    const hygiene: BranchHygieneOps = {
+      listCheckedOutBranches: () => new Set<string>(),
+      isUpstreamGone: () => false,
+      isContainedInDefaultBranch: () => false,
+      probeRemoteRef: () => ({
+        status: 'probe-failed',
+        reason: FIELD_DETAIL,
+        cause: 'transport-blocked',
+      }),
+      deleteBranch: vi.fn(),
+    };
+
+    const result = executeCleanup({ selected: [wt], skipped: [] }, {
+      remover,
+      branchHygiene: hygiene,
+    });
+
+    expect(result.branchHygieneSkipped).toEqual([
+      {
+        branch: 'wave/876-blocked',
+        reason: 'branch-probe-transport-blocked',
+        detail: FIELD_DETAIL,
+      },
+    ]);
+    expect(result.branchesDeleted).not.toContain('wave/876-blocked');
+  });
+});
