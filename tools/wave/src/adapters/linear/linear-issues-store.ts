@@ -86,6 +86,7 @@ import {
   appendBodySections,
   upsertSection,
   parentToLine,
+  assertAcceptanceCriteriaShape,
 } from '../body-codec';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
@@ -391,6 +392,13 @@ export class LinearIssuesStore implements IssueStore {
   }
 
   async annotate(id: string, patch: AnnotatePatch): Promise<void> {
+    // Entry-shape validation BEFORE anything is written (#871) — the FIRST
+    // statement, because the label swaps below are already writes. This is the
+    // store the corruption was observed on live (engine 2.4.0): a string-form
+    // `acceptanceCriteria` overwrote every criterion with `undefined` and the
+    // call still reported success. The rule lives in the codec so all three
+    // shipped stores refuse the identical shape (conformance pins the parity).
+    assertAcceptanceCriteriaShape(patch.acceptanceCriteria, 'annotate');
     const issue = await this.api.getIssue(id); // throws on unknown id
 
     // risk/worker → swap the sole risk/* | worker/* label (remove old, add new).

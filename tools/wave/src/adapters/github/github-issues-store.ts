@@ -69,6 +69,7 @@ import {
   appendBodySections,
   upsertSection,
   parentToLine,
+  assertAcceptanceCriteriaShape,
 } from '../body-codec';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
@@ -213,6 +214,13 @@ export class GitHubIssuesStore implements IssueStore {
   }
 
   async annotate(id: string, patch: AnnotatePatch): Promise<void> {
+    // Entry-shape validation BEFORE anything is written (#871) — the same
+    // whole-patch-first discipline `amend` applies below, and deliberately the
+    // FIRST statement: the label swaps a few lines down are already writes, so
+    // a check placed after them would leave a rejected call half-applied. The
+    // rule lives in the codec, not here, so all three shipped stores refuse the
+    // identical shape (conformance pins the parity).
+    assertAcceptanceCriteriaShape(patch.acceptanceCriteria, 'annotate');
     const n = Number(id);
     const gh = await this.api.getIssue(n); // throws on unknown id
 

@@ -77,9 +77,18 @@ describe('issue-store-cli', () => {
   let outSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
   let captured: string;
+  /**
+   * What this block's runs wrote to stderr. It used to be DISCARDED here (the
+   * mock returned `true` and kept nothing) — fine while every case in this
+   * block asserted only on exit codes and stdout, and not fine for #871, whose
+   * whole contract is the refusal LINE. Accumulating it changes nothing for the
+   * existing cases: it only keeps what was already being thrown away.
+   */
+  let stderr: string;
 
   beforeEach(() => {
     captured = '';
+    stderr = '';
     outSpy = vi
       .spyOn(process.stdout, 'write')
       .mockImplementation((chunk: string | Uint8Array): boolean => {
@@ -88,7 +97,10 @@ describe('issue-store-cli', () => {
       });
     errSpy = vi
       .spyOn(process.stderr, 'write')
-      .mockImplementation((): boolean => true);
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        stderr += chunk.toString();
+        return true;
+      });
   });
 
   afterEach(() => {
@@ -247,6 +259,134 @@ describe('issue-store-cli', () => {
       store,
     );
     expect(code).toBe(2);
+  });
+
+  // ── #871 — the malformed-acceptanceCriteria refusal at the CLI boundary ────
+  //
+  // A patch file is JSON, so the `{ text, checked }[]` type annotation never
+  // runs against it. The shorter `["first", "second"]` spelling looked
+  // reasonable, was refused by nothing, and every renderer's `.text` read
+  // overwrote each criterion with the four characters `undefined` — exit 0,
+  // empty stderr, no undo. Observed live on a Linear store at engine 2.4.0.
+  // The store-parity half lives in the conformance suite; these cases pin the
+  // CLI's own contract: the exit code, the `error:` line, and that the store is
+  // never called at all.
+
+  /** Write a patch file carrying `acceptanceCriteria` exactly as given (no typing in the way). */
+  function writeAcPatch(acceptanceCriteria: unknown, extra: Record<string, unknown> = {}): string {
+    const p = join(mkdtempSync(join(tmpdir(), 'is-ac-patch-')), 'patch.json');
+    writeFileSync(p, JSON.stringify({ ...extra, acceptanceCriteria }), 'utf-8');
+    return p;
+  }
+
+  it('annotate REFUSES a string-form acceptanceCriteria: exit 2, an error: line naming the field and the shape', async () => {
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeInput()], store);
+    const id = captured.trim();
+
+    captured = '';
+    stderr = '';
+    const code = await runIssueStore(
+      ['annotate', id, '--patch', writeAcPatch(['the criterion text'])],
+      store,
+    );
+
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/^error: /m);
+    expect(stderr).toContain('acceptanceCriteria');
+    expect(stderr).toContain('entry 0');
+    expect(stderr).toContain('string');
+    // it quotes what arrived and says what it prevented
+    expect(stderr).toContain('the criterion text');
+    expect(stderr).toMatch(/undefined/);
+    // nothing on stdout — a refusal is not a receipt
+    expect(captured).toBe('');
+  });
+
+  it('annotate refusing a malformed acceptanceCriteria leaves the issue byte-for-byte untouched', async () => {
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeInput()], store);
+    const id = captured.trim();
+
+    // the patch also carries a perfectly good `risk` — neither half may land
+    const patchPath = writeAcPatch(['a bare string criterion'], { risk: 'isolated-refactor' });
+    const code = await runIssueStore(['annotate', id, '--patch', patchPath], store);
+    expect(code).toBe(2);
+
+    captured = '';
+    await runIssueStore(['read', id], store);
+    const view = JSON.parse(captured) as IssueView;
+    expect(view.risk).toBe('mechanical'); // INPUT's value, not the patch's
+    expect(view.acceptanceCriteria.map((a) => a.text)).toEqual(['route registered']);
+    expect(view.acceptanceCriteria.map((a) => a.text)).not.toContain('undefined');
+  });
+
+  it('annotate refuses the other malformed shapes too, each with exit 2', async () => {
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeInput()], store);
+    const id = captured.trim();
+
+    const malformed: unknown[] = [
+      [null],
+      [42],
+      [{ checked: false }], // object with no `text` — the direct `undefined` vector
+      [{ text: 123, checked: false }],
+      [{ text: 'no checked flag' }],
+      [{ text: 'fine', checked: false }, 'a string beside a good one'],
+      'not an array at all',
+    ];
+    for (const acceptanceCriteria of malformed) {
+      stderr = '';
+      const code = await runIssueStore(
+        ['annotate', id, '--patch', writeAcPatch(acceptanceCriteria)],
+        store,
+      );
+      expect(code).toBe(2);
+      expect(stderr).toContain('acceptanceCriteria');
+    }
+
+    captured = '';
+    await runIssueStore(['read', id], store);
+    const view = JSON.parse(captured) as IssueView;
+    expect(view.acceptanceCriteria.map((a) => a.text)).toEqual(['route registered']);
+  });
+
+  it('a WELL-FORMED acceptanceCriteria patch is unaffected by the refusal (positive control)', async () => {
+    // The over-reach control: the guard must cost a legitimate patch nothing —
+    // neither the ordinary object form nor an explicitly empty checklist.
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeInput()], store);
+    const id = captured.trim();
+
+    let code = await runIssueStore(
+      [
+        'annotate',
+        id,
+        '--patch',
+        writeAcPatch([
+          { text: 'replacement one', checked: false },
+          { text: 'replacement two', checked: true },
+        ]),
+      ],
+      store,
+    );
+    expect(code).toBe(0);
+
+    captured = '';
+    await runIssueStore(['read', id], store);
+    let view = JSON.parse(captured) as IssueView;
+    expect(view.acceptanceCriteria.map((a) => a.text)).toEqual([
+      'replacement one',
+      'replacement two',
+    ]);
+    expect(view.acceptanceCriteria.map((a) => a.checked)).toEqual([false, true]);
+
+    code = await runIssueStore(['annotate', id, '--patch', writeAcPatch([])], store);
+    expect(code).toBe(0);
+    captured = '';
+    await runIssueStore(['read', id], store);
+    view = JSON.parse(captured) as IssueView;
+    expect(view.acceptanceCriteria).toEqual([]);
   });
 
   // ── amend (ADR-0025 — authored content: title + free-prose sections) ────────

@@ -43,6 +43,131 @@ const AC_LINE = /^- \[([ xX])\]\s*(.*)$/;
 /** `##` section names this codec owns — a free `bodySections` heading must not collide. */
 const RESERVED_SECTIONS = ['files', 'blocked by', 'unblocks', 'acceptance criteria'];
 
+// ─── the acceptance-criteria ENTRY-SHAPE rule (#871) ────────────────────────
+//
+// Lives HERE, in the codec, for the same reason the reserved-heading rejection
+// does (`upsertSection`): a rule the codec owns fires identically on all three
+// shipped adapters, instead of each store carrying its own — possibly more
+// permissive — copy. The conformance suite is where that parity is pinned.
+//
+// The defect it closes (#871, observed live on a Linear store at engine 2.4.0):
+// `acceptanceCriteria` is typed `{ text, checked }[]`, but a caller writing the
+// shorter, reasonable-looking `["first", "second"]` was not refused anywhere.
+// Every renderer reads `.text` off the entry, a string has no `.text`, and each
+// criterion was written as the four characters `undefined` — exit 0, empty
+// stderr, no undo. The reviewer's verdict is the acceptance-criteria ground
+// truth, so a row whose criteria all read `undefined` has no standard left to
+// check anything against. The sibling verb `write-report` already refuses
+// invalid input outright; this is that same stance, one field over.
+
+/**
+ * The typed rejection {@link assertAcceptanceCriteriaShape} throws.
+ *
+ * Typed rather than a bare `Error` so a CLI layer can tell a CALLER-INPUT bug
+ * (exit 2, usage) apart from a store failure (exit 1) without string-matching a
+ * message — exactly the discrimination {@link ../issue-store!CreateInputError}
+ * gives the `create` path.
+ */
+export class AcceptanceCriteriaShapeError extends Error {
+  readonly name = 'AcceptanceCriteriaShapeError';
+  constructor(
+    message: string,
+    /** The offending patch/input field — `acceptanceCriteria` today, named so the reader never has to guess. */
+    readonly field: string,
+    /** 0-based index of the FIRST offending entry, or `-1` when the field itself is not an array. */
+    readonly index: number,
+    /** What arrived, as a short shape word (`string`, `number`, `null`, `array`, `object`, …) — never the value. */
+    readonly received: string,
+  ) {
+    super(message);
+  }
+}
+
+/** A short shape WORD for a value — `null`/`array` split out of `typeof`'s `object`. */
+function shapeOf(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+/** A short, quotable rendering of what arrived, so the refusal is diagnosable at the call site. */
+function preview(value: unknown): string {
+  let rendered: string;
+  try {
+    rendered = JSON.stringify(value) ?? String(value);
+  } catch {
+    rendered = String(value);
+  }
+  return rendered.length > 60 ? `${rendered.slice(0, 57)}…` : rendered;
+}
+
+/**
+ * Refuse an `acceptanceCriteria` payload whose entries are not
+ * `{ text: string, checked: boolean }` objects — BEFORE anything is written.
+ *
+ * An ABSENT field (`undefined`) is not malformed: on an {@link ../issue-store!AnnotatePatch}
+ * it means "leave the existing checklist alone", which is the ordinary decorate
+ * case. `[]` is likewise well-formed — an explicit, empty checklist.
+ *
+ * @param acs      the payload as it arrived — deliberately `unknown`, because the
+ *                 whole defect is that the declared type was not what showed up.
+ * @param context  the verb the refusal speaks for (`annotate`), so the message
+ *                 names the call the caller actually made.
+ * @throws {AcceptanceCriteriaShapeError} naming the field, the entry index, and
+ *                 the shape received.
+ */
+export function assertAcceptanceCriteriaShape(acs: unknown, context: string): void {
+  const field = 'acceptanceCriteria';
+  const shape = `{ "text": string, "checked": boolean }`;
+
+  if (acs === undefined) return; // omitted — there is nothing to write, and nothing to check
+  if (!Array.isArray(acs)) {
+    throw new AcceptanceCriteriaShapeError(
+      `${context}: \`${field}\` must be an array of ${shape} objects; ` +
+        `received ${shapeOf(acs)} (${preview(acs)}). Nothing was written.`,
+      field,
+      -1,
+      shapeOf(acs),
+    );
+  }
+
+  for (let i = 0; i < acs.length; i++) {
+    const entry: unknown = acs[i];
+    const entryShape = shapeOf(entry);
+    if (entryShape !== 'object') {
+      throw new AcceptanceCriteriaShapeError(
+        `${context}: \`${field}\` entry ${i} is a ${entryShape} (${preview(entry)}), ` +
+          `not the required ${shape} object. Writing it would have stored that ` +
+          `criterion's text as the four characters \`undefined\`. Nothing was written.`,
+        field,
+        i,
+        entryShape,
+      );
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record.text !== 'string') {
+      throw new AcceptanceCriteriaShapeError(
+        `${context}: \`${field}\` entry ${i} has no string \`text\` — its \`text\` is ` +
+          `${shapeOf(record.text)} (${preview(entry)}). A criterion with no text would ` +
+          `have been written as the four characters \`undefined\`. Nothing was written.`,
+        field,
+        i,
+        shapeOf(record.text),
+      );
+    }
+    if (typeof record.checked !== 'boolean') {
+      throw new AcceptanceCriteriaShapeError(
+        `${context}: \`${field}\` entry ${i} has no boolean \`checked\` — its \`checked\` ` +
+          `is ${shapeOf(record.checked)} (${preview(entry)}). The required shape is ` +
+          `${shape}. Nothing was written.`,
+        field,
+        i,
+        shapeOf(record.checked),
+      );
+    }
+  }
+}
+
 /** Compose a fresh issue body. Managed sections follow the free prose sections. */
 export function serializeBody(input: BodyInput): string {
   const parts: string[] = [];

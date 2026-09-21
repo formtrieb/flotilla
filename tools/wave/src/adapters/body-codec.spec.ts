@@ -6,6 +6,8 @@ import {
   upsertLine,
   tickAcs,
   upsertSection,
+  assertAcceptanceCriteriaShape,
+  AcceptanceCriteriaShapeError,
 } from './body-codec';
 
 describe('body-codec round-trip', () => {
@@ -347,5 +349,159 @@ describe('upsertSection', () => {
     expect(out).toContain('line one');
     expect(out).toContain('- bullet a');
     expect(out).toContain('- bullet b');
+  });
+});
+
+// ── the acceptance-criteria ENTRY-SHAPE rule (#871) ──────────────────────────
+//
+// The unit half of the guard the conformance suite pins across all three stores.
+// The defect: `acceptanceCriteria` is typed `{ text, checked }[]`, the shorter
+// `["first", "second"]` spelling looked reasonable and was refused by nothing,
+// and every renderer's `.text` read turned each criterion into the four
+// characters `undefined` — exit 0, no stderr, no undo.
+describe('assertAcceptanceCriteriaShape (#871)', () => {
+  it('accepts the well-formed shape, an empty list, and an OMITTED field (the three legitimate inputs)', () => {
+    expect(() =>
+      assertAcceptanceCriteriaShape(
+        [
+          { text: 'first', checked: false },
+          { text: 'second', checked: true },
+        ],
+        'annotate',
+      ),
+    ).not.toThrow();
+    // an explicit, empty checklist is a decision, not a malformed payload
+    expect(() => assertAcceptanceCriteriaShape([], 'annotate')).not.toThrow();
+    // omitted means "leave the existing checklist alone" — the ordinary decorate case
+    expect(() => assertAcceptanceCriteriaShape(undefined, 'annotate')).not.toThrow();
+    // an entry may carry extra keys; the rule is about `text`/`checked`, not exclusivity
+    expect(() =>
+      assertAcceptanceCriteriaShape([{ text: 'x', checked: false, note: 'extra' }], 'annotate'),
+    ).not.toThrow();
+    // an EMPTY text is a blankness question the DoR gate owns, not a shape question
+    expect(() =>
+      assertAcceptanceCriteriaShape([{ text: '', checked: false }], 'annotate'),
+    ).not.toThrow();
+  });
+
+  it('refuses the exact live case — a bare string entry — naming the field, the index and the shape', () => {
+    let err: AcceptanceCriteriaShapeError | undefined;
+    try {
+      assertAcceptanceCriteriaShape(['the criterion text'], 'annotate');
+    } catch (e) {
+      err = e as AcceptanceCriteriaShapeError;
+    }
+    expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+    expect(err?.field).toBe('acceptanceCriteria');
+    expect(err?.index).toBe(0);
+    expect(err?.received).toBe('string');
+    expect(err?.message).toMatch(/acceptanceCriteria/);
+    expect(err?.message).toMatch(/entry 0/);
+    expect(err?.message).toMatch(/string/);
+    // the message quotes what arrived, so the refusal is diagnosable at the call site
+    expect(err?.message).toContain('the criterion text');
+    // and it says what would have happened — the whole reason this is not a nicety
+    expect(err?.message).toMatch(/undefined/);
+    expect(err?.message).toMatch(/Nothing was written/);
+  });
+
+  it('refuses a PARTIALLY malformed list rather than writing the good entries and dropping the rest', () => {
+    // "I wrote some of it" is the failure mode this class exists to refuse —
+    // the same fail-loud stance as the blocked-by parser above.
+    let err: AcceptanceCriteriaShapeError | undefined;
+    try {
+      assertAcceptanceCriteriaShape(
+        [{ text: 'a good one', checked: false }, 'a bare string'],
+        'annotate',
+      );
+    } catch (e) {
+      err = e as AcceptanceCriteriaShapeError;
+    }
+    expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+    expect(err?.index).toBe(1);
+    expect(err?.received).toBe('string');
+  });
+
+  it('refuses every other non-object entry shape, each naming what it received', () => {
+    const cases: [unknown, string][] = [
+      [null, 'null'],
+      [42, 'number'],
+      [true, 'boolean'],
+      [['nested'], 'array'],
+    ];
+    for (const [entry, shape] of cases) {
+      let err: AcceptanceCriteriaShapeError | undefined;
+      try {
+        assertAcceptanceCriteriaShape([entry], 'annotate');
+      } catch (e) {
+        err = e as AcceptanceCriteriaShapeError;
+      }
+      expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+      expect(err?.received).toBe(shape);
+      expect(err?.message).toMatch(/acceptanceCriteria/);
+    }
+  });
+
+  it('refuses an OBJECT entry whose `text` is missing or not a string — the direct `undefined` vector', () => {
+    const entries: unknown[] = [
+      { checked: false },
+      { text: 123, checked: false },
+      { text: null, checked: false },
+    ];
+    for (const entry of entries) {
+      let err: AcceptanceCriteriaShapeError | undefined;
+      try {
+        assertAcceptanceCriteriaShape([entry], 'annotate');
+      } catch (e) {
+        err = e as AcceptanceCriteriaShapeError;
+      }
+      expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+      expect(err?.message).toMatch(/`text`/);
+      expect(err?.message).toMatch(/undefined/);
+    }
+  });
+
+  it('refuses an OBJECT entry whose `checked` is missing or not a boolean', () => {
+    const entries: unknown[] = [{ text: 'x' }, { text: 'x', checked: 'false' }];
+    for (const entry of entries) {
+      let err: AcceptanceCriteriaShapeError | undefined;
+      try {
+        assertAcceptanceCriteriaShape([entry], 'annotate');
+      } catch (e) {
+        err = e as AcceptanceCriteriaShapeError;
+      }
+      expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+      expect(err?.message).toMatch(/`checked`/);
+    }
+  });
+
+  it('refuses a field that is not an array at all, with index -1 (no entry to blame)', () => {
+    let err: AcceptanceCriteriaShapeError | undefined;
+    try {
+      assertAcceptanceCriteriaShape('first, second', 'annotate');
+    } catch (e) {
+      err = e as AcceptanceCriteriaShapeError;
+    }
+    expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+    expect(err?.index).toBe(-1);
+    expect(err?.received).toBe('string');
+    expect(err?.message).toMatch(/must be an array/);
+  });
+
+  it('names the CALLING verb, so the message points at the call the caller actually made', () => {
+    expect(() => assertAcceptanceCriteriaShape(['x'], 'annotate')).toThrow(/^annotate:/);
+  });
+
+  it('truncates a long offending value instead of echoing an unbounded payload into stderr', () => {
+    const long = 'x'.repeat(500);
+    let message = '';
+    try {
+      assertAcceptanceCriteriaShape([long], 'annotate');
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('…');
+    expect(message).not.toContain(long);
+    expect(message.length).toBeLessThan(400);
   });
 });

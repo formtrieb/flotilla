@@ -579,6 +579,137 @@ export function runIssueStoreConformance(
       }
     });
 
+    // ── #871: the malformed-acceptanceCriteria refusal, pinned for all three ──
+    //
+    // The live defect this cell exists for: `acceptanceCriteria` is typed
+    // `{ text, checked }[]`, and a patch whose entries were plain strings was
+    // refused by nothing. Every renderer reads `.text` off the entry, a string
+    // has no `.text`, and each criterion was overwritten with the four
+    // characters `undefined` — exit 0, empty stderr, no undo, and the AC
+    // section it replaced is gone. Observed on a Linear store at engine 2.4.0
+    // while a coordinator amended ONE criterion; the originals survived only
+    // because they were still in that session's transcript.
+    //
+    // This is a store-PARITY cell, not one store's own case, for the same
+    // reason the reserved-heading cell above is: the shape rule lives in the
+    // codec (`assertAcceptanceCriteriaShape`), each store calls it as the
+    // FIRST statement of `annotate`, and "the CLI happens to refuse it" is not
+    // the same claim as "no store can write it". A caller reaching
+    // `store.annotate` directly — another engine verb, a consumer importing
+    // the store — must meet the identical refusal.
+    it('annotate() refuses an acceptanceCriteria entry that is not a {text, checked} object, writing NOTHING', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(
+        h.baseInput({
+          risk: 'mechanical',
+          worker: 'background',
+          files: ['keep/me.ts'],
+          acceptanceCriteria: [
+            { text: 'original criterion one', checked: false },
+            { text: 'original criterion two', checked: false },
+          ],
+        }),
+      );
+
+      // The shapes a caller plausibly reaches for, and the ones that arrive from
+      // hand-written / machine-generated JSON. Each is typed away at compile
+      // time, which is exactly why the runtime guard is the one that matters —
+      // the corrupting call came through a JSON patch file, where the type
+      // annotation never ran.
+      const malformed: unknown[] = [
+        ['a bare string criterion'], // THE live case
+        [{ text: 'fine', checked: false }, 'a string beside a good one'], // partial
+        [null],
+        [42],
+        [{ checked: false }], // object, no `text` — the `.text` read that produced `undefined`
+        [{ text: 123, checked: false }], // `text` present but not a string
+        [{ text: 'no checked flag' }], // object, no `checked`
+        'not an array at all',
+      ];
+
+      for (const entries of malformed) {
+        await expect(
+          store.annotate(id, {
+            acceptanceCriteria: entries as { text: string; checked: boolean }[],
+          }),
+        ).rejects.toThrow(/acceptanceCriteria/);
+      }
+
+      // …and NOTHING was written by any of those calls: the original criteria
+      // are intact, no criterion reads as the string `undefined`, and the
+      // unrelated header fields are untouched.
+      const view = await store.read(id);
+      expect(view.acceptanceCriteria.map((a) => a.text)).toEqual([
+        'original criterion one',
+        'original criterion two',
+      ]);
+      expect(view.acceptanceCriteria.map((a) => a.text)).not.toContain('undefined');
+      expect(view.risk).toBe('mechanical');
+      expect(view.worker).toBe('background');
+      expect(view.files).toEqual(['keep/me.ts']);
+    });
+
+    it('annotate() rejecting a malformed acceptanceCriteria applies NO other field of the same patch', async () => {
+      // The partial-application half, which the cell above cannot see: a patch
+      // carrying BOTH a good `risk` and a malformed `acceptanceCriteria` must
+      // land neither. On GitHub/Linear the risk/worker label swap is a write
+      // that happens before the body is touched at all, so a guard placed
+      // anywhere but the first statement of `annotate` would leave exactly this
+      // half-applied.
+      const { h, store } = await fresh();
+      const id = await store.create(
+        h.baseInput({
+          risk: 'mechanical',
+          worker: 'background',
+          acceptanceCriteria: [{ text: 'original criterion', checked: false }],
+        }),
+      );
+
+      await expect(
+        store.annotate(id, {
+          risk: 'cross-feature-refactor',
+          worker: 'background-heavy',
+          acceptanceCriteria: ['a bare string criterion'] as unknown as {
+            text: string;
+            checked: boolean;
+          }[],
+        }),
+      ).rejects.toThrow(/acceptanceCriteria/);
+
+      const view = await store.read(id);
+      expect(view.risk).toBe('mechanical');
+      expect(view.worker).toBe('background');
+      expect(view.acceptanceCriteria.map((a) => a.text)).toEqual(['original criterion']);
+    });
+
+    it('annotate() still applies a WELL-FORMED acceptanceCriteria patch unchanged (positive control)', async () => {
+      // The over-reach control for the two cells above: the refusal must cost a
+      // legitimate patch nothing. `[]` is well-formed too — an explicit, empty
+      // checklist is a decision, not a malformed payload — and an OMITTED field
+      // still means "leave the existing checklist alone" (the ordinary decorate
+      // case, which the decorate cell above already pins).
+      const { h, store } = await fresh();
+      const id = await store.create(
+        h.baseInput({ acceptanceCriteria: [{ text: 'original criterion', checked: false }] }),
+      );
+
+      await store.annotate(id, {
+        acceptanceCriteria: [
+          { text: 'replacement one', checked: false },
+          { text: 'replacement two', checked: true },
+        ],
+      });
+      const view = await store.read(id);
+      expect(view.acceptanceCriteria.map((a) => a.text)).toEqual([
+        'replacement one',
+        'replacement two',
+      ]);
+      expect(view.acceptanceCriteria.map((a) => a.checked)).toEqual([false, true]);
+
+      await store.annotate(id, { acceptanceCriteria: [] });
+      expect((await store.read(id)).acceptanceCriteria).toEqual([]);
+    });
+
     // ── amend (ADR-0025 — the authored-content facet: title + free prose) ──
     //
     // The tracker-agnostic half of FOR-33. Read-back rides `readTriage()`'s
