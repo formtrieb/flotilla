@@ -306,6 +306,121 @@ export function runIssueStoreConformance(
       expect((await store.listOpen('wave-ready')).length).toBe(before);
     });
 
+    // ── #898: the malformed-acceptanceCriteria refusal on CREATE, all three ──
+    //
+    // The sibling half of the #871 cells further down. #871 closed `annotate`
+    // and deliberately left `create` open: the only lever inside its declared
+    // files was `serializeBody`, which GitHub and Linear route through and
+    // `MarkdownFsStore` does not — a guard firing on two stores out of three
+    // makes the remaining hole look closed, which is worse than the uniform
+    // gap. So `create` kept accepting `["a bare string criterion"]`, returning
+    // normally, and reading back `[{"text":"undefined","checked":false}]`
+    // (reproduced three times independently: the #871 Worker, the #871
+    // Reviewer against a real MarkdownFsStore, and the Coordinator before this
+    // row was dispatched).
+    //
+    // THIS is the cell that proves the fix is not the half-fix #871 refused to
+    // ship. It is a store-PARITY cell for the reason the annotate one is: the
+    // rule now lives at `classifyCreateInput`, which every adapter runs as the
+    // FIRST statement of `create()`, so "the CLI happens to refuse it" is a
+    // different claim from "no store can write it". A caller reaching
+    // `store.create` directly — another engine verb, a consumer importing the
+    // store — must meet the identical refusal on all three registrations, and
+    // `MarkdownFsStore`'s registration is the one that would still be corrupt
+    // had the guard gone into the shared body serializer.
+    it('create() refuses an acceptanceCriteria entry that is not a {text, checked} object, filing NOTHING', async () => {
+      const { h, store } = await fresh();
+      const before = (await store.listOpen('wave-ready')).length;
+
+      // The same roster the annotate cell uses, deliberately: the two verbs
+      // agree on what a valid entry is, so they must agree on every invalid
+      // one too. Each is typed away at compile time, which is exactly why the
+      // runtime guard is the one that matters — the corrupting call came in
+      // through a JSON input file, where the annotation never ran.
+      const malformed: unknown[] = [
+        ['a bare string criterion'], // THE live case, reproduced three times
+        [{ text: 'fine', checked: false }, 'a string beside a good one'], // partial
+        [null],
+        [42],
+        [{ checked: false }], // object, no `text` — the `.text` read that produced `undefined`
+        [{ text: 123, checked: false }], // `text` present but not a string
+        [{ text: 'no checked flag' }], // object, no `checked` — refused, never defaulted
+        'not an array at all',
+      ];
+
+      for (const entries of malformed) {
+        await expect(
+          store.create(
+            h.baseInput({
+              acceptanceCriteria: entries as { text: string; checked: boolean }[],
+            }),
+          ),
+        ).rejects.toThrow(/acceptanceCriteria/);
+      }
+
+      // no-partial-application: not one of the rejected creates filed anything.
+      // This is the half a message assertion cannot see — a store that threw
+      // AFTER minting the issue would satisfy the line above and still have
+      // left a corrupt row on the tracker.
+      expect((await store.listOpen('wave-ready')).length).toBe(before);
+    });
+
+    it('the create-side refusal names the field, the entry index and the shape received', async () => {
+      // The diagnosability half. `create` and `annotate` differ by ONE leading
+      // word (the context) and nothing else — same predicate, same message
+      // shape — so a caller who has read one refusal can read the other.
+      const { h, store } = await fresh();
+      await expect(
+        store.create(
+          h.baseInput({
+            acceptanceCriteria: ['a bare string criterion'] as unknown as {
+              text: string;
+              checked: boolean;
+            }[],
+          }),
+        ),
+      ).rejects.toMatchObject({
+        name: 'AcceptanceCriteriaShapeError',
+        field: 'acceptanceCriteria',
+        index: 0,
+        received: 'string',
+      });
+    });
+
+    it('create() still files a WELL-FORMED acceptanceCriteria unchanged (positive control)', async () => {
+      // The over-reach control for the two cells above: the refusal must cost a
+      // legitimate create nothing. `[]` is well-formed too — an explicit, empty
+      // checklist is a decision, not a malformed payload — and an OMITTED field
+      // is the BARE filing path, which the bare cells above already pin.
+      const { h, store } = await fresh();
+      const id = await store.create(
+        h.baseInput({
+          acceptanceCriteria: [
+            { text: 'first criterion', checked: false },
+            { text: 'second criterion', checked: false },
+          ],
+        }),
+      );
+      const view = await store.read(id);
+      expect(view.acceptanceCriteria.map((a) => a.text)).toEqual([
+        'first criterion',
+        'second criterion',
+      ]);
+      // `create` files every criterion UNCHECKED by contract (`CreateInput`:
+      // "all `checked:false` at creation"), which is why the shape rule demands
+      // the flag be a real boolean rather than reading a value off it: the
+      // requirement is that the caller wrote the entry, not that the value
+      // survives. Pinned here so the refusal cannot be mistaken for the reason
+      // a `checked:true` create does not round-trip — that predates it.
+      expect(view.acceptanceCriteria.map((a) => a.checked)).toEqual([false, false]);
+      expect(view.acceptanceCriteria.map((a) => a.text)).not.toContain('undefined');
+
+      const empty = await store.create(
+        h.baseInput({ title: 'Empty checklist', acceptanceCriteria: [] }),
+      );
+      expect((await store.read(empty)).acceptanceCriteria).toEqual([]);
+    });
+
     it('create() rejects decoration-only fields on an otherwise-bare input', async () => {
       const { h, store } = await fresh();
       const base = h.baseInput();

@@ -10,6 +10,10 @@ import {
   renderGoalUpdateBody,
 } from './issue-store';
 import type { CreateInput } from './issue-store';
+import {
+  AcceptanceCriteriaShapeError,
+  assertAcceptanceCriteriaShape,
+} from './body-codec';
 import { computeGoalFrontier, type GoalMemberFacts } from '../goal-frontier';
 
 describe('withTriageDisclaimer (ADR-0015)', () => {
@@ -356,6 +360,174 @@ describe('classifyCreateInput — a malformed bodySections entry on a BARE input
       bodySections: [{ heading: 'What to build', markdown: '   ' }],
     };
     expect(classifyCreateInput(DECORATED).kind).toBe('decorated');
+  });
+});
+
+// ── #898: the acceptance-criteria ENTRY-SHAPE rule reaches `create` ──────────
+//
+// The LAYER specs for the create half of the defect #871 closed on `annotate`.
+// #871's own guard call sites were exactly four, all `annotate` — the codec
+// definition, the three stores — because the only lever inside its declared
+// files was `serializeBody`, which `MarkdownFsStore` does not route through.
+// A guard that fires on two stores out of three makes the remaining hole look
+// closed, so the create half was carved out and filed instead of half-fixed.
+//
+// These cases call the CLASSIFIER directly, with no store and no CLI in the
+// picture, because that is the claim: the rule is a property of
+// `classifyCreateInput`, which every adapter runs as the first statement of
+// `create()`, so every caller inherits it. The all-three-stores half is the
+// conformance suite's; the CLI's exit code is `issue-store-cli.spec.ts`'.
+describe('classifyCreateInput — the acceptanceCriteria entry-shape rule (#898)', () => {
+  const DECORATED: CreateInput = {
+    title: 'A real slice',
+    filingHint: 'a-real-slice',
+    risk: 'mechanical',
+    worker: 'background',
+    files: ['src/x.ts'],
+    blockedBy: 'none',
+    acceptanceCriteria: [{ text: 'does the thing', checked: false }],
+  };
+
+  /** A decorated input carrying `acceptanceCriteria` exactly as given (no typing in the way). */
+  function withAc(acceptanceCriteria: unknown): CreateInput {
+    return {
+      ...DECORATED,
+      acceptanceCriteria: acceptanceCriteria as { text: string; checked: boolean }[],
+    };
+  }
+
+  /** Run the classifier and return the shape error it threw. */
+  function shapeRejectionOf(input: CreateInput): AcceptanceCriteriaShapeError {
+    try {
+      classifyCreateInput(input);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+      return err as AcceptanceCriteriaShapeError;
+    }
+    throw new Error('expected classifyCreateInput to reject, but it returned');
+  }
+
+  it('refuses THE live case — a bare string criterion — naming field, index and shape', () => {
+    // Reproduced three times independently before this row was dispatched:
+    // `create({ acceptanceCriteria: ['a bare string criterion'] })` returned
+    // normally and read back `[{"text":"undefined","checked":false}]`.
+    const err = shapeRejectionOf(withAc(['a bare string criterion']));
+    expect(err.name).toBe('AcceptanceCriteriaShapeError');
+    expect(err.field).toBe('acceptanceCriteria');
+    expect(err.index).toBe(0);
+    expect(err.received).toBe('string');
+    expect(err.message).toContain('acceptanceCriteria');
+    expect(err.message).toContain('entry 0');
+    expect(err.message).toContain('a bare string criterion'); // it quotes what arrived
+    expect(err.message).toContain('undefined'); // …and what it prevented
+  });
+
+  it('the refusal speaks for `create`, so the message names the call the caller made', () => {
+    expect(() => classifyCreateInput(withAc(['x']))).toThrow(/^create:/);
+  });
+
+  it('refuses at all three levels the rule has — payload, entry, and the entry fields', () => {
+    // The inherited strictness ruling (#871), re-asserted on the create side so
+    // a laxer create-only predicate could never pass this file: the payload
+    // must be an array, each entry must be an object, and `text`/`checked` must
+    // each be of the declared type. A MISSING `checked` is REFUSED, never
+    // defaulted to `false` — that is the ruling, not an accident of the code.
+    expect(shapeRejectionOf(withAc('not an array at all')).index).toBe(-1);
+    expect(shapeRejectionOf(withAc([null])).received).toBe('null');
+    expect(shapeRejectionOf(withAc([42])).received).toBe('number');
+    expect(shapeRejectionOf(withAc([{ checked: false }])).received).toBe('undefined');
+    expect(shapeRejectionOf(withAc([{ text: 123, checked: false }])).received).toBe('number');
+    expect(shapeRejectionOf(withAc([{ text: 'no checked flag' }])).received).toBe('undefined');
+    // …and the index points at the FIRST offending entry, not at entry 0 by default.
+    expect(
+      shapeRejectionOf(withAc([{ text: 'fine', checked: false }, 'a string beside a good one']))
+        .index,
+    ).toBe(1);
+  });
+
+  it('is literally the same predicate `annotate` runs — same verdict, one context word apart', () => {
+    // Acceptance criterion 3 in one assertion: there is no create-shaped copy
+    // of the rule to drift from the annotate-shaped one. The two messages are
+    // byte-identical once the leading context word is normalized away.
+    const malformed: unknown[] = [
+      ['a bare string criterion'],
+      [null],
+      [42],
+      [{ checked: false }],
+      [{ text: 123, checked: false }],
+      [{ text: 'no checked flag' }],
+      [{ text: 'fine', checked: false }, 'a string beside a good one'],
+      'not an array at all',
+    ];
+    for (const acs of malformed) {
+      const fromCreate = shapeRejectionOf(withAc(acs));
+      let fromAnnotate: AcceptanceCriteriaShapeError | undefined;
+      try {
+        assertAcceptanceCriteriaShape(acs, 'annotate');
+      } catch (err) {
+        fromAnnotate = err as AcceptanceCriteriaShapeError;
+      }
+      expect(fromAnnotate).toBeInstanceOf(AcceptanceCriteriaShapeError);
+      expect(fromCreate.field).toBe(fromAnnotate?.field);
+      expect(fromCreate.index).toBe(fromAnnotate?.index);
+      expect(fromCreate.received).toBe(fromAnnotate?.received);
+      expect(fromCreate.message.replace(/^create:/, '')).toBe(
+        fromAnnotate?.message.replace(/^annotate:/, ''),
+      );
+    }
+  });
+
+  it('costs a WELL-FORMED create nothing — the positive control', () => {
+    expect(classifyCreateInput(DECORATED).kind).toBe('decorated');
+    expect(
+      classifyCreateInput(withAc([{ text: 'a', checked: false }, { text: 'b', checked: true }]))
+        .kind,
+    ).toBe('decorated');
+    // `[]` is an explicit, empty checklist — a decision, not a malformed payload.
+    expect(classifyCreateInput(withAc([])).kind).toBe('decorated');
+    // An extra key beside the two required ones is not this rule's business.
+    expect(
+      classifyCreateInput(withAc([{ text: 'a', checked: false, note: 'extra' }])).kind,
+    ).toBe('decorated');
+  });
+
+  it('leaves the BARE path untouched: an ABSENT acceptanceCriteria is the bare filing, not a malformed one', () => {
+    // The bare arm requires the field absent, so the shape rule has nothing to
+    // say there — and must not invent something to say. This is the cell that
+    // fails if the guard ever moves ahead of the classification.
+    expect(
+      classifyCreateInput({
+        title: 'Gate 8 ships inert',
+        filingHint: 'gate-8-ships-inert',
+        bodySections: [{ heading: 'Gap', markdown: 'the verify config is never threaded.' }],
+      }),
+    ).toEqual({ kind: 'bare' });
+  });
+
+  it('does NOT reclassify a HALF-WRITTEN Header-Block that happens to carry a malformed acceptanceCriteria', () => {
+    // Deliberate precedence, pinned so it reads as a decision: the guard sits
+    // on the DECORATED arm, after classification, so an input that is already
+    // refused today keeps its existing verdict and its existing error class.
+    // "Your header is half-written" is the coarser, more actionable claim about
+    // such an input, and a consumer routing on `CreateInputError` for it keeps
+    // working. The entry-shape rule still has nothing left to guard: the bare
+    // arm forbids the field and this arm never reaches a write.
+    let caught: unknown;
+    try {
+      classifyCreateInput({
+        title: 'A real slice',
+        filingHint: 'a-real-slice',
+        acceptanceCriteria: ['a bare string criterion'] as unknown as {
+          text: string;
+          checked: boolean;
+        }[],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(CreateInputError);
+    expect((caught as CreateInputError).failure).toBe('header-block-half-written');
+    expect(caught).not.toBeInstanceOf(AcceptanceCriteriaShapeError);
   });
 });
 

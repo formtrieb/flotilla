@@ -21,6 +21,13 @@ import type {
 } from '../contract';
 import type { GoalBlocker, GoalFrontier, GoalMemberState } from '../goal-frontier';
 import { GOAL_MEMBER_STATES } from '../goal-frontier';
+// The acceptance-criteria entry-shape rule (#871/#898). IMPORTED, never
+// re-spelled here: `create` and `annotate` must not be able to disagree about
+// what a valid entry is, and the only way to guarantee that is for both to run
+// the same function body. The edge is one-way and acyclic — `body-codec` imports
+// nothing from this module — and it is read at CALL time, inside
+// `classifyCreateInput`, never at module evaluation.
+import { assertAcceptanceCriteriaShape } from './body-codec';
 
 export type { ClaimRung };
 
@@ -172,6 +179,13 @@ export interface CreateInput {
    * All `checked:false` at creation; serialized as `- [ ]` task-list items.
    * Omit for a BARE create — a bare issue carries NO acceptance-criteria
    * section, rather than an empty one fabricated from nothing.
+   *
+   * Every entry must genuinely BE a `{ text: string, checked: boolean }`
+   * object at runtime. The shorter `["first", "second"]` spelling — which this
+   * annotation forbids but a JSON input file never sees — is REFUSED before
+   * any write (#898), by the same codec predicate `annotate` has refused it
+   * with since #871. Left unrefused it exited 0 having written each criterion
+   * as the four characters `undefined`.
    */
   acceptanceCriteria?: { text: string; checked: boolean }[];
   estimatedWallclock?: string;
@@ -435,6 +449,21 @@ export type CreateShape =
  * half-written header (or a half-written body-section entry) would mint a
  * wave-eligible issue out of a caller bug.
  *
+ * **Also throws — a DIFFERENT class, on purpose (#898).** A DECORATED input
+ * whose `acceptanceCriteria` entries are not `{ text, checked }` objects is
+ * refused with the body codec's
+ * {@link ../body-codec!AcceptanceCriteriaShapeError}, not a
+ * {@link CreateInputError}. That is not an inconsistency to tidy away: the two
+ * rejections answer different questions and a caller routes on them
+ * differently. `CreateInputError` is about the input as a WHOLE — which fields
+ * are present, which is the bare-vs-decorated claim this function exists to
+ * make. The shape error is about ONE field's VALUE, and it is the identical
+ * refusal `annotate` raises for the identical value on all three stores, which
+ * is the entire point of reusing it: minting a second, create-shaped copy of
+ * the rule is exactly how the two verbs would drift apart. A caller that wants
+ * both in one `catch` catches `Error` and reads `name`; the issue-store CLI
+ * narrows on both classes and renders each as the same usage exit (2).
+ *
  * **Why the body requirement lives HERE (#309).** It arrived as a predicate at
  * the issue-store CLI, applied to whatever this function classified as bare —
  * which worked, but left the classifier deciding "this is a bare issue" while
@@ -460,6 +489,33 @@ export function classifyCreateInput(input: CreateInput): CreateShape {
   const missing = HEADER_BLOCK_FIELDS.filter((f) => input[f] === undefined);
 
   if (missing.length === 0) {
+    // #898 — the acceptance-criteria ENTRY-SHAPE rule, on the create side.
+    //
+    // WHY HERE, on the decorated arm specifically. The decorated arm is the
+    // ONLY create path that ever writes `acceptanceCriteria`: the bare arm
+    // requires the field absent (`BARE_MUST_BE_ABSENT`), and any other
+    // combination is already refused as `'header-block-half-written'` below,
+    // before an adapter touches storage. So guarding here closes the whole
+    // reachable surface, and it changes the verdict of no input that is
+    // refused today — a malformed `acceptanceCriteria` on a half-written
+    // header still reads as the half-written header it is, which is the
+    // coarser and more actionable claim about that input.
+    //
+    // It also matches the shape validation this function ALREADY does one arm
+    // over: `validateBareBodySectionsShape` checks the bare arm's own body
+    // field after classification, for the same reason — classification asks
+    // WHICH fields are present, a shape rule asks whether a present value is
+    // usable, and the second question only has an answer once the first is
+    // settled.
+    //
+    // WHY THE PREDICATE IS IMPORTED rather than written here: #871 put this
+    // rule in the body codec and wired it into all three stores' `annotate`;
+    // the point of this call is that `create` now inherits THAT rule, not a
+    // second, possibly laxer one. Placing it in the store-agnostic classifier
+    // (rather than in `serializeBody`, the only lever #871 could reach) is
+    // what makes it fire on `MarkdownFsStore` too, which renders acceptance
+    // criteria locally and never goes through the shared serializer.
+    assertAcceptanceCriteriaShape(input.acceptanceCriteria, 'create');
     return { kind: 'decorated', input: input as DecoratedCreateInput };
   }
 

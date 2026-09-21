@@ -505,3 +505,88 @@ describe('assertAcceptanceCriteriaShape (#871)', () => {
     expect(message.length).toBeLessThan(400);
   });
 });
+
+// ── the rule is CONTEXT-AGNOSTIC — `create` inherits it whole (#898) ─────────
+//
+// #871 wired this predicate into `annotate` on all three stores and left
+// `create` open on purpose: the only lever inside its declared files was
+// `serializeBody`, which `MarkdownFsStore` does not route through, and a guard
+// firing on two stores out of three makes the remaining hole look closed.
+// `create` therefore kept writing `[{"text":"undefined","checked":false}]` for
+// `["a bare string criterion"]` — reproduced three times independently.
+//
+// #898 closes it by calling THIS function from `classifyCreateInput` with the
+// context word `create`. That makes one property load-bearing, and these cells
+// are where it is pinned: the context is the ONLY thing the verb chooses. Every
+// verdict — accept, refuse, which entry, what shape — is identical, because
+// there is one function body and both verbs run it.
+describe('assertAcceptanceCriteriaShape — one rule, two verbs (#898)', () => {
+  /** Every payload the rule has an opinion about, valid and invalid alike. */
+  const PAYLOADS: unknown[] = [
+    undefined, // omitted — bare create / leave-the-checklist-alone annotate
+    [], // explicit empty checklist
+    [{ text: 'first', checked: false }],
+    [{ text: 'x', checked: false, note: 'extra' }],
+    ['a bare string criterion'],
+    [{ text: 'fine', checked: false }, 'a string beside a good one'],
+    [null],
+    [42],
+    [true],
+    [['nested']],
+    [{ checked: false }],
+    [{ text: 123, checked: false }],
+    [{ text: 'no checked flag' }],
+    [{ text: 'x', checked: 'false' }],
+    'not an array at all',
+  ];
+
+  /** The verdict one verb reaches, reduced to something comparable. */
+  function verdictOf(
+    acs: unknown,
+    context: string,
+  ): { threw: false } | { threw: true; field: string; index: number; received: string; tail: string } {
+    try {
+      assertAcceptanceCriteriaShape(acs, context);
+      return { threw: false };
+    } catch (e) {
+      const err = e as AcceptanceCriteriaShapeError;
+      return {
+        threw: true,
+        field: err.field,
+        index: err.index,
+        received: err.received,
+        // the message with its leading context word stripped — what is left
+        // must be byte-identical between the two verbs
+        tail: err.message.slice(`${context}:`.length),
+      };
+    }
+  }
+
+  it('reaches the IDENTICAL verdict under `create` and under `annotate`, for every payload', () => {
+    for (const acs of PAYLOADS) {
+      expect(verdictOf(acs, 'create')).toEqual(verdictOf(acs, 'annotate'));
+    }
+  });
+
+  it('leads the refusal with whichever verb asked, and nothing else changes', () => {
+    expect(() => assertAcceptanceCriteriaShape(['x'], 'create')).toThrow(/^create:/);
+    expect(() => assertAcceptanceCriteriaShape(['x'], 'annotate')).toThrow(/^annotate:/);
+  });
+
+  it('refuses a MISSING `checked` under `create` too — refused, never defaulted', () => {
+    // The inherited strictness ruling, asserted at the create context: a
+    // create-side guard that quietly defaulted `checked` to `false` would be
+    // laxer than the annotate-side one, and the two verbs would disagree about
+    // what a valid entry is while every other cell still passed.
+    let err: AcceptanceCriteriaShapeError | undefined;
+    try {
+      assertAcceptanceCriteriaShape([{ text: 'no checked flag' }], 'create');
+    } catch (e) {
+      err = e as AcceptanceCriteriaShapeError;
+    }
+    expect(err).toBeInstanceOf(AcceptanceCriteriaShapeError);
+    expect(err?.message).toMatch(/^create:/);
+    expect(err?.message).toMatch(/`checked`/);
+    expect(err?.index).toBe(0);
+  });
+});

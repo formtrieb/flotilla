@@ -39,6 +39,14 @@
  *              `bodySections` means the filed issue carries no body at all —
  *              exactly the defect that landed 10/10 disclosure filings with
  *              0 body chars on the tracker.
+ *              An `acceptanceCriteria` entry that is not a
+ *              `{ text: string, checked: boolean }` object is a usage error
+ *              too (exit 2, #898) — the SAME refusal `annotate` gives below,
+ *              from the same codec predicate, so the two verbs cannot
+ *              disagree about what a valid entry is. Left unrefused, `create`
+ *              exited 0 having written each criterion as the four characters
+ *              `undefined`; #871 closed that on `annotate` only, and the
+ *              create half stayed reachable until this.
  *   read     <id>                                  → prints the IssueView (JSON)
  *   parse-ref <id>                                 → prints the IssueRef {slug?, issue} (JSON)
  *   annotate <id> --patch <AnnotatePatch.json>     → decorates an existing issue (ADR-0010); nothing on stdout (a receipt with --json)
@@ -54,7 +62,10 @@
  *              (`assertAcceptanceCriteriaShape`), which all three
  *              shipped stores also call as the first statement of
  *              `annotate`, so a caller reaching `store.annotate`
- *              directly gets the identical refusal.
+ *              directly gets the identical refusal — and which
+ *              `create` above reaches through `classifyCreateInput`
+ *              (#898), so the two verbs share one rule rather than
+ *              two copies of it.
  *   amend    <id> --patch <AmendPatch.json>        → amends title / free-prose sections (ADR-0025); nothing on stdout (a receipt with --json)
  *   transition <id> <queued|in-flight|in-review>   → writes one claim rung; nothing on stdout (a receipt with --json)
  *   unclaim  <id>                                  → drops the claim (queued→available); nothing on stdout (a receipt with --json)
@@ -301,6 +312,9 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
       '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
       '  bare MAY also add (ADR-0044): "blockedBy": [{ "issue": 41 }] — realized natively (no Header-Block written)',
       '  decorated ALSO adds:        "risk", "worker", "files": [...], "blockedBy": "none", "acceptanceCriteria": [...]',
+      '  each acceptanceCriteria entry MUST be a { "text": string, "checked": boolean } object —',
+      '    a bare string ("..." instead of { "text": "..." }) is REFUSED (exit 2), never written',
+      '    as the four characters `undefined` — the identical rule `annotate` applies',
     ],
     outputNote: 'the opaque new id, as plain text (not JSON)',
   }),
@@ -770,10 +784,23 @@ export async function runIssueStore(
         // anything else thrown from the classifier is not a caller-input
         // verdict and must not be laundered into a usage message — it falls to
         // the outer catch as a domain failure (exit 1).
+        //
+        // #898: the classifier ALSO raises the body codec's
+        // `AcceptanceCriteriaShapeError` — a DECORATED input whose
+        // `acceptanceCriteria` entries are not `{ text, checked }` objects.
+        // Two classes, one rendering: both are caller-input verdicts, so both
+        // exit 2 with the `error:` line and this op's own contract block. The
+        // narrowing stays explicit for exactly the reason the comment above
+        // gives — anything NOT one of these two is not a caller-input verdict
+        // and falls through to the outer catch as a domain failure (exit 1).
+        // This is also what keeps `create` and `annotate` indistinguishable to
+        // a caller staring at a malformed criterion: identical predicate,
+        // identical message shape, identical exit code.
         try {
           classifyCreateInput(input);
         } catch (err) {
           if (err instanceof CreateInputError) return usage(err.message, 'create');
+          if (err instanceof AcceptanceCriteriaShapeError) return usage(err.message, 'create');
           throw err;
         }
         const id = await store.create(input);

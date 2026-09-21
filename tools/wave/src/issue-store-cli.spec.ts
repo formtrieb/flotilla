@@ -261,16 +261,21 @@ describe('issue-store-cli', () => {
     expect(code).toBe(2);
   });
 
-  // ── #871 — the malformed-acceptanceCriteria refusal at the CLI boundary ────
+  // ── #871/#898 — the malformed-acceptanceCriteria refusal at the CLI ────────
   //
-  // A patch file is JSON, so the `{ text, checked }[]` type annotation never
-  // runs against it. The shorter `["first", "second"]` spelling looked
-  // reasonable, was refused by nothing, and every renderer's `.text` read
-  // overwrote each criterion with the four characters `undefined` — exit 0,
-  // empty stderr, no undo. Observed live on a Linear store at engine 2.4.0.
-  // The store-parity half lives in the conformance suite; these cases pin the
-  // CLI's own contract: the exit code, the `error:` line, and that the store is
-  // never called at all.
+  // An input or patch file is JSON, so the `{ text, checked }[]` type
+  // annotation never runs against it. The shorter `["first", "second"]`
+  // spelling looked reasonable, was refused by nothing, and every renderer's
+  // `.text` read overwrote each criterion with the four characters `undefined`
+  // — exit 0, empty stderr, no undo. Observed live on a Linear store at engine
+  // 2.4.0. The store-parity half lives in the conformance suite; these cases
+  // pin the CLI's own contract: the exit code, the `error:` line, and that the
+  // store is never called at all.
+  //
+  // The `create` cells (#898) come first below, then the `annotate` ones
+  // (#871), because the two verbs share ONE predicate and the create half is
+  // the one that was still open. Both helpers live here, side by side, for the
+  // same reason: a caller meets the identical refusal whichever verb it typed.
 
   /** Write a patch file carrying `acceptanceCriteria` exactly as given (no typing in the way). */
   function writeAcPatch(acceptanceCriteria: unknown, extra: Record<string, unknown> = {}): string {
@@ -278,6 +283,160 @@ describe('issue-store-cli', () => {
     writeFileSync(p, JSON.stringify({ ...extra, acceptanceCriteria }), 'utf-8');
     return p;
   }
+
+  // ── #898 — the same refusal at `create`, the half #871 deliberately left ──
+  //
+  // #871 closed `annotate` and carved `create` out with a reason: the only
+  // lever inside its declared files was `serializeBody`, which GitHub and
+  // Linear route through and `MarkdownFsStore` does not, so a guard there
+  // would have fired on two stores out of three and made the remaining hole
+  // look closed. `create` therefore kept accepting the bare-string spelling
+  // and reading back `[{"text":"undefined","checked":false}]` — reproduced
+  // three times independently. The store-parity half lives in the conformance
+  // suite; these cases pin the CLI's own contract: the exit code, the `error:`
+  // line, and that no id is minted.
+
+  /** Write an input file carrying `acceptanceCriteria` exactly as given (no typing in the way). */
+  function writeAcInput(acceptanceCriteria: unknown, extra: Record<string, unknown> = {}): string {
+    const p = join(mkdtempSync(join(tmpdir(), 'is-ac-input-')), 'input.json');
+    writeFileSync(p, JSON.stringify({ ...INPUT, ...extra, acceptanceCriteria }), 'utf-8');
+    return p;
+  }
+
+  it('create REFUSES a string-form acceptanceCriteria: exit 2, an error: line naming the field and the shape', async () => {
+    const store = tmpStore();
+
+    captured = '';
+    stderr = '';
+    const code = await runIssueStore(
+      ['create', '--input', writeAcInput(['the criterion text'])],
+      store,
+    );
+
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/^error: /m);
+    expect(stderr).toContain('acceptanceCriteria');
+    expect(stderr).toContain('entry 0');
+    expect(stderr).toContain('string');
+    // it quotes what arrived and says what it prevented
+    expect(stderr).toContain('the criterion text');
+    expect(stderr).toMatch(/undefined/);
+    // the refusal speaks for the verb the caller actually typed
+    expect(stderr).toContain('create:');
+    // nothing on stdout — no id was minted, so there is nothing to print
+    expect(captured).toBe('');
+  });
+
+  it('create refusing a malformed acceptanceCriteria files NOTHING — the store never sees the call', async () => {
+    const store = tmpStore();
+    const before = await store.listOpen('wave-ready');
+
+    const code = await runIssueStore(
+      ['create', '--input', writeAcInput(['a bare string criterion'])],
+      store,
+    );
+    expect(code).toBe(2);
+    expect(captured).toBe('');
+
+    const after = await store.listOpen('wave-ready');
+    expect(after.length).toBe(before.length);
+    for (const view of after) {
+      expect(view.acceptanceCriteria.map((a) => a.text)).not.toContain('undefined');
+    }
+  });
+
+  it('create refuses the other malformed shapes too, each with exit 2', async () => {
+    const store = tmpStore();
+    const malformed: unknown[] = [
+      [null],
+      [42],
+      [{ checked: false }], // object with no `text` — the direct `undefined` vector
+      [{ text: 123, checked: false }],
+      [{ text: 'no checked flag' }], // refused, never defaulted
+      [{ text: 'fine', checked: false }, 'a string beside a good one'],
+      'not an array at all',
+    ];
+    for (const acceptanceCriteria of malformed) {
+      stderr = '';
+      captured = '';
+      const code = await runIssueStore(
+        ['create', '--input', writeAcInput(acceptanceCriteria)],
+        store,
+      );
+      expect(code).toBe(2);
+      expect(stderr).toContain('acceptanceCriteria');
+      expect(captured).toBe('');
+    }
+    expect((await store.listOpen('wave-ready')).length).toBe(0);
+  });
+
+  it('a WELL-FORMED create is unaffected by the refusal (positive control)', async () => {
+    // The over-reach control: the guard must cost a legitimate create nothing —
+    // neither the ordinary object form nor an explicitly empty checklist.
+    const store = tmpStore();
+
+    captured = '';
+    let code = await runIssueStore(
+      [
+        'create',
+        '--input',
+        writeAcInput([
+          { text: 'route registered', checked: false },
+          { text: 'config read back', checked: false },
+        ]),
+      ],
+      store,
+    );
+    expect(code).toBe(0);
+    const id = captured.trim();
+    expect(id.length).toBeGreaterThan(0);
+
+    captured = '';
+    await runIssueStore(['read', id], store);
+    const view = JSON.parse(captured) as IssueView;
+    expect(view.acceptanceCriteria.map((a) => a.text)).toEqual([
+      'route registered',
+      'config read back',
+    ]);
+    // `create` files every criterion unchecked by contract — a pre-existing
+    // property of the create path, not something the refusal introduced.
+    expect(view.acceptanceCriteria.map((a) => a.checked)).toEqual([false, false]);
+
+    captured = '';
+    code = await runIssueStore(
+      ['create', '--input', writeAcInput([], { title: 'Empty checklist' })],
+      store,
+    );
+    expect(code).toBe(0);
+    const emptyId = captured.trim();
+    captured = '';
+    await runIssueStore(['read', emptyId], store);
+    expect((JSON.parse(captured) as IssueView).acceptanceCriteria).toEqual([]);
+  });
+
+  it('a create whose Header-Block is HALF-WRITTEN still reports the half-written header, malformed criteria or not', async () => {
+    // The precedence decision, visible where a caller meets it. The guard sits
+    // on the classifier's DECORATED arm, so an input that is already refused
+    // today keeps its existing message; nothing reaches a write either way.
+    const store = tmpStore();
+    const p = join(mkdtempSync(join(tmpdir(), 'is-ac-half-')), 'input.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        title: INPUT.title,
+        filingHint: INPUT.filingHint,
+        acceptanceCriteria: ['a bare string criterion'],
+      }),
+      'utf-8',
+    );
+
+    stderr = '';
+    captured = '';
+    const code = await runIssueStore(['create', '--input', p], store);
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/Header-Block is half-written/);
+    expect(captured).toBe('');
+  });
 
   it('annotate REFUSES a string-form acceptanceCriteria: exit 2, an error: line naming the field and the shape', async () => {
     const store = tmpStore();
