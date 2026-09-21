@@ -173,59 +173,88 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: **RATCHETED down**, closing the loop the vocabulary wave
- * left open. Row 824 (ADR-0051's canonical-spelling rewrite) raised this
- * ceiling by one full KB — the finest step the whole-KB-boundary rule admits —
- * to fit a +219 B growth it could not apply literally. That row's own
- * iteration-2 review called the raise precautionary rather than load-bearing:
- * the wave closed with the measure 1,002 B under the raised ceiling, headroom
- * nobody was reading, not a budget anyone had spent. This row is that
- * promised ratchet (spine disclosure 824.12, dispositioned here as issue #858).
+ * Why this number: **RAISED by the row that corrects Convention 13's Catalog
+ * entry 2**, in the diff that causes the growth, as the ratchet requires. That
+ * entry named the wrong discriminator — it said a heredoc is refused "only when
+ * a heredoc redirects straight to a file and its body contains `{`/`}`" — and a
+ * field occurrence in wave `2026-09-16-engine-truth-and-verbs` had already
+ * contradicted the redirect half of it. The corrected entry has to carry what 22
+ * live probes established (neither the redirect target nor the tool is part of
+ * the trigger, payload size is not it either, and the positional boundary is not
+ * crisp enough to predict) *and* the remedy a Worker is meant to reach for
+ * instead — the file-editing tool — so it is necessarily longer than the one
+ * sentence it replaces. Everything that is evidence rather than rule went to the
+ * `evidence/` sibling, the class no run reads, which is why the growth is 1,226 B
+ * and not the several KB the probe matrix itself costs.
  *
- * Measured **158,998 B** over 18 files at commit
- * `9e2e237b7759f68ce6a161164783c79476a1a508` (`git rev-parse HEAD` on this
- * row's branch tip, before this row's own edit — the same anchor the
- * vocabulary wave's last reading printed), rounded UP to the next full KB
- * (1 KB = 1000 B): **159,000 B**. That happens to be the value this constant
- * held before row 824's precautionary raise — not a rollback of that raise,
- * but this wave's landed measure rounding to the same boundary.
+ * At anchor commit `b9e3c4201f3d57bd44f49db7ef6649e0261e53eb` (`git rev-parse
+ * HEAD` on this row's branch tip, before this row's own edit) the class measured
+ * **158,309 B** over 18 files — 691 B under the 159,000 B ceiling, not the 2 B
+ * this row's own issue text assumed (that figure was stale by two landings).
+ * This row's single `reference/convention-13-one-bash-call-per-step.md` edit adds
+ * **1,226 B**, landing the class at **159,535 B** over the same 18 files, so the
+ * ceiling moves to that sum rounded UP to the next full KB (1 KB = 1000 B):
+ * **160,000 B**. The 465 B of headroom that leaves is a fact about the rounding
+ * rule, not a budget.
  *
- * Previously: 160,000 B (row 824's precautionary raise, above), and before
- * that 159,000 B — the ADR-0050 wave's own closing ratchet row (#815),
- * measured at 158,779 B on that wave's landed `main` and rounded up the same
- * way. Lowering a ceiling is still free: the next ratchet row takes this back
- * down to its own landed measure.
+ * Previously: 159,000 B — row #858's ratchet to its own landed measure of
+ * 158,998 B, closing the loop row 824 (ADR-0051's canonical-spelling rewrite)
+ * left open when it raised this ceiling precautionarily; before that 160,000 B
+ * (row 824's raise), and before that 159,000 B — the ADR-0050 wave's own closing
+ * ratchet row (#815), measured at 158,779 B on that wave's landed `main` and
+ * rounded up the same way. Lowering a ceiling is still free: the next ratchet row
+ * takes this back down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 159_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 160_000;
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that ships the `models` config key**
- * (ADR-0012 Amendment 2026-09-21), in the diff that causes the growth, as the
- * ratchet requires. That row is the only ceiling raiser of its wave, and it
- * adds operator-facing text in five places: `wave-setup`'s fourth interview
- * concern and the `ModelsConfig` section + `WaveConfig` table row in its
- * reference (the two largest), the corrected human-gate paragraph in
- * `wave-start/reference/workflow-driver.md`, the standing-binding sentence in
- * `wave-start/SKILL.md`, and the un-deferred clause in
- * `wave-start/reference/start-mechanics.md`.
+ * Why this number: **RAISED by the same Convention 13 Catalog correction that
+ * raises the constant above**, in the diff that causes the growth. The shared
+ * standing load is a SUBSET of this population, so the one
+ * `wave-shared/reference/convention-13-one-bash-call-per-step.md` edit moves both
+ * measures by the same bytes and both ceilings ratchet in this one diff — the
+ * reasoning for the edit itself is on that constant and is not repeated here.
+ * The probe matrix that backs it went to the `evidence/` sibling, which this
+ * population excludes by definition and which therefore costs nothing here.
  *
- * At anchor commit `bb8c6af0603d33e9aa06e2900d3feccff0325960` (`git rev-parse
+ * At anchor commit `b9e3c4201f3d57bd44f49db7ef6649e0261e53eb` (`git rev-parse
  * HEAD` on this row's branch tip, before this row's own edit) the population
- * measured **1,219,768 B** over 57 files — 232 B under the 1,220,000 B ceiling
- * row #842 left. This row's own edit measures **1,224,896 B** over the same 57
- * files, +5,128 B, so the ceiling moves to that sum rounded UP to the next full
- * KB (1 KB = 1000 B): **1,225,000 B**. The shared standing load is NOT raised:
- * it measures 158,309 B against its unchanged 159,000 B ceiling (this row's one
- * `wave-shared/SKILL.md` edit costs 133 B of the 824 B that class had free).
+ * measured **1,224,896 B** over 57 files — 104 B under the 1,225,000 B ceiling
+ * the `models`-config row left. This row's own edit adds **1,226 B**, landing the
+ * population at **1,226,122 B** over the same 57 files, so the ceiling moves to
+ * that sum rounded UP to the next full KB (1 KB = 1000 B): **1,227,000 B**.
  * (A self-referential SHA naming this row's own landing commit is not printable
  * here — the hash covers the file's own bytes — so the anchor above is the
  * closest verifiable fixed point.)
  *
- * Previously: 1,220,000 B — row #842's raise, whose own reasoning is kept
- * below (in ITS voice, so "this row" there means #842) because the chain back
- * through #858 to the ADR-0050 wave is what makes each step auditable.
+ * Previously: 1,225,000 B — the `models`-config row's raise, whose own
+ * reasoning is kept below (in ITS voice, so "this row" there means that row)
+ * because the chain back through #858 to the ADR-0050 wave is what makes each
+ * step auditable.
+ *
+ * > Why this number: **RAISED by the row that ships the `models` config key**
+ * > (ADR-0012 Amendment 2026-09-21), in the diff that causes the growth, as the
+ * > ratchet requires. That row is the only ceiling raiser of its wave, and it
+ * > adds operator-facing text in five places: `wave-setup`'s fourth interview
+ * > concern and the `ModelsConfig` section + `WaveConfig` table row in its
+ * > reference (the two largest), the corrected human-gate paragraph in
+ * > `wave-start/reference/workflow-driver.md`, the standing-binding sentence in
+ * > `wave-start/SKILL.md`, and the un-deferred clause in
+ * > `wave-start/reference/start-mechanics.md`.
+ * >
+ * > At anchor commit `bb8c6af0603d33e9aa06e2900d3feccff0325960` the population
+ * > measured **1,219,768 B** over 57 files — 232 B under the 1,220,000 B ceiling
+ * > row #842 left. This row's own edit measures **1,224,896 B** over the same 57
+ * > files, +5,128 B, so the ceiling moves to that sum rounded UP to the next full
+ * > KB: **1,225,000 B**. The shared standing load is NOT raised: it measures
+ * > 158,309 B against its unchanged 159,000 B ceiling (this row's one
+ * > `wave-shared/SKILL.md` edit costs 133 B of the 824 B that class had free).
+ * >
+ * > Previously: 1,220,000 B — row #842's raise, whose own reasoning is kept
+ * > below (in ITS voice, so "this row" there means #842) because the chain back
+ * > through #858 to the ADR-0050 wave is what makes each step auditable.
  *
  * > Row #858 (the ratchet before it) left 54 B of
  * > headroom over its own anchor measure — 1,218,946 B against the 1,219,000 B
@@ -251,11 +280,11 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 159_000;
  * > chain back to the ADR-0050 wave's 1,218,000 B).
  *
  * Lowering a ceiling is still free; the next ratchet row takes this back down
- * to its own landed measure. This raise leaves 104 B of headroom, which is a
+ * to its own landed measure. This raise leaves 878 B of headroom, which is a
  * fact about the rounding rule rather than a budget — the next row that adds
  * reading cost raises again, in its own diff.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_225_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_227_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
