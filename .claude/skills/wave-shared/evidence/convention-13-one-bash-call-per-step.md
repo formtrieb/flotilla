@@ -249,6 +249,106 @@ EOF
 
 This shape's occurrence citation is the same one Entry 3 below carries — both were named in the same disclosure.
 
+### Entry 2, corrected 2026-09-21 — the trigger is a brace near the HEAD of the body, and the redirect is not part of it
+
+**What forced the re-reproduction.** Wave `2026-09-16-engine-truth-and-verbs` produced two field
+occurrences in one wave (spine disclosures `772.4` and row 755 iteration 1): a Worker's large
+`cat >> <spec> <<'EOF'` append was refused, and — for 772 — the identical payload re-issued through
+a `python3 - <<'EOF'` append **that redirects to no file** was refused too, while short `python3 -`
+heredocs doing an in-place `str.replace` ran. The second of those contradicts the entry above, which
+names "redirects straight to a file" as half of its combination. Both Workers recovered through the
+file-editing tool, but each discovered the shape by trial. The entry's own rule — reproduce before
+you write it down — therefore applied to the correction as much as to the original.
+
+**The dispatch.** 22 probes, issue #869, 2026-09-21, from a Worker dispatch with
+`isolation: 'worktree'`. Each probe was its own Bash call with nothing fused onto it, so every
+refusal below is about that one command's own shape.
+
+**The refusal text, verbatim, identical across all eleven refusals** — and note it is NOT the string
+Entry 5 recorded in 2026-08-09, so the harness's own message has been re-worded since:
+
+> This agent is isolated in the worktree \<worktree-path\>, but this command is too complex to verify that it stays inside the worktree. Refusing to run it — a worktree-isolated agent's git operations must target its own worktree. Split it into plain, separate commands and run them from \<worktree-path\>.
+
+(The "git operations" clause is still the boilerplate tail Entries 1 and 5 already noted: no probe
+below ran a git command.)
+
+**The matrix.** "brace at" is the position of the first `{` inside the heredoc BODY (the line after
+the `<<'EOF'` line is body line 1). Byte offsets marked ≈ are computed from the command text; the
+two unmarked ones were measured with `grep -bo '{'` on the file the accepted probe actually wrote.
+
+| # | shape | braces | brace at | body | result |
+|---|---|---|---|---|---|
+| 1 | `cat >> <file> <<'EOF'`, plain prose | no | — | 22 B | accepted |
+| 2 | `cat >> <file> <<'EOF'`, body is one JSON object | yes | line 1 / byte 0 | 46 B | **refused** |
+| 3 | `cat >> <file> <<'EOF'`, long brace-free prose | no | — | 3,309 B | accepted |
+| 4 | `python3 - <<'EOF'`, 4-line in-place `str.replace` | no | — | ~150 B | accepted |
+| 5 | `python3 - <<'EOF'`, a dict literal on body line 1 | yes | line 1 / byte 0 | ~75 B | **refused** |
+| 6 | `PATCH="$(cat <<'EOF' … EOF)"`, the same JSON object | yes | line 1 / byte 0 | 46 B | accepted |
+| 7 | `cat <<'EOF'` to **stdout, no redirect at all** | yes | line 1 / byte 0 | 46 B | **refused** |
+| 8 | `cat >> <file> <<'EOF'`, markdown `- [ ]` / `- [x]` checkboxes | no (square) | — | 97 B | accepted |
+| 9 | `cat >> <file> <<'EOF'`, backticked commands and a `**` glob | no | — | 134 B | accepted |
+| 10 | `python3 - <<'EOF'`, interpreter does the append, **no redirect** | no | — | 1,838 B payload | accepted |
+| 11 | `echo '{ "sections": { … } }'` — braces, **no heredoc** | yes | n/a | 50 B | accepted |
+| 12 | `printf '%s' "$PATCH" > <file>` — a `$VAR` expansion | no | — | — | accepted |
+| 13 | `cat >> <file> <<'EOF'`, prose with one brace pair mid-body | yes | line 15 / byte 858 | 1,537 B | accepted |
+| 14 | probe 2 re-run verbatim | yes | line 1 / byte 0 | 46 B | **refused** |
+| 15 | `cat >> <file> <<'EOF'`, one line: prose then the brace pair | yes | line 1 / ≈35 B | 83 B | **refused** |
+| 16 | probe 13's long body with the brace pair moved to body line 1 | yes | line 1 / ≈35 B | ~1,000 B | **refused** |
+| 17 | `cat >> <file> <<'EOF'`, six prose lines, blank, brace pair | yes | line 8 / byte 475 | 524 B | accepted |
+| 18 | `cat >> <file> <<'EOF'`, three prose lines, blank, brace pair | yes | line 5 / ≈160 B | ~240 B | **refused** |
+| 19 | `cat >> <file> <<'EOF'`, ONE ~800-B line, then the brace pair | yes | line 2 / ≈800 B | ~880 B | **refused** |
+| 20 | `cat >> <file> <<'EOF'`, five short padding lines, brace pair | yes | line 6 / ≈265 B | ~345 B | **refused** |
+| 21 | same, six padding lines | yes | line 7 / ≈318 B | ~400 B | **refused** |
+| 22 | same, seven padding lines | yes | line 8 / ≈370 B | ~450 B | **refused** |
+
+**What the matrix establishes.**
+
+- **The redirect target is not part of the trigger.** Probe 7 refused with no redirect at all and
+  probe 5 refused through an interpreter reading stdin, against probe 2's file redirect — same body,
+  three destinations, one answer. This is the half of the old entry that was wrong, and it is the
+  half the field's `python3 -` occurrence had already contradicted.
+- **The tool is not part of it either** — `cat` and `python3` both refused (probes 2, 5, 7) and both
+  ran (probes 1, 3, 4, 8, 9, 10).
+- **Size is not the discriminator.** A 3,309-B brace-free append ran (probe 3), as did a 1,838-B
+  brace-free interpreter append (probe 10), while a 46-B brace-bearing body refused (probes 2, 14).
+  The field's "large appends were refused" reads as a correlation, not the cause. **What is NOT
+  excluded:** this dispatch never put a brace-free body larger than 3,309 B in front of the guard, so
+  a size threshold somewhere above that is untested, not ruled out.
+- **The heredoc matters.** The same braces in a plain single-quoted argument ran (probe 11).
+- **"Near the head" has no crisp threshold, and that is the operative finding.** Both accepted
+  brace-bearing probes (13, 17) sit at or past body line 8 *and* past 475 B; every refusal falls
+  short on at least one of the two — probe 22 at line 8 but ≈370 B, probe 19 at ≈800 B but line 2.
+  Two accepted points are far too few to establish a conjunction. What they do establish is the
+  negative: **no single-factor threshold fits, so a brace-bearing heredoc cannot be judged safe from
+  its own text.** A shape whose refusal you cannot predict is one you stop reaching for.
+
+**The remedy, and why it is not "a better heredoc".** Write the content with the file-editing tool.
+It takes the path directly, creates the parent directory, involves no shell at all, and no occurrence
+on record has it refused — including the two field occurrences, where both Workers recovered through
+exactly that surface. The driver's `workerBrief()` policy clause 11 now names it for every content
+write rather than only inside the sidecar-write step, which is the whole point of this correction:
+the field cost was two Workers each discovering the working surface by trial.
+
+**Probe 6 is an accepted brace shape and still a dead end.** Capturing the heredoc through a command
+substitution (`PATCH="$(cat <<'EOF' … EOF)"`) was accepted here, exactly as the original entry
+recorded — but what it produces is a shell variable, and a value cannot be carried from one Bash call
+to the next at all (see "Splitting is not always a preceding `cd`"). It buys a capture you cannot
+spend.
+
+**One out-of-scope observation, recorded but NOT adopted.** Probe 12 — `printf '%s' "$PATCH" > <file>`,
+a `$VAR` expansion in a plain argument position — was **accepted** in this dispatch. Entry 1 states
+that any `$VAR` expansion is refused in any position from an `isolation: 'worktree'` dispatch, and
+this single datapoint does not reproduce that. Entry 1 is explicitly out of this row's scope, so it
+is left exactly as it stands: one probe, in a non-guard position, against a variable that was already
+unset, is not grounds to relax a rule that three stations of Entry 1's own arc established — and the
+harness message re-wording noted above is a reminder that this guard's behaviour drifts between
+versions. **A follow-up that re-runs Entry 1's five stations against the current harness is what would
+settle it.** Until then, keep following Entry 1.
+
+**Occurrence:** wave `2026-09-16-engine-truth-and-verbs`, spine disclosures `772.4` and row 755
+iteration 1, carved out of issue #800 at triage on 2026-09-21 and re-reproduced at issue #869's own
+dispatch.
+
 ### Entry 3 — heredoc commit message, full reproduction
 
 ```bash
