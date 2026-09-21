@@ -63,6 +63,9 @@ export const meta = {
 // both halves — no top-level combinator, AND every other property deep-equals the engine
 // const modulo exactly that stripped anyOf, so a content drift here (e.g. a lost minLength)
 // fails loud too.
+// 2026-09-21: the vendor's docs list minLength/minimum under "Not supported" and name
+// neither list for root if/then — measured 2026-08-14 only, not re-measured since
+// (ADR-0034's 2026-09-21 sub-note).
 const WORKER_REPORT_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['outcome','issue','branch','commitShas','filesChanged','tests','lint','judgmentCalls','reviewerFocusItems'],
@@ -82,6 +85,9 @@ const WORKER_REPORT_SCHEMA = {
 }
 
 // ── inlined from wave-shared (copy of REVIEWER_VERDICT_SCHEMA — uniform Reviewer: NO briefProfile) ──
+// 2026-09-21: the vendor's docs list minLength/minimum under "Not supported" and name
+// neither list for root if/then — measured 2026-08-14 only, not re-measured since
+// (ADR-0034's 2026-09-21 sub-note).
 const REVIEWER_VERDICT_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['verdict','branchReviewed','riskClass','workerReportDigest','acVerification','reviewerFocusItems'],
@@ -111,6 +117,9 @@ const REVIEWER_VERDICT_SCHEMA = {
     // placement decision, never a cue to "fix" it into a root if/then.
     // `sources` minItems:1 is the STRUCTURAL half of the no-restatement rule:
     // a comparison must cite a document the Reviewer read itself.
+    // 2026-09-21: the vendor's docs list minLength/minimum under "Not supported" and name
+    // neither list for root if/then — measured 2026-08-14 only, not re-measured since
+    // (ADR-0034's 2026-09-21 sub-note).
     documentedFormComparison: {
       type: 'object', additionalProperties: false,
       required: ['trigger','sources','divergences'],

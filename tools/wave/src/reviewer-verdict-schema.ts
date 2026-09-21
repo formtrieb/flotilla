@@ -201,6 +201,12 @@ export interface ReviewerVerdict {
    *
    * Absent on the common case: a row whose core path is executable fires no
    * trigger and pays nothing.
+   *
+   * **2026-09-21 —** the vendor's own docs neither list nor exclude a root
+   * `if`/`then` (it names neither its supported nor its unsupported list) and
+   * separately list `minLength`/`maxLength` under "Not supported" while this
+   * repo measures `minLength: 1` enforced — both measured 2026-08-14 only, not
+   * re-measured since (ADR-0034's 2026-09-21 sub-note).
    */
   documentedFormComparison?: DocumentedFormComparison;
 }
@@ -494,6 +500,9 @@ export const REVIEWER_VERDICT_JSON_SCHEMA = {
     // a boundary-forced one. `sources` is `minItems: 1` — that is the
     // structural half of the no-restatement rule: a comparison must cite at
     // least one document the Reviewer read in its own dispatch.
+    // 2026-09-21: the vendor's docs list minLength/minimum under "Not supported" and name
+    // neither list for root if/then — measured 2026-08-14 only, not re-measured since
+    // (ADR-0034's 2026-09-21 sub-note).
     documentedFormComparison: {
       type: 'object',
       additionalProperties: false,
