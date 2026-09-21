@@ -43,7 +43,7 @@ const AC_LINE = /^- \[([ xX])\]\s*(.*)$/;
 /** `##` section names this codec owns — a free `bodySections` heading must not collide. */
 const RESERVED_SECTIONS = ['files', 'blocked by', 'unblocks', 'acceptance criteria'];
 
-// ─── the acceptance-criteria ENTRY-SHAPE rule (#871) ────────────────────────
+// ─── the acceptance-criteria ENTRY-SHAPE rule (#871, extended to create #898) ─
 //
 // Lives HERE, in the codec, for the same reason the reserved-heading rejection
 // does (`upsertSection`): a rule the codec owns fires identically on all three
@@ -59,6 +59,21 @@ const RESERVED_SECTIONS = ['files', 'blocked by', 'unblocks', 'acceptance criter
 // truth, so a row whose criteria all read `undefined` has no standard left to
 // check anything against. The sibling verb `write-report` already refuses
 // invalid input outright; this is that same stance, one field over.
+//
+// **Both writing verbs, one predicate (#898).** #871 wired this into `annotate`
+// only, deliberately: the lever reachable from inside its declared files was
+// `serializeBody`, which GitHub and Linear route through and `MarkdownFsStore`
+// does not — a half-guard firing on two stores out of three is worse than a
+// uniform gap, because it makes the remaining hole look closed. So the `create`
+// half was carved out and filed, and the corruption stayed reachable through it
+// (reproduced three times independently: a `create` carrying
+// `["a bare string criterion"]` returned normally and read back
+// `[{"text":"undefined","checked":false}]`). #898 closes it at the ONE seam
+// every adapter's `create()` already runs first — `classifyCreateInput` in
+// `./issue-store` — calling THIS predicate with the context word `create`.
+// That is the whole reason the rule is a free function taking its own context
+// rather than an `annotate`-shaped method: `create` and `annotate` cannot
+// disagree about what a valid entry is, because there is only one of it.
 
 /**
  * The typed rejection {@link assertAcceptanceCriteriaShape} throws.
@@ -105,14 +120,23 @@ function preview(value: unknown): string {
  * Refuse an `acceptanceCriteria` payload whose entries are not
  * `{ text: string, checked: boolean }` objects — BEFORE anything is written.
  *
- * An ABSENT field (`undefined`) is not malformed: on an {@link ../issue-store!AnnotatePatch}
- * it means "leave the existing checklist alone", which is the ordinary decorate
- * case. `[]` is likewise well-formed — an explicit, empty checklist.
+ * An ABSENT field (`undefined`) is not malformed, and it means something
+ * different — but equally legitimate — at each of the two verbs that call this:
+ * on an {@link ../issue-store!AnnotatePatch} it means "leave the existing
+ * checklist alone" (the ordinary decorate case), and on a
+ * {@link ../issue-store!CreateInput} it means the BARE filing path (ADR-0027),
+ * which carries no acceptance-criteria section at all rather than an empty one
+ * fabricated from nothing. `[]` is likewise well-formed at both — an explicit,
+ * empty checklist. Everything else is refused identically, because the entry
+ * shape is one rule and this is its one implementation (#898).
  *
  * @param acs      the payload as it arrived — deliberately `unknown`, because the
  *                 whole defect is that the declared type was not what showed up.
- * @param context  the verb the refusal speaks for (`annotate`), so the message
- *                 names the call the caller actually made.
+ * @param context  the verb the refusal speaks for — `'create'` or `'annotate'`,
+ *                 the only two callers — so the message names the call the
+ *                 caller actually made. It is the ONLY thing that differs
+ *                 between the two verbs' refusals: same predicate, same
+ *                 message shape, one leading word apart.
  * @throws {AcceptanceCriteriaShapeError} naming the field, the entry index, and
  *                 the shape received.
  */
