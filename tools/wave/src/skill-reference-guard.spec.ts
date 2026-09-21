@@ -338,6 +338,75 @@ const INVOCATION_FORM_PATTERNS: ReadonlyArray<{ readonly label: string; readonly
 const FORM_RANKING_LANGUAGE =
   /\bdual[- ]form\b|\bcanonical\b|\bfall(?:s|en)?\s+back\b|\bfallbacks?\b|\bfirst\b|\bsecond\b|\botherwise\b|\bif that fails\b|\beither form\b|\bboth forms?\b|\bboth reach\b|\bwhichever form\b|\bprefer(?:s|red)?\b/i;
 
+// ─── Guard declaration (ADR-0052) ────────────────────────────────────────────
+
+/**
+ * **Subject.** Every markdown file under `.claude/skills/` and
+ * `.claude/agents/`, read as text by four separate regex extractors: anchored
+ * link targets, inline-code spans naming a clone-root path, sections whose
+ * heading names the engine binding, and ADR/retro/finding citation tokens in
+ * `SKILL.md` bodies.
+ *
+ * **Resolution bias — BLOCKS, and it is the one guard in this family that
+ * blocks on a shape it admits it cannot read.** The live occurrence is
+ * {@link verifyAnchorFragment}: a `#fragment` whose target file resolves but
+ * sits outside this guard's own population is judged `'out-of-scope'` and
+ * FAILS, because there is nothing here to verify it against and trusting an
+ * anchor never inspected is the silent pass the class was written to close.
+ * {@link slugifyHeading} takes the same direction at its own boundary — a
+ * heading carrying a non-ASCII letter slugs shorter here than GitHub's real
+ * anchor, so a genuinely correct link into it fails rather than passing
+ * unverified.
+ *
+ * The reason is what a reference IS. A dead pointer is invisible to the
+ * person who wrote it — it resolves on their disk, in their editor, at the
+ * moment they check it — and it fails at exactly one moment: a consumer,
+ * mid-task, following it. There is no later reader who catches it. So an
+ * unverifiable reference is reported as a dead one, and the widening that
+ * makes it verifiable (adding a tree to `SKILL_DIRS`) is a deliberate, loud
+ * edit rather than a silent exemption carved out at the call site. The cost
+ * is accepted and bounded: false refusals here land on a maintainer at
+ * `npm test`, with the file, the line and the target named.
+ *
+ * TWO carve-outs resolve the other way, and both are DECIDED passes with a
+ * paired assertion behind them rather than non-verdicts: a CONSUMER-SCAFFOLD
+ * path is a subject the documentation talks about, absent from this clone by
+ * construction ({@link CONSUMER_SCAFFOLD_PAIRS}, self-policing in both
+ * directions), and a `RUNTIME_ARTIFACT_PREFIXES` path names a gitignored
+ * runtime artifact a clone does not carry. Neither lives as a marker in the
+ * prose: the checked text never carries its own exemption (ADR-0043).
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **Markdown grammar.** The extractors are regexes over lines. Fenced
+ *     code is NOT stripped for class (a) — the grill-with-docs worked example
+ *     lives inside a fence and is exactly the kind of reference the allowlist
+ *     exists for — while {@link extractHeadingTexts} and
+ *     {@link extractCitations} DO track fences. Reference-style links,
+ *     HTML anchors, and a link target split across a line break are read by
+ *     nothing here.
+ *  2. **References that are not file-relative.** A URL (any `scheme:`
+ *     prefix), an absolute path, and a fragment-only link are out of class
+ *     (a) by construction. Nothing checks that a URL resolves.
+ *  3. **Non-ASCII slug content.** {@link slugifyHeading} implements a
+ *     documented ASCII SUBSET of GitHub's algorithm rather than embedding
+ *     GitHub's Unicode-punctuation table. No heading in the guarded corpus
+ *     exercises the boundary today, and the boundary fails closed when one
+ *     does.
+ *  4. **Path spellings the character classes exclude.** {@link BARE_PATH}
+ *     rejects any code span carrying a space, a `<…>` placeholder, a `$` or a
+ *     glob — a command fragment and a template are not citations. A real path
+ *     written that way is therefore not checked.
+ *  5. **Whether a resolving reference is the RIGHT one.** Existence is the
+ *     whole predicate for classes (a) and (b): a link that resolves to the
+ *     wrong document passes. Class (d) asks about PLACEMENT, not about
+ *     whether the citation is apt.
+ *  6. **Prose meaning in class (c).** The binding check is a sentence-level
+ *     regex pass over a resolution block — it can see that the block names
+ *     `engine.cli`, names the config, says what an absent binding means, and
+ *     ranks no invocation form. It cannot see whether the block is correct.
+ */
+
 // ─── extraction ─────────────────────────────────────────────────────────────
 
 interface Reference {
@@ -442,8 +511,7 @@ function resolveAnchoredLink(ref: Reference): boolean {
  * UNEXERCISED boundary, not a known-wrong case: a heading that does someday
  * carry such a character would slug SHORTER here than GitHub's real anchor,
  * so a genuinely correct link into it FAILS this check rather than silently
- * passing. The guard fails CLOSED at the boundary, never open — an
- * unverifiable slug reads as a dead one, not as a skip.
+ * passing — the declared resolution bias above, at its own boundary.
  */
 function slugifyHeading(rawHeadingText: string): string {
   const labelOnly = rawHeadingText.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
@@ -496,9 +564,8 @@ type AnchorFragmentVerdict = 'no-fragment' | 'ok' | 'dead' | 'out-of-scope';
  * dead-path predicate above already proved that) but which sits OUTSIDE that
  * population — an ADR, a retro, `CONTEXT.md`, anything this guard has never
  * read the headings of — is judged `'out-of-scope'` and treated as a FAILURE
- * by the assertion below, never silently skipped: this guard has nothing to
- * verify such a fragment against, and trusting an anchor it never inspected
- * is exactly the silent pass this row exists to close. Widening the guarded
+ * by the assertion below, never silently skipped. That is the declared
+ * resolution bias above, and its live occurrence. Widening the guarded
  * population to cover a real future case is a deliberate, loud edit to
  * `SKILL_DIRS` — not a silent exemption carved out here.
  */

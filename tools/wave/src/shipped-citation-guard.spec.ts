@@ -253,6 +253,80 @@ const REPO_ROOT = join(__dirname, '..', '..', '..');
 const SOURCE_EXTENSIONS = ['.ts', '.cjs', '.mjs', '.js'];
 
 // ---------------------------------------------------------------------------
+// Guard declaration (ADR-0052)
+// ---------------------------------------------------------------------------
+
+/**
+ * **Subject.** Path-shaped text in two artifacts: the refusal a shipped hook
+ * prints when run out of a freshly packed tarball (rule 1), and the
+ * COMMENT LINES of every shipped source in that tarball plus every spec file
+ * in `src/` (rules 2–5), read line by line with regexes.
+ *
+ * **Resolution bias — PASSES.** Every rule here is triggered by recognizing a
+ * SHAPE. Text this file's extractors do not recognize as a citation produces
+ * no candidate and is never judged: a `.claude/…` reference with no `.md`
+ * suffix, a pointer whose label falls outside {@link HEADER_POINTER}'s
+ * character class, a prose citation using neither of
+ * {@link CANONICAL_CITATION_TRIGGER}'s two phrases. The direction is chosen
+ * for this subject and is the opposite of the two scaffold guards' in the
+ * same family.
+ *
+ * The reason is what a false refusal would COST here. The repair a failure
+ * demands is not "add the missing entry" but "delete or re-point this
+ * sentence", and the person holding that failure is a maintainer editing
+ * unrelated prose in a shipped source. A rule that fired on text merely
+ * SHAPED like a citation would push them to mutilate a working sentence, or
+ * worse, working code: `worktree-cleanup.ts`'s `.claude/loop.md` is a
+ * functional path constant naming a harness-owned file that is absent here by
+ * design, and the comment-line classifier exists precisely so a demand to
+ * "fix" it is never made. Rule 2's second sanctioned repair — name the
+ * subject in words instead of re-spelling the path — is the same bias stated
+ * as a remedy: a citation with no path in it has nothing to find, and that is
+ * the intended pass.
+ *
+ * What makes the bias affordable rather than reckless is that it is paired
+ * with population FLOORS. Each rule asserts its extractor still found
+ * something (`checked > 0`, `sources.length > 20`, `specFiles().length > 20`)
+ * and the tarball halves fail LOUD rather than skipping when `npm pack` or
+ * `tar` does not run. A guard that resolves toward passing must at minimum
+ * prove it read anything at all, or its green is indistinguishable from its
+ * silence.
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **Everything outside a comment line.** {@link isCommentLine} admits a
+ *     line whose first non-space characters are `*`, `/*` or `//`, and
+ *     nothing else. A citation inside a string literal, a template literal, a
+ *     markdown file, a JSON asset or a trailing `code(); // see foo.md`
+ *     comment that does not START the line is not read. This is the
+ *     load-bearing exclusion, not an accident of the regex.
+ *  2. **Markdown and JavaScript grammar.** Every extractor is a per-line or
+ *     per-window regex. It does not know a fence from prose, a doc-comment
+ *     from a commented-out block of code, or an escaped character from a real
+ *     one — the one structural concession is rule 5's scan window, which
+ *     stops at a blank `*` line or the comment's close.
+ *  3. **Path spellings the character classes exclude.** A target carrying a
+ *     space, a `<placeholder>` segment, a `$` or a glob never satisfies
+ *     {@link MD_PATH_TOKEN} or {@link HEADER_POINTER}. That is deliberate — a
+ *     paragraph illustrating a tree's SHAPE is not a citation of a document
+ *     in it — and it means a genuinely dead path written that way is not
+ *     seen.
+ *  4. **Non-`.md` documents.** Rules 2, 3 and 5 all require a `.md` target.
+ *     A dead pointer at a `.json`, a `.ts` or a directory resolves to no
+ *     candidate.
+ *  5. **Whether a resolving citation is form-DEPENDENT.** Only rule 1's
+ *     emitted text is held to travel across the distribution boundary. An
+ *     inert doc-comment citing `.claude/agents/wave-reviewer.md` is required
+ *     to be TRUE, never to be form-neutral, and a crash message
+ *     interpolating an OS error string is outside rule 1 by the same
+ *     reasoning: the path in it was never a citation this repo wrote down.
+ *  6. **This file itself, from rule 4.** A guard cannot be its own subject:
+ *     its fixtures plant dead citations on purpose and its prose must name
+ *     the absent paths whose absence it asserts. The exemption is one named
+ *     file and a control below pins that it stays one.
+ */
+
+// ---------------------------------------------------------------------------
 // Rule 1 — form-dependent paths
 // ---------------------------------------------------------------------------
 

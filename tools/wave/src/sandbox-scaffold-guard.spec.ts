@@ -72,6 +72,59 @@ const SETUP_MECHANICS_PATH = join(
   '.claude/skills/wave-setup/reference/setup-mechanics.md',
 );
 
+// ─── Guard declaration (ADR-0052) ────────────────────────────────────────────
+
+/**
+ * **Subject.** Two structured texts and nothing else: the `sandbox` block of
+ * the tracked `.claude/settings.json` (read JSONC-tolerantly) and the
+ * `needs.writes` / `needs.network` entries of a `wave.config.json`'s verify
+ * commands (read through the real `loadWaveConfig()` loader).
+ *
+ * **Resolution bias — BLOCKS.** Parity is a two-way set comparison, so there
+ * is no shape this guard reads and then cannot decide about: what it can read
+ * it compares exactly, and what it cannot read it throws on — a settings file
+ * that will not parse takes the suite down rather than yielding an empty
+ * block. That direction is chosen for this subject specifically, because the
+ * thing being reconciled is a SANDBOX GRANT. An entry that quietly disappears
+ * from one side of the comparison is either a capability nobody declared
+ * (direction 2's unexplained grant) or a declared need with no grant behind
+ * it, which surfaces mid-dispatch as a permission refusal nobody is awake to
+ * answer. Both are silent; a red `npm test` in front of the author is not.
+ *
+ * TWO absences are DECIDED passes rather than non-verdicts, and both are
+ * facts this guard knows rather than shapes it failed to read: a missing
+ * `sandbox` key means a consumer with no `writes`/`network` needs
+ * ({@link extractSandboxWrites}, {@link extractSandboxNetwork}), and a
+ * missing `wave.config.json` is this repo's own gitignored-config layout
+ * ({@link extractDeclaredNeeds}, CONTEXT.md `### Distribution`). Both live
+ * halves are therefore legitimately empty here, which is why the real
+ * predicate is also exercised against fixtures built through the same loader.
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **`needs.host`, deliberately and by construction.** It is never read
+ *     into the parity computation at all — not because the reader cannot see
+ *     it, but because ADR-0049 decision 3 says it has no representation in
+ *     the tracked file. The "host is never representable" describe block
+ *     below is the assertion that keeps this an unmodelled set of ONE named
+ *     member rather than an oversight.
+ *  2. **The MEANING of an entry.** Both sides are compared as opaque strings.
+ *     `~/Library/Caches` and `$HOME/Library/Caches` are two entries, a
+ *     trailing slash is a different entry, and a broader grant that already
+ *     covers a narrower declared need still reads as `missingFromBlock`.
+ *     Nothing here resolves, normalizes or subsumes a path or a domain.
+ *  3. **Every other key in `.claude/settings.json`.** `permissions.*` is
+ *     allowlist-scaffold-guard.spec.ts's subject; `env`, `hooks`,
+ *     `enabledPlugins` and the rest are read by nothing here. A capability
+ *     granted through one of those is invisible to this parity check.
+ *  4. **JSONC beyond comments.** {@link stripJsonComments} tolerates line and
+ *     block comments outside string literals and nothing further; any other
+ *     JSON5-ism throws, per the blocking bias above.
+ *  5. **`settings.local.json`, user-level and managed settings.** Only the
+ *     repo's tracked file is read, so a sandbox grant held elsewhere is
+ *     outside this guard's sight entirely.
+ */
+
 // ─── JSONC-tolerant parse (same parser constraint as allowlist-scaffold-guard.spec.ts) ──
 
 /**
@@ -136,15 +189,14 @@ interface LiveSettings {
   };
 }
 
-/** `sandbox.filesystem.allowWrite`, or `[]` when the key/block is absent —
- * absence is the ordinary, expected state for a consumer with no `writes`
- * needs declared anywhere. */
+/** `sandbox.filesystem.allowWrite`, or `[]` when the key/block is absent (the
+ * declared-pass absence above). */
 function extractSandboxWrites(settings: LiveSettings): string[] {
   return settings.sandbox?.filesystem?.allowWrite ?? [];
 }
 
 /** `sandbox.network.allowedDomains`, or `[]` when the key/block is absent —
- * same absence-is-ordinary reasoning as {@link extractSandboxWrites}. */
+ * same declared-pass absence. */
 function extractSandboxNetwork(settings: LiveSettings): string[] {
   return settings.sandbox?.network?.allowedDomains ?? [];
 }
@@ -160,18 +212,14 @@ interface DeclaredNeeds {
  * The `writes`/`network` needs declared across every verify command in a
  * `wave.config.json`, deduplicated — read through the REAL
  * {@link loadWaveConfig} loader, never a restated copy of `VerifyCommand`'s
- * shape. Absence of the file is a valid, expected state (this repo's own
- * dogfood config lives at the gitignored `.flotilla/wave.config.json`, never
- * tracked at the repo root — the identical situation
+ * shape. Absence of the file contributes zero needs rather than throwing —
+ * the declared-pass absence above, the identical situation
  * allowlist-scaffold-guard.spec.ts's own `extractWaveConfigVerifyCommands`
- * handles) and contributes zero needs rather than throwing.
+ * handles.
  *
- * `cmd.needs?.host` is deliberately NEVER read here. That is not an oversight
- * this function happens to have — it is the whole point of the "host is
- * never representable" describe block below: `host` cannot be narrowed to a
- * path or a host, so there is nothing for a `writes`/`network` parity check
- * to hold it against, and folding it in here would silently invent a
- * representation ADR-0049 decision 3 says must not exist.
+ * `cmd.needs?.host` is deliberately NEVER read here — member 1 of the
+ * unmodelled set above, and the subject of the "host is never representable"
+ * describe block below.
  */
 function extractDeclaredNeeds(path: string): DeclaredNeeds {
   if (!existsSync(path)) return { writes: [], network: [] };

@@ -122,18 +122,10 @@
  *
  * ## What this guard cannot do
  *
- * It cannot tell whether a description is *good*. "Does this sentence help a
- * stranger" is a judgement, and the runtime speech behaviour it belongs to
- * stays prose by decision. What is structurally checkable, and all that is
- * claimed here, is that no internal token reaches the listing, no trigger
- * phrase was lost on the way, and the register is the one the platform asks for.
- *
- * It also cannot observe **selection**. Whether the harness still picks each
- * skill when a person types its trigger phrase is only visible in a live
- * session, and no amount of file reading substitutes for that. Tier 3 is the
- * strongest proxy available from here — it proves the matched text survived —
- * and the live check stays deliberately outside this file, with the operator.
- * Nothing in this spec should grow into an attempt to fake it.
+ * Declared as its **Unmodelled set** in the Guard declaration below, beside
+ * the resolution bias that says where an unfamiliar shape lands. The two
+ * largest members: it cannot tell whether a description is *good*, and it
+ * cannot observe **selection**.
  *
  * Every predicate has a negative control beside it (wave-shared Convention 11),
  * and the strongest of them are not invented: they are the descriptions AS THEY
@@ -167,6 +159,66 @@ const REVIEWER_AGENT_REL = '.claude/agents/wave-reviewer.md';
  * that ritual, bumping this const from 14.
  */
 const DESCRIBED_SURFACE_COUNT = 15;
+
+// ─── Guard declaration (ADR-0052) ────────────────────────────────────────────
+
+/**
+ * **Subject.** One line per described surface: the `description:` value in
+ * the YAML frontmatter of every skill's `SKILL.md` and of the Reviewer agent
+ * file — read twice over the SAME bytes, once by the hand extractor below and
+ * once by a real YAML parser, and then matched against id patterns, a
+ * stop-list, the trigger phrases and a point-of-view rule.
+ *
+ * **Resolution bias — BLOCKS.** {@link readFrontmatterDescription} throws on
+ * every shape it was not taught: no frontmatter, no `description:` key, an
+ * empty value, a folded or literal scalar, a value continuing onto an
+ * indented line, an unterminated quoted scalar, a lone apostrophe inside
+ * single quotes, an undecodable backslash escape. None of those return a
+ * partial string.
+ *
+ * The reason is arithmetic about this subject. Every tier below is a
+ * predicate over one string, and an extractor that degrades to `''` on an
+ * unfamiliar shape does not fail one tier — it satisfies ALL of them
+ * vacuously, in silence, on the one line a consumer reads before anything in
+ * this repository has had a chance to explain itself. That is not a
+ * hypothetical failure mode: this corpus stayed green for a hundred waves
+ * while five descriptions were not valid YAML at all, because the hand reader
+ * was lenient in exactly the way the runtime is. Tier 5 exists to catch a
+ * silent divergence between the two readers, so the hand reader is forbidden
+ * to manufacture one. The cost is that a legitimately multi-line description
+ * turns the suite red until someone teaches the extractor the new shape —
+ * which is the intended bargain, and the error messages say so.
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **Tomorrow's internal coinage.** Tier 2 is a curated stop-list and is
+ *     therefore incomplete BY CONSTRUCTION — see the VOCABULARY TRADEOFF note
+ *     on {@link INTERNAL_VOCABULARY} for why the alternative is worse and
+ *     what widening the list obliges. This guard will be green while a
+ *     stranger reads a word that means nothing to them.
+ *  2. **Whether a description is any GOOD.** "Does this sentence help a
+ *     stranger" is a judgement. All that is claimed here is that no internal
+ *     token reaches the listing, no trigger phrase was lost, and the register
+ *     is the one the platform asks for.
+ *  3. **SELECTION.** Whether the harness still picks each skill when a person
+ *     types its trigger phrase is visible only in a live session. Tier 3 is
+ *     the strongest proxy reachable from a file read — it proves the matched
+ *     text survived — and the live check stays deliberately with the
+ *     operator. Nothing in this spec should grow into an attempt to fake it.
+ *  4. **YAML beyond a single-line scalar.** The hand reader decodes plain,
+ *     single-quoted and double-quoted single-line styles and nothing else;
+ *     anchors, tags, multi-line scalars and flow collections are shapes it
+ *     refuses rather than reads. Tier 5's strict parser sees the whole
+ *     document, but only `description` is compared.
+ *  5. **Every other frontmatter field, and the body.** `name`, the
+ *     allowed-tools key and the prose under the frontmatter are read by
+ *     nothing here.
+ *  6. **What the harness actually renders.** The listing is assumed to be the
+ *     `description` value; no part of this file observes the rendered
+ *     listing, and the platform's own validator is explicitly NOT borrowed as
+ *     a check — it changed its verdict on this corpus inside one patch
+ *     version.
+ */
 
 // ─── reading the surface ─────────────────────────────────────────────────────
 
@@ -286,9 +338,8 @@ function decodeSingleLineScalar(raw: string, label: string): string {
  *
  * Throws rather than returning `null` on every unexpected shape — no
  * frontmatter, no `description:` key, an empty value, or a multi-line YAML
- * scalar the single-line reader below would silently truncate. A guard whose
- * extractor degrades to "" scans nothing and passes everything, which is the
- * failure mode this whole file exists to make impossible.
+ * scalar the single-line reader below would silently truncate. This is the
+ * declared resolution bias above, at the site it is enforced.
  */
 export function readFrontmatterDescription(md: string, label: string): string {
   const block = frontmatterBlockOf(md, label);

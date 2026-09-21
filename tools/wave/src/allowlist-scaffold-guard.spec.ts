@@ -89,6 +89,64 @@ const SETUP_MECHANICS_PATH = join(
 );
 const ROOT_CLAUDE_MD_PATH = join(REPO_ROOT, 'CLAUDE.md');
 
+// ─── Guard declaration (ADR-0052) ────────────────────────────────────────────
+
+/**
+ * **Subject.** Four texts, read as text: the tracked `.claude/settings.json`'s
+ * `permissions.allow` array, the scaffold JSON block and the dogfood-only
+ * table in wave-setup's `setup-mechanics.md`, root `CLAUDE.md`'s `## Verify`
+ * fence, and a consumer's `wave.config.json` verify commands (through the real
+ * loader).
+ *
+ * **Resolution bias — BLOCKS.** Every extractor below throws rather than
+ * returning nothing, and an allow entry this guard cannot classify fails
+ * instead of being waved past. The reason is specific to this subject: the
+ * thing being reconciled is an ALLOWLIST, and both failure directions are
+ * silent by nature — an uncited entry is a grant nobody argued for, and a
+ * declared-but-unallowed verify command stalls a dispatched agent on a
+ * permission prompt nobody is awake to answer. A vacuous green here reads
+ * exactly like a clean reconciliation, which is the state issue #269 was in
+ * before this file existed. The cost of blocking is a doc restructure that
+ * turns the suite red at `npm test`, in front of the author, with the heading
+ * it could not find named in the message.
+ *
+ * ONE case resolves the other way and it is a DECIDED pass, not a
+ * non-verdict: an ABSENT `wave.config.json` contributes zero commands. That
+ * file is gitignored in this repo by construction (CONTEXT.md
+ * `### Distribution`), so its absence is a fact the guard knows, not a shape
+ * it failed to read — and direction 2's fixture half exercises the same
+ * loader against a real temp file so the predicate is never only vacuous.
+ *
+ * **Unmodelled set, named rather than assumed away.**
+ *
+ *  1. **Every permission entry that is not `Bash(…)`-shaped.**
+ *     {@link parseBashPattern} returns `null` for `Read(…)`, `WebFetch(…)`,
+ *     an `mcp__*` entry or any future prefix, so such an entry can never
+ *     COVER a declared verify command in direction 2. Direction 1 still
+ *     demands a citation for it, because it classifies the raw string.
+ *  2. **`permissions.deny` and `permissions.ask`.** Not read at all. A
+ *     command allowed in one array and denied in another reads as allowed
+ *     here.
+ *  3. **Shell grammar inside a command string.** {@link commandTokens} splits
+ *     on whitespace and nothing else: quoting, `&&`/`|`/`;` segmentation,
+ *     redirections, `$VAR` expansion and a leading `VAR=value` assignment are
+ *     all just tokens. A verify command carrying a quoted argument with a
+ *     space in it tokenizes into pieces no allow entry was written for.
+ *  4. **JSONC beyond comments.** {@link stripJsonComments} removes line and
+ *     block comments outside string literals; a trailing comma, a
+ *     single-quoted key or any other JSON5-ism still throws — which is the
+ *     blocking bias above, not a gap that passes.
+ *  5. **Markdown structure.** The extractors are `indexOf` on exact heading
+ *     strings plus fixed byte windows (400 B after the vendored-exception
+ *     anchor, 6000 B after the dogfood table heading). A fence nested inside
+ *     another fence, a table that grows past its window, or a heading whose
+ *     wording drifts by one character is not modelled — the first two lose
+ *     rows silently within the window they do read, the third throws.
+ *  6. **`settings.local.json`, user-level and managed settings.** Only the
+ *     repo's tracked file is read, so a grant an operator holds elsewhere is
+ *     invisible to both directions.
+ */
+
 // ─── JSONC-tolerant parse (parser constraint) ────────────────────────────────
 
 /**
@@ -204,9 +262,8 @@ function findCoveringEntry(entries: AllowEntry[], command: string): AllowEntry |
 // ─── direction 1: scaffold / documented-exception / dogfood-only extraction ──
 
 /** Extract the JSON payload of the first ```json fence found AFTER `heading`
- * in `md`. Throws (never silently returns nothing) if the heading or the
- * fence is missing — a doc restructure must break this extraction, not make
- * it vacuous. */
+ * in `md`. Throws if the heading or the fence is missing (the declared
+ * resolution bias above). */
 function extractFencedJsonAfterHeading(md: string, heading: string): unknown {
   const hIdx = md.indexOf(heading);
   if (hIdx < 0) {
