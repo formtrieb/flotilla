@@ -2777,6 +2777,64 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     expect(clause).not.toContain(SIBLING_FETCH_HEAD_LITERAL);
   });
 
+  // ─── issue #791: the denominator is wave-wide, and each entry is annotated ──
+  //
+  // Driver-copy-only on purpose, and that is the whole design of this row. The
+  // list a Reviewer is handed now spans the WAVE — earlier rounds' `pr-created`
+  // rows included — so an unresolvable fetch no longer has one cause. The
+  // obvious fix, a fifth prediction outcome, was REFUSED: the four outcomes are
+  // enumerated in four pinned copies with the span check above, and widening
+  // that vocabulary would cost four documents what a `(state)` suffix plus one
+  // sentence carries in one. The sentence therefore lives where the annotation
+  // does — in the composed brief — and is pinned here, not in `COPIES`.
+
+  /**
+   * The per-annotation clause's load-bearing fragments (issue #791). Several
+   * short plain-text fragments rather than one long literal: the clause spans
+   * six template lines and carries escaped backticks, so a single literal would
+   * pin the line wrapping as hard as the content, and a reflow nobody meant as
+   * a semantic change would fail it.
+   */
+  const SIBLING_ANNOTATION_FRAGMENTS = [
+    'a fact about the SPINE, never about', // the suffix is spine state, not origin state
+    'WAVE-WIDE, not this round', // …and the list's scope is what made that necessary
+    'may simply not have been', // (dispatched)    → its Worker has not pushed yet
+    'may already have landed', // (pr-created)    → landed, branch deleted
+    'is on the list on purpose', // (failed)        → live, may yet land
+  ] as const;
+
+  /** The clause's own opener, and the bold run that begins what follows it. */
+  const SIBLING_ANNOTATION_OPENER = '**Each entry reads';
+  const AT_ANCHOR_PARAGRAPH_MARKER = 'is the sharp one:**';
+
+  it('the reviewerBrief says what a `(state)` annotation means for a not-on-origin sibling (#791)', () => {
+    const clause = driverClause(driverJs);
+    for (const fragment of SIBLING_ANNOTATION_FRAGMENTS) {
+      expect(clause).toContain(fragment);
+    }
+    // The annotation EXPLAINS an outcome; it never becomes one. Both halves
+    // said out loud: the cause is attached to `not-on-origin`, and the outcome
+    // vocabulary is still exactly four.
+    expect(clause).toMatch(/is UNCOVERED and is never/);
+    expect(SIBLING_PREDICTION_OUTCOMES).toHaveLength(4);
+  });
+
+  it('NEGATIVE CONTROL — #791: a brief copy with the annotation clause cut out is caught', () => {
+    const clause = driverClause(driverJs);
+    const from = clause.indexOf(SIBLING_ANNOTATION_OPENER);
+    const to = clause.indexOf(AT_ANCHOR_PARAGRAPH_MARKER, from);
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    // Excise the whole paragraph, the way a "tighten this brief" edit would.
+    const stripped = clause.slice(0, from) + clause.slice(to);
+    expect(stripped).not.toEqual(clause); // the cut actually removed something
+    for (const fragment of SIBLING_ANNOTATION_FRAGMENTS) {
+      expect(stripped).not.toContain(fragment); // …the real pin would now fail
+      expect(clause).toContain(fragment); // control: the shipped copy has it
+    }
+    expect(stripped).not.toMatch(/is UNCOVERED and is never/);
+  });
+
   it.each(COPIES)(
     '%s prescribes the per-sibling named-ref path for the tip read (#445)',
     (_label, region) => {

@@ -44,7 +44,7 @@ import type { IssueView, TriageView } from './contract';
 import { flag, printJson } from './cli-utils';
 import { readDisclosures } from './spine-store';
 import { loadWaveConfig, type WaveConfig } from './wave-config';
-import { readSpine, HUMAN_GATED_WORKER } from './wave-md-rw';
+import { readSpine, HUMAN_GATED_WORKER, type PlanTableRow } from './wave-md-rw';
 import { verifyCommands, type VerifyCommand } from './verify';
 import { resolveStore } from './cli-store';
 import {
@@ -801,6 +801,73 @@ export function composeDriverScript(input: ComposeDriverScriptInput): string {
 /** The states a row must be in to be composed into this dispatch. */
 const DISPATCHABLE_STATES = ['dispatched', 're-dispatched'];
 
+/**
+ * The two states that take a branch-bearing row OUT of the sibling denominator
+ * (issue #791) — and the only two.
+ *
+ * `parked` released its tracker claim at park time (ADR-0022) and `abandoned`
+ * is dead: neither will land, so neither can collide with the row under review.
+ * EVERY other state with a recorded branch stays in, including the ones a
+ * roster-only rule dropped:
+ *
+ *  - `pr-created` / `approved` — an earlier ROUND's rows, and the siblings most
+ *    likely to collide, because a Conflict-Map cell sharing files is exactly why
+ *    they were serialised into their own round in the first place. Whether that
+ *    PR has merged makes no difference: a merged sibling's hunks are on the
+ *    default branch while this row's diff base is still the wave anchor, so the
+ *    Reviewer needs to know the branch exists either way.
+ *  - `failed` — Coordinator ruling 2026-09-21: the branch is live and may still
+ *    land via a ruled round. The `(state)` annotation is what tells the Reviewer
+ *    what it is looking at.
+ *  - `report-in` / `reviewing` / `verdict-in` — mid-flight in THIS compose's own
+ *    round or an earlier one; the branch is pushed or about to be.
+ *
+ * This is deliberately NOT the complement of `wave-md-rw`'s `TERMINAL_ROW_STATES`,
+ * and reaching for that set instead is the mistake worth naming: `pr-created`,
+ * `approved` and `failed` are all terminal AND all belong in the denominator.
+ * Terminality answers "will this row dispatch again"; this set answers "can this
+ * branch still reach the default branch", and the two questions part company on
+ * exactly those three states.
+ */
+const SIBLING_EXCLUDED_STATES: ReadonlySet<string> = new Set(['parked', 'abandoned']);
+
+/**
+ * The wave-wide sibling roster, in Plan-Table order — one entry per row that has
+ * a recorded branch and a state {@link SIBLING_EXCLUDED_STATES} does not remove.
+ *
+ * **Wave-wide, not compose-wide, and that is the whole fix (issue #791).** The
+ * denominator used to be the rows dispatchable IN THIS COMPOSE, so a wave run in
+ * ROUNDS — the ordinary way to run a wave whose Conflict-Map has overlap cells —
+ * hid its already-`pr-created` siblings from every later round's Reviewer. Round
+ * 3 and round 4 of one live wave each composed an EMPTY denominator and reported
+ * "0/0 — vacuously satisfied", on waves that were serialised precisely because
+ * their rows shared files. The spine's own Plan-Table is the wave-wide truth, and
+ * `readSpine` has already resolved every row's branch off the dispatch log
+ * (ADR-0021), so no second source is needed to see them.
+ *
+ * Each entry renders as `<branch> (<state>)`: the branch token stays the FIRST
+ * word so the brief's `git fetch origin <branch>:refs/review/sib/<id>` instruction
+ * still parses, and the parenthesised spine state tells the Reviewer what an
+ * unresolvable fetch MEANS for that particular sibling — `(dispatched)` reads
+ * "not pushed yet", `(pr-created)` reads "landed and the branch is gone". That
+ * annotation is deliberately NOT a fifth prediction outcome: the four
+ * `predicted-clean | predicted-conflict | not-on-origin | at-anchor` tokens are
+ * enumerated in four pinned copies, and widening that vocabulary to carry a cause
+ * would cost four documents what one `(state)` suffix carries for free.
+ */
+function siblingRosterFrom(
+  planTable: readonly PlanTableRow[],
+): Array<{ id: string; entry: string }> {
+  const out: Array<{ id: string; entry: string }> = [];
+  for (const row of planTable) {
+    const branch = (row.branch ?? '').trim();
+    const state = String(row.state).trim();
+    if (!branch || SIBLING_EXCLUDED_STATES.has(state)) continue;
+    out.push({ id: row.id, entry: `${branch} (${state})` });
+  }
+  return out;
+}
+
 /** Per-row Coordinator overrides, keyed by bare row id (`--row-meta`). */
 export interface RowMeta {
   prTitle?: string;
@@ -1001,8 +1068,14 @@ export async function runComposeDriver(
     const globalDepsSetup = flag(args, '--deps-setup');
     const store = await resolveStore(args, injected);
 
-    // Branches first: every row's `siblingBranches` is the OTHER rows' branches,
-    // so the whole roster has to exist before any single row is composed.
+    // Branches first: every row's `siblingBranches` is the OTHER branch-bearing
+    // rows' branches, so both rosters have to exist before any single row is
+    // composed. TWO rosters, and they answer different questions (issue #791):
+    // `roster` is what this compose DISPATCHES — it owes a `wave/<id>-<slug>`
+    // branch and a derivable slug, and a row missing either is a STOP.
+    // `siblingRoster` is what this wave has RUNNING OR LANDED — every row the
+    // spine records a branch for, this compose's own rows included, whatever
+    // round put them there.
     const roster = dispatchable.map((row) => {
       const branch = row.branch ?? '';
       const slugFromBranch = branch.startsWith(`wave/${row.id}-`)
@@ -1010,6 +1083,8 @@ export async function runComposeDriver(
         : '';
       return { row, branch, rowSlug: slugFromBranch };
     });
+
+    const siblingRoster = siblingRosterFrom(spine.planTable);
 
     const missingBranch = roster.filter((r) => !r.branch || !r.rowSlug);
     if (missingBranch.length > 0) {
@@ -1040,7 +1115,7 @@ export async function runComposeDriver(
       const triage: TriageView = await store.readTriage(row.id);
       const verify = config.verify ? verifyCommands(view.files, config.verify) : [];
       const iteration = typeof row.iter === 'number' ? row.iter : Number(row.iter) || 1;
-      const siblings = roster.filter((r) => r.row.id !== row.id).map((r) => r.branch);
+      const siblings = siblingRoster.filter((s) => s.id !== row.id).map((s) => s.entry);
       const deps = resolveDepsSetup({
         rowMeta: meta.depsSetup,
         flag: globalDepsSetup,
