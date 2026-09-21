@@ -83,7 +83,12 @@ export const CONFLICT_MAP_CONTRACT: VerbContract = defineVerb({
   // where that spelling is advertised.
   program: 'wave-conflict-map',
   flags: [
-    { canonical: '--id', value: 'repeatable', valueType: 'id' },
+    // `placeholder` is render-only (FlagContract's own docblock in
+    // verb-contract.ts): this verb's own usage section reads it, so it agrees
+    // with `dor --id`'s `<issue-id>` instead of the roster's generic `<id>`;
+    // the router roster still renders the `id` value type's own placeholder,
+    // untouched by this declaration.
+    { canonical: '--id', value: 'repeatable', valueType: 'id', placeholder: '<issue-id>' },
     { canonical: '--repo-root', value: 'one', valueType: 'dir' },
     { canonical: '--config', value: 'one', valueType: 'path' },
   ],
