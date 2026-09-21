@@ -4,8 +4,12 @@ Recompute the order and print it as a clear advisory block. The engine sources e
 
 ```bash
 {{wave-cli}} merge-order --spine "$WAVE"
-# { "algorithmic": ["wave-orch/42-foo", "wave-orch/43-bar"], "override": null, "hasOverride": false, "reason": "no stacking detected" }
+# { "algorithmic": [ { "issueId": "42", "nn": 42, "fileCount": 1, "branch": "wave-orch/42-foo", "title": "foo" },
+#                     { "issueId": "43", "nn": 43, "fileCount": 2, "branch": "wave-orch/43-bar", "title": "bar" } ],
+#   "override": null, "hasOverride": false, "reason": "no stacking detected" }
 ```
+
+`algorithmic`/`override` are arrays of **objects** — `{ issueId, nn, fileCount, branch, title?, prUrl? }` — never bare branch strings. Building the `Order :` line below means reading each entry's own `branch` field, not the entry itself.
 
 ```
 --- Advisory Merge Order ---
