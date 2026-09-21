@@ -21,6 +21,23 @@
  * file existed only ever exercised one of them by accident (import order of
  * the spec files themselves, never asserted, never chosen on purpose).
  *
+ * ## Sibling guard: this file answers one cycle, not the graph
+ *
+ * This spec is told which two modules to load; it never looks at the graph, so
+ * a SECOND cycle appearing anywhere else in `src/` is invisible to it. That is
+ * the general question, and `import-graph-guard.spec.ts` (issue #915) is where
+ * it is answered: it builds the whole import graph from source, partitions
+ * edges by when they are read (evaluation-time · type-erased · call-time), and
+ * requires every cycle either graph contains to be declared with its reason.
+ *
+ * The two are complementary and neither substitutes for the other. The
+ * import-graph guard sees that the Bitbucket cycle EXISTS and permits it by
+ * declaration — citing this file as what holds its condition. It cannot check
+ * that condition itself: a static reader sees an edge, not a load order. This
+ * file is the only thing in the suite that actually evaluates both modules in
+ * both orders and reads the crossing bindings, which is the ADR-0037
+ * call-time-only requirement being tested rather than asserted.
+ *
  * ## What this spec does NOT need to prove
  *
  * Today neither file reads the other's binding at module evaluation — both
