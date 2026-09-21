@@ -9,6 +9,50 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.8.0] — 2026-09-21
+
+A write verb that quietly destroyed data now refuses instead: `issue-store annotate` no longer replaces every acceptance criterion with the four characters `undefined` when the patch carries strings ([#871](https://github.com/formtrieb/flotilla/issues/871)). The tier→model-id binding becomes an optional `models` config block, so no model name is spelled in the engine any more ([#803](https://github.com/formtrieb/flotilla/issues/803)), and every verb's usage text renders from its contract instead of a hand-written printer ([#856](https://github.com/formtrieb/flotilla/issues/856)). Seventeen landings, two decision records. Nothing removed.
+
+### Upgrading
+
+1. **Plugin/marketplace:** update the plugin to 2.8.0. Marketplace listing unchanged.
+2. **Engine pin:** `@formtrieb/flotilla-engine` 2.7.0 → 2.8.0. Vendored form: re-copy `tools/wave/`.
+3. **Config keys:** one added — an optional top-level `models` block (`heavy`, `standard`, `scribe`). Absent, every row composes as in 2.7.0 **except the Scribe stage**, which is no longer pinned to a fixed cheap model id: it runs on `models.scribe`, else `models.standard`, else the row's own recorded model. Set `models.scribe` to keep it cheap ([#803](https://github.com/formtrieb/flotilla/issues/803)).
+4. **Hook re-copy:** none — `hooks/` is unchanged.
+5. **Allowlist parity:** none. Separately, a **fine-grained** GitHub token now needs `Checks: Read` and `Commit statuses: Read`; without them every `arm` reads `reports-unreadable` ([#712](https://github.com/formtrieb/flotilla/issues/712)).
+6. **Behaviour heads-ups** (same input, different outcome):
+   - `issue-store annotate` refuses an `acceptanceCriteria` entry that is not a `{ text, checked }` object — exit 2, an `error:` line naming the field, the index and the shape received, and **no write reaches the store**. The refusal also covers a missing or non-boolean `checked`, which rendered correctly before; an omitted field and `[]` stay well-formed. `create` is deliberately not covered ([#871](https://github.com/formtrieb/flotilla/issues/871), [#898](https://github.com/formtrieb/flotilla/issues/898)).
+   - `--json` stops being a silent no-op on `spine check-disclosures` and `spine check-awaiting-human`: each prints one object `{ ok, verb, holding }` and no prose. Without the flag, stdout and every exit code are byte-identical to 2.7.0 ([#859](https://github.com/formtrieb/flotilla/issues/859)).
+   - `host-pr preflight` reports a fourth GitHub check, `pr-create-token` (advisory, never `fail`), and `host-pr arm`'s *not verified against the required-check names* reason now names which of three causes fired ([#712](https://github.com/formtrieb/flotilla/issues/712)).
+   - Every verb's `--help` and refusal print renders from its contract: alternations appear, some flag orders follow declaration order, and three pre-existing inaccuracies are corrected by the render. Exit codes, the first `error:` line and the roster are unchanged ([#856](https://github.com/formtrieb/flotilla/issues/856)).
+   - The Reviewer's sibling merge-tree denominator spans every branch-bearing row of the wave, not only the rows dispatched in the same round; each entry is annotated with its spine state ([#791](https://github.com/formtrieb/flotilla/issues/791)).
+7. **Implementer heads-ups** (additive; nothing renamed or removed): nine new root exports — `defineVerb`, `renderUsageSection`, `renderInvocations`, `ModelsConfig`, `VerbContractDeclaration`, `FlagGroup`, `VerbForm`, `JsonNote`, `UsageRenderOptions`. `HostCheckName` widens from four to five members, `preflightHost` gains an optional fourth parameter (`createRight`), `refineArmDecisionForCheckAttach`'s second parameter widens to a discriminated no-evidence value (`null` still accepted), and `composeDriverScript`'s input gains optional `scribeModel`. `assertAcceptanceCriteriaShape` and `AcceptanceCriteriaShapeError` are deliberately **adapter-internal** and not root-exported.
+
+### Added
+
+- ADR-0052 — a guard that cannot decide **abstains**: three answer kinds, a **resolution bias** declared per guard, a named **unmodelled set**. Binds all ten shipped guards; the glossary gains those terms plus **Guard** (PR #894).
+- The `models` config block, interviewed by `wave-setup` as a fourth concern and pinned by a declaration-driven reference ([#803](https://github.com/formtrieb/flotilla/issues/803)).
+- `pr-create-token` — a fourth GitHub preflight check probing the create right the posture checks never graded ([#712](https://github.com/formtrieb/flotilla/issues/712)).
+- `--json` on the two prose-class spine gates, answering with the list of what holds them ([#859](https://github.com/formtrieb/flotilla/issues/859)).
+
+### Changed
+
+- Every verb's usage section, refusal print and flag relationship renders from its contract; `SPINE_OP_ARGS` and the four hand-written usage printers are gone ([#856](https://github.com/formtrieb/flotilla/issues/856)).
+- The Reviewer's sibling denominator spans the whole wave ([#791](https://github.com/formtrieb/flotilla/issues/791)).
+- Linear's PR-open automation is documented as an operational precondition, and the integration probe's scope is corrected ([#756](https://github.com/formtrieb/flotilla/issues/756)).
+- `wave-setup`'s settings hand-off states the real two-path landing ([#734](https://github.com/formtrieb/flotilla/issues/734)).
+
+### Fixed
+
+- `issue-store annotate` no longer writes `undefined` as every acceptance criterion ([#871](https://github.com/formtrieb/flotilla/issues/871)).
+- `host-pr arm`'s no-evidence reason names its cause instead of stating none ([#712](https://github.com/formtrieb/flotilla/issues/712)).
+- Stale enforcement-location prose in Conventions 9, 10, 11 and 13 ([#830](https://github.com/formtrieb/flotilla/issues/830)); the copied STILL OPEN sentence ([#800](https://github.com/formtrieb/flotilla/issues/800)); the mirror-pass record's empty-frontier sentence ([#633](https://github.com/formtrieb/flotilla/issues/633)); ADR-0050's ledger-row populations ([#840](https://github.com/formtrieb/flotilla/issues/840)); register-guard residue ([#600](https://github.com/formtrieb/flotilla/issues/600)); the credential-helper's benign `fatal:` line, now named in all three composed setup blocks ([#828](https://github.com/formtrieb/flotilla/issues/828)).
+
+### Not yet proven
+
+- `issue-store create` still writes `undefined` from a string-form `acceptanceCriteria` on all three stores — reproduced live, filed, not fixed ([#898](https://github.com/formtrieb/flotilla/issues/898)).
+- ADR-0052 is decided, not implemented: the two hooks' scanner repair and declaration is [#710](https://github.com/formtrieb/flotilla/issues/710), the eight drift specs' is [#896](https://github.com/formtrieb/flotilla/issues/896). The Convention-12 guard still issues the false refusals ADR-0052 measured at 60% of all its refusals on live traffic.
+
 ## [2.7.0] — 2026-09-17
 
 Every engine verb now declares its own contract ([ADR-0051](docs/adr/0051-a-verb-declares-its-own-contract-one-canonical-spelling-per-flag-silent-aliases-and-a-refusal-for-everything-undeclared.md)): one canonical spelling per flag, every old spelling a silent alias, exit 2 for anything undeclared, `--help` on every verb, `--json` receipts on the silent write ops. The text a Coordinator loads is a pinned, guarded measure ([ADR-0050](docs/adr/0050-the-loaded-corpus-is-a-pinned-measure-and-a-rules-enforcement-tier-decides-its-reading-class.md)): −42 KB standing load, −70 KB corpus, 171 KB moved into `evidence/` files no dispatch loads. Three waves, 27 rows. Nothing removed.
