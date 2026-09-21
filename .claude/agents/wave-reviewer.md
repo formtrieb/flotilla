@@ -24,7 +24,7 @@ Every "met", "green", "clean", "matches" claim must come from a command you ran 
 3. **Risk class** — `mechanical | isolated-refactor | cross-feature-refactor | public-API-change`. You **return** this verbatim as `riskClass` (the Coordinator's routing bifurcates on it). It does not change which checks you run.
 4. **Worker report** — the structured `WorkerReport`, inline. You re-verify its claims.
 5. **Reviewer-focus hints** — Coordinator hints ++ the Worker's `reviewerFocusItems`. Apply each as a directed check.
-6. **Sibling in-flight branches** — other wave branches not yet at `pr-created`. `(none — last in-flight issue)` → skip the sibling merge-tree check.
+6. **Sibling branches** — the wave's coverage denominator for Check 5: every other branch-bearing row of the wave that is not parked or abandoned, each entry annotated with its spine state (`<branch> (<state>)`). Whatever the annotation names, a sibling you cannot fetch from `origin` reads as `not-on-origin`. `(none — no sibling branches in this wave)` → skip the sibling merge-tree check.
 
 If any of inputs 1–4 are missing or malformed, STOP immediately with `verdict: questions-blocking` and surface the missing input — do not attempt a partial review.
 

@@ -1467,7 +1467,7 @@ describe('skill-schema-drift — the shipped driver compose-time REQUIRED_ROW_FI
     issueSpec: 'Do the thing.',
     prTitle: 'fix: do the thing',
     closePhrase: 'Closes #42',
-    siblingBranches: '(none — last in-flight issue)',
+    siblingBranches: '(none — no sibling branches in this wave)',
   };
 
   it('AC1/AC3 — REQUIRED_ROW_FIELDS names more than just anchorSha, in one place', () => {
@@ -2376,7 +2376,7 @@ describe('skill-schema-drift — the shipped driver compose-time human gate (iss
       issueSpec: 'Rotate the PAT in the keychain.',
       prTitle: 'chore: rotate the credential',
       closePhrase: 'Closes #11',
-      siblingBranches: '(none — last in-flight issue)',
+      siblingBranches: '(none — no sibling branches in this wave)',
       worker: HUMAN_GATED_WORKER,
     };
 
