@@ -1197,7 +1197,15 @@ const DEFER_NO_DEFAULT_BRANCH_REF =
  * Upper bound on the commits `git log` is asked for. `--since` already bounds
  * the window in practice; this bounds the pathological case (a very old row on a
  * very busy branch) so a large stdout can never turn a real advisory into a
- * `'deferred'` buffer overflow. A capped answer is reported as `N+`.
+ * `'deferred'` buffer overflow. A capped answer is reported as `N+`, and (issue
+ * #918) the capped case additionally discloses that its file attribution is
+ * partial — see {@link renderStalenessAdvisory}.
+ *
+ * Not exported: this module's barrel-reachability is asserted by
+ * `barrel-drift.spec.ts` against an allowlist that lives outside this issue's
+ * declared Files: globs, so `dor-gate.spec.ts`'s capped-list fixture pins its
+ * own local copy of this number instead (with a comment pointing back here)
+ * rather than growing that allowlist.
  */
 const STALENESS_COMMIT_CAP = 200;
 
@@ -1207,6 +1215,20 @@ const STALENESS_COMMITS_SHOWN = 8;
 /** Field separator inside the `git log --format` record (US, never in a subject line). */
 const GIT_FIELD_SEP = '\u001f';
 
+/**
+ * Record separator prefixed onto each commit's `--format` header line (SOH,
+ * never in a subject line), so a `--name-only` file list can be told apart
+ * from the next commit's header without guessing at blank-line conventions.
+ * Its ABSENCE from a `git log` answer is also the signal that no per-commit
+ * file data rode along at all — see {@link parseTouchingCommits}'s fallback
+ * arm, which exists for exactly one caller: `cli.spec.ts`'s `execFileSync`
+ * mock, which answers every `git log` call with a fixed one-line-per-commit
+ * string regardless of the arguments this module actually passed. That mock
+ * is out of this issue's declared Files: scope, so this module tolerates its
+ * shape rather than assuming every caller can be changed to match.
+ */
+const STALENESS_RECORD_SEP = '\u0001';
+
 interface TouchingCommit {
   /** Abbreviated sha (`%h`). */
   sha: string;
@@ -1214,6 +1236,16 @@ interface TouchingCommit {
   date: string;
   /** Subject line (`%s`). */
   subject: string;
+  /**
+   * Declared-file paths THIS commit's own diff touched (issue #918) — git's
+   * own pathspec-restricted `--name-only` answer, so it is already the
+   * intersection with the declared `Files:` list, never the commit's whole
+   * diff. Empty when no per-commit file data reached this parse (the fallback
+   * arm above): a caller in that shape carries no attribution to report, and
+   * {@link renderStalenessAdvisory} degrades to its pre-#918 wording rather
+   * than asserting a false "touched nothing" from an absent signal.
+   */
+  files: string[];
 }
 
 type StalenessProbe =
@@ -1299,7 +1331,66 @@ function toGitSince(raw: string | undefined): string | undefined {
   return new Date(Math.floor(ms / 1000) * 1000).toISOString().replace('.000Z', 'Z');
 }
 
-/** `git log <default-branch> --since=<ts> -- <declared files>`, failures folded into `ok:false`. */
+/**
+ * Parse a `git log` answer into {@link TouchingCommit}s. Two shapes, told
+ * apart by whether {@link STALENESS_RECORD_SEP} appears at all:
+ *
+ *  - present → this module's own `--name-only` + record-separated `--format`
+ *    (see {@link commitsTouchingSince}): each record is the header line
+ *    (`sha`/`date`/`subject`) followed by zero or more file lines, which are
+ *    already pathspec-restricted to the declared files by git itself (issue
+ *    #918) — no further intersection work is needed here.
+ *  - absent → the pre-#918 one-line-per-commit shape, with no file data at
+ *    all (`files: []` on every record). This is the shape `cli.spec.ts`'s
+ *    `execFileSync` mock still answers with regardless of the arguments this
+ *    module passes; {@link renderStalenessAdvisory} recognises the all-empty
+ *    case and falls back to its pre-#918 wording rather than reporting a
+ *    false "touched nothing".
+ */
+function parseTouchingCommits(out: string): TouchingCommit[] {
+  if (!out.includes(STALENESS_RECORD_SEP)) {
+    return out
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const parts = line.split(GIT_FIELD_SEP);
+        return {
+          sha: parts[0] ?? '',
+          date: parts[1] ?? '',
+          subject: parts.slice(2).join(GIT_FIELD_SEP),
+          files: [],
+        };
+      });
+  }
+
+  return out
+    .split(STALENESS_RECORD_SEP)
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const lines = record.split('\n');
+      const parts = (lines[0] ?? '').split(GIT_FIELD_SEP);
+      const files = lines
+        .slice(1)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      return {
+        sha: parts[0] ?? '',
+        date: parts[1] ?? '',
+        subject: parts.slice(2).join(GIT_FIELD_SEP),
+        files,
+      };
+    });
+}
+
+/**
+ * `git log <default-branch> --since=<ts> --name-only -- <declared files>`,
+ * failures folded into `ok:false`. `--name-only` (issue #918) rides the SAME
+ * pathspec already given to `--`, so git itself computes, per commit, exactly
+ * the declared files THAT commit touched — the intersection the advisory
+ * previously skipped, reported instead as the row's entire declared list
+ * regardless of which files a cited commit's diff actually moved.
+ */
 function commitsTouchingSince(
   repoRoot: string,
   since: string,
@@ -1321,7 +1412,8 @@ function commitsTouchingSince(
       ref,
       `--since=${since}`,
       `--max-count=${STALENESS_COMMIT_CAP}`,
-      '--format=%h%x1f%aI%x1f%s',
+      '--name-only',
+      `--format=${STALENESS_RECORD_SEP}%h${GIT_FIELD_SEP}%aI${GIT_FIELD_SEP}%s`,
       '--',
       ...toPathspecs(files),
     ]);
@@ -1332,23 +1424,50 @@ function commitsTouchingSince(
     };
   }
 
-  const commits = out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => {
-      const parts = line.split(GIT_FIELD_SEP);
-      return {
-        sha: parts[0] ?? '',
-        date: parts[1] ?? '',
-        subject: parts.slice(2).join(GIT_FIELD_SEP),
-      };
-    });
+  const commits = parseTouchingCommits(out);
 
   return { ok: true, ref, commits, capped: commits.length >= STALENESS_COMMIT_CAP };
 }
 
-/** The advisory's human-facing text: what moved, where to look, and what it does NOT mean. */
+/**
+ * Group each declared file git actually reported as touched onto the sha(s)
+ * of the commit(s) that touched it (issue #918 AC2). `commits` may carry MORE
+ * entries than {@link STALENESS_COMMITS_SHOWN} ever prints inline — this reads
+ * every one of them, not just the shown preview, so a file touched only by a
+ * commit past the preview cutoff is still named and attributed.
+ */
+function attributeFilesToCommits(commits: readonly TouchingCommit[]): Map<string, string[]> {
+  const byFile = new Map<string, string[]>();
+  for (const commit of commits) {
+    for (const file of commit.files) {
+      const shas = byFile.get(file);
+      if (shas) shas.push(commit.sha);
+      else byFile.set(file, [commit.sha]);
+    }
+  }
+  return byFile;
+}
+
+/**
+ * The advisory's human-facing text: what moved, where to look, and what it
+ * does NOT mean.
+ *
+ * **Issue #918 — precision.** `files` is the row's WHOLE declared `Files:`
+ * list; the pre-#918 text named every one of them regardless of what a cited
+ * commit's own diff actually touched, so an operator re-derived the real
+ * intersection by hand before the re-read this advisory exists to save. The
+ * per-commit `files` git itself now reports (pathspec-restricted, see
+ * {@link commitsTouchingSince}) already IS that intersection, so this only
+ * has to name it and attribute each declared file to the commit(s)
+ * responsible — never a declared file none of the cited commits touched.
+ *
+ * The one exception is `commits` carrying no file data at ALL (every
+ * `files` array empty) — the shape a caller supplies when it never had
+ * per-commit attribution to give (see {@link parseTouchingCommits}'s
+ * fallback arm). Absence of that signal is not evidence the intersection is
+ * empty, so this falls back to the pre-#918 whole-list wording rather than
+ * asserting a false "touched nothing".
+ */
 function renderStalenessAdvisory(
   probe: { ref: string; commits: TouchingCommit[]; capped: boolean },
   since: string,
@@ -1357,15 +1476,43 @@ function renderStalenessAdvisory(
   const shown = probe.commits.slice(0, STALENESS_COMMITS_SHOWN);
   const rest = probe.commits.length - shown.length;
   const total = `${probe.commits.length}${probe.capped ? '+' : ''}`;
-  const lines = [
-    `The default branch (${probe.ref}) has moved over this row's declared Files since its last tracker update (${since}): ` +
-      `${total} commit(s) touched ${files.join(', ')}.`,
+
+  const attribution = attributeFilesToCommits(probe.commits);
+  const touchedFiles = [...attribution.keys()].sort();
+  const hasFileAttribution = touchedFiles.length > 0;
+
+  const lines = hasFileAttribution
+    ? [
+        `The default branch (${probe.ref}) has moved over this row's declared Files since its last tracker update (${since}): ` +
+          `${total} commit(s) touched ${touchedFiles.length} of ${files.length} declared file(s).`,
+        'Declared file(s) actually touched, each attributed to the commit(s) responsible:',
+        ...touchedFiles.map(
+          (file) => `  - ${file} — touched by ${attribution.get(file)!.join(', ')}`,
+        ),
+      ]
+    : [
+        // No per-commit file data reached this render at all (see the doc
+        // comment above) — the pre-#918 wording, naming the whole declared
+        // list because there is no intersection to compute it against.
+        `The default branch (${probe.ref}) has moved over this row's declared Files since its last tracker update (${since}): ` +
+          `${total} commit(s) touched ${files.join(', ')}.`,
+      ];
+
+  if (hasFileAttribution && probe.capped) {
+    lines.push(
+      `NOTE: this commit list is capped at ${STALENESS_COMMIT_CAP} — the file attribution above reflects only these ` +
+        `${total} commits and may be PARTIAL: commits beyond the cap are not represented here and could touch further ` +
+        `declared files not listed above.`,
+    );
+  }
+
+  lines.push(
     `RE-READ the row body against the default branch before dispatch: a declared file moving is where a stale premise hides — ` +
       `acceptance criteria can go on naming a mechanism that has already been retired, and triage, decoration and both DoR gates all pass it through.`,
     `ADVISORY ONLY: a moved file is NOT proof the premise broke. This gate never FAILs and never blocks a wave; the premise judgment is the Coordinator's, not the engine's.`,
     'Touching commits:',
     ...shown.map((c) => `  ${c.sha} ${c.date} ${c.subject}`),
-  ];
+  );
   if (rest > 0) lines.push(`  ... and ${rest}${probe.capped ? '+' : ''} more`);
   return lines.join('\n');
 }

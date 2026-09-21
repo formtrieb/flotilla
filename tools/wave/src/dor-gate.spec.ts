@@ -1734,6 +1734,34 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     git(repo, ['commit', '-q', '-m', message]);
   }
 
+  /**
+   * One commit touching SEVERAL files at once — the shape issue #918's
+   * Provenance describes ("that commit's whole diff is four files, exactly
+   * one of which the row declares"): `commitFile` above only ever produces a
+   * single-file diff, which cannot reproduce a commit whose diff is WIDER
+   * than the declared files it happens to intersect.
+   */
+  function commitFiles(repo: string, rels: string[], message: string): void {
+    for (const rel of rels) {
+      const abs = join(repo, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, `// ${message}: ${rel}\n`, 'utf-8');
+    }
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', message]);
+  }
+
+  /** The abbreviated shas `git log --format=%h` reports for `rel`, newest first. */
+  function shasTouching(repo: string, rel: string): string[] {
+    return execFileSync('git', ['log', '--format=%h', '--', rel], {
+      cwd: repo,
+      encoding: 'utf-8',
+    })
+      .trim()
+      .split('\n')
+      .filter((line) => line.length > 0);
+  }
+
   // ── it FIRES ────────────────────────────────────────────────────────────
 
   it('warns when the default branch touched a declared file after the row was last updated, naming the touching commit', () => {
@@ -1795,6 +1823,138 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     expect(result.gates.some((g) => g.status === 'fail')).toBe(false);
     expect(result.overall).toBe('PASS');
   });
+
+  // ── it names the INTERSECTION, not the whole declared list (issue #918) ──
+  //
+  // The observed defect (issue #918's Provenance, verified against each
+  // commit's own diff): a row was warned that a commit had moved SEVEN of its
+  // declared files when that commit's whole diff was four files, exactly one
+  // of which the row declared; a second row in the same pass was warned over
+  // three declared files by a commit that touched only one of them. Both
+  // cases are reproduced verbatim below.
+
+  it('names only the declared file a commit touched out of SEVEN declared, and omits the other six', () => {
+    const repo = makeRepo('seven-declared-one-touched');
+    const declared = [
+      'src/a.ts',
+      'src/b.ts',
+      'src/c.ts',
+      'src/d.ts',
+      'src/e.ts',
+      'src/f.ts',
+      'src/g.ts',
+    ];
+    // The commit's WHOLE diff is four files; only `src/c.ts` is declared —
+    // the exact shape reported in the Provenance above.
+    commitFiles(
+      repo,
+      ['src/c.ts', 'unrelated/one.ts', 'unrelated/two.ts', 'unrelated/three.ts'],
+      'touch one declared file inside a wider four-file diff',
+    );
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: declared, trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('warn');
+    expect(g.reason).toContain('src/c.ts');
+    expect(g.reason).toContain('touched 1 of 7 declared file');
+    for (const untouched of ['src/a.ts', 'src/b.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/g.ts']) {
+      expect(g.reason).not.toContain(untouched);
+    }
+  });
+
+  it('names only the declared file a commit touched out of THREE declared, and omits the other two', () => {
+    const repo = makeRepo('three-declared-one-touched');
+    const declared = ['src/x.ts', 'src/y.ts', 'src/z.ts'];
+    commitFile(repo, 'src/y.ts', 'touch one of three declared files');
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: declared, trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('warn');
+    expect(g.reason).toContain('src/y.ts');
+    expect(g.reason).toContain('touched 1 of 3 declared file');
+    expect(g.reason).not.toContain('src/x.ts');
+    expect(g.reason).not.toContain('src/z.ts');
+  });
+
+  it('attributes a file touched by TWO commits to both of them, on the same line', () => {
+    const repo = makeRepo('two-commits-one-file');
+    commitFile(repo, 'src/shared.ts', 'first change to the shared file');
+    commitFile(repo, 'src/shared.ts', 'second change to the shared file');
+    const [newestSha, olderSha] = shasTouching(repo, 'src/shared.ts');
+    expect(newestSha).toBeDefined();
+    expect(olderSha).toBeDefined();
+
+    const g = gate(
+      validateIssueView(
+        buildView({ files: ['src/shared.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('warn');
+    const attributionLine = (g.reason ?? '')
+      .split('\n')
+      .find((line) => line.includes('src/shared.ts —'));
+    expect(attributionLine).toBeDefined();
+    expect(attributionLine).toContain(newestSha);
+    expect(attributionLine).toContain(olderSha);
+  });
+
+  it(
+    'discloses a capped commit list as PARTIAL rather than presenting a truncated file set as complete',
+    () => {
+      const repo = makeRepo('capped');
+      // Mirrors dor-gate.ts's own (unexported) STALENESS_COMMIT_CAP = 200 —
+      // not imported, because that constant is deliberately module-private
+      // (see its doc comment: exporting it would require growing
+      // barrel-drift.spec.ts's allowlist, a file outside this issue's
+      // declared Files: globs). Exactly this many commits touching the one
+      // declared file is enough to hit `git log --max-count`'s own cap.
+      const CAPPED_COMMIT_COUNT = 200;
+      for (let i = 0; i < CAPPED_COMMIT_COUNT; i++) {
+        commitFile(repo, 'src/foo.ts', `capped touch ${i}`);
+      }
+
+      const g = gate(
+        validateIssueView(
+          buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+          { repoRoot: repo },
+        ),
+        STALENESS_GATE_NAME,
+      );
+
+      expect(g.status).toBe('warn');
+      expect(g.reason).toMatch(/partial/i);
+
+      // Control: well under the cap, the same fixture shape carries no such
+      // disclosure — the wording is conditional on capping, not unconditional
+      // hedging.
+      const repo2 = makeRepo('uncapped-control');
+      commitFile(repo2, 'src/foo.ts', 'a single touch, nowhere near the cap');
+      const g2 = gate(
+        validateIssueView(
+          buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+          { repoRoot: repo2 },
+        ),
+        STALENESS_GATE_NAME,
+      );
+      expect(g2.reason).not.toMatch(/partial/i);
+    },
+    60_000,
+  );
 
   // ── it stays QUIET where it should ──────────────────────────────────────
 
