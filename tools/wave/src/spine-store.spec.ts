@@ -656,6 +656,65 @@ describe('SpineStore — the disclosure verbs on the store surface', () => {
 // "(`upsertPrLogRow` throws \"table is malformed\" on a bare heading)" back into
 // either doc comment and the last test goes red naming the file and the
 // passage. The observed failing output is recorded in this row's report.
+//
+// The retraction guard below scans a ±300-character window around every
+// `upsertPrLogRow` token for the word `malformed` — a distance-shaped check
+// that fired on the LEGITIMATE retraction paragraph itself (wave-md-rw.ts),
+// which sat only 89 characters outside that window's edge: shortening the
+// JSDoc by that little would have made the guard fire on correct prose
+// (#800). The fix is a NAMED anchor, not a wider or narrower window: the
+// retraction paragraph is fenced by a `retraction-anchor:start`/`:end`
+// marker pair in its own source, and `malformedOffenders` below exempts a
+// `malformed` occurrence ONLY when it falls inside such a pair — any other
+// `malformed` within the same window, anchored passage or not, still counts.
+const RETRACTION_ANCHOR_START = '<!-- retraction-anchor:start -->';
+const RETRACTION_ANCHOR_END = '<!-- retraction-anchor:end -->';
+
+/** Every `[start, end)` byte range fenced by a `retraction-anchor` pair in
+ * `source`, end-exclusive and inclusive of the markers themselves. */
+function anchoredRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let from = 0;
+  for (;;) {
+    const start = source.indexOf(RETRACTION_ANCHOR_START, from);
+    if (start === -1) break;
+    const end = source.indexOf(RETRACTION_ANCHOR_END, start + RETRACTION_ANCHOR_START.length);
+    if (end === -1) break;
+    ranges.push([start, end + RETRACTION_ANCHOR_END.length]);
+    from = end + RETRACTION_ANCHOR_END.length;
+  }
+  return ranges;
+}
+
+function isAnchored(pos: number, ranges: ReadonlyArray<[number, number]>): boolean {
+  return ranges.some(([start, end]) => pos >= start && pos < end);
+}
+
+/**
+ * Every `upsertPrLogRow` occurrence in `source` whose ±300-character window
+ * carries a `malformed` claim that is NOT fenced by a `retraction-anchor`
+ * pair. Returns the offending windows (whitespace-collapsed), `[]` when none.
+ */
+function malformedOffenders(source: string): string[] {
+  const ranges = anchoredRanges(source);
+  const offenders: string[] = [];
+  let at = source.indexOf('upsertPrLogRow');
+  while (at !== -1) {
+    const winStart = Math.max(0, at - 300);
+    const winEnd = at + 300;
+    let m = source.indexOf('malformed', winStart);
+    while (m !== -1 && m < winEnd) {
+      if (!isAnchored(m, ranges)) {
+        offenders.push(source.slice(winStart, winEnd).replace(/\s+/g, ' ').trim());
+        break;
+      }
+      m = source.indexOf('malformed', m + 1);
+    }
+    at = source.indexOf('upsertPrLogRow', at + 1);
+  }
+  return offenders;
+}
+
 describe('upsertPrLogRow through the SpineStore (issue #751)', () => {
   /** A fresh `renderSpine` spine — bare `## PR-Log` heading, nothing else. */
   function freshSource(): string {
@@ -711,20 +770,44 @@ describe('upsertPrLogRow through the SpineStore (issue #751)', () => {
     // the co-occurrence of the symbol and the word `malformed` inside one
     // passage: `upsertPrLogRow`'s own JSDoc still (correctly) documents that a
     // spine with NO `## PR-Log` SECTION throws, which is a different claim and
-    // stays true.
+    // stays true. The LEGITIMATE retraction paragraph (wave-md-rw.ts) is
+    // fenced by a `retraction-anchor` marker pair and the guard exempts it BY
+    // THAT ANCHOR, not by widening the ±300-character predicate — a margin of
+    // 89 characters between the retraction and the window edge is how close
+    // this guard came to firing on correct prose (#800). See
+    // `malformedOffenders` above for the exemption and the two controls below
+    // for its falsifiability.
     for (const file of ['wave-md-rw.ts', 'spine-store.ts']) {
       const source = readFileSync(join(__dirname, file), 'utf-8');
-      const offenders: string[] = [];
-      let at = source.indexOf('upsertPrLogRow');
-      while (at !== -1) {
-        const window = source.slice(Math.max(0, at - 300), at + 300);
-        if (/malformed/.test(window)) offenders.push(window.replace(/\s+/g, ' ').trim());
-        at = source.indexOf('upsertPrLogRow', at + 1);
-      }
+      const offenders = malformedOffenders(source);
       expect(
         offenders,
-        `${file} still pairs upsertPrLogRow with a "malformed" claim:\n${offenders.join('\n---\n')}`,
+        `${file} still pairs upsertPrLogRow with an un-anchored "malformed" claim:\n${offenders.join('\n---\n')}`,
       ).toEqual([]);
     }
+  });
+
+  it('POSITIVE CONTROL — an un-anchored "malformed" claim within 300 characters of a token FAILS the guard (#800)', () => {
+    // No anchor at all: the exemption must never fire on plain, un-fenced
+    // prose, or a genuinely re-acquired claim would pass silently.
+    const planted =
+      'x'.repeat(250) +
+      'upsertPrLogRow' +
+      ' — this call is malformed on a bare heading, and nothing fences the claim.';
+    expect(malformedOffenders(planted)).not.toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — the anchored passage moved to within 100 characters of a token PASSES (#800)', () => {
+    // Same claim, same proximity class as the positive control above — the
+    // only difference is the anchor pair around it — so what discriminates
+    // pass from fail is demonstrably the anchor, not the distance.
+    const anchored =
+      'x'.repeat(250) +
+      'upsertPrLogRow' +
+      ' — ' +
+      RETRACTION_ANCHOR_START +
+      'this call is malformed on a bare heading, but the claim is fenced.' +
+      RETRACTION_ANCHOR_END;
+    expect(malformedOffenders(anchored)).toEqual([]);
   });
 });

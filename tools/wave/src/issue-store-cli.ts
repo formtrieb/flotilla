@@ -684,6 +684,33 @@ function writeReceipt(
 }
 
 /**
+ * The `STILL OPEN:` line `close` writes to stderr when the post-close probe
+ * still reads `open` (#399) — the satisfied-but-not-by-PR case (e.g. a
+ * release) that this call does not natively close. It speaks in the READER'S
+ * terms and names no document, because the caller may be any consumer repo
+ * and this repo's own release procedure is not a file they have (#801).
+ *
+ * This module owns the sentence; `close-row` — the done-reconcile verb that
+ * runs the same probe on the same tracker write — calls this SAME function
+ * rather than carrying its own copy (#800), so the two renderings cannot
+ * drift apart the way a duplicated string could. It is exported for exactly
+ * that one caller and is module-local on the barrel (never root-exported —
+ * see barrel-drift.spec.ts's `./issue-store-cli` allowlist entry): a
+ * consumer reaches this text only by running `issue-store close` or
+ * `close-row` and reading their stderr, never by importing the renderer.
+ */
+export function stillOpenLine(id: string, prUrl: string): string {
+  return (
+    `STILL OPEN: issue ${id} recorded closing facts (${prUrl}) but the ` +
+    `tracker still reports it OPEN — this call does not natively close ` +
+    `an issue whose satisfying act was not a merged PR carrying its own ` +
+    `close phrase. It stays open until that native close happens, and ` +
+    `there is no further close verb to reach for: close it by hand in ` +
+    `the tracker.\n`
+  );
+}
+
+/**
  * Run the issue-store CLI.
  *
  * @param args - CLI argument list (typically `process.argv.slice(2)`)
@@ -920,14 +947,7 @@ export async function runIssueStore(
         const closing = await store.readClosing(id);
         printJson(closing);
         if (closing.state === 'open') {
-          process.stderr.write(
-            `STILL OPEN: issue ${id} recorded closing facts (${prUrl}) but the ` +
-              `tracker still reports it OPEN — this call does not natively close ` +
-              `an issue whose satisfying act was not a merged PR carrying its own ` +
-              `close phrase. It stays open until that native close happens, and ` +
-              `there is no further close verb to reach for: close it by hand in ` +
-              `the tracker.\n`,
-          );
+          process.stderr.write(stillOpenLine(id, prUrl));
         }
         return 0;
       }
