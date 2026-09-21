@@ -7,7 +7,11 @@
  * - The **claim ledger is the workflow STATE** (config-mapped names, defaults
  *   `Todo / In Progress / In Review`; ADR-0020) — not a `wave/<rung>` label. The
  *   board is the live wave dashboard, and Linear's GitHub integration already
- *   flips the terminal rung to `Done` on PR-merge.
+ *   flips the terminal rung to `Done` on PR-merge. That same integration can
+ *   ALSO move an issue on PR **open** — a per-team automation, independent of
+ *   every engine write, that this adapter never configures and `store-preflight`
+ *   never probes (ADR-0020 amendment, 2026-09-21: wave-setup's Linear
+ *   preconditions cover aligning it to `states.inFlight`/`states.inReview`).
  * - Everything vocabulary-shaped stays a LABEL exactly like GitHub: the
  *   eligibility OR-set, `risk/<x>`, `worker/<x>`, the triage vocab, and the
  *   orthogonal `wave/needs-attention` flag (a flag CANNOT be a state, ADR-0006).

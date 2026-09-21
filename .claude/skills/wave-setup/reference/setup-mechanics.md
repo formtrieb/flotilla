@@ -53,7 +53,7 @@ Each check reports `pass` / `fail` / `not-applicable`; the report `ok` is `true`
 
 | Check (`name`) | `github` | `linear` | `markdown` |
 |---|---|---|---|
-| `tracker-host-integration` | n/a (GitHub is its own host) | **probed** — Linear↔GitHub integration installed? (n/a when `states.doneState` is set — the FOR-13 fallback) | n/a |
+| `tracker-host-integration` | n/a (GitHub is its own host) | **probed** — WORKSPACE-level presence only, never a team-or-repo binding: is a Linear↔GitHub integration installed anywhere in the workspace? (n/a when `states.doneState` is set — the FOR-13 fallback) | n/a |
 | `state-catalog` | **probed** (issue #131) — GitHub's claims *are* labels, which is exactly why they need verifying: every label the wave reads or writes must exist in the repository — the eligibility set, `risk/*` (four), `worker/*` (four), the three `wave/*` claim rungs and `wave/needs-attention` (thirteen on a fresh repo with the defaults). A `fail` names each missing label in `detail`; re-run with `--create-missing-labels` (above) to create exactly that set through the engine's own credential, or, when that credential cannot create labels, create them once by hand (`gh label create <name>` per name, or the repository's label settings) and re-run | **probed** — the team catalog covers every state name the wave will `setState` to, read off the EFFECTIVE `states` map (this consumer's overrides merged over the defaults), never off the defaults alone: the three claim rungs (defaults `Todo`/`In Progress`/`In Review`), the unclaim target (default `Backlog`) and the unplanned target (default `Canceled`) — each of the five configurable, each verified under whatever name this consumer configured — plus `doneState` when set | n/a |
 | `goalBinding` (a FIELD beside `checks` — advisory, never moves `ok`) | `milestone` | **no default** — an undeclared `store.goal.container` reads `advisory`/`unbound` | `goal-file` |
 
@@ -487,7 +487,7 @@ This value is not consumer-specific — it is the SAME string for every Node con
 }
 ```
 
-Before writing this config, walk through the SKILL.md "Linear operational preconditions" checklist with the consumer (GitHub integration installed, `Fixes <TEAM-NN>` PR-body convention, PR-route discipline, the `states.unclaimTarget`-vs-`states.queued` team convention) — none of it is engine-checkable, so `config validate` passing does not mean these hold.
+Before writing this config, walk through the SKILL.md "Linear operational preconditions" checklist with the consumer (GitHub integration installed, the team's PR-automation aligned to `states.inFlight`/`states.inReview`, `Fixes <TEAM-NN>` PR-body convention, PR-route discipline, the `states.unclaimTarget`-vs-`states.queued` team convention) — none of it is engine-checkable, so `config validate` passing does not mean these hold.
 
 #### linear store, no Linear↔GitHub integration (the opt-in `doneState` fallback, FOR-13)
 

@@ -16,7 +16,7 @@ on.
 
 | Capability | GitHub Issues | Linear | Markdown files (local) |
 | --- | --- | --- | --- |
-| Claim ledger `queued / in-flight / in-review` | `wave/*` labels | workflow states, config-mapped (the board *is* the ledger) — [ADR-0020](adr/0020-linear-claims-live-in-workflow-states-triage-vocabulary-stays-labels.md) | status line |
+| Claim ledger `queued / in-flight / in-review` | `wave/*` labels | workflow states, config-mapped (the board *is* the ledger) — [ADR-0020](adr/0020-linear-claims-live-in-workflow-states-triage-vocabulary-stays-labels.md); the team's own PR-automation must be aligned to the same states or it rewrites the ledger out of band on PR open, not only on merge — [2026-09-21 amendment](adr/0020-linear-claims-live-in-workflow-states-triage-vocabulary-stays-labels.md#amendment-2026-09-21--linears-own-pr-automation-is-a-documented-operational-precondition-not-a-probed-fact-issue-756) | status line |
 | needs-attention flag + question payload | label + structured comment | label + structured comment | field + block |
 | Wave-eligibility marker (configurable OR-set) | labels | labels | status |
 | Triage states | labels | labels (+ `Canceled` for unplanned — ADR-0020) | status line |
