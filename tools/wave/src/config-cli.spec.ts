@@ -374,7 +374,7 @@ describe('config validate — unknown keys are named, never refused (issue #761)
     expect(warningLines()[0]).toContain('"verifyy"');
     // The closed set is spelled out, the way every refusal in wave-config.ts
     // spells its own — an author who mistyped is one line from the fix.
-    expect(warningLines()[0]).toContain('store, verify, cleanup, engine');
+    expect(warningLines()[0]).toContain('store, verify, cleanup, engine, models');
   });
 
   it.each([
@@ -587,6 +587,74 @@ describe("config validate — an absolute path in an engine binding's ARGUMENT p
     });
     expect(runConfig(['validate', path])).toBe(0);
     expect(warningLines()).toEqual([]);
+  });
+});
+
+// ── models — the tier→model-id block (ADR-0012 Amendment 2026-09-21) ────────
+//
+// The loader refuses the block's unusable SHAPES (a non-object, a non-string
+// value, an empty id — pinned in wave-config.spec.ts). What is left for this
+// verb is the finding the loader deliberately reads past: a MISSPELLED key,
+// which binds nothing in silence and would otherwise surface as a wave running
+// on whatever model happened to be coordinating it.
+
+describe('config validate — the models block (ADR-0012 Amendment 2026-09-21)', () => {
+  const MODELS = {
+    heavy: 'consumer-heavy-id',
+    standard: 'consumer-standard-id',
+    scribe: 'consumer-scribe-id',
+  };
+
+  it('a fully-declared models block validates with ZERO warnings, and reports what it bound', () => {
+    const path = writeConfig({ store: { kind: 'github' }, models: MODELS });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toEqual([]);
+    expect(stdoutBuf).toContain(
+      'models: heavy="consumer-heavy-id", standard="consumer-standard-id", scribe="consumer-scribe-id"',
+    );
+  });
+
+  it('an unknown key under models is ONE warning naming the block\'s declared keys, exit 0', () => {
+    const path = writeConfig({ store: { kind: 'github' }, models: { ...MODELS, scribes: 'x' } });
+    expect(runConfig(['validate', path])).toBe(0); // never a refusal
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain('wave config "models"');
+    expect(warningLines()[0]).toContain('"scribes"');
+    expect(warningLines()[0]).toContain('heavy, standard, scribe');
+    // The count rides on the ok line too, so a piped stdout never reads clean.
+    expect(stdoutBuf).toContain('1 warning(s)');
+  });
+
+  it('NEGATIVE CONTROL — the same config with the key spelled right draws no warning at all', () => {
+    // The pair that makes the warning above mean something: without it, "one
+    // warning" is compatible with a walk that fires on every models block.
+    const path = writeConfig({ store: { kind: 'github' }, models: { scribe: 'x' } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toEqual([]);
+  });
+
+  it('a malformed models block is REFUSED by the loader, exit 1, with the key named', () => {
+    // The other half of the tier: the shapes that are not a typo but an
+    // unusable binding do not come back as advice.
+    const path = writeConfig({ store: { kind: 'github' }, models: { heavy: '' } });
+    expect(runConfig(['validate', path])).toBe(1);
+    expect(stderrBuf).toContain('wave config "models.heavy"');
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('--json carries the models warning inside the answer, not as a stderr line', () => {
+    const path = writeConfig({ store: { kind: 'github' }, models: { heavyy: 'x' } });
+    expect(runConfig(['validate', path, '--json'])).toBe(0);
+    expect(stderrBuf).toBe('');
+    const answer = JSON.parse(stdoutBuf) as {
+      ok: boolean;
+      warnings: { block: string; path: string; kind: string }[];
+    };
+    expect(answer.ok).toBe(true);
+    expect(answer.warnings).toHaveLength(1);
+    expect(answer.warnings[0].block).toBe('models');
+    expect(answer.warnings[0].path).toBe('models.heavyy');
+    expect(answer.warnings[0].kind).toBe('unknown-key');
   });
 });
 

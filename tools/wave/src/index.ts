@@ -919,6 +919,17 @@ export {
   // reconciliation) — a root-only consumer reading `config.cleanup` needs the
   // type to annotate it.
   type CleanupConfig,
+  // The tier→model-id binding (ADR-0012 Amendment 2026-09-21) — the standing,
+  // repo-level answer to "which concrete model does the `heavy` tier mean here",
+  // which the 2026-09-16 amendment deferred. TYPE ONLY, and that is the whole
+  // of this key's root surface: the loader's refusal is a plain `Error` (the
+  // house style every additive config key since `verify.…needs` follows — only
+  // `engine.cli` mints a typed one, and only because a consumer branches on its
+  // discriminant), and the composer reads the block through the verb. What a
+  // root-only consumer needs is the shape, to annotate `config.models` when it
+  // reads or authors one — the same reason `CleanupConfig` and
+  // `StoreGoalConfig` above are here.
+  type ModelsConfig,
 } from './wave-config';
 
 // The plugin/engine LOCKSTEP COMPARISON (ADR-0032) — the other half of the same

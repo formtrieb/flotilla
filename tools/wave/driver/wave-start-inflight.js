@@ -3,7 +3,8 @@
 // THIS FILE IS THE SOURCE OF TRUTH FOR THE DISPATCH SCRIPT. It is not pasted
 // from anywhere and it is not transcribed by hand: the engine verb
 // `compose-driver` reads it, substitutes the compose-time constants below
-// (REPO_ROOT, WAVE_CLI, REPORTS_DIR, VERDICTS_DIR, REVIEWER_AGENT) and the
+// (REPO_ROOT, WAVE_CLI, REPORTS_DIR, VERDICTS_DIR, REVIEWER_AGENT,
+// SCRIBE_MODEL) and the
 // per-row ISSUES array, and writes the finished script to the path the
 // Coordinator hands the harness Workflow tool as its `scriptPath`. The design
 // rationale — why the pipeline decomposes this way, why the schema copies drop
@@ -279,6 +280,32 @@ const VERDICTS_DIR = '<absolute .flotilla/waves/<slug>/verdicts>'
 // spelling, exactly as WAVE_CLI states no invocation form (ADR-0032).
 const REVIEWER_AGENT = '<agent name — bare in the source form, <plugin>:<agent> in the installed form>'
 
+// SCRIBE_MODEL IS THE SCRIBE STAGE'S OWN BINDING, and the last constant this
+// template gained (ADR-0012 Amendment 2026-09-21). It is filled from the
+// consumer's `models` block in `wave.config.json` — `models.scribe`, else
+// `models.standard`, else the EMPTY STRING — read once per compose, because
+// `models` is a config-level fact and the Scribe's cost cannot differ between
+// rows of one wave.
+//
+// IT IS NOT A RISK-DERIVED TIER. Every other `model:` in this script is
+// `issue.model`, the per-row value the Coordinator recorded; the Scribe is a
+// FIXED CHEAP STAGE that writes one sidecar file from a payload it is handed,
+// so its binding is a stage constant with a config key of its own. That is also
+// why the chain prefers `models.standard` over the row's model: a heavy row's
+// expensive model is the last thing this stage wants to inherit.
+//
+// THE EMPTY STRING MEANS "THIS COMPOSE STATES NONE", NEVER "OMIT THE KEY". The
+// stage below binds `SCRIBE_MODEL || issue.model`, so an undeclared `models`
+// block puts the Scribe on the row's own recorded model. An `agent()` call with
+// NO `model` key at all is the one outcome this chain may not reach: a stage
+// dispatched without one silently re-inherits whatever model happens to be
+// coordinating the session, per stage — the cost regression ADR-0007's
+// 2026-07-31 amendment closed for the Reviewer (see the Stage-3 CURRENCY CHECK
+// below, which names the same tell). Before this constant existed the stage
+// carried a hard-coded cheap-tier model id, which is exactly the brand literal
+// in a durable artefact ADR-0012 forbids; no model id is spelled here now.
+const SCRIBE_MODEL = '<models.scribe, else models.standard, else empty — empty binds the recorded row model>'
+
 const j = (items) => (items.length ? items : ['none']).map(s => `- ${s}`).join('\n')
 
 // Render one value as a POSIX shell SINGLE-QUOTED word (issue #776, folded into
@@ -345,13 +372,15 @@ const ISSUES = [
     // Binds BOTH the Worker (Stage 1) and the Reviewer (Stage 3, ADR-0007
     // Amendment 2026-07-31) — one tier for the whole row, bound to ONE concrete
     // model. The concrete id is the CONSUMER's, never the engine's: compose-driver
-    // echoes the model the Coordinator recorded for this row with
-    // `spine set-branch --model` (or this row's `--row-meta` `model` override) and
-    // REFUSES the compose when neither exists, naming the row's Risk-derived tier
-    // (`heavy` for cross-feature-refactor / public-API-change, `standard`
-    // otherwise) and that remedy. No model id is spelled anywhere in the engine or
-    // in this template — a brand literal in a durable artefact is exactly what
-    // ADR-0012 (Amendment 2026-09-16) retired.
+    // echoes it from three sources, most specific first — this row's `--row-meta`
+    // `model` override, the model the Coordinator recorded for this row with
+    // `spine set-branch --model`, then the consumer's standing `models.<tier>`
+    // binding in wave.config.json — and REFUSES the compose when none of the
+    // three answers, naming the row's Risk-derived tier (`heavy` for
+    // cross-feature-refactor / public-API-change, `standard` otherwise), that
+    // config key, and the set-branch remedy. No model id is spelled anywhere in
+    // the engine or in this template — a brand literal in a durable artefact is
+    // exactly what ADR-0012 (Amendments 2026-09-16 and 2026-09-21) retired.
     model: '<the concrete model recorded for this row — consumer-owned, never spelled here>',
     anchorSha: '<COORDINATOR_HEAD_SHA>',   // git rev-parse HEAD at dispatch time — the wave anchor
     coordinatorBranch: 'feat/<slug>',
@@ -502,9 +531,14 @@ ISSUES.forEach(assertRequiredRowFields)
 // here has no failure of its own to hit: every brief interpolates fine, the
 // Worker runs, and it burns a full agent budget on the one blocker an agent
 // cannot clear by construction.
-// The default token is the engine's HUMAN_GATED_WORKER (tools/wave/src/wave-md-rw.ts);
-// a consumer that re-spelled or trimmed its config-governed Worker vocabulary
-// fills its own token(s) in here at compose time, exactly like WAVE_CLI.
+// The default token is the engine's HUMAN_GATED_WORKER (tools/wave/src/wave-md-rw.ts).
+// THIS ARRAY IS A STATIC LITERAL, NOT A COMPOSE-TIME CONSTANT — compose-driver
+// fills the six constants above and the ISSUES array, and nothing else, so a
+// consumer that re-spelled or trimmed its config-governed Worker vocabulary
+// edits this line in its own copy of the script rather than declaring it in
+// wave.config.json. What keeps the copy honest is the pin, not a fill:
+// skill-schema-drift.spec.ts extracts this array and asserts it equals the
+// engine constant, so a re-spelling on either side fails loud.
 const HUMAN_GATED_WORKERS = ['HITL-required']
 
 function assertNotHumanGated(issue) {
@@ -1285,7 +1319,10 @@ async function scribe(kind, issue, iter, payload, passthrough) {
   try {
     const r = await agent(scribeBrief(kind, issue, iter, payload), {
       label: `scribe-${kind}:${issue.id}`, phase: 'Dispatch',
-      model: 'haiku', effort: 'low', schema: SCRIBE_RESULT_SCHEMA,
+      // `SCRIBE_MODEL || issue.model` — never an omitted `model` key. See the
+      // constant's own comment above for the chain and why its floor is the
+      // row's recorded model rather than an omission.
+      model: SCRIBE_MODEL || issue.model, effort: 'low', schema: SCRIBE_RESULT_SCHEMA,
     })
     if (!r.ok) log(`SIDECAR-WRITE FAILED ${kind} ${issue.id}: ${r.error || 'unknown'}`)
     else if (r.notice) log(`SIDECAR-WRITE NOTICE ${kind} ${issue.id}: ${r.notice}`)

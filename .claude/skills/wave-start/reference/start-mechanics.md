@@ -314,9 +314,10 @@ fi
 #     (exit 1, naming the row, its tier and this remedy) instead of being
 #     silently defaulted — the literal-id fallback that used to fill that gap is
 #     retired (ADR-0012 Amendment 2026-09-16). `--row-meta`'s per-row `model`
-#     key overrides this recording for one compose; formalising the tier→model
-#     binding as a config key is a deferred follow-on, so until it exists this
-#     flag IS the binding. $MODEL is the consumer's own choice of model id, read
+#     key overrides this recording for one compose; below BOTH sits the standing
+#     `models.<tier>` binding in `wave.config.json` (ADR-0012 Amendment
+#     2026-09-21), which answers for a row this flag did not — so the refusal
+#     names all three. $MODEL is the consumer's own choice of model id, read
 #     off the roster — no model name is spelled in the engine, in the shipped
 #     driver, or in this document.
 {{wave-cli}} issue-store transition "$ID" in-flight                     # coarse rung, second

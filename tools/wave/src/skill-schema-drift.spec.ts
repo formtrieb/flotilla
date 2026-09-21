@@ -3693,3 +3693,240 @@ describe('skill-schema-drift — the host-seam clause teaches the status title/b
     expect(teachesStatusContentRead(both)).toBe(true);
   });
 });
+
+// ─── the human-gate token is a STATIC literal, and both copies say so ────────
+//
+// The defect this closes is a POINTER defect, the same family as the anyOf-free
+// pins above: two documents told a reader that `HUMAN_GATED_WORKERS` is
+// "compose-time-filled, like WAVE_CLI". It never was. `composeDriverScript`
+// fills six named constants and the ISSUES array and refuses a template missing
+// any of them; this array is not among them, and a consumer who believed the
+// sentence would look for a config key that does not exist while its Worker
+// vocabulary went ungated.
+//
+// What actually holds the copy honest is the census + structural pin one block
+// up — extract the array from the shipped script, compare it to the engine's
+// own `HUMAN_GATED_WORKER` — so the corrected sentences say THAT. Pinned here
+// because a correction nothing checks is one re-wording from being wrong again,
+// and because the true claim (a static literal held by a spec) is less obvious
+// than the false one it replaces.
+
+describe('skill-schema-drift — the human-gate token is taught as a STATIC literal, never as a compose-time fill', () => {
+  /**
+   * Each copy, with the anchor its own human-gate region starts at.
+   *
+   * SCOPED, never file-wide, and the unscoped version was measured wrong before
+   * it was fixed: `workflow-driver.md`'s own orientation box lists every symbol
+   * the document reasons about, `HUMAN_GATED_WORKERS` among them, ~400 lines
+   * ahead of the section that explains it. A region anchored on the first
+   * mention of the NAME reads that box and never reaches the claim under test.
+   */
+  const HUMAN_GATE_POINTERS: ReadonlyArray<{ label: string; path: string; anchor: string }> = [
+    {
+      label: 'wave-start/reference/workflow-driver.md',
+      path: WORKFLOW_DRIVER_MD,
+      anchor: '## The human gate',
+    },
+    {
+      label: 'engine driver/wave-start-inflight.js',
+      path: WORKFLOW_DRIVER_JS,
+      anchor: 'Compose-time HUMAN GATE',
+    },
+  ];
+
+  /**
+   * The corrected claim, as a predicate over one document's text: it says the
+   * array is STATIC (not filled), and it names the pin that holds it.
+   *
+   * Two properties, both required, because either alone is a sentence that
+   * rots. "Static" without the pin leaves a reader thinking nothing checks the
+   * copy; the pin without "static" is the false compose-time claim with a
+   * citation bolted on.
+   */
+  function teachesStaticHumanGate(text: string): boolean {
+    const saysStatic = /STATIC LITERAL|static literal/.test(text) && /NOT.{0,30}compose-time|not.{0,30}compose-time/i.test(text);
+    const namesThePin = /skill-schema-drift\.spec\.ts/.test(text);
+    return saysStatic && namesThePin;
+  }
+
+  /** The region of a document that talks about the human gate, never the whole file. */
+  function humanGateRegion(text: string, anchor: string): string {
+    const at = text.indexOf(anchor);
+    if (at < 0) throw new Error(`the human-gate anchor ${JSON.stringify(anchor)} is not in this copy`);
+    // The section runs from its own anchor to the declaration and a little past
+    // it; both copies keep the whole argument well inside this span.
+    const region = text.slice(at, at + 4000);
+    expect(region).toContain('HUMAN_GATED_WORKERS');
+    return region;
+  }
+
+  it.each(HUMAN_GATE_POINTERS.map((p) => [p.label, p] as const))(
+    '%s says the token is a static literal held by the drift pin',
+    (label, doc) => {
+      const region = humanGateRegion(readFileSync(doc.path, 'utf-8'), doc.anchor);
+      expect(teachesStaticHumanGate(region), `${label} does not teach the corrected claim`).toBe(
+        true,
+      );
+    },
+  );
+
+  it('NEGATIVE CONTROL — the region really is SCOPED, and a missing anchor fails loud', () => {
+    // Guards the discriminator the comment above records: the orientation box
+    // at the top of workflow-driver.md names the symbol ~400 lines ahead of the
+    // section under test, so a region anchored on the NAME would read the wrong
+    // text and pass or fail for the wrong reason.
+    const md = readFileSync(WORKFLOW_DRIVER_MD, 'utf-8');
+    expect(md.indexOf('HUMAN_GATED_WORKERS')).toBeLessThan(md.indexOf('## The human gate'));
+    expect(() => humanGateRegion(md, '## No Such Section')).toThrow(/anchor .* is not in this copy/);
+  });
+
+  it.each(HUMAN_GATE_POINTERS.map((p) => [p.label, p.path] as const))(
+    '%s no longer carries the retired compose-time-fill claim',
+    (label, path) => {
+      const text = readFileSync(path, 'utf-8');
+      expect(text, label).not.toMatch(/The token is compose-time-filled/);
+      expect(text, label).not.toMatch(/fills its own token\(s\) in here at compose time/);
+      expect(text, label).not.toMatch(/so it is pasted, exactly as the two/);
+    },
+  );
+
+  it('PREMISE — the composer really does NOT fill this array', () => {
+    // The claim the corrected sentences make, checked against the composer
+    // itself rather than taken on trust. If a later row ever DID make the
+    // array compose-filled, this premise fails first and the prose pins above
+    // become the thing to change, in that order.
+    const composer = readFileSync(join(__dirname, 'compose-driver.ts'), 'utf-8');
+    const filled = [...composer.matchAll(/fillStringConst\(src, '([A-Z_]+)'/g)].map((m) => m[1]);
+    expect(filled).toEqual([
+      'REPO_ROOT',
+      'WAVE_CLI',
+      'REPORTS_DIR',
+      'VERDICTS_DIR',
+      'REVIEWER_AGENT',
+      'SCRIBE_MODEL',
+    ]);
+    expect(filled).not.toContain('HUMAN_GATED_WORKERS');
+  });
+
+  it('NEGATIVE CONTROL — the predicate fires on the sentence this row retired', () => {
+    const retired =
+      '**The token is compose-time-filled, like `WAVE_CLI`.** The script cannot `import` it — ' +
+      'no filesystem, no local modules — so it is pasted, exactly as the two `*_SCHEMA` literals are.';
+    expect(teachesStaticHumanGate(retired)).toBe(false);
+
+    // …and on each half alone, so the predicate is a discriminator rather than
+    // a check that anything long enough passes.
+    expect(teachesStaticHumanGate('This is a STATIC LITERAL and is NOT compose-time filled.')).toBe(
+      false,
+    );
+    expect(teachesStaticHumanGate('Pinned by skill-schema-drift.spec.ts.')).toBe(false);
+    expect(
+      teachesStaticHumanGate(
+        'A STATIC LITERAL, NOT a compose-time constant — pinned by skill-schema-drift.spec.ts.',
+      ),
+    ).toBe(true);
+  });
+});
+
+// ─── every declared `models.*` key is TAUGHT by the skill that authors it ────
+//
+// Exactly the shape of the `cleanup.*` pin above, with a different authority on
+// the reading end and the same one on the writing end. `models` (ADR-0012
+// Amendment 2026-09-21) is a config key a consumer only ever learns about from
+// `wave-setup`: nothing derives it, no preflight probes it, and a key nobody
+// names is a key nobody declares — which for `models.scribe` is not merely a
+// missed convenience, it is a driver stage running on a heavy row's model.
+//
+// The key set is READ off `ModelsConfig` in wave-config.ts rather than
+// transcribed, so a fourth key added tomorrow fails this pin with nobody having
+// to remember a list in this file.
+
+const WAVE_SETUP_SKILL_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-setup/SKILL.md',
+);
+const SETUP_MECHANICS_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-setup/reference/setup-mechanics.md',
+);
+
+/**
+ * The load-bearing assertion: `md` names every declared key, and there was at
+ * least one key to check. Throws naming the missing key(s) so a failure says
+ * WHICH key went untaught.
+ */
+function assertModelsKeysTaught(md: string, keys: readonly string[]): void {
+  if (keys.length === 0) {
+    throw new Error(
+      'ModelsConfig declared no keys at all — this pin would pass vacuously. ' +
+        'Re-anchor the extraction in wave-config.ts.',
+    );
+  }
+  const untaught = keys.filter((key) => !md.includes('`' + key + '`'));
+  if (untaught.length > 0) {
+    throw new Error(
+      'the setup reference never names `' +
+        untaught.join('` / `') +
+        '` — every declarable models key must be taught by the skill that authors the config. ' +
+        'A tier binding nothing documents is a tier no consumer declares, and for the scribe ' +
+        'stage that means a heavy row paying its own model to write one sidecar file.',
+    );
+  }
+}
+
+describe('skill-schema-drift — wave-setup teaches every declared models.* key (ADR-0012 Amendment 2026-09-21)', () => {
+  const modelsKeys = declaredKeys(
+    interfaceBody(readFileSync(WAVE_CONFIG_TS, 'utf-8'), 'ModelsConfig'),
+  );
+  const setupMechanicsMd = readFileSync(SETUP_MECHANICS_MD, 'utf-8');
+  const waveSetupSkillMd = readFileSync(WAVE_SETUP_SKILL_MD, 'utf-8');
+
+  it('the extraction finds the real key set — never a vacuous empty', () => {
+    expect(modelsKeys).toEqual(['heavy', 'scribe', 'standard']);
+  });
+
+  it('the setup reference lists `models` in the WaveConfig table and gives the block its own table', () => {
+    expect(setupMechanicsMd).toContain('| `models` | no |');
+    expect(setupMechanicsMd).toContain('### `ModelsConfig`');
+  });
+
+  it('...and that table names every declared key', () => {
+    expect(() => assertModelsKeysTaught(setupMechanicsMd, modelsKeys)).not.toThrow();
+    for (const key of modelsKeys) expect(setupMechanicsMd).toContain('| `' + key + '` | no |');
+  });
+
+  it('the setup SKILL interviews the block rather than scaffolding it', () => {
+    // Coordinator ruling 2026-09-21: scaffold-only would leave the key
+    // undiscoverable, because unlike `engine.cli` there is no repo-shape fact
+    // to observe — only a preference the consumer holds.
+    expect(waveSetupSkillMd).toContain('### 4. Models (optional)');
+    expect(waveSetupSkillMd).toContain('The config has four concerns');
+    expect(waveSetupSkillMd).toMatch(/Interview it — do not scaffold it/);
+    // The procedure's own interview step names it too, so a run that reads only
+    // the ordered steps still asks.
+    expect(waveSetupSkillMd).toContain('store kind → eligibility → verify → models');
+    // …and it names every key, so the round-trip question is answerable.
+    expect(() => assertModelsKeysTaught(waveSetupSkillMd, modelsKeys)).not.toThrow();
+  });
+
+  it('NEGATIVE CONTROL — a key the doc does not name is caught, naming that key', () => {
+    expect(() =>
+      assertModelsKeysTaught(setupMechanicsMd, [...modelsKeys, 'reviewerOnly']),
+    ).toThrow(/`reviewerOnly`/);
+  });
+
+  it('NEGATIVE CONTROL — dropping the scribe key from the reference is caught', () => {
+    // The realistic shape of this defect: a doc edit that keeps the two tiers
+    // and loses the stage key — the one whose absence actually costs money.
+    const stripped = setupMechanicsMd.split('`scribe`').join('<dropped>');
+    expect(stripped).not.toEqual(setupMechanicsMd); // the strip actually matched
+    expect(() => assertModelsKeysTaught(stripped, modelsKeys)).toThrow(/`scribe`/);
+  });
+
+  it('NEGATIVE CONTROL — a renamed or emptied interface fails loud instead of passing vacuously', () => {
+    expect(() => interfaceBody('// nothing here\n', 'ModelsConfig')).toThrow(
+      /interface ModelsConfig not found/,
+    );
+    expect(() => assertModelsKeysTaught(setupMechanicsMd, [])).toThrow(/pass vacuously/);
+  });
+});

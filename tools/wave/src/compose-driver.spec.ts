@@ -7,7 +7,7 @@
  *  1. **Substitution is total and nothing else moves.** The composed script is
  *     re-derived here by an INDEPENDENT implementation (plain string surgery in
  *     this file, not the module's own helpers) and compared byte-for-byte. That
- *     is what makes "the composed script is the template with its five constants
+ *     is what makes "the composed script is the template with its six constants
  *     and its ISSUES array filled" a checkable claim instead of a hope — the
  *     property that used to be defended by a currency checklist.
  *
@@ -44,12 +44,12 @@ import {
   composeIssueSpec,
   depsSetupFrom,
   isMissingField,
-  modelForRisk,
   projectScopeGrants,
   resolveReviewerAgent,
   runComposeDriver,
   slugFromSpinePath,
   stripBareIds,
+  tierForRisk,
   type DriverRow,
 } from './compose-driver';
 import type { VerifyCommand } from './verify';
@@ -109,6 +109,10 @@ const CONSTANTS = {
   reportsDir: '/abs/repo/.flotilla/waves/w/reports',
   verdictsDir: '/abs/repo/.flotilla/waves/w/verdicts',
   reviewerAgent: 'flotilla:wave-reviewer',
+  // The SIXTH constant (ADR-0012 Amendment 2026-09-21). A consumer-shaped id
+  // rather than a brand, for the same reason every fixture model in this file
+  // is one: the no-brand scan below reads this source too.
+  scribeModel: 'consumer-scribe-model-id',
 };
 
 /**
@@ -125,6 +129,7 @@ function expectedScript(rows: DriverRow[]): string {
     ['REPORTS_DIR', CONSTANTS.reportsDir],
     ['VERDICTS_DIR', CONSTANTS.verdictsDir],
     ['REVIEWER_AGENT', CONSTANTS.reviewerAgent],
+    ['SCRIBE_MODEL', CONSTANTS.scribeModel],
   ];
   for (const [name, value] of fills) {
     const re = new RegExp(`^const ${name} = '[^']*'$`, 'm');
@@ -263,7 +268,7 @@ function metaOf(script: string): {
 // ─── 1. the substitution ──────────────────────────────────────────────────────
 
 describe('compose-driver — the composed script is the shipped template with its constants filled', () => {
-  it('differs from the template ONLY in the five constants and the ISSUES array', () => {
+  it('differs from the template ONLY in the six constants and the ISSUES array', () => {
     const rows = [row(), row({ id: '43', slug: 'other', model: 'opus', risk: 'public-API-change' })];
     const composed = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows });
     expect(composed).toBe(expectedScript(rows));
@@ -283,9 +288,25 @@ describe('compose-driver — the composed script is the shipped template with it
     expect(composed).toContain(`const REPORTS_DIR = ${JSON.stringify(CONSTANTS.reportsDir)}`);
     expect(composed).toContain(`const VERDICTS_DIR = ${JSON.stringify(CONSTANTS.verdictsDir)}`);
     expect(composed).toContain(`const REVIEWER_AGENT = ${JSON.stringify(CONSTANTS.reviewerAgent)}`);
+    expect(composed).toContain(`const SCRIBE_MODEL = ${JSON.stringify(CONSTANTS.scribeModel)}`);
     expect(composed).not.toContain('<absolute repo root');
     expect(composed).not.toContain('<engine.cli from wave.config.json');
+    expect(composed).not.toContain('<models.scribe, else models.standard');
     expect(composed).not.toContain("id: 'NN'");
+  });
+
+  it('the sixth constant composes even when this consumer declares no models block', () => {
+    // `''` is the ONLY legitimately-empty constant of the six, and it still has
+    // to be FILLED: the placeholder is prose, and a placeholder reaching a
+    // dispatch would make the stage's own `|| issue.model` fallback unreachable.
+    const composed = composeDriverScript({
+      template: TEMPLATE,
+      ...CONSTANTS,
+      scribeModel: undefined,
+      rows: [row()],
+    });
+    expect(composed).toContain('const SCRIBE_MODEL = ""');
+    expect(composed).not.toContain('<models.scribe, else models.standard');
   });
 
   it('NEGATIVE CONTROL — a template missing a placeholder constant fails loud, it does not silently skip the fill', () => {
@@ -293,6 +314,19 @@ describe('compose-driver — the composed script is the shipped template with it
     expect(broken).not.toEqual(TEMPLATE);
     expect(() => composeDriverScript({ template: broken, ...CONSTANTS, rows: [row()] })).toThrow(
       /no `const WAVE_CLI = '…'` line to fill/,
+    );
+  });
+
+  it('NEGATIVE CONTROL — a template missing the SCRIBE_MODEL placeholder is refused exactly like the other five', () => {
+    // The sixth constant is the one whose absence would fail SILENTLY if it
+    // were filled any other way: an unfilled `SCRIBE_MODEL` is still a truthy
+    // string, so `SCRIBE_MODEL || issue.model` would dispatch every Scribe
+    // against the placeholder PROSE rather than a model. It goes through the
+    // same `fillStringConst` as the rest precisely so that cannot happen.
+    const broken = TEMPLATE.replace(/^const SCRIBE_MODEL = '[^']*'$/m, 'const SCRIBE_MODEL = ""');
+    expect(broken).not.toEqual(TEMPLATE);
+    expect(() => composeDriverScript({ template: broken, ...CONSTANTS, rows: [row()] })).toThrow(
+      /no `const SCRIBE_MODEL = '…'` line to fill/,
     );
   });
 
@@ -627,15 +661,17 @@ describe('compose-driver — the derivations', () => {
   });
 
   // Updated by the ADR-0012 Amendment 2026-09-16 row: this helper used to return
-  // the two brand literals and now returns the ABSTRACT tier marker. The
+  // the two brand literals and now returns the ABSTRACT tier marker — and
+  // renamed to say so by the 2026-09-21 row that owns the barrel-drift
+  // allowlist which had pinned the old spelling. The
   // full-coverage pin over all four default Risk values, plus the "no engine
   // code maps a marker to an id" half, lives in its own appended describe block
   // at the end of this file.
-  it('modelForRisk binds the heavy tier marker to the two heavy Risk classes only', () => {
-    expect(modelForRisk('public-API-change')).toBe('heavy');
-    expect(modelForRisk('cross-feature-refactor')).toBe('heavy');
-    expect(modelForRisk('mechanical')).toBe('standard');
-    expect(modelForRisk('isolated-refactor')).toBe('standard');
+  it('tierForRisk binds the heavy tier marker to the two heavy Risk classes only', () => {
+    expect(tierForRisk('public-API-change')).toBe('heavy');
+    expect(tierForRisk('cross-feature-refactor')).toBe('heavy');
+    expect(tierForRisk('mechanical')).toBe('standard');
+    expect(tierForRisk('isolated-refactor')).toBe('standard');
   });
 
   it('closePhraseFor follows the store kind (Convention 4)', () => {
@@ -2495,30 +2531,40 @@ describe('compose-driver — a `model`-shaped branch slug does not shadow the re
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ADR-0012 Amendment 2026-09-16 — the engine derives a TIER, never a model id.
+// ADR-0012 Amendments 2026-09-16 and 2026-09-21 — the engine derives a TIER,
+// never a model id; the CONSUMER binds the tier, per row or standing.
 //
 // Three separate claims, each with its own falsifiable pin:
 //   1. No model brand is spelled in the composer module or the shipped driver
 //      template — including the template's own `ISSUES` placeholder comment,
-//      which is the copy an operator READS even though nothing extracts it now.
-//   2. `modelForRisk` answers with the abstract marker only, for all four
-//      default Risk values, and nothing in the engine maps that marker to an id.
-//   3. A row's `model` is ECHOED from what the Coordinator recorded — row-meta
-//      first, then the spine dispatch-log entry — and a row with neither is
-//      refused before the script is written.
+//      which is the copy an operator READS even though nothing extracts it now,
+//      and including the Scribe stage's own former literal, retired by the
+//      2026-09-21 amendment through the `models.scribe` config key.
+//   2. `tierForRisk` answers with the abstract marker only, for all four
+//      default Risk values, and nothing in the ENGINE maps that marker to an id
+//      — the only thing that maps it is the CONSUMER's own `models` block, read
+//      as an opaque string exactly as a recorded `--model` is.
+//   3. A row's `model` is ECHOED from what the consumer declared — row-meta
+//      first, then the spine dispatch-log entry, then `models.<tier>` — and a
+//      row with none of the three is refused before the script is written.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('compose-driver — no model brand is spelled in the engine or the shipped template (ADR-0012 Amendment 2026-09-16)', () => {
+describe('compose-driver — no model brand is spelled in the engine or the shipped template (ADR-0012 Amendments 2026-09-16 / 2026-09-21)', () => {
   /**
-   * The two literals this amendment retired, each assembled at runtime from
-   * two halves so this spec file's OWN source does not spell either one. That
-   * is not cosmetic: the pin's whole claim is that a repo-wide search for
+   * The three literals these amendments retired, each assembled at runtime from
+   * two halves so this spec file's OWN source does not spell any one of them.
+   * That is not cosmetic: the pin's whole claim is that a repo-wide search for
    * these names lands on nothing in the engine, and a guard that writes them
    * out would be the one hit a reader then has to explain away.
+   *
+   * The third entry is the Scribe stage's own former binding — the last
+   * concrete model id in the shipped driver, and the one the 2026-09-16 pin
+   * could not see because that row scanned only for the two it had retired.
    */
   const RETIRED_LITERALS = [
     { label: 'the heavy-tier brand', literal: `op${'us'}` },
     { label: 'the standard-tier brand', literal: `sonn${'et'}` },
+    { label: "the Scribe stage's former brand", literal: `hai${'ku'}` },
   ].map(({ label, literal }) => ({
     label,
     literal,
@@ -2565,6 +2611,25 @@ describe('compose-driver — no model brand is spelled in the engine or the ship
     // The abstract markers are named there; no id is.
     expect(rowLiteral).toMatch(/`heavy`/);
     expect(rowLiteral).toMatch(/`standard`/);
+    // …and, since the 2026-09-21 amendment, the THIRD rung the refusal names.
+    // An operator reading this comment has to learn that a standing config key
+    // can answer where a per-row recording did not.
+    expect(rowLiteral).toMatch(/`models\.<tier>`/);
+  });
+
+  it("the Scribe constant's own comment states the chain and forbids the omitted-key floor", () => {
+    // The stage's binding is the one place a reader could reasonably guess the
+    // old behaviour back (a cheap fixed tier), so the constant carries the
+    // chain in prose beside it — with the reason the chain may not bottom out
+    // in an absent `model` key, which is the outcome that silently re-inherits
+    // the session model per stage.
+    const at = TEMPLATE.indexOf('const SCRIBE_MODEL = ');
+    expect(at).toBeGreaterThan(-1);
+    const region = TEMPLATE.slice(TEMPLATE.indexOf('// SCRIBE_MODEL IS'), at);
+    expect(region).toMatch(/models\.scribe/);
+    expect(region).toMatch(/models\.standard/);
+    expect(region).toMatch(/NO `model` key at all/);
+    expect(region).toMatch(/re-inherits/);
   });
 
   it('NEGATIVE CONTROL — the scan fires when either literal is re-introduced into either source', () => {
@@ -2577,7 +2642,7 @@ describe('compose-driver — no model brand is spelled in the engine or the ship
   });
 });
 
-describe('compose-driver — the Risk-derived helper returns an abstract tier marker and nothing maps it to an id (ADR-0012 Amendment 2026-09-16)', () => {
+describe('compose-driver — the Risk-derived helper returns an abstract tier marker and no ENGINE code maps it to an id (ADR-0012 Amendments 2026-09-16 / 2026-09-21)', () => {
   /** The four default Risk values, from ADR-0007's frozen enum. */
   const DEFAULT_RISKS: Array<[string, string]> = [
     ['mechanical', 'standard'],
@@ -2587,34 +2652,58 @@ describe('compose-driver — the Risk-derived helper returns an abstract tier ma
   ];
 
   it.each(DEFAULT_RISKS)('Risk `%s` derives the `%s` tier marker', (risk, tier) => {
-    expect(modelForRisk(risk)).toBe(tier);
+    expect(tierForRisk(risk)).toBe(tier);
   });
 
   it('answers only those two markers — there is no third value and no id-shaped one', () => {
-    const answers = new Set(DEFAULT_RISKS.map(([risk]) => modelForRisk(risk)));
+    const answers = new Set(DEFAULT_RISKS.map(([risk]) => tierForRisk(risk)));
     expect([...answers].sort()).toEqual(['heavy', 'standard']);
     // An unknown Risk falls to the standard marker rather than inventing one.
-    expect(modelForRisk('something-nobody-configured')).toBe('standard');
+    expect(tierForRisk('something-nobody-configured')).toBe('standard');
   });
 
-  it('no engine code maps a tier marker to a model id — the composer never reads the helper for a row value', () => {
+  it('the old spelling is GONE as a symbol — the helper says what it returns', () => {
+    // The rename is the point of this half: `modelForRisk` answered with a tier
+    // from the moment the literal fallback was retired, and survived only
+    // because the barrel-drift allowlist pinned the spelling from outside that
+    // row's globs. A source-level scan, because a removed export cannot be
+    // imported to assert its absence.
     const composer = readFileSync(join(__dirname, 'compose-driver.ts'), 'utf8');
-    // The helper survives for ONE purpose: naming the tier inside the refusal.
-    const callSites = [...composer.matchAll(/modelForRisk\(/g)];
-    // one declaration + one use inside the refusal message
-    expect(callSites.length).toBeGreaterThan(0);
-    const refusalRegion = composer.slice(
-      composer.indexOf('const recordedModel ='),
+    expect(composer).not.toMatch(/\bmodelForRisk\b/);
+    expect(composer).toMatch(/export function tierForRisk\(/);
+  });
+
+  it('the composer reads the helper for the TIER only — the id it binds is a value the consumer wrote', () => {
+    const composer = readFileSync(join(__dirname, 'compose-driver.ts'), 'utf8');
+    // The helper survives for TWO purposes, and neither is an id: naming the
+    // tier inside the refusal, and choosing WHICH key of the consumer's own
+    // `models` block to read. Reading a consumer's string at a key the engine
+    // names is not the engine knowing a model.
+    expect([...composer.matchAll(/tierForRisk\(/g)].length).toBeGreaterThan(0);
+    const ladderRegion = composer.slice(
+      composer.indexOf('const tier = tierForRisk(view.risk);'),
       composer.indexOf('const composed: DriverRow ='),
     );
-    expect(refusalRegion).toContain('modelForRisk(view.risk)');
-    // ...and the row's own value is the recorded one, with no `??` fallback left.
-    expect(composer).toContain('model: recordedModel as string');
+    expect(ladderRegion).not.toBe('');
+    // The refusal names the tier it derived...
+    expect(ladderRegion).toContain('${tier} tier');
+    // ...and the third rung is a lookup in the CONSUMER's block, keyed by it.
+    expect(ladderRegion).toContain('configuredTierModel(config.models, tier)');
+    // The lookup itself maps a marker to a CONFIG VALUE and never to a literal.
+    const lookup = composer.slice(
+      composer.indexOf('function configuredTierModel('),
+      composer.indexOf('function scribeModelFrom('),
+    );
+    expect(lookup).toContain('models.heavy');
+    expect(lookup).toContain('models.standard');
+    // ...and the row's own value is the resolved one, with no `??` chain to a
+    // literal left anywhere.
+    expect(composer).toContain('model: resolvedModel,');
     expect(composer).not.toMatch(/model:\s*meta\.model\s*\?\?\s*modelByRow/);
   });
 });
 
-describe('compose-driver — a row with no recorded model is refused, end to end (ADR-0012 Amendment 2026-09-16)', () => {
+describe('compose-driver — the row-model ladder, end to end (ADR-0012 Amendments 2026-09-16 / 2026-09-21)', () => {
   let repoRoot: string;
   let anchor: string;
   let stdout: string;
@@ -2628,10 +2717,18 @@ describe('compose-driver — a row with no recorded model is refused, end to end
   /**
    * One dispatchable row. `recordedModel` is written onto the dispatch-log
    * entry exactly as `spine set-branch --model` writes it; passing `null`
-   * records the BRANCH and no model, which is the shape this refusal exists
+   * records the BRANCH and no model, which is the shape the refusal exists
    * for — a spine that a Coordinator built without the flag.
+   *
+   * `models` is this consumer's own standing block (ADR-0012 Amendment
+   * 2026-09-21) — the THIRD rung, and omitted from the written config entirely
+   * when not passed, so every pre-existing case below composes against the
+   * byte-identical config it always did.
    */
-  async function seed(recordedModel: string | null): Promise<{
+  async function seed(
+    recordedModel: string | null,
+    models?: Record<string, string>,
+  ): Promise<{
     id: string;
     spinePath: string;
     configPath: string;
@@ -2683,6 +2780,7 @@ describe('compose-driver — a row with no recorded model is refused, end to end
         store: { kind: 'markdown', repoRoot, slug: SLUG },
         engine: { cli: SOURCE_FORM_CLI, install: 'npm ci --prefix tools/wave' },
         verify: { profiles: [] },
+        ...(models ? { models } : {}),
       }),
       'utf8',
     );
@@ -2729,7 +2827,7 @@ describe('compose-driver — a row with no recorded model is refused, end to end
     rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('refuses a dispatch-log entry that records no model — naming the row, its tier and the remedy', async () => {
+  it('refuses a row no rung answers for — naming the row, its tier and all three remedies', async () => {
     const { id, spinePath, configPath } = await seed(null);
     const out = join(repoRoot, 'driver.js');
     const code = await compose(spinePath, configPath, out);
@@ -2742,6 +2840,10 @@ describe('compose-driver — a row with no recorded model is refused, end to end
     expect(stderr).toContain('spine set-branch');
     expect(stderr).toContain('--model');
     expect(stderr).toContain('--row-meta');
+    // …and, since the 2026-09-21 amendment, the standing config key beside it.
+    // A refusal that names only the per-row remedies would send an operator to
+    // record the same id on every wave for ever.
+    expect(stderr).toContain('models.heavy');
     // "before anything is written" is the load-bearing half: no script exists.
     expect(existsSync(out)).toBe(false);
   });
@@ -2779,6 +2881,165 @@ describe('compose-driver — a row with no recorded model is refused, end to end
     expect(code).toBe(0);
     const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string }> };
     expect(receipt.rows.find((r) => r.id === id)?.model).toBe('override-model-id');
+  });
+
+  // ── rung 3: the standing `models.<tier>` binding (Amendment 2026-09-21) ────
+  //
+  // The row's Risk is `cross-feature-refactor`, so every case below reads the
+  // HEAVY key. `models.standard` rides along in each fixture precisely so a
+  // pass proves the tier was SELECTED rather than the block being read as one
+  // undifferentiated answer.
+
+  it('rung 3 ANSWERS: `models.<tier>` binds a row whose spine records nothing', async () => {
+    const { id, spinePath, configPath } = await seed(null, {
+      heavy: 'configured-heavy-id',
+      standard: 'configured-standard-id',
+    });
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out);
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string }> };
+    // The HEAVY key, not the standard one — the tier is derived from Risk.
+    expect(receipt.rows.find((r) => r.id === id)?.model).toBe('configured-heavy-id');
+  });
+
+  it('rung 3 does NOT answer for a tier it does not declare — the refusal still fires', async () => {
+    // NEGATIVE CONTROL for the rung above: a `models` block that binds only the
+    // OTHER tier must leave this row exactly as refused as no block at all.
+    // Without this, "rung 3 answers" would be compatible with "any models block
+    // answers for any row".
+    const { id, spinePath, configPath } = await seed(null, { standard: 'configured-standard-id' });
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out);
+
+    expect(code).not.toBe(0);
+    expect(stderr).toContain(id);
+    expect(stderr).toContain('models.heavy');
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('the RECORDED model outranks `models.<tier>` — the per-row act still wins', async () => {
+    const { id, spinePath, configPath } = await seed('recorded-for-this-row', {
+      heavy: 'configured-heavy-id',
+      standard: 'configured-standard-id',
+    });
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out);
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string }> };
+    expect(receipt.rows.find((r) => r.id === id)?.model).toBe('recorded-for-this-row');
+  });
+
+  it('`--row-meta` outranks BOTH — the whole ladder, top to bottom, in one compose', async () => {
+    const { id, spinePath, configPath } = await seed('recorded-for-this-row', {
+      heavy: 'configured-heavy-id',
+    });
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out, [
+      '--row-meta',
+      JSON.stringify({ [id]: { model: 'override-model-id' } }),
+    ]);
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string }> };
+    // The receipt's `model` shows the WINNER — which is the whole point of it
+    // being on the receipt at all.
+    expect(receipt.rows.find((r) => r.id === id)?.model).toBe('override-model-id');
+  });
+
+  it('a BLANK at a rung is not an answer — the next rung down still gets to speak', async () => {
+    // `resolveDepsSetup`'s rule, applied to the model ladder: an explicit `""`
+    // that outranked a real binding would compose a row no dispatch can use.
+    const { id, spinePath, configPath } = await seed(null, { heavy: 'configured-heavy-id' });
+    const out = join(repoRoot, 'driver.js');
+    const code = await compose(spinePath, configPath, out, [
+      '--row-meta',
+      JSON.stringify({ [id]: { model: '   ' } }),
+    ]);
+
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    const receipt = JSON.parse(stdout) as { rows: Array<{ id: string; model: string }> };
+    expect(receipt.rows.find((r) => r.id === id)?.model).toBe('configured-heavy-id');
+  });
+
+  // ── the Scribe stage's own binding (Amendment 2026-09-21) ─────────────────
+  //
+  // Asserted through the RUN HELPER's captured Scribe options rather than off
+  // the composed text: what matters is the `model` a Scribe `agent()` call
+  // actually carries, and only a run shows that. All three chain cases, plus
+  // the property the chain exists for — the key is never absent.
+
+  /** Every Scribe `agent()` call's options from one composed script's run. */
+  async function scribeOptions(out: string): Promise<Array<Record<string, unknown>>> {
+    const { calls } = await runComposedDriver(readFileSync(out, 'utf8'));
+    const scribes = calls.filter((c) => String(c.opts.label ?? '').startsWith('scribe-'));
+    // Guard the fixture before any claim rests on it: report + verdict.
+    expect(scribes.length).toBe(2);
+    return scribes.map((c) => c.opts);
+  }
+
+  it('`models.scribe` binds the Scribe stage', async () => {
+    const { spinePath, configPath } = await seed('recorded-for-this-row', {
+      scribe: 'configured-scribe-id',
+      standard: 'configured-standard-id',
+      heavy: 'configured-heavy-id',
+    });
+    const out = join(repoRoot, 'driver.js');
+    expect(await compose(spinePath, configPath, out)).toBe(0);
+    for (const opts of await scribeOptions(out)) {
+      expect(opts.model).toBe('configured-scribe-id');
+    }
+  });
+
+  it('with no `models.scribe`, `models.standard` binds it — never the heavy row model', async () => {
+    const { spinePath, configPath } = await seed('recorded-for-this-row', {
+      standard: 'configured-standard-id',
+      heavy: 'configured-heavy-id',
+    });
+    const out = join(repoRoot, 'driver.js');
+    expect(await compose(spinePath, configPath, out)).toBe(0);
+    for (const opts of await scribeOptions(out)) {
+      expect(opts.model).toBe('configured-standard-id');
+      // The discriminator: this row IS heavy, and the Scribe must not inherit
+      // that — it is a fixed cheap stage, not a Risk-derived tier.
+      expect(opts.model).not.toBe('configured-heavy-id');
+    }
+  });
+
+  it("with no `models` block at all, the row's own recorded model binds it — and the key is never omitted", async () => {
+    const { spinePath, configPath } = await seed('recorded-for-this-row');
+    const out = join(repoRoot, 'driver.js');
+    expect(await compose(spinePath, configPath, out)).toBe(0);
+    for (const opts of await scribeOptions(out)) {
+      expect(opts.model).toBe('recorded-for-this-row');
+      // The property the whole chain exists for (Coordinator ruling
+      // 2026-09-21): a stage dispatched with NO `model` key silently
+      // re-inherits the session model, per stage.
+      expect(Object.prototype.hasOwnProperty.call(opts, 'model')).toBe(true);
+      expect(opts.model).not.toBe('');
+      expect(opts.model).not.toBeUndefined();
+    }
+  });
+
+  it('the receipt reports the Scribe binding — `null` when this consumer declares none', async () => {
+    const bare = await seed('recorded-for-this-row');
+    const out = join(repoRoot, 'driver.js');
+    expect(await compose(bare.spinePath, bare.configPath, out)).toBe(0);
+    expect((JSON.parse(stdout) as { scribeModel: string | null }).scribeModel).toBeNull();
+
+    stdout = '';
+    const bound = await seed('recorded-for-this-row', { scribe: 'configured-scribe-id' });
+    const out2 = join(repoRoot, 'driver2.js');
+    expect(await compose(bound.spinePath, bound.configPath, out2)).toBe(0);
+    expect((JSON.parse(stdout) as { scribeModel: string | null }).scribeModel).toBe(
+      'configured-scribe-id',
+    );
   });
 });
 

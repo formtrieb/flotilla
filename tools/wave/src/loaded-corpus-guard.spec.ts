@@ -201,36 +201,61 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 159_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by row #842**, in the diff that causes the growth,
- * as the ratchet requires. Row #858 (the prior ratchet, below) left 54 B of
- * headroom over its own anchor measure — 1,218,946 B against the 1,219,000 B
- * ceiling — and its own comment named this row by number as the one meant to
- * spend it, on `wave-start/reference/start-mechanics.md`. This row's step 7c
- * reading clause adds 922 B to that file, landing the population at
- * **1,219,868 B**, 868 B past that headroom. One full KB is the finest step
- * the whole-KB-boundary rule admits, so the ceiling moves from 1,219,000 B to
- * **1,220,000 B**.
+ * Why this number: **RAISED by the row that ships the `models` config key**
+ * (ADR-0012 Amendment 2026-09-21), in the diff that causes the growth, as the
+ * ratchet requires. That row is the only ceiling raiser of its wave, and it
+ * adds operator-facing text in five places: `wave-setup`'s fourth interview
+ * concern and the `ModelsConfig` section + `WaveConfig` table row in its
+ * reference (the two largest), the corrected human-gate paragraph in
+ * `wave-start/reference/workflow-driver.md`, the standing-binding sentence in
+ * `wave-start/SKILL.md`, and the un-deferred clause in
+ * `wave-start/reference/start-mechanics.md`.
  *
- * At anchor commit `3b4b8c4efc9ead706933c3cfd8ecc12578d1a3f9` (`git rev-parse
- * HEAD` on this row's branch tip, before this row's own edit — unchanged from
- * row #858's own anchor below, since nothing touched `.claude/skills/**` or
- * `.claude/agents/` in the two commits between them) the population still
- * measured **1,218,946 B**. This row's own edit is what moves it: measured
- * **1,219,868 B** over the same 57 files with the step 7c clause applied,
- * rounded UP to the next full KB (1 KB = 1000 B): **1,220,000 B**. (A
- * self-referential SHA naming this row's own landing commit is not printable
- * here — the hash covers the file's own bytes, so editing the comment to
- * state it changes it; the anchor above is the closest fixed point that is
- * actually verifiable.)
+ * At anchor commit `bb8c6af0603d33e9aa06e2900d3feccff0325960` (`git rev-parse
+ * HEAD` on this row's branch tip, before this row's own edit) the population
+ * measured **1,219,768 B** over 57 files — 232 B under the 1,220,000 B ceiling
+ * row #842 left. This row's own edit measures **1,224,896 B** over the same 57
+ * files, +5,128 B, so the ceiling moves to that sum rounded UP to the next full
+ * KB (1 KB = 1000 B): **1,225,000 B**. The shared standing load is NOT raised:
+ * it measures 158,309 B against its unchanged 159,000 B ceiling (this row's one
+ * `wave-shared/SKILL.md` edit costs 133 B of the 824 B that class had free).
+ * (A self-referential SHA naming this row's own landing commit is not printable
+ * here — the hash covers the file's own bytes — so the anchor above is the
+ * closest verifiable fixed point.)
  *
- * Previously: 1,219,000 B — row #858's ratchet, re-measured unchanged at
- * 1,218,946 B at anchor `9e2e237b7759f68ce6a161164783c79476a1a508`, over the
- * same cause as the constant above (the ADR-0051 wave's row 824 raise, made
- * load-bearing by sibling row #762 — see that row's own history for the
- * chain back to the ADR-0050 wave's 1,218,000 B). Lowering a ceiling is still
- * free; the next ratchet row takes this back down to its own landed measure.
+ * Previously: 1,220,000 B — row #842's raise, whose own reasoning is kept
+ * below (in ITS voice, so "this row" there means #842) because the chain back
+ * through #858 to the ADR-0050 wave is what makes each step auditable.
+ *
+ * > Row #858 (the ratchet before it) left 54 B of
+ * > headroom over its own anchor measure — 1,218,946 B against the 1,219,000 B
+ * > ceiling — and its own comment named this row by number as the one meant to
+ * > spend it, on `wave-start/reference/start-mechanics.md`. This row's step 7c
+ * > reading clause adds 922 B to that file, landing the population at
+ * > **1,219,868 B**, 868 B past that headroom. One full KB is the finest step
+ * > the whole-KB-boundary rule admits, so the ceiling moves from 1,219,000 B to
+ * > **1,220,000 B**.
+ * >
+ * > At anchor commit `3b4b8c4efc9ead706933c3cfd8ecc12578d1a3f9` (`git rev-parse
+ * > HEAD` on this row's branch tip, before this row's own edit — unchanged from
+ * > row #858's own anchor below, since nothing touched `.claude/skills/**` or
+ * > `.claude/agents/` in the two commits between them) the population still
+ * > measured **1,218,946 B**. This row's own edit is what moves it: measured
+ * > **1,219,868 B** over the same 57 files with the step 7c clause applied,
+ * > rounded UP to the next full KB (1 KB = 1000 B): **1,220,000 B**.
+ *
+ * > Previously: 1,219,000 B — row #858's ratchet, re-measured unchanged at
+ * > 1,218,946 B at anchor `9e2e237b7759f68ce6a161164783c79476a1a508`, over the
+ * > same cause as the constant above (the ADR-0051 wave's row 824 raise, made
+ * > load-bearing by sibling row #762 — see that row's own history for the
+ * > chain back to the ADR-0050 wave's 1,218,000 B).
+ *
+ * Lowering a ceiling is still free; the next ratchet row takes this back down
+ * to its own landed measure. This raise leaves 104 B of headroom, which is a
+ * fact about the rounding rule rather than a budget — the next row that adds
+ * reading cost raises again, in its own diff.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_220_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_225_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

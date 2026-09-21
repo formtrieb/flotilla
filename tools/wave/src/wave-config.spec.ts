@@ -27,6 +27,7 @@ import {
   type LinearStoreConfig,
   type LinearStateMapConfig,
   type MarkdownStoreConfig,
+  type ModelsConfig,
   type StoreGoalConfig,
 } from './wave-config';
 // The ADAPTER's own state map, imported so the config block below is compared
@@ -64,6 +65,13 @@ import {
   // `config.store.states` with this name, so the widening has to be what the
   // BARREL re-exports, not merely what the module file declares.
   type LinearStateMapConfig as LinearStateMapConfigFromRoot,
+  // The tier→model-id block (ADR-0012 Amendment 2026-09-21), paired here for
+  // the same reason every alias above is: a root-only consumer annotates
+  // `config.models` with this name, so the key's shape has to be what the
+  // BARREL re-exports and not merely what the module file declares. A type
+  // cannot be probed at runtime — this import resolving at all is the proof,
+  // because `tsc --noEmit` fails outright if it regresses off the barrel.
+  type ModelsConfig as ModelsConfigFromRoot,
 } from './index';
 
 // `config validate`'s runner, reached from the LOADER's own spec — deliberately,
@@ -1463,6 +1471,142 @@ describe('engine.cli is reachable from the PACKAGE ROOT (AC#3)', () => {
   });
 });
 
+// ── models — the tier→model-id binding (ADR-0012 Amendment 2026-09-21) ───────
+//
+// The key the 2026-09-16 amendment deferred and this one un-defers: the
+// standing, repo-level answer to "which concrete model does the `heavy` tier
+// mean here". Three properties, each with its own control — an ABSENT block
+// loads exactly as before, a fully-declared one loads verbatim, and the three
+// unusable shapes are refused with the key named.
+//
+// The refusals are new, and legitimately so: no config validating today can
+// carry a MEANINGFUL `models` block, because nothing read one until this row.
+// A malformed value is therefore new text rather than a config anyone is
+// running — the same reading `verify.…needs`, `cleanup.disposableNames` and
+// `engine.install` each took at their own introduction (ADR-0035).
+
+describe('loadWaveConfig — models: the ACCEPT path', () => {
+  /** A github config carrying the given raw `models` value. */
+  function loadWithModels(models: unknown) {
+    return loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, models }));
+  }
+
+  it('loads all three keys verbatim — the ids are opaque, consumer-owned strings', () => {
+    const config = loadWithModels({
+      heavy: 'consumer-heavy-id',
+      standard: 'consumer-standard-id',
+      scribe: 'consumer-scribe-id',
+    });
+    expect(config.models).toEqual({
+      heavy: 'consumer-heavy-id',
+      standard: 'consumer-standard-id',
+      scribe: 'consumer-scribe-id',
+    });
+  });
+
+  it('every key answers ON ITS OWN — a block declaring only one loads', () => {
+    // The shape a consumer that only wants its Scribe pinned actually writes.
+    expect(loadWithModels({ scribe: 'consumer-scribe-id' }).models).toEqual({
+      scribe: 'consumer-scribe-id',
+    });
+    expect(loadWithModels({}).models).toEqual({});
+  });
+
+  it('hands the caller the TRIMMED id, the way engine.cli is normalized', () => {
+    // The composer writes this string into a dispatched row, so a stray space
+    // would reach an `agent({ model })` call verbatim.
+    expect(loadWithModels({ heavy: '  consumer-heavy-id  ' }).models?.heavy).toBe(
+      'consumer-heavy-id',
+    );
+  });
+
+  it('is reachable from the PACKAGE ROOT as a type a consumer can annotate with', () => {
+    // Compile-time half — these annotations only typecheck if the barrel really
+    // re-exports the type; `tsc --noEmit` is the assertion. The module-file
+    // import and the root import must also be the SAME declaration, which is
+    // what assigning one to the other proves.
+    const fromRoot: ModelsConfigFromRoot = { heavy: 'consumer-heavy-id' };
+    const fromModule: ModelsConfig = fromRoot;
+    const config: WaveConfigFromRoot = { store: { kind: 'github' }, models: fromModule };
+    expect(config.models?.heavy).toBe('consumer-heavy-id');
+  });
+});
+
+describe('loadWaveConfig — models: the ABSENCE path stays valid (the additive guarantee)', () => {
+  it('a config with no models key loads, and reads back as undefined', () => {
+    const config = loadConfigFromString(JSON.stringify({ store: { kind: 'github' } }));
+    expect(config.models).toBeUndefined();
+    expect(config.store.kind).toBe('github');
+  });
+
+  it('absence is not turned into an empty block — nothing is written back', () => {
+    // The distinction the composer reads: an ABSENT block leaves every row on
+    // its recorded model, and a `{}` says the same thing, but the loader must
+    // not invent the second from the first. A consumer comparing configs would
+    // see a key it never wrote.
+    const config = loadConfigFromString(JSON.stringify({ store: { kind: 'markdown', repoRoot: '/x', slug: 's' } }));
+    expect(Object.prototype.hasOwnProperty.call(config, 'models')).toBe(false);
+  });
+});
+
+describe('loadWaveConfig — models: the REJECT path names the key', () => {
+  function loadWithModels(models: unknown) {
+    return loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, models }));
+  }
+
+  it('refuses a models that is not an object, naming the block and the closed set', () => {
+    for (const bad of ['consumer-heavy-id', 7, true, null, ['consumer-heavy-id']]) {
+      expect(() => loadWithModels(bad), JSON.stringify(bad)).toThrow(
+        /wave config "models" must be an object/,
+      );
+      expect(() => loadWithModels(bad), JSON.stringify(bad)).toThrow(/"heavy".*"standard".*"scribe"/s);
+    }
+  });
+
+  it('refuses a non-string VALUE, naming the offending key', () => {
+    expect(() => loadWithModels({ heavy: 7 })).toThrow(
+      /wave config "models\.heavy" must be a model-id string — got a number/,
+    );
+    expect(() => loadWithModels({ standard: null })).toThrow(
+      /wave config "models\.standard" must be a model-id string — got null/,
+    );
+    expect(() => loadWithModels({ scribe: ['x'] })).toThrow(
+      /wave config "models\.scribe" must be a model-id string — got an array/,
+    );
+  });
+
+  it('refuses an EMPTY (or whitespace-only) id, naming the offending key', () => {
+    // An empty binding is not "unbound" — it is a binding no dispatch can use,
+    // the same reading `engine.cli` takes of its own empty value.
+    expect(() => loadWithModels({ heavy: '' })).toThrow(
+      /wave config "models\.heavy" must be a NON-EMPTY model-id string/,
+    );
+    expect(() => loadWithModels({ scribe: '   ' })).toThrow(
+      /wave config "models\.scribe" must be a NON-EMPTY model-id string/,
+    );
+    // …and it says what to write instead.
+    expect(() => loadWithModels({ heavy: '' })).toThrow(/Omit the key entirely/);
+  });
+
+  it('NEGATIVE CONTROL — the refusals are about the SHAPE, never about the id', () => {
+    // The pair that makes the three refusals mean something: the loader has no
+    // vocabulary for a model id and must not acquire one (ADR-0012). Any
+    // non-empty string, however odd, loads.
+    for (const odd of ['x', 'a-model-nobody-has-heard-of', 'vendor/model:2026-01-01', '0']) {
+      expect(() => loadWithModels({ heavy: odd }), odd).not.toThrow();
+    }
+  });
+
+  it('NEGATIVE CONTROL — an UNKNOWN key inside the block is NOT refused here', () => {
+    // It is a `config validate` warning instead (see config-cli.spec.ts), for
+    // the same reason `store.states` handles its own typos that way: a refusal
+    // here would be a second, weaker owner of one rule — and `models.scribes`
+    // reaching the loader is not a shape the loader cannot act on, only a
+    // binding nothing reads.
+    expect(() => loadWithModels({ scribes: 'consumer-scribe-id' })).not.toThrow();
+  });
+});
+
 // ── verify.commands[].needs — the declared capability requirement (ADR-0049) ──
 //
 // The field is the config half of "a dispatched agent never escalates": a gate
@@ -1688,6 +1832,11 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
   };
   const CLEANUP = { disposableNames: ['target'], extraRoots: ['/scratch'] };
   const ENGINE = { cli: './node_modules/.bin/flotilla-engine', install: 'npm ci --prefix tools/wave' };
+  const MODELS = {
+    heavy: 'consumer-heavy-id',
+    standard: 'consumer-standard-id',
+    scribe: 'consumer-scribe-id',
+  };
   const STORES = {
     markdown: { kind: 'markdown', repoRoot: '/x', slug: 's', eligibility: ['ready-for-agent'], goal: { container: 'goal-file' } },
     github: { kind: 'github', eligibility: ['ready-for-agent'], goal: GOAL },
@@ -1704,7 +1853,7 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
 
   /** The fully-declared config for one store kind — every block, every key. */
   function fullConfig(kind: keyof typeof STORES): Record<string, unknown> {
-    return { store: STORES[kind], verify: VERIFY, cleanup: CLEANUP, engine: ENGINE };
+    return { store: STORES[kind], verify: VERIFY, cleanup: CLEANUP, engine: ENGINE, models: MODELS };
   }
 
   it.each([
@@ -1716,6 +1865,7 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
     ['LinearStateMapConfig', WAVE_CONFIG_SRC, Object.keys(STATES)],
     ['CleanupConfig', WAVE_CONFIG_SRC, Object.keys(CLEANUP)],
     ['EngineConfig', WAVE_CONFIG_SRC, Object.keys(ENGINE)],
+    ['ModelsConfig', WAVE_CONFIG_SRC, Object.keys(MODELS)],
     ['VerifyConfig', VERIFY_SRC, Object.keys(VERIFY)],
     ['VerifyProfile', VERIFY_SRC, Object.keys(VERIFY.profiles[0])],
     ['VerifyCommand', VERIFY_SRC, Object.keys(VERIFY.profiles[0].commands[0])],
@@ -1750,11 +1900,12 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
       store: { ...STORES.linear, eligibilty: [], goal: { container: 'project', containerr: 'x' }, states: { ...STATES, queuedd: 'Todo' } },
       cleanup: { ...CLEANUP, disposableNamez: [] },
       engine: { ...ENGINE, instal: 'npm ci' },
+      models: { ...MODELS, scribes: 'consumer-scribe-id' },
     };
     const { code, warnings } = validateRaw(withTypos);
     expect(code).toBe(0); // still never a refusal
     const named = warnings.join('\n');
-    for (const typo of ['unknownTop', 'eligibilty', 'containerr', 'queuedd', 'disposableNamez', 'instal']) {
+    for (const typo of ['unknownTop', 'eligibilty', 'containerr', 'queuedd', 'disposableNamez', 'instal', 'scribes']) {
       expect(named, `expected the walk to name ${typo}`).toContain(`"${typo}"`);
     }
   });
