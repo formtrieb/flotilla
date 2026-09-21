@@ -24,13 +24,55 @@ import { defaultGitHubHttp, type GitHubHttp, type GitHubHttpResponse } from './g
 
 const API = 'https://api.github.com';
 
-/** A non-success GitHub response. `status` is the HTTP code; `op` the failed operation. */
+/**
+ * A non-success GitHub response. `status` is the HTTP code; `op` the failed
+ * operation; `endpoint` — optional — the REST endpoint that answered, in
+ * GitHub's own documented template spelling.
+ *
+ * `endpoint` exists because one `op` can front SEVERAL endpoints, and then the
+ * status and the operation together still do not say what failed.
+ * `getReportedChecks` is exactly that case: it reads the check-runs source and
+ * the combined-status source in sequence, so a 403 from either arrives as the
+ * same `{status: 403, op: 'getReportedChecks'}` — and the two have different
+ * fixes (Checks: Read vs Commit statuses: Read on a fine-grained token). The
+ * consumer report that opened this (2026-09-04) is downstream of precisely that
+ * ambiguity. Optional and additive: every existing construction site keeps its
+ * three arguments and its message, and a reader that ignores the field sees no
+ * change.
+ */
 export class GitHubApiError extends Error {
-  constructor(readonly status: number, readonly op: string, message?: string) {
+  constructor(
+    readonly status: number,
+    readonly op: string,
+    message?: string,
+    readonly endpoint?: string,
+  ) {
     super(message ?? `GitHub ${op} failed (HTTP ${status})`);
     this.name = 'GitHubApiError';
   }
 }
+
+/**
+ * The two endpoints {@link RealGitHubApi.getReportedChecks} folds together, in
+ * GitHub's own documented template spelling (`docs.github.com/en/rest/checks/runs`
+ * "List check runs for a Git reference" and `docs.github.com/en/rest/commits/statuses`
+ * "Get the combined status for a specific reference", both re-read 2026-09-21).
+ *
+ * Templates, not the concrete URLs: the endpoint is reported to name WHICH read
+ * failed, and the owner/repo/ref are already the operator's own — spelling them
+ * out adds nothing and puts a repository path into an arm outcome's reason for
+ * no gain.
+ *
+ * Module-LOCAL, unlike the four pinned spike constants above, and deliberately:
+ * the package-root barrel re-exports every symbol this module exports
+ * (`barrel-drift.spec.ts`), so exporting these would be a public-API addition
+ * outside this row's declared Files. Nothing outside this module needs to NAME
+ * them — the arm's reason carries their VALUE, and the spec pins that value as
+ * a literal, which is the stronger pin anyway.
+ */
+const CHECK_RUNS_ENDPOINT = 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs';
+/** @see CHECK_RUNS_ENDPOINT */
+const COMBINED_STATUS_ENDPOINT = 'GET /repos/{owner}/{repo}/commits/{ref}/status';
 
 // ─── ADR-0023 spikes: pinned constants ───────────────────────────────────────
 //
@@ -672,6 +714,15 @@ export class RealGitHubApi implements GitHubApi {
    * to this commit yet, and that is the one input that forces the arm verb away from
    * a direct merge — so a failed read must not be able to counterfeit it. The arm
    * catches the throw and treats it as "no evidence", i.e. unchanged behaviour.
+   *
+   * The throw NAMES THE ENDPOINT that answered ({@link CHECK_RUNS_ENDPOINT} /
+   * {@link COMBINED_STATUS_ENDPOINT}), because this one `op` fronts two of them
+   * and the two have different fixes: a fine-grained token denied the check-runs
+   * read needs `Checks: Read`, one denied the combined-status read needs
+   * `Commit statuses: Read`. Without the endpoint both arrive as
+   * `{status: 403, op: 'getReportedChecks'}` and the arm's reason can only say
+   * that something could not be read — the collapse the 2026-09-04 consumer
+   * report is downstream of.
    */
   async getReportedChecks(ref: string): Promise<ReportedCheck[]> {
     const path = ref.split('/').map(encodeURIComponent).join('/');
@@ -680,7 +731,12 @@ export class RealGitHubApi implements GitHubApi {
     for (let page = 1; ; page++) {
       const res = await this.send('GET', `${this.base()}/commits/${path}/check-runs?filter=latest&per_page=100&page=${page}`);
       if (res.status !== 200) {
-        throw new GitHubApiError(res.status, 'getReportedChecks', ghMessage(res.json, 'getReportedChecks'));
+        throw new GitHubApiError(
+          res.status,
+          'getReportedChecks',
+          ghMessage(res.json, 'getReportedChecks'),
+          CHECK_RUNS_ENDPOINT,
+        );
       }
       const runs = (res.json as Record<string, unknown>)?.check_runs;
       const items = Array.isArray(runs) ? (runs as Record<string, unknown>[]) : [];
@@ -694,7 +750,12 @@ export class RealGitHubApi implements GitHubApi {
     for (let page = 1; ; page++) {
       const res = await this.send('GET', `${this.base()}/commits/${path}/status?per_page=100&page=${page}`);
       if (res.status !== 200) {
-        throw new GitHubApiError(res.status, 'getReportedChecks', ghMessage(res.json, 'getReportedChecks'));
+        throw new GitHubApiError(
+          res.status,
+          'getReportedChecks',
+          ghMessage(res.json, 'getReportedChecks'),
+          COMBINED_STATUS_ENDPOINT,
+        );
       }
       const statuses = (res.json as Record<string, unknown>)?.statuses;
       const items = Array.isArray(statuses) ? (statuses as Record<string, unknown>[]) : [];

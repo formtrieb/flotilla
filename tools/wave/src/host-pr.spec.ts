@@ -49,6 +49,7 @@ import {
   type PrMergeability,
   type AutoMergeSetting,
   type Host,
+  type RequiredCheckAttachment,
   type RequiredChecksInfo,
   type RulesetChecksInfo,
 } from './host-pr';
@@ -1830,6 +1831,125 @@ describe('refineArmDecisionForCheckAttach (the clean/pending distinction)', () =
       expect(refineArmDecisionForCheckAttach(before, null)).toBe(before);
     }
   });
+
+  // ── the three no-evidence causes, told apart (consumer report 2026-09-04) ──
+  //
+  // The defect: one sentence — "this host could not report which checks are
+  // required, or which have reported for the head commit" — stood for three
+  // different facts, and on the reported session it stood for the one it was
+  // LEAST likely to be. `preflight`, in that same session, had just named the
+  // repository's one required check and said it read it off the effective
+  // rules; `arm` then said the host could not report them. Both verbs share one
+  // reader, so the sentence was never about the host — it was about a reads
+  // failure the message had no way to name.
+  //
+  // What is asserted here is the DISTINGUISHABILITY, plus the two things that
+  // must not move: `null` still renders the shipped sentence byte-for-byte, and
+  // every branch keeps the prefix and both pre-existing regex pins.
+
+  describe('the no-evidence reason names WHICH cause fired', () => {
+    /** Exactly the sentence the bare-`null` branch has always rendered. */
+    const SHIPPED_NULL_REASON =
+      `${decideArmAction('clean').reason} NOT verified against the required-check names: this host could ` +
+      `not report which checks are required, or which have reported for the head commit — so "clean" is ` +
+      `the host's word alone, not evidence that the required checks ran.`;
+
+    const reasonFor = (attach: Parameters<typeof refineArmDecisionForCheckAttach>[1]): string =>
+      refineArmDecisionForCheckAttach(cleanDecision(), attach).reason;
+
+    const READER_ABSENT = { evidence: 'none', cause: 'reader-absent' } as const;
+    const REQUIRED_BLIND = {
+      evidence: 'none',
+      cause: 'required-unknown',
+      detail: 'fake: both reads were unavailable',
+    } as const;
+    const REPORTS_FAILED = {
+      evidence: 'none',
+      cause: 'reports-read-failed',
+      message: 'Resource not accessible by personal access token',
+      status: 403,
+      op: 'getReportedChecks',
+      endpoint: 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs',
+    } as const;
+
+    it("a bare `null` renders TODAY'S sentence, byte-identically", () => {
+      // The compatibility half, pinned as an equality and not a match: widening
+      // the input type must not have moved the one rendering that shipped.
+      expect(reasonFor(null)).toBe(SHIPPED_NULL_REASON);
+    });
+
+    it('`reader-absent` says the ADAPTER implements neither read — the one cause that IS about the host', () => {
+      const reason = reasonFor(READER_ABSENT);
+      expect(reason).toMatch(/implements neither of the two reads/);
+      expect(reason).toMatch(/no evidence to ask it for/);
+    });
+
+    it("`required-unknown` says the read answered BLIND and carries that read's own detail", () => {
+      const reason = reasonFor(REQUIRED_BLIND);
+      expect(reason).toMatch(/required-checks read answered but was BLIND/);
+      // The detail is the read's own words, not a sentence re-invented beside it.
+      expect(reason).toContain('fake: both reads were unavailable');
+    });
+
+    it('`reports-read-failed` carries the status, the operation, the host message AND the endpoint', () => {
+      const reason = reasonFor(REPORTS_FAILED);
+      expect(reason).toMatch(/reported-checks read FAILED/);
+      expect(reason).toContain('HTTP 403');
+      expect(reason).toContain('`getReportedChecks`');
+      expect(reason).toContain('Resource not accessible by personal access token');
+      expect(reason).toContain('GET /repos/{owner}/{repo}/commits/{ref}/check-runs');
+      // The required names ARE known on this branch — saying otherwise is the
+      // collapse this whole block exists to undo.
+      expect(reason).toMatch(/required checks ARE known/);
+    });
+
+    it('a reports failure with NO status/op/endpoint still renders — a plain Error is a valid throw', () => {
+      const reason = reasonFor({
+        evidence: 'none',
+        cause: 'reports-read-failed',
+        message: 'socket hang up',
+      });
+      expect(reason).toContain('socket hang up');
+      expect(reason).not.toContain('undefined');
+    });
+
+    it('all four renderings DIFFER, and every one keeps the prefix and both pre-existing pins', () => {
+      const rendered = [null, READER_ABSENT, REQUIRED_BLIND, REPORTS_FAILED].map(reasonFor);
+      // Distinguishable: four inputs, four distinct sentences.
+      expect(new Set(rendered).size).toBe(4);
+      for (const reason of rendered) {
+        expect(reason).toContain('NOT verified against the required-check names:');
+        // The two regex pins the shipped spec already rests on, held for EVERY
+        // branch — a new cause may add a clause, never rewrite either end.
+        expect(reason).toMatch(/NOT verified/);
+        expect(reason).toMatch(/the host's word alone/);
+      }
+      // …and no cause turns the landing into anything else.
+      for (const attach of [null, READER_ABSENT, REQUIRED_BLIND, REPORTS_FAILED]) {
+        expect(refineArmDecisionForCheckAttach(cleanDecision(), attach).action).toBe('merge');
+      }
+    });
+
+    it('is STILL a strict identity on every non-merge decision, whichever cause is passed', () => {
+      for (const attach of [READER_ABSENT, REQUIRED_BLIND, REPORTS_FAILED]) {
+        for (const m of ['blocked', 'unstable', 'behind', 'unknown', 'dirty', 'draft'] as PrMergeability[]) {
+          const before = decideArmAction(m);
+          expect(refineArmDecisionForCheckAttach(before, attach)).toBe(before);
+        }
+      }
+    });
+
+    // The COMPILE-TIME half of the compatibility claim: the pre-existing
+    // two-argument, `null`-accepting call form still typechecks. It is a
+    // fixture rather than a runtime assertion because that is the property —
+    // `tsc --noEmit` failing here is the failure mode it guards.
+    it('the old two-argument, null-accepting call form still typechecks', () => {
+      const shipped: (d: ArmDecision, a: RequiredCheckAttachment | null) => ArmDecision =
+        refineArmDecisionForCheckAttach;
+      expect(shipped(cleanDecision(), null).action).toBe('merge');
+      expect(shipped(cleanDecision(), compareRequiredToReported([], [])).action).toBe('merge');
+    });
+  });
 });
 
 describe('asCheckAttachReader (the optional capability probe)', () => {
@@ -2333,10 +2453,25 @@ const preflight = (host: Host, posture: LandingPosture, env: NodeJS.ProcessEnv =
   preflightHost(host, posture, env);
 
 describe('preflightHost (ADR-0023 amendment posture grading)', () => {
-  it('reports exactly the three code-host checks and echoes the host', async () => {
+  it('reports the three posture checks IN ORDER, then the host create-verb check, and echoes the host', async () => {
+    // EXTENDED, not weakened (issue: the create-right fold-in): the three
+    // posture names and their order are the shipped claim and are asserted
+    // exactly as before — what is new is the fourth position, which on github
+    // is `pr-create-token` and on bitbucket `create-credentials`. Neither host
+    // ever carries the other's.
     const report = await preflight('github', fakePosture({ autoMerge: 'on', required: REQUIRED_ABSENT }));
     expect(report.host).toBe('github');
-    expect(report.checks.map((c) => c.name)).toEqual(['pr-merge-token', 'allow-auto-merge', 'required-checks']);
+    expect(report.checks.map((c) => c.name)).toEqual([
+      'pr-merge-token',
+      'allow-auto-merge',
+      'required-checks',
+      'pr-create-token',
+    ]);
+    expect(report.checks.slice(0, 3).map((c) => c.name)).toEqual([
+      'pr-merge-token',
+      'allow-auto-merge',
+      'required-checks',
+    ]);
   });
 
   it('reads required-checks against the DEFAULT branch (no branch argument)', async () => {
@@ -2451,7 +2586,10 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
       fakePosture({ canMerge: true, autoMerge: 'unknown', required: REQUIRED_UNKNOWN }),
     );
     expect(report.ok).toBe(true);
-    expect(report.checks.map((c) => c.status).sort()).toEqual(['pass', 'unknown', 'unknown']);
+    // Four statuses now: the un-probed `pr-create-token` contributes a fourth
+    // `unknown`, which is the point of the assertion rather than an accident —
+    // it must not drag `ok` either.
+    expect(report.checks.map((c) => c.status).sort()).toEqual(['pass', 'unknown', 'unknown', 'unknown']);
   });
 
   // ─── the same grading, on bitbucket ────────────────────────────────────
@@ -2662,15 +2800,19 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
 
     it('github NEVER reports it — variable unset AND variable set (no fail, no spurious advisory)', async () => {
       // The chosen host-aware behaviour is OMISSION, not an inert
-      // `not-applicable` row: GitHub's create credential is the same token
-      // `pr-merge-token` already grades, so a row here would be one fact under
-      // two names — and omission keeps the shipped GitHub report byte-identical.
+      // `not-applicable` row: this check grades an AMBIENT variable GitHub does
+      // not have, and there is nothing for it to say there. GitHub's create
+      // right is a different question and is reported under a different name
+      // (`pr-create-token`, position four here) — the premise this test used to
+      // cite, "the same token `pr-merge-token` already grades", was falsified by
+      // a fine-grained token that passed that check and then 403'd on create.
       for (const env of [NO_EMAIL, WITH_EMAIL]) {
         const report = await preflight('github', fakePosture({ canMerge: true }), env);
         expect(report.checks.map((c) => c.name)).toEqual([
           'pr-merge-token',
           'allow-auto-merge',
           'required-checks',
+          'pr-create-token',
         ]);
         expect(report.checks.find((c) => c.name === CREATE_CREDENTIALS)).toBeUndefined();
       }
@@ -2722,6 +2864,217 @@ describe('preflightHost (ADR-0023 amendment posture grading)', () => {
         const serialised = JSON.stringify(report);
         expect(serialised).not.toContain('wave-fixture@example.test');
         expect(serialised).not.toContain('preflight-probe-not-a-credential');
+      }
+    });
+  });
+
+  // ─── pr-create-token (the GitHub create right, PROBED) ──────────────────
+  //
+  // The gap: `preflight` graded the MERGE token and never the create right, and
+  // the two are not one grant on a fine-grained token. Measured on both rows of
+  // a consumer wave, sandboxed and unsandboxed — the token passed
+  // `pr-merge-token` (a repository-ROLE read off `GET /repos/{o}/{r}`) and then
+  // 403'd on `host-pr create`, which is the verb the Worker terminator runs on
+  // every row. So a green posture promised a landing the wave could not reach.
+  //
+  // This check asks the host instead of inferring, which is what makes it a
+  // sibling of `create-credentials` rather than a copy of it: Bitbucket's
+  // precondition IS an environment fact and can be graded locally; GitHub's is
+  // a property of the token as the host sees it and cannot.
+
+  describe('pr-create-token (the GitHub create-right probe)', () => {
+    const PR_CREATE_TOKEN = 'pr-create-token';
+    const REPO = { workspace: 'acme', repo: 'widgets' };
+    /** The form `createCredsFor` builds for GitHub — never a Bearer landing pair. */
+    const CREATE_AUTH = 'x-access-token:tok-create-fixture';
+
+    /** An `HttpProbe` that answers by URL and records every request it saw. */
+    function probeHttp(answer: (req: HttpRequest) => HttpResponse | Error): {
+      http: HttpProbe;
+      seen: HttpRequest[];
+    } {
+      const seen: HttpRequest[] = [];
+      return {
+        seen,
+        http: {
+          async request(req) {
+            seen.push(req);
+            const out = answer(req);
+            if (out instanceof Error) throw out;
+            return out;
+          },
+        },
+      };
+    }
+
+    const isIdentity = (req: HttpRequest) => req.url === 'https://api.github.com/user';
+
+    /** 200 identity + a caller-chosen answer to the open-PR list read. */
+    const listAnswers = (list: HttpResponse | Error) => (req: HttpRequest) =>
+      isIdentity(req) ? { status: 200, json: { login: 'octo-fixture' } } : list;
+
+    const run = async (answer: (req: HttpRequest) => HttpResponse | Error) => {
+      const { http, seen } = probeHttp(answer);
+      const report = await preflightHost('github', fakePosture({ canMerge: true }), {}, {
+        creds: { auth: CREATE_AUTH },
+        info: REPO,
+        http,
+      });
+      return { report, seen, check: byName(report.checks)[PR_CREATE_TOKEN] };
+    };
+
+    it('200 identity + 200 list → `pass`, and it is the FOURTH check on github', async () => {
+      const { report, check } = await run(listAnswers({ status: 200, json: [] }));
+      expect(check.status).toBe('pass');
+      expect(report.checks.map((c) => c.name)).toEqual([
+        'pr-merge-token',
+        'allow-auto-merge',
+        'required-checks',
+        PR_CREATE_TOKEN,
+      ]);
+      expect(report.ok).toBe(true);
+    });
+
+    it('issues EXACTLY one identity request and one open-PR list request, both with the CREATE credential', async () => {
+      // AC7. Three claims in one, and each has its own way of being wrong: the
+      // wrong COUNT (an extra probe request per preflight), the wrong URLS (a
+      // probe that drifts from the verb it predicts), and the wrong CREDENTIAL
+      // (the landing adapter's Bearer token, which would grade a different
+      // grant from the one `create` actually uses).
+      const { seen } = await run(listAnswers({ status: 200, json: [] }));
+      expect(seen).toHaveLength(2);
+
+      expect(seen[0].method).toBe('GET');
+      expect(seen[0].url).toBe('https://api.github.com/user');
+
+      expect(seen[1].method).toBe('GET');
+      // The create verb's OWN open-PR URL for THIS repository — same builder
+      // `findOpenPrRef` uses, so the probe cannot drift from the read `create`
+      // performs first.
+      expect(seen[1].url).toContain('https://api.github.com/repos/acme/widgets/pulls?state=open&head=');
+      expect(seen[1].url).toContain(encodeURIComponent('acme:'));
+
+      // Basic `x-access-token:<token>` on BOTH — the pair `createCredsFor`
+      // builds. `host-pr`'s HttpProbe base64s this into an `Authorization:
+      // Basic` header; a Bearer landing credential would never appear here.
+      for (const req of seen) {
+        expect(req.auth).toBe(CREATE_AUTH);
+        expect(req.auth.startsWith('x-access-token:')).toBe(true);
+        expect(req.auth).not.toMatch(/^Bearer/i);
+      }
+      // A read-only probe: nothing is written on any leg.
+      expect(seen.every((r) => r.body === undefined)).toBe(true);
+    });
+
+    it('identity 401 → `advisory`, and it SHORT-CIRCUITS (no second request on a credential that did not authenticate)', async () => {
+      const { check, seen } = await run(listAnswers({ status: 200, json: [] }));
+      expect(check.status).toBe('pass');
+      const denied = await run((req) =>
+        isIdentity(req) ? { status: 401, json: { message: 'Bad credentials' } } : { status: 200, json: [] },
+      );
+      expect(denied.check.status).toBe('advisory');
+      expect(denied.check.detail).toMatch(/did NOT authenticate/);
+      expect(denied.check.detail).toContain('HTTP 401');
+      expect(denied.seen).toHaveLength(1);
+      expect(seen).toHaveLength(2); // the contrast: the pass path does ask twice
+    });
+
+    it.each([403, 404])('list %i → `advisory`, naming the Pull requests permission, the role split, and the wave consequence', async (status) => {
+      // AC6's three detail requirements, each of which an operator acts on: WHAT
+      // to grant, WHY the green check above does not already cover it, and WHAT
+      // breaks if they do nothing.
+      const { check } = await run(listAnswers({ status, json: { message: 'Not accessible' } }));
+      expect(check.status).toBe('advisory');
+      expect(check.detail).toContain(`HTTP ${status}`);
+      expect(check.detail).toMatch(/Pull requests permission \(Read and write\)/);
+      expect(check.detail).toMatch(/`pr-merge-token` above does NOT cover it/);
+      expect(check.detail).toMatch(/repository ROLE/);
+      expect(check.detail).toMatch(/EVERY row/);
+      expect(check.detail).toMatch(/fails at each row's termination step/);
+    });
+
+    it('a transport throw → `advisory`, and says plainly that it is no evidence either way', async () => {
+      const { check } = await run(() => new Error('fetch failed: ECONNREFUSED'));
+      expect(check.status).toBe('advisory');
+      expect(check.detail).toContain('fetch failed: ECONNREFUSED');
+      expect(check.detail).toMatch(/no evidence either way/);
+    });
+
+    it('never changes `ok` or the graded posture: every outcome leaves the three posture checks deciding', async () => {
+      // The settled grade, asserted as an invariant across every answer the
+      // probe can produce AND across a posture that genuinely fails: a
+      // land-only consumer must not be refused for this, and a real fail must
+      // not be masked by it.
+      const answers: Array<(req: HttpRequest) => HttpResponse | Error> = [
+        listAnswers({ status: 200, json: [] }),
+        listAnswers({ status: 403, json: {} }),
+        listAnswers({ status: 404, json: {} }),
+        (req) => (isIdentity(req) ? { status: 401, json: {} } : { status: 200, json: [] }),
+        () => new Error('boom'),
+      ];
+      for (const answer of answers) {
+        const { http } = probeHttp(answer);
+        const probe = { creds: { auth: CREATE_AUTH }, info: REPO, http };
+        for (const posture of [
+          fakePosture({ canMerge: true, autoMerge: 'on', required: REQUIRED_PRESENT }),
+          fakePosture({ canMerge: false }), // pr-merge-token FAILs
+          fakePosture({ canMerge: true, autoMerge: 'off', required: REQUIRED_PRESENT }), // allow-auto-merge FAILs
+        ]) {
+          const withProbe = await preflightHost('github', posture, {}, probe);
+          const threeAlone = await preflightHost('github', posture, {});
+          expect(byName(withProbe.checks)[PR_CREATE_TOKEN].status).not.toBe('fail');
+          // `ok` is decided by the same checks it was decided by before.
+          expect(withProbe.ok).toBe(threeAlone.ok);
+          expect(withProbe.checks.slice(0, 3)).toEqual(threeAlone.checks.slice(0, 3));
+        }
+      }
+    });
+
+    it('with NO probe supplied it grades `unknown` and issues no request at all', async () => {
+      const report = await preflightHost('github', fakePosture({ canMerge: true }), {});
+      const check = byName(report.checks)[PR_CREATE_TOKEN];
+      expect(check.status).toBe('unknown');
+      expect(check.detail).toMatch(/was NOT probed/);
+      expect(check.detail).toMatch(/[Aa]bsence of evidence/);
+      expect(report.ok).toBe(true);
+    });
+
+    it('bitbucket NEVER reports it — its report is exactly the shipped four, with create-credentials fourth', async () => {
+      // Host-exclusivity in the other direction, and the reason it matters:
+      // the probe would send a GitHub-shaped credential at a Bitbucket URL, and
+      // the create precondition there is already graded by its own check.
+      const report = await preflightHost(
+        'bitbucket',
+        fakePosture({ canMerge: true }),
+        {},
+        { creds: { auth: CREATE_AUTH }, info: REPO, http: probeHttp(() => ({ status: 200, json: [] })).http },
+      );
+      expect(report.checks.map((c) => c.name)).toEqual([
+        'pr-merge-token',
+        'allow-auto-merge',
+        'required-checks',
+        'create-credentials',
+      ]);
+      expect(report.checks.find((c) => c.name === PR_CREATE_TOKEN)).toBeUndefined();
+    });
+
+    it('the probe issues NO request on bitbucket — host-exclusivity is decided before any network', async () => {
+      const { http, seen } = probeHttp(() => ({ status: 200, json: [] }));
+      await preflightHost('bitbucket', fakePosture({ canMerge: true }), {}, {
+        creds: { auth: CREATE_AUTH },
+        info: REPO,
+        http,
+      });
+      expect(seen).toEqual([]);
+    });
+
+    it('never echoes the credential into the report, on any verdict', async () => {
+      for (const answer of [
+        listAnswers({ status: 200, json: [] }),
+        listAnswers({ status: 403, json: {} }),
+      ]) {
+        const { report } = await run(answer);
+        expect(JSON.stringify(report)).not.toContain('tok-create-fixture');
       }
     });
   });

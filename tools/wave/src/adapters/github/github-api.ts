@@ -336,6 +336,12 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    * (the input that forces an arm), so a read failure must never be able to
    * counterfeit it. The arm's own guard turns a throw into "no evidence", which
    * leaves the landing behaviour exactly as it was before this read existed.
+   *
+   * Because this ONE read fronts TWO endpoints, the throw should also carry
+   * WHICH of them answered — the arm renders `endpoint` off the error beside
+   * the status and the message, and the two have different token fixes
+   * (`Checks: Read` vs `Commit statuses: Read`). `RealGitHubApi` does; see the
+   * thrown-error contract on `CheckAttachReader.getReportedChecks` (host-pr).
    */
   getReportedChecks(ref: string): Promise<ReportedCheck[]>;
 

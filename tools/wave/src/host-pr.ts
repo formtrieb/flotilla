@@ -7,7 +7,9 @@
  *
  *   - `detectHost(remoteUrl)` — pure URL parse → `{host, workspace, repo}`.
  *   - `verifyAuth(host, creds)` — the preflight that gates every write
- *     (Finding L1: a mid-flight 401 becomes an up-front warning).
+ *     (Finding L1: a mid-flight 401 becomes an up-front warning). Its production
+ *     caller is `preflightHost`'s `pr-create-token` check: until that landed it
+ *     had none, and this line described an intention rather than a wiring.
  *   - `findOpenPr(host, creds, branch)` — idempotency: query open PRs on the
  *     source branch BEFORE creating, so a re-run never opens a duplicate.
  *     `findOpenPrRef` is the richer form that also surfaces the PR number AND
@@ -1252,6 +1254,15 @@ export interface CheckAttachReader {
    * itself fails: an empty list is EVIDENCE of the latency window, and a failed
    * read must never be able to counterfeit it.
    *
+   * THROWN-ERROR CONTRACT (advisory, read duck-typed): the arm's reason reads
+   * `status` (number), `op` (string) and `endpoint` (string) off whatever is
+   * thrown, and renders whichever are present alongside the message. An
+   * implementation that folds SEVERAL endpoints into this one read — as the
+   * GitHub one does, check-runs then combined-status — should carry `endpoint`,
+   * because without it the two failures are indistinguishable in the outcome
+   * and they have different fixes. A plain `Error` is still valid; it just
+   * renders a shorter clause.
+   *
    * PAGINATION CONTRACT (issue #263): both underlying reads — the check-runs
    * source and the legacy combined-status source — are pageable GitHub REST
    * endpoints (`per_page`/`page`), and a commit can carry more than one page
@@ -1358,6 +1369,146 @@ export function decideArmAction(mergeability: PrMergeability): ArmDecision {
 }
 
 /**
+ * WHY there is no check-attach evidence — the three causes
+ * {@link readCheckAttachment} can end on, carried as a value instead of being
+ * collapsed into the bare `null` the refinement used to receive.
+ *
+ * The collapse is the defect this type exists to undo (consumer report,
+ * 2026-09-04): `arm` told an operator "this host could not report which checks
+ * are required" on a repository whose `preflight`, in the same session, had just
+ * named the one required check and said where it read it from. Both verbs share
+ * ONE reader — `getRequiredChecks`, the preflight's own effective-rules read —
+ * so the sentence was never about the host. It was about three different things
+ * at once, and the reader could not tell which had happened:
+ *
+ *   - `reader-absent` — the adapter implements neither read. The one cause that
+ *     genuinely IS a statement about the host.
+ *   - `required-unknown` — the required-checks read answered, blind
+ *     (`state: 'unknown'`). It carries that read's OWN `detail`, so the reason
+ *     says what was probed and what came back rather than re-inventing a
+ *     sentence beside it.
+ *   - `reports-read-failed` — the REPORTS read threw. Carries the four facts an
+ *     operator needs to act: the HTTP status, the operation, the host's own
+ *     message, and the endpoint that answered. The most likely live trigger is
+ *     a token without Checks / Commit statuses read access, which is a fix, not
+ *     a host limitation — and the old sentence hid it completely.
+ *
+ * Deliberately NOT exported, and this is a decision rather than an oversight:
+ * the package-root barrel is a separate public surface (barrel-drift.spec.ts),
+ * adding to it is a public-API change, and it lies outside this row's declared
+ * Files. Every value a caller can pass is still constructible as an object
+ * literal (structural typing), and the two things a consumer would name —
+ * `RequiredCheckAttachment` and `null` — stay root-exported and keep working
+ * unchanged.
+ */
+type NoCheckAttachEvidence =
+  | { evidence: 'none'; cause: 'reader-absent' }
+  | { evidence: 'none'; cause: 'required-unknown'; detail: string }
+  | {
+      evidence: 'none';
+      cause: 'reports-read-failed';
+      /** The host's own error message, verbatim. */
+      message: string;
+      /** The HTTP status the endpoint answered, when the error carried one. */
+      status?: number;
+      /** The adapter operation that failed (`getReportedChecks`). */
+      op?: string;
+      /** The endpoint that answered — the fact that tells the two reads apart. */
+      endpoint?: string;
+    };
+
+/**
+ * The check-attach input the refinement grades: real evidence, the absence of it
+ * WITH a cause, or the bare `null` that means "no evidence, cause unstated".
+ * `null` is kept for exactly one reason — every pre-existing caller passes it,
+ * and its rendered sentence is byte-identical to what it always was.
+ */
+type CheckAttachEvidence = RequiredCheckAttachment | NoCheckAttachEvidence | null;
+
+/** Whether this input is a stated ABSENCE of evidence rather than evidence. */
+function isNoCheckAttachEvidence(attach: CheckAttachEvidence): attach is NoCheckAttachEvidence {
+  return attach !== null && (attach as Partial<NoCheckAttachEvidence>).evidence === 'none';
+}
+
+/**
+ * The two halves every unverified-merge reason keeps, whatever the cause. They
+ * are constants because two regex pins and one operator habit rest on them: the
+ * prefix is how a reader greps for "this merge was not check-verified", and the
+ * suffix is the disclosure itself. A new cause adds a CLAUSE between them; it
+ * never rewrites either end.
+ */
+const UNVERIFIED_PREFIX = 'NOT verified against the required-check names:';
+const UNVERIFIED_SUFFIX =
+  'so "clean" is the host\'s word alone, not evidence that the required checks ran.';
+
+/** The `reports-read-failed` bracket: status, operation, endpoint, host message. */
+function reportsReadFailureClause(
+  attach: Extract<NoCheckAttachEvidence, { cause: 'reports-read-failed' }>,
+): string {
+  const said = [
+    attach.op !== undefined ? `the \`${attach.op}\` read` : 'that read',
+    attach.status !== undefined ? `answered HTTP ${attach.status}` : 'failed',
+    ...(attach.endpoint !== undefined ? [`at ${attach.endpoint}`] : []),
+  ].join(' ');
+  return `${said}: "${attach.message}"`;
+}
+
+/**
+ * The clause naming WHICH of the causes produced no evidence. One sentence
+ * fragment, ending in an em dash, spliced between {@link UNVERIFIED_PREFIX} and
+ * {@link UNVERIFIED_SUFFIX} — so all four renderings differ from each other
+ * while every one of them keeps both ends.
+ */
+function noCheckAttachEvidenceClause(attach: NoCheckAttachEvidence | null): string {
+  if (attach === null) {
+    return (
+      'this host could not report which checks are required, or which have reported for the head ' +
+      'commit —'
+    );
+  }
+  if (attach.cause === 'reader-absent') {
+    return (
+      'this host adapter implements neither of the two reads the comparison needs (the ' +
+      'required-checks read and the reported-checks read), so there was no evidence to ask it for —'
+    );
+  }
+  if (attach.cause === 'required-unknown') {
+    return (
+      'the required-checks read answered but was BLIND (state `unknown`), so what the base branch ' +
+      `requires is itself unverified [${attach.detail}] —`
+    );
+  }
+  return (
+    'the required checks ARE known, but the reported-checks read FAILED, so the empty list it would ' +
+    'otherwise have returned cannot be read as the check-attach latency window either ' +
+    `[${reportsReadFailureClause(attach)}] —`
+  );
+}
+
+/**
+ * Read the four facts a failed reports read carries off whatever was thrown.
+ * Duck-typed on purpose: the adapter's error class (`GitHubApiError`) lives
+ * behind the host seam, and importing it here would couple the host-neutral arm
+ * decision to one adapter. A host that throws a plain `Error` still renders a
+ * correct — shorter — clause.
+ */
+function reportsReadFailure(err: unknown): NoCheckAttachEvidence {
+  const e = err as Partial<Record<'status' | 'op' | 'endpoint', unknown>> | null | undefined;
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.length > 0 ? v : undefined;
+  return {
+    evidence: 'none',
+    cause: 'reports-read-failed',
+    message: errMessage(err),
+    status: num(e?.status),
+    op: str(e?.op),
+    endpoint: str(e?.endpoint),
+  };
+}
+
+/**
  * Refine a `merge` decision against the check-ATTACH evidence — the second half of
  * the arm intent, and the fix for the two live occurrences documented above.
  *
@@ -1370,10 +1521,15 @@ export function decideArmAction(mergeability: PrMergeability): ArmDecision {
  *
  * Pure and total, so the whole distinction is spec-drivable without a host:
  *
- *   - `attach === null` — no evidence available (the host cannot answer, or the
- *     read was blind). Decision UNCHANGED, and the reason DISCLOSES that `clean`
- *     is the host's unverified word. Absence of evidence is not a finding
- *     (the W2-F1c discipline) — but it is also not silence.
+ *   - no evidence — either a bare `null` (cause unstated) or a
+ *     {@link NoCheckAttachEvidence} record naming WHICH of the three causes
+ *     fired. Decision UNCHANGED either way, and the reason DISCLOSES that
+ *     `clean` is the host's unverified word. Absence of evidence is not a
+ *     finding (the W2-F1c discipline) — but it is also not silence, and since
+ *     the 2026-09-04 consumer report it is not a single undifferentiated
+ *     sentence either: a reader who cannot tell "this host cannot answer" from
+ *     "your token cannot read check runs" is taught to distrust a check that is
+ *     in fact working. `null` renders exactly the sentence it always did.
  *   - `required` empty — the branch requires no checks. Direct merge, reason says
  *     so. This is the "no required checks configured → unchanged" case, and it is
  *     authoritative, not a guess.
@@ -1384,17 +1540,16 @@ export function decideArmAction(mergeability: PrMergeability): ArmDecision {
  */
 export function refineArmDecisionForCheckAttach(
   decision: ArmDecision,
-  attach: RequiredCheckAttachment | null,
+  attach: CheckAttachEvidence,
 ): ArmDecision {
   if (decision.action !== 'merge') return decision;
 
-  if (attach === null) {
+  if (attach === null || isNoCheckAttachEvidence(attach)) {
     return {
       action: 'merge',
       reason:
-        `${decision.reason} NOT verified against the required-check names: this host could not report ` +
-        `which checks are required, or which have reported for the head commit — so "clean" is the host's ` +
-        `word alone, not evidence that the required checks ran.`,
+        `${decision.reason} ${UNVERIFIED_PREFIX} ${noCheckAttachEvidenceClause(attach)} ` +
+        `${UNVERIFIED_SUFFIX}`,
     };
   }
 
@@ -1632,9 +1787,10 @@ function hasNoPendingRequiredCheck(mergeability: PrMergeability): boolean {
  * refused with `clean-status`, and the recovery would have merged it anyway.
  */
 function attachForbidsDirectMerge(
-  attach: RequiredCheckAttachment | null,
+  attach: CheckAttachEvidence,
 ): attach is RequiredCheckAttachment {
-  return attach !== null && attach.required.length > 0 && !attach.attached;
+  if (attach === null || isNoCheckAttachEvidence(attach)) return false;
+  return attach.required.length > 0 && !attach.attached;
 }
 
 /** The refusal a direct merge becomes when the attach evidence forbids it. */
@@ -1655,35 +1811,59 @@ function attachRefusalReason(attach: RequiredCheckAttachment, hostSaid: string):
  * (a `blocked` PR that arms cleanly) issues no extra host read at all, so that
  * path stays byte-identical in call count.
  *
- * Evidence discipline, in the order the reads happen:
- *   - the host does not implement the two reads → `null` (no evidence).
- *   - the required-checks read is blind (`state: 'unknown'`) → `null`. It must NOT
- *     be read as "nothing is required": that is precisely the admin-403 blindness
- *     the effective-rules read exists to route around.
+ * Evidence discipline, in the order the reads happen. Every no-evidence exit
+ * now NAMES its cause ({@link NoCheckAttachEvidence}) instead of returning a
+ * bare `null`, because the three were indistinguishable in the arm's reason and
+ * a consumer read the collapsed sentence as a statement about the host:
+ *   - the host does not implement the two reads → `reader-absent`.
+ *   - the required-checks read is blind (`state: 'unknown'`) → `required-unknown`,
+ *     carrying that read's own `detail`. It must NOT be read as "nothing is
+ *     required": that is precisely the admin-403 blindness the effective-rules
+ *     read exists to route around.
  *   - nothing is required (`contexts: []`, authoritatively) → the vacuous
  *     comparison, WITHOUT asking for reports. There is nothing to compare them to,
  *     and a repo with no CI must not pay a request for the answer.
- *   - the reports read throws → `null`. A failed read contributes no evidence; it
- *     must never be able to counterfeit the empty list that means "nothing has
- *     attached yet", which is the one input that forces an arm.
+ *   - the reports read throws → `reports-read-failed`, carrying the status, the
+ *     operation, the host's message and the endpoint. A failed read contributes
+ *     no evidence; it must never be able to counterfeit the empty list that
+ *     means "nothing has attached yet", which is the one input that forces an
+ *     arm. Naming it is what lets an operator see a fixable token scope where
+ *     the old sentence showed an unfixable host limitation.
+ *
+ * The `getRequiredChecks` read is wrapped too, though its own interface
+ * contracts it throw-free: a throw there is still no evidence, and routing it to
+ * `required-unknown` keeps this function total against an adapter that breaks
+ * that contract rather than letting it escape into `armPullRequest`.
  */
 async function readCheckAttachment(
   host: LandingHost,
   status: PrLandingStatus,
   branch: string,
-): Promise<RequiredCheckAttachment | null> {
+): Promise<CheckAttachEvidence> {
   const reader = asCheckAttachReader(host);
-  if (reader === null) return null;
+  if (reader === null) return { evidence: 'none', cause: 'reader-absent' };
+
+  let required: RequiredChecksInfo;
   try {
-    const required = await reader.getRequiredChecks(status.baseRef);
-    if (required.state === 'unknown') return null;
-    if (required.contexts.length === 0) return compareRequiredToReported([], []);
-    // Check reports hang off a COMMIT. Prefer the head SHA; fall back to the
-    // branch in GitHub's documented `heads/<branch>` ref form.
-    const ref = status.headSha ?? `heads/${branch}`;
+    required = await reader.getRequiredChecks(status.baseRef);
+  } catch (err) {
+    return {
+      evidence: 'none',
+      cause: 'required-unknown',
+      detail: `the required-checks read THREW, against its own throw-free contract: ${errMessage(err)}`,
+    };
+  }
+  if (required.state === 'unknown') {
+    return { evidence: 'none', cause: 'required-unknown', detail: required.detail };
+  }
+  if (required.contexts.length === 0) return compareRequiredToReported([], []);
+  // Check reports hang off a COMMIT. Prefer the head SHA; fall back to the
+  // branch in GitHub's documented `heads/<branch>` ref form.
+  const ref = status.headSha ?? `heads/${branch}`;
+  try {
     return compareRequiredToReported(required.contexts, await reader.getReportedChecks(ref));
-  } catch {
-    return null;
+  } catch (err) {
+    return reportsReadFailure(err);
   }
 }
 
@@ -1692,8 +1872,8 @@ function checkAttachmentOnce(
   host: LandingHost,
   status: PrLandingStatus,
   branch: string,
-): () => Promise<RequiredCheckAttachment | null> {
-  let pending: Promise<RequiredCheckAttachment | null> | undefined;
+): () => Promise<CheckAttachEvidence> {
+  let pending: Promise<CheckAttachEvidence> | undefined;
   return () => (pending ??= readCheckAttachment(host, status, branch));
 }
 
@@ -2231,17 +2411,23 @@ export type CheckStatus = 'pass' | 'fail' | 'not-applicable' | 'advisory' | 'unk
  * amendment): they left `cli-store preflight` entirely — one fact, one owner.
  *
  * The first three are POSTURE reads (they come off the {@link LandingPosture}
- * seam and are graded per host). `create-credentials` is the odd one out and is
- * named generically on purpose: it grades an AMBIENT credential-form fact rather
- * than a host read, and only a host whose `create` verb has a precondition the
- * landing verbs do not share emits it at all — today that is Bitbucket Cloud
- * alone (see {@link createCredentialsCheck} for why GitHub omits it).
+ * seam and are graded per host). The last two are the CREATE-verb half, and
+ * they are host-exclusive alternatives, never both: `create-credentials` grades
+ * an AMBIENT credential-form fact (Bitbucket Cloud's account email) and
+ * `pr-create-token` PROBES the create right against the host (GitHub). Each is
+ * appended fourth on its own host; neither ever appears on the other's.
+ *
+ * `create-credentials` is named generically on purpose, and only a host whose
+ * `create` verb has a precondition the landing verbs do not share emits it at
+ * all — today that is Bitbucket Cloud alone
+ * (see {@link createCredentialsCheck}).
  */
 export type HostCheckName =
   | 'pr-merge-token'
   | 'allow-auto-merge'
   | 'required-checks'
-  | 'create-credentials';
+  | 'create-credentials'
+  | 'pr-create-token';
 
 /** One probed code-host precondition. */
 export interface HostPreflightCheck {
@@ -2258,13 +2444,47 @@ export interface HostPreflightReport {
 }
 
 /**
+ * What {@link preflightHost} probes the CREATE right with on GitHub — the
+ * `create` verb's OWN credential and the repo it would open a PR in, over the
+ * same injectable network seam every other cross-host call in this module uses.
+ *
+ * Optional at the call site, so the three posture checks keep answering when it
+ * is absent (a spec with an injected posture and no credential resolves none) —
+ * the check then grades `unknown`, which is this module's settled word for
+ * "nobody could look", never a finding.
+ *
+ * Module-LOCAL for the same reason {@link NoCheckAttachEvidence} is: the
+ * package-root barrel is a separate public surface outside this row's declared
+ * Files, and an object literal satisfies this shape without naming it.
+ */
+interface CreateRightProbe {
+  /** The credential `host-pr create` itself sends (`createCredsFor`'s output). */
+  creds: Creds;
+  /** The repository whose open-PR list the probe reads. */
+  info: Pick<HostInfo, 'workspace' | 'repo'>;
+  /** Injectable network seam. Defaults to {@link defaultHttpProbe}. */
+  http?: HttpProbe;
+}
+
+/**
+ * The branch the create-right probe asks the open-PR list about.
+ *
+ * Any branch answers the question — the read is graded on its STATUS, never on
+ * its contents — so the probe names one that cannot exist rather than a real
+ * one: a repository's own branch could legitimately carry an open PR, and
+ * fetching somebody's live PR to grade a permission is more than the question
+ * needs. `[]` from a 200 is the expected body here, and it is ignored.
+ */
+const CREATE_RIGHT_PROBE_BRANCH = 'flotilla-preflight-create-right-probe';
+
+/**
  * Probe the code host's landing posture through the {@link LandingPosture} seam
  * (ADR-0023 amendment). Reports `pr-merge-token`, `allow-auto-merge`, and
  * `required-checks` — the three checks the `--auto` confirm and `wave-setup`
- * onboarding read — plus, on a host whose `create` verb has its own credential
- * precondition, `create-credentials`. Advisory by design: the probe informs the
- * confirm, the ARM OUTCOME stays the ground truth. `unknown` never blocks; only
- * a visible-OFF auto-merge WITH required checks is a hard `fail`.
+ * onboarding read — plus the host's CREATE-verb check: `create-credentials` on
+ * Bitbucket, `pr-create-token` on GitHub. Advisory by design: the probe informs
+ * the confirm, the ARM OUTCOME stays the ground truth. `unknown` never blocks;
+ * only a visible-OFF auto-merge WITH required checks is a hard `fail`.
  *
  * @param env - the environment the AMBIENT (non-posture) half of the report is
  *   read from — today only the Bitbucket Basic-auth username variable the
@@ -2272,11 +2492,15 @@ export interface HostPreflightReport {
  *   `process.env` at a new site so the check is exercisable from a spec with an
  *   injected environment; `host-pr-cli`'s `HostPrDeps.env` is the seam that
  *   feeds it. Defaults to `process.env` for a caller that has no opinion.
+ * @param createRight - the create credential + repo the GitHub
+ *   {@link prCreateTokenCheck} probes with. Omit it and that check grades
+ *   `unknown` (and issues no request at all); it is ignored on every other host.
  */
 export async function preflightHost(
   host: Host,
   posture: LandingPosture,
   env: NodeJS.ProcessEnv = process.env,
+  createRight?: CreateRightProbe,
 ): Promise<HostPreflightReport> {
   const canMerge = await posture.canMergePullRequests();
   const autoMerge = await posture.getAutoMergeSetting();
@@ -2291,9 +2515,15 @@ export async function preflightHost(
   ];
   // Appended, never interleaved: the three posture checks keep their names,
   // their grading, their detail text AND their order on every host, so this
-  // slice is additive to the shipped report rather than a rewrite of it.
+  // slice is additive to the shipped report rather than a rewrite of it. The
+  // two create-verb checks below are host-EXCLUSIVE — `createCredentialsCheck`
+  // answers only on bitbucket and `prCreateTokenCheck` only on github — so
+  // exactly one of them lands in position four, and neither host's shipped
+  // report gains the other's row.
   const createCredentials = createCredentialsCheck(host, env);
   if (createCredentials !== null) checks.push(createCredentials);
+  const prCreateToken = await prCreateTokenCheck(host, createRight);
+  if (prCreateToken !== null) checks.push(prCreateToken);
 
   return { ok: checks.every((c) => c.status !== 'fail'), host, checks };
 }
@@ -2512,18 +2742,23 @@ const CREATE_CREDS_PROBE_TOKEN = 'preflight-probe-not-a-credential';
  *
  * ## Why nothing is reported on GitHub (`null`, not `not-applicable`)
  *
- * Three reasons, in order of weight. (1) There is no second fact to report:
- * GitHub's create credential is `x-access-token:<the same token>` that
- * `pr-merge-token` already grades, so a GitHub row would restate an
- * already-graded fact under a second name — one fact, two owners, which is the
- * drift the ADR-0023 amendment collapsed the store-preflight duplicates to
- * avoid. (2) A permanently-inert row is noise on a report a human reads at the
- * `--auto` confirm — the same reasoning that stops the Bitbucket branches above
- * from promising an arm nothing can perform. (3) Omission keeps the shipped
- * GitHub report byte-identical — same three checks, same order, same text — so
- * a consumer that reads it by shape sees no change at all. The trade accepted:
- * a reader cannot tell "not applicable here" from "nobody implemented it";
- * the check-name union and this doc comment are where that is answered.
+ * Because THIS check grades an ambient variable GitHub does not have. GitHub's
+ * create credential needs no second non-secret input: `createCredsFor` pairs
+ * the resolved token as `x-access-token:<token>` and there is nothing that can
+ * be missing from the FORM of it, which is the only thing this check can see.
+ *
+ * **Correction (2026-09-04 consumer report, folded in here because this comment
+ * was the claim's source).** This section used to justify the omission
+ * differently — "GitHub's create credential is the same token `pr-merge-token`
+ * already grades, so a GitHub row would restate an already-graded fact". That
+ * premise is FALSE and was falsified live on both rows of a consumer wave: a
+ * fine-grained token passed `pr-merge-token` (which reads the repository ROLE
+ * off `GET /repos/{o}/{r}` → push/maintain/admin) and then 403'd on `host-pr
+ * create`, because the role and the Pull requests permission are separate
+ * grants on that token type. Same token, two facts — not one. The create right
+ * on GitHub is therefore a genuine second thing to report, and it is reported:
+ * by {@link prCreateTokenCheck}, which PROBES it rather than inferring it from
+ * a variable's presence.
  *
  * ## Why it CALLS the create helper instead of re-testing the rule
  *
@@ -2575,6 +2810,142 @@ function createCredentialsCheck(host: Host, env: NodeJS.ProcessEnv): HostPreflig
       `ATLASSIAN ACCOUNT EMAIL paired with an API token — and the Worker terminator can open a PR on every row. ` +
       `Presence only: the value is graded, never read into this report and never printed.`,
   };
+}
+
+// ─── pr-create-token: the GitHub create right, probed (consumer report 2026-09-04) ──
+//
+// The gap, measured on both rows of a consumer wave (sandboxed AND unsandboxed):
+// a fine-grained token PASSED `pr-merge-token` and then 403'd on `host-pr
+// create`. The two are not the same grant — `pr-merge-token` reads the
+// repository ROLE off `GET /repos/{o}/{r}` (push / maintain / admin), and a
+// fine-grained token carries that role while being scoped away from Pull
+// requests entirely. So a green landing posture genuinely did not prove the
+// create right, and the preflight said nothing about it until here.
+//
+// WHY A PROBE AND NOT A VARIABLE CHECK. `create-credentials` (above) can grade
+// Bitbucket's precondition from the environment because the precondition IS an
+// environment fact — an email is present or it is not. GitHub's is a property of
+// the token as the HOST sees it, and nothing local can see it. The only honest
+// way to report it is to ask, which is why this check costs two read-only
+// requests where its sibling costs none.
+//
+// WHY THE CREATE VERB'S OWN URLS. Both reads go through the same `HostApi` that
+// `verifyAuth` and `findOpenPrRef` use, so the probe cannot drift from the verb
+// it predicts — the same discipline that makes `createCredentialsCheck` CALL
+// `bitbucketCreateCreds` rather than restate its rule. Identity first
+// (`verifyAuth`, whose production caller this now is: it was documented at the
+// top of this module as "the preflight that gates every write" and had none),
+// then the find-before-create list read, which is the request `create` actually
+// issues first and the one a Pull-requests-scoped-away token refuses.
+//
+// WHY `advisory`, NEVER `fail`. Exactly the reasoning `create-credentials`
+// records: a land-only consumer that never opens a PR through flotilla has a
+// healthy posture without the create right and must not be refused, and `ok` is
+// derived as "no check is `fail`", so this row leaves `ok` and the exit code
+// where the three posture checks put them. The DETAIL carries the weight.
+
+/**
+ * Grade whether the resolved GitHub credential holds the CREATE right — the one
+ * thing `host-pr create` needs that the landing verbs, and therefore
+ * `pr-merge-token`, do not prove. GitHub only; `null` on every other host.
+ *
+ * Two read-only requests, in this order, both with the create credential:
+ *
+ *   1. the identity endpoint, through {@link verifyAuth} — non-200 short-circuits
+ *      (there is nothing to learn from a second request on a credential that did
+ *      not authenticate, and issuing one would be a request spent on noise);
+ *   2. the open-PR list for this repository, through the `create` verb's own
+ *      {@link HostApi.openPrUrl} — graded on its STATUS alone. 403 is the live
+ *      shape (Pull requests unscoped); 404 is the same story told by a host that
+ *      hides what the token may not see.
+ *
+ * Every outcome but the clean one is `advisory`. `unknown` when there was
+ * nothing to probe WITH — absence of evidence, this module's settled word for it.
+ */
+async function prCreateTokenCheck(
+  host: Host,
+  probe: CreateRightProbe | undefined,
+): Promise<HostPreflightCheck | null> {
+  if (host !== 'github') return null;
+  if (probe === undefined) {
+    return {
+      name: 'pr-create-token',
+      status: 'unknown',
+      detail:
+        'The create right was NOT probed: this call supplied no create credential to probe it with (the ' +
+        'credential could not be resolved, or a caller injected a posture reader and bypassed the resolve). ' +
+        'Absence of evidence, never a finding — nothing here says the token lacks the right. `host-pr create` ' +
+        'remains the ground truth.',
+    };
+  }
+
+  const full: HostInfo = { host, workspace: probe.info.workspace, repo: probe.info.repo };
+  const api = apiFor(full);
+  // Unreachable for `github` (apiFor answers for both shipped hosts); typed
+  // rather than asserted, because a silent `!` here would be the one place this
+  // check could throw inside an advisory probe.
+  if (api === null) return null;
+
+  const http = probe.http ?? defaultHttpProbe();
+  try {
+    const auth = await verifyAuth(host, probe.creds, { http });
+    if (!auth.ok) {
+      return {
+        name: 'pr-create-token',
+        status: 'advisory',
+        detail:
+          `The create credential did NOT authenticate: the identity read \`host-pr create\` makes before it ` +
+          `writes answered HTTP ${auth.status}. \`pr-merge-token\` above can be green while this is not — that ` +
+          `check reads the repository ROLE, which is a different grant on a different endpoint. Advisory, never ` +
+          `a failure: the landing verbs are unaffected and a land-only consumer stays healthy. What WILL refuse ` +
+          `is \`host-pr create\`, which the Worker terminator calls on EVERY row — so a wave dispatched against ` +
+          `this repo fails at each row's termination step, after the work is done. Check the token is live and ` +
+          `reaches this repository before dispatching one.`,
+      };
+    }
+
+    const res = await http.request({
+      method: 'GET',
+      url: api.openPrUrl(full, CREATE_RIGHT_PROBE_BRANCH),
+      auth: probe.creds.auth,
+    });
+    if (res.status !== 200) {
+      return {
+        name: 'pr-create-token',
+        status: 'advisory',
+        detail:
+          `The create credential authenticated, but listing this repository's open pull requests — the ` +
+          `find-before-create read \`host-pr create\` performs before it opens one — answered HTTP ` +
+          `${res.status}. On a fine-grained token that is the Pull requests permission (Read and write), which ` +
+          `has to be granted by name: \`pr-merge-token\` above does NOT cover it, because that check reads the ` +
+          `repository ROLE (\`GET /repos/{owner}/{repo}\` → push / maintain / admin) and a fine-grained token ` +
+          `can carry the role while being scoped away from Pull requests entirely — measured on a consumer ` +
+          `wave, both rows, 2026-09-04. On a classic PAT it is the \`repo\` scope. Advisory, never a failure: ` +
+          `the landing verbs are unaffected and a land-only consumer stays healthy. What WILL refuse is ` +
+          `\`host-pr create\`, which the Worker terminator calls on EVERY row — so a wave dispatched against ` +
+          `this repo fails at each row's termination step, after the work is done.`,
+      };
+    }
+
+    return {
+      name: 'pr-create-token',
+      status: 'pass',
+      detail:
+        'The resolved GITHUB_TOKEN holds the CREATE right: it authenticated at the identity endpoint AND ' +
+        'listed this repository\'s open pull requests — the two reads `host-pr create` performs before it ' +
+        'opens one. Two read-only GETs, nothing written; the create POST itself remains the ground truth.',
+    };
+  } catch (err) {
+    return {
+      name: 'pr-create-token',
+      status: 'advisory',
+      detail:
+        `The create-right probe could not reach the host: ${errMessage(err)}. That is no evidence either way — ` +
+        `the reads \`host-pr create\` performs before it opens a PR went unanswered, so this says nothing ` +
+        `about the credential. Advisory, never a failure. If the host is genuinely unreachable from here, ` +
+        `\`host-pr create\` will fail at each row's termination step for the same reason.`,
+    };
+  }
 }
 
 // ─── Bitbucket API shape ─────────────────────────────────────────────────────

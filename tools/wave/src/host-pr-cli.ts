@@ -81,15 +81,19 @@
  *   status       → `LandingHost.getPrStatus`
  *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
  *                  the three code-host checks (pr-merge-token, allow-auto-merge,
- *                  required-checks), plus `create-credentials` on a host whose
- *                  `create` verb has a precondition the landing verbs do not share
- *                  (today Bitbucket Cloud alone, where `create` needs
- *                  BITBUCKET_EMAIL and the landing verbs do not). Store-BLIND (no
+ *                  required-checks), plus ONE create-verb check fourth, because
+ *                  `host-pr create` has a precondition the landing verbs do not
+ *                  share on BOTH shipped hosts — `create-credentials` on Bitbucket
+ *                  Cloud (create needs BITBUCKET_EMAIL, the landing verbs do not)
+ *                  and `pr-create-token` on GitHub (create needs the Pull requests
+ *                  grant, which `pr-merge-token`'s repository-role read does not
+ *                  cover on a fine-grained token). Store-BLIND (no
  *                  `--config`, no `--branch`) — identical on every store kind,
  *                  because landing is always on the code host (ADR-0023 amendment /
  *                  W10-F1). Builds the posture reader from the resolved host
- *                  credential, like arm/merge/status, and reads the ambient half
- *                  from `deps.env`.
+ *                  credential, like arm/merge/status, reads the ambient half
+ *                  from `deps.env`, and probes the GitHub create right with the
+ *                  `create` verb's own credential over `deps.http`.
  *
  * Exit codes:
  *   0 — the op succeeded (`create`: the PR was created or an open one reused;
@@ -171,7 +175,16 @@ const IMPLEMENTED_HOSTS: Host[] = ['github', 'bitbucket'];
  * `process.env`, and the posture reader is a `GitHubApi` built from the env.
  */
 export interface HostPrDeps {
-  /** `create`: injectable network seam (tests). Defaults inside `findOpenPr`/`createPr`. */
+  /**
+   * `create` + `preflight`: injectable network seam (tests). Defaults inside
+   * `findOpenPr`/`createPr`.
+   *
+   * `preflight` uses it for the GitHub `pr-create-token` check, which PROBES the
+   * create right with two read-only requests rather than inferring it — so a
+   * spec that injects a posture reader and no probe leaves that check `unknown`
+   * and issues no request, and a spec that wants to grade it injects a fixture
+   * probe here.
+   */
   http?: HttpProbe;
   /**
    * `create` + `preflight`: the environment the host credential is RESOLVED
@@ -253,9 +266,15 @@ function fullUsageLines(): string[] {
     '            may not write reads what a PR says (the close phrase included), instead of `gh pr view`.',
     '            Output: a single JSON object on stdout.',
     '  preflight Report the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks.',
-    '            On bitbucket it also reports create-credentials — an ADVISORY (it never changes the exit code)',
-    '            stating whether BITBUCKET_EMAIL is set, because `host-pr create` refuses without it while the',
-    '            landing verbs do not, and a wave calls create on every row.',
+    '            Each host adds one CREATE-verb check fourth, because `host-pr create` has a precondition the',
+    '            landing verbs do not share and a wave calls create on every row. Both are ADVISORY — neither',
+    '            ever changes the exit code, so read `checks`, not `$?`, for them.',
+    '            On bitbucket: create-credentials, stating whether BITBUCKET_EMAIL is set (create refuses',
+    '            without it; the landing verbs authenticate with Bearer and do not).',
+    '            On github: pr-create-token, which PROBES the create right with two read-only requests (the',
+    '            identity read, then the open-PR list) using create\'s own credential. pr-merge-token does not',
+    '            cover it — that check reads the repository role, and a fine-grained token can hold the role',
+    '            while being scoped away from Pull requests entirely.',
     '            Store-blind (no --branch; --config is accepted and ignored) — identical on every store kind.',
     '            Output: a single JSON object on stdout.',
     '',
@@ -407,8 +426,11 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     output: 'json',
     usage: [
       'usage: host-pr preflight [--remote <url>] [--config <path>]   # no --branch — a repo-level probe',
-      '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks (plus',
-      '  create-credentials on bitbucket). Store-blind — identical on every store kind.',
+      '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks, plus one',
+      '  CREATE-verb check fourth — create-credentials on bitbucket, pr-create-token on github. Both are',
+      '  advisory and never change the exit code. pr-create-token probes the create right with two read-only',
+      '  requests: pr-merge-token grades the repository role, which a fine-grained token can hold while being',
+      '  scoped away from Pull requests. Store-blind — identical on every store kind.',
       'output: a single JSON object on stdout',
     ],
   },
@@ -960,8 +982,9 @@ export function createCredsFor(host: Host, env: NodeJS.ProcessEnv | undefined): 
  * Exit 0 = every check passed / advisory / unknown (a probe answer, not a block);
  * exit 1 = a check `fail`ed (allow-auto-merge OFF with required checks present, or
  * the token cannot merge PRs), or the host build/probe threw. The Bitbucket
- * `create-credentials` check is graded `advisory` by construction and therefore
- * never reaches this exit code — read `checks`, not `$?`, for it.
+ * `create-credentials` check and the GitHub `pr-create-token` check are both
+ * graded `advisory`/`unknown` by construction and therefore never reach this
+ * exit code — read `checks`, not `$?`, for either.
  */
 async function runPreflight(info: HostInfo, remoteUrl: string, deps: HostPrDeps): Promise<number> {
   try {
@@ -974,7 +997,7 @@ async function runPreflight(info: HostInfo, remoteUrl: string, deps: HostPrDeps)
     // credential resolve already uses keeps it exercisable from a spec instead
     // of adding a second `process.env` read site. `undefined` → the engine's
     // own `process.env` default.
-    const report = await preflightHost(info.host, posture, deps.env);
+    const report = await preflightHost(info.host, posture, deps.env, createRightProbe(info, deps));
     printJson({ ok: report.ok, verb: 'preflight', host: report.host, checks: report.checks });
     return report.ok ? 0 : 1;
   } catch (err) {
@@ -986,6 +1009,34 @@ async function runPreflight(info: HostInfo, remoteUrl: string, deps: HostPrDeps)
       error: (err as Error).message ?? String(err),
     });
     return 1;
+  }
+}
+
+/**
+ * The inputs `preflightHost`'s GitHub `pr-create-token` check probes the CREATE
+ * right with — resolved HERE, from this verb's own seams, because the credential
+ * is the `create` verb's and {@link createCredsFor} is its single owner. Calling
+ * that owner is what makes the probe send exactly what `host-pr create` sends:
+ * `x-access-token:<token>` Basic, never the landing adapter's Bearer.
+ *
+ * Returns `undefined` — never throws — when the credential cannot be resolved,
+ * and the check then grades `unknown` and issues no request. That is the honest
+ * answer rather than an exit: `preflight` is an advisory probe, and a resolve
+ * failure here says nothing about the token's rights. In PRODUCTION the branch
+ * is effectively unreachable on either host, because `landingHostFor` has
+ * already resolved the same variable through the same seam one line above and
+ * would have failed loud first; it is reached by a spec that injects a posture
+ * reader and no credential, which is exactly the shape that must issue no
+ * network call.
+ */
+function createRightProbe(
+  info: HostInfo,
+  deps: HostPrDeps,
+): { creds: Creds; info: HostInfo; http?: HttpProbe } | undefined {
+  try {
+    return { creds: createCredsFor(info.host, deps.env), info, http: deps.http };
+  } catch {
+    return undefined;
   }
 }
 

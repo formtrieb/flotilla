@@ -7,7 +7,7 @@ import {
   ARM_FORBIDDEN_ERROR_TYPE,
   ARM_TOKEN_REQUIREMENTS,
 } from './real-github-api';
-import { AutoMergeUnavailableError } from '../../host-pr';
+import { AutoMergeUnavailableError, armPullRequest } from '../../host-pr';
 import { FakeGitHubHttp } from './github-http-fake';
 import type { GitHubHttpRequest, GitHubHttpResponse } from './github-http';
 
@@ -767,6 +767,151 @@ describe('RealGitHubApi', () => {
           : { status: 403, json: { message: 'Forbidden' } },
       );
       await expect(api.getReportedChecks('c0ffee1')).rejects.toMatchObject({ status: 403, op: 'getReportedChecks' });
+    });
+
+    // ── the throw NAMES the endpoint that answered (consumer report 2026-09-04) ──
+    //
+    // One `op` fronts TWO endpoints here, so `{status, op}` alone cannot say
+    // which read refused — and the two have different fixes on a fine-grained
+    // token (Checks: Read for the check-runs source, Commit statuses: Read for
+    // the combined-status source). Without the endpoint the arm's reason can
+    // only say that something could not be read, which is the collapse the
+    // consumer report is downstream of.
+
+    it('a 403 on the CHECK-RUNS read names the check-runs endpoint', async () => {
+      const { api } = makeApi(() => ({ status: 403, json: { message: 'Resource not accessible by personal access token' } }));
+      await expect(api.getReportedChecks('c0ffee1')).rejects.toMatchObject({
+        status: 403,
+        op: 'getReportedChecks',
+        endpoint: 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs',
+      });
+    });
+
+    it('a 403 on the COMBINED-STATUS read names the combined-status endpoint — a DIFFERENT name', async () => {
+      const { api } = makeApi((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [] } }
+          : { status: 403, json: { message: 'Resource not accessible by personal access token' } },
+      );
+      await expect(api.getReportedChecks('c0ffee1')).rejects.toMatchObject({
+        status: 403,
+        op: 'getReportedChecks',
+        endpoint: 'GET /repos/{owner}/{repo}/commits/{ref}/status',
+      });
+    });
+
+    it('the endpoint is a TEMPLATE, not the live URL — no owner, repo or ref leaks into a landing reason', async () => {
+      const { api } = makeApi(() => ({ status: 403, json: {} }));
+      let endpoint: string | undefined;
+      try {
+        await api.getReportedChecks('c0ffee1');
+      } catch (e) {
+        endpoint = (e as GitHubApiError).endpoint;
+      }
+      expect(endpoint).toBe('GET /repos/{owner}/{repo}/commits/{ref}/check-runs');
+      expect(endpoint).not.toContain('example-org');
+      expect(endpoint).not.toContain('c0ffee1');
+    });
+  });
+
+  // ─── the endpoint reaches the ARM's own reason (the reported symptom) ──────
+  //
+  // The two fixtures above pin the thrown error. What an operator actually
+  // reads is `host-pr arm`'s printed `reason`, so the claim is carried all the
+  // way there: a REAL `RealGitHubApi` over a fixture HTTP seam, armed, and the
+  // resulting reason inspected. Nothing here is faked between the 403 and the
+  // sentence.
+  //
+  // Both fixtures land the SAME way — a direct merge, exactly as before the
+  // endpoint existed — because a failed reports read is no evidence and no
+  // evidence never changes the decision. Only the reason differs, which is
+  // precisely the fix.
+
+  describe('the reports-read endpoint reaches `host-pr arm`\'s reason (two fixtures, two names)', () => {
+    /**
+     * Answer every request an arm makes against a `clean` PR whose base branch
+     * requires one check — up to the reports read, which the caller decides.
+     */
+    function armingApi(reports: (req: GitHubHttpRequest) => GitHubHttpResponse): RealGitHubApi {
+      return makeApi((req) => {
+        // getPrStatus — the branch list, then the single-PR detail.
+        if (req.url.includes('/pulls?head=')) {
+          return { status: 200, json: [{ number: 42, state: 'open', html_url: 'https://github.com/example-org/example-repo/pull/42' }] };
+        }
+        if (req.url.endsWith('/pulls/42')) {
+          return {
+            status: 200,
+            json: {
+              number: 42,
+              mergeable_state: 'clean',
+              head: { sha: 'c0ffee1' },
+              base: { ref: 'main' },
+            },
+          };
+        }
+        // getRequiredChecks — legacy branch protection, then effective rules.
+        if (req.url.includes('/protection/required_status_checks')) {
+          return { status: 404, json: { message: 'Branch not protected' } };
+        }
+        if (req.url.includes('/rules/branches/')) {
+          return {
+            status: 200,
+            json: [
+              {
+                type: 'required_status_checks',
+                parameters: { required_status_checks: [{ context: 'Engine Tests (vitest)' }] },
+              },
+            ],
+          };
+        }
+        // …and the two reads this block is about.
+        if (req.url.includes('/check-runs') || req.url.includes('/commits/')) return reports(req);
+        // The landing itself.
+        if (req.method === 'PUT') return { status: 200, json: { merged: true, sha: 'merged1' } };
+        throw new Error(`unexpected request: ${req.method} ${req.url}`);
+      }).api;
+    }
+
+    const reasonAfterArm = async (reports: (req: GitHubHttpRequest) => GitHubHttpResponse): Promise<string> => {
+      const out = await armPullRequest(armingApi(reports), 'b');
+      // Unchanged landing: the message was wrong, the merge was not.
+      expect(out).toMatchObject({ outcome: 'merged', prNumber: 42 });
+      return (out as { reason: string }).reason;
+    };
+
+    it('a 403 on the check-runs read puts the check-runs endpoint in the reason', async () => {
+      const reason = await reasonAfterArm(() => ({
+        status: 403,
+        json: { message: 'Resource not accessible by personal access token' },
+      }));
+      expect(reason).toContain('GET /repos/{owner}/{repo}/commits/{ref}/check-runs');
+      expect(reason).toContain('HTTP 403');
+      expect(reason).toContain('Resource not accessible by personal access token');
+    });
+
+    it('a 403 on the combined-status read puts the OTHER endpoint in the reason', async () => {
+      const reason = await reasonAfterArm((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [] } }
+          : { status: 403, json: { message: 'Resource not accessible by personal access token' } },
+      );
+      expect(reason).toContain('GET /repos/{owner}/{repo}/commits/{ref}/status');
+      expect(reason).not.toContain('/check-runs');
+    });
+
+    it('…and the two reasons are DIFFERENT — which is the whole point of naming the endpoint', async () => {
+      const checkRuns = await reasonAfterArm(() => ({ status: 403, json: { message: 'Forbidden' } }));
+      const combined = await reasonAfterArm((req) =>
+        req.url.includes('/check-runs')
+          ? { status: 200, json: { check_runs: [] } }
+          : { status: 403, json: { message: 'Forbidden' } },
+      );
+      expect(checkRuns).not.toBe(combined);
+      // Both still disclose the merge was unverified, in the shipped wording.
+      for (const reason of [checkRuns, combined]) {
+        expect(reason).toContain('NOT verified against the required-check names:');
+        expect(reason).toMatch(/the host's word alone/);
+      }
     });
 
     it('drops entries with no usable name/context rather than reporting a nameless check', async () => {
