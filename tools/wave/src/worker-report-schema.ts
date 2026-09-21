@@ -182,6 +182,12 @@ export interface WorkerReport {
  * Worker brief in `wave-shared` states the requirement in prose as the
  * belt-and-braces companion, so a validator that silently ignores the
  * conditional still leaves the model told.
+ *
+ * **2026-09-21 —** the vendor's own docs neither list nor exclude a root
+ * `if`/`then` (it names neither its supported nor its unsupported list) and
+ * separately list `minLength`/`maxLength` under "Not supported" while this
+ * repo measures `minLength: 1` enforced — both measured 2026-08-14 only, not
+ * re-measured since (ADR-0034's 2026-09-21 sub-note).
  */
 export const WORKER_REPORT_JSON_SCHEMA = {
   type: 'object',
