@@ -93,6 +93,7 @@ import { createSpineStore, defaultSpineIo, type SpineIo, type SpineStore } from 
 import { loadWaveConfig, type WaveConfig } from './wave-config';
 import type { PlanTableRow, PrLogRowInput } from './wave-md-rw';
 import {
+  defineVerb,
   helpRequested,
   printVerbHelp,
   refuseUndeclared,
@@ -283,43 +284,43 @@ const fsSidecarReader: SidecarReader = {
  * module (ADR-0051 row 1's stated exception) in the mechanical follow-up row
  * that deleted that exception; the content is unchanged.
  */
-export const CLOSE_ROW_CONTRACT: VerbContract = {
+export const CLOSE_ROW_CONTRACT: VerbContract = defineVerb({
   verb: 'close-row',
   flags: [
-    { canonical: '--spine', value: 'one', valueType: 'path', required: true },
+    { canonical: '--spine', value: 'one', valueType: 'path', required: true, placeholder: '<spine>' },
     { canonical: '--id', value: 'one', valueType: 'id', required: true },
     { canonical: '--pr-url', value: 'one', valueType: 'url' },
-    { canonical: '--config', value: 'one', valueType: 'path' },
+    { canonical: '--config', value: 'one', valueType: 'path', placeholder: '<cfg>' },
     { canonical: '--repo-root', value: 'one', valueType: 'dir' },
     { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
   ],
   positionals: { kind: 'fixed', count: 0 },
-  output: 'json',
-  usage: [
-    'usage: flotilla-engine close-row --spine <spine> --id <id> [--pr-url <url>]',
-    '         [--config <cfg>] [--repo-root <dir>] [--verdicts-dir <dir>]',
+  notes: [
     '  Lands ONE merged row: upserts its `## PR-Log` row and its `## Closed-by`',
     '  line, derives the met-AC indexes from the MAX-iter valid verdict sidecar,',
-    "  then calls the store's close(id, prUrl, acked).",
-    'output: a single JSON result on stdout',
+    "  then calls the store's close(id, prUrl, acked). Both spine writes happen",
+    '  BEFORE the store call (the spine is the WAL a resume reconstructs from).',
+    "  --pr-url overrides the spine row's PR cell. Whichever is used must",
+    '  classify as a real PR URL; a pre-fill, placeholder, sha, prose or empty',
+    '  cell is refused with nothing written.',
+    '  It does NOT decide whether the PR merged — the evidence hierarchy',
+    '  (ADR-0023) stays with the caller — and it never flags, unclaims or parks.',
   ],
-};
+  output: 'json',
+  outputNote: 'a single JSON result on stdout',
+});
 
+/**
+ * The usage refusal: `error: …`, then this verb's OWN rendered section, exit 2
+ * (issue #856).
+ *
+ * The private copy it replaces taught MORE than `--help` did, not less — four
+ * paragraphs about the write order, the `--pr-url` precedence and what this
+ * verb deliberately does not decide, reachable only by getting the call wrong.
+ * Those are the contract's declared notes now, so `--help` carries them too.
+ */
 function usage(message: string): number {
-  process.stderr.write(
-    `error: ${message}\n` +
-      'usage: flotilla-engine close-row --spine <spine> --id <id> [--pr-url <url>]\n' +
-      '         [--config <cfg>] [--repo-root <dir>] [--verdicts-dir <dir>]\n' +
-      '  Lands ONE merged row: upserts its `## PR-Log` row and its `## Closed-by`\n' +
-      '  line, derives the met-AC indexes from the MAX-iter valid verdict sidecar,\n' +
-      '  then calls the store\'s close(id, prUrl, acked). Both spine writes happen\n' +
-      '  BEFORE the store call (the spine is the WAL a resume reconstructs from).\n' +
-      '  --pr-url overrides the spine row\'s PR cell. Whichever is used must\n' +
-      '  classify as a real PR URL; a pre-fill, placeholder, sha, prose or empty\n' +
-      '  cell is refused with nothing written.\n' +
-      '  It does NOT decide whether the PR merged — the evidence hierarchy\n' +
-      '  (ADR-0023) stays with the caller — and it never flags, unclaims or parks.\n',
-  );
+  process.stderr.write([`error: ${message}`, ...CLOSE_ROW_CONTRACT.usage, ''].join('\n'));
   return 2;
 }
 

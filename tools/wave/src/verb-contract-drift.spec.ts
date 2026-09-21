@@ -44,6 +44,8 @@ import fastGlob from 'fast-glob';
 import { main, verbContracts } from './cli';
 import {
   declaredFlagTokens,
+  defineVerb,
+  renderInvocations,
   ROUTER_GLOBAL_FLAGS,
   type VerbContract,
 } from './verb-contract';
@@ -407,5 +409,203 @@ describe('verb-contract drift — the aggregate covers the whole engine surface'
     expect(opsOf('issue-store').length).toBe(26);
     expect(opsOf('spine').length).toBe(13);
     expect(opsOf('config').length).toBe(1);
+  });
+});
+
+// ─── 4. Relationships: every alternation maps to a declaration, and back ────
+//
+// Issue #856 moved the flag RELATIONSHIPS onto the contract — a `groups`
+// declaration (exactly-one / at-most-one, over branches that may mix a flag
+// with a positional) and a second `forms` entry where a verb has two call
+// shapes — and renders them into the signature line. That closes the loss row
+// 758 measured (`host-pr create … [--body <text>] [--body-file <path>]` read as
+// two independent optionals where the parser requires exactly one) and opens
+// exactly one new way to drift: a rendered alternation that no longer
+// corresponds to a declaration, or a declaration the renderer stopped printing.
+//
+// Both directions are held here, because only both together mean anything. A
+// one-way check "every declaration is rendered" passes a renderer that also
+// prints alternations out of nowhere; a one-way check "every alternation is
+// declared" passes a renderer that prints none at all.
+
+/**
+ * Every `( … | … )` / `[ … | … ]` alternation in one rendered section — the
+ * RELATIONSHIPS, and nothing else.
+ *
+ * Angle-bracket spans are masked out before the scan, because a pipe inside
+ * `<…>` is a value VOCABULARY, not a choice between arguments: without the
+ * mask, `[--method <squash|merge|rebase>]` — one optional flag whose value has
+ * three spellings — reads as an alternation between two flags, and the drift
+ * check below would demand a declaration for a relationship that does not
+ * exist. The mask preserves offsets (one NUL per masked character) so the text
+ * reported back is the line's own, not the masked one.
+ */
+export function alternationsIn(section: readonly string[]): string[] {
+  const found: string[] = [];
+  for (const line of section) {
+    const masked = line.replace(/<[^<>]*>/g, (span) => '\u0000'.repeat(span.length));
+    for (const match of masked.matchAll(/[([]([^()[\]]*\|[^()[\]]*)[)\]]/g)) {
+      const start = (match.index ?? 0) + 1;
+      found.push(line.slice(start, start + match[1].length).trim());
+    }
+  }
+  return found;
+}
+
+describe('verb-contract drift — every rendered alternation maps to a declaration', () => {
+  /**
+   * What a contract DECLARES an alternation for: one per `groups` entry, plus
+   * one for a named twin (the positional form against the named one, ADR-0051
+   * decision 6 — the relationship the renderer has always drawn).
+   *
+   * A value VOCABULARY is deliberately not counted. `--method
+   * <squash|merge|rebase>` and `issue-store transition <queued|in-flight|
+   * in-review>` spell their pipes inside angle brackets, which is what
+   * {@link alternationsIn} reads as "one slot, several accepted values" rather
+   * than as a choice between arguments. Relationships and vocabularies are two
+   * different facts and the renderer says them with two different brackets.
+   */
+  function declaredAlternationCount(contract: VerbContract): number {
+    const groups = (contract.groups ?? []).length;
+    const twin = contract.twin === undefined || contract.twin.length === 0 ? 0 : 1;
+    return groups + twin;
+  }
+
+  it('renders one alternation per declaration, and declares one per alternation', () => {
+    const mismatches: string[] = [];
+    for (const [verb, contract] of Object.entries(AGGREGATE)) {
+      const rendered = alternationsIn(renderInvocations(contract));
+      const declared = declaredAlternationCount(contract);
+      if (rendered.length !== declared) {
+        mismatches.push(
+          `${verb}: renders ${rendered.length} alternation(s) [${rendered.join(' ; ')}] ` +
+            `but declares ${declared}`,
+        );
+      }
+    }
+    expect(mismatches.join('\n')).toBe('');
+  });
+
+  it('every declared group and form names flags the verb actually declares', () => {
+    // A group or a form over a spelling the contract does not carry would
+    // render a flag nobody can pass — the omission class in reverse, and the
+    // one way a relationship declaration can lie on its own.
+    const bad: string[] = [];
+    for (const [verb, contract] of Object.entries(AGGREGATE)) {
+      const canonicals = new Set(contract.flags.map((f) => f.canonical));
+      const check = (token: string, where: string): void => {
+        if (token.startsWith('--') && !canonicals.has(token)) {
+          bad.push(`${verb}: ${where} names ${token}, which this verb does not declare`);
+        }
+      };
+      for (const group of contract.groups ?? []) {
+        for (const token of group.branches.flat()) check(token, 'a group');
+      }
+      for (const form of contract.forms ?? []) {
+        for (const token of [...(form.requires ?? []), ...(form.accepts ?? [])]) {
+          check(token, 'a form');
+        }
+        for (const group of form.groups ?? []) {
+          for (const token of group.branches.flat()) check(token, "a form's group");
+        }
+      }
+    }
+    expect(bad.join('\n')).toBe('');
+  });
+
+  it('the five verbs the ticket named each render their relationship', () => {
+    // Named, because these are the losses that were MEASURED — a structural
+    // check that happened to hold on an empty set would say nothing about them.
+    const shapes: Record<string, string> = {
+      'host-pr create': '(--body <body> | --body-file <path>)',
+      'spine add-disclosure': '(<row-id> --iter <n> | --wave-scoped)',
+    };
+    for (const [verb, shape] of Object.entries(shapes)) {
+      expect(renderInvocations(AGGREGATE[verb]).join('\n')).toContain(shape);
+    }
+    // The other three carry their relationship as a second FORM rather than as
+    // an alternation inside one line: two shapes, two lines.
+    for (const verb of ['dor', 'conflict-map', 'credential-probe']) {
+      expect(renderInvocations(AGGREGATE[verb]), `${verb} declares two forms`).toHaveLength(2);
+    }
+  });
+
+  it('NEGATIVE CONTROL — a declaration the renderer drops is caught, and so is the reverse', () => {
+    // The check above is worth exactly what it can fail on, so both halves are
+    // provoked here against synthetic contracts rather than trusted.
+    const base = {
+      verb: 'toy',
+      flags: [
+        { canonical: '--a', value: 'none', valueType: 'none' },
+        { canonical: '--b', value: 'none', valueType: 'none' },
+      ],
+      positionals: { kind: 'fixed', count: 0 },
+      output: 'json',
+    } as const;
+
+    // (a) declared and rendered — balanced.
+    const balanced = defineVerb({
+      ...base,
+      groups: [{ kind: 'exactly-one', branches: [['--a'], ['--b']] }],
+    });
+    expect(alternationsIn(renderInvocations(balanced))).toHaveLength(1);
+
+    // (b) the SAME contract rendered with relationships off — the declaration
+    // is there and the alternation is not. This is what a renderer that
+    // silently stopped printing groups would look like.
+    expect(
+      alternationsIn(renderInvocations(balanced, { relationships: false })),
+    ).toHaveLength(0);
+
+    // (c) an alternation with NO declaration behind it — a positional label
+    // that spells one by hand. It renders, it declares nothing, and the count
+    // check above is what catches it: RUN against the real assertion here, so
+    // the failure is observed rather than assumed.
+    const handWritten = defineVerb({
+      ...base,
+      positionals: { kind: 'fixed', count: 1, labels: ['(x | y)'] },
+    });
+    const rendered = alternationsIn(renderInvocations(handWritten));
+    expect(rendered).toEqual(['x | y']);
+    expect(declaredAlternationCount(handWritten)).toBe(0);
+    expect(rendered.length).not.toBe(declaredAlternationCount(handWritten));
+  });
+});
+
+// ─── 5. The retired spellings are gone from the engine sources ──────────────
+
+describe('verb-contract drift — a renamed flag leaves no copy behind', () => {
+  it('no engine source still spells route-tuple\'s pre-decision-5 payload flags', async () => {
+    // `route-tuple`'s private usage printer outlived ADR-0051 decision 5's
+    // rename by two rows: `--help` printed `--report-file`/`--verdict-file`
+    // while the missing-flag refusal three lines down still taught
+    // `--report`/`--verdict` followed by a path. Issue #856 deleted the printer;
+    // this is what stops the pair coming back — in a printer, a docblock, or a
+    // brief. Scanned over the engine's own sources, specs excluded (this file
+    // has to be able to name what it forbids).
+    const files = await fastGlob('**/*.ts', {
+      cwd: SRC_DIR,
+      ignore: ['**/*.spec.ts', '__fixtures__/**'],
+    });
+    const retired = ['--report <path>', '--verdict <path>'];
+    const offenders: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(join(SRC_DIR, file), 'utf-8');
+      for (const spelling of retired) {
+        if (source.includes(spelling)) offenders.push(`${file} — ${spelling}`);
+      }
+    }
+    expect(offenders.join('\n')).toBe('');
+  });
+
+  it('NEGATIVE CONTROL — the scan fires on the exact text that was removed', () => {
+    // The deleted printer's second line, verbatim. If this ever reads clean the
+    // check above has stopped being able to fail.
+    const removed =
+      "      '         --report <path> --verdict <path> --anchor <sha> --config <cfg>\\n' +";
+    expect(['--report <path>', '--verdict <path>'].filter((s) => removed.includes(s))).toEqual([
+      '--report <path>',
+      '--verdict <path>',
+    ]);
   });
 });

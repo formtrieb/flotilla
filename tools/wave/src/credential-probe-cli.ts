@@ -84,6 +84,7 @@ import {
 import { BITBUCKET_TOKEN_VAR } from './adapters/bitbucket/bitbucket-api';
 import { flagAll, printJson } from './cli-utils';
 import {
+  defineVerb,
   hasFlag,
   helpRequested,
   printVerbHelp,
@@ -102,11 +103,12 @@ import {
  * `--config` is tolerated and unused) and the one shared refusal path does the
  * rest, with the same exit code it always used.
  */
-export const CREDENTIAL_PROBE_CONTRACT: VerbContract = {
+export const CREDENTIAL_PROBE_CONTRACT: VerbContract = defineVerb({
   verb: 'credential-probe',
+  program: 'credential-probe',
   flags: [
     { canonical: '--all', value: 'none', valueType: 'none' },
-    { canonical: '--var', value: 'repeatable', valueType: 'text' },
+    { canonical: '--var', value: 'repeatable', valueType: 'text', placeholder: '<VAR>' },
     // Accepted and DISCARDED (the FOR-87/W25-F2 precedent): a Coordinator
     // wrapper appends it uniformly to every engine invocation, and a probe that
     // reads only the environment has no use for it.
@@ -114,14 +116,19 @@ export const CREDENTIAL_PROBE_CONTRACT: VerbContract = {
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
-  usage: [
-    'usage:',
-    '  credential-probe --all                          # probe every CONFIGURED credential',
-    '  credential-probe --var <VAR> [--var <VAR> ...]  # probe exactly these (e.g. GITHUB_TOKEN)',
-    '  --config <path> is accepted and IGNORED (uniform-wrapper tolerance); this probe reads only the environment.',
-    'output: JSON — the value-free CredentialProbeReport; never a secret',
+  // The two selection forms are exclusive, and the roster cannot say so (it
+  // lists each flag as the independent optional it is). Declared here, the
+  // verb's own section renders one line per form — which is where a caller
+  // looking at `--all` and `--var` side by side goes to find out.
+  forms: [
+    { requires: ['--all'], note: 'probe every CONFIGURED credential' },
+    { requires: ['--var'], note: 'probe exactly these (e.g. GITHUB_TOKEN)' },
   ],
-};
+  notes: [
+    '  --config <path> is accepted and IGNORED (uniform-wrapper tolerance); this probe reads only the environment.',
+  ],
+  outputNote: 'JSON — the value-free CredentialProbeReport; never a secret',
+});
 
 /**
  * The credentials THIS engine's own adapters read (ADR-0029's mechanical

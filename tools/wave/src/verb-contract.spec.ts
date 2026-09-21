@@ -34,6 +34,7 @@ import {
   canonicalFlagTokens,
   checkUndeclared,
   declaredFlagTokens,
+  defineVerb,
   describeArity,
   editDistance,
   firstValueOf,
@@ -43,7 +44,9 @@ import {
   nearestDeclared,
   positionalsOf,
   refuseUndeclared,
+  renderInvocations,
   renderRefusal,
+  renderUsageSection,
   resolveFlagContract,
   resolveTwin,
   ROUTER_GLOBAL_FLAGS,
@@ -617,5 +620,230 @@ describe('every contract declares an output class', () => {
     expect(main(['verdict-acked', join(dir, 'verdicts'), '7'])).toBe(0);
     expect(without.out()).toBe(a);
     restore.push(() => rmSync(dir, { recursive: true, force: true }));
+  });
+});
+
+// ─── the usage renderer (issue #856) ────────────────────────────────────────
+//
+// Row 758 rendered the ROSTER from the contracts; this row renders each verb's
+// OWN section — the text `--help` prints, every refusal reprints and every
+// runner's missing-argument branch prints. What the block below holds is that
+// there is exactly ONE description of a verb's argument shape in the engine and
+// that `usage` IS it, computed rather than typed out beside it.
+
+describe('the usage renderer — a section is computed, never transcribed', () => {
+  it('every shipped contract\'s `usage` IS the renderer\'s output for its declaration', () => {
+    // The whole claim of the row, as one structural assertion over the whole
+    // surface: not "the section resembles the declaration" but "the section is
+    // a pure function of it". A hand-typed line anywhere in the engine fails
+    // here, whatever else it says.
+    const drifted: string[] = [];
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const rendered = renderUsageSection(contract);
+      if (rendered.join('\n') !== contract.usage.join('\n')) {
+        drifted.push(
+          `${verb}:\n  usage:    ${contract.usage.join('\n            ')}\n` +
+            `  rendered: ${rendered.join('\n            ')}`,
+        );
+      }
+    }
+    expect(drifted.join('\n\n')).toBe('');
+  });
+
+  it('`--help` prints a signature line equal to the renderer\'s, for every verb and op', async () => {
+    // The section reaches a caller through `--help`; this asserts the text that
+    // arrives there, not just the array it came from. Through `mainAsync`,
+    // because four verbs resolve a store on their non-help path and the router
+    // reaches them only there — the help interception still runs first, which
+    // is half of what this measures.
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const c = capture();
+      const argv = verb.split(' ');
+      expect(await mainAsync([...argv, '--help']), `${verb} --help`).toBe(0);
+      const first = c.out().split('\n')[0];
+      expect(first, `${verb}`).toBe(renderUsageSection(contract)[0]);
+      expect(first, `${verb}`).toContain(`usage: ${renderInvocations(contract)[0]}`);
+    }
+  });
+
+  it('spells the three PREFIX kinds and no fourth', () => {
+    // A router verb is a subcommand of the one CLI; a group op is its own two
+    // tokens; a module with its own entry point names itself. Anything else
+    // would be a fourth way to spell an invocation, which is the drift ADR-0051
+    // decision 2 closes one level down.
+    const all = verbContracts();
+    expect(renderInvocations(all.dor)[0].startsWith('flotilla-engine dor ')).toBe(true);
+    expect(renderInvocations(all['spine set-status'])[0].startsWith('spine set-status ')).toBe(true);
+    expect(
+      renderInvocations(all['store-preflight'])[0].startsWith('store-preflight '),
+    ).toBe(true);
+    const prefixes = new Set(
+      Object.entries(all).map(([verb, c]) => {
+        const line = renderInvocations(c)[0];
+        if (line.startsWith('flotilla-engine ')) return 'router';
+        if (line.startsWith(`${verb} `) || line === verb) return 'group-op';
+        return 'bare-module';
+      }),
+    );
+    expect([...prefixes].sort()).toEqual(['bare-module', 'group-op', 'router']);
+  });
+
+  it('the ROSTER and the SECTION render one declaration two ways, never two declarations', () => {
+    // `credential-probe` is the measured case: the roster lists `--var` as the
+    // independent optional it is declared to be (`<text>`, the value type), the
+    // section names the value the verb actually wants (`<VAR>`) and spells the
+    // two selection forms apart. Same contract, same renderer, two settings.
+    const c = verbContracts()['credential-probe'];
+    const roster = renderInvocations(c, {
+      program: `flotilla-engine ${c.verb}`,
+      placeholders: 'type',
+      relationships: false,
+    });
+    expect(roster).toHaveLength(1);
+    expect(roster[0]).toContain('[--var <text> [--var <text> ...]]');
+    const section = renderInvocations(c);
+    expect(section).toHaveLength(2);
+    expect(section[0]).toBe('credential-probe --all');
+    expect(section[1]).toBe('credential-probe --var <VAR> [--var <VAR> ...]');
+  });
+
+  it('a relationship renders as the alternation it is, in both kinds', () => {
+    const exactlyOne = defineVerb({
+      verb: 'toy-a',
+      program: 'toy-a',
+      flags: [
+        { canonical: '--x', value: 'one', valueType: 'text' },
+        { canonical: '--y', value: 'one', valueType: 'path' },
+      ],
+      positionals: { kind: 'fixed', count: 0 },
+      output: 'json',
+      groups: [{ kind: 'exactly-one', branches: [['--x'], ['--y']] }],
+    });
+    expect(exactlyOne.usage[0]).toBe('usage: toy-a (--x <text> | --y <path>)');
+
+    const atMostOne = defineVerb({
+      verb: 'toy-b',
+      program: 'toy-b',
+      flags: [
+        { canonical: '--x', value: 'one', valueType: 'text' },
+        { canonical: '--y', value: 'one', valueType: 'path' },
+      ],
+      positionals: { kind: 'fixed', count: 0 },
+      output: 'json',
+      groups: [{ kind: 'at-most-one', branches: [['--x'], ['--y']] }],
+    });
+    expect(atMostOne.usage[0]).toBe('usage: toy-b [--x <text> | --y <path>]');
+  });
+
+  it('a group that occupies a positional slot renders THERE, and the slot is not printed twice', () => {
+    // `spine add-disclosure`'s shape, in miniature: the row slot lives inside
+    // the alternation, so the arity must stop one short of it.
+    const c = defineVerb({
+      verb: 'toy-c',
+      program: 'toy-c',
+      flags: [
+        { canonical: '--iter', value: 'one', valueType: 'int' },
+        { canonical: '--wave-scoped', value: 'none', valueType: 'none' },
+        { canonical: '--text', value: 'one', valueType: 'text', required: true },
+      ],
+      positionals: { kind: 'fixed', count: 2, labels: ['<path>', '<row-id>'], min: 1 },
+      output: 'product',
+      groups: [
+        {
+          kind: 'exactly-one',
+          branches: [['<row-id>', '--iter'], ['--wave-scoped']],
+          consumesPositionals: 1,
+        },
+      ],
+    });
+    expect(c.usage[0]).toBe(
+      'usage: toy-c <path> (<row-id> --iter <n> | --wave-scoped) --text <text>',
+    );
+    // Printed once, in the branch — never also as a bracketed trailing slot.
+    expect(c.usage[0].match(/<row-id>/g)).toHaveLength(1);
+  });
+
+  it('the `output:` and `--json:` lines come from declared fields, on every contract', () => {
+    // Stated both ways, because either alone is satisfiable by a renderer that
+    // is silently ignoring one of them: a section carries an `output:` line
+    // exactly when the contract declares one, and a `--json:` clause exactly
+    // when it declares one.
+    const wrong: string[] = [];
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const hasOutputLine = contract.usage.some((l) => l.startsWith('output: '));
+      if (hasOutputLine !== (contract.outputNote !== undefined)) {
+        wrong.push(`${verb}: output line ${hasOutputLine}, declaration ${contract.outputNote !== undefined}`);
+      }
+      const hasJsonLine = contract.usage.some((l) => l.trimStart().startsWith('--json'));
+      if (hasJsonLine !== (contract.json !== undefined)) {
+        wrong.push(`${verb}: --json line ${hasJsonLine}, declaration ${contract.json !== undefined}`);
+      }
+      if (contract.outputNote !== undefined) {
+        const first =
+          typeof contract.outputNote === 'string' ? contract.outputNote : contract.outputNote[0];
+        expect(contract.usage, verb).toContain(`output: ${first}`);
+      }
+    }
+    expect(wrong.join('\n')).toBe('');
+  });
+
+  it('the declared SHAPE is what the `--json` clause carries — spine\'s gates included', () => {
+    // The gate answers row 859 landed exist to be rendered here; before that
+    // row there was no shape to declare, and the clause was absent.
+    const all = verbContracts();
+    for (const gate of ['spine check-disclosures', 'spine check-awaiting-human']) {
+      const contract = all[gate];
+      const shape = contract.json?.shape;
+      expect(shape, `${gate} declares a --json shape`).toBeDefined();
+      expect(contract.usage.join('\n')).toContain(shape as string);
+      expect(shape).toContain('ok, verb, holding');
+    }
+    expect(all['spine set-row-state'].json?.shape).toBe('{ op, spine, id, written: { state } }');
+  });
+
+  it('the spine receipt continuation stays byte-identical (the PR-855 pin, re-read here)', () => {
+    // Struck from this row's scope as already pinned — asserted anyway at the
+    // place the sentence is now DECLARED, so a rendering change cannot move it
+    // without this failing too.
+    for (const op of ['set-row-state', 'set-row-iter', 'set-row-pr', 'set-branch',
+                      'set-status', 'set-disposition', 'replace-closed-by']) {
+      expect(verbContracts()[`spine ${op}`].usage).toContain(
+        '          Without it this op prints nothing, exactly as before.',
+      );
+    }
+  });
+
+  it('the prose the four private printers held now prints under `--help` too', async () => {
+    // `close-row` and `store-preflight` each taught MORE on a misinvocation
+    // than `--help` did: four paragraphs reachable only by getting the call
+    // wrong. Folded into the contract, they are on both doors.
+    const c1 = capture();
+    expect(await mainAsync(['close-row', '--help'])).toBe(0);
+    expect(c1.out()).toContain('BEFORE the store call (the spine is the WAL a resume reconstructs from).');
+    expect(c1.out()).toContain('(ADR-0023) stays with the caller — and it never flags, unclaims or parks.');
+
+    const c2 = capture();
+    expect(await mainAsync(['store-preflight', '--help'])).toBe(0);
+    expect(c2.out()).toContain('--create-missing-labels creates every label the state-catalog check reports');
+    expect(c2.out()).toContain('comparison as an ADVISORY check — it never fails the preflight.');
+  });
+
+  it('NEGATIVE CONTROL — a flag added to a contract appears in its section with no edit to any text', () => {
+    // The row's whole promise, demonstrated rather than asserted: the section
+    // is not a place a flag can be forgotten, because there is no text to
+    // forget it in.
+    const before = defineVerb({
+      verb: 'toy-d',
+      program: 'toy-d',
+      flags: [{ canonical: '--one', value: 'one', valueType: 'text' }],
+      positionals: { kind: 'fixed', count: 0 },
+      output: 'json',
+    });
+    expect(before.usage[0]).toBe('usage: toy-d [--one <text>]');
+    const after = defineVerb({
+      ...before,
+      flags: [...before.flags, { canonical: '--two', value: 'none', valueType: 'none' }],
+    });
+    expect(after.usage[0]).toBe('usage: toy-d [--one <text>] [--two]');
   });
 });

@@ -98,6 +98,7 @@ import {
 } from './sidecar';
 import { flag, printJson } from './cli-utils';
 import {
+  defineVerb,
   hasFlag,
   helpRequested,
   printVerbHelp,
@@ -115,24 +116,24 @@ import {
  * aliases, so the six `wave-resume` call-sites that still spell them the old way
  * resolve unchanged.
  */
-export const RESUME_CONTRACT: VerbContract = {
+export const RESUME_CONTRACT: VerbContract = defineVerb({
   verb: 'resume',
+  program: 'resume',
   flags: [
     { canonical: '--spine', value: 'one', valueType: 'path', required: true },
     { canonical: '--reports-dir', aliases: ['--reports'], value: 'one', valueType: 'dir', required: true },
     { canonical: '--verdicts-dir', aliases: ['--verdicts'], value: 'one', valueType: 'dir', required: true },
     { canonical: '--repo-root', value: 'one', valueType: 'dir' },
-    { canonical: '--marker', value: 'one', valueType: 'text' },
+    { canonical: '--marker', value: 'one', valueType: 'text', placeholder: '<m>' },
     { canonical: '--force', value: 'none', valueType: 'none' },
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
-  usage: [
-    'usage: resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [--repo-root <dir>] [--marker <m>] [--force]',
+  notes: [
     '  --reports and --verdicts are accepted as aliases of --reports-dir and --verdicts-dir.',
-    'output: JSON — the ResumeResult plus a `cleanup` array',
   ],
-};
+  outputNote: 'JSON — the ResumeResult plus a `cleanup` array',
+});
 
 /**
  * The durable-home reads (+ the crash-cleanup seam), isolated for testing.

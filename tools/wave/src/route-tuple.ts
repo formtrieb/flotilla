@@ -151,6 +151,7 @@ import {
 import { loadWaveConfig, type WaveConfig } from './wave-config';
 import type { PlanTableRow } from './wave-md-rw';
 import {
+  defineVerb,
   helpRequested,
   printVerbHelp,
   refuseUndeclared,
@@ -411,10 +412,10 @@ function fsSidecarWriter(dir: string, file: string, content: string): void {
  * {@link flag}, which resolves the alias too), so no bridge is needed. The
  * content is otherwise unchanged.
  */
-export const ROUTE_TUPLE_CONTRACT: VerbContract = {
+export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
   verb: 'route-tuple',
   flags: [
-    { canonical: '--spine', value: 'one', valueType: 'path', required: true },
+    { canonical: '--spine', value: 'one', valueType: 'path', required: true, placeholder: '<spine>' },
     { canonical: '--id', value: 'one', valueType: 'id', required: true },
     { canonical: '--iter', value: 'one', valueType: 'int', required: true },
     // ADR-0051 decision 5: a file-path flag is `--<thing>-file` wherever any
@@ -436,7 +437,7 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = {
       required: true,
     },
     { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
-    { canonical: '--config', value: 'one', valueType: 'path' },
+    { canonical: '--config', value: 'one', valueType: 'path', placeholder: '<cfg>' },
     { canonical: '--title', value: 'one', valueType: 'text' },
     { canonical: '--repo-root', value: 'one', valueType: 'dir' },
     { canonical: '--remote', value: 'one', valueType: 'url' },
@@ -447,11 +448,7 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = {
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
-  usage: [
-    'usage: flotilla-engine route-tuple --spine <spine> --id <id> --iter <n>',
-    '         --report-file <path> --verdict-file <path> --anchor <sha> --config <cfg>',
-    '         [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>]',
-    '         [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]',
+  notes: [
     '  --title renames the PR. Without it, a REUSE preserves the live PR title',
     '  byte-identically (the Worker opened it and named its own change), exactly as',
     '  the body preserves the live PR body; a CREATE falls back to the spine row',
@@ -459,25 +456,25 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = {
     '  it used as `titleSource` (flag | live-pr | row).',
     "  --ruling is the Operator's stated reason for a Reviewer-only round ABOVE the",
     '  re-dispatch cap, and the only thing that admits an --iter above it.',
-    'output: a single JSON result on stdout',
   ],
-};
+  outputNote: 'a single JSON result on stdout',
+});
 
+/**
+ * The usage refusal: `error: …`, then this verb's OWN rendered section, exit 2.
+ *
+ * It printed a private hand-written copy until issue #856 — and that copy had
+ * gone stale in the worst available way: it still named the two payload flags
+ * by their PRE-DECISION-5 spellings, the ones ADR-0051 renamed to
+ * `--report-file` / `--verdict-file`, while the `--help` two lines above
+ * already printed the new ones. A caller who reached this branch by omitting a
+ * flag was taught the flag that no longer exists. Rendered, that divergence is
+ * not expressible: one section, printed here, by `--help`, and by every
+ * undeclared-token refusal — and `verb-contract-drift.spec.ts` scans the
+ * engine sources for the retired spellings so the pair cannot come back.
+ */
 function usage(message: string): number {
-  process.stderr.write(
-    `error: ${message}\n` +
-      'usage: flotilla-engine route-tuple --spine <spine> --id <id> --iter <n>\n' +
-      '         --report <path> --verdict <path> --anchor <sha> --config <cfg>\n' +
-      '         [--title <text>] [--repo-root <dir>] [--remote <url>] [--base <branch>]\n' +
-      '         [--reports-dir <dir>] [--verdicts-dir <dir>] [--ruling <text>]\n' +
-      '  --title renames the PR. Without it, a REUSE preserves the live PR title\n' +
-      '  byte-identically (the Worker opened it and named its own change), exactly as\n' +
-      '  the body preserves the live PR body; a CREATE falls back to the spine row\n' +
-      '  title with bare tracker ids stripped. The result reports which of the three\n' +
-      '  it used as `titleSource` (flag | live-pr | row).\n' +
-      '  --ruling is the Operator\'s stated reason for a Reviewer-only round ABOVE the\n' +
-      '  re-dispatch cap, and the only thing that admits an --iter above it.\n',
-  );
+  process.stderr.write([`error: ${message}`, ...ROUTE_TUPLE_CONTRACT.usage, ''].join('\n'));
   return 2;
 }
 
@@ -726,8 +723,8 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
   if (!spinePath) return usage('route-tuple requires --spine <spine>');
   if (!id) return usage('route-tuple requires --id <id>');
   if (iterRaw === undefined) return usage('route-tuple requires --iter <n>');
-  if (!reportPath) return usage('route-tuple requires --report <path>');
-  if (!verdictPath) return usage('route-tuple requires --verdict <path>');
+  if (!reportPath) return usage('route-tuple requires --report-file <path>');
+  if (!verdictPath) return usage('route-tuple requires --verdict-file <path>');
   if (!anchor) return usage('route-tuple requires --anchor <sha>');
 
   const iter = Number(iterRaw);

@@ -46,6 +46,7 @@ import { flag, flagAll } from './cli-utils';
 import { resolveStore } from './cli-store';
 import type { IssueStore } from './adapters/issue-store';
 import {
+  defineVerb,
   helpRequested,
   positionalsOf,
   printVerbHelp,
@@ -53,17 +54,9 @@ import {
   type VerbContract,
 } from './verb-contract';
 
-const USAGE_LINES = [
-  'usage:',
-  '  wave-conflict-map <issue-path> [<issue-path> ...]                                        # path form (markdown/local)',
-  '  wave-conflict-map --id <issue-id> [--id <id> ...] [--repo-root <dir>] [--config <path>]  # store form (github/linear, non-file)',
-  '  paths and --id cannot be mixed in one call.',
-];
-
 /**
- * This verb's usage, off its CONTRACT (issue #758) rather than off the raw
- * `USAGE_LINES` the contract is built from: the contract is the whole section —
- * the invocation forms AND the output line — and printing the prefix left the
+ * This verb's usage, off its CONTRACT: the contract is the whole section — both
+ * invocation forms AND the output line — and printing a prefix of it left the
  * one surface a caller reads on a misinvocation quieter than `--help`.
  */
 function writeUsage(): void {
@@ -83,8 +76,12 @@ function writeUsage(): void {
  * positional mixed into `--id` is the "cannot mix" error, and it now travels
  * the same refusal path every other undeclared token does.
  */
-export const CONFLICT_MAP_CONTRACT: VerbContract = {
+export const CONFLICT_MAP_CONTRACT: VerbContract = defineVerb({
   verb: 'conflict-map',
+  // The shipped entry point spells itself `wave-conflict-map`; the router
+  // reaches the same runner as the `conflict-map` subcommand, and the roster is
+  // where that spelling is advertised.
+  program: 'wave-conflict-map',
   flags: [
     { canonical: '--id', value: 'repeatable', valueType: 'id' },
     { canonical: '--repo-root', value: 'one', valueType: 'dir' },
@@ -92,8 +89,22 @@ export const CONFLICT_MAP_CONTRACT: VerbContract = {
   ],
   positionals: { kind: 'variadic', min: 1, label: '<issue-path>' },
   output: 'json',
-  usage: [...USAGE_LINES, 'output: JSON — { issues, cells }'],
-};
+  // Two forms, and the relationship between them is the one a caller gets
+  // wrong: the PATH form reads issue files, the STORE form reads the tracker,
+  // and a call that mixes them is refused. The runner narrows the arity to zero
+  // on the store form, so the refusal measures the call that was made.
+  forms: [
+    { note: 'path form (markdown/local)' },
+    {
+      positionals: { kind: 'fixed', count: 0 },
+      requires: ['--id'],
+      accepts: ['--repo-root', '--config'],
+      note: 'store form (github/linear, non-file)',
+    },
+  ],
+  notes: ['  paths and --id cannot be mixed in one call.'],
+  outputNote: 'JSON — { issues, cells }',
+});
 
 /**
  * Run the conflict-map CLI — PATH form (sync).

@@ -50,7 +50,12 @@ import { main, mainAsync, runDorById, findRepoRoot, verbContracts } from './cli'
 // Issue #758: the roster is rendered FROM the contracts, so its expectations are
 // derived from the contracts too — `canonicalFlagTokens` is the engine's own
 // answer to "which spellings does this verb declare", never a list retyped here.
-import { canonicalFlagTokens } from './verb-contract';
+import {
+  canonicalFlagTokens,
+  defineVerb,
+  renderInvocations,
+  type VerbContract,
+} from './verb-contract';
 // Imported ONLY to reach `route-tuple`'s own usage() text (issue #743's
 // catalog/usage agreement check below) — a bare `runRouteTuple([])` hits its
 // first missing-flag check and writes that text to stderr, exactly the way
@@ -8549,6 +8554,159 @@ describe('the prose the roster used to hold now lives in the contract that owns 
       'pr-create-token',
     ]) {
       expect(stderrBuf).toContain(name);
+    }
+  });
+});
+
+// ─── the sections are RENDERED now, and the guards became the net (issue #856)
+//
+// Row 758 closed the omission class on the roster by construction and on the
+// verb's own section by GUARD: the two checks above read every contract's
+// hand-written `usage` back against its flags and its positional labels, and
+// found three real omissions on their first run. This row renders the section
+// too, so those two guards can no longer be the mechanism — they are the
+// regression net, and a net is worth what it can still catch.
+//
+// Hence this block. It does not re-assert what the guards assert; it asserts
+// that they DISCRIMINATE — that a section missing a declared flag still fails
+// them — and it pins the four refusal prints that stopped being private copies.
+
+describe('the row-758 section guards still discriminate (issue #856)', () => {
+  /** The flag half of the guard above, as a predicate over one contract. */
+  function flagsMissingFromSection(contract: VerbContract): string[] {
+    const text = contract.usage.join('\n');
+    return canonicalFlagTokens(contract).filter(
+      (token) => !new RegExp(`(?<![\\w-])${token}(?![\\w-])`).test(text),
+    );
+  }
+
+  it('finds nothing on the shipped surface — the guard above, restated as its predicate', () => {
+    const missing = Object.entries(verbContracts()).flatMap(([verb, c]) =>
+      flagsMissingFromSection(c).map((f) => `${verb}: ${f}`),
+    );
+    expect(missing.join('\n')).toBe('');
+  });
+
+  it('…and FIRES on a contract whose section leaves a declared flag unmentioned', () => {
+    // Rendering makes the omission hard to reach, not impossible: a verb with
+    // declared FORMS renders only the flags its forms name, so a flag left out
+    // of every form and out of every note is invisible again. That is exactly
+    // `credential-probe --config`'s shape — it is in no form and survives only
+    // because the contract declares a note about it. Drop the note and the
+    // guard fires, which is the demonstration.
+    const live = verbContracts()['credential-probe'];
+    expect(flagsMissingFromSection(live)).toEqual([]);
+
+    const withoutTheNote = defineVerb({ ...live, notes: [] });
+    expect(flagsMissingFromSection(withoutTheNote)).toEqual(['--config']);
+  });
+
+  it('…and the POSITIONAL half fires on a slot no form names', () => {
+    const live = verbContracts()['conflict-map'];
+    const labelsMissing = (c: VerbContract): string[] => {
+      const text = c.usage.join('\n');
+      const arity = c.positionals;
+      const labels =
+        arity.kind === 'variadic'
+          ? arity.label === undefined
+            ? []
+            : [arity.label]
+          : (arity.labels ?? []);
+      return labels.filter((l) => !text.includes(l));
+    };
+    expect(labelsMissing(live)).toEqual([]);
+
+    // The store form alone — the path form's `<issue-path>` slot is then
+    // declared and never printed.
+    const storeFormOnly = defineVerb({ ...live, forms: [(live.forms ?? [])[1]] });
+    expect(labelsMissing(storeFormOnly)).toEqual(['<issue-path>']);
+  });
+});
+
+describe('a missing required flag answers with the RENDERED section (issue #856)', () => {
+  // Four runners kept a private hand-written usage printer, reached only by
+  // getting the call wrong. `route-tuple`'s had gone stale against its own
+  // `--help` — it still named the pre-decision-5 payload spellings — which is
+  // the concrete harm of a second copy. All four print the contract now.
+
+  it('`route-tuple` names the flag, then its own section, exit 2', async () => {
+    expect(await mainAsync(['route-tuple', '--spine', 'x.md'])).toBe(2);
+    const lines = stderrBuf.split('\n');
+    expect(lines[0]).toBe('error: route-tuple requires --id <id>');
+    for (const line of verbContracts()['route-tuple'].usage) {
+      expect(stderrBuf).toContain(line);
+    }
+    // The renamed spellings, and only those.
+    expect(stderrBuf).toContain('--report-file <path> --verdict-file <path>');
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('`compose-driver` does the same', async () => {
+    expect(await mainAsync(['compose-driver', '--spine', 'x.md'])).toBe(2);
+    expect(stderrBuf.split('\n')[0]).toBe('error: compose-driver requires --out <path>');
+    for (const line of verbContracts()['compose-driver'].usage) {
+      expect(stderrBuf).toContain(line);
+    }
+  });
+
+  it('`close-row` does the same, and its four extra paragraphs came with it', async () => {
+    expect(await mainAsync(['close-row', '--spine', 'x.md'])).toBe(2);
+    expect(stderrBuf.split('\n')[0]).toBe('error: close-row requires --id <id>');
+    for (const line of verbContracts()['close-row'].usage) {
+      expect(stderrBuf).toContain(line);
+    }
+  });
+
+  it('`store-preflight` does the same — and stops calling itself `cli-store preflight`', async () => {
+    // Reached through the RUNNER, because this is the module-invocation door:
+    // `npx tsx tools/wave/src/cli-store.ts <op> …`, where an op that is not
+    // `preflight` is the refusal. Through the router the same mistake is a
+    // stray positional and is answered by the shared refusal path instead —
+    // which prints the same section, from the same place.
+    expect(await runStorePreflight(['not-an-op'])).toBe(2);
+    expect(stderrBuf.split('\n')[0]).toContain('error: unknown op "not-an-op"');
+    for (const line of verbContracts()['store-preflight'].usage) {
+      expect(stderrBuf).toContain(line);
+    }
+    // The private copy spelled the verb by its MODULE path; the contract spells
+    // it by the subcommand every skill invokes.
+    expect(stderrBuf).not.toContain('usage: cli-store preflight');
+    expect(stderrBuf).toContain('usage: store-preflight ');
+  });
+});
+
+describe('the spine group roster is rendered from SPINE_CONTRACTS (issue #856)', () => {
+  it('the group\'s own roster lists every op, each line equal to that op\'s rendered invocation', () => {
+    // `spine <op>` with a missing positional falls back to this runner's whole
+    // op roster — the surface `SPINE_OP_ARGS` used to spell as prose.
+    expect(main(['spine', 'set-row-state'])).toBe(2);
+    const printed = stderrBuf.split('\n');
+    expect(printed[0]).toBe('usage:');
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      if (!verb.startsWith('spine ')) continue;
+      for (const invocation of renderInvocations(contract)) {
+        expect(printed, verb).toContain(`  ${invocation}`);
+      }
+    }
+  });
+
+  it('the `available:` roster and the op sections come from the ONE table', () => {
+    // FOR-11's finding was a hand-maintained roster that had lost `set-status`.
+    // `SPINE_OP_ARGS` — the prose table those printers read — is gone; both
+    // surfaces read the contracts now, so the two cannot disagree.
+    expect(main(['spine', '__no_such_op__'])).toBe(2);
+    const match = /available: ([^\n]+)/.exec(stderrBuf);
+    expect(match).not.toBeNull();
+    const advertised = (match as RegExpExecArray)[1].split(', ').map((s) => s.trim());
+    const declared = Object.keys(verbContracts())
+      .filter((v) => v.startsWith('spine '))
+      .map((v) => v.slice('spine '.length));
+    expect(advertised).toEqual(declared);
+    for (const op of advertised) {
+      const lines = stderrBuf
+        .split('\n')
+        .filter((l) => l.trim().startsWith(`spine ${op} `) || l.trim() === `spine ${op}`);
+      expect(lines, `one arg-shape line for ${op}`).toHaveLength(1);
     }
   });
 });

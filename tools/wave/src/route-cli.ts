@@ -86,12 +86,14 @@ import {
 import { transition, type IssueState } from './stop-condition-state-machine';
 import type { Risk } from './header-parser';
 import {
+  defineVerb,
   hasFlag,
   helpRequested,
   positionalsOf,
   printVerbHelp,
   refuseUndeclared,
   resolveTwin,
+  type JsonNote,
   type VerbContract,
 } from './verb-contract';
 
@@ -126,9 +128,15 @@ const JSON_SHAPES: Readonly<Record<string, string>> = {
   'write-verdict': '{ verb, path, id, iter }',
 };
 
-/** The `usage` line each of those four carries, rendered from {@link JSON_SHAPES}. */
-function jsonUsageLine(verb: keyof typeof JSON_SHAPES & string, note: string): string {
-  return `  --json: ${note} — ${JSON_SHAPES[verb]}`;
+/** The `--json:` clause each of those four declares, off {@link JSON_SHAPES}. */
+function jsonNote(
+  verb: keyof typeof JSON_SHAPES & string,
+  lead: string,
+  continuation?: readonly string[],
+): JsonNote {
+  return continuation === undefined
+    ? { lead, shape: JSON_SHAPES[verb] }
+    : { lead, shape: JSON_SHAPES[verb], continuation };
 }
 
 /**
@@ -183,64 +191,54 @@ interface WriteSidecarJsonResult {
  * (its alias), never as both.
  */
 export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
-  'route-verdict': {
+  'route-verdict': defineVerb({
     verb: 'route-verdict',
     flags: [
       // `--verdict` here is the ENUM — approve | changes-requested | question.
       // It is the one spelling decision 5 keeps polymorphism-free by renaming
       // the OTHER side: route-tuple's file path became `--verdict-file`.
-      { canonical: '--verdict', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--verdict', value: 'one', valueType: 'enum', required: true, placeholder: '<v>' },
       { canonical: '--iter', aliases: ['--iteration'], value: 'one', valueType: 'int', required: true },
-      { canonical: '--risk', value: 'one', valueType: 'enum', required: true },
-      { canonical: '--state', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--risk', value: 'one', valueType: 'enum', required: true, placeholder: '<r>' },
+      { canonical: '--state', value: 'one', valueType: 'enum', required: true, placeholder: '<s>' },
       { canonical: '--ruling', value: 'one', valueType: 'text' },
     ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-      'usage: flotilla-engine route-verdict --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]',
+    notes: [
       '  --iteration is accepted as an alias of --iter.',
       "  --ruling <text> is the Operator's stated reason for a Reviewer-only round ABOVE the",
       '  re-dispatch cap, and the only thing that admits an iteration above it.',
-      'output: JSON — { event, outcome } (+ `ruled` on an above-cap ruled round)',
     ],
-  },
-  'route-outcome': {
+    outputNote: 'JSON — { event, outcome } (+ `ruled` on an above-cap ruled round)',
+  }),
+  'route-outcome': defineVerb({
     verb: 'route-outcome',
     flags: [
-      { canonical: '--outcome', value: 'one', valueType: 'enum', required: true },
-      { canonical: '--state', value: 'one', valueType: 'enum', required: true },
+      { canonical: '--outcome', value: 'one', valueType: 'enum', required: true, placeholder: '<o>' },
+      { canonical: '--state', value: 'one', valueType: 'enum', required: true, placeholder: '<s>' },
     ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-      'usage: flotilla-engine route-outcome --outcome <o> --state <s>',
-      'output: JSON — { event, outcome }',
-    ],
-  },
-  'validate-report': {
+    outputNote: 'JSON — { event, outcome }',
+  }),
+  'validate-report': defineVerb({
     verb: 'validate-report',
     flags: [],
     positionals: { kind: 'fixed', count: 1, labels: ['<file>'] },
     output: 'prose',
-    usage: [
-      'usage: flotilla-engine validate-report <file>',
-      'output: text ("valid"), not JSON; the errors[] on stderr when invalid',
-      jsonUsageLine('validate-report', 'the same answer as JSON on stdout, valid or not'),
-    ],
-  },
-  'validate-verdict': {
+    outputNote: 'text ("valid"), not JSON; the errors[] on stderr when invalid',
+    json: jsonNote('validate-report', 'the same answer as JSON on stdout, valid or not'),
+  }),
+  'validate-verdict': defineVerb({
     verb: 'validate-verdict',
     flags: [],
     positionals: { kind: 'fixed', count: 1, labels: ['<file>'] },
     output: 'prose',
-    usage: [
-      'usage: flotilla-engine validate-verdict <file>',
-      'output: text ("valid"), not JSON; the errors[] on stderr when invalid',
-      jsonUsageLine('validate-verdict', 'the same answer as JSON on stdout, valid or not'),
-    ],
-  },
-  'write-report': {
+    outputNote: 'text ("valid"), not JSON; the errors[] on stderr when invalid',
+    json: jsonNote('validate-verdict', 'the same answer as JSON on stdout, valid or not'),
+  }),
+  'write-report': defineVerb({
     verb: 'write-report',
     flags: [
       { canonical: '--report-file', value: 'one', valueType: 'path' },
@@ -251,16 +249,16 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     positionals: { kind: 'fixed', count: 1, labels: ['<json-file>'] },
     output: 'prose',
     twin: [{ flag: '--report-file', label: '<json-file>' }],
-    usage: [
-      'usage: flotilla-engine write-report (--report-file <path> | <json-file>) --reports-dir <dir> --id <id> --iter <n>',
+    notes: [
       '  --dir is accepted as an alias of --reports-dir. The payload file is named EITHER',
       '  by --report-file or as the leading positional — never both (a mixed call is a usage error).',
-      'output: text (the written file path), not JSON',
-      jsonUsageLine('write-report', 'the same path, with the id and iteration it was filed under'),
-      '  The notice:/warning: findings stay on stderr under --json — they are about the record, not the result.',
     ],
-  },
-  'write-verdict': {
+    outputNote: 'text (the written file path), not JSON',
+    json: jsonNote('write-report', 'the same path, with the id and iteration it was filed under', [
+      '  The notice:/warning: findings stay on stderr under --json — they are about the record, not the result.',
+    ]),
+  }),
+  'write-verdict': defineVerb({
     verb: 'write-verdict',
     flags: [
       { canonical: '--verdict-file', value: 'one', valueType: 'path' },
@@ -271,15 +269,15 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     positionals: { kind: 'fixed', count: 1, labels: ['<json-file>'] },
     output: 'prose',
     twin: [{ flag: '--verdict-file', label: '<json-file>' }],
-    usage: [
-      'usage: flotilla-engine write-verdict (--verdict-file <path> | <json-file>) --verdicts-dir <dir> --id <id> --iter <n>',
+    notes: [
       '  --dir is accepted as an alias of --verdicts-dir. The payload file is named EITHER',
       '  by --verdict-file or as the leading positional — never both (a mixed call is a usage error).',
-      'output: text (the written file path), not JSON',
-      jsonUsageLine('write-verdict', 'the same path, with the id and iteration it was filed under'),
-      '  The notice:/warning: findings stay on stderr under --json — they are about the record, not the result.',
     ],
-  },
+    outputNote: 'text (the written file path), not JSON',
+    json: jsonNote('write-verdict', 'the same path, with the id and iteration it was filed under', [
+      '  The notice:/warning: findings stay on stderr under --json — they are about the record, not the result.',
+    ]),
+  }),
 };
 
 /**
