@@ -563,6 +563,7 @@ import {
   refuseUndeclared,
   renderInvocations,
   resolveTwin,
+  type Catalog,
   type OutputClass,
   type VerbContract,
 } from './verb-contract';
@@ -635,8 +636,23 @@ const KNOWN_SUBCOMMANDS = [
   'verdict-acked',
   'render-verdict',
   'version',
+  'catalog',
 ] as const;
 type Subcommand = (typeof KNOWN_SUBCOMMANDS)[number];
+
+/**
+ * The verbs whose BARE invocation IS their primary form, and which therefore
+ * keep an exemption from the router's zero-argument guard (issue #758).
+ *
+ * Both are store-free engine INTROSPECTION and neither has an argument that
+ * could be missing: `version` answers "what version is this engine?" (ADR-0032)
+ * and `catalog` answers "what does it accept?" (ADR-0051's Catalog). Neither
+ * performs an action, and both are reached for exactly where nothing else on
+ * the machine is configured yet — printing usage instead would make them
+ * unusable there. Every OTHER verb names a target, so a bare call to one of
+ * those is a caller who left it out, and the focused usage is the answer.
+ */
+const BARE_FORM_VERBS: ReadonlySet<Subcommand> = new Set<Subcommand>(['version', 'catalog']);
 
 /**
  * A one-line purpose per subcommand (issue #650) — printed on the unknown-
@@ -684,6 +700,8 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
   'render-verdict':
     'Render the Reviewer-verdict PR-body section from the final verdict sidecar for an id.',
   version: 'Print the engine package version, optionally checked against --expect (ADR-0032).',
+  catalog:
+    'Print the Catalog — every Verb contract the router collects, as JSON (ADR-0051).',
 };
 
 // ─── `--json` on this file's two prose verbs (ADR-0051 decision 7, row V5) ───
@@ -919,6 +937,28 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  Exit: 0 match / bare read; 1 mismatch, unreadable engine version, or',
       '  unusable expectation; 2 usage.',
     ],
+  }),
+  catalog: defineVerb({
+    verb: 'catalog',
+    // No flags of its own, deliberately: the Catalog is the whole aggregate or
+    // it is not the Catalog. A `--verb <verb>` filter would be a second way to
+    // ask a question `--help` already answers for one verb, and a reader that
+    // holds the JSON can filter it itself.
+    flags: [],
+    positionals: { kind: 'fixed', count: 0 },
+    output: 'json',
+    notes: [
+      '  Emits the Catalog: every Verb contract the router collects, one entry per',
+      '  verb and per group op, each carrying its canonical flag spellings, their',
+      '  aliases, value kinds, positional arity and output class.',
+      '  Resolves no store, reads no wave config, and reaches no network.',
+    ],
+    outputNote: 'JSON — the Catalog itself, sorted by verb',
+    json: {
+      lead: 'accepted and redundant — this verb has no second rendering',
+      shape: '{ verb, verbs: [ <VerbContract>, ... ] }',
+      trail: 'the contracts verbatim, never a hand-written projection of them',
+    },
   }),
 };
 
@@ -3285,6 +3325,46 @@ function runVersion(args: string[]): number {
   return engineVersionExitCode(report);
 }
 
+/**
+ * The Catalog, off the router's own aggregate — every contract, verbatim.
+ *
+ * Two lines and no field list, which is the point: nothing here decides WHICH
+ * parts of a contract the Catalog carries, so nothing here can fall behind the
+ * contract. The one transformation is the SORT, and it is a presentation
+ * decision rather than a content one — `verbContracts()` returns declaration
+ * order (router verbs, then the delegated ones, then each group's ops), and a
+ * consumer diffing two engine versions should not read a moved declaration as a
+ * changed surface. The key it sorts by is the contract's own `verb`, which the
+ * drift spec already holds equal to the aggregate key it is filed under.
+ */
+function catalogPayload(): Catalog {
+  const verbs = Object.values(verbContracts()).sort((a, b) =>
+    a.verb < b.verb ? -1 : a.verb > b.verb ? 1 : 0,
+  );
+  return { verb: 'catalog', verbs };
+}
+
+/**
+ * Run the `catalog` subcommand — ADR-0051 decision 2's FOURTH reader of a Verb
+ * contract, and the one 2.7.0 shipped without.
+ *
+ * Store-free, config-free and network-free, like `version` beside it: the
+ * aggregate is built out of module constants, so this verb answers on a machine
+ * where no wave config exists yet. That is also why its BARE form is its
+ * primary one ({@link BARE_FORM_VERBS}) — there is no target to name.
+ *
+ * `--json` is accepted and changes nothing: the output class is already `json`,
+ * and a verb whose only rendering is JSON has no second one to switch to.
+ */
+function runCatalog(args: string[]): number {
+  const contract = ROUTER_VERB_CONTRACTS.catalog;
+  if (helpRequested(contract, args)) return printVerbHelp(contract);
+  const refusal = refuseUndeclared(contract, args);
+  if (refusal !== 0) return refusal;
+  printJson(catalogPayload());
+  return 0;
+}
+
 function versionUsage(message: string): number {
   process.stderr.write(
     [
@@ -3338,18 +3418,21 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     // (no repo-root/--wave/--branches) is still fine, since it performs no
     // removal; only the truly arg-less call needs to require an explicit target.
     //
-    // `version` is the ONE exemption (ADR-0032), and for the opposite reason
-    // worktree-cleanup lost its: a bare `version` is that verb's PRIMARY form
-    // ("what version is this engine?"), it performs no action at all, and it is
-    // the invocation an operator reaches for when nothing else on the machine
-    // is configured yet. Printing usage instead would make the verb unusable
-    // exactly where it is needed most.
+    // {@link BARE_FORM_VERBS} are the exemptions — `version` (ADR-0032) and
+    // `catalog` (ADR-0051) — and for the opposite reason worktree-cleanup lost
+    // its: a bare call to either is that verb's PRIMARY form ("what version is
+    // this engine?", "what does it accept?"), it performs no action at all, and
+    // it is the invocation an operator reaches for when nothing else on the
+    // machine is configured yet. Printing usage instead would make the verb
+    // unusable exactly where it is needed most.
     //
     // What it prints, since issue #758, is THAT verb's own contract section —
     // not the whole-CLI block. Nineteen verbs used to answer a bare invocation
     // with a roster of every other verb in the engine; a caller who has already
-    // named the one they want is owed its arguments, not the catalog.
-    if (rest.length === 0 && first !== 'version') {
+    // named the one they want is owed its arguments, not the whole roster.
+    // (This sentence read "not the catalog" until `catalog` became a verb of
+    // its own; the Catalog is the contracts as DATA, not this prose block.)
+    if (rest.length === 0 && !BARE_FORM_VERBS.has(first as Subcommand)) {
       if (VERB_GROUP_CONTRACTS[first] !== undefined) return printGroupUsage(first);
       return printVerbUsage(verbContracts()[first]);
     }
@@ -3422,6 +3505,11 @@ export function main(argv: string[] = process.argv.slice(2)): number {
         // reads only the engine package's own manifest, so it answers on a
         // machine where no wave config exists yet.
         return runVersion(rest);
+      case 'catalog':
+        // ADR-0051's Catalog. Sync and store-free for the same reason `version`
+        // above is: the aggregate is built out of module constants, so nothing
+        // has to be configured for this verb to answer.
+        return runCatalog(rest);
       case 'issue-store':
         // `issue-store` is async (Promise<number>) and cannot run inside this
         // sync `main()`. The async entrypoint `mainAsync()` intercepts it BEFORE

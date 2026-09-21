@@ -141,6 +141,7 @@ const MODULE_VERBS: Readonly<Record<string, readonly string[]>> = {
     'verdict-acked',
     'render-verdict',
     'version',
+    'catalog',
   ],
   'cli-store.ts': ['store-preflight'],
   'cli-utils.ts': [],
@@ -390,25 +391,46 @@ describe('verb-contract drift — the aggregate covers the whole engine surface'
     expect(missing.join(', ')).toBe('');
   });
 
-  it('states the surface this row measured — 27 top-level verbs, 45 group ops', () => {
+  it('states the surface this row measured — 28 top-level verbs, 45 group ops', () => {
     // ADR-0051's own table measured 27 top-level verbs and 39 group ops at
     // `53261e0`. Both halves are re-measured here rather than trusted: the
-    // top-level count is unchanged, and the op count has grown to 45 because
-    // `issue-store` gained five ops since that commit and `config validate` is
-    // counted as the group op it structurally is. The duty was never the
-    // number — it is that EVERY verb and EVERY op declares a contract, which the
-    // roster test above holds — but the number is stated so a later reader can
-    // see which way it moved.
+    // top-level count has grown to 28 because `catalog` — decision 2's fourth
+    // reader, which 2.7.0 shipped without — joined it, and the op count has
+    // grown to 45 because `issue-store` gained five ops since that commit and
+    // `config validate` is counted as the group op it structurally is. The duty
+    // was never the number — it is that EVERY verb and EVERY op declares a
+    // contract, which the roster test above holds — but the number is stated so
+    // a later reader can see which way it moved.
     const keys = Object.keys(AGGREGATE);
     const groups = ['host-pr', 'issue-store', 'spine', 'config'];
     const groupOps = keys.filter((k) => groups.some((g) => k.startsWith(`${g} `)));
     const topLevel = keys.filter((k) => !groupOps.includes(k));
-    expect(topLevel.length + groups.length).toBe(27);
+    expect(topLevel.length + groups.length).toBe(28);
     expect(groupOps.length).toBe(45);
     expect(opsOf('host-pr').length).toBe(5);
     expect(opsOf('issue-store').length).toBe(26);
     expect(opsOf('spine').length).toBe(13);
     expect(opsOf('config').length).toBe(1);
+  });
+
+  it('`catalog` is ONE contract on this map, declared like every other verb', () => {
+    // The emitter of the aggregate is itself IN the aggregate, once. Stated
+    // here because the failure it forbids is specific to a verb that prints
+    // the contracts: a second entry — a group op, a module claiming it twice —
+    // would make the Catalog contain two answers to "what does `catalog`
+    // accept", and the emitted JSON is where a consumer would read them.
+    const keys = Object.keys(AGGREGATE).filter((k) => k === 'catalog' || k.endsWith(' catalog'));
+    expect(keys).toEqual(['catalog']);
+    const claims = Object.entries(MODULE_VERBS).filter(([, verbs]) => verbs.includes('catalog'));
+    expect(claims.map(([file]) => file)).toEqual(['cli.ts']);
+    // …and it is a contract of the same shape as every other, not a special
+    // case the coverage checks above would have to exempt.
+    const contract = AGGREGATE.catalog;
+    expect(contract.verb).toBe('catalog');
+    expect(contract.output).toBe('json');
+    expect(contract.positionals).toEqual({ kind: 'fixed', count: 0 });
+    expect(contract.flags).toEqual([]);
+    expect(contract.usage.length).toBeGreaterThan(0);
   });
 });
 

@@ -8710,3 +8710,179 @@ describe('the spine group roster is rendered from SPINE_CONTRACTS (issue #856)',
     }
   });
 });
+
+// ─── the Catalog: the aggregate, EMITTED (ADR-0051 decision 2) ───────────────
+//
+// ADR-0051 named four readers of a Verb contract — the parser, the refusal,
+// `--help`, and the Catalog — and 2.7.0 shipped three of them. Its own
+// CHANGELOG said so under *Not yet proven*: "the Catalog (contracts as JSON) is
+// decided, not built; no out-of-tree reader of the exported contracts yet."
+// This block is the fourth reader's spec.
+//
+// What it owes is not "some JSON appears on stdout" but that the JSON **is**
+// the aggregate: one entry per verb and per group op, every field read from the
+// contract rather than transcribed beside it. So every expectation here is
+// derived from `verbContracts()`, the same discipline the roster guards above
+// run under and for the same reason — a spec that retyped the five facts the
+// Catalog publishes would itself be the second hand-maintained description of
+// the contracts that ADR-0051 exists to make impossible.
+
+describe('`catalog` emits the router aggregate as JSON (ADR-0051 decision 2)', () => {
+  /** The parsed Catalog, off a real router run. */
+  function emitted(): { verb: string; verbs: VerbContract[] } {
+    stdoutBuf = '';
+    expect(main(['catalog'])).toBe(0);
+    return JSON.parse(stdoutBuf) as { verb: string; verbs: VerbContract[] };
+  }
+
+  /** One contract as JSON round-trips it — absent optionals dropped, nothing else. */
+  function asJson(contract: VerbContract): VerbContract {
+    return JSON.parse(JSON.stringify(contract)) as VerbContract;
+  }
+
+  it('prints one entry per verb AND per group op — the aggregate\'s own count', () => {
+    const catalog = emitted();
+    expect(catalog.verb).toBe('catalog');
+    const aggregate = verbContracts();
+    expect(catalog.verbs).toHaveLength(Object.keys(aggregate).length);
+    expect(catalog.verbs.map((c) => c.verb).sort()).toEqual(Object.keys(aggregate).sort());
+    // A group op is an entry in its own right: `spine <op>` does not stand in
+    // for thirteen of them, the same rule the roster follows one surface over.
+    for (const verb of [
+      'spine add-disclosure',
+      'issue-store triage-apply',
+      'host-pr create',
+      'config validate',
+    ]) {
+      expect(
+        catalog.verbs.some((c) => c.verb === verb),
+        verb,
+      ).toBe(true);
+    }
+  });
+
+  it('every entry IS its contract — nothing re-spelled on the way out', () => {
+    // The strongest form of the claim, and the only one that also covers the
+    // fields nobody thought to name: each emitted entry equals the exported
+    // contract as JSON, field for field. An emitter that dropped `aliases`,
+    // renamed `valueType` or transcribed a positional arity fails here whatever
+    // else it gets right.
+    const byVerb = new Map(emitted().verbs.map((c) => [c.verb, c]));
+    const drifted: string[] = [];
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      if (JSON.stringify(byVerb.get(verb)) !== JSON.stringify(asJson(contract))) {
+        drifted.push(verb);
+      }
+    }
+    expect(drifted.join(', ')).toBe('');
+  });
+
+  it('carries the five facts the Catalog exists to publish, each read off the contract', () => {
+    // Canonical spelling, aliases, value kinds, positional arity, output class
+    // — asserted one by one as well as wholesale above, because the equality
+    // check would still pass if BOTH sides lost a field and these cannot.
+    const byVerb = new Map(emitted().verbs.map((c) => [c.verb, c]));
+    let aliasesSeen = 0;
+    let repeatableSeen = 0;
+    for (const [verb, contract] of Object.entries(verbContracts())) {
+      const entry = byVerb.get(verb) as VerbContract;
+      expect(entry, verb).toBeDefined();
+      expect(entry.output, `${verb} output class`).toBe(contract.output);
+      expect(entry.positionals, `${verb} positional arity`).toEqual(asJson(contract).positionals);
+      expect(
+        entry.flags.map((f) => f.canonical),
+        `${verb} canonical spellings`,
+      ).toEqual(canonicalFlagTokens(contract));
+      for (const [i, f] of contract.flags.entries()) {
+        expect(entry.flags[i].value, `${verb} ${f.canonical} value kind`).toBe(f.value);
+        expect(entry.flags[i].valueType, `${verb} ${f.canonical} value type`).toBe(f.valueType);
+        expect(entry.flags[i].aliases ?? [], `${verb} ${f.canonical} aliases`).toEqual(
+          f.aliases ?? [],
+        );
+        if ((f.aliases ?? []).length > 0) aliasesSeen++;
+        if (f.value === 'repeatable') repeatableSeen++;
+      }
+    }
+    // The two facts a contract may legally omit are actually PRESENT on the
+    // shipped surface, so the loop measured them rather than walking past an
+    // empty set on every verb and reporting a pass it never earned.
+    expect(aliasesSeen).toBeGreaterThan(0);
+    expect(repeatableSeen).toBeGreaterThan(0);
+  });
+
+  it('sorts by verb, and the sort is the only transformation', () => {
+    const verbs = emitted().verbs.map((c) => c.verb);
+    expect(verbs).toEqual([...verbs].sort());
+    expect(new Set(verbs)).toEqual(new Set(Object.keys(verbContracts())));
+  });
+
+  it('declares its own contract, and the Catalog contains exactly one of it', () => {
+    const contract = verbContracts().catalog;
+    expect(contract).toBeDefined();
+    expect(emitted().verbs.filter((c) => c.verb === 'catalog')).toHaveLength(1);
+    // The roster names it like any other verb…
+    stderrBuf = '';
+    expect(main([])).toBe(2);
+    expect(stderrBuf).toContain('  flotilla-engine catalog   # prints JSON');
+    expect(stderrBuf).toMatch(/available subcommands: .*\bcatalog\b/);
+    // …and `--help` answers with its own section, exit 0, nothing on stderr.
+    stdoutBuf = '';
+    stderrBuf = '';
+    expect(main(['catalog', '--help'])).toBe(0);
+    expect(stdoutBuf.split('\n')[0]).toBe(contract.usage[0]);
+    expect(stderrBuf).toBe('');
+  });
+
+  it('a BARE call is its primary form — never the zero-argument usage', () => {
+    // `catalog` joins `version` in the router's zero-arg exemption: it has no
+    // target to name, so "no arguments" is the whole invocation rather than a
+    // caller who left something out.
+    stdoutBuf = '';
+    stderrBuf = '';
+    expect(main(['catalog'])).toBe(0);
+    expect(stderrBuf).toBe('');
+    expect(JSON.parse(stdoutBuf).verbs.length).toBeGreaterThan(60);
+  });
+
+  it('refuses an undeclared flag — exit 2, its own section, a did-you-mean', () => {
+    stdoutBuf = '';
+    stderrBuf = '';
+    expect(main(['catalog', '--helpp'])).toBe(2);
+    expect(stderrBuf).toContain('error: catalog: unknown flag --helpp');
+    expect(stderrBuf).toContain('did you mean --help?');
+    expect(stderrBuf).toContain(verbContracts().catalog.usage[0]);
+    expect(stdoutBuf).toBe('');
+  });
+
+  it('`--json` is accepted and changes nothing — the output class is already json', () => {
+    stdoutBuf = '';
+    expect(main(['catalog'])).toBe(0);
+    const bare = stdoutBuf;
+    stdoutBuf = '';
+    expect(main(['catalog', '--json'])).toBe(0);
+    expect(stdoutBuf).toBe(bare);
+  });
+
+  it('NEGATIVE CONTROL — a projection that drops one field fails the equality check', () => {
+    // The check above is worth exactly what it can fail on. This builds the
+    // emitter's defect by hand — an entry naming four of the five facts and
+    // silently losing the aliases — and runs the SAME comparison against it, so
+    // the failure is observed here rather than assumed.
+    const contract = verbContracts()['worktree-cleanup'];
+    expect(contract.flags.some((f) => (f.aliases ?? []).length > 0)).toBe(true);
+    const projected = {
+      verb: contract.verb,
+      flags: contract.flags.map((f) => ({
+        canonical: f.canonical,
+        value: f.value,
+        valueType: f.valueType,
+      })),
+      positionals: contract.positionals,
+      output: contract.output,
+    };
+    expect(JSON.stringify(projected)).not.toBe(JSON.stringify(asJson(contract)));
+    // …and the live emitter does not look like that.
+    const live = emitted().verbs.find((c) => c.verb === 'worktree-cleanup');
+    expect(JSON.stringify(live)).toBe(JSON.stringify(asJson(contract)));
+  });
+});
