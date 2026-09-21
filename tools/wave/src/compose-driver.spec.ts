@@ -755,6 +755,50 @@ describe('compose-driver — the derivations', () => {
     expect(stripBareIds("the row's own title", '822')).toBe("the row's own title");
   });
 
+  it('stripBareIds consumes the separator between two adjacent stripped ids — slash-, comma- and `and`-joined (issue #888)', () => {
+    // The live shape: row 800's tracker title, whose composed PR title on PR
+    // #886 read "Residue after /: the STILL OPEN sentence …" — both ids
+    // stripped, the bare slash left standing. The fix consumes the join AND
+    // its separator as one unit, leaving only the sentence's own punctuation.
+    const LIVE_SLASH_TITLE =
+      'Residue after #751/#772: the STILL OPEN sentence stays only in the residual issue, ' +
+      'never the wave row itself';
+    expect(stripBareIds(LIVE_SLASH_TITLE, '800')).toBe(
+      'Residue after : the STILL OPEN sentence stays only in the residual issue, ' +
+        'never the wave row itself',
+    );
+    expect(stripBareIds(LIVE_SLASH_TITLE, '800')).not.toContain('/');
+
+    // Comma-joined, two and three deep.
+    expect(stripBareIds('Fixes #100, #200: cleanup', '800')).toBe('Fixes : cleanup');
+    expect(stripBareIds('Fixes #100, #200, #300: cleanup', '800')).toBe('Fixes : cleanup');
+    expect(stripBareIds('Fixes #100, #200: cleanup', '800')).not.toContain(',');
+
+    // `and`-joined.
+    expect(stripBareIds('Ship #100 and #200 together', '800')).toBe('Ship together');
+    expect(stripBareIds('Ship #100 and #200 together', '800')).not.toMatch(/\band\b/);
+
+    // A single id, or two ids that are NOT adjacent, never enters this pass —
+    // the existing single-id branches still do the whole job, unchanged.
+    expect(stripBareIds('#680 — ship the verb', '680')).toBe('ship the verb');
+    expect(stripBareIds('Ship #100 now, revisit #200 later', '800')).toBe(
+      'Ship now, revisit later',
+    );
+  });
+
+  it("stripBareIds leaves a stray separator standing when the join is not one of the three recognised shapes — the case the compose-time notice below exists for", () => {
+    // A doubled slash: the join pass requires exactly ONE separator between two
+    // id tokens, so it does not recognise this as a join and falls through to
+    // the single-id branches, which strip each `#<digits>` but know nothing
+    // about the punctuation between them.
+    expect(stripBareIds('Residue after #100 // #200: note', '800')).toBe(
+      'Residue after // : note',
+    );
+    // A lone id directly followed by a separator and non-id text: the same
+    // fallthrough, this time leaving a LEADING separator.
+    expect(stripBareIds('#100/text needing its own fix', '800')).toBe('/text needing its own fix');
+  });
+
   it('depsSetupFrom picks the first install command, and answers empty when there is none', () => {
     expect(
       depsSetupFrom([{ command: 'npm ci --prefix tools/wave' }, { command: 'vitest run' }]),
@@ -2391,6 +2435,183 @@ describe('compose-driver — the verb, end to end', () => {
     // clean exit-0 compose rather than becoming collateral of the new gate.
     rewriteConfig(configPath, { cli: './node_modules/.bin/flotilla-engine', install: FROM_CONFIG });
     expect((await composeAndReadStep(spinePath, configPath)).source).toBe('engine.install');
+  });
+});
+
+// ─── issue #888: the bare-id strip's separator fix, exercised through the
+// real verb ──────────────────────────────────────────────────────────────
+//
+// Unit coverage for `stripBareIds` itself lives in "the derivations" above;
+// this is AC3's composed-title pin — the same slash-joined shape row 800's
+// own tracker title carried, run through `runComposeDriver` rather than the
+// function in isolation — plus AC2's compose-time notice, proven to fire on a
+// title the strip cannot cleanly repair (Convention 11) and proven silent on
+// one it can (the pin test's own empty-stderr assertion is that restored-green
+// case).
+describe('compose-driver — the bare-id strip separator fix, end to end (issue #888)', () => {
+  let repoRoot: string;
+  let anchor: string;
+  let stdout: string;
+  let stderr: string;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const SLUG = '2026-09-21-separator-fix';
+
+  function git(...args: string[]): string {
+    return execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }).trim();
+  }
+
+  async function seed(title: string): Promise<{ id: string; spinePath: string; configPath: string }> {
+    const store = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const id = await store.create({
+      title,
+      filingHint: 'separator-fix',
+      risk: 'isolated-refactor',
+      worker: 'background',
+      files: ['tools/wave/**'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'the separator is consumed', checked: false }],
+      bodySections: [{ heading: 'What to build', markdown: 'Fix the strip.' }],
+    });
+
+    let spine = renderSpine(
+      {
+        slug: SLUG,
+        description: 'separator fix',
+        coordinator: 'c',
+        model: 'm',
+        created: '2026-09-21',
+        lastUpdated: '2026-09-21',
+      },
+      [{ id, title, worker: 'background', risk: 'isolated-refactor' }],
+      { issues: [], cells: [] },
+      'ok',
+    );
+    spine = setRowState(spine, id, 'dispatched');
+    spine = upsertDispatchLogEntry(spine, id, `wave/${id}-separator-fix`);
+    spine = upsertDispatchLogModel(spine, id, 'sonnet');
+
+    const spinePath = join(repoRoot, '.flotilla', 'waves', `${SLUG}.md`);
+    mkdirSync(join(repoRoot, '.flotilla', 'waves'), { recursive: true });
+    writeFileSync(spinePath, spine, 'utf8');
+
+    const configPath = join(repoRoot, 'wave.config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: { cli: SOURCE_FORM_CLI },
+        verify: {
+          profiles: [
+            {
+              name: 'engine',
+              appliesTo: ['tools/wave/**'],
+              commands: [
+                { command: 'npm ci --prefix tools/wave' },
+                { command: 'vitest run --root tools/wave' },
+              ],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    return { id, spinePath, configPath };
+  }
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'compose-driver-sep-'));
+    execFileSync('git', ['-C', repoRoot, 'init', '-q']);
+    execFileSync('git', [
+      '-C',
+      repoRoot,
+      '-c',
+      'user.email=t@example.invalid',
+      '-c',
+      'user.name=t',
+      'commit',
+      '--allow-empty',
+      '-q',
+      '-m',
+      'anchor',
+    ]);
+    anchor = git('rev-parse', 'HEAD');
+    stdout = '';
+    stderr = '';
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      stdout += String(c);
+      return true;
+    });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  async function compose(title: string, outName: string) {
+    const { id, spinePath, configPath } = await seed(title);
+    const out = join(repoRoot, outName);
+    const code = await runComposeDriver([
+      '--spine',
+      spinePath,
+      '--config',
+      configPath,
+      '--repo-root',
+      repoRoot,
+      '--anchor',
+      anchor,
+      '--out',
+      out,
+      '--reviewer-agent',
+      'flotilla:wave-reviewer',
+    ]);
+    return { id, code, out };
+  }
+
+  function prTitleFor(scriptPath: string, id: string): unknown {
+    const script = readFileSync(scriptPath, 'utf8');
+    const at = script.indexOf('const ISSUES = ');
+    const close = script.indexOf('\n]\n', at);
+    const rows = JSON.parse(script.slice(at + 'const ISSUES = '.length, close + 2)) as Array<
+      Record<string, unknown>
+    >;
+    return rows.find((r) => r.id === id)?.prTitle;
+  }
+
+  it('AC3 — a slash-joined title of the shape the live row carried composes with no dangling separator, and stays silent (the restored-green case)', async () => {
+    const LIVE_SLASH_TITLE =
+      'Residue after #751/#772: the STILL OPEN sentence stays only in the residual issue';
+    const { id, code, out } = await compose(LIVE_SLASH_TITLE, 'driver.js');
+    expect(code).toBe(0);
+    expect(stderr).toBe(''); // a clean strip: no compose-time notice
+    const prTitle = prTitleFor(out, id);
+    expect(prTitle).toBe(
+      'Residue after : the STILL OPEN sentence stays only in the residual issue',
+    );
+    expect(String(prTitle)).not.toContain('/');
+  });
+
+  it('AC2 FALSIFICATION — a title the strip cannot cleanly repair produces a compose-time notice, not a silent write (Convention 11)', async () => {
+    // A doubled slash is not one of the three recognised join shapes, so the
+    // strip falls through to the single-id branches and leaves the doubled
+    // separator standing — the shape the notice exists to catch.
+    const MALFORMED_TITLE = 'Residue after #100 // #200: note';
+    const { id, code, out } = await compose(MALFORMED_TITLE, 'driver.js');
+    // The notice does not stop the compose — the row still gets a title, and
+    // the Coordinator (who reads compose-driver's stderr) decides whether it
+    // needs a hand fix via --row-meta.
+    expect(code).toBe(0);
+    expect(stderr).toMatch(/^notice: compose-driver: row .*: the bare-id strip left a doubled "\/"/m);
+    expect(stderr).toContain(id);
+    expect(stderr).toContain('Residue after // : note');
+    expect(prTitleFor(out, id)).toBe('Residue after // : note');
   });
 });
 

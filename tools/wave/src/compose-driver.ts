@@ -333,15 +333,53 @@ export function closePhraseFor(storeKind: string, id: string): string {
  * when it is ATTACHED, so a quoted `'s` standing on its own elsewhere in a title
  * is untouched. What is left is the bare phrase (`… settled shape)`), which is
  * what the sentence meant before the id was in it.
+ *
+ * **A SEPARATOR between two adjacent stripped ids goes with them, for the same
+ * reason the possessive does.** Row 800's tracker title read `Residue after
+ * #751/#772: the STILL OPEN sentence …`; both `#751` and `#772` are `#<digits>`
+ * tokens the generic branch strips on its own, but neither branch below knew
+ * the `/` between them was THEIR punctuation rather than the sentence's — so it
+ * stripped both ids and left the bare slash standing (`Residue after /: …`,
+ * observed live on PR #886). The join pass below runs FIRST, before either
+ * single-id branch, and consumes a whole run of two-or-more adjacent id tokens
+ * — `#a/#b`, `#a, #b`, `#a and #b`, and any longer chain of the same — together
+ * with the separators between them, leaving only the sentence's own boundary
+ * punctuation (a colon, a dash) behind. A title with only one id, or two ids
+ * that are not adjacent, never matches this pass and falls through to the
+ * branches below exactly as before.
  */
 export function stripBareIds(title: string, id: string): string {
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const idToken = `(?:#\\d+|${escaped})(?:['’]s)?`;
+  const sepToken = `(?:\\s*/\\s*|\\s*,\\s*|\\s+and\\s+)`;
+  const joinedIds = new RegExp(
+    `(^|[\\s(\\[])${idToken}(?:${sepToken}${idToken})+(?=$|[\\s):\\]—-])`,
+    'g',
+  );
   return title
+    .replace(joinedIds, '$1')
     .replace(/#\d+(?:['’]s)?/g, '')
     .replace(new RegExp(`(^|[\\s(\\[])${escaped}(?:['’]s)?(?=$|[\\s):\\]—-])`, 'g'), '$1')
     .replace(/^[\s:—–-]+/, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
+}
+
+/**
+ * True when a title `stripBareIds` produced still carries a stray separator —
+ * a leading `/`/`,` or a doubled occurrence of the same one — the shape left
+ * behind when a strip could not cleanly consume a join (an unrecognised
+ * separator, e.g. a doubled slash the join pass above does not match, or an id
+ * adjacent to only one neighbour of a longer chain). Module-local: the one
+ * call site is {@link cmdComposeDriver}'s per-row loop, which uses it to
+ * decide whether the derived `prTitle` needs a compose-time notice rather than
+ * a silent write — never a general title validator a consumer would import.
+ */
+function danglingSeparatorNotice(title: string): string | null {
+  if (/^[/,]/.test(title)) return `a leading "${title[0]}"`;
+  const doubled = /([/,])\s*\1/.exec(title);
+  if (doubled) return `a doubled "${doubled[1]}"`;
+  return null;
 }
 
 /** True for a verify command that installs this consumer's dependency tree. */
@@ -1249,6 +1287,28 @@ export async function runComposeDriver(
         );
       }
 
+      // A title left malformed by the strip — a leading or doubled separator,
+      // the shape a join the regex above did not recognise leaves behind — is
+      // still WRITTEN (a compose that refused outright over a cosmetic title
+      // would stall the whole wave over one row), but never SILENTLY: the
+      // notice below names the row and the stray punctuation so a Coordinator
+      // can override it with `--row-meta`'s `prTitle` before dispatch. Only
+      // checked when this function's own output is what is being written —
+      // an operator-authored `meta.prTitle` is not this function's claim to
+      // police.
+      const derivedPrTitle = stripBareIds(triage.title, row.id);
+      const resolvedPrTitle = meta.prTitle ?? derivedPrTitle;
+      if (meta.prTitle === undefined) {
+        const dangling = danglingSeparatorNotice(derivedPrTitle);
+        if (dangling) {
+          process.stderr.write(
+            `notice: compose-driver: row ${row.id}: the bare-id strip left ${dangling} ` +
+              `standing in the derived PR title ("${derivedPrTitle}") — a join the strip did not ` +
+              "recognise. Override with --row-meta's prTitle if it needs a hand fix.\n",
+          );
+        }
+      }
+
       const composed: DriverRow = {
         id: row.id,
         slug: rowSlug,
@@ -1270,7 +1330,7 @@ export async function runComposeDriver(
           note: meta.note,
         }),
         scopeGrants: projectScopeGrants(spineSource, row.id),
-        prTitle: meta.prTitle ?? stripBareIds(triage.title, row.id),
+        prTitle: resolvedPrTitle,
         closePhrase: closePhraseFor(config.store.kind, row.id),
         reviewerHints: meta.reviewerHints ?? [],
         siblingBranches:
