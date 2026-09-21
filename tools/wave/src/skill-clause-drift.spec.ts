@@ -1065,16 +1065,55 @@ describe("skill-clause-drift — wave-resume step 5 levels with wave-close phase
     return md.slice(start, end);
   }
 
+  /**
+   * The one ordering comparison both the positive test and the negative
+   * control below call (issue #909, AC3) — covering all three markers, so
+   * neither re-implements the index arithmetic inline. A missing marker reads
+   * as "not in order" rather than throwing, since the positive test already
+   * asserts each marker's presence separately with its own diagnostic message
+   * before it ever calls this.
+   */
+  function recoveryStepsInOrder(text: string): boolean {
+    const idxReset = text.indexOf('git reset --hard HEAD');
+    const idxCleanMistake = text.indexOf('git clean -fd');
+    const idxRepull = text.indexOf('git pull --ff-only origin main');
+    return (
+      idxReset >= 0 &&
+      idxCleanMistake >= 0 &&
+      idxRepull >= 0 &&
+      idxReset < idxCleanMistake &&
+      idxCleanMistake < idxRepull
+    );
+  }
+
+  /**
+   * Seed integrity for the placeholder round-trip the negative control below
+   * performs (issue #909, AC2), asserted as its own predicate independently of
+   * whatever the ordering comparison goes on to report: a placeholder already
+   * present in the block cannot round-trip, because the swap's closing
+   * `.replace(placeholder, …)` is then free to land on that PRE-EXISTING
+   * occurrence instead of the one the swap itself planted — silently
+   * corrupting a position the swap never meant to touch. `String.replace`
+   * with a string search replaces only the FIRST match, which is exactly what
+   * makes an already-present placeholder unsafe: whichever occurrence sorts
+   * first — the pre-existing one or the newly planted one — is the one that
+   * comes back.
+   */
+  function seedsCleanly(block: string, placeholder: string): boolean {
+    if (block.includes(placeholder)) return false;
+    const seeded = block.replace('git reset --hard HEAD', placeholder);
+    return seeded.split(placeholder).length - 1 === 1;
+  }
+
   it("wave-resume states phase 4a's three recovery steps in order: reset to HEAD, remove Face-2 exactly (never a broad git clean -fd), then re-pull", () => {
     const block = extractRecoveryBlock(resumeSkill);
-    const idxReset = block.indexOf('git reset --hard HEAD');
-    const idxCleanMistake = block.indexOf('git clean -fd');
-    const idxRepull = block.indexOf('git pull --ff-only origin main');
-    expect(idxReset, 'step 1 (reset --hard HEAD) is missing from the Recovery block').toBeGreaterThanOrEqual(0);
-    expect(idxCleanMistake, 'the git clean -fd mistake is not named beside step 2').toBeGreaterThanOrEqual(0);
-    expect(idxRepull, 'step 3 (re-pull) is missing from the Recovery block').toBeGreaterThanOrEqual(0);
-    expect(idxReset).toBeLessThan(idxCleanMistake);
-    expect(idxCleanMistake).toBeLessThan(idxRepull);
+    expect(block.indexOf('git reset --hard HEAD'), 'step 1 (reset --hard HEAD) is missing from the Recovery block').toBeGreaterThanOrEqual(0);
+    expect(block.indexOf('git clean -fd'), 'the git clean -fd mistake is not named beside step 2').toBeGreaterThanOrEqual(0);
+    expect(block.indexOf('git pull --ff-only origin main'), 'step 3 (re-pull) is missing from the Recovery block').toBeGreaterThanOrEqual(0);
+    expect(
+      recoveryStepsInOrder(block),
+      'the Recovery block states reset, the clean-mistake mention, and re-pull out of order',
+    ).toBe(true);
     expect(block).not.toContain(OLD_RESET_LINE);
   });
 
@@ -1099,7 +1138,42 @@ describe("skill-clause-drift — wave-resume step 5 levels with wave-close phase
     expect(droppedInPhase4a).not.toContain(DENIED_PATH_PATTERN);
   });
 
-  it('negative control — a reordered recovery step fails the ordering predicate', () => {
+  it('negative control — seed integrity is asserted independently of the ordering outcome (#909)', () => {
+    // The Gap this closes: the OLD version of the reordering control below
+    // compared `reordered.indexOf('git reset --hard HEAD')` — a fixed-literal
+    // replace target the placeholder value could never affect — against
+    // wherever the placeholder happened to land, which the swap always plants
+    // at the position of the EARLIER-appearing step (reset). Any collision
+    // between the placeholder and pre-existing text resolves the final
+    // `.replace(placeholder, …)` to that same early position or an earlier
+    // one, so the comparison held for EVERY placeholder value, corrupted or
+    // not — it was never actually testing the swap. This block asserts the
+    // round-trip's own integrity directly, before any ordering question is
+    // asked.
+    const block = extractRecoveryBlock(resumeSkill);
+    // The placeholder actually used below (Unicode Private Use Area, U+E000):
+    // absent from the block before seeding, planted exactly once by the first
+    // replace.
+    const PLACEHOLDER = '\uE000STEP-SWAP\uE000';
+    expect(block.includes(PLACEHOLDER)).toBe(false);
+    const seeded = block.replace('git reset --hard HEAD', PLACEHOLDER);
+    expect(seeded.split(PLACEHOLDER).length - 1).toBe(1);
+    expect(seedsCleanly(block, PLACEHOLDER)).toBe(true);
+
+    // Two values observed, live, to slip the OLD (broken) comparison
+    // undetected without ever flipping it red: the literal `main` — already a
+    // substring of the shipped `git pull --ff-only origin main` itself — and
+    // a bare single space, present throughout any prose. Neither can
+    // round-trip as a placeholder, and seed integrity catches both, each
+    // shown failing here, independently of whatever an ordering comparison
+    // would go on to say.
+    expect(block.includes('main')).toBe(true);
+    expect(seedsCleanly(block, 'main')).toBe(false);
+    expect(block.includes(' ')).toBe(true);
+    expect(seedsCleanly(block, ' ')).toBe(false);
+  });
+
+  it('negative control — a reordered recovery step fails the shared ordering predicate', () => {
     const block = extractRecoveryBlock(resumeSkill);
     // Swap steps 1 and 3's marker text so the re-pull now precedes the reset —
     // the same three tokens present, in the wrong order. The placeholder must
@@ -1110,17 +1184,21 @@ describe("skill-clause-drift — wave-resume step 5 levels with wave-close phase
     // the quoted commands, but unlike NUL it leaves this spec readable by
     // plain `grep`/`file` as text, not classified as binary data (#867).
     const PLACEHOLDER = '\uE000STEP-SWAP\uE000';
+    expect(seedsCleanly(block, PLACEHOLDER)).toBe(true); // the swap below relies on this holding
     const reordered = block
       .replace('git reset --hard HEAD', PLACEHOLDER)
       .replace('git pull --ff-only origin main', 'git reset --hard HEAD')
       .replace(PLACEHOLDER, 'git pull --ff-only origin main');
     expect(reordered).not.toEqual(block); // both replacements actually matched
-    const idxReset = reordered.indexOf('git reset --hard HEAD');
-    const idxRepull = reordered.indexOf('git pull --ff-only origin main');
+
+    // The SAME predicate the positive test above calls (issue #909, AC3/AC4) —
+    // not a bespoke index comparison re-derived here, which is exactly what
+    // let the old version of this control pass for any placeholder value.
+    expect(recoveryStepsInOrder(block)).toBe(true); // the clean block is genuinely in order
     expect(
-      idxReset,
+      recoveryStepsInOrder(reordered),
       'the seeded swap must actually invert the order, or this negative control proves nothing',
-    ).toBeGreaterThan(idxRepull);
+    ).toBe(false); // …and the genuinely reordered block is genuinely caught
   });
 
   it('negative control — restoring the old `reset --hard origin/main` line fails the absence predicate', () => {
