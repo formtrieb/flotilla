@@ -38,6 +38,7 @@ import type { VerifyConfig } from './verify';
 import { parseGoalContainer } from './adapters/issue-store';
 import { printJson } from './cli-utils';
 import {
+  defineVerb,
   hasFlag,
   helpRequested,
   positionalsOf,
@@ -100,21 +101,23 @@ interface ConfigValidateJsonResult {
  * surprise this verb was part of when issue #505 measured it.
  */
 export const CONFIG_CONTRACTS: Readonly<Record<string, VerbContract>> = {
-  validate: {
+  validate: defineVerb({
     verb: 'config validate',
     flags: [],
     positionals: { kind: 'fixed', count: 1, labels: ['<path>'] },
     output: 'prose',
-    usage: [
-      'usage: config validate <path>',
-      'output: text (a one-line ok/error message), not JSON',
-      `  --json: the same verdict as JSON, warnings included — ${VALIDATE_JSON_SHAPE}`,
-      '  --json FOLLOWS the op: `config validate <path> --json`. Ahead of it,',
-      '  `config --json validate <path>` reads --json as the op and exits 2 — the',
-      '  group grammar is `config <op> …`, and it is the same on spine, issue-store',
-      '  and host-pr.',
-    ],
-  },
+    outputNote: 'text (a one-line ok/error message), not JSON',
+    json: {
+      lead: 'the same verdict as JSON, warnings included',
+      shape: VALIDATE_JSON_SHAPE,
+      continuation: [
+        '  --json FOLLOWS the op: `config validate <path> --json`. Ahead of it,',
+        '  `config --json validate <path>` reads --json as the op and exits 2 — the',
+        '  group grammar is `config <op> …`, and it is the same on spine, issue-store',
+        '  and host-pr.',
+      ],
+    },
+  }),
 };
 
 /**

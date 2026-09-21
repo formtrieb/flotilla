@@ -350,16 +350,19 @@ export {
 //     `RequiredChecksInfo`, `RulesetChecksInfo`, `AutoMergeSetting`,
 //     `PrLandingStatus`.
 //
-//     `HostCheckName` carries FOUR members, not three: the three posture reads
+//     `HostCheckName` carries FIVE members, not three: the three posture reads
 //     plus `create-credentials`, the ambient-credential advisory a host emits
 //     when its `create` verb has a precondition its landing verbs do not share
-//     (Bitbucket Cloud's BITBUCKET_EMAIL today). Widening that string-literal
-//     union is a public-API change for anyone who exhaustively switches on it —
-//     the check is host-CONDITIONAL and absent from a GitHub report entirely, so
-//     a consumer must read `checks` by name and never by index or length.
-//     `preflightHost` gained a matching optional third parameter (the
-//     environment that advisory is graded in, defaulting to `process.env`);
-//     existing two-argument call sites are unaffected.
+//     (Bitbucket Cloud's BITBUCKET_EMAIL today), plus `pr-create-token`, the
+//     GitHub counterpart that PROBES the create right. Widening that
+//     string-literal union is a public-API change for anyone who exhaustively
+//     switches on it — both create-verb checks are host-CONDITIONAL and each is
+//     absent from the other host's report entirely, so a consumer must read
+//     `checks` by name and never by index or length.
+//     `preflightHost` gained a matching optional FOURTH parameter, after the
+//     environment that advisory is graded in (defaulting to `process.env`): the
+//     `createRight` probe the GitHub check reads. Existing two-argument call
+//     sites are unaffected.
 //
 // `github-api.ts` re-exports `RequiredChecksInfo`/`RulesetChecksInfo`/
 // `AutoMergeSetting`/`ReportedCheck` from THIS module rather than declaring
@@ -1552,6 +1555,15 @@ export {
 // its output class is — and none of that is reachable through a CLI invocation.
 //
 // Additive (Minor, ADR-0035): every name below is new.
+//
+// The three USAGE-RENDERER names (issue #856) are here for the same reason the
+// rest of the family is, one step further on. `defineVerb` is how a contract is
+// declared at all now — `usage` is computed from the declaration, so a consumer
+// writing its own verb against this type reaches for the constructor, not for a
+// hand-typed section. `renderUsageSection` and `renderInvocations` are the two
+// halves of what it computes, and the engine itself consumes them from two
+// modules (the router's roster, the spine group's op roster), which is exactly
+// the "more than one reader" test the barrel exists to settle.
 export {
   ROUTER_GLOBAL_FLAGS,
   routerGlobalFlag,
@@ -1574,6 +1586,9 @@ export {
   resolveTwin,
   firstValueOf,
   allValuesOf,
+  defineVerb,
+  renderUsageSection,
+  renderInvocations,
   type FlagValueKind,
   type FlagValueType,
   type FlagContract,
@@ -1581,6 +1596,11 @@ export {
   type TwinSlot,
   type OutputClass,
   type VerbContract,
+  type VerbContractDeclaration,
+  type FlagGroup,
+  type VerbForm,
+  type JsonNote,
+  type UsageRenderOptions,
   type ScannedArgs,
   type VerbContractViolation,
   type CheckOptions,

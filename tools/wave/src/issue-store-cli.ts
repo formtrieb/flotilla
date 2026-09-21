@@ -145,6 +145,7 @@ import type { ApplyTriageInput } from './contract';
 import { flag, flagAll, printJson } from './cli-utils';
 import { resolveStore, resolveGoalContainer } from './cli-store';
 import {
+  defineVerb,
   hasFlag,
   helpRequested,
   positionalsOf,
@@ -153,6 +154,7 @@ import {
   type FlagContract,
   type OutputClass,
   type VerbContract,
+  type VerbContractDeclaration,
 } from './verb-contract';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
@@ -203,24 +205,32 @@ const FULL_OP_LIST =
  */
 const CONFIG_FLAG: FlagContract = { canonical: '--config', value: 'one', valueType: 'path' };
 
-/** `--input <path>` on the ops that require a payload file. */
-const INPUT_REQUIRED: FlagContract = {
+/**
+ * `--input <path>` on the ops that require a payload file.
+ *
+ * A FACTORY rather than one shared constant, because the rendered usage line
+ * names the payload TYPE the op reads (`--input <CreateInput.json>`, not
+ * `--input <path>`) — the single most useful thing that line carries, and the
+ * one an operator otherwise goes to `contract.ts` for. The router's roster
+ * still prints `<path>`: a flag declares its value type once and its own
+ * spelling once, and the two surfaces read the one they need.
+ */
+function inputRequired(placeholder: string): FlagContract {
+  return { canonical: '--input', value: 'one', valueType: 'path', required: true, placeholder };
+}
+
+/** `--input <path>` on `goal-publish-update`, where it ADDS prose rather than satisfying the op. */
+const INPUT_OPTIONAL: FlagContract = {
   canonical: '--input',
   value: 'one',
   valueType: 'path',
-  required: true,
+  placeholder: '<PublishGoalUpdateInput.json>',
 };
 
-/** `--input <path>` on `goal-publish-update`, where it ADDS prose rather than satisfying the op. */
-const INPUT_OPTIONAL: FlagContract = { canonical: '--input', value: 'one', valueType: 'path' };
-
-/** `--patch <path>` on the two patch ops. */
-const PATCH_REQUIRED: FlagContract = {
-  canonical: '--patch',
-  value: 'one',
-  valueType: 'path',
-  required: true,
-};
+/** `--patch <path>` on the two patch ops — the payload type named, as above. */
+function patchRequired(placeholder: string): FlagContract {
+  return { canonical: '--patch', value: 'one', valueType: 'path', required: true, placeholder };
+}
 
 /**
  * One op's shape, minus the verb name (which {@link ISSUE_STORE_CONTRACTS}
@@ -238,13 +248,13 @@ function issueStoreOp(
   positionals: readonly string[],
   output: OutputClass,
   flags: readonly FlagContract[],
-  usage: readonly string[],
-): Omit<VerbContract, 'verb'> {
+  section: Pick<VerbContract, 'notes' | 'outputNote' | 'json'> = {},
+): Omit<VerbContractDeclaration, 'verb'> {
   return {
     flags: [...flags, CONFIG_FLAG],
     positionals: { kind: 'fixed', count: positionals.length, labels: positionals },
     output,
-    usage,
+    ...section,
   };
 }
 
@@ -265,276 +275,207 @@ function issueStoreOp(
  * (this group's positional grammar IS its canonical spelling — decision 6 gives
  * a verb group no named twin), and the output class.
  */
-const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = {
-  create: issueStoreOp(
-    [],
-    'product',
-    [INPUT_REQUIRED],
-    [
-      'usage: issue-store create --input <CreateInput.json> [--config <path>]',
+const ISSUE_STORE_OP_SHAPES: Readonly<
+  Record<Op, Omit<VerbContractDeclaration, 'verb'>>
+> = {
+  create: issueStoreOp([], 'product', [inputRequired('<CreateInput.json>')], {
+    notes: [
       '  bare shape (ADR-0027):      { "title": "...", "filingHint": "...",',
       '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
       '  bare MAY also add (ADR-0044): "blockedBy": [{ "issue": 41 }] — realized natively (no Header-Block written)',
       '  decorated ALSO adds:        "risk", "worker", "files": [...], "blockedBy": "none", "acceptanceCriteria": [...]',
-      'output: the opaque new id, as plain text (not JSON)',
     ],
-  ),
-  read: issueStoreOp(
-    ['<id>'],
-    'json',
-    [],
-    ['usage: issue-store read <id> [--config <path>]', 'output: the IssueView, as JSON'],
-  ),
-  'parse-ref': issueStoreOp(
-    ['<id>'],
-    'json',
-    [],
-    [
-      'usage: issue-store parse-ref <id> [--config <path>]',
-      'output: the IssueRef {slug?, issue}, as JSON',
-    ],
-  ),
-  annotate: issueStoreOp(
-    ['<id>'],
-    'silent-write',
-    [PATCH_REQUIRED],
-    [
-      'usage: issue-store annotate <id> --patch <AnnotatePatch.json> [--config <path>]',
+    outputNote: 'the opaque new id, as plain text (not JSON)',
+  }),
+  read: issueStoreOp(['<id>'], 'json', [], { outputNote: 'the IssueView, as JSON' }),
+  'parse-ref': issueStoreOp(['<id>'], 'json', [], {
+    outputNote: 'the IssueRef {slug?, issue}, as JSON',
+  }),
+  annotate: issueStoreOp(['<id>'], 'silent-write', [patchRequired('<AnnotatePatch.json>')], {
+    notes: [
       '  input shape (every key optional — supply at least one): { "risk": "...", "worker": "...",',
       '    "files": ["..."], "acceptanceCriteria": [{ "text": "...", "checked": false }],',
       '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
       '  files/acceptanceCriteria REPLACE the modeled section when supplied; bodySections',
       '    APPENDS instead — annotating the same heading twice duplicates it, and the read',
       '    path returns the FIRST match, silently shadowing the newer one',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent } — sent names the header fields written:',
-      '    risk?, worker?, parent?, files?, acceptanceCriteria?, bodySections?',
     ],
-  ),
-  amend: issueStoreOp(
-    ['<id>'],
-    'silent-write',
-    [PATCH_REQUIRED],
-    [
-      'usage: issue-store amend <id> --patch <AmendPatch.json> [--config <path>]',
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: {
+      label: '--json receipt',
+      shape: '{ op, id, sent }',
+      trail: 'sent names the header fields written:',
+      continuation: ['    risk?, worker?, parent?, files?, acceptanceCriteria?, bodySections?'],
+    },
+  }),
+  amend: issueStoreOp(['<id>'], 'silent-write', [patchRequired('<AmendPatch.json>')], {
+    notes: [
       '  input shape (title and/or sections — non-empty):',
       '    { "title": "...", "sections": [{ "heading": "...", "markdown": "..." }] }',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent: { title?, sections? } } — what was written',
     ],
-  ),
-  transition: issueStoreOp(
-    ['<id>', `<${VALID_RUNGS.join('|')}>`],
-    'silent-write',
-    [],
-    [
-      `usage: issue-store transition <id> <${VALID_RUNGS.join('|')}> [--config <path>]`,
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent: { rung } } — the rung swapped to',
-    ],
-  ),
-  unclaim: issueStoreOp(
-    ['<id>'],
-    'silent-write',
-    [],
-    [
-      'usage: issue-store unclaim <id> [--config <path>]',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent: {} } — the id IS the whole call',
-    ],
-  ),
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: {
+      label: '--json receipt',
+      shape: '{ op, id, sent: { title?, sections? } }',
+      trail: 'what was written',
+    },
+  }),
+  transition: issueStoreOp(['<id>', `<${VALID_RUNGS.join('|')}>`], 'silent-write', [], {
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: {
+      label: '--json receipt',
+      shape: '{ op, id, sent: { rung } }',
+      trail: 'the rung swapped to',
+    },
+  }),
+  unclaim: issueStoreOp(['<id>'], 'silent-write', [], {
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: {
+      label: '--json receipt',
+      shape: '{ op, id, sent: {} }',
+      trail: 'the id IS the whole call',
+    },
+  }),
   close: issueStoreOp(
     ['<id>', '<prUrl>'],
     'json',
-    [{ canonical: '--acked', value: 'one', valueType: 'list' }],
-    [
-      'usage: issue-store close <id> <prUrl> [--acked 0,2,3] [--config <path>]',
-      'output: the resulting ClosingState, as JSON — plus a stderr "STILL OPEN:" line',
-      '  whenever the tracker still reports the issue open after recording the closing facts',
-    ],
+    [{ canonical: '--acked', value: 'one', valueType: 'list', placeholder: '0,2,3' }],
+    {
+      outputNote: [
+        'the resulting ClosingState, as JSON — plus a stderr "STILL OPEN:" line',
+        '  whenever the tracker still reports the issue open after recording the closing facts',
+      ],
+    },
   ),
-  listOpen: issueStoreOp(
-    [],
-    'json',
-    [],
-    ['usage: issue-store listOpen [--config <path>]', 'output: IssueView[], as JSON'],
-  ),
-  listClaimed: issueStoreOp(
-    [],
-    'json',
-    [],
-    [
-      'usage: issue-store listClaimed [--config <path>]',
-      'output: IssueView[], as JSON',
-    ],
-  ),
+  listOpen: issueStoreOp([], 'json', [], { outputNote: 'IssueView[], as JSON' }),
+  listClaimed: issueStoreOp([], 'json', [], { outputNote: 'IssueView[], as JSON' }),
   publishDocument: issueStoreOp(
     [],
     'product',
-    [INPUT_REQUIRED],
-    [
-      'usage: issue-store publishDocument --input <PublishDocumentInput.json> [--config <path>]',
-      '  input shape: { "title": "...", "filingHint": "...",',
-      '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
-      'output: the opaque new PRD id, as plain text (not JSON)',
-    ],
+    [inputRequired('<PublishDocumentInput.json>')],
+    {
+      notes: [
+        '  input shape: { "title": "...", "filingHint": "...",',
+        '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
+      ],
+      outputNote: 'the opaque new PRD id, as plain text (not JSON)',
+    },
   ),
-  readDocument: issueStoreOp(
-    ['<id>'],
-    'json',
-    [],
-    [
-      'usage: issue-store readDocument <id> [--config <path>]',
-      'output: the DocumentView, as JSON',
-    ],
-  ),
-  listDocuments: issueStoreOp(
-    [],
-    'json',
-    [],
-    [
-      'usage: issue-store listDocuments [--config <path>]',
-      'output: DocumentView[], as JSON',
-    ],
-  ),
-  'triage-read': issueStoreOp(
-    ['<id>'],
-    'json',
-    [],
-    [
-      'usage: issue-store triage-read <id> [--config <path>]',
-      'output: the TriageView, as JSON',
-    ],
-  ),
+  readDocument: issueStoreOp(['<id>'], 'json', [], {
+    outputNote: 'the DocumentView, as JSON',
+  }),
+  listDocuments: issueStoreOp([], 'json', [], { outputNote: 'DocumentView[], as JSON' }),
+  'triage-read': issueStoreOp(['<id>'], 'json', [], {
+    outputNote: 'the TriageView, as JSON',
+  }),
   'triage-apply': issueStoreOp(
     ['<id>'],
     'silent-write',
-    [INPUT_REQUIRED],
-    [
-      'usage: issue-store triage-apply <id> --input <ApplyTriageInput.json> [--config <path>]',
-      '  input shape (every key optional — supply at least one):',
-      '    { "state": "...", "category": "...", "comment": "..." }',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent: { state?, category?, commentPosted } }',
-    ],
+    [inputRequired('<ApplyTriageInput.json>')],
+    {
+      notes: [
+        '  input shape (every key optional — supply at least one):',
+        '    { "state": "...", "category": "...", "comment": "..." }',
+      ],
+      outputNote: 'nothing on success (exit 0, empty stdout)',
+      json: {
+        label: '--json receipt',
+        shape: '{ op, id, sent: { state?, category?, commentPosted } }',
+      },
+    },
   ),
   'triage-close': issueStoreOp(
     ['<id>'],
     'silent-write',
     [{ canonical: '--comment', value: 'one', valueType: 'text', required: true }],
-    [
-      'usage: issue-store triage-close <id> --comment <text> [--config <path>]',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent: { commentPosted } }',
-    ],
+    {
+      outputNote: 'nothing on success (exit 0, empty stdout)',
+      json: { label: '--json receipt', shape: '{ op, id, sent: { commentPosted } }' },
+    },
   ),
   flag: issueStoreOp(
     ['<id>'],
     'silent-write',
     [
-      { canonical: '--kind', value: 'one', valueType: 'enum', required: true },
-      { canonical: '--question', value: 'one', valueType: 'text', required: true },
-      { canonical: '--option', value: 'repeatable', valueType: 'text', required: true },
+      {
+        canonical: '--kind',
+        value: 'one',
+        valueType: 'enum',
+        required: true,
+        placeholder: `<${NA_KINDS.join('|')}>`,
+      },
+      { canonical: '--question', value: 'one', valueType: 'text', required: true, placeholder: '<q>' },
+      {
+        canonical: '--option',
+        value: 'repeatable',
+        valueType: 'text',
+        required: true,
+        placeholder: '<o>',
+      },
     ],
-    [
-      'usage: issue-store flag <id> --kind <recoverable-stop|terminal-failure> --question <q> --option <o> [--option <o> ...] [--config <path>]',
-      '  example: flag 42 --kind recoverable-stop --question "Which branch?" --option main --option develop',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent: { kind, question, options } }',
-    ],
+    {
+      notes: [
+        '  example: flag 42 --kind recoverable-stop --question "Which branch?" --option main --option develop',
+      ],
+      outputNote: 'nothing on success (exit 0, empty stdout)',
+      json: { label: '--json receipt', shape: '{ op, id, sent: { kind, question, options } }' },
+    },
   ),
-  'clear-flag': issueStoreOp(
-    ['<id>'],
-    'silent-write',
-    [],
-    [
-      'usage: issue-store clear-flag <id> [--config <path>]',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id, sent: {} } — the id IS the whole call',
-    ],
-  ),
-  'read-closing': issueStoreOp(
-    ['<id>'],
-    'json',
-    [],
-    [
-      'usage: issue-store read-closing <id> [--config <path>]',
-      'output: the ClosingState, as JSON',
-    ],
-  ),
-  'goal-create': issueStoreOp(
-    [],
-    'product',
-    [INPUT_REQUIRED],
-    [
-      'usage: issue-store goal-create --input <CreateGoalInput.json> [--config <path>]',
+  'clear-flag': issueStoreOp(['<id>'], 'silent-write', [], {
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: {
+      label: '--json receipt',
+      shape: '{ op, id, sent: {} }',
+      trail: 'the id IS the whole call',
+    },
+  }),
+  'read-closing': issueStoreOp(['<id>'], 'json', [], {
+    outputNote: 'the ClosingState, as JSON',
+  }),
+  'goal-create': issueStoreOp([], 'product', [inputRequired('<CreateGoalInput.json>')], {
+    notes: [
       '  input shape: { "title": "...", "filingHint": "...", "description": "..." }',
       '  the container comes from wave.config.json "store.goal.container" —',
       '    github defaults to "milestone", markdown to its goal file, linear has NO default',
-      'output: the opaque new goal id, as plain text (not JSON)',
     ],
-  ),
-  'goal-read': issueStoreOp(
-    ['<goalId>'],
-    'json',
-    [],
-    [
-      'usage: issue-store goal-read <goalId> [--config <path>]',
-      'output: the GoalView {id, title, description, container, memberIds}, as JSON',
-    ],
-  ),
-  'goal-list': issueStoreOp(
-    [],
-    'json',
-    [],
-    [
-      'usage: issue-store goal-list [--config <path>]',
-      'output: GoalView[], as JSON',
-    ],
-  ),
-  'goal-assign': issueStoreOp(
-    ['<goalId>', '<memberId>'],
-    'silent-write',
-    [],
-    [
-      'usage: issue-store goal-assign <goalId> <memberId> [--config <path>]',
+    outputNote: 'the opaque new goal id, as plain text (not JSON)',
+  }),
+  'goal-read': issueStoreOp(['<goalId>'], 'json', [], {
+    outputNote: 'the GoalView {id, title, description, container, memberIds}, as JSON',
+  }),
+  'goal-list': issueStoreOp([], 'json', [], { outputNote: 'GoalView[], as JSON' }),
+  'goal-assign': issueStoreOp(['<goalId>', '<memberId>'], 'silent-write', [], {
+    notes: [
       "  <memberId>'s KIND follows the binding (ADR-0045): an issue id under",
       '    "milestone" | "project" | "goal-file"; a PROJECT id under "initiative"',
-      'output: nothing on success (exit 0, empty stdout)',
-      '  --json receipt: { op, id: <memberId>, sent: { goalId, container? } }',
     ],
-  ),
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: { label: '--json receipt', shape: '{ op, id: <memberId>, sent: { goalId, container? } }' },
+  }),
   'goal-create-member': issueStoreOp(
     ['<goalId>'],
     'product',
-    [INPUT_REQUIRED],
-    [
-      'usage: issue-store goal-create-member <goalId> --input <CreateGoalMemberInput.json> [--config <path>]',
-      '  input shape: { "title": "...", "filingHint": "...",',
-      '    "bodySections": [{ "heading": "...", "markdown": "..." }],',
-      '    "blockedBy": ["<memberId>", ...] }        ← optional; MEMBER ids, not refs',
-      '  mints a BARE direct member (no eligibility marker) and joins it in one act;',
-      '    the member KIND follows the binding — an issue, or a project under "initiative"',
-      'output: the opaque new member id, as plain text (not JSON)',
-    ],
+    [inputRequired('<CreateGoalMemberInput.json>')],
+    {
+      notes: [
+        '  input shape: { "title": "...", "filingHint": "...",',
+        '    "bodySections": [{ "heading": "...", "markdown": "..." }],',
+        '    "blockedBy": ["<memberId>", ...] }        ← optional; MEMBER ids, not refs',
+        '  mints a BARE direct member (no eligibility marker) and joins it in one act;',
+        '    the member KIND follows the binding — an issue, or a project under "initiative"',
+      ],
+      outputNote: 'the opaque new member id, as plain text (not JSON)',
+    },
   ),
-  'goal-frontier': issueStoreOp(
-    ['<goalId>'],
-    'json',
-    [],
-    [
-      'usage: issue-store goal-frontier <goalId> [--config <path>]',
-      'output: the GoalFrontier, as JSON — one reading per member',
+  'goal-frontier': issueStoreOp(['<goalId>'], 'json', [], {
+    outputNote: [
+      'the GoalFrontier, as JSON — one reading per member',
       '  (done | in-motion | actionable | blocked | unready), plus counts,',
       '  the open remainder, and `complete`. Read-only: it never closes the goal.',
     ],
-  ),
-  'goal-publish-update': issueStoreOp(
-    ['<goalId>'],
-    'json',
-    [INPUT_OPTIONAL],
-    [
-      'usage: issue-store goal-publish-update <goalId> [--input <PublishGoalUpdateInput.json>] [--config <path>]',
+  }),
+  'goal-publish-update': issueStoreOp(['<goalId>'], 'json', [INPUT_OPTIONAL], {
+    notes: [
       '  --input is OPTIONAL: {"narrative"?, "health"?, "operatorNote"?}',
       '  the ENGINE derives the frontier fresh and renders the accounting anchor;',
       '    there is no way to supply, edit or omit it — that is the whole guarantee',
@@ -542,10 +483,12 @@ const ISSUE_STORE_OP_SHAPES: Readonly<Record<Op, Omit<VerbContract, 'verb'>>> = 
       '    none at all. Omitted means the update publishes without one.',
       '  needs a container with a native update surface (linear project/initiative);',
       '    github and markdown refuse with GoalBindingError "unrealized-update-surface"',
-      'output: the GoalUpdateReceipt, as JSON — the update id and url, the exact',
+    ],
+    outputNote: [
+      'the GoalUpdateReceipt, as JSON — the update id and url, the exact',
       '  body published, and the frontier the anchor was derived from',
     ],
-  ),
+  }),
 };
 
 /**
@@ -560,7 +503,7 @@ export const ISSUE_STORE_CONTRACTS: Readonly<Record<Op, VerbContract>> =
   Object.fromEntries(
     (Object.keys(ISSUE_STORE_OP_SHAPES) as Op[]).map((op) => [
       op,
-      { verb: `issue-store ${op}`, ...ISSUE_STORE_OP_SHAPES[op] },
+      defineVerb({ verb: `issue-store ${op}`, ...ISSUE_STORE_OP_SHAPES[op] }),
     ]),
   ) as Readonly<Record<Op, VerbContract>>;
 

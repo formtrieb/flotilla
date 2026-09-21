@@ -1223,12 +1223,14 @@ const SURFACE_HYGIENE_FAMILY_ADDED_AT_ROOT = [
  * canonical, what is its output class), and none of them is answerable through
  * a CLI invocation. So the machinery travels with the type.
  *
- * The TWENTY types that came with them — `VerbContract`, `FlagContract`,
+ * The TYPES that came with them — `VerbContract`, `FlagContract`,
  * `FlagValueKind`, `FlagValueType`, `PositionalArity`, `TwinSlot`,
  * `OutputClass`, `ScannedArgs`, `VerbContractViolation`, `CheckOptions`,
- * `TwinMode`, `TwinResolution` — are erased at runtime and add nothing to the
- * count below; `tsc --noEmit` plus barrel-drift.spec.ts's compiler-API check are
- * their gate, exactly as they are for every type half above.
+ * `TwinMode`, `TwinResolution`, and (issue #856) `VerbContractDeclaration`,
+ * `FlagGroup`, `VerbForm`, `JsonNote`, `UsageRenderOptions` — are erased at
+ * runtime and add nothing to the count below; `tsc --noEmit` plus
+ * barrel-drift.spec.ts's compiler-API check are their gate, exactly as they are
+ * for every type half above.
  *
  * Semver: ADDITIONS only, so minor (ADR-0035). The behaviour change that rides
  * with them — a flag a verb never declared now exits 2 where it was silently
@@ -1258,6 +1260,12 @@ const VERB_CONTRACT_FAMILY_ADDED_AT_ROOT = [
   'resolveTwin',
   'firstValueOf',
   'allValuesOf',
+  // The usage renderer (issue #856): `usage` is a COMPUTED field now, so the
+  // constructor that computes it and the two halves of the computation travel
+  // with the type. Three runtime names, no removals.
+  'defineVerb',
+  'renderUsageSection',
+  'renderInvocations',
   // The router's aggregate reader + the argv resolver (cli.ts)
   'verbContracts',
   'contractForArgv',

@@ -96,6 +96,7 @@ import { DEFAULT_LINEAR_STATES, type LinearStateMap } from './adapters/linear/li
 import { RISK_VALUES, WORKER_VALUES, type Risk, type Worker } from './header-parser';
 import { flag, printJson, describeConfigLoadError } from './cli-utils';
 import {
+  defineVerb,
   helpRequested,
   printVerbHelp,
   refuseUndeclared,
@@ -1159,39 +1160,45 @@ const CREATE_MISSING_LABELS_FLAG = '--create-missing-labels';
  * every verb now accepts, which is what lets `store-preflight --help` answer
  * WITHOUT resolving a store or reaching the tracker (issue #758).
  */
-export const STORE_PREFLIGHT_CONTRACT: VerbContract = {
+export const STORE_PREFLIGHT_CONTRACT: VerbContract = defineVerb({
   verb: 'store-preflight',
+  // The bare-module prefix kind: this runner has its own entry point and names
+  // itself, where a router verb says `flotilla-engine <verb>` and a group op
+  // says its two tokens.
+  program: 'store-preflight',
   flags: [
     { canonical: '--config', value: 'one', valueType: 'path' },
-    { canonical: '--expect', value: 'one', valueType: 'version' },
+    { canonical: '--expect', value: 'one', valueType: 'version', placeholder: '<plugin-version>' },
     { canonical: CREATE_MISSING_LABELS_FLAG, value: 'none', valueType: 'none' },
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
-  usage: [
-    `usage: store-preflight [--config <path>] [--expect <plugin-version>] [${CREATE_MISSING_LABELS_FLAG}]`,
+  notes: [
     '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
-    '  For code-host posture run `host-pr preflight` — it is store-blind.',
-    'output: JSON — the StorePreflightReport',
+    '  --expect <plugin-version> additionally reports the plugin/engine lockstep',
+    '  comparison as an ADVISORY check — it never fails the preflight.',
+    `  ${CREATE_MISSING_LABELS_FLAG} creates every label the state-catalog check reports`,
+    "  missing, through the engine's own credential, then re-probes and names what it",
+    '  created. `github` store only (exit 2 on any other kind), idempotent, and never',
+    '  the default — without it the probe writes nothing at all.',
+    '  For code-host posture (pr-merge-token, allow-auto-merge, required-checks) run',
+    '  `host-pr preflight` — it is store-blind and reports on every store kind.',
   ],
-};
+  outputNote: 'JSON — the StorePreflightReport',
+});
 
+/**
+ * The usage refusal: `error: …`, then this verb's OWN rendered section, exit 2.
+ *
+ * It used to print a PRIVATE hand-written copy that spelled the verb
+ * `cli-store preflight` — the module invocation rather than the subcommand the
+ * contract names — and carried four paragraphs the contract section did not.
+ * Issue #856 folded the two together: the paragraphs are the contract's
+ * declared notes now, and this prints what `--help` prints.
+ */
 function preflightUsage(message: string): number {
   process.stderr.write(
-    [
-      `error: ${message}`,
-      `usage: cli-store preflight [--config <path>] [--expect <plugin-version>] [${CREATE_MISSING_LABELS_FLAG}]   # prints the StorePreflightReport as JSON`,
-      '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
-      '  --expect <plugin-version> additionally reports the plugin/engine lockstep',
-      '  comparison as an ADVISORY check — it never fails the preflight.',
-      `  ${CREATE_MISSING_LABELS_FLAG} creates every label the state-catalog check reports`,
-      "  missing, through the engine's own credential, then re-probes and names what it",
-      '  created. `github` store only (exit 2 on any other kind), idempotent, and never',
-      '  the default — without it the probe writes nothing at all.',
-      '  For code-host posture (pr-merge-token, allow-auto-merge, required-checks) run',
-      '  `host-pr preflight` — it is store-blind and reports on every store kind.',
-      '',
-    ].join('\n'),
+    [`error: ${message}`, ...STORE_PREFLIGHT_CONTRACT.usage, ''].join('\n'),
   );
   return 2;
 }

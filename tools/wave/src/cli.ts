@@ -555,14 +555,14 @@ import {
 import { findScratchRoot } from './find-repo-root';
 import { flag, printJson } from './cli-utils';
 import {
+  defineVerb,
   hasFlag,
   helpRequested,
   positionalsOf,
   printVerbHelp,
   refuseUndeclared,
+  renderInvocations,
   resolveTwin,
-  type FlagContract,
-  type FlagValueType,
   type OutputClass,
   type VerbContract,
 } from './verb-contract';
@@ -774,56 +774,59 @@ function dorJsonIssue(issue: string, result: DorResult): DorJsonIssue {
  *     though both halves landed.
  */
 const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
-  dor: {
+  dor: defineVerb({
     verb: 'dor',
     flags: [
-      { canonical: '--id', value: 'one', valueType: 'id' },
+      { canonical: '--id', value: 'one', valueType: 'id', placeholder: '<issue-id>' },
       { canonical: '--repo-root', value: 'one', valueType: 'dir' },
       { canonical: '--config', value: 'one', valueType: 'path' },
     ],
     positionals: { kind: 'variadic', min: 1, label: '<issue-path>' },
     output: 'prose',
-    usage: [
-      'usage: flotilla-engine dor [--config <path>] <issue-path> [<issue-path> ...]',
-      '       flotilla-engine dor --id <issue-id> [--repo-root <dir>] [--config <path>]',
-      '  The --id form reads the issue from the IssueStore and takes NO positional.',
-      'output: text (PASS/FAIL + gate lines), not JSON',
-      `  --json: the same result as JSON, in BOTH forms — ${DOR_JSON_SHAPE}`,
+    // Two genuinely different calls: the PATH form reads issue files, the --id
+    // form reads the IssueStore and takes no positional at all. The runner
+    // narrows the arity to zero for the second (CheckOptions.positionals), so
+    // the refusal measures the call that was made — the forms below are the
+    // same split, stated where a caller can see it.
+    forms: [
+      { accepts: ['--config'] },
+      {
+        positionals: { kind: 'fixed', count: 0 },
+        requires: ['--id'],
+        accepts: ['--repo-root', '--config'],
+      },
     ],
-  },
-  'files-drift': {
+    notes: ['  The --id form reads the issue from the IssueStore and takes NO positional.'],
+    outputNote: 'text (PASS/FAIL + gate lines), not JSON',
+    json: { lead: 'the same result as JSON, in BOTH forms', shape: DOR_JSON_SHAPE },
+  }),
+  'files-drift': defineVerb({
     verb: 'files-drift',
     flags: [],
     positionals: { kind: 'fixed', count: 2, labels: ['<issue-path>', '<sha-range>'] },
     output: 'prose',
-    usage: [
-      'usage: flotilla-engine files-drift <issue-path> <sha-range>',
-      'output: text, with a JSON block embedded at the end',
-      `  --json: ONLY that block — ${FILES_DRIFT_JSON_SHAPE}`,
-    ],
-  },
-  'merge-order': {
+    outputNote: 'text, with a JSON block embedded at the end',
+    json: { lead: 'ONLY that block', shape: FILES_DRIFT_JSON_SHAPE },
+  }),
+  'merge-order': defineVerb({
     verb: 'merge-order',
     flags: [{ canonical: '--spine', value: 'one', valueType: 'path' }],
     positionals: { kind: 'fixed', count: 1, labels: ['<wave-md-path>'] },
     output: 'json',
     twin: [{ flag: '--spine', label: '<wave-md-path>' }],
-    usage: [
-      'usage: flotilla-engine merge-order (--spine <path> | <wave-md-path>)',
-      '  The spine is named EITHER by --spine or as the positional — never both.',
-      'output: JSON',
-    ],
-  },
-  'closed-by': {
+    notes: ['  The spine is named EITHER by --spine or as the positional — never both.'],
+    outputNote: 'JSON',
+  }),
+  'closed-by': defineVerb({
     verb: 'closed-by',
     flags: [],
     // The line is JOINED from every positional, so an unquoted `Closed-by:` line
     // is as legal as a quoted one — variadic, and the floor is one token.
     positionals: { kind: 'variadic', min: 1, label: '<closed-by-line>' },
     output: 'json',
-    usage: ['usage: flotilla-engine closed-by <closed-by-line>', 'output: JSON'],
-  },
-  'detect-host': {
+    outputNote: 'JSON',
+  }),
+  'detect-host': defineVerb({
     verb: 'detect-host',
     // Accepted and DISCARDED — the FOR-87/W25-F2 uniform-wrapper tolerance.
     // This verb parses a URL and resolves nothing, but `wave-shared`'s
@@ -836,20 +839,19 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     flags: [{ canonical: '--config', value: 'one', valueType: 'path' }],
     positionals: { kind: 'fixed', count: 1, labels: ['<remote-url>'] },
     output: 'json',
-    usage: [
-      'usage: flotilla-engine detect-host <remote-url>',
+    notes: [
       '  --config is accepted and ignored (uniform-wrapper tolerance); this verb resolves no store.',
-      'output: JSON',
     ],
-  },
-  'worktree-cleanup': {
+    outputNote: 'JSON',
+  }),
+  'worktree-cleanup': defineVerb({
     verb: 'worktree-cleanup',
     flags: [
       { canonical: '--dry-run', value: 'none', valueType: 'none' },
       { canonical: '--orphans', value: 'none', valueType: 'none' },
       { canonical: '--detached', value: 'none', valueType: 'none' },
-      { canonical: '--spine', aliases: ['--wave'], value: 'one', valueType: 'path' },
-      { canonical: '--branches', value: 'one', valueType: 'list' },
+      { canonical: '--spine', aliases: ['--wave'], value: 'one', valueType: 'path', placeholder: '<spine>' },
+      { canonical: '--branches', value: 'one', valueType: 'list', placeholder: '<b1,b2>' },
       { canonical: '--config', value: 'one', valueType: 'path' },
     ],
     // The repo-root slot is OPTIONAL — a bare `--dry-run`, a `--spine` or a
@@ -857,14 +859,17 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     // floor of zero and a rendered usage line brackets it.
     positionals: { kind: 'fixed', count: 1, min: 0, labels: ['<repo-root>'] },
     output: 'json',
-    usage: [
-      'usage: flotilla-engine worktree-cleanup [<repo-root>] [--dry-run] [--spine <spine>] [--branches <b1,b2>] [--orphans] [--detached] [--config <path>]   # prints JSON',
+    notes: [
       '  --wave is accepted as an alias of --spine.',
       '  --detached also sweeps REGISTERED detached-HEAD scratch checkouts under the',
       '  worktrees root (the E2BIG population); --dry-run previews the same plan.',
     ],
-  },
-  'verdict-acked': {
+    // It used to say `# prints JSON` inline on the signature line and carry no
+    // `output:` line at all — the one JSON verb in the engine that advertised
+    // its class a second way. One way now.
+    outputNote: 'JSON',
+  }),
+  'verdict-acked': defineVerb({
     verb: 'verdict-acked',
     flags: [
       { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
@@ -876,13 +881,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { flag: '--verdicts-dir', label: '<verdictsDir>' },
       { flag: '--id', label: '<id>' },
     ],
-    usage: [
-      'usage: flotilla-engine verdict-acked (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)',
-      '  ALL named or ALL positional — a mixed call is a usage error.',
-      'output: JSON',
-    ],
-  },
-  'render-verdict': {
+    notes: ['  ALL named or ALL positional — a mixed call is a usage error.'],
+    outputNote: 'JSON',
+  }),
+  'render-verdict': defineVerb({
     verb: 'render-verdict',
     flags: [
       { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
@@ -896,26 +898,28 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { flag: '--verdicts-dir', label: '<verdictsDir>' },
       { flag: '--id', label: '<id>' },
     ],
-    usage: [
-      'usage: flotilla-engine render-verdict (--verdicts-dir <dir> --id <id> | <verdictsDir> <id>) --anchor <sha>',
+    notes: [
       '  The directory and the id are ALL named or ALL positional; --anchor is always named.',
-      'output: text (the rendered markdown), not JSON',
-      '  --json: accepted and IGNORED — output class `product`, so the markdown IS the result.',
     ],
-  },
-  version: {
+    outputNote: 'text (the rendered markdown), not JSON',
+    json: {
+      lead: 'accepted and IGNORED — output class `product`, so the markdown IS the result.',
+    },
+  }),
+  version: defineVerb({
     verb: 'version',
-    flags: [{ canonical: '--expect', value: 'one', valueType: 'version' }],
+    flags: [
+      { canonical: '--expect', value: 'one', valueType: 'version', placeholder: '<plugin-version>' },
+    ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-      'usage: flotilla-engine version [--expect <plugin-version>]',
+    notes: [
       '  Prints { version, expected, match, outcome, detail, repair } as JSON.',
       '  Resolves no store and reads no wave config.',
       '  Exit: 0 match / bare read; 1 mismatch, unreadable engine version, or',
       '  unusable expectation; 2 usage.',
     ],
-  },
+  }),
 };
 
 /**
@@ -1033,11 +1037,18 @@ function renderResult(issuePath: string, result: DorResult): string {
   return lines.join('\n');
 }
 
-// ─── The roster, RENDERED from the contracts (issue #758) ────────────────────
+// ─── The roster, RENDERED from the contracts (issues #758, #856) ─────────────
 //
 // Every line of the router's whole-CLI usage below is built from a Verb
 // contract — its flags, its positional arity, its named-twin slots and its
 // output class — and none of it is typed out by hand any more.
+//
+// Issue #856 finished the other half and moved the mechanism: the renderer
+// itself lives in `verb-contract.ts` now, and each verb's OWN section goes
+// through it too. What is left here is the roster's two settings — the uniform
+// `flotilla-engine <verb>` prefix and the value-TYPE placeholders — plus the
+// output note, the alias note and the `--json` clause that only a one-line
+// index needs. One renderer, two surfaces; see {@link signatureForm}.
 //
 // The gap this closes was measurable rather than stylistic. The roster used to
 // be ~50 hand-maintained lines describing the same verbs the contracts already
@@ -1058,85 +1069,26 @@ function renderResult(issuePath: string, result: DorResult): string {
 // every verb and every group op with its full argument shape and sends the
 // reader there. That is what removed the last hand-copied paragraph pairs.
 
-/** The placeholder a flag's VALUE is printed as, from its declared value TYPE. */
-const VALUE_PLACEHOLDER: Readonly<Record<FlagValueType, string>> = {
-  none: '',
-  path: '<path>',
-  dir: '<dir>',
-  id: '<id>',
-  int: '<n>',
-  text: '<text>',
-  enum: '<value>',
-  sha: '<sha>',
-  url: '<url>',
-  branch: '<branch>',
-  version: '<version>',
-  list: '<a,b>',
-  json: '<json>',
-};
-
 /**
- * One flag as a caller types it: the CANONICAL spelling first (ADR-0051
- * decision 8 — an alias is silent, and naming it inline would advertise two
- * spellings of one flag), its value placeholder, and the repeat form on a
- * repeatable flag.
- */
-function flagForm(f: FlagContract): string {
-  const placeholder = VALUE_PLACEHOLDER[f.valueType];
-  const head = placeholder === '' ? f.canonical : `${f.canonical} ${placeholder}`;
-  return f.value === 'repeatable' ? `${head} [${head} ...]` : head;
-}
-
-/**
- * The positional segment of a signature.
+ * One verb's — or one group op's — ROSTER signature: the shape
+ * {@link renderInvocations} renders for it, with the router's own settings.
  *
- * A named-twin verb (ADR-0051 decision 6) renders as the alternation it really
- * is — `(--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)` — because on
- * those verbs the positionals ARE the flags, spelled the other way, and listing
- * both segments separately would read as a verb that takes four arguments.
- */
-function positionalForm(contract: VerbContract): string {
-  const twin = contract.twin ?? [];
-  if (twin.length > 0) {
-    const named = twin
-      .map((slot) => {
-        const f = contract.flags.find((c) => c.canonical === slot.flag);
-        return f === undefined ? slot.flag : flagForm(f);
-      })
-      .join(' ');
-    return `(${named} | ${twin.map((s) => s.label).join(' ')})`;
-  }
-  const arity = contract.positionals;
-  if (arity.kind === 'variadic') {
-    const label = arity.label ?? '<arg>';
-    return arity.min === 0 ? `[${label} ...]` : `${label} [${label} ...]`;
-  }
-  if (arity.count === 0) return '';
-  const labels =
-    arity.labels ?? Array.from({ length: arity.count }, (_, i) => `<arg${i + 1}>`);
-  const required = arity.min ?? arity.count;
-  return labels.map((label, i) => (i < required ? label : `[${label}]`)).join(' ');
-}
-
-/**
- * The whole argument shape of one verb: its positionals, then its REQUIRED
- * flags, then its optional ones in brackets.
- *
- * Positionals lead because a verb group's positional grammar is its canonical
- * spelling (`issue-store triage-apply <id> --input <path>`, decision 6's "no
- * named twin for a group"), and a required flag leads an optional one because
- * that is the order a caller has to satisfy them in.
+ * Two of them, and each is a deliberate difference from the verb's own section
+ * (issue #856). The program is `flotilla-engine <verb>` for EVERY verb, group
+ * ops and self-named modules alike — every one of them is reachable as a
+ * subcommand of this one CLI, and the roster is the list of that. And the
+ * relationships are OFF: a flag is listed as the independent optional the
+ * contract declares it to be, and how the flags go together is taught by the
+ * verb's own section one `--help` away. Sixty lines that have to scan as
+ * columns cannot also be sixty paragraphs.
  */
 function signatureForm(contract: VerbContract): string {
-  const twinFlags = new Set((contract.twin ?? []).map((s) => s.flag));
-  const rest = contract.flags.filter((f) => !twinFlags.has(f.canonical));
-  return [
-    positionalForm(contract),
-    ...rest.filter((f) => f.required === true).map(flagForm),
-    ...rest.filter((f) => f.required !== true).map((f) => `[${flagForm(f)}]`),
-  ]
-    .filter((segment) => segment !== '')
-    .join(' ');
+  const [line] = renderInvocations(contract, {
+    program: '',
+    placeholders: 'type',
+    relationships: false,
+  });
+  return line;
 }
 
 /** What a verb's stdout IS, as the inline note the roster line ends with. */
@@ -1157,9 +1109,13 @@ const OUTPUT_NOTE: Readonly<Record<OutputClass, string>> = {
  * here and that helper is gone — one mechanism renders the roster, and the
  * `--json` shape is part of what it renders rather than a second thing bolted
  * onto lines it did not build. It stays DERIVED either way: a verb whose
- * contract declares no `--json` line gets no clause, so the roster can never
- * promise a JSON form a verb does not have (`spine check-disclosures` and
- * `check-awaiting-human` are prose verbs that row V5 deliberately left alone).
+ * contract declares no `--json` clause in its contract gets none here, so the
+ * roster can never promise a JSON form a verb does not have.
+ *
+ * The clause is read back off the rendered section rather than off the
+ * `JsonNote` beside it, and that is the point of reading it here: whatever a
+ * verb's own `--help` prints on its `--json` line is, byte for byte, what the
+ * roster carries — one text, two places, never two renderings of one shape.
  */
 function rosterLine(contract: VerbContract): string {
   const signature = signatureForm(contract);
@@ -1222,6 +1178,23 @@ const USAGE_TRAILER: readonly string[] = [
 ];
 
 /**
+ * The verb-LESS form's line: `flotilla-engine <issue-path> [<issue-path> ...]`.
+ *
+ * It is not a verb and has no contract of its own, so its argument shape is
+ * rendered from `dor`'s — the runner it reaches — with the flags stripped off:
+ * the legacy positional form is exactly "the readiness gate, with no subcommand
+ * token", and advertising `dor`'s flags on a line that never names `dor` would
+ * invite the reader to type a call that resolves to a different verb.
+ */
+function verblessForm(dor: VerbContract): string {
+  const [line] = renderInvocations(
+    { ...dor, flags: [], forms: undefined, groups: undefined, twin: undefined },
+    { program: 'flotilla-engine', placeholders: 'type', relationships: false },
+  );
+  return line;
+}
+
+/**
  * The router's whole-CLI usage, as lines — one rendered line per verb and per
  * group op, in the router's own dispatch order.
  *
@@ -1243,7 +1216,7 @@ function usageLines(): string[] {
     // gate with no subcommand token at all (the legacy positional form). It has
     // no contract of its own because it is not a verb — so its argument shape is
     // rendered from `dor`'s contract, which is the runner it reaches.
-    `  flotilla-engine ${positionalForm(all.dor)}   # the verb-less readiness gate — ${OUTPUT_NOTE[all.dor.output]}`,
+    `  ${verblessForm(all.dor)}   # the verb-less readiness gate — ${OUTPUT_NOTE[all.dor.output]}`,
   ];
   for (const verb of KNOWN_SUBCOMMANDS) {
     const group = VERB_GROUP_CONTRACTS[verb];

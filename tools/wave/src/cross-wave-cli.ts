@@ -33,6 +33,7 @@ import { readFileSync } from 'node:fs';
 import { crossWaveCheck, type ScopedIssue } from './cross-wave';
 import { flag, printJson } from './cli-utils';
 import {
+  defineVerb,
   helpRequested,
   printVerbHelp,
   refuseUndeclared,
@@ -45,8 +46,9 @@ import {
  * and `--claimed` name things nothing else names — so the declaration is a
  * straight statement of what the runner already read.
  */
-export const CROSS_WAVE_CONTRACT: VerbContract = {
+export const CROSS_WAVE_CONTRACT: VerbContract = defineVerb({
   verb: 'cross-wave',
+  program: 'cross-wave',
   flags: [
     { canonical: '--candidates', value: 'one', valueType: 'path', required: true },
     { canonical: '--claimed', value: 'one', valueType: 'path', required: true },
@@ -54,11 +56,8 @@ export const CROSS_WAVE_CONTRACT: VerbContract = {
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
-  usage: [
-    'usage: cross-wave --candidates <path> --claimed <path> [--repo-root <dir>]',
-    'output: JSON — the CrossWaveResult (check `warnings`; they are non-fatal)',
-  ],
-};
+  outputNote: 'JSON — the CrossWaveResult (check `warnings`; they are non-fatal)',
+});
 
 /**
  * Run the cross-wave check CLI.

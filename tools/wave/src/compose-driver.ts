@@ -48,6 +48,7 @@ import { readSpine, HUMAN_GATED_WORKER, type PlanTableRow } from './wave-md-rw';
 import { verifyCommands, type VerifyCommand } from './verify';
 import { resolveStore } from './cli-store';
 import {
+  defineVerb,
   helpRequested,
   printVerbHelp,
   refuseUndeclared,
@@ -961,42 +962,35 @@ export interface RowMeta {
  * mechanical follow-up row that deleted that exception; the content is
  * unchanged.
  */
-export const COMPOSE_DRIVER_CONTRACT: VerbContract = {
+export const COMPOSE_DRIVER_CONTRACT: VerbContract = defineVerb({
   verb: 'compose-driver',
   flags: [
-    { canonical: '--spine', value: 'one', valueType: 'path', required: true },
+    { canonical: '--spine', value: 'one', valueType: 'path', required: true, placeholder: '<spine>' },
     { canonical: '--out', value: 'one', valueType: 'path', required: true },
     { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
     { canonical: '--config', value: 'one', valueType: 'path' },
     { canonical: '--repo-root', value: 'one', valueType: 'dir' },
-    { canonical: '--reviewer-agent', value: 'one', valueType: 'text' },
+    { canonical: '--reviewer-agent', value: 'one', valueType: 'text', placeholder: '<name>' },
     { canonical: '--plugin-manifest', value: 'one', valueType: 'path' },
-    { canonical: '--coordinator-branch', value: 'one', valueType: 'branch' },
-    { canonical: '--deps-setup', value: 'one', valueType: 'text' },
-    { canonical: '--row-meta', value: 'one', valueType: 'json' },
+    { canonical: '--coordinator-branch', value: 'one', valueType: 'branch', placeholder: '<b>' },
+    { canonical: '--deps-setup', value: 'one', valueType: 'text', placeholder: '<cmd>' },
+    { canonical: '--row-meta', value: 'one', valueType: 'json', placeholder: '<json|path>' },
     { canonical: '--template', value: 'one', valueType: 'path' },
     { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
     { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
-  usage: [
-    'usage: flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha>',
-    '         [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>]',
-    '         [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>]',
-    '         [--row-meta <json|path>] [--template <path>] [--reports-dir <dir>] [--verdicts-dir <dir>]',
-    'output: a single JSON receipt on stdout; the driver script is written to --out',
-  ],
-};
+  outputNote: 'a single JSON receipt on stdout; the driver script is written to --out',
+});
 
+/**
+ * The usage refusal: `error: …`, then this verb's OWN rendered section, exit 2
+ * (issue #856). It used to be a second hand-written copy of the contract's
+ * usage lines, kept in step by nothing.
+ */
 function usage(message: string): number {
-  process.stderr.write(
-    `error: ${message}\n` +
-      'usage: flotilla-engine compose-driver --spine <spine> --out <path> --anchor <sha>\n' +
-      '         [--config <path>] [--repo-root <dir>] [--reviewer-agent <name>]\n' +
-      '         [--plugin-manifest <path>] [--coordinator-branch <b>] [--deps-setup <cmd>]\n' +
-      '         [--row-meta <json|path>] [--template <path>] [--reports-dir <dir>] [--verdicts-dir <dir>]\n',
-  );
+  process.stderr.write([`error: ${message}`, ...COMPOSE_DRIVER_CONTRACT.usage, ''].join('\n'));
   return 2;
 }
 

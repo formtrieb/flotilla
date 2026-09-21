@@ -150,6 +150,7 @@ import {
 import { resolveCredential } from './credential-resolver';
 import { flag, printJson } from './cli-utils';
 import {
+  defineVerb,
   hasFlag,
   helpRequested,
   printVerbHelp,
@@ -202,6 +203,14 @@ export interface HostPrDeps {
 }
 
 const MERGE_METHODS: MergeMethod[] = ['squash', 'merge', 'rebase'];
+
+/**
+ * How `--method`'s value is spelled in the three landing verbs' own sections —
+ * the merge-method vocabulary itself, off {@link MERGE_METHODS}, never a second
+ * copy of it. The roster prints the value TYPE (`<value>`) instead, the way it
+ * does for every enum flag in the engine.
+ */
+const METHOD_PLACEHOLDER = `<${MERGE_METHODS.join('|')}>`;
 
 /**
  * The FULL multi-verb usage dump — every verb's usage line, its prose, and the
@@ -335,12 +344,12 @@ const HOST_PR_COMMON_FLAGS = [
  * `VERB_CONTRACT` and `issue-store`'s op table already have".
  */
 export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
-  create: {
+  create: defineVerb({
     verb: 'host-pr create',
     flags: [
       { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
-      { canonical: '--title', value: 'one', valueType: 'text', required: true },
-      { canonical: '--body', value: 'one', valueType: 'text' },
+      { canonical: '--title', value: 'one', valueType: 'text', required: true, placeholder: '<title>' },
+      { canonical: '--body', value: 'one', valueType: 'text', placeholder: '<body>' },
       { canonical: '--body-file', value: 'one', valueType: 'path' },
       { canonical: '--base', value: 'one', valueType: 'branch' },
       { canonical: '--allow-close-phrase-loss', value: 'none', valueType: 'none' },
@@ -348,54 +357,56 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-    'usage: host-pr create --branch <branch> --title <title> (--body <body> | --body-file <path>) [--base <branch>] [--remote <url>] [--allow-close-phrase-loss] [--config <path>]',
-    '  Opens the PR for --branch (find-before-create): an existing OPEN PR is REUSED — and its title AND body',
-    '  are RE-WRITTEN to the values you pass (last-writer-wins) — so this is NOT a read-only probe; use `status`',
-    '  for that. A reuse that would drop the live body\'s close phrase is REFUSED (exit 1, reuse-refused) unless',
-    '  --allow-close-phrase-loss is passed.',
-    '  The body comes from EXACTLY ONE of --body (inline) and --body-file (a path, read verbatim). Prefer the',
-    '  file whenever the body runs to more than one paragraph — a worktree-isolated caller\'s multi-paragraph',
-    '  --body has been refused in the field by an agent harness\'s isolation guard (not by every such guard), and',
-    '  a long quoted argument is a quoting hazard everywhere. The close phrase must own its own line in the file.',
-    'output: a single JSON object on stdout',
+    // The one relationship this group has, and the one the flag list could not
+    // state: the body comes from EXACTLY ONE of the two, and a call with both
+    // or neither is a usage error naming both flags. Declared, it renders as
+    // the alternation it is instead of as two independent optionals.
+    groups: [{ kind: 'exactly-one', branches: [['--body'], ['--body-file']] }],
+    notes: [
+      '  Opens the PR for --branch (find-before-create): an existing OPEN PR is REUSED — and its title AND body',
+      '  are RE-WRITTEN to the values you pass (last-writer-wins) — so this is NOT a read-only probe; use `status`',
+      '  for that. A reuse that would drop the live body\'s close phrase is REFUSED (exit 1, reuse-refused) unless',
+      '  --allow-close-phrase-loss is passed.',
+      '  The body comes from EXACTLY ONE of --body (inline) and --body-file (a path, read verbatim). Prefer the',
+      '  file whenever the body runs to more than one paragraph — a worktree-isolated caller\'s multi-paragraph',
+      '  --body has been refused in the field by an agent harness\'s isolation guard (not by every such guard), and',
+      '  a long quoted argument is a quoting hazard everywhere. The close phrase must own its own line in the file.',
     ],
-  },
-  arm: {
+    outputNote: 'a single JSON object on stdout',
+  }),
+  arm: defineVerb({
     verb: 'host-pr arm',
     flags: [
       { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
-      { canonical: '--method', value: 'one', valueType: 'enum' },
+      { canonical: '--method', value: 'one', valueType: 'enum', placeholder: METHOD_PLACEHOLDER },
       { canonical: '--delete-branch', value: 'none', valueType: 'none' },
       ...HOST_PR_COMMON_FLAGS,
     ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-      `usage: host-pr arm --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>] [--config <path>]`,
+    notes: [
       '  Lands the PR by deciding per-PR from its live merge state: pending checks → enable auto-merge; already clean → direct',
       '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
-      'output: a single JSON object on stdout',
     ],
-  },
-  merge: {
+    outputNote: 'a single JSON object on stdout',
+  }),
+  merge: defineVerb({
     verb: 'host-pr merge',
     flags: [
       { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
-      { canonical: '--method', value: 'one', valueType: 'enum' },
+      { canonical: '--method', value: 'one', valueType: 'enum', placeholder: METHOD_PLACEHOLDER },
       { canonical: '--delete-branch', value: 'none', valueType: 'none' },
       ...HOST_PR_COMMON_FLAGS,
     ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-      `usage: host-pr merge --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--delete-branch] [--remote <url>] [--config <path>]`,
+    notes: [
       '  Merges the PR now, no arm intent (the caller has already decided). Idempotent. --delete-branch deletes',
       '  the PR head branch after a successful merge (best-effort).',
-      'output: a single JSON object on stdout',
     ],
-  },
-  status: {
+    outputNote: 'a single JSON object on stdout',
+  }),
+  status: defineVerb({
     verb: 'host-pr status',
     flags: [
       { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
@@ -403,37 +414,36 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       // merges nothing: the router reads `--method` on all three landing verbs
       // from one branch, and refusing it here would break a caller that appends
       // it uniformly.
-      { canonical: '--method', value: 'one', valueType: 'enum' },
+      { canonical: '--method', value: 'one', valueType: 'enum', placeholder: METHOD_PLACEHOLDER },
       ...HOST_PR_COMMON_FLAGS,
     ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-      `usage: host-pr status --branch <branch> [--method <${MERGE_METHODS.join('|')}>] [--remote <url>] [--config <path>]`,
+    notes: [
       '  --method is accepted and validated here though `status` merges nothing: the router reads it on all',
       '  three landing verbs from one branch. --config is accepted and IGNORED on every host-pr verb (this',
       '  group is store-blind); a Coordinator wrapper appends it to every engine invocation uniformly.',
       '  Reports the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only — never writes.',
       '  Also reports the PR\'s live `title` and `body` off that same response (no extra host call): absent on',
       '  state none and wherever the host does not surface them, and never an empty string.',
-      'output: a single JSON object on stdout',
     ],
-  },
-  preflight: {
+    outputNote: 'a single JSON object on stdout',
+  }),
+  preflight: defineVerb({
     verb: 'host-pr preflight',
     flags: [...HOST_PR_COMMON_FLAGS],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    usage: [
-      'usage: host-pr preflight [--remote <url>] [--config <path>]   # no --branch — a repo-level probe',
+    notes: [
+      '  Takes no --branch — it is a repo-level probe.',
       '  Reports the code-host landing posture: pr-merge-token, allow-auto-merge, required-checks, plus one',
       '  CREATE-verb check fourth — create-credentials on bitbucket, pr-create-token on github. Both are',
       '  advisory and never change the exit code. pr-create-token probes the create right with two read-only',
       '  requests: pr-merge-token grades the repository role, which a fine-grained token can hold while being',
       '  scoped away from Pull requests. Store-blind — identical on every store kind.',
-      'output: a single JSON object on stdout',
     ],
-  },
+    outputNote: 'a single JSON object on stdout',
+  }),
 };
 
 /**

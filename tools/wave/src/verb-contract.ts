@@ -80,6 +80,19 @@ export interface FlagContract {
   /** The ONE spelling `--help` and the Catalog print, and the skills are pinned to. */
   readonly canonical: string;
   /**
+   * What this flag's VALUE is called in THIS verb's own usage section —
+   * `--input <CreateInput.json>`, `--var <VAR>`, `--method <squash|merge|rebase>`.
+   *
+   * Optional, and read by ONE surface: the verb's own rendered section, which is
+   * the place a caller goes to learn what to put after the flag. The router's
+   * roster deliberately ignores it and prints the placeholder of the value TYPE
+   * instead ({@link FlagValueType}) — the roster is a uniform one-line index of
+   * the whole engine, and sixty verbs each naming their own value shape would
+   * make its columns unreadable. One declaration, two renderings, neither
+   * hand-written.
+   */
+  readonly placeholder?: string;
+  /**
    * Accepted spellings that are NOT canonical. Silent (ADR-0051 decision 8): no
    * stderr note, no result field, and the word "deprecated" appears nowhere —
    * it would promise a removal this record does not date.
@@ -148,6 +161,110 @@ export interface TwinSlot {
  */
 export type OutputClass = 'prose' | 'json' | 'silent-write' | 'product';
 
+/**
+ * A RELATIONSHIP between several flags of one verb (Coordinator decision 15,
+ * 2026-09-21; ADR-0051's 2026-09-21 note).
+ *
+ * The roster and the flag list are faithful about flag NAMES and were lossy
+ * about how they go together: `host-pr create … [--body <text>] [--body-file
+ * <path>]` read as two independent optionals where the parser requires exactly
+ * one of them. A group says which, and the renderer turns it into the
+ * alternation a caller can act on.
+ *
+ * **Reporting only.** The parser is not changed by a group: every runner still
+ * checks its own combinations and emits its own message, and
+ * {@link checkUndeclared} never reads this. A group that disagreed with a
+ * runner would be a second, silent parser — exactly what ADR-0051 exists to
+ * forbid — so it declares what the runner already enforces and is rendered,
+ * nothing more.
+ */
+export interface FlagGroup {
+  /**
+   * `exactly-one` — the verb refuses with neither and with both; renders
+   * `(--a | --b)`.
+   * `at-most-one` — either alone, or neither; renders `[--a | --b]`.
+   */
+  readonly kind: 'exactly-one' | 'at-most-one';
+  /**
+   * The alternatives, in render order — one inner list per branch, because a
+   * branch is not always a single flag. `spine add-disclosure`'s row-scoped
+   * branch is a POSITIONAL and a flag together (`<row-id> --iter <n>`) against
+   * a wave-scoped branch that is one switch; rendering those as two bare flag
+   * names would lose the half that makes the choice legible.
+   *
+   * A token starting with `--` is a canonical flag spelling and renders with
+   * its value placeholder; anything else is a positional LABEL and renders
+   * verbatim.
+   */
+  readonly branches: readonly (readonly string[])[];
+  /**
+   * How many of the contract's TRAILING positional slots this group's branches
+   * already account for — `1` on `spine add-disclosure`, whose `<row-id>` slot
+   * appears inside the group rather than beside it. Without it the slot would
+   * be printed twice: once bracketed by the arity, once inside the branch.
+   *
+   * A group that consumes a slot also renders WHERE that slot is — directly
+   * after the remaining positionals — rather than after the required flags,
+   * which is where a purely-flag group belongs.
+   */
+  readonly consumesPositionals?: number;
+}
+
+/**
+ * One CALL SHAPE of a verb that has more than one (Coordinator decision 15).
+ *
+ * Three verbs take two genuinely different invocations — `dor` by path or by
+ * `--id`, `conflict-map` the same, `credential-probe` by `--all` or by `--var`
+ * — and one signature line cannot state that without lying about one of them.
+ * A form declares the positionals and the flags of ONE shape; the section
+ * renders one invocation line per form.
+ *
+ * A form, not a {@link FlagGroup}, when the two shapes differ in their
+ * POSITIONALS as well as their flags: `dor --id <id>` takes none where the path
+ * form takes at least one, and an alternation inside one line cannot say that.
+ * Where only the flags differ — `spine add-disclosure`'s two scopes, whose
+ * `--source` and `--text` are the same on both sides — a group keeps it to one
+ * line, which is also what keeps the op's `available:` vocabulary one entry.
+ *
+ * Like {@link FlagGroup} this is reporting only: the runner still decides which
+ * form a call is in (usually by whether a discriminating flag is present), and
+ * {@link CheckOptions.positionals} is the one place a form narrows what the
+ * refusal measures against.
+ */
+export interface VerbForm {
+  /** This form's positional arity. Defaults to the contract's own. */
+  readonly positionals?: PositionalArity;
+  /** Canonical spellings this form REQUIRES, in render order — unbracketed. */
+  readonly requires?: readonly string[];
+  /** Canonical spellings this form also accepts, in render order — bracketed. */
+  readonly accepts?: readonly string[];
+  /** Relationships scoped to this form. Defaults to the contract's own. */
+  readonly groups?: readonly FlagGroup[];
+  /** The trailing `# …` comment this form's line carries, aligned with its siblings. */
+  readonly note?: string;
+}
+
+/**
+ * The `--json:` clause of a verb's section, as declared parts rather than as a
+ * sentence (ADR-0051 decision 7 gave `--json` its meaning; this states the
+ * SHAPE it answers with where the verb has one).
+ *
+ * Rendered as `  <label>: <lead> — <shape> — <trail>`, dropping every part the
+ * verb does not declare, then the continuation lines verbatim.
+ */
+export interface JsonNote {
+  /** The clause label. Defaults to `--json`; the write receipts say `--json receipt`. */
+  readonly label?: string;
+  /** Prose BEFORE the shape (`one receipt on stdout, after the write lands`). */
+  readonly lead?: string;
+  /** The declared shape (`{ op, spine, id, written: { state } }`). */
+  readonly shape?: string;
+  /** Prose AFTER the shape (`the rung swapped to`). */
+  readonly trail?: string;
+  /** Lines printed under the clause, verbatim — indentation included. */
+  readonly continuation?: readonly string[];
+}
+
 /** One verb's — or one group op's — whole contract. */
 export interface VerbContract {
   /**
@@ -162,11 +279,50 @@ export interface VerbContract {
   readonly positionals: PositionalArity;
   /** What its stdout is. */
   readonly output: OutputClass;
-  /** THIS verb's usage lines — printed on a refusal and by `--help`. */
+  /**
+   * THIS verb's usage lines — printed on a refusal and by `--help`.
+   *
+   * A COMPUTED field: {@link defineVerb} fills it from everything else on the
+   * declaration, so a flag the parser reads cannot be missing from `--help` by
+   * construction. It stays a plain `readonly string[]` on the type (rather than
+   * a method a caller has to invoke) because every root-exported contract is
+   * read for it — `host-pr`'s group dump, `issue-store`'s op roster and the
+   * router's own `--json` clause all take `usage[0]` or scan the array — and a
+   * shape change there would break every one of them.
+   */
   readonly usage: readonly string[];
   /** The named-twin slots (ADR-0051 decision 6), in positional order. */
   readonly twin?: readonly TwinSlot[];
+
+  // ── what the section is rendered FROM (Coordinator decision 15) ───────────
+
+  /**
+   * How a caller SPELLS this verb at a shell prompt, if not the default.
+   *
+   * Three prefix kinds and no more: a router verb is `flotilla-engine <verb>`
+   * (the default), a verb group's op is its own two tokens (`spine set-status`
+   * — derived, because a group op's `verb` already carries both), and a module
+   * with its own entry point names itself (`store-preflight`, `resume`,
+   * `wave-conflict-map`), which is the only kind that has to be declared.
+   */
+  readonly program?: string;
+  /** How this verb's flags relate — rendered into the signature, never parsed. */
+  readonly groups?: readonly FlagGroup[];
+  /** The verb's call shapes, where it has more than one. One line each. */
+  readonly forms?: readonly VerbForm[];
+  /** This verb's own prose, verbatim — indentation included. */
+  readonly notes?: readonly string[];
+  /** What follows `output: `; an array states the continuation lines too. */
+  readonly outputNote?: string | readonly string[];
+  /** The `--json:` clause, where the verb has one. */
+  readonly json?: JsonNote;
 }
+
+/**
+ * A verb's contract as an author DECLARES it — everything except the `usage`
+ * section, which {@link defineVerb} renders from it.
+ */
+export type VerbContractDeclaration = Omit<VerbContract, 'usage'>;
 
 // ─── Router-global flags ─────────────────────────────────────────────────────
 
@@ -526,6 +682,279 @@ export function helpRequested(
 export function printVerbHelp(contract: VerbContract): number {
   process.stdout.write([...contract.usage, ''].join('\n'));
   return 0;
+}
+
+// ─── The usage renderer (issue #856) ─────────────────────────────────────────
+//
+// Row 758 rendered the router's ROSTER from the contracts and closed the
+// omission class there; a verb's OWN section — the text `--help` prints and
+// every refusal reprints — stayed 331 lines of declared prose held to the
+// parser by a guard rather than by construction. This is the other half: the
+// signature line, the `output:` line and the `--json:` clause of every verb and
+// every group op are BUILT from the declaration, so a flag the parser reads
+// cannot be missing from `--help` any more than it can be missing from the
+// roster. The guard row 758 installed stays, as the regression net it now is.
+//
+// What is NOT rendered is the verb's prose. It survives verbatim as declared
+// `notes` — a sentence like "a reuse that would drop the close phrase is
+// REFUSED" is knowledge about the verb, not a fact about its argument shape,
+// and generating it from structure would either lose it or invent it.
+//
+// **Two surfaces, one declaration.** The roster and the section render the same
+// contract differently on purpose: the roster is a uniform index (value-TYPE
+// placeholders, no alternations — sixty lines that have to scan as columns),
+// the section is one verb's teaching surface (its own placeholders, its
+// relationships spelled out). Both go through {@link renderInvocations}, so
+// neither can name a flag the other does not.
+
+/** The placeholder a flag's VALUE is printed as, from its declared value TYPE. */
+const VALUE_PLACEHOLDER: Readonly<Record<FlagValueType, string>> = {
+  none: '',
+  path: '<path>',
+  dir: '<dir>',
+  id: '<id>',
+  int: '<n>',
+  text: '<text>',
+  enum: '<value>',
+  sha: '<sha>',
+  url: '<url>',
+  branch: '<branch>',
+  version: '<version>',
+  list: '<a,b>',
+  json: '<json>',
+};
+
+/** How one contract is rendered — the two surfaces differ only by these. */
+export interface UsageRenderOptions {
+  /**
+   * The program prefix to use instead of the contract's own. The roster passes
+   * `flotilla-engine <verb>` for EVERY verb (every one of them is reachable as
+   * a subcommand of the one CLI, whatever its module is called), and the empty
+   * string renders the bare signature.
+   */
+  readonly program?: string;
+  /**
+   * `declared` (the default) — a flag prints its own {@link
+   * FlagContract.placeholder} where it declares one. `type` — every flag prints
+   * the placeholder of its value TYPE, which is what keeps the roster's columns
+   * uniform.
+   */
+  readonly placeholders?: 'declared' | 'type';
+  /**
+   * Render the declared relationships — the alternations and the second form.
+   * Default true; the roster passes `false` and lists each flag as the
+   * independent optional it is declared to be, sending the reader to the verb's
+   * own section for how they go together.
+   */
+  readonly relationships?: boolean;
+}
+
+/**
+ * How a caller spells this verb at a prompt — the three prefix kinds, decided
+ * by the declaration alone (see {@link VerbContract.program}).
+ */
+function programNameOf(decl: VerbContractDeclaration): string {
+  if (decl.program !== undefined) return decl.program;
+  return decl.verb.includes(' ') ? decl.verb : `flotilla-engine ${decl.verb}`;
+}
+
+/** One flag as a caller types it, with the repeat form on a repeatable flag. */
+function flagForm(f: FlagContract, mode: 'declared' | 'type'): string {
+  const placeholder =
+    mode === 'declared' && f.placeholder !== undefined
+      ? f.placeholder
+      : VALUE_PLACEHOLDER[f.valueType];
+  const head = placeholder === '' ? f.canonical : `${f.canonical} ${placeholder}`;
+  return f.value === 'repeatable' ? `${head} [${head} ...]` : head;
+}
+
+/**
+ * The positional segment of a signature.
+ *
+ * A named-twin verb (ADR-0051 decision 6) renders as the alternation it really
+ * is — `(--verdicts-dir <dir> --id <id> | <verdictsDir> <id>)` — because on
+ * those verbs the positionals ARE the flags, spelled the other way, and listing
+ * both segments separately would read as a verb that takes four arguments.
+ */
+function positionalForm(
+  decl: VerbContractDeclaration,
+  arity: PositionalArity,
+  twin: readonly TwinSlot[],
+  mode: 'declared' | 'type',
+): string {
+  if (twin.length > 0) {
+    const named = twin
+      .map((slot) => {
+        const f = decl.flags.find((c) => c.canonical === slot.flag);
+        return f === undefined ? slot.flag : flagForm(f, mode);
+      })
+      .join(' ');
+    return `(${named} | ${twin.map((s) => s.label).join(' ')})`;
+  }
+  if (arity.kind === 'variadic') {
+    const label = arity.label ?? '<arg>';
+    return arity.min === 0 ? `[${label} ...]` : `${label} [${label} ...]`;
+  }
+  if (arity.count === 0) return '';
+  const labels =
+    arity.labels ?? Array.from({ length: arity.count }, (_, i) => `<arg${i + 1}>`);
+  const required = arity.min ?? arity.count;
+  return labels.map((label, i) => (i < required ? label : `[${label}]`)).join(' ');
+}
+
+/**
+ * The whole argument shape of one verb (or one of its forms): its positionals,
+ * then its REQUIRED flags, then its declared relationships, then its optional
+ * flags in brackets.
+ *
+ * Positionals lead because a verb group's positional grammar is its canonical
+ * spelling (`issue-store triage-apply <id> --input <path>`, decision 6's "no
+ * named twin for a group"), and a required flag leads an optional one because
+ * that is the order a caller has to satisfy them in. A group sits between the
+ * two: its members are what a caller decides about once the required flags are
+ * settled.
+ */
+function signatureSegments(
+  decl: VerbContractDeclaration,
+  form: VerbForm | undefined,
+  opts: UsageRenderOptions,
+): string[] {
+  const mode = opts.placeholders ?? 'declared';
+  const byName = new Map(decl.flags.map((f) => [f.canonical, f]));
+  const named = (token: string): string => {
+    const f = byName.get(token);
+    return f === undefined ? token : flagForm(f, mode);
+  };
+  const groups = opts.relationships === false ? [] : (form?.groups ?? decl.groups ?? []);
+  const grouped = new Set(groups.flatMap((g) => g.branches.flat()));
+  const render = (g: FlagGroup): string => {
+    const inner = g.branches.map((branch) => branch.map(named).join(' ')).join(' | ');
+    return g.kind === 'exactly-one' ? `(${inner})` : `[${inner}]`;
+  };
+  // A group that occupies a positional slot renders where that slot is; one
+  // made of flags alone renders after the flags a caller has no choice about.
+  const atPositionals = groups.filter((g) => (g.consumesPositionals ?? 0) > 0);
+  const afterRequired = groups.filter((g) => (g.consumesPositionals ?? 0) === 0);
+  const consumed = atPositionals.reduce((n, g) => n + (g.consumesPositionals ?? 0), 0);
+
+  // A twin's slots ARE the positionals, so a FORM (which states its own
+  // positionals) never renders the twin alternation on top of them.
+  const twin = form === undefined ? (decl.twin ?? []) : [];
+  const segments: string[] = [
+    positionalForm(decl, narrowArity(form?.positionals ?? decl.positionals, consumed), twin, mode),
+    ...atPositionals.map(render),
+  ];
+
+  if (form !== undefined) {
+    for (const token of form.requires ?? []) {
+      if (!grouped.has(token)) segments.push(named(token));
+    }
+    segments.push(...afterRequired.map(render));
+    for (const token of form.accepts ?? []) {
+      if (!grouped.has(token)) segments.push(`[${named(token)}]`);
+    }
+    return segments.filter((s) => s !== '');
+  }
+
+  const twinFlags = new Set(twin.map((s) => s.flag));
+  const rest = decl.flags.filter(
+    (f) => !twinFlags.has(f.canonical) && !grouped.has(f.canonical),
+  );
+  segments.push(...rest.filter((f) => f.required === true).map((f) => flagForm(f, mode)));
+  segments.push(...afterRequired.map(render));
+  segments.push(
+    ...rest.filter((f) => f.required !== true).map((f) => `[${flagForm(f, mode)}]`),
+  );
+  return segments.filter((s) => s !== '');
+}
+
+/** `arity` with its last `consumed` slots taken over by a group that renders them. */
+function narrowArity(arity: PositionalArity, consumed: number): PositionalArity {
+  if (consumed === 0 || arity.kind === 'variadic') return arity;
+  const count = Math.max(0, arity.count - consumed);
+  return {
+    kind: 'fixed',
+    count,
+    ...(arity.labels === undefined ? {} : { labels: arity.labels.slice(0, count) }),
+    ...(arity.min === undefined ? {} : { min: Math.min(arity.min, count) }),
+  };
+}
+
+/**
+ * Every invocation line of one contract — the program prefix plus the rendered
+ * signature, ONE line per declared {@link VerbForm} (and exactly one line for a
+ * verb that declares none).
+ *
+ * The router's roster and the verb's own section both come through here, which
+ * is the point: a flag on one and not the other is not expressible.
+ */
+export function renderInvocations(
+  decl: VerbContractDeclaration,
+  opts: UsageRenderOptions = {},
+): string[] {
+  const program = opts.program ?? programNameOf(decl);
+  const forms: readonly (VerbForm | undefined)[] =
+    opts.relationships === false || decl.forms === undefined ? [undefined] : decl.forms;
+  return forms.map((form) =>
+    [program, ...signatureSegments(decl, form, opts)].filter((s) => s !== '').join(' '),
+  );
+}
+
+/** The `--json:` clause, as lines — the declared parts, joined by em-dashes. */
+function renderJsonNote(json: JsonNote): string[] {
+  const body = [json.lead, json.shape, json.trail]
+    .filter((part): part is string => part !== undefined)
+    .join(' — ');
+  return [`  ${json.label ?? '--json'}: ${body}`, ...(json.continuation ?? [])];
+}
+
+/**
+ * ONE verb's whole usage section, rendered from its declaration — the text
+ * `--help` prints, the text every refusal reprints, and the text a runner's own
+ * missing-argument branch prints.
+ *
+ * Shape, in order: the invocation line(s), the verb's declared prose, the
+ * `output:` line, the `--json:` clause. A form's trailing `# …` comment is
+ * aligned across the invocation block, so two forms read as a table rather than
+ * as two sentences that happen to be adjacent.
+ */
+export function renderUsageSection(decl: VerbContractDeclaration): string[] {
+  const invocations = renderInvocations(decl);
+  // Every invocation line carries the same 7-character prefix (`usage: ` or the
+  // continuation indent), so the comment column can be measured on the finished
+  // lines rather than on the signatures inside them.
+  const head = invocations.map((inv, i) => (i === 0 ? `usage: ${inv}` : `       ${inv}`));
+  const formNotes = decl.forms?.map((f) => f.note);
+  const column =
+    Math.max(
+      0,
+      ...head.filter((_, i) => formNotes?.[i] !== undefined).map((line) => line.length),
+    ) + 3;
+  const lines = head.map((line, i) => {
+    const note = formNotes?.[i];
+    return note === undefined ? line : `${line.padEnd(column)}# ${note}`;
+  });
+  lines.push(...(decl.notes ?? []));
+  if (decl.outputNote !== undefined) {
+    const [first, ...rest] =
+      typeof decl.outputNote === 'string' ? [decl.outputNote] : decl.outputNote;
+    lines.push(`output: ${first}`, ...rest);
+  }
+  if (decl.json !== undefined) lines.push(...renderJsonNote(decl.json));
+  return lines;
+}
+
+/**
+ * Declare one verb: the declaration, plus the `usage` section rendered from it.
+ *
+ * Every contract in the engine is built through this, which is what makes
+ * `usage` a computed field rather than a second hand-maintained description of
+ * the parser. Nothing stops a caller writing a `VerbContract` literal with a
+ * hand-typed `usage` — the type still allows it, so a consumer's own tooling
+ * can hand one in — but no contract this engine ships does.
+ */
+export function defineVerb(decl: VerbContractDeclaration): VerbContract {
+  return { ...decl, usage: renderUsageSection(decl) };
 }
 
 // ─── Named twins (ADR-0051 decision 6) ───────────────────────────────────────
