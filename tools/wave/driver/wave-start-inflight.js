@@ -429,7 +429,7 @@ const ISSUES = [
     prTitle: '<PR title — no bare tracker id>',
     closePhrase: '<Closes #NN | Fixes TEAM-NN — store-kind-derived (Convention 4)>',
     reviewerHints: ['Verify <thing 1>.', 'Confirm <thing 2>.'],
-    siblingBranches: '(none — last in-flight issue)',
+    siblingBranches: '(none — no sibling branches in this wave)',
   },
 ]
 
