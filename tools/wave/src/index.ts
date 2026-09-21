@@ -1597,6 +1597,12 @@ export {
   type OutputClass,
   type VerbContract,
   type VerbContractDeclaration,
+  // The Catalog's payload type (ADR-0051 decision 2's fourth reader). A TYPE
+  // and no runtime name: the emitter is `catalog`'s runner, module-local to
+  // cli.ts like every other verb's, and what an out-of-tree reader of the
+  // emitted JSON needs is the shape to parse it into — which is this, plus the
+  // `VerbContract` family already above it.
+  type Catalog,
   type FlagGroup,
   type VerbForm,
   type JsonNote,

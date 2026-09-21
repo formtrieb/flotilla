@@ -20,8 +20,8 @@
  * Four readers and nothing else know what a verb accepts: the parser
  * ({@link resolveFlagContract}, which `flag()` in cli-utils.ts resolves
  * through), the refusal ({@link checkUndeclared}), `--help`
- * ({@link helpRequested} + the contract's own `usage`), and — later — the
- * Catalog, which emits the contracts.
+ * ({@link helpRequested} + the contract's own `usage`), and the {@link Catalog}
+ * — the `catalog` verb, which emits the contracts as JSON.
  *
  * ## Where a contract lives
  *
@@ -323,6 +323,32 @@ export interface VerbContract {
  * section, which {@link defineVerb} renders from it.
  */
 export type VerbContractDeclaration = Omit<VerbContract, 'usage'>;
+
+/**
+ * The **Catalog** (ADR-0051 decision 2; CONTEXT.md `### Engine surface`) — the
+ * sum of every {@link VerbContract} the router collects, as the payload the
+ * `catalog` verb prints. The fourth reader of a contract, and the last one
+ * ADR-0051 named that did not exist: 2.7.0 shipped the contracts, the roster
+ * rendered from them and `--help` on every verb, and said so in its own
+ * CHANGELOG under *Not yet proven* — "the Catalog (contracts as JSON) is
+ * decided, not built".
+ *
+ * `verbs` carries the contracts THEMSELVES, not a projection of them, and that
+ * is the whole design. A projection would name the fields somebody thought
+ * mattered, and every field it did not name would be a field the Catalog could
+ * never carry — the omission class ADR-0051 closes at the parser, re-opened one
+ * layer out at the emitter. Verbatim, a field added to {@link VerbContract}
+ * tomorrow is in the Catalog with no edit to the emitter at all.
+ *
+ * Ordered by `verb`, so a consumer diffing two engine versions reads contract
+ * changes and not declaration-order churn.
+ */
+export interface Catalog {
+  /** The verb that printed this — the envelope every engine JSON answer opens with. */
+  readonly verb: 'catalog';
+  /** Every contract: one entry per verb and per verb-group op, sorted by `verb`. */
+  readonly verbs: readonly VerbContract[];
+}
 
 // ─── Router-global flags ─────────────────────────────────────────────────────
 
