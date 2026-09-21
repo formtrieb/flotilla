@@ -15,11 +15,11 @@
  * Why a copy per skill rather than one shared file every skill loads: the front
  * half (`triage`, `to-prd`, `to-issues`) never loads `wave-shared` at all, and
  * coupling it to that skill's schemas and routing mechanics to reach one
- * paragraph is the rejected option. So the short clause is planted thirteen
+ * paragraph is the rejected option. So the short clause is planted fourteen
  * times and the long form sits under `wave-shared/reference/`, reached by a
  * sibling-path read against the reading skill's own directory.
  *
- * Thirteen hand-maintained copies is exactly the shape that rots one copy
+ * Fourteen hand-maintained copies is exactly the shape that rots one copy
  * silently, which is why this guard is a peer of `skill-schema-drift.spec.ts`
  * — same idea (a copy pinned to one source), applied to a paragraph of prose
  * instead of a schema literal. `toEqual` on strings is a byte comparison: a
@@ -44,8 +44,12 @@
  *
  * The clause-plant duty (predicate 1) runs over **SKILL.md bodies only** — a
  * reference file is not a skill body, carries no planted clause, and must never
- * be asked for one. The **address** predicate (predicate 4) runs over **both
- * tiers**: SKILL.md *and* every `reference/*.md` beneath it.
+ * be asked for one. The **address** predicate (predicate 4) runs over the whole
+ * agent-read surface: SKILL.md bodies, every `reference/*.md` beneath them,
+ * every agent definition under `.claude/agents/`, and the two `grill-with-docs`
+ * format templates — everywhere dispatched text can carry the forbidden
+ * address, minus the Evidence reading class and the contributor README, which
+ * `loaded-corpus-guard.spec.ts` already draws the same line around (ADR-0050).
  *
  * The reason the two differ is the reason the reference tier was ungoverned for
  * a rollout: those files are loaded by the same agents, in the same dispatches,
@@ -166,16 +170,56 @@ function listReferenceBodies(): string[] {
     .sort();
 }
 
-const SKILL_BODIES = listSkillBodies();
-const REFERENCE_BODIES = listReferenceBodies();
+/**
+ * Every `.md` file directly under `.claude/agents/`, repo-relative, sorted — a
+ * third population feeding the ADDRESS predicate, on nobody's clause-plant
+ * duty. Coordinator ruling 2026-09-21: an agent definition is dispatched text
+ * exactly like a SKILL.md body — the Reviewer's own definition addresses
+ * whoever ends up reading its output — so the register rule applies to it on
+ * the same grounds the reference tier earned its own widening (issue #600).
+ */
+function listAgentBodies(): string[] {
+  const agentsDir = join(REPO_ROOT, '.claude/agents');
+  return readdirSync(agentsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+    .map((entry) => `.claude/agents/${entry.name}`)
+    .sort();
+}
 
 /**
- * The ADDRESS predicate's population: both tiers, and the only population in
- * this file that is not SKILL.md-only. Order is skill bodies first, then
- * reference bodies, each block already sorted — it is a test-name ordering, not
- * a contract.
+ * The two `grill-with-docs` format templates — the fourth and last population
+ * feeding the ADDRESS predicate (issue #600). Named explicitly rather than
+ * listed structurally: `grill-with-docs` carries no `reference/` of its own,
+ * and these two files are the whole of its agent-read surface outside its
+ * `SKILL.md`.
+ *
+ * **Deliberately excluded, both here and from every population above:**
+ * `evidence/` (ADR-0050's Evidence reading class — cited by path when a
+ * specific file is relevant, never loaded whole, so it carries no runtime
+ * register exposure) and `.claude/skills/README.md` (contributor-facing, not
+ * agent-read dispatch text). `loaded-corpus-guard.spec.ts` already draws this
+ * exact line for its own, unrelated byte measure — `isShippedInstructionFile`
+ * excludes the same `evidence/` segment and the same README constant — so
+ * this widening reuses a boundary this corpus already has, rather than
+ * drawing a new one.
  */
-const ADDRESS_BODIES = [...SKILL_BODIES, ...REFERENCE_BODIES];
+const GRILL_TEMPLATE_BODIES = [
+  '.claude/skills/grill-with-docs/ADR-FORMAT.md',
+  '.claude/skills/grill-with-docs/CONTEXT-FORMAT.md',
+] as const;
+
+const SKILL_BODIES = listSkillBodies();
+const REFERENCE_BODIES = listReferenceBodies();
+const AGENT_BODIES = listAgentBodies();
+
+/**
+ * The ADDRESS predicate's population: every tier, and the only population in
+ * this file that is not SKILL.md-only. Order is skill bodies, then reference
+ * bodies, then agent bodies, then the grill-with-docs templates, each block
+ * already sorted (bar the last, which is fixed) — it is a test-name ordering,
+ * not a contract.
+ */
+const ADDRESS_BODIES = [...SKILL_BODIES, ...REFERENCE_BODIES, ...AGENT_BODIES, ...GRILL_TEMPLATE_BODIES];
 
 const SOURCES = new Map(
   ADDRESS_BODIES.map((rel) => [rel, readFileSync(join(REPO_ROOT, rel), 'utf-8')] as const),
@@ -455,8 +499,16 @@ const COORDINATOR_AS_ADDRESS: ReadonlyArray<RegExp> = [
   // The attributive noun form, which no verb pattern above can reach: a
   // `--question "<the Coordinator decision needed>"` placeholder is text that
   // lands in a human-read tracker field, so it addresses the reader of that
-  // field — the Operator.
-  /\bthe\s+coordinator(?:'s)?\s+decision\b/i,
+  // field — the Operator. The leading article is OPTIONAL (issue #600): a
+  // flag-question placeholder is written tight, `<Coordinator decision
+  // needed>`, and an article-less predicate reaches that shape too — the
+  // article was never what made the phrase an address, "Coordinator decision"
+  // on its own already names the session as the decider. Widening past the
+  // one legitimate corpus shape this flips green-to-red on (the wave-start
+  // Common Mistakes bullet about automatic parking, reworded in the same diff
+  // to "no decision by the Coordinator behind it" — the concept survives, the
+  // adjacency the pattern keys on does not) is asserted below.
+  /\b(?:the\s+)?coordinator(?:'s)?\s+decision\b/i,
 ];
 
 function coordinatorAddresses(md: string): string[] {
@@ -539,8 +591,52 @@ describe('skill-clause-drift — the rollout corrections (the human is not "the 
     expect(REFERENCE_BODIES).toContain('.claude/skills/goal/reference/goal-mechanics.md');
     // Every entry is a reference-tier path — nothing upstairs leaked downstairs.
     expect(REFERENCE_BODIES.every((rel) => /^\.claude\/skills\/[^/]+\/reference\/[^/]+\.md$/.test(rel))).toBe(true);
-    // …and the predicate runs over the union, not over either half.
-    expect(ADDRESS_BODIES).toHaveLength(SKILL_BODIES.length + REFERENCE_BODIES.length);
+    // …and the predicate runs over the union of all four populations, not any subset.
+    expect(ADDRESS_BODIES).toHaveLength(
+      SKILL_BODIES.length + REFERENCE_BODIES.length + AGENT_BODIES.length + GRILL_TEMPLATE_BODIES.length,
+    );
+  });
+
+  it('the agent + grill-with-docs widening (issue #600) is in ADDRESS_SUBJECTS and claimed by neither older population', () => {
+    expect(AGENT_BODIES).toContain('.claude/agents/wave-reviewer.md');
+    for (const rel of [...AGENT_BODIES, ...GRILL_TEMPLATE_BODIES]) {
+      expect(SKILL_BODIES, rel).not.toContain(rel);
+      expect(REFERENCE_BODIES, rel).not.toContain(rel);
+      expect(ADDRESS_BODIES, rel).toContain(rel);
+      expect(ADDRESS_SUBJECTS, rel).toContain(rel); // none of these is the citation-exempt long form
+    }
+  });
+
+  it('the evidence/ tier and the skills README are excluded on purpose, not merely absent by accident', () => {
+    // ADR-0050's reading classes: `evidence/` is cited by path, never loaded
+    // whole, and the skills-directory README is contributor-facing, not
+    // agent-read dispatch text — `loaded-corpus-guard.spec.ts` already draws
+    // this same line for its own byte measure (`isShippedInstructionFile`).
+    expect(ADDRESS_BODIES.some((rel) => rel.includes('/evidence/'))).toBe(false);
+    expect(ADDRESS_BODIES).not.toContain('.claude/skills/README.md');
+  });
+
+  it('every newly reached file passes the (widened) address predicate without being edited', () => {
+    for (const rel of [...AGENT_BODIES, ...GRILL_TEMPLATE_BODIES]) {
+      expect(coordinatorAddresses(SOURCES.get(rel) as string), rel).toEqual([]);
+    }
+  });
+
+  it('negative control — a seeded agent-tier address goes red, and the OLD population missed it', () => {
+    // The same three-part falsification as the reference-tier widening above,
+    // applied to the agent tier: reachable now, NOT reachable before, and the
+    // predicate fires on a seed.
+    const rel = '.claude/agents/wave-reviewer.md';
+    expect(SKILL_BODIES).not.toContain(rel);
+    expect(REFERENCE_BODIES).not.toContain(rel);
+    expect(ADDRESS_SUBJECTS).toContain(rel); // …and the widened population reaches it
+
+    const shipped = SOURCES.get(rel) as string;
+    const seeded = `${shipped}\nIf the diff is ambiguous, ping the Coordinator before verdicting.\n`;
+    expect(coordinatorAddresses(seeded)).toHaveLength(1);
+    // …and the shipped file is genuinely clean, so the assertion above is a
+    // seeded failure rather than a pre-existing one being re-observed.
+    expect(coordinatorAddresses(shipped)).toEqual([]);
   });
 
   it('the citation exemption is pinned at one entry and still load-bearing', () => {
@@ -553,11 +649,27 @@ describe('skill-clause-drift — the rollout corrections (the human is not "the 
     expect(ADDRESS_SUBJECTS).not.toContain(LONG_FORM_REL);
     const longForm = SOURCES.get(LONG_FORM_REL) as string;
     expect(longForm).toContain('"the Coordinator must decide"');
+    // Pinned EXACTLY at one — not merely "at least one" (issue #600). The file
+    // is scoped to a single genuine citation; a second, uncited address
+    // anywhere in it must be caught rather than hidden behind a >0 floor. The
+    // negative control immediately below is what proves this bound is real.
     expect(
       coordinatorAddresses(longForm).length,
-      'the long form no longer quotes the shape this exemption exists to tolerate. ' +
-        'A guard-side exemption that covers nothing is a hole — delete the entry.',
-    ).toBeGreaterThan(0);
+      'the long form no longer quotes the shape this exemption exists to tolerate, or it has ' +
+        'grown a SECOND, uncited address the file-scoped exemption would wrongly swallow. ' +
+        'A guard-side exemption that covers nothing is a hole — delete the entry; one that ' +
+        'covers more than the single citation is a hole in the other direction.',
+    ).toBe(1);
+  });
+
+  it('negative control — a second address appended to the long form turns the exact-one assertion red', () => {
+    // The bound above is only meaningful if it can fail. Append a genuine,
+    // uncited address to the long form's own text and confirm the count moves
+    // from the pinned 1 to 2 — the shape that would make `.toBe(1)` above fail.
+    const longForm = SOURCES.get(LONG_FORM_REL) as string;
+    expect(coordinatorAddresses(longForm)).toHaveLength(1); // the baseline this control perturbs
+    const seeded = `${longForm}\nIf you are still unsure, ping the Coordinator.\n`;
+    expect(coordinatorAddresses(seeded)).toHaveLength(2);
   });
 
   it.each(ADDRESS_SUBJECTS)('%s does not address the human as the Coordinator', (rel) => {
@@ -655,12 +767,19 @@ describe('skill-clause-drift — the rollout corrections (the human is not "the 
     // seeded failure rather than a pre-existing one being re-observed.
     expect(coordinatorAddresses(shipped)).toEqual([]);
 
-    // The flag-question placeholder this sweep rewrote is the site that proves
-    // the vocabulary tradeoff is real rather than theoretical: `<Coordinator
-    // decision needed>` carries no article, so the attributive pattern — scoped
-    // to `the Coordinator('s) decision` on purpose — never reached it. It was
-    // rewritten by hand and stays outside what this predicate can hold.
-    expect(coordinatorAddresses('  --question "<Coordinator decision needed>" \\')).toEqual([]);
+    // The flag-question placeholder this sweep rewrote was the site that proved
+    // the vocabulary tradeoff real rather than theoretical: `<Coordinator
+    // decision needed>` carries no article, and the attributive pattern used to
+    // be scoped to `the Coordinator('s) decision` on purpose — an article-less
+    // predicate fired on a shipped sentence (wave-start's Common Mistakes
+    // bullet about automatic parking) with no in-scope fix available at the
+    // time. Issue #600 closes the gap: that sentence is reworded in the same
+    // diff ("no decision by the Coordinator behind it" — the adjacency the
+    // pattern keys on is gone, the meaning is not), so the article can now be
+    // made optional with nothing left in the shipped corpus for it to
+    // wrongly catch. The negative control this documents: the guard used to
+    // assert ZERO hits on the article-less form; it now asserts ONE.
+    expect(coordinatorAddresses('  --question "<Coordinator decision needed>" \\')).toHaveLength(1);
     expect(coordinatorAddresses('  --question "<the Coordinator decision needed>" \\')).toHaveLength(1);
     expect(shipped).not.toContain('<Coordinator decision needed>');
   });
