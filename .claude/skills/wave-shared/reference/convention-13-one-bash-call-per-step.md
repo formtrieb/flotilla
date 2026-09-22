@@ -26,7 +26,7 @@ Refused/accepted command shapes, cited by name from `workflow-driver.md`'s brief
 
 **3. Heredoc commit message** — a genuine fusion problem, confirming the original name: stage and commit as two separate calls — the code pair and reproduction detail are in the evidence sidecar.
 
-**4. Fused directory-change-plus-test-runner** — accepted, not refused: mechanism (a) does not fire on every fused shape it could in principle apply to, so read the per-subcommand rule above as what mechanism (a) actually tests, not "any fusion prompts" — detail in the evidence sidecar.
+**4. Fused directory-change-plus-test-runner** — accepted, not refused: mechanism (a) does not fire on every fused shape it could in principle apply to, so read the per-subcommand rule above as what mechanism (a) actually tests, not "any fusion prompts" — and two later occurrences show "accepted" silently validating the wrong checkout, not only skipping a dialog — detail in the evidence sidecar.
 
 **5. `for`/`do`/`done` loop** — refused in 2026-08-09 whenever the loop body referenced the loop variable, which is why it was filed as entry 1's `$VAR` discriminator rather than a new one; **re-run 2026-09-22 and it no longer reproduces** either, both the one-iteration and the three-iteration form running clean, exactly as entry 1's lapse predicts. Both measurements are in the evidence sidecar.
 
@@ -85,4 +85,4 @@ Most tools have such a flag (`--prefix`, `-C`, `--root`, `--cwd`, `--project`, `
 
 ### Live occurrences (evidence)
 
-The wave that turned a one-brief aside into this convention, the cwd-reset reproduction, the capture-guard collision that grew the Catalog's entry 1 to five stations, the two further shapes the Catalog gained after it, and the 2026-09-22 re-measurement that retired two of them — all in the evidence sidecar.
+The wave that turned a one-brief aside into this convention, the cwd-reset reproduction, the capture-guard collision that grew the Catalog's entry 1 to five stations, the two further shapes the Catalog gained after it, the 2026-09-22 re-measurement that retired two of them, two later Entry-4 occurrences that validated the wrong checkout silently, and an open question on whether this clause has earned a structural rung — all in the evidence sidecar.

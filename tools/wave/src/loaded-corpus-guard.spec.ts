@@ -276,7 +276,27 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: **RAISED by the row that rebuilds `conv12-guard.cjs`'s
+ * Why this number: **RAISED by the row that catalogues two live occurrences of
+ * a brief clause reaching its limit** (issue #917), in the diff that causes the
+ * growth. Its only standing-load edits are two short additions to
+ * `reference/convention-13-one-bash-call-per-step.md`: the Catalog's entry 4
+ * line gains a clause noting that two later occurrences show "accepted"
+ * silently validating the wrong checkout rather than only skipping a dialog,
+ * and the closing "Live occurrences" pointer sentence gains the same two
+ * occurrences plus a pointer to an open question the row leaves unresolved.
+ * Every occurrence's own detail — both Convention 13 entries, the new
+ * Convention 8 guard-collision entry, and the open-question section itself —
+ * went to the `evidence/` siblings, the class no run reads and neither pinned
+ * population counts.
+ *
+ * At this row's anchor commit `7d603e59f3bb559649eed5d40bc8ffc7ee4bad94` the
+ * class measured **160,919 B** over 18 files — 81 B under the previous
+ * 161,000 B ceiling. This row's edit adds **257 B**, landing the class at
+ * **161,176 B** over the same 18 files, so the ceiling moves to that sum
+ * rounded UP to the next full KB (1 KB = 1000 B): **162,000 B**. The 824 B of
+ * headroom that leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 161,000 B — **RAISED by the row that rebuilds `conv12-guard.cjs`'s
  * scanner and gives it ADR-0052's third answer kind** (flotilla#710), in the
  * diff that causes the growth. The hook's observable behaviour changed in a way
  * an operator meets mid-wave and cannot infer: it now has an **Abstention** —
@@ -291,7 +311,7 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * reads, which is why the standing load pays a paragraph and not the several KB
  * the record itself costs.
  *
- * At this row's anchor commit `65108c75fdac708f538709be2828aa3884fec41f` the
+ * At that row's anchor commit `65108c75fdac708f538709be2828aa3884fec41f` the
  * class measured **159,926 B** over 18 files — 74 B under the previous 160,000 B
  * ceiling. This row's single `reference/convention-12-no-command-in-a-shell-variable.md`
  * edit lands it at **160,955 B** over the same 18 files, so the ceiling moves to
@@ -346,7 +366,7 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * rounded up the same way. Lowering a ceiling is still free: the next ratchet row
  * takes this back down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 161_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
@@ -369,6 +389,17 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 161_000;
  * raised: `throwaway-consumer.md` is not a member of that population (only
  * `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are), so that class
  * stays at 160,919 B against its unchanged 161,000 B ceiling.
+ *
+ * **UNCHANGED by the brief-clause-occurrences row (issue #917), which spent
+ * 257 B of this headroom** on the same two
+ * `reference/convention-13-one-bash-call-per-step.md` additions that raise
+ * the shared standing load above: the population lands
+ * at **1,229,353 B** over the same 57 files, and 1,229,353 B rounded UP to
+ * the next full KB is 1,230,000 B — this constant already. A raise here would
+ * be a pre-bought one, the thing the diff-twin duty exists to make visible.
+ * The row's other three edits — the Convention 8 evidence addition and the
+ * two Convention 13 evidence additions — are `evidence/` files, excluded from
+ * this population by definition, so none of their bytes are priced here.
  *
  * Previously: 1,229,000 B — **RAISED by the same `conv12-guard` scanner row
  * that raises the constant above** (flotilla#710), in the diff that causes the
