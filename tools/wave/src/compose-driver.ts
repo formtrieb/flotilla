@@ -1020,6 +1020,18 @@ export const COMPOSE_DRIVER_CONTRACT: VerbContract = defineVerb({
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
   outputNote: 'a single JSON receipt on stdout; the driver script is written to --out',
+  // Issue #913. Read off the `printJson` call at the end of `runComposeDriver`,
+  // which builds the receipt as an object literal — every key below is
+  // unconditional, so the printed shape is the literal's key order verbatim.
+  // The failure path prints NO JSON at all (an `error:` line on stderr, exit 1),
+  // which is why the clause states one shape and not two.
+  json: {
+    shape:
+      '{ ok, verb, out, scriptBytes, template, templateBytes, wave, anchor, ' +
+      'reviewerAgent, reviewerAgentForm, pluginName, waveCli, scribeModel, ' +
+      'rows: [ { id, slug, branch, model, iteration, risk, worker, scopeGrants, depsSetupSource } ] }',
+    trail: 'scribeModel is null when this consumer states none; a failure prints no JSON',
+  },
 });
 
 /**

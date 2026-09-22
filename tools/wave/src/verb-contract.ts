@@ -245,15 +245,43 @@ export interface VerbForm {
 }
 
 /**
- * The `--json:` clause of a verb's section, as declared parts rather than as a
+ * The SHAPE clause of a verb's section, as declared parts rather than as a
  * sentence (ADR-0051 decision 7 gave `--json` its meaning; this states the
- * SHAPE it answers with where the verb has one).
+ * shape that answer carries).
  *
  * Rendered as `  <label>: <lead> — <shape> — <trail>`, dropping every part the
  * verb does not declare, then the continuation lines verbatim.
+ *
+ * ## One field, two headings — and why it is one field (issue #913)
+ *
+ * The question "what shape does this verb's JSON have?" has ONE answer per
+ * verb, so it has one declaration site, whatever the verb's {@link
+ * OutputClass}. What differs is only the HEADING it renders under, and the
+ * renderer derives that from the output class rather than asking each verb to
+ * repeat it:
+ *
+ *   - a `prose` / `silent-write` / `product` verb prints JSON only when asked,
+ *     so its clause is headed `--json:` — the flag IS the subject;
+ *   - a `json` verb's whole stdout is already that JSON, so its clause is
+ *     headed `shape:` — there is no flag to explain, only a shape to state.
+ *
+ * Before this, a `json` verb could carry `output: 'json'` and stop, and every
+ * one but `catalog` did. An undeclared output shape is what let two shipped
+ * reference documents describe `merge-order`'s output as an array of branch
+ * STRINGS when it prints an array of OBJECTS: nothing rendered the real shape
+ * anywhere a reader would meet it, so the disagreement had nowhere to surface.
+ * `verb-contract-drift.spec.ts` now fails a `json` verb that declares no
+ * `shape`.
  */
 export interface JsonNote {
-  /** The clause label. Defaults to `--json`; the write receipts say `--json receipt`. */
+  /**
+   * The clause label. Defaults to `shape` on an `output: 'json'` verb and to
+   * `--json` on every other class; the write receipts say `--json receipt`.
+   *
+   * Declared only to OVERRIDE that default — the class already decides it, and
+   * a per-verb repetition of what the class says is the second copy this
+   * module exists to avoid.
+   */
   readonly label?: string;
   /** Prose BEFORE the shape (`one receipt on stdout, after the write lands`). */
   readonly lead?: string;
@@ -314,7 +342,16 @@ export interface VerbContract {
   readonly notes?: readonly string[];
   /** What follows `output: `; an array states the continuation lines too. */
   readonly outputNote?: string | readonly string[];
-  /** The `--json:` clause, where the verb has one. */
+  /**
+   * The shape clause — the `--json:` clause on a verb that answers JSON only
+   * when asked, and the `shape:` clause on a verb whose whole stdout is JSON.
+   *
+   * REQUIRED, by drift spec rather than by type, on every `output: 'json'`
+   * verb, and its `shape` must be declared there (issue #913). The type keeps
+   * it optional because the three other output classes genuinely may have
+   * nothing to say — a `silent-write` op without a receipt, a `product` verb
+   * whose stdout is the artifact.
+   */
   readonly json?: JsonNote;
 }
 
@@ -716,7 +753,7 @@ export function printVerbHelp(contract: VerbContract): number {
 // omission class there; a verb's OWN section — the text `--help` prints and
 // every refusal reprints — stayed 331 lines of declared prose held to the
 // parser by a guard rather than by construction. This is the other half: the
-// signature line, the `output:` line and the `--json:` clause of every verb and
+// signature line, the `output:` line and the shape clause of every verb and
 // every group op are BUILT from the declaration, so a flag the parser reads
 // cannot be missing from `--help` any more than it can be missing from the
 // roster. The guard row 758 installed stays, as the regression net it now is.
@@ -926,12 +963,21 @@ export function renderInvocations(
   );
 }
 
-/** The `--json:` clause, as lines — the declared parts, joined by em-dashes. */
-function renderJsonNote(json: JsonNote): string[] {
+/**
+ * The shape clause, as lines — the declared parts, joined by em-dashes.
+ *
+ * The heading comes from the OUTPUT CLASS, not from the verb (issue #913): a
+ * verb whose whole stdout is JSON has no flag to explain, so its clause reads
+ * `shape:`; every other class answers JSON only on request, so its clause
+ * reads `--json:`. A verb overrides that with {@link JsonNote.label} — the
+ * write receipts do, to say `--json receipt`.
+ */
+function renderJsonNote(json: JsonNote, output: OutputClass): string[] {
   const body = [json.lead, json.shape, json.trail]
     .filter((part): part is string => part !== undefined)
     .join(' — ');
-  return [`  ${json.label ?? '--json'}: ${body}`, ...(json.continuation ?? [])];
+  const label = json.label ?? (output === 'json' ? 'shape' : '--json');
+  return [`  ${label}: ${body}`, ...(json.continuation ?? [])];
 }
 
 /**
@@ -940,7 +986,8 @@ function renderJsonNote(json: JsonNote): string[] {
  * missing-argument branch prints.
  *
  * Shape, in order: the invocation line(s), the verb's declared prose, the
- * `output:` line, the `--json:` clause. A form's trailing `# …` comment is
+ * `output:` line, the shape clause (`shape:` on a `json` verb, `--json:`
+ * elsewhere — {@link JsonNote}). A form's trailing `# …` comment is
  * aligned across the invocation block, so two forms read as a table rather than
  * as two sentences that happen to be adjacent.
  */
@@ -966,7 +1013,7 @@ export function renderUsageSection(decl: VerbContractDeclaration): string[] {
       typeof decl.outputNote === 'string' ? [decl.outputNote] : decl.outputNote;
     lines.push(`output: ${first}`, ...rest);
   }
-  if (decl.json !== undefined) lines.push(...renderJsonNote(decl.json));
+  if (decl.json !== undefined) lines.push(...renderJsonNote(decl.json, decl.output));
   return lines;
 }
 

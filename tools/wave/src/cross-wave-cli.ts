@@ -57,6 +57,16 @@ export const CROSS_WAVE_CONTRACT: VerbContract = defineVerb({
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
   outputNote: 'JSON — the CrossWaveResult (check `warnings`; they are non-fatal)',
+  // Issue #913: the type NAME is not the shape. Read off `printJson(result)` —
+  // the whole `CrossWaveResult` — and confirmed by running the verb over two
+  // empty rosters, which printed the four always-present keys and no `warnings`.
+  json: {
+    shape:
+      '{ parallelSafe, crossWaveConflicts: [ { a, b, files: [ <path> ] } ], ' +
+      'intraWaveConflicts: [ <same cell> ], ' +
+      'intraWaveBlockedByPairs: [ { blocked, blocker, resolved } ], warnings?: [ <text> ] }',
+    trail: 'warnings appears ONLY when an unexpanded glob made parallelSafe unreliable',
+  },
 });
 
 /**

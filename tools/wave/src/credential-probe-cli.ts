@@ -128,6 +128,16 @@ export const CREDENTIAL_PROBE_CONTRACT: VerbContract = defineVerb({
     '  --config <path> is accepted and IGNORED (uniform-wrapper tolerance); this probe reads only the environment.',
   ],
   outputNote: 'JSON — the value-free CredentialProbeReport; never a secret',
+  // Issue #913. Read off the `printJson` call below, which spreads a `note` onto
+  // the report when the selection was empty, then confirmed by probing one
+  // deliberately unset variable. `command` is a POINTER (the configured lookup
+  // command) and never its output — the value-free guarantee holds key by key.
+  json: {
+    shape:
+      '{ ok, probed: [ { variable, commandVariable, source, command?, resolved, ' +
+      'failure?, message? } ], failed: [ <VAR> ], note? }',
+    trail: 'note appears only when the selection was empty; no key ever carries a secret',
+  },
 });
 
 /**

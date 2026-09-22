@@ -108,7 +108,17 @@ export const CONFLICT_MAP_CONTRACT: VerbContract = defineVerb({
     },
   ],
   notes: ['  paths and --id cannot be mixed in one call.'],
-  outputNote: 'JSON — { issues, cells }',
+  outputNote: 'JSON',
+  // Issue #913. The `output:` line above used to carry `{ issues, cells }` as
+  // prose, and it was WRONG BY OMISSION: `ConflictMap.warnings` is spread only
+  // when a glob could not be expanded, so a run that omits `--repo-root` prints
+  // a third key the advertised shape denied. Stated here, in full, in the one
+  // place the renderer reads — and read off the printer (`printJson(result)`,
+  // the whole `ConflictMap`), then confirmed by running the verb.
+  json: {
+    shape: '{ issues: [ <issue-id> ], cells: [ { a, b, files: [ <path> ] } ], warnings?: [ <text> ] }',
+    trail: 'warnings appears ONLY when an unexpanded glob made the map incomplete — read it',
+  },
 });
 
 /**

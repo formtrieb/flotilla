@@ -169,6 +169,19 @@ interface WriteSidecarJsonResult {
 }
 
 /**
+ * The `outcome` field both routing verbs print — the state machine's
+ * {@link Outcome} union, as the shape clause states it (issue #913).
+ *
+ * `type` is the discriminant and the other keys follow from it, so a flat key
+ * list would be a lie about three of the four members. Declared once because
+ * both verbs print the identical field: `route-verdict` and `route-outcome`
+ * differ in how they DERIVE the event, never in what `transition` hands back.
+ */
+const ROUTE_OUTCOME_SHAPE =
+  '{ type: <transition>, nextState } | { type: <stop>, reason, severity } | ' +
+  '{ type: <warn>, reason } | { type: <noop> }';
+
+/**
  * The six verbs this module runs, each declaring its own contract beside its own
  * runner (ADR-0051 decision 2).
  *
@@ -210,7 +223,16 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       "  --ruling <text> is the Operator's stated reason for a Reviewer-only round ABOVE the",
       '  re-dispatch cap, and the only thing that admits an iteration above it.',
     ],
-    outputNote: 'JSON — { event, outcome } (+ `ruled` on an above-cap ruled round)',
+    outputNote: 'JSON',
+    // Issue #913. The `output:` line used to carry this as prose and stopped at
+    // the top level, so `outcome` — a four-member discriminated union, and the
+    // only field a caller branches on — had no stated shape at all. Read off the
+    // `printJson` call in `runRouteVerdict`, then confirmed by running all three
+    // branches (transition, noop + ruled, and a stop).
+    json: {
+      shape: `{ event, outcome: ${ROUTE_OUTCOME_SHAPE}, ruled?: { cell, ruling } }`,
+      trail: 'ruled rides along ONLY on an above-cap Operator-ruled round',
+    },
   }),
   'route-outcome': defineVerb({
     verb: 'route-outcome',
@@ -220,7 +242,8 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     ],
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
-    outputNote: 'JSON — { event, outcome }',
+    outputNote: 'JSON',
+    json: { shape: `{ event, outcome: ${ROUTE_OUTCOME_SHAPE} }` },
   }),
   'validate-report': defineVerb({
     verb: 'validate-report',

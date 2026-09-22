@@ -330,6 +330,38 @@ const HOST_PR_COMMON_FLAGS = [
   { canonical: '--config', value: 'one', valueType: 'path' },
 ] as const satisfies readonly VerbContract['flags'][number][];
 
+// ─── What each verb's single JSON object IS (issue #913) ─────────────────────
+//
+// `output: 'json'` on all five said the stdout was JSON and stopped there. Each
+// shape below was read off this module's own `printJson` call sites — never off
+// a TypeScript return type, because every one of them is an object literal with
+// conditional spreads over a discriminated union, so the keys a run carries and
+// the keys an interface declares are different lists.
+//
+// Two facts hold across all five and are therefore stated once, here, rather
+// than five times in five clauses:
+//
+//   - **`ok`, `verb` and `host` open every answer**, success and failure alike;
+//     a failure adds `error` and (on the not-implemented path) `code`. The
+//     failure envelope is `{ ok: false, verb, host, branch?, error }`, and the
+//     per-verb clauses below state the SUCCESS shape.
+//   - **The PR reference is doubled**, by `alignedPrRef` (FOR-54): a known url
+//     prints as BOTH `url` and `prUrl`, a known number as BOTH `number` and
+//     `prNumber`, and an unknown one prints neither key. That is why the
+//     clauses say `url+prUrl?` rather than naming one spelling.
+
+/** The PR-reference pair every landing verb carries when the host knows it. */
+const HOST_PR_REF_SHAPE = 'url+prUrl?, number+prNumber?';
+
+/**
+ * The `arm` / `merge` success shape — the {@link LandingOutcome} union spread
+ * flat onto the envelope, so `outcome` is the discriminant and the keys after
+ * it follow from it.
+ */
+const HOST_PR_LANDING_SHAPE =
+  `{ ok, verb, host, branch, method, outcome, reason, ${HOST_PR_REF_SHAPE}, ` +
+  'sha?, branchDeletion?: { branch, deleted, error? } }';
+
 /**
  * Every host-pr verb's Verb contract (ADR-0051 decision 2), EXTENDING the
  * per-verb usage table this file already carried (issue #505) rather than
@@ -373,6 +405,16 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  a long quoted argument is a quoting hazard everywhere. The close phrase must own its own line in the file.',
     ],
     outputNote: 'a single JSON object on stdout',
+    json: {
+      shape: `{ ok, verb, host, branch, outcome, updated?, ${HOST_PR_REF_SHAPE} }`,
+      trail: 'outcome is created | reused | create-failed | reuse-refused',
+      continuation: [
+        '         `updated` rides only on a REUSE, and says whether the live title/body were re-written.',
+        '         The two failing outcomes exit 1 and add `error`; create-failed adds `fallbackPrefillUrl`,',
+        '         reuse-refused adds `reason` and re-states `updated: false` — it wrote NOTHING.',
+        '         This verb never carries a PR number, even on a reuse where it knows one.',
+      ],
+    },
   }),
   arm: defineVerb({
     verb: 'host-pr arm',
@@ -389,6 +431,15 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
     ],
     outputNote: 'a single JSON object on stdout',
+    json: {
+      shape: HOST_PR_LANDING_SHAPE,
+      trail: 'outcome is merged | armed | already-merged | refused | no-pr',
+      continuation: [
+        '         `sha` rides only on `merged`; `branchDeletion` only where --delete-branch was passed AND the',
+        '         path merged immediately. A `no-pr` outcome carries no PR reference at all. ok is true for',
+        '         merged | armed | already-merged, false otherwise — and the exit code mirrors it.',
+      ],
+    },
   }),
   merge: defineVerb({
     verb: 'host-pr merge',
@@ -405,6 +456,10 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  the PR head branch after a successful merge (best-effort).',
     ],
     outputNote: 'a single JSON object on stdout',
+    json: {
+      shape: HOST_PR_LANDING_SHAPE,
+      trail: 'the same shape `arm` prints — `armed` is the one outcome this verb never returns',
+    },
   }),
   status: defineVerb({
     verb: 'host-pr status',
@@ -428,6 +483,17 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  state none and wherever the host does not surface them, and never an empty string.',
     ],
     outputNote: 'a single JSON object on stdout',
+    json: {
+      shape:
+        `{ ok, verb, host, branch, state, ${HOST_PR_REF_SHAPE}, ` +
+        'mergeability?, headSha?, baseRef?, title?, body? }',
+      trail: 'state is open | merged | closed-unmerged | none',
+      continuation: [
+        '         Every key after `state` is present only where the host surfaced it — `state: none` carries',
+        '         none of them. `title`/`body` are two-valued: an empty description is an ABSENT key, never `""`.',
+        '         `state: none` is an ANSWER and exits 0; the caller reads `state`, not the exit code.',
+      ],
+    },
   }),
   preflight: defineVerb({
     verb: 'host-pr preflight',
@@ -443,6 +509,14 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  scoped away from Pull requests. Store-blind — identical on every store kind.',
     ],
     outputNote: 'a single JSON object on stdout',
+    json: {
+      shape: '{ ok, verb, host, checks: [ { name, status, detail } ] }',
+      trail: 'no branch key — this is a repo-level probe',
+      continuation: [
+        '         `ok` is true iff no check is `fail`, and the exit code mirrors it. The two advisory checks',
+        '         (create-credentials, pr-create-token) never grade `fail`, so read `checks` and not `$?` for them.',
+      ],
+    },
   }),
 };
 

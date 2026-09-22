@@ -1185,6 +1185,18 @@ export const STORE_PREFLIGHT_CONTRACT: VerbContract = defineVerb({
     '  `host-pr preflight` — it is store-blind and reports on every store kind.',
   ],
   outputNote: 'JSON — the StorePreflightReport',
+  // Issue #913. Read off `printJson(report)` / {@link withLabelCreation}, then
+  // confirmed by running the verb against a markdown store. `goalBinding` is
+  // declared OPTIONAL on the type and is always present in what
+  // {@link preflightStore} returns — the shape below says `?` because that is
+  // what a consumer's own hand-built report may omit, and the printed form of
+  // THIS verb always carries it.
+  json: {
+    shape:
+      '{ ok, storeKind, checks: [ { name, status, detail } ], ' +
+      'goalBinding?: { status, container?, failure?, configured?, detail } }',
+    trail: '--create-missing-labels changes no key — it rewrites the state-catalog check\'s detail',
+  },
 });
 
 /**

@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { runHostPr } from './host-pr-cli';
+import { runHostPr, HOST_PR_CONTRACTS } from './host-pr-cli';
 import {
   AutoMergeUnavailableError,
   type LandingHost,
@@ -2200,5 +2200,122 @@ describe('host-pr preflight — the pr-create-token probe (the GitHub create rig
       'create-credentials',
     ]);
     expect(seen).toEqual([]);
+  });
+});
+
+// ─── The declared shape against the EMITTED one (issue #913) ────────────────
+//
+// `verb-contract-drift.spec.ts` holds the structural half: a `json`-class verb
+// declares a shape, and the renderer prints it. That check cannot see whether
+// the shape is TRUE — it compares a string against nothing. This block closes
+// the other half for this group, because these five verbs are the ones a
+// reviewer cannot confirm by running the CLI: every path needs a code host and
+// a credential, so the emitted shape is only observable from a spec that
+// injects both.
+//
+// The comparison runs in ONE direction on purpose: every key the verb PRINTS
+// must be named in the declared shape. The reverse ("every declared key is
+// printed") is deliberately not asserted — most of these shapes are unions
+// across outcomes and half their keys are conditional by design, so a run that
+// prints five of nine keys is the contract working, not drifting. What must
+// never happen is the emitter growing a key the shape does not mention: that
+// is the omission issue #913 closes, one layer out.
+
+/**
+ * The keys `emitted` carries that `verb`'s declared shape does not name.
+ *
+ * A word-boundary search rather than a parse, and the shallowness is the point:
+ * the shape is documentation notation, not a schema, and a parser here would
+ * be a second grammar to keep in step with the receipt clauses that shipped
+ * without one. What it catches is the whole drift class — a key in the JSON
+ * that appears nowhere in the sentence describing that JSON.
+ */
+function keysNotInShape(verb: keyof typeof HOST_PR_CONTRACTS, emitted: object): string[] {
+  const shape = HOST_PR_CONTRACTS[verb].json?.shape ?? '';
+  return Object.keys(emitted).filter((key) => !new RegExp(`\\b${key}\\b`).test(shape));
+}
+
+describe('host-pr — every emitted key is named in the verb\'s declared shape', () => {
+  it('status: a live open PR with title and body prints nothing the shape omits', async () => {
+    const { host } = fakeHost({
+      status: {
+        state: 'open',
+        number: 42,
+        url: 'https://github.com/example-org/example-repo/pull/42',
+        mergeability: 'clean',
+        headSha: 'deadbee',
+        baseRef: 'main',
+        title: 'T',
+        body: 'B',
+      },
+    });
+    expect(await runHostPr(['status', '--branch', 'b', '--remote', GITHUB_REMOTE], host)).toBe(0);
+    expect(keysNotInShape('status', out())).toEqual([]);
+  });
+
+  it('arm: an immediate merge with a branch deletion prints nothing the shape omits', async () => {
+    const { host } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(
+      ['arm', '--branch', 'b', '--delete-branch', '--remote', GITHUB_REMOTE],
+      host,
+    );
+    expect(code).toBe(0);
+    // The richest arm payload: outcome + reason + sha + branchDeletion + both
+    // spellings of the PR reference.
+    expect(out()).toMatchObject({ outcome: 'merged' });
+    expect(keysNotInShape('arm', out())).toEqual([]);
+  });
+
+  it('merge: the same payload through the merge-now path', async () => {
+    const { host } = fakeHost({ status: openPr('clean') });
+    expect(await runHostPr(['merge', '--branch', 'b', '--remote', GITHUB_REMOTE], host)).toBe(0);
+    expect(keysNotInShape('merge', out())).toEqual([]);
+  });
+
+  it('create: both the reuse and the create outcome print nothing the shape omits', async () => {
+    const reuse = fakeHttp({ get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7 }] }) });
+    expect(
+      await runHostPr(
+        ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
+        undefined,
+        { http: reuse.http, env: ENV },
+      ),
+    ).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'reused' });
+    expect(keysNotInShape('create', out())).toEqual([]);
+
+    stdout = '';
+    const fresh = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: () => ({ status: 201, json: { html_url: NEW_PR } }),
+    });
+    expect(
+      await runHostPr(
+        ['create', '--branch', 'wave/EX-1-x', '--title', 'T', '--body', 'Fixes EX-1', '--remote', GITHUB_REMOTE],
+        undefined,
+        { http: fresh.http, env: ENV },
+      ),
+    ).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'created' });
+    expect(keysNotInShape('create', out())).toEqual([]);
+  });
+
+  it('preflight: the repo-level report prints nothing the shape omits', async () => {
+    expect(
+      await runHostPr(['preflight', '--remote', GITHUB_REMOTE], undefined, {
+        env: NO_CREDS_ENV,
+        posture: fakePosture(),
+      }),
+    ).toBe(0);
+    expect(keysNotInShape('preflight', out())).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — the comparison fires on a key the shape does not name', () => {
+    // Without this the five assertions above are compatible with a comparison
+    // that can only return []. A key no host-pr shape mentions is fed through
+    // the same function, and it comes back named.
+    expect(keysNotInShape('status', { ok: true, thisKeyIsNowhereInAnyShape: 1 })).toEqual([
+      'thisKeyIsNowhereInAnyShape',
+    ]);
   });
 });

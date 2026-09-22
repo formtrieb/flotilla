@@ -308,6 +308,17 @@ export const CLOSE_ROW_CONTRACT: VerbContract = defineVerb({
   ],
   output: 'json',
   outputNote: 'a single JSON result on stdout',
+  // Issue #913. Read off the `printJson` call in `runCloseRow` — an object
+  // literal with no conditional spreads, so every key below is always present.
+  // A domain failure prints no JSON (an `error:` line on stderr, exit 1), so
+  // this is the verb's one printed shape.
+  json: {
+    shape:
+      '{ ok, verb, id, prUrl, prUrlSource, acked: [ <ac-index> ], verdictIter, ' +
+      'corruptVerdicts, closing: { state, prUrl? }, ' +
+      'steps: [ { step, status, ...detail } ], wrote: { spine, tracker } }',
+    trail: 'closing.state still reading `open` is a documented, non-failing outcome',
+  },
 });
 
 /**

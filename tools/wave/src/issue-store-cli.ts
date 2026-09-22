@@ -260,6 +260,47 @@ function patchRequired(placeholder: string): FlagContract {
   return { canonical: '--patch', value: 'one', valueType: 'path', required: true, placeholder };
 }
 
+// ─── The READ ops' output shapes (issue #913) ────────────────────────────────
+//
+// Every `json`-class op here prints `printJson(await store.<read>(…))` — the
+// store's answer, serialized whole and untransformed. So the printed shape is
+// the contract TYPE's shape minus every key whose value came back `undefined`,
+// which is the one thing the type cannot say and the one thing a caller trips
+// over. Each shape below was read off `contract.ts` / `adapters/issue-store.ts`
+// and then CONFIRMED by running the op against a MarkdownFs store, and the
+// optionality marks below are what the run printed, not what the interface
+// declares.
+//
+// One disagreement found and resolved in favour of the printed form: the op
+// table used to name the TYPE (`the IssueView, as JSON`), which reads as a
+// shape and is not one — `IssueView` declares five optional keys, and a freshly
+// created issue prints exactly one of them.
+
+/**
+ * `IssueView`, as an op prints it. `unblocks`, `parent`, `closedBy`,
+ * `estimatedWallclock` and `trackerUpdatedAt` are the five optional keys; a
+ * store leaves absent whatever it has no fact for, so all five are marked.
+ */
+const ISSUE_VIEW_SHAPE =
+  '{ id, risk, worker, files: [ <glob> ], blockedBy: <none> | [ { slug?, issue } ], ' +
+  'acceptanceCriteria: [ { text, checked } ], status, unblocks?, parent?, closedBy?, ' +
+  'estimatedWallclock?, trackerUpdatedAt? }';
+
+/** `DocumentView`, as `readDocument` / `listDocuments` print it. */
+const DOCUMENT_VIEW_SHAPE = '{ id, title, body }';
+
+/** `ClosingState` — the closing probe's four-outcome answer. */
+const CLOSING_STATE_SHAPE =
+  '{ state: <open|merged|closed-unmerged|closed-unknown>, prUrl? }';
+
+/** `GoalView` — the container, as the Goal facet reads it back. */
+const GOAL_VIEW_SHAPE = '{ id, title, description, container, memberIds: [ <memberId> ] }';
+
+/** One `GoalMemberReading` of the derived frontier. */
+const GOAL_READING_SHAPE =
+  '{ id, state: <done|in-motion|blocked|actionable|unready>, ' +
+  'unresolvedBlockers: [ <blocker> ], nativeState?, health? }';
+
 /**
  * One op's shape, minus the verb name (which {@link ISSUE_STORE_CONTRACTS}
  * derives from the table key, so the two can never disagree). `--config` is
@@ -318,9 +359,19 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
     ],
     outputNote: 'the opaque new id, as plain text (not JSON)',
   }),
-  read: issueStoreOp(['<id>'], 'json', [], { outputNote: 'the IssueView, as JSON' }),
+  read: issueStoreOp(['<id>'], 'json', [], {
+    outputNote: 'the IssueView, as JSON',
+    json: {
+      shape: ISSUE_VIEW_SHAPE,
+      trail: 'a key with no fact behind it is ABSENT, never null',
+    },
+  }),
   'parse-ref': issueStoreOp(['<id>'], 'json', [], {
-    outputNote: 'the IssueRef {slug?, issue}, as JSON',
+    outputNote: 'the IssueRef, as JSON',
+    json: {
+      shape: '{ slug?, issue }',
+      trail: 'slug is present only on a cross-slug ref; `issue` is a NUMBER',
+    },
   }),
   annotate: issueStoreOp(['<id>'], 'silent-write', [patchRequired('<AnnotatePatch.json>')], {
     notes: [
@@ -379,10 +430,20 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
         'the resulting ClosingState, as JSON — plus a stderr "STILL OPEN:" line',
         '  whenever the tracker still reports the issue open after recording the closing facts',
       ],
+      json: {
+        shape: CLOSING_STATE_SHAPE,
+        trail: 'a state still reading `open` is a documented, non-failing outcome',
+      },
     },
   ),
-  listOpen: issueStoreOp([], 'json', [], { outputNote: 'IssueView[], as JSON' }),
-  listClaimed: issueStoreOp([], 'json', [], { outputNote: 'IssueView[], as JSON' }),
+  listOpen: issueStoreOp([], 'json', [], {
+    outputNote: 'IssueView[], as JSON',
+    json: { shape: `[ ${ISSUE_VIEW_SHAPE} ]`, trail: 'an empty pool prints `[]`' },
+  }),
+  listClaimed: issueStoreOp([], 'json', [], {
+    outputNote: 'IssueView[], as JSON',
+    json: { shape: `[ ${ISSUE_VIEW_SHAPE} ]`, trail: 'an empty pool prints `[]`' },
+  }),
   publishDocument: issueStoreOp(
     [],
     'product',
@@ -397,10 +458,18 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
   ),
   readDocument: issueStoreOp(['<id>'], 'json', [], {
     outputNote: 'the DocumentView, as JSON',
+    json: { shape: DOCUMENT_VIEW_SHAPE },
   }),
-  listDocuments: issueStoreOp([], 'json', [], { outputNote: 'DocumentView[], as JSON' }),
+  listDocuments: issueStoreOp([], 'json', [], {
+    outputNote: 'DocumentView[], as JSON',
+    json: { shape: `[ ${DOCUMENT_VIEW_SHAPE} ]`, trail: 'no documents prints `[]`' },
+  }),
   'triage-read': issueStoreOp(['<id>'], 'json', [], {
     outputNote: 'the TriageView, as JSON',
+    json: {
+      shape: '{ id, title, body, state?, category?, comments: [ { body } ] }',
+      trail: 'body is representation-shaped — a markdown store\'s header lines are part of it',
+    },
   }),
   'triage-apply': issueStoreOp(
     ['<id>'],
@@ -465,6 +534,10 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
   }),
   'read-closing': issueStoreOp(['<id>'], 'json', [], {
     outputNote: 'the ClosingState, as JSON',
+    json: {
+      shape: CLOSING_STATE_SHAPE,
+      trail: '`closed-unknown` is "no PR evidence either way" — NEVER a rejection',
+    },
   }),
   'goal-create': issueStoreOp([], 'product', [inputRequired('<CreateGoalInput.json>')], {
     notes: [
@@ -475,9 +548,13 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
     outputNote: 'the opaque new goal id, as plain text (not JSON)',
   }),
   'goal-read': issueStoreOp(['<goalId>'], 'json', [], {
-    outputNote: 'the GoalView {id, title, description, container, memberIds}, as JSON',
+    outputNote: 'the GoalView, as JSON',
+    json: { shape: GOAL_VIEW_SHAPE },
   }),
-  'goal-list': issueStoreOp([], 'json', [], { outputNote: 'GoalView[], as JSON' }),
+  'goal-list': issueStoreOp([], 'json', [], {
+    outputNote: 'GoalView[], as JSON',
+    json: { shape: `[ ${GOAL_VIEW_SHAPE} ]`, trail: 'no goal in the container prints `[]`' },
+  }),
   'goal-assign': issueStoreOp(['<goalId>', '<memberId>'], 'silent-write', [], {
     notes: [
       "  <memberId>'s KIND follows the binding (ADR-0045): an issue id under",
@@ -507,6 +584,13 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
       '  (done | in-motion | actionable | blocked | unready), plus counts,',
       '  the open remainder, and `complete`. Read-only: it never closes the goal.',
     ],
+    json: {
+      shape:
+        `{ goalId, readings: [ ${GOAL_READING_SHAPE} ], ` +
+        'counts: { done, in-motion, blocked, actionable, unready }, ' +
+        'open: [ <same reading> ], complete }',
+      trail: 'every counts key is present, zeroes included; `open` is every reading that is not done',
+    },
   }),
   'goal-publish-update': issueStoreOp(['<goalId>'], 'json', [INPUT_OPTIONAL], {
     notes: [
@@ -522,6 +606,12 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
       'the GoalUpdateReceipt, as JSON — the update id and url, the exact',
       '  body published, and the frontier the anchor was derived from',
     ],
+    json: {
+      shape:
+        '{ goalId, container, updateId, url?, body, health?, ' +
+        'frontier: { goalId, readings, counts, open, complete } }',
+      trail: 'health is present ONLY when one was actually SENT — never an echo of the input',
+    },
   }),
 };
 

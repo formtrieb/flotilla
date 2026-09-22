@@ -458,6 +458,22 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
     '  re-dispatch cap, and the only thing that admits an --iter above it.',
   ],
   outputNote: 'a single JSON result on stdout',
+  // Issue #913. THREE shapes, one per `disposition`, read off the three
+  // `printJson` calls (`finishStop`, `finishRedispatch`, and the approved
+  // terminator). They share an envelope and diverge after it, so the clause
+  // states the envelope and the continuation lines state each branch — a single
+  // flat key list would advertise `prUrl` on a STOP that never carries one.
+  json: {
+    shape:
+      '{ ok, verb, id, iter, disposition, steps: [ { step, status, ...detail } ], ' +
+      'wrote: { spine, host, tracker }, ... }',
+    trail: 'the rest follows the disposition',
+    continuation: [
+      '         pr-created adds:   branch, prUrl, title, titleSource, ruled?, reportOutcome',
+      '         re-dispatched adds: reason, nextIteration, next: [ <step> ]',
+      '         stop adds:         stop: { phase, reason, severity }, ruled?, next: <text>',
+    ],
+  },
 });
 
 /**
