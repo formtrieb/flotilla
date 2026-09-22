@@ -39,6 +39,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { Script } from 'node:vm';
 import type { IssueStore } from './adapters/issue-store';
 import type { IssueView, TriageView } from './contract';
 import { flag, printJson } from './cli-utils';
@@ -909,6 +910,88 @@ export function composeDriverScript(input: ComposeDriverScriptInput): string {
   );
 }
 
+// ─── The parse gate ───────────────────────────────────────────────────────────
+
+/**
+ * The harness's own frame around a driver script, as SOURCE TEXT (issue #868).
+ *
+ * The harness does not `import` the composed file: it strips the module frame
+ * the `export` line belongs to and evaluates the rest as a function body with
+ * the four Workflow primitives bound as parameters — which is why a driver may
+ * carry a top-level `await` and a top-level `return` and still be valid where
+ * it runs. Both halves of that frame are load-bearing for a PARSE: the raw file
+ * is not valid script source at all (`export` is a module-only form, and a
+ * top-level `return` is a syntax error outside a function body), so compiling
+ * the file as-written would answer a question nobody asked.
+ *
+ * Spelled as two constants rather than one template literal so
+ * {@link HARNESS_FRAME_HEAD_LINES} can be COUNTED off the head instead of
+ * hand-written: the count is the `lineOffset` that makes a reported line number
+ * a line of the SCRIPT rather than a line of the wrapper, and a hand-written
+ * `-2` would be a second copy of a fact the string already states.
+ */
+const HARNESS_FRAME_HEAD = '(function (agent, pipeline, phase, log) {\nreturn (async () => {\n';
+const HARNESS_FRAME_TAIL = '\n})()\n})';
+
+/** Lines {@link HARNESS_FRAME_HEAD} adds above the script's own first line. */
+const HARNESS_FRAME_HEAD_LINES = HARNESS_FRAME_HEAD.split('\n').length - 1;
+
+/** A `SyntaxError` the parse gate caught, reduced to what a refusal has to say. */
+interface DriverScriptParseFailure {
+  /** The `SyntaxError`'s own message, verbatim. */
+  message: string;
+  /** The script line V8 could not get past, or `null` when it did not say. */
+  line: number | null;
+}
+
+/**
+ * The line a V8 `SyntaxError` names, read off the decorated stack `node:vm`
+ * produces — `<filename>:<line>` as its FIRST line, then the offending source
+ * line and a caret.
+ *
+ * There is no public property to read this from: `err.lineNumber` is undefined
+ * for a `vm` compile failure (measured 2026-09-22), and the decorated stack is
+ * the only place the position surfaces. So the extraction is deliberately
+ * total-or-`null` rather than best-effort-plus-a-guess: a stack that does not
+ * end its first line in `:<digits>` yields `null`, the refusal below simply
+ * omits the position, and nothing invents one.
+ */
+function syntaxErrorLine(err: Error): number | null {
+  const first = String(err.stack ?? '').split('\n')[0]?.trim() ?? '';
+  const m = /:(\d+)$/.exec(first);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Compile a driver script in {@link HARNESS_FRAME_HEAD}'s frame and answer the
+ * `SyntaxError` it could not get past, or `null` when it parses.
+ *
+ * **Compiled, never run.** `new Script` parses its source and stops there —
+ * there is no context, no `runInContext`, and not one statement of the driver
+ * executes. That is the whole point: the composed script's own effects are a
+ * fan-out of dispatched agents, and the question here is only whether the
+ * harness will be able to read it.
+ *
+ * `filename` is reported in the decorated stack, so the caller passes the path
+ * an operator would open.
+ */
+function driverScriptParseFailure(script: string, filename: string): DriverScriptParseFailure | null {
+  const body = script.replace(/^export const meta =/m, 'const meta =');
+  try {
+    new Script(HARNESS_FRAME_HEAD + body + HARNESS_FRAME_TAIL, {
+      filename,
+      lineOffset: -HARNESS_FRAME_HEAD_LINES,
+    });
+    return null;
+  } catch (err) {
+    const error = err as Error;
+    // A non-syntax throw is not this gate's finding to report — re-raise it and
+    // let the runner's own catch say what it was.
+    if (!(error instanceof SyntaxError) && error?.name !== 'SyntaxError') throw err;
+    return { message: error.message, line: syntaxErrorLine(error) };
+  }
+}
+
 // ─── The CLI runner ───────────────────────────────────────────────────────────
 
 /** The states a row must be in to be composed into this dispatch. */
@@ -1373,6 +1456,27 @@ export async function runComposeDriver(
       scribeModel,
       rows,
     });
+
+    // The parse gate (issue #868), and the reason it sits HERE — after the
+    // compose, before the first byte of I/O. The composer's other checks read
+    // the template's SHAPE (a placeholder line to fill, a balanced `ISSUES`
+    // array); none of them asks whether the result is JavaScript. A `--template`
+    // override that does not parse therefore composed clean, was written to disk
+    // under a receipt reading `ok: true`, and failed only when the harness tried
+    // to evaluate it — inside a dispatched wave, with no Coordinator watching.
+    // It is the unresolvable-anchor refusal's sibling: a compose-time STOP for a
+    // defect whose other discovery point is five hours in.
+    const parseFailure = driverScriptParseFailure(script, templatePath);
+    if (parseFailure !== null) {
+      throw new Error(
+        'compose-driver: the composed script does not parse, so nothing was written — ' +
+          `SyntaxError: ${parseFailure.message}` +
+          (parseFailure.line === null ? '' : ` (line ${parseFailure.line} of the composed script)`) +
+          `. The template is ${templatePath}; this composer fills only its six constants and its ` +
+          'ISSUES array, both JSON-encoded and neither able to break a parse, so a composed script ' +
+          'that does not parse is a template that does not parse. Fix the template, then re-compose.',
+      );
+    }
 
     const outAbs = isAbsolute(outPath) ? outPath : resolve(repoRoot, outPath);
     mkdirSync(dirname(outAbs), { recursive: true });
