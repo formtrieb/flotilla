@@ -1296,6 +1296,18 @@ function rosterLine(contract: VerbContract): string {
  * stop it scanning as columns, and `--help` is one keystroke away. The roster's
  * `# prints JSON` already says the class.
  *
+ * **That rule TRIMMED one roster line, and the trim is operator-visible.**
+ * `catalog` is the one `json`-class verb that already carried a clause before
+ * the rule existed, so its roster line lost it: it read `# prints JSON;
+ * --json: accepted and redundant — this verb has no second rendering — { verb,
+ * verbs: [ <VerbContract>, ... ] } — the contracts verbatim, never a
+ * hand-written projection of them`, and now reads `# prints JSON`. Measured,
+ * not inferred: the zero-argument roster is 85 lines before and after, and
+ * `catalog`'s is the ONLY line of the 85 that differs. Exempting it was
+ * considered and rejected — one verb keeping a clause the other 35 may not
+ * have would leave the roster inconsistent with its own stated rule, and that
+ * shape is still one `flotilla-engine catalog --help` away.
+ *
  * The lookup is by the clause's OWN heading rather than by a `--json` prefix,
  * and that precision is load-bearing: `catalog`'s prose mentions the flag, and
  * a prefix search pulled that sentence onto its roster line as though it were
