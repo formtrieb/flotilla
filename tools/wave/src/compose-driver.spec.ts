@@ -3524,8 +3524,11 @@ describe('compose-driver — the rendered Reviewer brief cites no policy clause 
 
   it("attributes the guard's live rejection of the value-free presence test to the Reviewer brief's OWN rule", async () => {
     const { reviewer } = await briefs();
-    // The sentence is still there — this row changed what it cites, not what it says.
-    expect(reviewer).toMatch(/exactly the command the guard has rejected outright, live, when a Worker ran it/);
+    // The sentence is still there — this row changed what it cites, not what it
+    // says. (Issue #933 later moved it to the PAST tense: the refusal it
+    // reports was retired by the 2026-09-22 re-measurement. Which rule it
+    // cites, the claim this block guards, did not move.)
+    expect(reviewer).toMatch(/the command the guard once rejected outright, live, when a Worker ran it/);
     // ...and it now points at the rule the Reviewer brief actually carries.
     expect(reviewer).toMatch(/\*\*ONE BASH CALL PER STEP\*\* rule directly above \(wave-shared Convention 13\)/);
     // The rule it names is genuinely in this brief, above that sentence.
@@ -3602,6 +3605,127 @@ describe("compose-driver — the RENDERED Worker brief carries Convention 13's f
     const worker = await workerBrief(cut);
     expect(worker).not.toContain(TRIGGER);
     expect(worker).not.toContain(REMEDY);
+  });
+});
+
+describe('compose-driver — the RENDERED briefs carry the re-measured variable-expansion reason, not the retired one (issue #933)', () => {
+  const rows = [row({ id: '42', slug: 'first' })];
+
+  /**
+   * Convention 13's Catalog entry 1 claimed a `$VAR` expansion was refused in
+   * ANY position from a worktree-isolated dispatch; the 2026-09-22
+   * re-measurement retired it (a `$VAR` expansion is not refused on its own in
+   * any position probed, and exactly one variable-bearing shape still is).
+   *
+   * These are the four wordings the asset carried as a CURRENT fact, and the
+   * wordings that replaced them — written as they read AFTER rendering, where
+   * the template's escaped backticks have become plain ones. That is the whole
+   * reason this block exists beside `skill-schema-drift.spec.ts`'s: a pin
+   * written against the TEMPLATE cannot catch a composition that mangles the
+   * passage on its way into the brief a live dispatch is handed.
+   */
+  const SITES: ReadonlyArray<{ role: 'worker' | 'reviewer'; site: string; retired: string; current: string }> = [
+    {
+      role: 'worker',
+      site: 'policy clause 11',
+      retired: '**The discriminator is the `$VAR` expansion, not the punctuation**',
+      current:
+        '**a 2026-09-22 re-measurement from a worktree-isolated dispatch RETIRED that claim: ' +
+        'a `$VAR` expansion is NOT refused on its own, in any position probed**',
+    },
+    {
+      role: 'worker',
+      site: 'Termination step 4 re-query rationale',
+      retired:
+        'The discriminator is not fusion and not the control structure: it is the ' +
+        '**`$VAR` expansion**, refused in any position, in any call',
+      current:
+        '**A 2026-09-22 re-measurement, re-run live from a worktree-isolated dispatch, ' +
+        'RETIRED those refusals**',
+    },
+    {
+      role: 'reviewer',
+      site: 'ONE BASH CALL PER STEP paragraph',
+      retired: '`case`/`esac` has been observed refused standing entirely alone',
+      current: '`case`/`esac` was once observed refused standing entirely alone',
+    },
+    {
+      role: 'reviewer',
+      site: 'SECRET-SAFE paragraph',
+      retired: 'is exactly the command the guard has rejected outright, live, when a Worker ran it',
+      current: 'is the command the guard once rejected outright, live, when a Worker ran it',
+    },
+  ];
+
+  /** The two RENDERED briefs from one composed run — not the template's text. */
+  async function briefs(template: string): Promise<Record<'worker' | 'reviewer', string>> {
+    const { calls } = await runComposedDriver(
+      composeDriverScript({ template, ...CONSTANTS, rows }),
+    );
+    const at = (label: string) => calls.find((c) => String(c.opts.label) === label)?.brief ?? '';
+    const worker = at('worker:42');
+    const reviewer = at('review:42');
+    // Guard the fixture before any claim rests on it.
+    expect(worker).toContain('You are a Wave Worker');
+    expect(reviewer).toContain('You are the Wave Reviewer');
+    return { worker, reviewer };
+  }
+
+  /** The sites whose RENDERED brief still states the retired claim. */
+  function staleSites(rendered: Record<'worker' | 'reviewer', string>): string[] {
+    return SITES.filter((s) => rendered[s.role].includes(s.retired)).map((s) => `${s.role}: ${s.site}`);
+  }
+
+  /** The sites whose replacement wording did not reach the RENDERED brief. */
+  function unrepairedSites(rendered: Record<'worker' | 'reviewer', string>): string[] {
+    return SITES.filter((s) => !rendered[s.role].includes(s.current)).map((s) => `${s.role}: ${s.site}`);
+  }
+
+  it('no dispatched brief states the retired claim, and every site carries the re-measured one', async () => {
+    const rendered = await briefs(TEMPLATE);
+    expect(staleSites(rendered)).toEqual([]);
+    expect(unrepairedSites(rendered)).toEqual([]);
+  });
+
+  it('the prescriptions reach the dispatched briefs intact, each with the surviving reason attached', async () => {
+    const { worker, reviewer } = await briefs(TEMPLATE);
+    // Re-query over capture, in both briefs that prescribe it…
+    expect(worker).toContain(
+      'so a captured URL is simply not there in the call that would spend it, and a guard on it ' +
+        'would inspect an unset variable whether or not anything refuses the shape',
+    );
+    expect(reviewer).toContain(
+      'so a value must still be re-queried in the call that needs it rather than carried, refusal or no refusal',
+    );
+    // …nothing carried across a call boundary…
+    expect(worker).toContain(
+      'so a captured value is unreadable in the call that would spend it whether or not anything ' +
+        'refuses the shape, which is why a value must never be carried from one call to the next',
+    );
+    // …and the file-editing tool over a shell heredoc, whose own refusal the
+    // re-measurement did NOT retire.
+    expect(worker).toContain(
+      '**PREFER YOUR FILE-EDITING TOOL OVER A SHELL HEREDOC FOR EVERY CONTENT WRITE YOU MAKE**',
+    );
+    // The Reviewer is told the heredoc still refuses, so it cannot read the
+    // retirement as covering entry 2 as well.
+    expect(reviewer).toContain('the brace-bearing heredoc of Catalog entry 2 still refuses too');
+  });
+
+  it('NEGATIVE CONTROL — a template drifted back to the retired wording renders briefs the pin rejects', async () => {
+    const stale = SITES.reduce((template, s) => {
+      // The template escapes its backticks; the rendered brief does not, so the
+      // drift-back is applied in the template's own spelling.
+      const esc = (text: string) => text.replaceAll('`', '\\`');
+      const next = template.replace(esc(s.current), esc(s.retired));
+      expect(next, `drift-back replacement did not match at ${s.role}: ${s.site}`).not.toEqual(template);
+      return next;
+    }, TEMPLATE);
+
+    const rendered = await briefs(stale);
+    // Shown, not asserted: every one of the four sites is reported.
+    expect(staleSites(rendered)).toEqual(SITES.map((s) => `${s.role}: ${s.site}`));
+    expect(unrepairedSites(rendered)).toEqual(SITES.map((s) => `${s.role}: ${s.site}`));
   });
 });
 

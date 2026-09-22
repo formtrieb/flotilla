@@ -721,6 +721,170 @@ describe("skill-schema-drift — the Worker brief carries Convention 13's FOURTH
   });
 });
 
+// ─── the variable-expansion REASON, after the 2026-09-22 re-measurement ─────
+//
+// Convention 13's Catalog entry 1 used to claim that a `$VAR` expansion was
+// refused in ANY position from a worktree-isolated dispatch. It was re-measured
+// on 2026-09-22 with the guard demonstrably live — entry 2's brace-bearing
+// heredoc was refused in the same dispatch, word for word — and two of its five
+// stations no longer reproduce: a `$VAR` expansion is not refused on its own in
+// any position probed, and exactly ONE variable-bearing shape still refuses.
+//
+// The driver's PRESCRIPTIONS were never wrong and do not move — re-query over
+// capture, nothing carried across a call boundary, file-editing tool over
+// heredoc — because none of them ever rested on that refusal: shell state does
+// not survive between a dispatched role's Bash calls, and THAT half re-measured
+// unchanged. Only the stated REASON went stale, at four sites a live dispatch
+// actually receives: two in `workerBrief()` (policy clause 11's discriminator
+// sentence and Termination step 4's re-query rationale) and two in
+// `reviewerBrief()` (the ONE BASH CALL PER STEP paragraph, and the SECRET-SAFE
+// paragraph, which rested its skip-this-check instruction on the refusal
+// outright).
+//
+// This block pins the ASSET text; `compose-driver.spec.ts` pins the RENDERED
+// briefs for the same four sites. Two specs because they catch different
+// regressions — this one proves the wording survives EDITING, that one proves it
+// survives COMPOSITION and lands in the copy a dispatched role is handed.
+
+describe('skill-schema-drift — no brief states the retired variable-expansion refusal as a current fact (issue #933)', () => {
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
+
+  /**
+   * One row per site: the retired wording exactly as the asset carried it
+   * before this row (escaped backticks and all), and the wording that replaced
+   * it. The retired half is also the drift-back control's target, so the
+   * control reinstates the real pre-row bytes rather than a paraphrase of them.
+   */
+  const SITES: ReadonlyArray<{ site: string; retired: string; current: string }> = [
+    {
+      site: 'workerBrief policy clause 11',
+      retired: '**The discriminator is the \\`$VAR\\` expansion, not the punctuation**',
+      current:
+        '**a 2026-09-22 re-measurement from a worktree-isolated dispatch RETIRED that claim: ' +
+        'a \\`$VAR\\` expansion is NOT refused on its own, in any position probed**',
+    },
+    {
+      site: 'workerBrief Termination step 4',
+      retired:
+        'The discriminator is not fusion and not the control structure: it is the ' +
+        '**\\`$VAR\\` expansion**, refused in any position, in any call',
+      current:
+        '**A 2026-09-22 re-measurement, re-run live from a worktree-isolated dispatch, ' +
+        'RETIRED those refusals**',
+    },
+    {
+      site: 'reviewerBrief ONE BASH CALL PER STEP',
+      retired: '\\`case\\`/\\`esac\\` has been observed refused standing entirely alone',
+      current: '\\`case\\`/\\`esac\\` was once observed refused standing entirely alone',
+    },
+    {
+      site: 'reviewerBrief SECRET-SAFE',
+      retired: 'is exactly the command the guard has rejected outright, live, when a Worker ran it',
+      current: 'is the command the guard once rejected outright, live, when a Worker ran it',
+    },
+  ];
+
+  /** The sites of `js` that still state the retired claim as a current fact. */
+  function staleSites(js: string): string[] {
+    return SITES.filter((s) => js.includes(s.retired)).map((s) => s.site);
+  }
+
+  /** The sites of `js` whose replacement wording is missing. */
+  function unrepairedSites(js: string): string[] {
+    return SITES.filter((s) => !js.includes(s.current)).map((s) => s.site);
+  }
+
+  /**
+   * The prescriptions, each paired with the reason that SURVIVED the
+   * re-measurement. Asserted as whole sentences on purpose: a keyword pin
+   * ("re-query", "never carried") stays green against a copy that keeps the
+   * verb and drops the reason, which is the drift this row exists to prevent in
+   * the other direction — the reason went stale once already.
+   */
+  const PRESCRIPTIONS: ReadonlyArray<{ name: string; text: string }> = [
+    {
+      name: 'worker clause 11 — nothing carried across a call boundary',
+      text:
+        'so a captured value is unreadable in the call that would spend it whether or not ' +
+        'anything refuses the shape, which is why a value must never be carried from one call to the next',
+    },
+    {
+      name: 'worker Termination step 4 — re-query over capture',
+      text:
+        'so a captured URL is simply not there in the call that would spend it, and a guard on it ' +
+        'would inspect an unset variable whether or not anything refuses the shape',
+    },
+    {
+      name: 'reviewer ONE BASH CALL PER STEP — re-query over capture',
+      text:
+        'so a value must still be re-queried in the call that needs it rather than carried, ' +
+        'refusal or no refusal',
+    },
+    {
+      name: 'worker clause 11 — file-editing tool over shell heredoc',
+      text: '**PREFER YOUR FILE-EDITING TOOL OVER A SHELL HEREDOC FOR EVERY CONTENT WRITE YOU MAKE**',
+    },
+  ];
+
+  /** The prescriptions `js` no longer carries. */
+  function missingPrescriptions(js: string): string[] {
+    return PRESCRIPTIONS.filter((p) => !js.includes(p.text)).map((p) => p.name);
+  }
+
+  it('no site states the retired claim, and every site carries the re-measured one', () => {
+    expect(staleSites(driverJs)).toEqual([]);
+    expect(unrepairedSites(driverJs)).toEqual([]);
+  });
+
+  it('names what the re-measurement did NOT retire — the one variable-bearing shape still refused', () => {
+    // A copy that reports the retirement and stops there reads as "the guard is
+    // gone", which is the opposite over-correction. All four passages had room
+    // for the retirement; only the three that a reader might act on carry the
+    // survivor, and the Worker's two are the ones a live dispatch acts from.
+    const stillRefused = /a \\`cp\\` to a computed path fused with a \\`node --check\\` on that same/g;
+    expect(driverJs.match(stillRefused) ?? []).toHaveLength(3);
+  });
+
+  it('every prescription survives, with the surviving reason attached', () => {
+    expect(missingPrescriptions(driverJs)).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — drifting all four sites back to their pre-row bytes fails the pin', () => {
+    const drifted = SITES.reduce((js, s) => {
+      const next = js.replace(s.current, s.retired);
+      expect(next, `drift-back replacement did not match at ${s.site}`).not.toEqual(js);
+      return next;
+    }, driverJs);
+
+    // Shown, not asserted: the pin above reports every one of the four sites.
+    expect(staleSites(drifted)).toEqual(SITES.map((s) => s.site));
+    expect(unrepairedSites(drifted)).toEqual(SITES.map((s) => s.site));
+  });
+
+  it('NEGATIVE CONTROL — drifting back ONE site is caught too', () => {
+    // The likelier regression is a single passage rewritten, not all four. A
+    // pin that only fired on the full set would miss it.
+    const one = SITES[3];
+    const drifted = driverJs.replace(one.current, one.retired);
+    expect(drifted).not.toEqual(driverJs);
+    expect(staleSites(drifted)).toEqual([one.site]);
+  });
+
+  it('NEGATIVE CONTROL — relaxing a prescription fails the prescription pin, and only that pin', () => {
+    // The failure mode the Coordinator's handoff calls out by name: the reason
+    // is corrected AND the prescription quietly weakens with it. The retired
+    // claim is gone from this copy, so the staleness pin stays green — only the
+    // prescription pin notices.
+    const relaxed = driverJs.replace(
+      PRESCRIPTIONS[1].text,
+      'so a captured URL may be readable in the call that would spend it',
+    );
+    expect(relaxed).not.toEqual(driverJs);
+    expect(staleSites(relaxed)).toEqual([]);
+    expect(missingPrescriptions(relaxed)).toEqual([PRESCRIPTIONS[1].name]);
+  });
+});
+
 // ─── the prUrl passage stays RESIDUAL, and points at the engine gate ────────
 //
 // Issue #556 promoted the `prUrl`-on-a-finishing-outcome invariant from prose
