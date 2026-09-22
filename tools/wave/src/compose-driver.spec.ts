@@ -2,7 +2,7 @@
  * compose-driver.spec.ts — the composed driver, exercised the way the harness
  * exercises it.
  *
- * Three layers of evidence, deliberately separate:
+ * Four layers of evidence, deliberately separate:
  *
  *  1. **Substitution is total and nothing else moves.** The composed script is
  *     re-derived here by an INDEPENDENT implementation (plain string surgery in
@@ -21,15 +21,27 @@
  *     describe.
  *
  *  3. **The compose-time refusals fire.** The required-row-fields assertion, the
- *     human-gate/foreground refusal and the anchor-resolvability gate all moved
- *     into the engine with this verb; each gets a positive case and a negative
- *     control (Convention 11).
+ *     human-gate/foreground refusal, the anchor-resolvability gate and the
+ *     parse gate all moved into the engine with this verb; each gets a positive
+ *     case and a negative control (Convention 11).
+ *
+ *  4. **The shipped template PARSES — as a NAMED gate (issue #868).** Layer 2
+ *     parses the template incidentally, by running a COMPOSED copy of it, and
+ *     that was the whole coverage: an unbalanced backtick surfaced as an opaque
+ *     `SyntaxError` inside nineteen behaviour tests at once, no one of which
+ *     says it is the parse gate and no one of which has ever been shown to fail
+ *     for that reason. The named gate below compiles the SHIPPED template — not
+ *     a composed copy — in the function-body form the harness evaluates, and
+ *     never runs it; its negative control plants an unbalanced backtick into a
+ *     copy and reads the position out of the `SyntaxError`. The compose-time
+ *     half of the same gate lives in layer 3, because a refusal is what it is.
  */
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Script } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -337,6 +349,103 @@ describe('compose-driver — the composed script is the shipped template with it
     expect(() => composeDriverScript({ template: broken, ...CONSTANTS, rows: [row()] })).toThrow(
       /no `const ISSUES = \[ … \]` array to fill/,
     );
+  });
+});
+
+// ─── 1b. THE PARSE GATE ───────────────────────────────────────────────────────
+
+/**
+ * The harness's frame, as source text — the same two halves the composer's own
+ * parse gate wraps a script in, re-spelled here rather than imported.
+ *
+ * Re-spelled deliberately, on this file's standing rule (layer 1 above): a gate
+ * that called the module's own helper would compare the implementation with
+ * itself. These are the frame `runComposedDriver` above builds by hand for
+ * `new Function` — `export` stripped, the body inside an async arrow taking the
+ * four Workflow primitives — written out as one string so it can be COMPILED
+ * instead of constructed, which is what makes the failure carry a position.
+ */
+const HARNESS_FRAME_HEAD = '(function (agent, pipeline, phase, log) {\nreturn (async () => {\n';
+const HARNESS_FRAME_TAIL = '\n})()\n})';
+const HARNESS_FRAME_HEAD_LINES = HARNESS_FRAME_HEAD.split('\n').length - 1;
+
+/**
+ * Parse a driver script in the harness's frame, and NEVER run it: `new Script`
+ * compiles its source and stops — no context, no `runInContext`, not one
+ * statement of the driver executed. `lineOffset` cancels the frame's own lines
+ * so a reported position is a line of the SCRIPT.
+ */
+function parseInHarnessFrame(script: string, filename: string): void {
+  const body = script.replace(/^export const meta =/m, 'const meta =');
+  new Script(HARNESS_FRAME_HEAD + body + HARNESS_FRAME_TAIL, {
+    filename,
+    lineOffset: -HARNESS_FRAME_HEAD_LINES,
+  });
+}
+
+/**
+ * The plant, in one place because two different gates use the identical one:
+ * an unbalanced backtick opened on its own line just above a constant the
+ * template is guaranteed to carry. Opening a template literal and never closing
+ * it is the failure #819 claimed could ship green, so it is the failure both
+ * negative controls plant.
+ *
+ * Never written over the shipped asset — it returns a COPY, and the one spec
+ * that needs it on disk writes the copy to its own temp directory.
+ */
+function withUnbalancedBacktick(template: string): string {
+  const lines = template.split('\n');
+  const at = lines.findIndex((l) => l.startsWith('const REVIEWER_AGENT'));
+  expect(at, 'the template must still carry the constant this plant anchors to').toBeGreaterThan(-1);
+  return [
+    ...lines.slice(0, at),
+    'const PLANTED_UNBALANCED_BACKTICK = `this template literal is never closed',
+    ...lines.slice(at),
+  ].join('\n');
+}
+
+describe('compose-driver — THE PARSE GATE: the shipped driver template parses in the form the harness evaluates it', () => {
+  it('THE PARSE GATE — the SHIPPED template compiles in the harness frame (compiled, never run)', () => {
+    // The subject is `DRIVER_TEMPLATE_PATH`'s own bytes, not a composed copy:
+    // this asks whether the ASSET is evaluable, which is a question about the
+    // file a consumer installs, before any row is anywhere near it.
+    expect(() => parseInHarnessFrame(TEMPLATE, DRIVER_TEMPLATE_PATH)).not.toThrow();
+  });
+
+  it('the FRAME is load-bearing — the same bytes compiled WITHOUT it are not valid script source at all', () => {
+    // Without this, "the template parses" would be a claim about a form nothing
+    // runs: `export` is a module-only declaration and the driver's top-level
+    // `return`/`await` need a function body. A gate that compiled the file
+    // as-written would be red on a perfectly good template.
+    expect(() => new Script(TEMPLATE, { filename: DRIVER_TEMPLATE_PATH })).toThrow(SyntaxError);
+  });
+
+  it('NEGATIVE CONTROL — an unbalanced backtick planted in a COPY throws a SyntaxError naming a line', () => {
+    const planted = withUnbalancedBacktick(TEMPLATE);
+    expect(planted).not.toEqual(TEMPLATE);
+
+    let thrown: unknown;
+    try {
+      parseInHarnessFrame(planted, DRIVER_TEMPLATE_PATH);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown, 'the gate must reject a template carrying an unbalanced backtick').toBeDefined();
+    expect((thrown as Error).name).toBe('SyntaxError');
+
+    // "Naming a line" is the half that distinguishes this gate from the opaque
+    // `SyntaxError` a behaviour test surfaces. `node:vm` decorates the stack
+    // with `<filename>:<line>` on its FIRST line — the file an operator opens,
+    // and the line V8 could not get past.
+    const firstStackLine = String((thrown as Error).stack ?? '').split('\n')[0];
+    expect(firstStackLine.startsWith(DRIVER_TEMPLATE_PATH)).toBe(true);
+    const position = /:(\d+)$/.exec(firstStackLine);
+    expect(position, `no line in: ${firstStackLine}`).not.toBeNull();
+    // A line of the SCRIPT, not of the wrapper — which is what `lineOffset`
+    // buys, and the reason it is counted off the frame rather than written out.
+    const line = Number((position as RegExpExecArray)[1]);
+    expect(line).toBeGreaterThan(0);
+    expect(line).toBeLessThanOrEqual(planted.split('\n').length);
   });
 });
 
@@ -2102,6 +2211,133 @@ describe('compose-driver — the verb, end to end', () => {
     ]);
     expect(code).toBe(1);
     expect(stderr).toMatch(/does not resolve to a commit/);
+  });
+
+  // ── the compose-time parse gate (issue #868) ──────────────────────────────
+  //
+  // The template's own parse is gated above, on the shipped asset. These three
+  // gate the OTHER half: `--template` accepts any path, so the bytes the
+  // composer fills are not necessarily the bytes this package ships. Before
+  // this gate the composer checked the template's SHAPE — a placeholder line to
+  // fill, a balanced `ISSUES` array — and never asked whether the result was
+  // JavaScript, so an unparseable override composed clean, was written to disk
+  // under a receipt reading `ok: true`, and failed inside a dispatched wave.
+
+  it('NEGATIVE CONTROL — an unparseable `--template` override is refused at compose time, and NO file is written', async () => {
+    const { spinePath, configPath } = await seed();
+    const brokenTemplate = join(repoRoot, 'broken-template.js');
+    writeFileSync(brokenTemplate, withUnbalancedBacktick(TEMPLATE), 'utf8');
+
+    const out = join(repoRoot, 'driver.js');
+    const code = await runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+      '--template', brokenTemplate,
+    ]);
+
+    expect(code).toBe(1);
+    // An `error:` line naming the syntax failure — the class, the message, the
+    // position, and the path an operator opens to fix it.
+    expect(stderr).toMatch(/^error: /m);
+    expect(stderr).toContain('SyntaxError');
+    expect(stderr).toMatch(/line \d+ of the composed script/);
+    expect(stderr).toContain(brokenTemplate);
+    // "before anything is written" is the load-bearing half, exactly as it is
+    // for the fabricated-anchor refusal above: no script exists.
+    expect(existsSync(out)).toBe(false);
+    // …and no receipt was printed either, so nothing downstream can read this
+    // compose as `ok: true`.
+    expect(stdout).toBe('');
+  });
+
+  it('POSITIVE CONTROL — a parseable `--template` override still composes, byte-identically to no override at all', async () => {
+    const { spinePath, configPath } = await seed();
+
+    const withoutOverride = join(repoRoot, 'driver-default.js');
+    expect(
+      await runComposeDriver([
+        '--spine', spinePath,
+        '--config', configPath,
+        '--repo-root', repoRoot,
+        '--anchor', anchor,
+        '--out', withoutOverride,
+        '--reviewer-agent', 'flotilla:wave-reviewer',
+      ]),
+    ).toBe(0);
+
+    // A VERBATIM copy of the shipped template, handed over as an override.
+    const verbatim = join(repoRoot, 'verbatim-template.js');
+    writeFileSync(verbatim, TEMPLATE, 'utf8');
+    const withOverride = join(repoRoot, 'driver-verbatim.js');
+    expect(
+      await runComposeDriver([
+        '--spine', spinePath,
+        '--config', configPath,
+        '--repo-root', repoRoot,
+        '--anchor', anchor,
+        '--out', withOverride,
+        '--reviewer-agent', 'flotilla:wave-reviewer',
+        '--template', verbatim,
+      ]),
+    ).toBe(0);
+
+    expect(stderr).toBe('');
+    expect(readFileSync(withOverride, 'utf8')).toBe(readFileSync(withoutOverride, 'utf8'));
+
+    // And a template that is parseable but NOT the shipped bytes composes too —
+    // without this, "the gate accepts a parseable override" would be compatible
+    // with "the gate recognises the shipped template and nothing else".
+    const edited = join(repoRoot, 'edited-template.js');
+    writeFileSync(edited, `// a hand-edited override, still valid JavaScript\n${TEMPLATE}`, 'utf8');
+    const fromEdited = join(repoRoot, 'driver-edited.js');
+    expect(
+      await runComposeDriver([
+        '--spine', spinePath,
+        '--config', configPath,
+        '--repo-root', repoRoot,
+        '--anchor', anchor,
+        '--out', fromEdited,
+        '--reviewer-agent', 'flotilla:wave-reviewer',
+        '--template', edited,
+      ]),
+    ).toBe(0);
+    expect(stderr).toBe('');
+    expect(existsSync(fromEdited)).toBe(true);
+    expect(readFileSync(fromEdited, 'utf8')).toContain(
+      '// a hand-edited override, still valid JavaScript',
+    );
+  });
+
+  it('NEGATIVE CONTROL — the gate catches a break the OTHER compose-time checks pass clean', async () => {
+    // The discriminator. This override keeps every placeholder line and a
+    // balanced `ISSUES` array — so `fillStringConst` and `balancedEnd` are both
+    // satisfied and the compose reaches the write — and breaks only the parse,
+    // with a template literal carrying an unclosed `${` appended after the
+    // array. That is the shape the shape-checks are blind to by construction,
+    // and it is the one the falsification confirmed: with the gate removed this
+    // same override composed to exit 0 and wrote the file.
+    const { spinePath, configPath } = await seed();
+    const broken = join(repoRoot, 'unclosed-expression.js');
+    writeFileSync(broken, `${TEMPLATE}\nconst TRAILING = \`an unclosed \${expression\n`, 'utf8');
+
+    const out = join(repoRoot, 'driver.js');
+    const code = await runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', out,
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+      '--template', broken,
+    ]);
+
+    expect(code).toBe(1);
+    expect(stderr).toContain('SyntaxError');
+    expect(existsSync(out)).toBe(false);
   });
 
   it('NEGATIVE CONTROL — a config with no engine.cli binding is a STOP, not a guessed spelling', async () => {
