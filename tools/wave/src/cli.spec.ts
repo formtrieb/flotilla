@@ -5813,6 +5813,263 @@ describe('dor -- the staleness advisory reaches both entry points (exit code unc
   });
 });
 
+// --- Gate 10 (the PR-title advisory) on the STORE-BACKED path ---------------
+//
+// The defect: the tenth gate shipped live on the FILE path and `deferred` on
+// `dor --id` — the one form a decoration pass actually runs — because the
+// runner built its `ValidateViewOptions` without the row's title. The gate was
+// never wrong; nothing ever handed it its input, and a gate that cannot fire
+// where it was designed to help is the same as a gate that is not there.
+//
+// Division of labour with dor-gate.spec.ts, stated because it is not obvious:
+// that file owns the gate's four ANSWERS over a hand-built options object, plus
+// the cross-pin against the composer's own strip. THIS block owns the half only
+// the CLI can prove — that `dor --id` READS the row's title off the store's
+// triage facet, that `--pr-title` reaches the same gate as the declared half,
+// and that a title the runner could not obtain still `defer`s with the gate's
+// OWN existing reason instead of passing, erroring, or inventing a second one.
+
+/** The gate's rendered stdout line, matched by status. */
+function prTitleGateLine(status: string): RegExp {
+  return new RegExp(`${status}\\s+pr-title-id-independent`);
+}
+
+/** The full ten-gate roster, in emission order — the pin AC4's second half asks for. */
+const STORE_PATH_GATE_ORDER = [
+  'header-parseable',
+  'files-glob-valid',
+  'ac-section-consistent',
+  'risk-file-count-consistent',
+  'blocked-by-chain-resolves',
+  'ac-files-coverage',
+  'literal-files-exist',
+  'verify-profile-coverage',
+  'files-touched-since-tracker-update',
+  'pr-title-id-independent',
+];
+
+/** A title whose SENTENCE leans on a tracker id — the live shape the gate exists for. */
+const LEANING_TITLE =
+  'After #791 the Reviewer agent definition still describes the sibling list';
+/** What the compose-time strip leaves of it: grammatically valid, semantically wrong. */
+const LEANING_TITLE_DERIVED =
+  'After the Reviewer agent definition still describes the sibling list';
+
+/**
+ * A store that answers `read` and `readTriage` and nothing else — the shape
+ * that lets a spec control the TRACKER TITLE exactly, which `MarkdownFsStore`
+ * cannot do for the failure arms (its triage read cannot be made to throw
+ * without also breaking the `read` above it).
+ */
+function storeWithTitle(title: string | (() => never)): IssueStore {
+  const view = (id: string): IssueView => ({
+    id,
+    risk: 'mechanical',
+    worker: 'background',
+    files: ['src/foo.ts'],
+    blockedBy: 'none',
+    acceptanceCriteria: [{ text: 'x', checked: false }],
+    status: 'available',
+  });
+  return {
+    read: async (id: string) => view(id),
+    readTriage: async (id: string) => {
+      if (typeof title !== 'string') title();
+      return { id, title, body: '', comments: [] };
+    },
+  } as unknown as IssueStore;
+}
+
+describe('dor --id <id> — the PR-title advisory runs on the store-backed path', () => {
+  it('WARNS on a tracker title that leans on a bare id and declares no PR title (was: deferred)', async () => {
+    const store = tmpStore();
+    const id = await store.create({
+      ...DOR_INPUT,
+      title: LEANING_TITLE,
+      filingHint: 'leaning-title',
+    });
+
+    const code = await runDorById(['--id', id], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(prTitleGateLine('warn'));
+    // The regression itself: this line is what the row was filed for.
+    expect(stdoutBuf).not.toMatch(prTitleGateLine('deferred'));
+    // …and the advisory SHOWS both titles, read off a real store's triage facet.
+    expect(stdoutBuf).toContain(`  tracker title:    "${LEANING_TITLE}"`);
+    expect(stdoutBuf).toContain(`  derived PR title: "${LEANING_TITLE_DERIVED}"`);
+  });
+
+  it('PASSES a row whose tracker title carries no id at all', async () => {
+    const store = tmpStore();
+    const id = await store.create({
+      ...DOR_INPUT,
+      title: 'Reconcile the Reviewer brief with the composed sibling list',
+      filingHint: 'clean-title',
+    });
+
+    const code = await runDorById(['--id', id], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(prTitleGateLine('pass'));
+    expect(stdoutBuf).not.toMatch(prTitleGateLine('deferred'));
+    expect(stdoutBuf).not.toMatch(prTitleGateLine('warn'));
+  });
+
+  it('PASSES with the declared-title note when --pr-title states the title, leaning tracker title and all', async () => {
+    const store = tmpStore();
+    const id = await store.create({
+      ...DOR_INPUT,
+      title: LEANING_TITLE,
+      filingHint: 'leaning-title-declared',
+    });
+
+    const code = await runDorById(
+      ['--id', id, '--pr-title', 'Reconcile the Reviewer brief with the composed sibling list'],
+      store,
+    );
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(prTitleGateLine('pass'));
+    expect(stdoutBuf).toContain('A PR title is declared for this row');
+    // Nothing is derived, so the orphaned derivation is never shown.
+    expect(stdoutBuf).not.toContain(LEANING_TITLE_DERIVED);
+  });
+
+  it('a BLANK --pr-title is not a declaration — the advisory still warns', async () => {
+    const store = tmpStore();
+    const id = await store.create({
+      ...DOR_INPUT,
+      title: LEANING_TITLE,
+      filingHint: 'leaning-title-blank-decl',
+    });
+
+    const code = await runDorById(['--id', id, '--pr-title', '   '], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(prTitleGateLine('warn'));
+  });
+
+  // ── The negative control: `deferred` is still produced, and still means
+  //    "nobody could supply a title" rather than "the title is clean". Three
+  //    arms, because three different things can leave the runner without one.
+
+  it('DEFERS with the gate’s existing reason when the triage read THROWS', async () => {
+    const store = storeWithTitle(() => {
+      throw new Error('triage facet unreachable');
+    });
+
+    const code = await runDorById(['--id', '42'], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(prTitleGateLine('deferred'));
+    // The gate's OWN reason, unchanged — not a second one invented at the caller.
+    expect(stdoutBuf).toContain('No row title reached this check');
+    expect(stdoutBuf).toContain(
+      'This is a capability gap (nobody supplied one), NOT evidence that the title is id-free.',
+    );
+    // …and the failure is not silent: the operator is told WHY it deferred.
+    expect(stderrBuf).toContain('notice: dor:');
+    expect(stderrBuf).toContain('triage facet unreachable');
+  });
+
+  it('DEFERS when the store answers `read` but has no triage facet at all', async () => {
+    // The shape every pre-existing injected double in this file has: `read`
+    // alone. Reaching for a method it does not carry must cost the gate its
+    // answer, never the verb its exit code.
+    const store = fakeStore(async (id) => ({
+      id,
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/foo.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+      status: 'available',
+    }));
+
+    const code = await runDorById(['--id', '42'], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(prTitleGateLine('deferred'));
+    expect(stdoutBuf).toContain('No row title reached this check');
+  });
+
+  it('DEFERS on a BLANK tracker title rather than reading it as id-free', async () => {
+    const store = storeWithTitle('   ');
+
+    const code = await runDorById(['--id', '42'], store);
+
+    expect(code).toBe(0);
+    expect(stdoutBuf).toMatch(prTitleGateLine('deferred'));
+    expect(stdoutBuf).toContain('No row title reached this check');
+    // A blank title is a read that SUCCEEDED, so there is nothing to notice.
+    expect(stderrBuf).not.toContain('notice: dor:');
+  });
+
+  // ── The advisory stays advisory (AC4), and the roster is unchanged.
+
+  it('never moves the verdict: a warning row is still PASS, still exit 0', async () => {
+    const store = tmpStore();
+    const repoRoot = (store as unknown as { repoRoot: string }).repoRoot;
+    const id = await store.create({
+      ...DOR_INPUT,
+      title: LEANING_TITLE,
+      filingHint: 'leaning-title-verdict',
+    });
+
+    const code = await runDorById(['--id', id, '--repo-root', repoRoot, '--json'], store);
+
+    expect(code).toBe(0);
+    const out = JSON.parse(stdoutBuf) as {
+      overall: string;
+      issues: { gates: { name: string; status: string }[] }[];
+    };
+    const gates = out.issues[0].gates;
+    expect(gates.find((g) => g.name === 'pr-title-id-independent')?.status).toBe('warn');
+    expect(gates.some((g) => g.status === 'fail')).toBe(false);
+    expect(out.overall).toBe('PASS');
+  });
+
+  it('emits the same ten gates, in the same order, with the advisory last', async () => {
+    const store = tmpStore();
+    const id = await store.create({
+      ...DOR_INPUT,
+      title: LEANING_TITLE,
+      filingHint: 'leaning-title-roster',
+    });
+
+    const code = await runDorById(['--id', id, '--json'], store);
+
+    expect(code).toBe(0);
+    const out = JSON.parse(stdoutBuf) as {
+      issues: { gates: { name: string }[] }[];
+    };
+    expect(out.issues[0].gates.map((g) => g.name)).toEqual(STORE_PATH_GATE_ORDER);
+  });
+
+  // ── The operator-facing surface (AC5): `dor --help` says the gate is here.
+
+  it("names --pr-title on the --id form's line, and never on the path form's", () => {
+    expect(main(['dor', '--help'])).toBe(0);
+    const lines = stdoutBuf.split('\n');
+    const idFormLine = lines.find((l) => l.includes('--id <issue-id>'))!;
+    const pathFormLine = lines.find((l) => l.includes('<issue-path>'))!;
+
+    expect(idFormLine).toContain('[--pr-title <pr-title>]');
+    // The path form is variadic — there is no single row one declared title
+    // could belong to — so the flag is rendered where it is actually read.
+    expect(pathFormLine).not.toContain('--pr-title');
+  });
+
+  it('tells a person, in its own usage, that the advisory runs on this path', () => {
+    expect(main(['dor', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain(
+      'PR-title advisory (pr-title-id-independent) runs there instead of deferring',
+    );
+    expect(stdoutBuf).toContain('--pr-title to declare the title the PR will open under');
+  });
+});
+
 // ─── FOR-11 AC1: pre-op-dispatch store failures exit non-zero ────────────────
 //
 // The observed defect (dogfooding, CLAUDE.md): a store/network failure BEFORE

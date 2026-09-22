@@ -371,7 +371,38 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that corrects three out-of-glob spots
+ * Why this number: **RAISED by the row that turns the PR-title readiness
+ * advisory on for the store-backed path** (issue #934), in the diff that causes
+ * the growth. Its one corpus-population edit is a paragraph in
+ * `to-issues/SKILL.md`'s self-check step: the tenth readiness gate shipped
+ * running on the file path and `deferred` on `dor --id` — the ONE form a
+ * decoration pass actually runs — so no operator-facing text could truthfully
+ * say the check was available where a person would meet it. Turning it on makes
+ * that sentence writable, and the row's last acceptance criterion is to write
+ * it: what the line answers by id, what `--pr-title` is for, that the advisory
+ * never blocks a row, and what a `deferred` on that line does and does not
+ * mean. Four facts, because a reader who has three of them still guesses at the
+ * fourth.
+ *
+ * At this row's anchor commit `a7e72ed517988c110a203a23b7cfae774d3c75df` the
+ * population measured **1,229,353 B** over 57 files — 647 B under the previous
+ * 1,230,000 B ceiling (the headroom the brief-clause-occurrences row left, and
+ * this row's decoration measured again). This row's edit lands it at
+ * **1,230,287 B** over the same 57 files, +934 B, so the ceiling moves to that
+ * sum rounded UP to the next full KB (1 KB = 1000 B): **1,231,000 B**. The 713 B
+ * of headroom that leaves is a fact about the rounding rule, not a budget. The
+ * shared standing load is NOT raised, because the edited `SKILL.md` — the
+ * `to-issues` one — is not a member of that population (only
+ * `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are), so that class
+ * stays at 161,176 B against its unchanged 162,000 B ceiling.
+ *
+ * Previously: 1,230,000 B — the raise by the row that corrects three out-of-glob
+ * spots one wave's rows left behind (issue #916), whose reasoning is kept below
+ * (in ITS voice, so "this row" there means that row) because the chain back
+ * through the `conv12-guard` scanner row and #858 to the ADR-0050 wave is what
+ * makes each step auditable.
+ *
+ * Why that number: **RAISED by the row that corrects three out-of-glob spots
  * this wave's rows left behind** (issue #916), in the diff that causes the
  * growth. Its one corpus-population edit is a paragraph in
  * `wave-setup/reference/throwaway-consumer.md`, replacing a stale claim that
@@ -546,7 +577,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_230_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_231_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
