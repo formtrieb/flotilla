@@ -130,14 +130,20 @@ const CONVENTION_REFERENCE_DIR = '.claude/skills/wave-shared/reference';
  * per sentence — prose in a shipped instruction file that tells a reader to
  * go and read a `docs/…` path at runtime.
  *
- * **Resolution bias — BLOCKS.** A convention file whose declaration line this
- * reader cannot resolve to exactly one well-formed declaration fails: zero
- * lines, two lines, a line not directly under the heading, an off-ladder rung
- * word, a rung naming nothing, a rung whose artifact shape disagrees with it,
- * or a backticked path that does not resolve in the clone. None of those
- * degrade to "no declaration found, carry on" —
- * {@link declarationOf} returns `null` and the assertion on it is what goes
- * red.
+ * **Resolution bias — SPLIT: rules (1) and (2) BLOCK, rules (3) and (4)
+ * PASS.** One word would be a lie here, so the declaration carries two, and
+ * the two halves are set out below in that order. **The split IS the
+ * resolution, not an open finding** — see "the passing half" below for the
+ * ruling and its ground.
+ *
+ * **The blocking half — rules (1) and (2).** A convention file whose
+ * declaration line this reader cannot resolve to exactly one well-formed
+ * declaration fails: zero lines, two lines, a line not directly under the
+ * heading, an off-ladder rung word, a rung naming nothing, a rung whose
+ * artifact shape disagrees with it, or a backticked path that does not
+ * resolve in the clone. None of those degrade to "no declaration found, carry
+ * on" — {@link declarationOf} returns `null` and the assertion on it is what
+ * goes red.
  *
  * The reason is what this line IS. Under ADR-0034 the declaration is the
  * residual left behind after a rule's prose was cut down, and its whole value
@@ -157,14 +163,34 @@ const CONVENTION_REFERENCE_DIR = '.claude/skills/wave-shared/reference';
  * and is the Evidence class working as designed. It is the rule's subject
  * boundary, not a shape the reader failed to parse.
  *
- * **The bias above is NOT uniform across this file's four rules, and that is
- * declared rather than smoothed over.** Rules (1) and (2) block, as stated.
- * Rules (3) and (4) — the dependency direction and the maintainer-only
- * citation — are single regexes over prose, and prose they do not recognize
- * yields no finding and therefore passes: see members 4 and 5 of the
- * Unmodelled set. Writing the bias down is what surfaced that split; it is
- * NOT corrected here, because correcting it would change a verdict set. The
- * divergence is filed as a finding instead.
+ * **The passing half — rules (3) and (4) — and the ruling that keeps it
+ * that way.** The dependency direction and the maintainer-only citation are
+ * each a SINGLE REGEX OVER PROSE, and prose such a regex does not recognize
+ * yields no finding, which reads as clean: see members 4 and 5 of the
+ * Unmodelled set. Writing the bias down is what surfaced the divergence, and
+ * the divergence is now RULED ON rather than left open: **the split is the
+ * resolution.**
+ *
+ * The ground is a property of the instrument, not a preference. A single
+ * regex over prose cannot distinguish "prose I do not recognize" from "prose
+ * with no finding" — a non-match is the same event in both cases, so the
+ * scanner never reaches a state it could call inconsistent and there is no
+ * moment at which it could honestly abstain. Forcing these two rules to block
+ * would therefore produce refusals with nothing behind them, which is the
+ * failure ADR-0052 decision 3 rules out: an Abstention is triggered by the
+ * Guard's OWN broken invariant, never by a construct allowlist, and a regex
+ * that matched nothing has no broken invariant to report. Rules (1) and (2)
+ * take the other direction because they genuinely have one — rule (1) parses
+ * a structured line against a closed vocabulary and can find that line
+ * absent, doubled or misplaced; rule (2) sums bytes and throws on a file it
+ * cannot read. One guard, two kinds of subject, two answers, declared per
+ * rule rather than averaged into a single word that would be false for half
+ * the file.
+ *
+ * No rule changes with this ruling and no verdict set moves; what changed is
+ * that the bias line above is now honest about both halves. The keeper in
+ * `guard-declaration-keeper.spec.ts` reads that line, and a `SPLIT` bias that
+ * failed to name both directions would fail there.
  *
  * **Unmodelled set, named rather than assumed away.**
  *
