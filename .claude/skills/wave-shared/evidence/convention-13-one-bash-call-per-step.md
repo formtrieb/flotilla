@@ -76,6 +76,7 @@ The tempting patch is a `cd` entry in the tracked allowlist. Do not add one.
 - **2026-07-30, issue #305's own dispatch — Catalog entry 1's categorical claim scoped, and the Worker/Reviewer disagreement recorded.** Entry 1 asserted a bare `case`/`esac` guard is refused categorically, evidenced only by the entry-writing Worker's eight-for-eight; that row's own Reviewer had independently reproduced zero-for-three on the same three probe shapes, and the disagreement was never written down. Issue #305's Worker dispatch (`isolation: 'worktree'`) re-ran the same three shapes and got three-for-three refused, matching the original Worker. The two-observer disagreement plus a candidate discriminator (the `isolation: 'worktree'` dispatch option, set for the Worker's `agent()` call in `workflow-driver.md` and not for the Reviewer's) are now recorded in entry 1 itself, and the categorical claim is scoped to a `isolation: 'worktree'` dispatch rather than left unscoped. Issue #305's own Reviewer independently re-runs the same three probes as the second observer for this measurement; append its result to entry 1 rather than growing this list.
 - **2026-08-01, wave `2026-08-01-shipped-text-and-ops-currency`, disclosure `388.3` — Catalog entry 1 gains a fifth station, a second working remedy alongside station 4's host re-query.** A Worker confirming both arms of the release workflow's version routing `select` hit the bare `case`/`esac` refusal (station 1) and, rather than re-adopting one of the three cataloged dead ends, found a shape not yet on the list: write the snippet to a script file, execute it as `bash <path-to-script>`. Its own stated reasoning — neither fusion nor a `$VAR`-expansion-in-the-command-string shape, since the interpolation happens inside the executed file rather than in the tool-call text the guard matches — is recorded in entry 1 as station 5, scoped to the control-flow case rather than the host-confirmation case station 4 already covers. Reported as a single occurrence; untested against station 2's two shapes (the `if`-guard on a captured variable, the lone `test -n "$VAR"`).
 - **2026-08-03, wave `2026-08-03-currency-guards-and-deps-port`, disclosures `381.4` (Worker) and `420.1` (Reviewer) — Catalog gains entry 5, a fourth refused shape: a `for`/`do`/`done` loop.** A Worker probing several issues for a populated dependency list hit a refusal on a bare, unfused `for`/`do`/`done` loop — no capture, no redirect, only the loop variable itself referenced in the body — and re-issued it split per-command, dropping nothing; the Reviewer's disclosure flagged the catalog as not yet recording the shape. Live-reproduced independently at issue #429 (2026-08-09, this file's own dispatch): both a three-iteration and a minimal one-iteration form were refused with the guard's own message, quoted in entry 5; a control probe absent from the original disclosure — a loop whose body never references the loop variable — ran clean, showing the trigger is entry 1's `$VAR`-expansion discriminator applied to a loop's own binding, not the `for`/`do`/`done` construct itself. The split-per-command remedy re-verified clean.
+- **2026-09-22, issue #910 — Catalog entry 1 re-measured against the current harness, and two of the five entries retired.** Entry 2's 2026-09-21 correction had recorded one probe it deliberately did not act on: a `$VAR` expansion in a plain argument position was ACCEPTED, contradicting entry 1's "refused in any position", and it named a re-run of entry 1's five stations as what would settle it. Issue #910's own `isolation: 'worktree'` Worker dispatch ran that re-run, with a control first — entry 2's brace-bearing heredoc, refused with the 2026-09-21 wording byte-for-byte, so the guard was demonstrably live. Stations 1 and 3, station 2's refusal half, both entry-5 loop forms and all three of the 2026-07-31 discriminator probes now run clean; stations 4 and 5 still work; station 2's *inertness* half still reproduces, which is why station 4 stays the prescription regardless. The contradicting probe reproduced, set and unset. One `$VAR`-bearing shape is still refused (`cp` to a computed path fused with `node --check` on that same computed path — five narrowing probes around it all accepted), and the same dispatch answered entry 2's open size question with a brace-free wall between 9,576 B and 10,032 B. Recorded in entries 1, 2 and 5 rather than growing this list.
 
 ### Entry 1 — the full reproduction record
 
@@ -220,6 +221,131 @@ bash version-routing-probe.sh
 
 **Occurrence:** wave `2026-08-01-shipped-text-and-ops-currency`, disclosure `388.3` (Worker). Filed bare per [ADR-0027](../../../../docs/adr/0027-disclosures-are-spine-captured-at-routing-and-dispositioned-before-archive.md).
 
+### Entry 1, re-measured 2026-09-22 — all five stations against the current harness
+
+**What forced the re-measurement.** Entry 2's 2026-09-21 correction ran a 22-probe matrix and recorded
+one out-of-scope observation it deliberately did not act on: probe 12, a `$VAR` expansion in a plain
+argument position (`printf '%s' "$PATCH" > <file>`), was **accepted** — flatly contradicting this
+entry's "any `$VAR` expansion is refused in any position". That row left it standing, correctly: one
+probe against a three-station arc is not grounds to relax a rule. It also noted the reason the
+question could not simply be dismissed — the harness's own refusal wording had been re-worded since
+this entry was written, so an entry recorded against an older harness may be describing a behaviour
+that has changed. Issue #910 is the follow-up that entry named. Issue #910's own Worker dispatch
+(`isolation: 'worktree'`, 2026-09-22) re-ran every station.
+
+**The control comes first, because without it the result is worthless.** A dispatch in which nothing
+is refused is indistinguishable from a dispatch that carries no isolation guard at all — which is
+exactly the Reviewer-vs-Worker asymmetry this entry spent two observers establishing. So before any
+station was read, Entry 2's known-refused shape was re-issued here: a 46-B brace-bearing body through
+`cat >> <file> <<'EOF'`. It was **refused**, with the 2026-09-21 wording byte-for-byte. The guard is
+live in this dispatch. Every "accepted" below is therefore a real change of behaviour, not an absent
+check.
+
+**The stations.** Each probe was its own Bash call with nothing fused onto it.
+
+| # | shape | 2026-07-31 … 2026-08-09 | 2026-09-22 | verdict |
+|---|---|---|---|---|
+| 1 | bare `case`/`esac`, minimal (`case "x" in x) echo "matched" ;; esac`) | REFUSED (8/8, 3/3, 4-of-9 rows, 3/3) | **accepted**, printed `matched` | no longer reproducible |
+| 1b | PR-URL-shaped `case` guard on `$PR_URL` | REFUSED | **accepted**, printed `empty` | no longer reproducible |
+| 1c | the catalogued `case` form verbatim, `>&2` + `exit 1` | REFUSED | **accepted** — ran its own guard, printed `STOP: PR_URL came back empty`, exited 1 | no longer reproducible |
+| 2 (call 1) | bare assignment `PROBE_VAL=$(echo "hello-probe")` | accepted | **accepted** | reproduced |
+| 2 (call 2) | `if [ -z "$PROBE_VAL" ]; then … fi` | INERT **and** REFUSED | **accepted, and still INERT** — printed `EMPTY`, i.e. the variable was unset in its own shell | **half reproduced**: inertness yes, refusal no |
+| 2 (minimal) | lone `test -n "$PROBE_VAL"` | REFUSED | **accepted**, exit 1 (still unset) | refusal no longer reproducible |
+| 3 | capture + `if`-guard fused into one call | REFUSED | **accepted**, printed `fused guard ran; value non-empty` | no longer reproducible |
+| 4 | host re-query — `host-pr status --branch <branch>` as its own call | WORKS | **works** — returned `{"ok":true,…,"state":"none"}` before the PR existed, and again after it did | reproduced |
+| 5 | script file executed as a flat `bash <path>` | WORKS | **works** — the script's own `case`/`esac` on a `$(jq …)` capture ran and printed its url | reproduced |
+
+**The three discriminator probes that isolated `$VAR` in 2026-07-31, re-run.** All three now run:
+
+```bash
+# ✓ accepted then and now — an `if` whose condition is a COMMAND
+if jq -e -r '.url' probe-capture.json > /dev/null; then echo "url present"; fi
+
+# ✓ accepted NOW, REFUSED then — the same `if` with a variable in the condition
+VAL=$(jq -r '.url' probe-capture.json)
+if [ -n "$VAL" ]; then echo "url present"; fi
+
+# ✓ accepted NOW, REFUSED then — a same-call variable in a plain position
+VAL2=$(jq -r '.url' probe-capture.json)
+printf 'captured: %s\n' "$VAL2"
+```
+
+**The contradicting probe, re-run — and it reproduces.** Entry 2's probe 12 was re-issued verbatim
+(`printf '%s' "$PATCH" > <file>`, `PATCH` unset) and **accepted**, writing a 0-byte file; the same
+shape with `PATCH` assigned in the same call was **accepted** too, writing its 16 bytes. So the
+earlier acceptance was not a fluke of an unset variable, and entry 1's discriminator is narrowed to
+match rather than the observation being written off.
+
+**What IS still refused with a variable in it — one shape, found by narrowing.** The row before this
+one recorded a live refusal of `cp <driver> "$TMPDIR/wsi-check.mjs" && node --check …`. That
+reproduces here with an ordinary shell variable in place of the env var, deterministically, three
+times out of three — including once with the destination file pre-created, so it is not about the
+operand naming a file that does not exist yet:
+
+```bash
+# ✗ REFUSED, 3/3
+PROBE_DIR=.flotilla/tmp/probe-910
+cp <src> "$PROBE_DIR/wsi-check.mjs" && node --check "$PROBE_DIR/wsi-check.mjs"
+```
+
+Five narrowing probes around it, every one **accepted**, which is what makes the refusal narrow
+rather than a survival of the old rule:
+
+| probe | result |
+|---|---|
+| `PROBE_SCRIPT=<lit>` then `node --check "$PROBE_SCRIPT"` (newline-separated) | accepted |
+| `true && node --check "$PROBE_SCRIPT"` | accepted |
+| `true && node --check "$PROBE_DIR/wsi-b.mjs"` — variable as a path PREFIX | accepted |
+| `cp <lit> "$PROBE_DIR/wsi-a.mjs"` alone, newline-separated from its assignment | accepted |
+| `cp <lit> <lit> && node --check <lit>` — the same fusion, no variable | accepted |
+
+So neither the `&&`, nor `node` with a computed operand, nor `cp` writing to a computed path is
+enough on its own; the refusal needs the interpreter's program operand to be computed AND the same
+chain to write to that computed path. **Do not read that as a new rule to engineer around** — it is
+one shape in one harness build, recorded so the next reader knows the guard still exists and what it
+currently objects to.
+
+**Both current refusal texts, verbatim.** They are two different kinds of message, and the
+distinction is the operative fact:
+
+> **Generic** (brace-bearing heredoc; oversize heredoc — identical for both):
+> This agent is isolated in the worktree \<worktree-path\>, but this command is too complex to verify that it stays inside the worktree. Refusing to run it — a worktree-isolated agent's git operations must target its own worktree. Split it into plain, separate commands and run them from \<worktree-path\>.
+
+> **Generated per shape** (the `cp`-then-`node` chain above):
+> This agent is isolated in the worktree \<worktree-path\>, but this command runs node with a script computed at runtime (a value computed at runtime (the variable PROBE\_DIR)) in a plain command, so what it runs cannot be shown not to be git. Refusing to run it — a worktree-isolated agent's git operations must target its own worktree. Run the plain command from \<worktree-path\>.
+
+The generic form is **byte-identical** to the 2026-09-21 recording: between those two dates the
+generic wording did not drift at all. The generated form differs from the 2026-09-22 recording in
+the drift table below even though both name `node` and a variable — that table's entry reads
+"a value computed at runtime (the variable TMPDIR) (a computed argument goes after the script or --)
+where it cannot tell which operand is the program, next to an operand or input computed at runtime",
+this one reads "a script computed at runtime (a value computed at runtime (the variable PROBE_DIR))".
+Two shapes, one harness build, two different sentences — which is the drift table's own point,
+stated with a second example: **the generated text is a function of the command, so there is no "the"
+refusal string even within a single version.** The 2026-09-22 measurement that no engine matcher
+reads this wording was re-run here at issue #910's anchor and is unchanged — `grep -rl` over
+`tools/wave/` finds `isolated in the worktree`, `Split it into plain` and `cannot be shown not to be
+git` zero times, and `too complex to verify` only in the driver's own brief prose.
+
+**What this changes in the doctrine, and what it emphatically does not.**
+
+- **Changed:** entry 1's claim that "any `$VAR` expansion is refused in any position" is retired as a
+  statement about the current harness. The Catalog entry and the reference file's Common Mistakes
+  bullet now say the same narrowed thing, which they did not before this row.
+- **Changed:** entry 5's `for`/`do`/`done` refusal, which was filed explicitly as this discriminator
+  wearing a loop, lapses with it — re-run below and accepted.
+- **NOT changed: station 4 stays the prescription, and Convention 12 stays.** The reason was never
+  the guard. Station 2's *inert* half reproduced exactly today: the `if` in call 2 read an unset
+  variable and printed `EMPTY`. Shell state does not survive between a dispatched role's Bash calls,
+  so a value captured in call N is simply not there in call N+1 — with or without a refusal. A brief
+  that told a role to capture and then guard would still be a brief the role cannot follow.
+- **NOT changed: reproduce before you write it down.** This entry was right for three harness
+  versions and is wrong for this one, and the only reason anyone knows that is that a row re-ran it
+  instead of citing it. Treat every "refused" in this file as a dated observation, and re-run the
+  control before trusting a green.
+
+**Occurrence:** issue #910, 2026-09-22, the follow-up Entry 2's out-of-scope observation named.
+
 ### Entry 2 — heredoc spec append, full reproduction
 
 ```bash
@@ -281,15 +407,26 @@ string:
 |---|---|
 | 2026-08-09 (Entry 5) | `…too complex to verify that it stays inside the worktree; break it into plain, separate commands. Refusing to run it — …git operations must target its own worktree. Run the equivalent from <worktree-path> without the redirect.` |
 | 2026-09-21 (Entry 2, above) | `…too complex to verify that it stays inside the worktree. Refusing to run it — …git operations must target its own worktree. Split it into plain, separate commands and run them from <worktree-path>.` |
-| 2026-09-22 (this row's dispatch) | `…but this command runs node with a value computed at runtime (the variable TMPDIR) (a computed argument goes after the script or --) where it cannot tell which operand is the program, next to an operand or input computed at runtime in a plain command, so what it runs cannot be shown not to be git. Refusing to run it — …git operations must target its own worktree. Run the plain command from <worktree-path>.` |
+| 2026-09-22 (issue #911's dispatch) | `…but this command runs node with a value computed at runtime (the variable TMPDIR) (a computed argument goes after the script or --) where it cannot tell which operand is the program, next to an operand or input computed at runtime in a plain command, so what it runs cannot be shown not to be git. Refusing to run it — …git operations must target its own worktree. Run the plain command from <worktree-path>.` |
+| 2026-09-22 (issue #910, generic) | byte-identical to the 2026-09-21 row above — measured on a brace-bearing heredoc AND on an oversize brace-free one |
+| 2026-09-22 (issue #910, generated) | `…but this command runs node with a script computed at runtime (a value computed at runtime (the variable PROBE_DIR)) in a plain command, so what it runs cannot be shown not to be git. Refusing to run it — …git operations must target its own worktree. Run the plain command from <worktree-path>.` |
 
 Between the first two, the remedy clause moved (from before `Refusing to run it` to after the
 git-operations tail), its wording changed (`break it into` → `Split it into … and run them from`),
 the clause separator changed (`;` → `.`), and the trailing `without the redirect` clause disappeared.
 The third is not a re-wording of a fixed string at all: it is **generated per refused shape**, naming
 the offending construct (`the variable TMPDIR`) and the specific reason inline. It was produced
-live in this row's own dispatch by `cp <driver> "$TMPDIR/wsi-check.mjs" && node --check …`, and it is
-a fourth independent confirmation of Entry 1's `$VAR`-expansion discriminator as a side effect.
+live in issue #911's dispatch by `cp <driver> "$TMPDIR/wsi-check.mjs" && node --check …`.
+
+Rows four and five, one day later, settle what those three could only suggest. The generic wording
+did **not** drift at all between 2026-09-21 and 2026-09-22 — row four is byte-identical to row two —
+while the generated wording differs between rows three and five *within the same harness build*,
+because the two commands had different shapes. So the two forms fail differently: the generic one
+drifts across versions, the generated one varies across commands. Neither is a string to match on.
+(Row three read as a fourth confirmation of Entry 1's `$VAR` discriminator when it was written; issue
+#910's re-measurement shows it is not — five narrowing probes around that exact shape were all
+accepted, and a bare `$VAR` expansion is no longer refused at all. See *Entry 1, re-measured
+2026-09-22* above.)
 
 **So the drift is a DOCUMENTATION fact, not a live breakage.** Nothing in flotilla matches on this
 string. Measured in this dispatch, at the row's anchor commit:
@@ -358,7 +495,10 @@ two unmarked ones were measured with `grep -bo '{'` on the file the accepted pro
   "the same body through three destinations" (as this entry's first correction did, and as the
   pull-request body that landed it did) the claim over-reaches by one leg while the conclusion it
   supports does not. This is the half of the old entry that was wrong, and it is the half the field's
-  `python3 -` occurrence had already contradicted.
+  `python3 -` occurrence had already contradicted. **Corrected 2026-09-22 on one point only:** the
+  bullet below says no brace-free body larger than 3,309 B was ever put in front of the guard, and
+  that gap is now closed — the ladder further down finds a wall between 9,576 B and 10,032 B. Size
+  is still not what refuses a 46-B brace-bearing body; it is a second, independent trigger.
 - **The tool is not part of it either** — `cat` and `python3` both refused (probes 2, 5, 7) and both
   ran (probes 1, 3, 4, 8, 9, 10).
 - **Size is not the discriminator.** A 3,309-B brace-free append ran (probe 3), as did a 1,838-B
@@ -400,6 +540,54 @@ settle it.** Until then, keep following Entry 1.
 **Occurrence:** wave `2026-09-16-engine-truth-and-verbs`, spine disclosures `772.4` and row 755
 iteration 1, carved out of issue #800 at triage on 2026-09-21 and re-reproduced at issue #869's own
 dispatch.
+
+#### The brace-free size question, answered 2026-09-22 — there is a wall, between 9,576 B and 10,032 B
+
+The matrix above left one gap open by name: no brace-free body larger than 3,309 B had ever been put
+in front of the guard, so a size threshold above that was untested rather than excluded. Issue #910's
+dispatch closed it with a seven-rung ladder. Every rung was its own Bash call, `cat >> <fresh file>
+<<'EOF'` with a body built from one repeated 228-B brace-free prose line, and every accepted rung was
+confirmed by `wc -c` on the file it wrote (`grep -c '[{}]'` on the first returned 0, so "brace-free"
+is measured, not assumed). A refusal writes nothing, so the refused rungs' files simply do not exist —
+which is itself the check that the refusal was a refusal and not a silent failure.
+
+| rung | lines × 228 B | body | result |
+|---|---|---|---|
+| A | 20 | 4,560 B | accepted (file written, 4,560 B) |
+| B | 40 | 9,120 B | accepted (file written, 9,120 B) |
+| H | 42 | 9,576 B | **accepted** (file written, 9,576 B) — the largest brace-free body proven clean |
+| G | 44 | 10,032 B | **refused** — the smallest refused |
+| F | 45 | 10,260 B | refused |
+| D | 60 | 13,680 B | refused |
+| C | 80 | 18,240 B | refused |
+| E | 12 × ~1,136 B | ~13,632 B | refused |
+
+**What the ladder establishes.**
+
+- **A size wall exists, and it is narrow: between 9,576 B (clean) and 10,032 B (refused)**, a 456-B
+  bracket. The full command text is the body plus roughly 50 B of `cat >> <path> <<'EOF'` head and
+  `EOF` tail, so a limit stated on the command rather than the body sits in the same bracket. Do not
+  round this to a tidy constant — it is a measured bracket on one harness build, and this file's own
+  drift table is the reason not to pin a number the harness never promised.
+- **It is bytes, not lines.** Rung E carried the same byte class as rung D in a fifth of the lines —
+  12 very long lines instead of 60 — and was refused all the same. Rung B's 40 lines ran clean. No
+  line-count threshold fits; the byte bracket does.
+- **It does not disturb the brace finding.** A 46-B brace-bearing body is still refused (that was
+  this row's control probe, and it is what proved the guard was live at all). Size and braces are two
+  independent triggers on the same generic message, which is why "size is not the cause" and "there
+  is a size wall" are both true and neither replaces the other.
+- **The refusal text is the generic one**, byte-identical to the brace-bearing refusal's — the guard
+  does not say it is refusing for size. So an oversize heredoc looks exactly like a brace-bearing one
+  from the outside, and the remedy is the same one either way.
+
+**The remedy is unchanged, and this only widens its reach.** The old reading — "big appends were
+refused" was a correlation, not a cause — was right about the 2026-09-21 occurrences and is still
+right: a 3,309-B append ran. But a Worker writing a long spec section through a heredoc will cross
+~10 KB long before it notices, and will then be told only that its command is "too complex to
+verify." Write the content with the file-editing tool; it has no ceiling of this kind and no
+occurrence on record has it refused.
+
+**Occurrence:** issue #910, 2026-09-22.
 
 **Residues closed on 2026-09-22 (issue #911).** The correction above landed with four disclosed
 loose ends, each fixed in that one follow-up row rather than carried: (1) the new Worker-brief clause
@@ -474,3 +662,27 @@ Live-reproduced in this dispatch (issue #429, 2026-08-09), standing in for the o
 The split-per-command re-issue — one Bash call per probed id, the loop unrolled — ran clean and dropped nothing, confirmed live in this dispatch: the same remedy this catalog prescribes for every other refused shape applies unchanged here.
 
 **Occurrence:** Wave `2026-08-03-currency-guards-and-deps-port`, disclosures `381.4` (Worker) and `420.1` (Reviewer) — a `for`/`do`/`done` loop probing several issues for a populated dependency list was refused by the worktree-isolation guard; the Worker re-issued it split per-command and dropped nothing. That wave's spine and disclosure text are archived, not tracked, so the quoted refusal message and the no-op control probe above are this dispatch's own live reproduction (issue #429, 2026-08-09) rather than a copy of the original wording — an independent reproduction of the same shape, not a restatement of it.
+
+### Entry 5, re-run 2026-09-22 — it lapsed with Entry 1, exactly as filed
+
+This entry was filed explicitly as Entry 1's `$VAR` discriminator wearing a loop rather than as a
+trigger of its own, so Entry 1's lapse predicts this one. Both refused forms were re-issued verbatim
+from issue #910's `isolation: 'worktree'` dispatch, each as its own Bash call:
+
+```bash
+# ✓ accepted 2026-09-22 (refused 2026-08-09) — printed `probe 371`
+for n in 371; do echo "probe $n"; done
+
+# ✓ accepted 2026-09-22 (refused 2026-08-09) — printed all three lines
+for n in 371 392 399; do
+  echo "probe issue $n"
+done
+```
+
+The prediction held: the loop variable is a `$VAR` expansion like any other, and with the `$VAR` rule
+lapsed the loop runs. Read as evidence, that is worth more than the convenience — it is the entry's
+own filing decision (a shape of an existing discriminator, not a new one) being confirmed by the
+discriminator taking the shape down with it when it went. The guard was live in that dispatch; see
+the control probe in *Entry 1, re-measured 2026-09-22*.
+
+**Occurrence:** issue #910, 2026-09-22.
