@@ -272,6 +272,19 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * that sum rounded UP to the next full KB (1 KB = 1000 B): **161,000 B**. The
  * 45 B of headroom that leaves is a fact about the rounding rule, not a budget.
  *
+ * **NOT raised by issue #910 (2026-09-22), which spent NEGATIVE bytes here.**
+ * That row re-measured Convention 13's Catalog entry 1 against the current
+ * harness — five stations, all re-run live — and had to rewrite three catalog
+ * entries and two Common Mistakes bullets to say what it found. It paid for them
+ * by deleting the same evidence-pointer parenthetical that the same reference
+ * file repeated seven times, keeping one full-path occurrence and letting the
+ * other six read "in the evidence sidecar" as the catalog entries already did.
+ * Net **−36 B**: the class lands at **160,919 B** over the same 18 files, so the
+ * round-up is still 161,000 B and this constant stays exactly where it is. Every
+ * measurement that row made — the station table, the probe log, the size ladder,
+ * both current refusal texts — went to the `evidence/` sibling, the class no run
+ * reads. Headroom is 81 B, which is still a rounding fact and still not a budget.
+ *
  * Previously: 160,000 B — **RAISED by the row that corrected Convention 13's
  * Catalog entry 2**, in the diff that caused that growth. That
  * entry named the wrong discriminator — it said a heredoc is refused "only when
@@ -328,6 +341,13 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 161_000;
  * 57 files, so the ceiling moves to that sum rounded UP to the next full KB
  * (1 KB = 1000 B): **1,229,000 B**. The 351 B of headroom that leaves is a fact
  * about the rounding rule, not a budget.
+ *
+ * **NOT raised by issue #910 (2026-09-22), for the same reason as the sibling
+ * above:** its one reference-file edit is a net **−36 B**, so this population
+ * lands at **1,228,613 B** over the same 57 files, the round-up is still
+ * 1,229,000 B, and this constant stays. That row's bulk — a station table, a
+ * probe log, a seven-rung size ladder and two verbatim refusal texts — went to
+ * `evidence/`, which this population excludes, so none of it is priced here.
  *
  * Previously: 1,228,000 B — the raise by the row that closed the four residues
  * the Convention 13 Catalog correction left behind (issue #911), whose reasoning
