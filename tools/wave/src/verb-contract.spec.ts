@@ -763,20 +763,30 @@ describe('the usage renderer — a section is computed, never transcribed', () =
     expect(c.usage[0].match(/<row-id>/g)).toHaveLength(1);
   });
 
-  it('the `output:` and `--json:` lines come from declared fields, on every contract', () => {
+  it('the `output:` and shape-clause lines come from declared fields, on every contract', () => {
     // Stated both ways, because either alone is satisfiable by a renderer that
     // is silently ignoring one of them: a section carries an `output:` line
-    // exactly when the contract declares one, and a `--json:` clause exactly
-    // when it declares one.
+    // exactly when the contract declares one, and a shape clause exactly when
+    // it declares one.
+    //
+    // The clause's HEADING follows the output class (issue #913) — `shape:` on
+    // a verb whose whole stdout is JSON, `--json:` on every other class, and
+    // whatever {@link JsonNote.label} says where one is declared — so the
+    // expected heading is DERIVED here rather than fixed at `--json`. Fixing it
+    // was what let `catalog` pass this check off an unrelated note line that
+    // happened to begin with the same four characters.
     const wrong: string[] = [];
     for (const [verb, contract] of Object.entries(verbContracts())) {
       const hasOutputLine = contract.usage.some((l) => l.startsWith('output: '));
       if (hasOutputLine !== (contract.outputNote !== undefined)) {
         wrong.push(`${verb}: output line ${hasOutputLine}, declaration ${contract.outputNote !== undefined}`);
       }
-      const hasJsonLine = contract.usage.some((l) => l.trimStart().startsWith('--json'));
+      const heading = contract.json?.label ?? (contract.output === 'json' ? 'shape' : '--json');
+      const hasJsonLine = contract.usage.some((l) => l.trimStart().startsWith(`${heading}: `));
       if (hasJsonLine !== (contract.json !== undefined)) {
-        wrong.push(`${verb}: --json line ${hasJsonLine}, declaration ${contract.json !== undefined}`);
+        wrong.push(
+          `${verb}: ${heading} line ${hasJsonLine}, declaration ${contract.json !== undefined}`,
+        );
       }
       if (contract.outputNote !== undefined) {
         const first =

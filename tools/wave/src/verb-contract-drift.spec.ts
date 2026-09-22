@@ -46,8 +46,10 @@ import {
   declaredFlagTokens,
   defineVerb,
   renderInvocations,
+  renderUsageSection,
   ROUTER_GLOBAL_FLAGS,
   type VerbContract,
+  type VerbContractDeclaration,
 } from './verb-contract';
 
 const SRC_DIR = __dirname;
@@ -650,5 +652,192 @@ describe('verb-contract drift — a renamed flag leaves no copy behind', () => {
       '--report <path>',
       '--verdict <path>',
     ]);
+  });
+});
+
+// ─── 6. A JSON verb declares the SHAPE of its JSON (issue #913) ──────────────
+//
+// `output: 'json'` says stdout is JSON and says nothing about what that JSON
+// IS. Thirty-five of the engine's thirty-six json-class verbs declared exactly
+// that and stopped — `catalog` alone carried a shape — while the `prose` and
+// `silent-write` verbs beside them had been declaring theirs since ADR-0051
+// decision 7. The asymmetry had a measured cost: two shipped reference
+// documents described `merge-order`'s output as an array of branch STRINGS
+// where it prints an array of OBJECTS, and nothing rendered the real shape
+// anywhere a reader — or a drift check — would meet it.
+//
+// This is the check that makes the omission impossible to re-introduce. It is
+// deliberately a MEMBERSHIP check over the live aggregate rather than a list of
+// verbs: a verb added tomorrow with `output: 'json'` and no shape fails here on
+// the day it lands, with no edit to this file.
+//
+// **Resolution bias (ADR-0052): fail-closed.** A contract this check cannot
+// read a shape off is a FINDING, not an abstention — there is no ambiguous case
+// to abstain over, because the predicate is the presence of one declared string
+// and the aggregate is fully enumerable in-process. The unmodelled set is
+// empty, and the two negative controls below are what keeps that claim honest.
+
+/** Every `output: 'json'` contract in the live aggregate, keyed as a caller types it. */
+function jsonClassContracts(): [string, VerbContract][] {
+  return Object.entries(AGGREGATE).filter(([, c]) => c.output === 'json');
+}
+
+/**
+ * Why `shape` fails to be usable notation, or `null` when it is fine.
+ *
+ * Deliberately shallow: it asks whether the string could be a shape at all —
+ * non-empty, and its braces/brackets balanced — not whether it matches any
+ * particular grammar. A stricter parser here would be a second notation the
+ * receipt clauses already shipped without, and the failure it would catch (a
+ * typo inside a key list) is one the printed-form comparison catches better.
+ */
+function malformedShape(shape: string): string | null {
+  if (shape.trim() === '') return 'empty';
+  const stack: string[] = [];
+  const close: Record<string, string> = { '}': '{', ']': '[' };
+  for (const ch of shape) {
+    if (ch === '{' || ch === '[') stack.push(ch);
+    else if (ch in close) {
+      if (stack.pop() !== close[ch]) return `unbalanced at "${ch}"`;
+    }
+  }
+  return stack.length === 0 ? null : `unclosed "${stack[stack.length - 1]}"`;
+}
+
+describe('verb-contract drift — a JSON verb declares the shape of its JSON', () => {
+  it('every `output: json` contract carries a declared `json.shape`', () => {
+    const undeclared = jsonClassContracts()
+      .filter(([, c]) => c.json?.shape === undefined)
+      .map(([verb]) => verb);
+    // No exemption list, and none is needed: every json verb in the engine
+    // states a shape. An exemption would have to be declared and reasoned in
+    // the contract itself — there is no allowlist here to add a verb to.
+    expect(undeclared.join('\n')).toBe('');
+  });
+
+  it('the surface this row closed — 36 json-class verbs, every one of them shaped', () => {
+    // The DUTY is the membership check above; this states the number the row
+    // measured so a later reader can see which way it moved. 35 of these 36
+    // carried no shape before issue #913 — `catalog` was the one that did.
+    const shaped = jsonClassContracts().filter(([, c]) => c.json?.shape !== undefined);
+    expect(jsonClassContracts()).toHaveLength(36);
+    expect(shaped).toHaveLength(36);
+  });
+
+  it('every declared shape is usable notation, on every output class', () => {
+    // Not only the json verbs: a receipt clause's shape is the same notation
+    // and gets the same check, so this cannot pass by narrowing its subject.
+    const bad: string[] = [];
+    for (const [verb, contract] of Object.entries(AGGREGATE)) {
+      const shape = contract.json?.shape;
+      if (shape === undefined) continue;
+      const why = malformedShape(shape);
+      if (why !== null) bad.push(`${verb}: ${why} — ${shape}`);
+    }
+    expect(bad.join('\n')).toBe('');
+  });
+
+  it('the rendered section SHOWS each shape, headed `shape:` on a json verb', () => {
+    // A declaration the renderer drops is the same omission one layer out: the
+    // Catalog would carry the shape and `--help` would not, which is the exact
+    // split that let the merge-order defect live. Both halves are asserted.
+    const missing: string[] = [];
+    for (const [verb, contract] of jsonClassContracts()) {
+      const shape = contract.json?.shape;
+      if (shape === undefined) continue; // the check above owns that case
+      const section = contract.usage;
+      const clause = section.find((line) => line.trimStart().startsWith('shape:'));
+      if (clause === undefined) {
+        missing.push(`${verb}: renders no \`shape:\` line`);
+      } else if (!clause.includes(shape)) {
+        missing.push(`${verb}: its \`shape:\` line does not carry the declared shape`);
+      }
+      // …and the flag-headed spelling is NOT what a json verb renders: there is
+      // no `--json` to explain when the whole stdout already is the JSON.
+      if (section.some((line) => line.trimStart().startsWith('--json:'))) {
+        missing.push(`${verb}: renders a \`--json:\` clause on a json-class verb`);
+      }
+    }
+    expect(missing.join('\n')).toBe('');
+  });
+
+  it('a non-json verb keeps the flag-headed `--json:` clause', () => {
+    // The other direction of the same rule: the heading follows the output
+    // class, so a prose verb must NOT start reading `shape:`.
+    const wrong: string[] = [];
+    for (const [verb, contract] of Object.entries(AGGREGATE)) {
+      if (contract.output === 'json' || contract.json === undefined) continue;
+      const headed = contract.usage.filter((line) => line.trimStart().startsWith('shape:'));
+      if (headed.length > 0) wrong.push(`${verb}: ${headed.join(' / ')}`);
+    }
+    expect(wrong.join('\n')).toBe('');
+    // A declared LABEL still overrides both defaults: the issue-store write
+    // receipts say `--json receipt`, and the class rule does not touch them.
+    expect(AGGREGATE['issue-store transition'].usage.join('\n')).toContain('--json receipt:');
+  });
+
+  it('merge-order — the verb this row was filed for — names its real keys', () => {
+    // Named, because this is the shape that was MEASURED wrong: two shipped
+    // reference documents called `algorithmic` an array of branch strings. The
+    // keys below are the ones `renderMergeOrder`'s `projectPr` actually builds.
+    const shape = AGGREGATE['merge-order'].json?.shape ?? '';
+    for (const key of ['issueId', 'nn', 'fileCount', 'branch', 'title?', 'prUrl?']) {
+      expect(shape, `merge-order's shape omits ${key}`).toContain(key);
+    }
+    expect(shape).toContain('algorithmic: [ {');
+    // …and the rendered help — the public contract surface — shows it.
+    const rendered = AGGREGATE['merge-order'].usage.join('\n');
+    expect(rendered).toContain('shape: { algorithmic: [ { issueId, nn, fileCount, branch');
+  });
+
+  it('NEGATIVE CONTROL — a json verb with no shape, and a malformed one, both fail', () => {
+    // The two predicates above are worth exactly what they can fail on, so a
+    // defect of each kind is built by hand here and run through the SAME
+    // functions, rather than trusted to stay catchable.
+    const base: VerbContractDeclaration = {
+      verb: 'toy',
+      flags: [],
+      positionals: { kind: 'fixed', count: 0 },
+      output: 'json',
+    };
+
+    // (a) the omission this row closes: `output: 'json'` and nothing else.
+    const unshaped = defineVerb(base);
+    expect(unshaped.json?.shape).toBeUndefined();
+    expect(
+      [unshaped].filter((c) => c.output === 'json' && c.json?.shape === undefined),
+    ).toHaveLength(1);
+    expect(unshaped.usage.some((l) => l.trimStart().startsWith('shape:'))).toBe(false);
+
+    // (b) notation that cannot be read as a shape.
+    expect(malformedShape('')).toBe('empty');
+    expect(malformedShape('{ a, b: [ c }')).toBe('unbalanced at "}"');
+    expect(malformedShape('{ a, b: [ c ]')).toBe('unclosed "{"');
+    // …and the well-formed one it has to let through.
+    expect(malformedShape('{ a, b: [ { c, d? } ], e | null }')).toBeNull();
+  });
+
+  it('NEGATIVE CONTROL — the renderer check fires when the clause is dropped', () => {
+    // The `shape:`-line assertion could pass vacuously if the renderer stopped
+    // emitting the clause AND the loop skipped the verb. It does not: a
+    // declared shape that the renderer does not print is caught here.
+    const shaped = renderUsageSection({
+      verb: 'toy',
+      flags: [],
+      positionals: { kind: 'fixed', count: 0 },
+      output: 'json',
+      json: { shape: '{ a, b }' },
+    });
+    expect(shaped.some((l) => l.trimStart() === 'shape: { a, b }')).toBe(true);
+    // The same declaration on a PROSE verb renders the flag-headed spelling —
+    // one declaration, two headings, decided by the class and by nothing else.
+    const prose = renderUsageSection({
+      verb: 'toy',
+      flags: [],
+      positionals: { kind: 'fixed', count: 0 },
+      output: 'prose',
+      json: { shape: '{ a, b }' },
+    });
+    expect(prose.some((l) => l.trimStart() === '--json: { a, b }')).toBe(true);
   });
 });

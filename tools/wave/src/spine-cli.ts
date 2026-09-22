@@ -317,6 +317,21 @@ const GATE_JSON_SHAPES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * THE output shape of this runner's one `json`-class op (issue #913) — the
+ * listing the two gates above are the fail-closed counterparts of.
+ *
+ * Same one-table discipline again: {@link SPINE_CONTRACTS} renders the op's
+ * `shape:` line from this, and {@link runSpineHumanGated} is the only thing
+ * that builds the object. Read off that builder and confirmed by running the
+ * op over `__fixtures__/minimal-spine.md` — every key is unconditional, so a
+ * wave with no human lane prints `rows: []` and `awaitingHumanIds: []` rather
+ * than dropping either key. Nothing downstream may guard on emptiness.
+ */
+const HUMAN_GATED_JSON_SHAPE =
+  '{ ok, verb, spine, humanGatedWorkers: [<worker token>], ' +
+  'rows: [ { id, title, worker, state, awaitingHuman } ], awaitingHumanIds: [<row id>] }';
+
+/**
  * One `--json` receipt: what a silent write put into the spine.
  *
  * `id` is present exactly on the four ops that address a Plan-Table ROW;
@@ -538,6 +553,10 @@ const SPINE_OP_SHAPES: Readonly<Record<string, Omit<VerbContractDeclaration, 've
     positionals: fixed('<spine-path>'),
     output: 'json',
     flags: [{ canonical: '--workers', value: 'one', valueType: 'list' }],
+    json: {
+      shape: HUMAN_GATED_JSON_SHAPE,
+      trail: 'a wave with no human lane prints `rows: []` and exits 0 — that IS the answer',
+    },
   },
   'check-awaiting-human': {
     positionals: fixed('<spine-path>'),

@@ -133,6 +133,19 @@ export const RESUME_CONTRACT: VerbContract = defineVerb({
     '  --reports and --verdicts are accepted as aliases of --reports-dir and --verdicts-dir.',
   ],
   outputNote: 'JSON — the ResumeResult plus a `cleanup` array',
+  // Issue #913. Read off `printJson({ ...result, cleanup })` — the spread is why
+  // `cleanup` is NOT on `ResumeResult` and why the TypeScript type alone would
+  // have understated the printed object by a whole key. Confirmed by running
+  // the verb over `__fixtures__/minimal-spine.md`.
+  json: {
+    shape:
+      '{ rows: [ { id, branch, reconstructedState, decision, coarse, worktree, ' +
+      'latestReport, reportIter, latestVerdict, verdictIter, notes } ], ' +
+      'fatals: [ { id, reason } ], ' +
+      'cleanup: [ { branch, worktreePath, wasLocked, wasDirty, worktreeRemoved, ' +
+      'branchDeleted, blockedByDirty, notes } ] }',
+    trail: 'every key is always present; the nullable ones carry null, never an absent key',
+  },
 });
 
 /**

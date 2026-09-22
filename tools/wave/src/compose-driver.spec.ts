@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  COMPOSE_DRIVER_CONTRACT,
   DRIVER_TEMPLATE_PATH,
   REQUIRED_ROW_FIELDS,
   agentDefinitionName,
@@ -3792,5 +3793,35 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
       'slug',
       'worker',
     ]);
+  });
+
+  it('the DECLARED shape names every key the receipt actually carries (issue #913)', async () => {
+    // Three things have to agree, and this is what makes it three rather than
+    // two: the EMITTER (what `runComposeDriver` prints), the PIN above (a
+    // hand-typed key list that fails on a "helpful" addition), and the CONTRACT
+    // (what `--help` and the Catalog advertise). Before issue #913 the third
+    // did not exist — `output: 'json'` was the whole declaration — so a key
+    // could be added to the receipt and to the pin while the public contract
+    // surface went on saying nothing about it.
+    //
+    // Asserted in ONE direction, over the receipt this run actually printed: a
+    // key in the JSON that the shape does not name is drift. The reverse is not
+    // asserted here, because nothing in this shape is conditional and the
+    // `toEqual` below already pins the row list exactly.
+    const { spinePath, configPath } = await seed(AC1_ROWS);
+    await compose(spinePath, configPath);
+    const receipt = JSON.parse(stdout) as Record<string, unknown>;
+    const shape = COMPOSE_DRIVER_CONTRACT.json?.shape ?? '';
+    const undeclared = Object.keys(receipt).filter((k) => !new RegExp(`\\b${k}\\b`).test(shape));
+    expect(undeclared, 'the receipt carries a key the declared shape does not name').toEqual([]);
+    // …and the per-row key list is declared in the SAME order the emitter
+    // builds it, so a reader of `--help` sees the object they will receive.
+    expect(shape).toContain(
+      'rows: [ { id, slug, branch, model, iteration, risk, worker, scopeGrants, depsSetupSource } ]',
+    );
+    // NEGATIVE CONTROL — the filter is not one that can only return [].
+    expect(
+      ['ok', 'aKeyNoShapeNames'].filter((k) => !new RegExp(`\\b${k}\\b`).test(shape)),
+    ).toEqual(['aKeyNoShapeNames']);
   });
 });

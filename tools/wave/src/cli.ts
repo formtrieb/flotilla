@@ -729,6 +729,86 @@ const DOR_JSON_SHAPE =
  */
 const FILES_DRIFT_JSON_SHAPE = '{ status, driftedFiles, rationale, projectScopes }';
 
+// ─── The output shapes of THIS module's `json`-class verbs (issue #913) ──────
+//
+// Every verb whose whole stdout is JSON declares the shape of that JSON, in the
+// same notation the receipt clauses above already use, and `--help` renders it
+// under `shape:`. Each was read off the verb's own EMITTER and then confirmed by
+// running the verb, never off a TypeScript return type: the printers below build
+// object literals with conditional spreads, so the keys a run actually carries
+// are not the keys an interface declares. Where the two disagreed, the printed
+// form won and the disagreement is named in place.
+
+/**
+ * One entry of every merge-order list, as `renderMergeOrder`'s `projectPr`
+ * builds it — the projection, not `MergeOrderResult`'s own row type.
+ *
+ * `title` and `prUrl` are spread conditionally (`prUrl` also drops on `null`),
+ * so both keys are genuinely ABSENT rather than `undefined` on a row that has
+ * neither. Confirmed live against `__fixtures__/minimal-spine.md`, whose single
+ * row prints `{ issueId, nn, fileCount, branch, title }` and no `prUrl`.
+ */
+const MERGE_ORDER_ENTRY_SHAPE = '{ issueId, nn, fileCount, branch, title?, prUrl? }';
+
+/**
+ * The shape `merge-order` prints (issue #913 — the verb this row was filed for).
+ *
+ * The lists carry OBJECTS, not branch strings, and that is the whole reason the
+ * shape is stated: two shipped reference documents described this verb's output
+ * as an array of branch names, and nothing rendered the real shape anywhere a
+ * reader would meet it. `override` is `null` unless the spine declares one;
+ * `hasOverride` is the same fact as a boolean, kept because callers read it.
+ */
+const MERGE_ORDER_JSON_SHAPE =
+  `{ algorithmic: [ ${MERGE_ORDER_ENTRY_SHAPE} ], override: [ <same entry> ] | null, ` +
+  'reason, hasOverride, notInPlay: [ <same entry> ], warnings: [ <text> ] }';
+
+/** The shape `closed-by` prints — `class` is the six-value classification. */
+const CLOSED_BY_JSON_SHAPE =
+  '{ class: <real-pr|pre-fill|placeholder|sha|prose|empty>, needsPin }';
+
+/** The shape `detect-host` prints — `HostInfo`, verbatim off `detectHost`. */
+const DETECT_HOST_JSON_SHAPE =
+  '{ host: <github|bitbucket|unknown>, workspace, repo }';
+
+/** The shape `verdict-acked` prints — the met-AC indexes of the MAX-iter verdict. */
+const VERDICT_ACKED_JSON_SHAPE = '{ acked: [ <ac-index> ], iter, corrupt }';
+
+/**
+ * The shape `version` prints — `compareEngineVersion`'s whole report.
+ *
+ * Every key is always present; four of the six are `null` on a bare read
+ * (confirmed live: `{ version, expected: null, match: null, outcome:
+ * "no-expectation", detail, repair: null }`).
+ */
+const VERSION_JSON_SHAPE = '{ version, expected, match, outcome, detail, repair }';
+
+/**
+ * The shape `worktree-cleanup` prints — and it is TWO shapes, because
+ * `--dry-run` reports a PLAN and a real run reports a RESULT. They share only
+ * their first two keys and their last three, so each is stated WHOLE rather
+ * than as an envelope plus a diff: a single merged key list would advertise
+ * `removed` on a preview that removes nothing.
+ *
+ * `branchFilter` is present only with `--spine`/`--branches`, and each of
+ * `orphans` / `detached` / `orphanBranches` only when that sweep ran — all
+ * conditional spreads, all genuinely absent otherwise. Confirmed live: a
+ * `--dry-run --branches …` run printed exactly `dryRun, branchFilter, selected,
+ * skipped, worktreeCount, unaccounted, commandLine`, which is this shape with
+ * its three optional sweeps absent.
+ */
+const WORKTREE_CLEANUP_JSON_SHAPE =
+  '{ dryRun, branchFilter?, selected, skipped, orphans?, detached?, orphanBranches?, ' +
+  'worktreeCount, unaccounted, commandLine }';
+const WORKTREE_CLEANUP_JSON_CONTINUATION = [
+  '         Without --dry-run the RESULT shape is printed instead:',
+  '           { dryRun, branchFilter?, removed, skipped, errors, deregisteredNotDeleted,',
+  '             erroredStillListed, branchesDeleted, branchHygieneSkipped, branchHygieneDeferred,',
+  '             orphans?, detached?, worktreeCount, unaccounted, commandLine }',
+  '         orphans? = { selected, skipped, scratch?, reviewRefs?, drivers? } on the preview and the',
+  '         executed sweep\'s own result on the run; orphanBranches? is preview-only.',
+];
+
 /**
  * One issue's readiness answer, as `dor --json` renders it.
  *
@@ -834,6 +914,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     twin: [{ flag: '--spine', label: '<wave-md-path>' }],
     notes: ['  The spine is named EITHER by --spine or as the positional — never both.'],
     outputNote: 'JSON',
+    json: {
+      shape: MERGE_ORDER_JSON_SHAPE,
+      trail: 'the three lists carry OBJECTS, never branch strings',
+    },
   }),
   'closed-by': defineVerb({
     verb: 'closed-by',
@@ -843,6 +927,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     positionals: { kind: 'variadic', min: 1, label: '<closed-by-line>' },
     output: 'json',
     outputNote: 'JSON',
+    json: {
+      shape: CLOSED_BY_JSON_SHAPE,
+      trail: 'the exit code mirrors needsPin (0 false / 1 true)',
+    },
   }),
   'detect-host': defineVerb({
     verb: 'detect-host',
@@ -861,6 +949,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  --config is accepted and ignored (uniform-wrapper tolerance); this verb resolves no store.',
     ],
     outputNote: 'JSON',
+    json: {
+      shape: DETECT_HOST_JSON_SHAPE,
+      trail: 'workspace/repo are `""` when the URL did not yield them; exit 1 on host `unknown`',
+    },
   }),
   'worktree-cleanup': defineVerb({
     verb: 'worktree-cleanup',
@@ -886,6 +978,11 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     // `output:` line at all — the one JSON verb in the engine that advertised
     // its class a second way. One way now.
     outputNote: 'JSON',
+    json: {
+      shape: WORKTREE_CLEANUP_JSON_SHAPE,
+      trail: 'the PLAN shape, printed with --dry-run',
+      continuation: WORKTREE_CLEANUP_JSON_CONTINUATION,
+    },
   }),
   'verdict-acked': defineVerb({
     verb: 'verdict-acked',
@@ -901,6 +998,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     ],
     notes: ['  ALL named or ALL positional — a mixed call is a usage error.'],
     outputNote: 'JSON',
+    json: {
+      shape: VERDICT_ACKED_JSON_SHAPE,
+      trail: 'no verdict for the id is `{ acked: [], iter: null, corrupt: 0 }`, never an error',
+    },
   }),
   'render-verdict': defineVerb({
     verb: 'render-verdict',
@@ -932,11 +1033,18 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     positionals: { kind: 'fixed', count: 0 },
     output: 'json',
     notes: [
-      '  Prints { version, expected, match, outcome, detail, repair } as JSON.',
+      // The shape used to live HERE, as prose inside a note — a second place a
+      // shape could be stated, and the reason the shape clause below exists as
+      // a declared field instead (issue #913). One statement, one renderer.
       '  Resolves no store and reads no wave config.',
       '  Exit: 0 match / bare read; 1 mismatch, unreadable engine version, or',
       '  unusable expectation; 2 usage.',
     ],
+    outputNote: 'JSON',
+    json: {
+      shape: VERSION_JSON_SHAPE,
+      trail: 'every key always present; four are null on a bare read',
+    },
   }),
   catalog: defineVerb({
     verb: 'catalog',
@@ -952,10 +1060,13 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  verb and per group op, each carrying its canonical flag spellings, their',
       '  aliases, value kinds, positional arity and output class.',
       '  Resolves no store, reads no wave config, and reaches no network.',
+      // Was the `lead` of the clause below while that clause was headed
+      // `--json:`. Under `shape:` (issue #913) the heading no longer names a
+      // flag, so the sentence about the flag belongs with the verb's prose.
+      '  The --json flag is accepted and redundant here — there is no second rendering.',
     ],
     outputNote: 'JSON — the Catalog itself, sorted by verb',
     json: {
-      lead: 'accepted and redundant — this verb has no second rendering',
       shape: '{ verb, verbs: [ <VerbContract>, ... ] }',
       trail: 'the contracts verbatim, never a hand-written projection of them',
     },
@@ -1177,9 +1288,23 @@ function rosterLine(contract: VerbContract): string {
  * drop exactly the part a caller was reading for. A continuation is recognised
  * structurally — a following line indented DEEPER than the `--json` line
  * itself — never by counting lines.
+ *
+ * **A `json`-class verb contributes nothing here, deliberately** (issue #913).
+ * Its clause answers a different question — `shape:`, what its whole stdout IS,
+ * not what a flag adds — and those shapes run to a hundred characters and more.
+ * The roster is a uniform one-line index of sixty verbs; carrying them would
+ * stop it scanning as columns, and `--help` is one keystroke away. The roster's
+ * `# prints JSON` already says the class.
+ *
+ * The lookup is by the clause's OWN heading rather than by a `--json` prefix,
+ * and that precision is load-bearing: `catalog`'s prose mentions the flag, and
+ * a prefix search pulled that sentence onto its roster line as though it were
+ * the clause.
  */
 function jsonClause(contract: VerbContract): string {
-  const at = contract.usage.findIndex((l) => l.trimStart().startsWith('--json'));
+  if (contract.output === 'json') return '';
+  const heading = contract.json?.label ?? '--json';
+  const at = contract.usage.findIndex((l) => l.trimStart().startsWith(`${heading}: `));
   if (at === -1) return '';
   const indent = contract.usage[at].length - contract.usage[at].trimStart().length;
   const clause = [contract.usage[at]];
