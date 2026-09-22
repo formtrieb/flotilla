@@ -378,7 +378,7 @@ const PARTIALLY_DECLARED_OUTSIDE = ['verb-contract-drift.spec.ts'];
  *     `fast-glob` import. A guard spec that imported a loader from a sibling
  *     module instead would read as a hermetic fixture suite and be excluded,
  *     silently. No shipped guard does this today — measured, not assumed:
- *     eleven of the twelve glob members import a reader directly.
+ *     twelve of the thirteen glob members import a reader directly.
  *  3. **Declarations in another notation.** Only the canonical bold markers
  *     are read. `verb-contract-drift.spec.ts`'s
  *     `**Resolution bias (ADR-0052): fail-closed.**` and
@@ -443,7 +443,7 @@ describe('guard-declaration-keeper: the population is derived, not listed', () =
     const reaching = namedGuardSpecs()
       .filter((f) => reachesExternalText(readFileSync(f, 'utf8')))
       .map((f) => basename(f));
-    // Measured at this anchor: twelve files match the glob and eleven reach
+    // Measured at this anchor: thirteen files match the glob and twelve reach
     // external text. Neither number is pinned here — the SET DIFFERENCE is,
     // in the census below, which is the assertion that has to be re-decided
     // when the population moves.
