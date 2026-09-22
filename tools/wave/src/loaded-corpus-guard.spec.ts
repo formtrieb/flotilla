@@ -394,6 +394,13 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 160_000;
  * to its own landed measure. This raise leaves 719 B of headroom, which is a
  * fact about the rounding rule rather than a budget — the next row that adds
  * reading cost raises again, in its own diff.
+ *
+ * UNCHANGED by the PR-title advisory row (issue #912), which spent 339 B of
+ * that headroom on `to-issues/SKILL.md`'s one-line title rule: the population
+ * lands at 1,227,620 B over the same 57 files, and 1,227,620 B rounded UP to the
+ * next full KB is 1,228,000 B — this constant already. A raise here would be a
+ * pre-bought one. (The shared standing load is untouched: that row's only
+ * corpus file is not in the class, which stays at 159,926 B.)
  */
 const LOADED_CORPUS_CEILING_BYTES = 1_228_000;
 

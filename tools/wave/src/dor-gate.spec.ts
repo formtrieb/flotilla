@@ -22,6 +22,12 @@ import {
 import type { HeaderBlock } from './header-parser';
 import type { IssueView } from './contract';
 import type { VerifyConfig } from './verify';
+// The composer's own bare-id strip — the function whose output Gate 10 models.
+// Imported HERE and never from dor-gate.ts: `compose-driver` already reaches
+// dor-gate.ts transitively, so the gate importing it back would close an
+// evaluation-time cycle. A spec is outside the engine's module graph, so this
+// is the one place the two can be compared.
+import { stripBareIds } from './compose-driver';
 
 /**
  * Each test spins up a throwaway repo-like tree under $TMPDIR with the bits
@@ -1363,6 +1369,32 @@ function gate(result: DorResult, name: string): GateResult {
   return g;
 }
 
+/** Gate 10's one spelling, pinned here the same way {@link STALENESS_GATE_NAME} is. */
+const PR_TITLE_GATE_NAME = 'pr-title-id-independent';
+
+/**
+ * The nine gate names that shipped before Gate 10, in emission order. Kept as
+ * its own constant so the additivity test below can assert them as a PREFIX of
+ * the live roster rather than re-listing them.
+ */
+const GATE_NAMES_BEFORE_PR_TITLE = [
+  'header-parseable',
+  'files-glob-valid',
+  'ac-section-consistent',
+  'risk-file-count-consistent',
+  'blocked-by-chain-resolves',
+  'ac-files-coverage',
+  'literal-files-exist',
+  'verify-profile-coverage',
+  'files-touched-since-tracker-update',
+];
+
+/** The full roster both entrypoints emit, in order. */
+const CANONICAL_GATE_NAMES = [
+  ...GATE_NAMES_BEFORE_PR_TITLE,
+  PR_TITLE_GATE_NAME,
+];
+
 describe('validateIssueView (non-file / structured entrypoint)', () => {
   it('passes a well-formed view and defers the working-tree + cross-issue gates when no repoRoot is given', () => {
     const result = validateIssueView(buildView());
@@ -1477,20 +1509,25 @@ describe('validateIssueView (non-file / structured entrypoint)', () => {
     expect(result.overall).toBe('PASS');
   });
 
-  it('emits all nine canonical gates in the same order as the file path (no silent omission)', () => {
+  it('emits all ten canonical gates in the same order as the file path (no silent omission)', () => {
     const names = validateIssueView(buildView()).gates.map((g) => g.name);
 
-    expect(names).toEqual([
-      'header-parseable',
-      'files-glob-valid',
-      'ac-section-consistent',
-      'risk-file-count-consistent',
-      'blocked-by-chain-resolves',
-      'ac-files-coverage',
-      'literal-files-exist',
-      'verify-profile-coverage',
-      'files-touched-since-tracker-update',
-    ]);
+    expect(names).toEqual(CANONICAL_GATE_NAMES);
+  });
+
+  it('the tenth gate is ADDITIVE — the nine that shipped before it are all still emitted, in order', () => {
+    // The roster is the package's contract surface: a consumer reading
+    // `dor --json` matches these names literally. Pinning the pre-existing
+    // nine as a PREFIX is what makes "additive" checkable — a rename or a
+    // reorder of any of them fails here even though the array above would
+    // simply be edited to match.
+    const names = validateIssueView(buildView()).gates.map((g) => g.name);
+
+    expect(names.slice(0, GATE_NAMES_BEFORE_PR_TITLE.length)).toEqual(
+      GATE_NAMES_BEFORE_PR_TITLE,
+    );
+    expect(names).toContain(PR_TITLE_GATE_NAME);
+    expect(names).toHaveLength(GATE_NAMES_BEFORE_PR_TITLE.length + 1);
   });
 
   it('never lets a warn or deferred gate flip overall to FAIL', () => {
@@ -2134,7 +2171,12 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     expect(gate(result, STALENESS_GATE_NAME).status).toBe('pass');
   });
 
-  it('emits the gate LAST on the file path too, keeping the two entrypoints in the same order', () => {
+  it('emits the gate second-to-last on the file path too, keeping the two entrypoints in the same order', () => {
+    // #918 pinned this gate as the LAST one on the file path; Gate 10 (the
+    // PR-title advisory) appended after it, so the position moved by one. The
+    // invariant #918 was actually holding — the two entrypoints emit the SAME
+    // roster in the SAME order — is asserted directly here instead of through
+    // the position, which makes it stronger than the original one-index check.
     const repo = makeRepo('file-path-order');
     const { issuePath, source } = writeIssueIn(repo);
 
@@ -2142,6 +2184,344 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
       (g) => g.name,
     );
 
-    expect(names[names.length - 1]).toBe(STALENESS_GATE_NAME);
+    expect(names).toEqual(CANONICAL_GATE_NAMES);
+    expect(names[names.length - 2]).toBe(STALENESS_GATE_NAME);
+    expect(names[names.length - 1]).toBe(PR_TITLE_GATE_NAME);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gate 10 — the PR-title advisory (pr-title-id-independent)
+//
+// The defect: a composed PR title is DERIVED from the tracker title by
+// stripping the bare ids mention discipline forbids, and a title whose
+// sentence leans on an id is left with prose pointing at nothing. Three such
+// titles were observed live in one wave and corrected by hand at routing; the
+// compose-time malformation notice caught none of them, because none of them
+// left stray punctuation behind. The three are pinned as cases below.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The three titles observed live in wave `2026-09-21-guard-clarity-and-create-shape`,
+ * in the shape the ticket records them: the id-bearing tracker title, the row id
+ * the strip is run against, and the derived title that actually reached the PR.
+ *
+ * `derived` is NOT hand-written from the reported symptom — each entry is
+ * cross-checked below against the composer's own `stripBareIds`, which is the
+ * function that produces the real thing.
+ */
+const LIVE_ORPHANED_TITLES: ReadonlyArray<{
+  label: string;
+  id: string;
+  title: string;
+  derived: string;
+}> = [
+  {
+    label: 'a leading preposition left pointing at nothing',
+    id: '905',
+    title:
+      "After #791 the Reviewer agent definition still describes the sibling list as the round's dispatched rows",
+    derived:
+      "After the Reviewer agent definition still describes the sibling list as the round's dispatched rows",
+  },
+  {
+    label: 'a trailing clause lost off the end',
+    id: '900',
+    title:
+      "wave-setup's throwaway-consumer reference after #734",
+    derived: "wave-setup's throwaway-consumer reference after",
+  },
+  {
+    label: 'a trailing clause lost with the sentence colon left standing',
+    id: '901',
+    title:
+      'Fix three usage-render residues after #856 : three stale references',
+    derived: 'Fix three usage-render residues after : three stale references',
+  },
+];
+
+/** A view carrying a title, with no PR-title override. */
+function viewWithTitle(id: string): IssueView {
+  return buildView({ id });
+}
+
+describe('Gate 10 — the PR-title advisory (pr-title-id-independent)', () => {
+  it('warns on a title that carries a tracker id and declares no PR title, naming the row and showing the derived title', () => {
+    const title = 'After #791 the Reviewer agent definition still describes the sibling list';
+    const result = validateIssueView(viewWithTitle('905'), { title });
+    const g = gate(result, PR_TITLE_GATE_NAME);
+
+    expect(g.status).toBe('warn');
+    // …names the row…
+    expect(g.reason).toContain('Row 905');
+    // …and shows BOTH titles, so the difference is read rather than re-derived.
+    expect(g.reason).toContain(title);
+    expect(g.reason).toContain(
+      'After the Reviewer agent definition still describes the sibling list',
+    );
+  });
+
+  it('passes a row that carries the override, whatever its tracker title contains', () => {
+    const result = validateIssueView(viewWithTitle('905'), {
+      title:
+        "After #791 the Reviewer agent definition still describes the sibling list as the round's dispatched rows",
+      prTitle: 'Reconcile the Reviewer brief with the composed sibling list',
+    });
+    const g = gate(result, PR_TITLE_GATE_NAME);
+
+    expect(g.status).toBe('pass');
+    expect(g.reason).toContain('A PR title is declared for this row');
+  });
+
+  it('passes a row whose tracker title contains no tracker id', () => {
+    const g = gate(
+      validateIssueView(viewWithTitle('905'), {
+        title: 'Reconcile the Reviewer brief with the composed sibling list',
+      }),
+      PR_TITLE_GATE_NAME,
+    );
+
+    expect(g.status).toBe('pass');
+    expect(g.reason).toBeUndefined();
+  });
+
+  it('a whitespace-only difference is not an id — the tidy pass alone never warns', () => {
+    // The detection compares the stripped title against the title's own tidied
+    // form, so collapsing runs of spaces cannot masquerade as a removed id.
+    const g = gate(
+      validateIssueView(viewWithTitle('905'), {
+        title: '  Reconcile   the Reviewer brief  ',
+      }),
+      PR_TITLE_GATE_NAME,
+    );
+
+    expect(g.status).toBe('pass');
+  });
+
+  it('defers — never passes — when no title reached the check', () => {
+    const g = gate(validateIssueView(viewWithTitle('905')), PR_TITLE_GATE_NAME);
+
+    expect(g.status).toBe('deferred');
+    expect(g.reason).toContain('capability gap');
+    expect(g.reason).toContain('readTriage');
+  });
+
+  it('defers on a blank title rather than reading it as id-free', () => {
+    const g = gate(
+      validateIssueView(viewWithTitle('905'), { title: '   ' }),
+      PR_TITLE_GATE_NAME,
+    );
+
+    expect(g.status).toBe('deferred');
+  });
+
+  it('a blank override does not count as a declaration', () => {
+    const g = gate(
+      validateIssueView(viewWithTitle('905'), {
+        title: 'After #791 the Reviewer agent definition',
+        prTitle: '   ',
+      }),
+      PR_TITLE_GATE_NAME,
+    );
+
+    expect(g.status).toBe('warn');
+  });
+
+  it("strips the row's OWN literal id too, not only the #<digits> form", () => {
+    // The composer's strip has two branches; the structured entrypoint hands it
+    // the row's opaque id so both of them run.
+    const g = gate(
+      validateIssueView(viewWithTitle('FOR-437'), {
+        title: 'After FOR-437 the guard list is stale',
+      }),
+      PR_TITLE_GATE_NAME,
+    );
+
+    expect(g.status).toBe('warn');
+    expect(g.reason).toContain('"After the guard list is stale"');
+  });
+
+  it('never changes the verdict — a row that would otherwise pass still passes', () => {
+    const result = validateIssueView(viewWithTitle('905'), {
+      title:
+        "After #791 the Reviewer agent definition still describes the sibling list as the round's dispatched rows",
+    });
+
+    expect(gate(result, PR_TITLE_GATE_NAME).status).toBe('warn');
+    expect(result.gates.some((g) => g.status === 'fail')).toBe(false);
+    expect(result.overall).toBe('PASS');
+  });
+
+  describe('the three titles observed live', () => {
+    for (const live of LIVE_ORPHANED_TITLES) {
+      it(`warns and shows the orphaned derivation — ${live.label}`, () => {
+        const g = gate(
+          validateIssueView(viewWithTitle(live.id), { title: live.title }),
+          PR_TITLE_GATE_NAME,
+        );
+
+        expect(g.status).toBe('warn');
+        expect(g.reason).toContain(`  tracker title:    "${live.title}"`);
+        expect(g.reason).toContain(`  derived PR title: "${live.derived}"`);
+      });
+    }
+
+    it('and the compose-time malformation notice catches NONE of them — the gap this gate closes', () => {
+      // The notice fires on a leading or doubled `/`/`,` the strip left
+      // standing. Every one of these three derivations is free of that shape,
+      // which is exactly why all three reached a PR and were renamed by hand.
+      for (const live of LIVE_ORPHANED_TITLES) {
+        expect(/^[/,]/.test(live.derived), live.title).toBe(false);
+        expect(/([/,])\s*\1/.test(live.derived), live.title).toBe(false);
+      }
+    });
+  });
+
+  describe("agreement with the composer's own strip", () => {
+    // This gate models the strip rather than importing it: the composer
+    // already reaches dor-gate.ts transitively (compose-driver → cli-store →
+    // store-factory → adapters/markdown-fs-store → dor-gate), so importing it
+    // back from the gate would close an evaluation-time cycle the engine's
+    // import-graph guard refuses. A SPEC may import both — specs are outside
+    // that graph — so the duplication is pinned here instead of trusted.
+    const CROSS_PIN_CASES: ReadonlyArray<{ id: string; title: string }> = [
+      ...LIVE_ORPHANED_TITLES.map((l) => ({ id: l.id, title: l.title })),
+      { id: '800', title: 'Residue after #751/#772: the STILL OPEN sentence' },
+      { id: '648', title: "(ADR-0051 decision 7, #648's settled shape)" },
+      { id: '905', title: 'A title with #12 and #13 in a chain' },
+      { id: 'FOR-437', title: 'After FOR-437 the guard list is stale' },
+      { id: '905', title: 'A title carrying no tracker id at all' },
+      { id: '905', title: 'ADR-0041 is not a tracker id and must survive' },
+    ];
+
+    for (const c of CROSS_PIN_CASES) {
+      it(`derives exactly what stripBareIds produces — "${c.title}"`, () => {
+        const expected = stripBareIds(c.title, c.id);
+        const g = gate(
+          validateIssueView(viewWithTitle(c.id), { title: c.title }),
+          PR_TITLE_GATE_NAME,
+        );
+
+        if (expected === c.title) {
+          // Nothing was stripped — the gate must not warn.
+          expect(g.status).toBe('pass');
+        } else {
+          expect(g.status).toBe('warn');
+          expect(g.reason).toContain(`  derived PR title: "${expected}"`);
+        }
+      });
+    }
+  });
+
+  describe('the file entrypoint', () => {
+    it("reads the issue file's own `# ` heading and warns on an id-bearing one", () => {
+      const issuePath = writeIssue(
+        'pr-title-feature',
+        '70-id-bearing-title.md',
+        [
+          '# After #791 the Reviewer agent definition still describes the sibling list',
+          '',
+          '**Status:** ready-for-agent',
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- src/foo.ts',
+          '**Blocked by:** none',
+          '',
+          '## Acceptance criteria',
+          '',
+          '- [ ] Thing is built',
+        ].join('\n'),
+      );
+      const source = require('node:fs').readFileSync(issuePath, 'utf-8');
+      const result = validateIssue({ repoRoot: root, issuePath, source });
+      const g = gate(result, PR_TITLE_GATE_NAME);
+
+      expect(g.status).toBe('warn');
+      // Named by its file, because this entrypoint is handed no tracker id.
+      expect(g.reason).toContain('Row 70-id-bearing-title.md');
+      expect(g.reason).toContain(
+        '"After the Reviewer agent definition still describes the sibling list"',
+      );
+      // Advisory only.
+      expect(result.overall).toBe('PASS');
+    });
+
+    it('takes the `# ` heading and never an `##` section heading', () => {
+      const issuePath = writeIssue(
+        'pr-title-feature',
+        '71-clean-title.md',
+        ISSUE_FIXTURE_BODY(
+          [
+            '**Risk:** mechanical',
+            '**Worker:** background',
+            '**Files:**',
+            '- src/foo.ts',
+            '**Blocked by:** none',
+          ].join('\n'),
+        ),
+      );
+      const source = require('node:fs').readFileSync(issuePath, 'utf-8');
+      const g = gate(
+        validateIssue({ repoRoot: root, issuePath, source }),
+        PR_TITLE_GATE_NAME,
+      );
+
+      // `# 99 — Example` carries no `#<digits>` token of its own.
+      expect(g.status).toBe('pass');
+    });
+
+    it('passes when the call states the PR title, whatever the heading says', () => {
+      const issuePath = writeIssue(
+        'pr-title-feature',
+        '72-declared.md',
+        [
+          '# After #791 the Reviewer agent definition',
+          '',
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- src/foo.ts',
+          '**Blocked by:** none',
+          '',
+          '## Acceptance criteria',
+          '',
+          '- [ ] Thing is built',
+        ].join('\n'),
+      );
+      const source = require('node:fs').readFileSync(issuePath, 'utf-8');
+      const g = gate(
+        validateIssue({
+          repoRoot: root,
+          issuePath,
+          source,
+          prTitle: 'Reconcile the Reviewer brief with the composed sibling list',
+        }),
+        PR_TITLE_GATE_NAME,
+      );
+
+      expect(g.status).toBe('pass');
+    });
+
+    it('defers on a source with no `# ` heading at all', () => {
+      const issuePath = writeIssue(
+        'pr-title-feature',
+        '73-headless.md',
+        [
+          '**Risk:** mechanical',
+          '**Worker:** background',
+          '**Files:**',
+          '- src/foo.ts',
+          '**Blocked by:** none',
+        ].join('\n'),
+      );
+      const source = require('node:fs').readFileSync(issuePath, 'utf-8');
+      const g = gate(
+        validateIssue({ repoRoot: root, issuePath, source }),
+        PR_TITLE_GATE_NAME,
+      );
+
+      expect(g.status).toBe('deferred');
+    });
   });
 });
