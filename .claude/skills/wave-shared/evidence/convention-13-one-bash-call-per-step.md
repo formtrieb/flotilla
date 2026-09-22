@@ -624,6 +624,73 @@ Live-reproduced in wave `2026-07-30-hitl-gate-and-guards` (disclosure `305.2`).
 
 **Occurrence:** Wave `2026-07-30-hitl-gate-and-guards`, disclosure `305.2`.
 
+### Entry 4, occurrences 2 and 3 — a silent-wrong-directory validation, not merely an unblocked dialog
+
+The original occurrence above recorded only that a fused `cd <dir> && <test-runner>` call was
+**accepted** with no dialog, and that the Worker re-issued it unfused anyway with no wrong-result
+reported. Two later occurrences report a sharper failure: the fused call was accepted **and produced
+a wrong-code result silently**.
+
+**Occurrence 2** — disclosed at the close of wave `2026-09-21-guard-clarity-and-create-shape` (issue
+#917's own Gap section; no row or disclosure id given in the filed text). A Worker's first two
+verify-gate runs were written with a directory change fused onto the command. Both ran — no refusal,
+no error — and both validated the **main checkout's unmodified code** rather than the Worker's own
+worktree changes: a green result that meant nothing, indistinguishable from a correct run at the
+point it printed. **Observed** (from the Worker's own disclosure): the fused shape; the absence of
+any refusal or error; that the result was silently wrong; that the Worker caught this itself by
+re-observing its dispatch root; that it re-ran both gates carrying the directory by flag before
+publishing any number. **Not established:** the exact mechanical cause of the wrong-checkout result —
+the filed text does not say whether the fused `cd` target was a mis-computed absolute path, a stale
+relative one, or something else, so no mechanism claim is made here beyond "fused, accepted, wrong."
+
+**Occurrence 3** — this same wave's own round one (no wave slug on record at the authoring time of
+this entry). A dispatched Worker's first verify-gate invocation fused a directory change onto the
+command; it was not refused and it ran. The Worker caught it itself, re-issued the call unfused with
+the directory carried by flag, and reported that every gate result it published came from the
+corrected calls — disclosed unprompted, under the policy clause it had read. **Observed:** the same
+shape as occurrence 2 (fused, accepted, self-caught, corrected before publishing). **Not
+established:** whether this run, too, validated the wrong checkout specifically, or only risked doing
+so — the summary this entry draws from states the shape and the self-catch, not a printed wrong
+result.
+
+Both keep Entry 4's own scoped claim intact, and sharpen it: mechanism (a) does not fire on every
+fused shape it could in principle apply to, so "accepted" is not "safe" — a green run carrying a
+fused directory change can be validating the wrong tree entirely, not only the wrong subdirectory of
+the right one (compare the cwd-reset entries under "Splitting is not always a preceding `cd`" above,
+every one of which stayed inside the right worktree even when it ran in the wrong subdirectory).
+
+### Open question — has a prose-tier clause here earned a structural rung?
+
+Issue #917 asks whether either Convention 8's isolated-role no-probe rule or this convention's
+one-bash-call rule has, on the strength of its own live occurrences, earned a structural enforcement
+mechanism rather than remaining brief prose that binds a role only once read and remembered. **Left
+explicitly open — this section records the evidence gathered for it as of 2026-09-22, and takes no
+position.**
+
+- **For Convention 8's isolated-role rule:** the three guard-collision incidents recorded in
+  `evidence/convention-08-secret-safe-briefs.md` (rows 216, 226, and the wave
+  `2026-09-21-guard-clarity-and-create-shape` occurrence) — a dispatched role reading the rule and
+  still reaching for the presence test, in every recorded case refused by the (unrelated)
+  worktree-isolation guard before anything could leak.
+- **For this convention's one-call rule:** the three Entry-4 occurrences above (the original
+  no-dialog case, and the two silent-wrong-directory cases) — a role reading the rule and still
+  writing the fused form, caught only by its own self-observation rather than by any guard.
+- **A datapoint about what a structural rung actually does when one exists, recorded beside the
+  above but not as an argument for or against adding one here:** in round four of the same wave that
+  produced occurrence 3 above, a Reviewer's first probe batch was refused by the shipped Echo-Guard
+  (Convention 8's own structural backstop) because it carried a fallback-expansion literal — the
+  guard's own documented false-positive class, an unsafe form quoted as prose in an argument (see
+  `reference/convention-08-secret-safe-briefs.md`'s Echo-Guard section). The Reviewer did not route
+  around the refusal and did not widen any right: it dropped those two probe rows, relied on the
+  conformance corpus instead, and disclosed the whole episode about itself. **Observed:** the
+  refusal, the Reviewer's acceptance of it, the substitution and the disclosure. **Inferred: nothing**
+  beyond that — the framing this datapoint arrived under explicitly declines to read it either way,
+  and this entry preserves that framing rather than sharpening it into a verdict of its own.
+
+No enforcement tier changes on the strength of this section — none of the three clauses named above
+is touched by it. The next occurrence, whichever clause it belongs to, is the one to weigh against
+this question; append it here rather than reopening the question from scratch.
+
 ### Entry 5 — `for`/`do`/`done` loop, full reproduction
 
 ```bash
