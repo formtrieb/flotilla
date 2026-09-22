@@ -35,6 +35,10 @@ wave_cli spine set-row-state "$SPINE" "$ID" pr-created
 
 The same rule covers a **list** in a variable: `for b in $BRANCHES` is one token under zsh, not N. Iterate written-out items, a `while read` loop, or a real array (`for b in "${BRANCHES[@]}"`) — never a bare `$LIST` in a `for` head or a multi-argument position.
 
+#### The hook answers in three kinds, and one of them is not a finding (ADR-0052)
+
+`conv12-guard.cjs` **blocks** on an unquoted expansion, **passes** silently on none, and **abstains** when its own quote/substitution state machine ends inconsistent (unclosed quote, unclosed `$( )`, unterminated heredoc). An Abstention blocks too — the hook's declared **Resolution bias** — but it is a statement about the hook, never a finding about your command: close the shape, or write the payload with the file-writing tool and run `bash <file>`. Correct nested shell (`jq . "$(dirname "$Y")"`) now passes; it used to be refused. The header declares the hook's Subject, bias and **Unmodelled set**, whose first member is that this predicate is narrower than the rule above — `eval "$CMD"` violates the rule and passes the test — so the refusal names what it found instead of reciting the rule (history: `../evidence/convention-12-no-command-in-a-shell-variable.md`, read via the sibling-path read when actually wanted, ADR-0040).
+
 **Compose-time interpolation is NOT this class — do not "fix" it.** `workflow-driver.md`'s `WAVE_CLI` is a **JS** const interpolated into brief text *before any shell sees it*; the rendered brief carries the literal command string, so no expansion ever happens. That form is correct as a string and must stay one. The class is a **shell** variable expanded by a **shell** at runtime.
 
 ### Half two — the call boundary is the rule: verify a captured value in the SAME Bash call that produced it, or re-query the source

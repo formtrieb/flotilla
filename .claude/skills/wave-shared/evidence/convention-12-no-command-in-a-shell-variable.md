@@ -16,7 +16,35 @@ Half one is now **structurally guarded on the Coordinator surface**: a tracked `
 
 #### The guard's scope is deliberately wider than this convention's own name
 
-`conv12-guard.cjs` blocks **any** unquoted parameter expansion, in **any** position — a bare `$VALUE` interpolated into an argument or a string is blocked exactly like a bare `$CLI` used as a command, even though only the second is literally "a command in a shell variable." That is not an oversight: narrowing the block to command *positions* only would require the guard to parse where in the command line an expansion sits — real shell grammar, the exact thing a deliberately simple, fail-open speed bump is designed not to do (see `conv12-guard.cjs`'s own "the quote scanner, not a shell parser" note). Quoting the expansion (`"$VALUE"`) is the sanctioned form whenever a *value*, not a command, is what is meant — the guard's own refusal message teaches that remedy identically regardless of which position tripped it. **Live, 2026-08-13, this repo:** the guard blocked a bare `$id` used in VALUE position — not a command — during this repo's own coordination session, which is the first time the breadth surprised anyone; documenting it here turns that surprise into a stated contract instead of a rediscovery.
+`conv12-guard.cjs` blocks **any** unquoted parameter expansion, in **any** position — a bare `$VALUE` interpolated into an argument or a string is blocked exactly like a bare `$CLI` used as a command, even though only the second is literally "a command in a shell variable." That is not an oversight: narrowing the block to command *positions* only would require the guard to parse where in the command line an expansion sits — real shell grammar, the exact thing a deliberately simple speed bump is designed not to do (since 2026-09-21 this is member 1 of the hook's declared **Unmodelled set**, in its own header — the predicate is narrower than the rule in one direction and wider in the other, and both directions are now stated there rather than left to a false refusal to teach). Quoting the expansion (`"$VALUE"`) is the sanctioned form whenever a *value*, not a command, is what is meant — the guard's own refusal message teaches that remedy identically regardless of which position tripped it. **Live, 2026-08-13, this repo:** the guard blocked a bare `$id` used in VALUE position — not a command — during this repo's own coordination session, which is the first time the breadth surprised anyone; documenting it here turns that surprise into a stated contract instead of a rediscovery.
+
+#### The scanner repair and the third answer kind (ADR-0052, 2026-09-21/22)
+
+The hook shipped with a quote scanner made of two booleans — `inSingle`, `inDouble` — and no notion of `$( )` nesting, a heredoc body, a `#` comment or a backtick. The FOR-437 grill measured what that cost, and the answer was symmetric.
+
+**Synthetic, one variable at a time.** The trigger for a false refusal is *an outer double quote wrapping a `$( )` that itself contains a double-quoted expansion*: the outer quote opens the quoted state and the inner quote reads as closing it. `X="$(echo "$Y")"` and `jq . "$(dirname "$Y")"` were refused as *"this command contains an UNQUOTED parameter expansion"* — correct shell, false diagnosis. `X=$(node -e 1)`, `X=$(echo "$Y")` and `X="$(node -e 1)"` each passed, which is what isolates the trigger to the combination rather than to either quote alone. And where the scanner was right it was right **by parity, not by depth**: `echo "$(basename "$(dirname "$P")")"` passed because four quotes happened to balance, and one more level refused.
+
+**The same root cause ran the other way, silently.** A lone unbalanced `"` inside a quoted-delimiter heredoc body, or inside a `#` comment, opened the quote state and never closed it, so every genuine unquoted expansion after that point read as quoted. Both probes carried a real `git checkout $BRANCH`; both passed.
+
+**On live traffic.** 3477 distinct Bash commands from 38 of this repo's session transcripts, at the grill: 60 refusals, **36 of them false (60%)**, 1 genuine violation let through. The dominant false-refusal shape was `cat > "$TMPDIR/x.sh" <<'SCRIPT'` — **the escape hatch the refusal message itself prescribes**; 359 of the 381 commands a construct-allowlist predicate would have deferred were that shape, which is the measurement that made ADR-0052 reject the allowlist and choose the broken-invariant trigger instead.
+
+**Re-measured on the repair, 2026-09-22**, over the same transcript population grown to 40 sessions and 3750 distinct commands (the corpus is a live directory, so it moves; the structure is what reproduces, not the integers):
+
+| | shipped | repaired |
+|---|---|---|
+| blocks | 62 | **27** |
+| …genuine (blocked by both) | 25 | 25 |
+| …false refusals | **37** | 0 |
+| genuine violations let through | 2 | 0 |
+| Abstentions | n/a | **0** |
+
+The two false negatives the repair catches are `for f in wf-*.json; do echo "$f: $(grep -c 'NT-' $f) NT-mentions, $(wc -c < $f) bytes"; done` (the one the grill named) and a `for f in …; do printf … "$(wc -l < tools/wave/src/$f-guard.spec.ts)"; done` from a later session — the same mechanism, `$f` unquoted inside a substitution behind an outer quote. Every one of the 27 blocks was read individually: 15 are an unquoted loop variable in argument position, 5 hold the engine CLI itself in a variable (`$CLI` / `$C` / `$E`), the rest are unquoted values. None is a false refusal.
+
+**Abstention measured empty, and that is the point.** Zero abstentions over 3750 commands is what a tripwire on the scanner's own broken invariant is supposed to read on healthy traffic; a closed-world construct list measured 11.0% on the same population. The class is reachable — three shapes are pinned in `conv12-guard.spec.ts` — it is just not a workload.
+
+**What the repair reuses rather than invents.** `echo-guard.cjs`, 200 lines away in the same directory, already carried the per-`$( )` frame stack with correctly scoped nested quotes and the delimiter-aware heredoc handling, both pinned in two directions by its own regression suite. It was read as the reference implementation and **not** extracted into a shared module: `wave-setup` copies each hook to a *tracked* path in the consumer repo, so a third file turns a missed scaffold copy into a new silent failure mode. The sharing happens in `tools/wave/src/shell-quoting-conformance.spec.ts` — one corpus of shell shapes, both scanners, each row carrying both expected verdicts and every divergence between them declared in the row itself.
+
+**The two hooks' biases are opposite, and that is now declared on each.** One command demonstrates it: `git commit -m "a note with an unbalanced ' quote; printenv`. `conv12-guard` abstains and blocks; `echo-guard` widens what it treats as inert prose and passes, letting the trailing `printenv` through — which the balanced control `git commit -m "a note"; printenv` proves it would otherwise block. Neither direction is wrong; what was wrong was that neither was written down.
 
 ### Live occurrences (evidence)
 
