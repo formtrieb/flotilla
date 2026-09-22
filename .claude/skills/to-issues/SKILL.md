@@ -23,6 +23,8 @@ Do **not** triage, label, or close issues — that is the `triage` skill's dimen
 
 Work from what is in the conversation. If the user passes an issue reference, read it first (`issue-store read <id>`). Issue titles should use the project's domain vocabulary and respect the architectural decisions recorded for the area you touch.
 
+> **Write every title so it still reads with its issue numbers deleted** — the pull-request title is derived by deleting them, and a sentence that leaned on one ("After #NNN the …", "… residues after #NNN") is left pointing at nothing; a row that cannot avoid leaning on one needs its pull-request title stated at dispatch instead.
+
 ## 2. Draft the slices
 
 The invariant every slice must satisfy: **independently grabbable, self-verifiable, and conflict-bounded** (its declared Files contain the real change). *How* you reach the invariant depends on the kind of work:

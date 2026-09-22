@@ -29,6 +29,11 @@
  *      the row's declared `Files:` since the tracker last recorded a change to
  *      the row? — see {@link checkFilesTouchedSinceTrackerUpdate}. Advisory
  *      warn-only in every path, by decision, never a FAIL.
+ *  10. The **PR-title advisory**: does this row's tracker title lean on a
+ *      tracker id that the compose-time strip will remove, with no declarative
+ *      PR title recorded to take its place? — see
+ *      {@link checkPrTitleIdIndependence}. Advisory warn-only in every path,
+ *      never a FAIL.
  *
  * Pure function modulo three side-effects: file-glob expansion (`fastGlob`),
  * blocked-by / literal-file existence checks (`statSync`/`existsSync`), and — for
@@ -142,6 +147,15 @@ export interface ValidateOptions {
    * `defer`s, never passes.
    */
   trackerUpdatedAt?: string;
+  /**
+   * The PR title this row will open under, **stated rather than derived** — the
+   * capability that turns Gate 10 ({@link checkPrTitleIdIndependence}) into a
+   * `pass`. Present and non-blank → nothing is derived from the tracker title,
+   * so there is nothing for the gate to warn about. Absent → the gate reads the
+   * row's own title out of `source` (its first `# ` heading) and asks whether
+   * the compose-time strip would take a tracker id out of it.
+   */
+  prTitle?: string;
 }
 
 /**
@@ -196,6 +210,20 @@ export function validateIssue(opts: ValidateOptions): DorResult {
       header.files,
       opts.trackerUpdatedAt ?? fileMtimeIso(opts.issuePath),
       opts.repoRoot,
+    ),
+  );
+
+  // Gate 10 — the PR-title advisory (advisory warn-only). Self-content: the
+  // title is the file's own first `# ` heading. The row is NAMED by its file
+  // name here, because this entrypoint is handed no tracker id — and for the
+  // same reason the strip it models runs its `#<digits>` branch only; see
+  // {@link stripTrackerIdsFromTitle}'s note on the empty own-id.
+  gates.push(
+    checkPrTitleIdIndependence(
+      basename(opts.issuePath),
+      '',
+      titleFromSource(opts.source),
+      opts.prTitle,
     ),
   );
 
@@ -277,6 +305,25 @@ export interface ValidateViewOptions {
    * every caller and couple the engine to the tracker.
    */
   blockerResolutions?: readonly BlockerResolution[];
+  /**
+   * The row's human-facing TRACKER title — the capability that turns Gate 10
+   * ({@link checkPrTitleIdIndependence}) on.
+   *
+   * It is an option rather than a field on {@link IssueView} because the
+   * canonical contract is wave-header-only by construction: the title lives on
+   * the `TriageView` facet (`readTriage(id).title`), which is the caller's read,
+   * not this pure function's. Absent → the gate `defer`s, exactly as the
+   * working-tree gates do without a `repoRoot`. "I was not shown the title" must
+   * not read the same as "the title carries no id".
+   */
+  title?: string;
+  /**
+   * The PR title this row will open under, **stated rather than derived** —
+   * see {@link ValidateOptions.prTitle}. Present and non-blank → Gate 10
+   * `pass`es whatever the tracker title contains, because no title is derived
+   * from it at all.
+   */
+  prTitle?: string;
 }
 
 const DEFER_NO_WORKTREE =
@@ -370,6 +417,15 @@ export function validateIssueView(
       view.trackerUpdatedAt,
       repoRoot,
     ),
+  );
+
+  // Gate 10 — the PR-title advisory (advisory warn-only). Capability-
+  // conditional on the caller having read the row's title, which `IssueView`
+  // deliberately does not carry (see {@link ValidateViewOptions.title}). The
+  // row's own opaque id is handed to the strip so BOTH of its branches run —
+  // the generic `#<digits>` one and the row's own literal id.
+  gates.push(
+    checkPrTitleIdIndependence(view.id, view.id, opts.title, opts.prTitle),
   );
 
   const failed = gates.some((g) => g.status === 'fail');
@@ -1574,5 +1630,188 @@ function checkFilesTouchedSinceTrackerUpdate(
     name,
     status: 'warn',
     reason: renderStalenessAdvisory(probe, since, files),
+  };
+}
+
+// ─── Gate 10: the PR-title advisory (advisory warn-only) ─────────────────────
+
+/**
+ * Gate 10's one spelling. Both entrypoints emit it under this name and the
+ * specs assert on it; nothing else in the engine reads a gate name.
+ */
+const PR_TITLE_GATE = 'pr-title-id-independent';
+
+/**
+ * The caller never showed this check a title, so there is nothing to read.
+ * `'deferred'`, never `'pass'`: "I was not shown the title" must not read the
+ * same as "the title carries no id" — the false-pass this gate exists to make
+ * impossible, and the same capability discipline Gates 2/5/7/8/9 already apply.
+ */
+const DEFER_NO_ROW_TITLE =
+  'No row title reached this check — the PR-title advisory reads the tracker title, and the canonical ' +
+  'contract is wave-header-only, so a structured caller states it (`title`) from its own `readTriage(id)` ' +
+  'read. This is a capability gap (nobody supplied one), NOT evidence that the title is id-free.';
+
+/**
+ * A declarative PR title is recorded, so no title is derived at all and this
+ * gate has nothing to be advisory about. Said in the reason rather than left
+ * silent, so a reader can tell "declared" from "checked and clean".
+ */
+const NOTE_PR_TITLE_DECLARED =
+  'A PR title is declared for this row, so none is derived by stripping ids out of the tracker title.';
+
+/**
+ * The cosmetic tail of {@link stripTrackerIdsFromTitle} on its own: leading
+ * separator trim, run-of-spaces collapse, outer trim. Applying it to the
+ * ORIGINAL title is what makes the id-detection exact rather than a second,
+ * drifting regex — the strip is "remove id tokens, then tidy", so a title
+ * carrying no id token strips to exactly its own tidied form, and any
+ * difference is an id (or an id's attached possessive or separator) having been
+ * taken out. Whitespace-only differences therefore never read as an id.
+ */
+function tidyTitle(title: string): string {
+  return title
+    .replace(/^[\s:—–-]+/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * The bare-tracker-id strip a composed PR title is subjected to, modelled here
+ * so this gate can SHOW the operator the title their row would actually open
+ * under (mention discipline, wave-shared Convention 4: a PR title may carry no
+ * bare tracker id but the close phrase).
+ *
+ * **Why a local model and not the compose-time function itself.** The composer
+ * that owns the shipped strip already reaches this module transitively
+ * (`compose-driver` → `cli-store` → `store-factory` → `adapters/markdown-fs-store`
+ * → here), so importing it back would close an evaluation-time cycle — the
+ * class the engine's import-graph guard exists to refuse, and one whose only
+ * escape is a declaration in a file outside this gate's reach. The duplication
+ * is the same shape `conflict-map.ts` and `merge-order.ts` already carry for
+ * their two `extractIssueId`s, and it is not left to trust: the spec runs this
+ * gate's rendered advisory against the composer's own `stripBareIds` over the
+ * live table of titles, so a divergence is a red test rather than an operator
+ * reading a title that never lands.
+ *
+ * `ownId` may be EMPTY, which is not a degenerate call: the file entrypoint is
+ * handed no tracker id at all. An empty own-id drops the row's-own-literal-id
+ * branch and runs the generic `#<digits>` branch alone — a narrowing, stated
+ * rather than smoothed over, and the branch every live occurrence came through.
+ * For a non-empty `ownId` this is character-for-character the composer's own
+ * pass order: joined-run first, then generic, then own-literal, then the tidy.
+ */
+function stripTrackerIdsFromTitle(title: string, ownId: string): string {
+  const escaped = ownId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const ownAlternative = escaped.length > 0 ? `|${escaped}` : '';
+  const idToken = `(?:#\\d+${ownAlternative})(?:['’]s)?`;
+  const sepToken = `(?:\\s*/\\s*|\\s*,\\s*|\\s+and\\s+)`;
+  const joinedIds = new RegExp(
+    `(^|[\\s(\\[])${idToken}(?:${sepToken}${idToken})+(?=$|[\\s):\\]—-])`,
+    'g',
+  );
+  const withoutGeneric = title
+    .replace(joinedIds, '$1')
+    .replace(/#\d+(?:['’]s)?/g, '');
+  const withoutOwn =
+    escaped.length > 0
+      ? withoutGeneric.replace(
+          new RegExp(`(^|[\\s(\\[])${escaped}(?:['’]s)?(?=$|[\\s):\\]—-])`, 'g'),
+          '$1',
+        )
+      : withoutGeneric;
+  return tidyTitle(withoutOwn);
+}
+
+/**
+ * The row's own title on the file entrypoint: the first `# ` heading of the
+ * issue source. A single `#` followed by whitespace, so an `##` section heading
+ * never matches. `undefined` when the source carries none, which the gate turns
+ * into `'deferred'` rather than a pass.
+ */
+function titleFromSource(source: string): string | undefined {
+  const match = /^#[ \t]+(.+?)[ \t]*$/m.exec(source);
+  return match ? match[1] : undefined;
+}
+
+/**
+ * The advisory's human-facing text: what the title says, what the PR would say
+ * instead, why nothing downstream catches the difference, and the two ways to
+ * settle it.
+ */
+function renderPrTitleAdvisory(
+  rowLabel: string,
+  title: string,
+  derived: string,
+): string {
+  return [
+    `Row ${rowLabel} declares no PR title, and its tracker title carries a tracker id the compose-time ` +
+      'strip removes (mention discipline, wave-shared Convention 4). The PR would open under the remainder:',
+    `  tracker title:    "${title}"`,
+    `  derived PR title: "${derived}"`,
+    'The strip takes the id out; it cannot take out the prose that leaned on it. A preposition or a trailing ' +
+      'clause is then left pointing at nothing — the result is grammatically valid and semantically wrong, ' +
+      'which is the hard case: no detector over the stripped text can tell "After the Reviewer agent ' +
+      'definition …" from a sentence that always began that way.',
+    'Settle it by DECLARING rather than deriving: record the PR title this row should open under, or re-word ' +
+      'the tracker title so it reads without the id.',
+    'ADVISORY ONLY: this gate never FAILs and never blocks a row; the title judgment is the Coordinator’s, ' +
+      'not the engine’s.',
+  ].join('\n');
+}
+
+/**
+ * Gate 10 — the **PR-title advisory**. A composed PR title is derived from the
+ * row's tracker title by stripping out the bare tracker ids mention discipline
+ * forbids. That derivation is lossless only for a title that MENTIONS an id;
+ * for a title whose sentence LEANS on one it silently orphans the prose around
+ * it — observed live on three titles of one wave, each corrected by hand at
+ * routing: one that began `After #NNN the Reviewer …` (composed as `After the
+ * Reviewer …`), one that ended `… reference after`, one that ended
+ * `… residues after : …`.
+ *
+ * The compose-time malformation notice cannot reach this shape, and widening it
+ * cannot either: it fires on punctuation the strip left stranded, and these
+ * three titles left none. So the answer is not a better detector over the
+ * stripped text — it is to stop deriving. A row whose title leans on an id
+ * DECLARES the title it opens under, and this gate says so at decoration time,
+ * where the title can still be re-worded, instead of leaving it to a
+ * Coordinator to catch at routing.
+ *
+ * Capability classification, mirroring Gates 2/5/7/8/9:
+ *   - a declarative PR title is recorded → `'pass'` with
+ *     {@link NOTE_PR_TITLE_DECLARED}, whatever the tracker title contains:
+ *     nothing is derived, so nothing can be orphaned.
+ *   - no title reached this check        → `'deferred'`
+ *     ({@link DEFER_NO_ROW_TITLE}), never `'pass'`.
+ *   - the title survives the strip unchanged (no id in it) → `'pass'`.
+ *   - otherwise                          → `'warn'`, naming the row and showing
+ *     BOTH titles, so the difference is read rather than re-derived.
+ *
+ * It never returns `'fail'` — there is no code path here that can, so a hard
+ * stop cannot be reintroduced by a config or a caller. A title leaning on an id
+ * costs one PR its readability; it is not a reason to hold a row.
+ */
+function checkPrTitleIdIndependence(
+  rowLabel: string,
+  ownId: string,
+  title: string | undefined,
+  prTitle: string | undefined,
+): GateResult {
+  const name = PR_TITLE_GATE;
+  if (prTitle !== undefined && prTitle.trim().length > 0) {
+    return { name, status: 'pass', reason: NOTE_PR_TITLE_DECLARED };
+  }
+  if (title === undefined || title.trim().length === 0) {
+    return { name, status: 'deferred', reason: DEFER_NO_ROW_TITLE };
+  }
+  const derived = stripTrackerIdsFromTitle(title, ownId);
+  if (derived === tidyTitle(title)) {
+    return { name, status: 'pass' };
+  }
+  return {
+    name,
+    status: 'warn',
+    reason: renderPrTitleAdvisory(rowLabel, title, derived),
   };
 }
