@@ -878,6 +878,16 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { canonical: '--id', value: 'one', valueType: 'id', placeholder: '<issue-id>' },
       { canonical: '--repo-root', value: 'one', valueType: 'dir' },
       { canonical: '--config', value: 'one', valueType: 'path' },
+      // The DECLARED PR title (Gate 10, the PR-title advisory). Read by the
+      // --id runner alone, exactly as --repo-root is: both are rendered on the
+      // second form below and both are ignored by the PATH form, whose
+      // variadic arity has no single row for one declared title to belong to.
+      // On the --id form the OTHER half of the gate's input — the row's own
+      // tracker title — needs no flag at all: the runner already holds the
+      // store and reads it through the triage facet (issue #912's store-backed
+      // half). So this flag states the ONE thing a tracker cannot be asked for:
+      // the title the operator has DECIDED the PR should open under.
+      { canonical: '--pr-title', value: 'one', valueType: 'text', placeholder: '<pr-title>' },
     ],
     positionals: { kind: 'variadic', min: 1, label: '<issue-path>' },
     output: 'prose',
@@ -891,10 +901,15 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       {
         positionals: { kind: 'fixed', count: 0 },
         requires: ['--id'],
-        accepts: ['--repo-root', '--config'],
+        accepts: ['--repo-root', '--config', '--pr-title'],
       },
     ],
-    notes: ['  The --id form reads the issue from the IssueStore and takes NO positional.'],
+    notes: [
+      '  The --id form reads the issue from the IssueStore and takes NO positional.',
+      "  The --id form also reads the row's TRACKER title through the triage facet, so the",
+      '  PR-title advisory (pr-title-id-independent) runs there instead of deferring; give',
+      '  --pr-title to declare the title the PR will open under and the advisory passes.',
+    ],
     outputNote: 'text (PASS/FAIL + gate lines), not JSON',
     json: { lead: 'the same result as JSON, in BOTH forms', shape: DOR_JSON_SHAPE },
   }),
@@ -1552,7 +1567,14 @@ function runDor(paths: string[]): number {
  * Async because it reads the issue from the (async) `IssueStore`; the engine
  * function {@link validateIssueView} stays pure over the `IssueView`. The store
  * is built from `--config` unless one is injected (tests). Self-content gates
- * run; working-tree + cross-issue gates `defer` (no checkout on a bare id).
+ * run; the WORKING-TREE gates `defer` unless `--repo-root` names a checkout.
+ *
+ * The two gates whose answer lives on the STORE rather than on the view are
+ * threaded here, from the store this function already holds: the cross-issue
+ * gate through `resolveDeclaredBlockers` (issue #750) and the PR-title advisory
+ * through one `readTriage` for the row's own title. Both stay capability-shaped
+ * — a read this function could not make leaves the gate `deferred`, never
+ * passing — and the pure validator stays synchronous and store-blind.
  *
  * Exit: 0 = ready (PASS / warn / deferred only), 1 = a content-gate FAIL, a
  * store-construction failure (BEFORE op dispatch — e.g. an unreadable config
@@ -1655,10 +1677,46 @@ export async function runDorById(
   // which `store.read(id)` above already populated (or deliberately left absent,
   // in which case the gate `defer`s rather than passing). `--repo-root` is what
   // turns it on, the same flag the other working-tree gates key off.
+
+  // Gate 10 (the PR-title advisory) is threaded as a CAPABILITY, the same shape
+  // Gate 5 is above — and for the same reason: the answer lives on the store
+  // this entry point already holds, and the pure gate must not learn to ask for
+  // it. The row's human-facing title is NOT on `IssueView` (the canonical
+  // contract is wave-header-only by construction); it lives on the TRIAGE facet,
+  // which is on the `IssueStore` contract and conformance-tested across all
+  // three shipped stores. So the read is one extra `readTriage`, here, at the
+  // caller — exactly what the gate's own deferral text has named as the missing
+  // step since the gate shipped. Without it the gate `deferred` on the ONE path
+  // a decoration pass actually runs (`dor --id`), which is the whole defect.
+  //
+  // A FAILED read is not an error for this verb. `store.read(id)` above already
+  // proved the row exists and is header-parseable, so a throw here is a
+  // capability gap — a store whose triage facet this call cannot reach, a
+  // transient tracker failure, or an injected test double that implements
+  // `read` alone — and a capability gap is what `'deferred'` means. Leaving
+  // `title` undefined hands the gate exactly the state it had before this
+  // threading, so it defers with ITS OWN existing reason rather than a second
+  // one invented here; the notice below is what keeps that from being silent.
+  let title: string | undefined;
+  try {
+    title = (await store.readTriage(view.id)).title;
+  } catch (err) {
+    process.stderr.write(
+      `notice: dor: could not read the title of ${view.id} through the triage facet ` +
+        `(${(err as Error).message}) — the PR-title advisory defers instead of running.\n`,
+    );
+  }
+  // The DECLARED half, and the only half an operator supplies: `--pr-title` is
+  // the row's stated PR title, which turns the advisory into a `pass` whatever
+  // the tracker title contains, because nothing is derived from it at all.
+  const prTitle = flag(args, contract, 'pr-title');
+
   const result = validateIssueView(view, {
     ...(repoRoot !== undefined ? { repoRoot } : {}),
     ...(verify !== undefined ? { verify } : {}),
     blockerResolutions,
+    ...(title !== undefined ? { title } : {}),
+    ...(prTitle !== undefined ? { prTitle } : {}),
   });
   // The SAME `{ verb, overall, issues: [...] }` envelope the file form prints,
   // holding one record (ADR-0051 decision 7, row V5). One shape across both

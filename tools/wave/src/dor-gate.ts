@@ -315,6 +315,12 @@ export interface ValidateViewOptions {
    * not this pure function's. Absent → the gate `defer`s, exactly as the
    * working-tree gates do without a `repoRoot`. "I was not shown the title" must
    * not read the same as "the title carries no id".
+   *
+   * The shipped caller that makes that read is the store-backed entry point
+   * `dor --id` — the one a decoration pass actually runs. It holds the store
+   * already, so it reads the title through the facet and states it here; a read
+   * it could not make leaves this absent and the gate `deferred`, which is why
+   * the deferral is a capability answer rather than an error.
    */
   title?: string;
   /**
@@ -322,6 +328,10 @@ export interface ValidateViewOptions {
    * see {@link ValidateOptions.prTitle}. Present and non-blank → Gate 10
    * `pass`es whatever the tracker title contains, because no title is derived
    * from it at all.
+   *
+   * It is the one half of this gate's input a tracker cannot be asked for — it
+   * is a DECISION, not a record — so the store-backed entry point takes it from
+   * the operator instead: `dor --id <id> --pr-title <title>`.
    */
   prTitle?: string;
 }
