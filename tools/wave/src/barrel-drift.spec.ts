@@ -41,7 +41,7 @@
  * is, with nothing to update in this file for the discovery to see it.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
@@ -360,9 +360,9 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
       'Same adapter-internal body-codec class as ParsedBody above — the serializer input shape.',
     appendBodySections: 'Adapter-internal body-codec helper (see ParsedBody above).',
     assertAcceptanceCriteriaShape:
-      "Adapter-internal body-codec RULE (#871) — the acceptance-criteria entry-shape refusal all three shipped stores call as the first statement of annotate, and the issue-store CLI calls before it hands the patch on. Module-local for the same reason its neighbours are: it validates the adapter's wire shape, not the engine's IssueView contract. A consumer meets it by running `issue-store annotate` and reading its exit code, never by importing the predicate.",
+      "Adapter-internal body-codec RULE (#871, extended to `create` by #907) — the acceptance-criteria entry-shape refusal called from two seams: all three shipped stores' own `annotate` (the issue-store CLI also calls it directly before handing the patch on), and — since #907 — `classifyCreateInput`'s decorated arm, the one seam all three stores already run first in `create()`. The predicate is IMPORTED there rather than re-spelled, so the two verbs cannot disagree about what a valid entry is. Module-local for the same reason its neighbours are: it validates the adapter's wire shape, not the engine's IssueView contract. A consumer meets it by running `issue-store create` or `issue-store annotate` and reading the exit code, never by importing the predicate.",
     AcceptanceCriteriaShapeError:
-      'The typed rejection assertAcceptanceCriteriaShape throws (see above) — the discriminator the CLI narrows on to classify a caller-input bug as exit 2 rather than a store failure. Adapter-internal alongside the predicate that throws it.',
+      'The typed rejection assertAcceptanceCriteriaShape throws (see above) — the discriminator both `issue-store create` (since #907, alongside CreateInputError) and `issue-store annotate` narrow on to classify a caller-input bug as exit 2 rather than a domain/store failure. Adapter-internal alongside the predicate that throws it.',
     parentToLine: 'Adapter-internal body-codec helper (see ParsedBody above).',
     parseBody: 'Adapter-internal body-codec helper (see ParsedBody above).',
     replaceSection: 'Adapter-internal body-codec helper (see ParsedBody above).',
@@ -770,6 +770,35 @@ describe('barrel-drift — every engine source module export is root-reachable O
       }
     }
     expect(empty, `allowlist entries with no real reason: ${empty.join(', ')}`).toEqual([]);
+  });
+});
+
+describe('barrel-drift — the acceptance-criteria shape predicate is pinned to its actual caller set (issue #916)', () => {
+  // #907 added a second caller (`classifyCreateInput`, for `create`) beside the
+  // three stores' own `annotate`. The allowlist reason above now names both in
+  // prose — this test holds that claim to the real source rather than trusting
+  // the prose to stay in sync with it, the same "asserts membership, never
+  // restates a hand-maintained list" standard this file's own module doc
+  // comment states for the barrel-or-allowlist check itself. A future caller
+  // added or removed without updating either place fails HERE, not silently.
+  const EXPECTED_ACCEPTANCE_CRITERIA_SHAPE_CALLERS = [
+    './adapters/github/github-issues-store',
+    './adapters/issue-store',
+    './adapters/linear/linear-issues-store',
+    './adapters/markdown-fs-store',
+    './issue-store-cli',
+  ].sort();
+
+  it('assertAcceptanceCriteriaShape is called from exactly the modules named above — no more, no fewer', () => {
+    // A negative lookbehind excludes the predicate's OWN declaration
+    // (`export function assertAcceptanceCriteriaShape(...)` in body-codec.ts)
+    // from counting as a call to itself.
+    const CALL_SITE = /(?<!function )\bassertAcceptanceCriteriaShape\(/;
+    const actual: string[] = [];
+    for (const [label, absPath] of MODULE_LABEL_TO_ABS_PATH) {
+      if (CALL_SITE.test(readFileSync(absPath, 'utf-8'))) actual.push(label);
+    }
+    expect(actual.sort()).toEqual(EXPECTED_ACCEPTANCE_CRITERIA_SHAPE_CALLERS);
   });
 });
 

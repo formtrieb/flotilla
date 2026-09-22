@@ -351,9 +351,28 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 161_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the same `conv12-guard` scanner row that raises
- * the constant above** (flotilla#710), in the diff that causes the growth. The
- * shared standing load is a SUBSET of this population, so the one
+ * Why this number: **RAISED by the row that corrects three out-of-glob spots
+ * this wave's rows left behind** (issue #916), in the diff that causes the
+ * growth. Its one corpus-population edit is a paragraph in
+ * `wave-setup/reference/throwaway-consumer.md`, replacing a stale claim that
+ * the harness declines a dispatched agent's write to the tracked settings file
+ * "by design" with the actual, narrower finding ADR-0049's 2026-09-06
+ * amendment records — the deny is scoped per TOOL SURFACE, not a blanket
+ * decline — which is necessarily longer than the sentence it corrects.
+ *
+ * At this row's anchor commit `fe1b84579e9374b5d1478b0c327eaa9c46a38f67` the
+ * population measured **1,228,613 B** over 57 files — 387 B under the previous
+ * 1,229,000 B ceiling. This row's edit lands it at **1,229,096 B** over the
+ * same 57 files, so the ceiling moves to that sum rounded UP to the next full
+ * KB (1 KB = 1000 B): **1,230,000 B**. The 904 B of headroom that leaves is a
+ * fact about the rounding rule, not a budget. The shared standing load is NOT
+ * raised: `throwaway-consumer.md` is not a member of that population (only
+ * `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are), so that class
+ * stays at 160,919 B against its unchanged 161,000 B ceiling.
+ *
+ * Previously: 1,229,000 B — **RAISED by the same `conv12-guard` scanner row
+ * that raises the constant above** (flotilla#710), in the diff that causes the
+ * growth. The shared standing load is a SUBSET of this population, so the one
  * `wave-shared/reference/convention-12-no-command-in-a-shell-variable.md` edit
  * moves both measures by the same **1,029 B** and both ceilings ratchet in this
  * one diff — the reasoning for the edit itself is on that constant and is not
@@ -361,19 +380,19 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 161_000;
  * the `evidence/` sibling, which this population excludes by definition and
  * which therefore costs nothing here.
  *
- * At this row's anchor commit `65108c75fdac708f538709be2828aa3884fec41f` the
+ * At that row's anchor commit `65108c75fdac708f538709be2828aa3884fec41f` the
  * population measured **1,227,620 B** over 57 files — 380 B under the previous
- * 1,228,000 B ceiling. This row's edit lands it at **1,228,649 B** over the same
- * 57 files, so the ceiling moves to that sum rounded UP to the next full KB
- * (1 KB = 1000 B): **1,229,000 B**. The 351 B of headroom that leaves is a fact
- * about the rounding rule, not a budget.
+ * 1,228,000 B ceiling. That row's edit landed it at **1,228,649 B** over the
+ * same 57 files, so the ceiling moved to that sum rounded UP to the next full
+ * KB (1 KB = 1000 B): **1,229,000 B**. The 351 B of headroom that left was a
+ * fact about the rounding rule, not a budget.
  *
  * **NOT raised by issue #910 (2026-09-22), for the same reason as the sibling
- * above:** its one reference-file edit is a net **−36 B**, so this population
- * lands at **1,228,613 B** over the same 57 files, the round-up is still
- * 1,229,000 B, and this constant stays. That row's bulk — a station table, a
+ * above:** its one reference-file edit was a net **−36 B**, so this population
+ * landed at **1,228,613 B** over the same 57 files, the round-up was still
+ * 1,229,000 B, and that constant stayed. That row's bulk — a station table, a
  * probe log, a seven-rung size ladder and two verbatim refusal texts — went to
- * `evidence/`, which this population excludes, so none of it is priced here.
+ * `evidence/`, which this population excludes, so none of it was priced here.
  *
  * Previously: 1,228,000 B — the raise by the row that closed the four residues
  * the Convention 13 Catalog correction left behind (issue #911), whose reasoning
@@ -496,7 +515,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 161_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_229_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_230_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
@@ -517,6 +536,49 @@ console.log(
   `[loaded-corpus-guard] loaded corpus: ${LOADED_CORPUS_BYTES} B over ` +
     `${LOADED_CORPUS_FILES.length} files (evidence/ excluded) — ceiling ${LOADED_CORPUS_CEILING_BYTES} B, ` +
     `headroom ${LOADED_CORPUS_CEILING_BYTES - LOADED_CORPUS_BYTES} B`,
+);
+
+/**
+ * The agent-definition tree (`.claude/agents/**\/*.md`) — a corrected reading
+ * (issue #916). A prior row grew one Reviewer-definition line from 155 B to
+ * 399 B, searched this guard and the rest of the shipped-guard family for a
+ * byte budget covering that file, and reported finding NONE. That claim does
+ * not survive a read of {@link SKILL_DIRS} above: it names `.claude/agents`
+ * alongside `.claude/skills`, so every agent-definition file is already a
+ * member of {@link LOADED_CORPUS_FILES} and already priced against
+ * {@link LOADED_CORPUS_CEILING_BYTES} — the same whole-corpus ceiling every
+ * skill body and reference file answers to. The tree IS measured; the prior
+ * row's search missed the ceiling it was already inside.
+ *
+ * What is genuinely true, and the shape the confusion took: the tree has NO
+ * measure at {@link SHARED_STANDING_LOAD_CEILING_BYTES}'s finer granularity.
+ * That ceiling's own population is `wave-shared/SKILL.md` plus
+ * `wave-shared/reference/*.md` only (see {@link sharedStandingLoadFiles}) — a
+ * fixed, small, always-loaded set no agent file has ever belonged to, by
+ * construction rather than by omission. A line growing inside one agent file
+ * moves the whole-corpus sum by that many bytes and nothing else; it has no
+ * standing-load-sized ceiling of its own to also move.
+ *
+ * Left OPEN, deliberately, and not decided here: whether the agent-definition
+ * tree wants a measure at that finer granularity — a ceiling sized to itself
+ * rather than folded into the 57-file whole-corpus sum. Today it has exactly
+ * the one measure above (currently a small fraction of the whole-corpus
+ * ceiling — the console line below prints the live share) and none finer;
+ * whether that is enough headroom-visibility for a tree a Reviewer reads on
+ * every dispatch is a question for a future row, not this one. No ceiling
+ * constant's population changes here and no guard's subject widens — this
+ * block only prints and pins what is already true of the two populations
+ * declared above.
+ */
+const AGENT_DEFINITION_FILES = LOADED_CORPUS_FILES.filter((f) => f.startsWith('.claude/agents/'));
+const AGENT_DEFINITION_BYTES = sumBytes(AGENT_DEFINITION_FILES);
+const MIN_AGENT_DEFINITION_FILES = 1; // 1 at landing (wave-reviewer.md)
+
+console.log(
+  `[loaded-corpus-guard] agent-definition tree: ${AGENT_DEFINITION_BYTES} B over ` +
+    `${AGENT_DEFINITION_FILES.length} file(s) — ` +
+    `${((AGENT_DEFINITION_BYTES / LOADED_CORPUS_BYTES) * 100).toFixed(1)}% of the loaded corpus; ` +
+    `not a member of the shared standing load (see the doc comment above)`,
 );
 
 /**
@@ -929,6 +991,23 @@ describe('loaded-corpus-guard — the two pinned reading-class measures', () => 
     expect(isShippedInstructionFile('.claude/skills/wave-start/evidence/driver-history.md')).toBe(false);
     const asCorpusPath = '.claude/skills/wave-start/evidence/driver-history.md'.split('/');
     expect(asCorpusPath).toContain(EVIDENCE_DIR_NAME);
+  });
+});
+
+describe('loaded-corpus-guard — the agent-definition tree has one measure, not two (issue #916)', () => {
+  it('finds the agent-definition tree, and it is already inside the loaded corpus population', () => {
+    expect(AGENT_DEFINITION_FILES.length).toBeGreaterThanOrEqual(MIN_AGENT_DEFINITION_FILES);
+    for (const file of AGENT_DEFINITION_FILES) {
+      expect(file.startsWith('.claude/agents/')).toBe(true);
+      expect(LOADED_CORPUS_FILES).toContain(file);
+    }
+    expect(AGENT_DEFINITION_BYTES).toBeGreaterThan(0);
+  });
+
+  it('no agent-definition file is a member of the shared standing load — that ceiling does not cover this tree', () => {
+    for (const file of AGENT_DEFINITION_FILES) {
+      expect(SHARED_STANDING_LOAD_FILES).not.toContain(file);
+    }
   });
 });
 
