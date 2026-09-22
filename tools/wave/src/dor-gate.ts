@@ -1267,13 +1267,19 @@ const DEFER_NO_DEFAULT_BRANCH_REF =
  * #918) the capped case additionally discloses that its file attribution is
  * partial — see {@link renderStalenessAdvisory}.
  *
- * Not exported: this module's barrel-reachability is asserted by
- * `barrel-drift.spec.ts` against an allowlist that lives outside this issue's
- * declared Files: globs, so `dor-gate.spec.ts`'s capped-list fixture pins its
- * own local copy of this number instead (with a comment pointing back here)
- * rather than growing that allowlist.
+ * Exported for exactly ONE reader: `dor-gate.spec.ts`'s capped-list fixture,
+ * which builds this many commits AND asserts the disclosure names this number,
+ * so changing the value here moves both halves of that spec together. It
+ * previously hand-mirrored the literal `200` with a comment pointing back
+ * here — a copy that could drift silently the moment this value changed.
+ *
+ * Module-local, NOT a package-root export: it is named on
+ * `barrel-drift.spec.ts`'s `MODULE_LOCAL_ALLOWLIST` with that reason, which
+ * keeps it off the pinned root-export count and out of the public contract.
+ * A consumer never reads it — it reads the advisory text, which states the cap
+ * in prose.
  */
-const STALENESS_COMMIT_CAP = 200;
+export const STALENESS_COMMIT_CAP = 200;
 
 /** How many touching commits are NAMED inline before the tail is summarised. */
 const STALENESS_COMMITS_SHOWN = 8;
@@ -1285,13 +1291,9 @@ const GIT_FIELD_SEP = '\u001f';
  * Record separator prefixed onto each commit's `--format` header line (SOH,
  * never in a subject line), so a `--name-only` file list can be told apart
  * from the next commit's header without guessing at blank-line conventions.
- * Its ABSENCE from a `git log` answer is also the signal that no per-commit
- * file data rode along at all — see {@link parseTouchingCommits}'s fallback
- * arm, which exists for exactly one caller: `cli.spec.ts`'s `execFileSync`
- * mock, which answers every `git log` call with a fixed one-line-per-commit
- * string regardless of the arguments this module actually passed. That mock
- * is out of this issue's declared Files: scope, so this module tolerates its
- * shape rather than assuming every caller can be changed to match.
+ * Every answer {@link parseTouchingCommits} reads carries it, because the
+ * `--format` string it is parsing back is the one {@link commitsTouchingSince}
+ * composes from this very constant — there is no second shape to tell apart.
  */
 const STALENESS_RECORD_SEP = '\u0001';
 
@@ -1306,8 +1308,13 @@ interface TouchingCommit {
    * Declared-file paths THIS commit's own diff touched (issue #918) — git's
    * own pathspec-restricted `--name-only` answer, so it is already the
    * intersection with the declared `Files:` list, never the commit's whole
-   * diff. Empty when no per-commit file data reached this parse (the fallback
-   * arm above): a caller in that shape carries no attribution to report, and
+   * diff.
+   *
+   * EMPTY for a MERGE commit, and that is a real answer rather than a missing
+   * one: `git log --name-only` prints no file list for a merge (git shows no
+   * diff for one unless explicitly asked), so a merge git reports as touching
+   * the declared paths — an "evil" merge, TREESAME to neither parent over them
+   * — carries no attribution of its own. When NO cited commit carried any,
    * {@link renderStalenessAdvisory} degrades to its pre-#918 wording rather
    * than asserting a false "touched nothing" from an absent signal.
    */
@@ -1398,38 +1405,28 @@ function toGitSince(raw: string | undefined): string | undefined {
 }
 
 /**
- * Parse a `git log` answer into {@link TouchingCommit}s. Two shapes, told
- * apart by whether {@link STALENESS_RECORD_SEP} appears at all:
+ * Parse a `git log` answer into {@link TouchingCommit}s: this module's own
+ * `--name-only` + record-separated `--format` (see
+ * {@link commitsTouchingSince}). Each record is the header line
+ * (`sha`/`date`/`subject`) followed by zero or more file lines, which are
+ * already pathspec-restricted to the declared files by git itself (issue
+ * #918) — no further intersection work is needed here.
  *
- *  - present → this module's own `--name-only` + record-separated `--format`
- *    (see {@link commitsTouchingSince}): each record is the header line
- *    (`sha`/`date`/`subject`) followed by zero or more file lines, which are
- *    already pathspec-restricted to the declared files by git itself (issue
- *    #918) — no further intersection work is needed here.
- *  - absent → the pre-#918 one-line-per-commit shape, with no file data at
- *    all (`files: []` on every record). This is the shape `cli.spec.ts`'s
- *    `execFileSync` mock still answers with regardless of the arguments this
- *    module passes; {@link renderStalenessAdvisory} recognises the all-empty
- *    case and falls back to its pre-#918 wording rather than reporting a
- *    false "touched nothing".
+ * ONE shape, not two. A second, separator-ABSENT arm used to live here for
+ * the pre-#918 one-line-per-commit shape; its only caller was never a real
+ * git — it was `cli.spec.ts`'s `execFileSync` mock, which answered every
+ * `git log` with a fixed string regardless of the arguments this module
+ * passed. That mock now derives its answer from the `--format` argument the
+ * module actually hands it, so the arm had no input left to serve and is
+ * gone. The empty answer — "nothing touched the declared files" — needs no
+ * arm of its own: `''.split(SEP)` is `['']` and the empty record is filtered
+ * out, yielding `[]`.
+ *
+ * A record with no FILE LINES is a different thing entirely and is not a
+ * degraded parse — see {@link TouchingCommit.files}: a merge commit is
+ * reported without one.
  */
 function parseTouchingCommits(out: string): TouchingCommit[] {
-  if (!out.includes(STALENESS_RECORD_SEP)) {
-    return out
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => {
-        const parts = line.split(GIT_FIELD_SEP);
-        return {
-          sha: parts[0] ?? '',
-          date: parts[1] ?? '',
-          subject: parts.slice(2).join(GIT_FIELD_SEP),
-          files: [],
-        };
-      });
-  }
-
   return out
     .split(STALENESS_RECORD_SEP)
     .filter((record) => record.length > 0)
@@ -1456,6 +1453,14 @@ function parseTouchingCommits(out: string): TouchingCommit[] {
  * the declared files THAT commit touched — the intersection the advisory
  * previously skipped, reported instead as the row's entire declared list
  * regardless of which files a cited commit's diff actually moved.
+ *
+ * The `git log` catch below is a DISTINCT deferral from the two above it, and
+ * it has real triggers: a declared `Files:` entry is caller data that lands in
+ * git's argv verbatim, so an entry git reads as pathspec magic it does not know
+ * (`:(…)`) makes the read exit non-zero; so does a stdout that outgrows
+ * `readOnlyGit`'s `maxBuffer`, or the bounded timeout expiring. Every one of
+ * them must defer with a named reason rather than throw out of an advisory
+ * gate — `dor-gate.spec.ts` pins that on the pathspec case.
  */
 function commitsTouchingSince(
   repoRoot: string,
@@ -1528,9 +1533,11 @@ function attributeFilesToCommits(commits: readonly TouchingCommit[]): Map<string
  * responsible — never a declared file none of the cited commits touched.
  *
  * The one exception is `commits` carrying no file data at ALL (every
- * `files` array empty) — the shape a caller supplies when it never had
- * per-commit attribution to give (see {@link parseTouchingCommits}'s
- * fallback arm). Absence of that signal is not evidence the intersection is
+ * `files` array empty). That is reachable from real git, not only in theory:
+ * `git log --name-only` prints no file list for a MERGE commit, so a window
+ * whose every touching commit is a merge arrives here with nothing to
+ * attribute (`dor-gate.spec.ts` pins exactly that case against a real
+ * repository). Absence of that signal is not evidence the intersection is
  * empty, so this falls back to the pre-#918 whole-list wording rather than
  * asserting a false "touched nothing".
  */
@@ -1557,9 +1564,11 @@ function renderStalenessAdvisory(
         ),
       ]
     : [
-        // No per-commit file data reached this render at all (see the doc
-        // comment above) — the pre-#918 wording, naming the whole declared
-        // list because there is no intersection to compute it against.
+        // No per-commit file data reached this render at all — every cited
+        // commit is a merge, which `git log --name-only` reports without a
+        // file list (see the doc comment above). The pre-#918 wording, naming
+        // the whole declared list because there is no intersection to compute
+        // it against.
         `The default branch (${probe.ref}) has moved over this row's declared Files since its last tracker update (${since}): ` +
           `${total} commit(s) touched ${files.join(', ')}.`,
       ];

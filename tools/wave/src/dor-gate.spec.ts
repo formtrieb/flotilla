@@ -15,6 +15,12 @@ import {
   validateIssueView,
   acFilesCoverageCheck,
   extractAcBody,
+  // Gate 9's `git log --max-count` bound, imported rather than hand-mirrored
+  // (issue #939). The capped-list fixture below builds exactly this many
+  // commits AND asserts the disclosure names this number, so changing the
+  // constant changes both halves of the fixture at once; the literal `200`
+  // this replaced could drift out of step with the module in silence.
+  STALENESS_COMMIT_CAP,
   type BlockerResolution,
   type DorResult,
   type GateResult,
@@ -1712,15 +1718,22 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     for (const r of repos) rmSync(r, { recursive: true, force: true });
   });
 
-  function git(repo: string, args: string[]): void {
+  /**
+   * `at` defaults to the suite-wide {@link COMMIT_AT}, which is what every
+   * fixture but one wants. The merge fixture near the bottom of this block is
+   * the exception: it needs its two parents committed BEFORE the advisory's
+   * window opens and the merge itself INSIDE it, which is the only way to get
+   * a window whose sole touching commit is a merge.
+   */
+  function git(repo: string, args: string[], at: string = COMMIT_AT): void {
     execFileSync('git', args, {
       cwd: repo,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        GIT_AUTHOR_DATE: COMMIT_AT,
-        GIT_COMMITTER_DATE: COMMIT_AT,
+        GIT_AUTHOR_DATE: at,
+        GIT_COMMITTER_DATE: at,
       },
     });
   }
@@ -1763,12 +1776,12 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     return { issuePath, source };
   }
 
-  function commitFile(repo: string, rel: string, message: string): void {
+  function commitFile(repo: string, rel: string, message: string, at: string = COMMIT_AT): void {
     const abs = join(repo, rel);
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, `// ${message}\n`, 'utf-8');
-    git(repo, ['add', '-A']);
-    git(repo, ['commit', '-q', '-m', message]);
+    git(repo, ['add', '-A'], at);
+    git(repo, ['commit', '-q', '-m', message], at);
   }
 
   /**
@@ -1954,14 +1967,15 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     'discloses a capped commit list as PARTIAL rather than presenting a truncated file set as complete',
     () => {
       const repo = makeRepo('capped');
-      // Mirrors dor-gate.ts's own (unexported) STALENESS_COMMIT_CAP = 200 —
-      // not imported, because that constant is deliberately module-private
-      // (see its doc comment: exporting it would require growing
-      // barrel-drift.spec.ts's allowlist, a file outside this issue's
-      // declared Files: globs). Exactly this many commits touching the one
-      // declared file is enough to hit `git log --max-count`'s own cap.
-      const CAPPED_COMMIT_COUNT = 200;
-      for (let i = 0; i < CAPPED_COMMIT_COUNT; i++) {
+      // THE module's own cap, imported (issue #939) — not a hand-mirrored
+      // literal. Exactly this many commits touching the one declared file is
+      // what hits `git log --max-count`'s own cap, so the fixture SIZE is
+      // derived from the constant and the assertion below reads the same
+      // number back out of the rendered text: change the constant and both
+      // halves move together, which is what makes this a pin rather than a
+      // coincidence. A literal here would keep passing against a changed
+      // constant only by building the wrong number of commits.
+      for (let i = 0; i < STALENESS_COMMIT_CAP; i++) {
         commitFile(repo, 'src/foo.ts', `capped touch ${i}`);
       }
 
@@ -1975,6 +1989,14 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
 
       expect(g.status).toBe('warn');
       expect(g.reason).toMatch(/partial/i);
+      // The pin itself: the disclosure names the cap, and the number it names
+      // is THIS constant. Asserting the rendered text against the imported
+      // value is what a hardcoded `200` could not do — it would have gone on
+      // matching a stale number the module no longer uses.
+      expect(g.reason).toContain(`capped at ${STALENESS_COMMIT_CAP}`);
+      // ...and the count it reports is the cap, marked `+` because more may
+      // exist beyond it. Same reasoning: derived, never retyped.
+      expect(g.reason).toContain(`${STALENESS_COMMIT_CAP}+ commit(s)`);
 
       // Control: well under the cap, the same fixture shape carries no such
       // disclosure — the wording is conditional on capping, not unconditional
@@ -1992,6 +2014,115 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
     },
     60_000,
   );
+
+  // ── the no-attribution render branch, on a REAL input (issue #939) ───────
+  //
+  // `renderStalenessAdvisory` degrades to the pre-#918 whole-declared-list
+  // wording when NO cited commit carried per-commit file data. That branch used
+  // to be reachable only through `cli.spec.ts`'s `execFileSync` mock, which
+  // answered in a separator-less shape the module then had a parse arm for.
+  // The arm is gone; the render branch stays, because real git reaches it: a
+  // MERGE commit is reported by `git log --name-only` with no file list at all
+  // (git shows no diff for a merge unless asked), so a window whose only
+  // touching commit is a merge arrives with nothing to attribute. Reported as
+  // "these N commits moved your whole declared list" is the honest answer
+  // there; "touched 0 of 2 declared files" would be a false negative.
+
+  it('renders the whole-declared-list wording when the only commit in the window is a MERGE, which git reports with no file list', () => {
+    const repo = makeRepo('merge-only');
+    // Everything but the merge lands BEFORE the advisory's window opens.
+    const BEFORE_WINDOW = '2020-02-01T12:00:00Z';
+    const WINDOW_OPENS = '2020-03-01T00:00:00Z';
+
+    commitFile(repo, 'src/foo.ts', 'foo, before the window', BEFORE_WINDOW);
+    commitFile(repo, 'src/bar.ts', 'bar, before the window and never touched again', BEFORE_WINDOW);
+    git(repo, ['checkout', '-q', '-b', 'side'], BEFORE_WINDOW);
+    commitFile(repo, 'src/foo.ts', 'side rewrites foo, before the window', BEFORE_WINDOW);
+    git(repo, ['checkout', '-q', 'main'], BEFORE_WINDOW);
+    commitFile(repo, 'docs/elsewhere.md', 'main moves elsewhere, before the window', BEFORE_WINDOW);
+
+    // An "evil" merge: the recorded resolution differs from BOTH parents over
+    // the declared file, which is what makes git report the merge itself as
+    // touching it (a merge TREESAME to a parent is simplified away entirely).
+    git(repo, ['merge', '--no-commit', '--no-ff', 'side']);
+    writeFileSync(join(repo, 'src', 'foo.ts'), '// a resolution neither parent has\n', 'utf-8');
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', 'evil merge: a resolution neither parent has']);
+
+    const g = gate(
+      validateIssueView(
+        buildView({
+          files: ['src/foo.ts', 'src/bar.ts'],
+          trackerUpdatedAt: WINDOW_OPENS,
+        }),
+        { repoRoot: repo },
+      ),
+      STALENESS_GATE_NAME,
+    );
+
+    expect(g.status).toBe('warn');
+    // The merge IS the only commit in the window — if history simplification or
+    // the date window let anything else through, the branch under test would
+    // not be the one that ran.
+    expect(g.reason).toContain('1 commit(s) touched');
+    expect(g.reason).toContain('evil merge: a resolution neither parent has');
+    expect(g.reason).not.toContain('side rewrites foo');
+    // The degraded wording: the whole declared list, in declared order...
+    expect(g.reason).toContain('touched src/foo.ts, src/bar.ts');
+    // ...and NOT the #918 attribution wording, which would be asserting an
+    // intersection this answer never carried.
+    expect(g.reason).not.toContain('Declared file(s) actually touched');
+    expect(g.reason).not.toContain('touched by');
+  });
+
+  // ── the history READ itself failing (issue #939) ─────────────────────────
+
+  it('DEFERS with its own named reason when the default-branch history READ fails, rather than throwing out of an advisory gate', () => {
+    const repo = makeRepo('log-read-fails');
+    commitFile(repo, 'src/foo.ts', 'moved');
+
+    // Control: the identical repo and window, with a well-formed declared
+    // entry, WARNS — so the deferral below is caused by the failing read and
+    // by nothing else about this fixture.
+    expect(
+      gate(
+        validateIssueView(
+          buildView({ files: ['src/foo.ts'], trackerUpdatedAt: TRACKER_BEFORE_COMMIT }),
+          { repoRoot: repo },
+        ),
+        STALENESS_GATE_NAME,
+      ).status,
+    ).toBe('warn');
+
+    // A declared `Files:` entry is caller data that reaches git's argv
+    // verbatim, and `:(…)` is pathspec MAGIC. An unknown magic word makes
+    // `git log` exit non-zero while `rev-parse --git-dir` still succeeds and
+    // the default-branch ref still resolves — so this, and only this, reaches
+    // the `git log` catch.
+    const result = validateIssueView(
+      buildView({
+        files: [':(nonesuch)src/foo.ts'],
+        trackerUpdatedAt: TRACKER_BEFORE_COMMIT,
+      }),
+      { repoRoot: repo },
+    );
+
+    const g = gate(result, STALENESS_GATE_NAME);
+    expect(g.status).toBe('deferred');
+    expect(g.status).not.toBe('pass'); // a failed read must never read as "nothing moved"
+    expect(g.reason).toContain('The default-branch history read failed');
+    // Distinct from the two deferrals that precede it inside the same
+    // function — a reader must be able to tell "the read blew up" apart from
+    // "this is not a checkout" and "no default branch resolves".
+    expect(g.reason).not.toContain('not a git checkout');
+    expect(g.reason).not.toContain('No default-branch ref resolves');
+    // It carries the failed invocation, so the deferral is actionable rather
+    // than a shrug.
+    expect(g.reason).toContain('nonesuch');
+    // ADVISORY to the end: a read that blew up still fails no gate.
+    expect(result.gates.some((x) => x.status === 'fail')).toBe(false);
+    expect(result.overall).toBe('PASS');
+  });
 
   // ── it stays QUIET where it should ──────────────────────────────────────
 
