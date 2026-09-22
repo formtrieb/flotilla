@@ -565,6 +565,20 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     slugFromSpinePath:
       'The wave slug a spine path names — the basis of the two absolute sidecar dirs. Exported for the spec; the verb derives it itself on every run.',
   },
+  // ─── the staleness advisory's commit cap (issue #939) ────────────────────
+  //
+  // One entry, minted deliberately rather than inherited. Gate 9's commit cap
+  // was module-PRIVATE and `dor-gate.spec.ts` hand-mirrored its literal value
+  // with a comment pointing back at it — a copy that stays correct only for as
+  // long as nobody changes the constant, which is the drift this file exists
+  // to make impossible everywhere else. The cheapest honest fix is the
+  // allowlist, not the barrel: the spec imports the real constant, the pinned
+  // root-export count does not move, and no semver commitment is minted for a
+  // number a consumer has no way to act on.
+  './dor-gate': {
+    STALENESS_COMMIT_CAP:
+      "Gate 9's `git log --max-count` bound. Exported for exactly ONE reader — dor-gate.spec.ts's capped-list fixture, which builds this many commits AND asserts the disclosure names this number, so both halves move together when the value does. Module-local rather than root-exported on the standard this file already applies: a CONSUMER reads the advisory's prose (which states the cap) off a `dor` gate line, never this binding — there is nothing it could do with the number that the text does not already tell it. Root-exporting it would move the pinned root-export count and turn a spec-pinning refactor into a public-API change for no consumer gain.",
+  },
   // ─── the post-return routing terminator (issue #681) ─────────────────────
   //
   // `route-tuple.ts` is a CLI-EDGE module, held to exactly the standard the

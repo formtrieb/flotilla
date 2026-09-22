@@ -5660,21 +5660,74 @@ describe('dor <path> --config <path> threads verify profiles into Gate 8 (file f
 describe('dor -- the staleness advisory reaches both entry points (exit code unchanged)', () => {
   const staleRoots: string[] = [];
 
-  /** One touching commit, in the exact record shape `git log --format` emits. */
-  const TOUCHING_COMMIT =
-    'abc1234' + '\u001f' + '2020-06-01T12:00:00Z' + '\u001f' + 'retire the mechanism the row still names\n';
+  /**
+   * One commit for the stub to answer with, as DATA. Deliberately NOT a wire
+   * string (issue #939): the record separator, the field separator and the
+   * `--name-only` layout are the module's business, and `stubGitLog` below
+   * renders this through the very `--format` the module passed rather than
+   * restating a shape this file would then have to keep in step by hand.
+   */
+  interface StubbedCommit {
+    sha: string;
+    date: string;
+    subject: string;
+    /** The declared file(s) `--name-only` reports this commit as touching. */
+    files: string[];
+  }
+
+  const TOUCHING_COMMIT: StubbedCommit = {
+    sha: 'abc1234',
+    date: '2020-06-01T12:00:00Z',
+    subject: 'retire the mechanism the row still names',
+    files: ['src/foo.ts'],
+  };
 
   /**
    * Stub the git calls gate 9 makes, in the same style the files-drift specs in
    * this file already stub `getChangedFilesFromGit`: answer each read the gate
    * performs, and hand back `commits` for the `git log`.
+   *
+   * The `git log` answer is RENDERED THROUGH THE REQUEST (issue #939). The stub
+   * reads the `--format=<template>` argument the module actually passed,
+   * substitutes `%h`/`%aI`/`%s` into it, and appends the file lines the same
+   * invocation's `--name-only` asked for — blank line first, exactly as git
+   * separates a commit header from its file list. Nothing here spells a
+   * separator, so this stub cannot answer in a shape the module stopped asking
+   * for.
+   *
+   * That mattered: the string this replaced was a FIXED one-line-per-commit
+   * answer handed back regardless of the arguments, carrying no per-commit file
+   * data and none of the record separator the module composes. `dor-gate.ts`
+   * carried a whole second parse arm for it — an arm no real `git log` could
+   * ever produce, an out-of-scope test double dictating a production branch.
+   * The arm is gone; this is why it could go.
    */
-  function stubGitLog(commits: string): void {
+  function stubGitLog(commits: readonly StubbedCommit[]): void {
     vi.mocked(execFileSync).mockImplementation(((_file: unknown, args: unknown) => {
       const a = Array.isArray(args) ? (args as string[]) : [];
       if (a[0] === 'rev-parse' && a[1] === '--git-dir') return '.git\n';
       if (a[0] === 'symbolic-ref') return 'origin/main\n';
-      if (a[0] === 'log') return commits;
+      if (a[0] === 'log') {
+        const formatArg = a.find((arg) => arg.startsWith('--format='));
+        // A stub that silently answered an unrecognised request would be the
+        // same defect in a new costume, so this refuses instead of guessing.
+        if (formatArg === undefined) {
+          throw new Error(`gate 9's git log carried no --format to answer: ${a.join(' ')}`);
+        }
+        const template = formatArg.slice('--format='.length);
+        const wantsFiles = a.includes('--name-only');
+        return commits
+          .map((c) => {
+            const header = template
+              .replace('%h', c.sha)
+              .replace('%aI', c.date)
+              .replace('%s', c.subject);
+            const fileList =
+              wantsFiles && c.files.length > 0 ? `\n${c.files.join('\n')}\n` : '';
+            return `${header}\n${fileList}`;
+          })
+          .join('');
+      }
       return '';
     }) as never);
   }
@@ -5698,7 +5751,7 @@ describe('dor -- the staleness advisory reaches both entry points (exit code unc
   }
 
   it('the FILE form surfaces the advisory as a warn and still exits 0', () => {
-    stubGitLog(TOUCHING_COMMIT);
+    stubGitLog([TOUCHING_COMMIT]);
     const dir = rootWithDeclaredFile('file-form');
     const issueDir = join(dir, '.scratch', 'demo', 'issues');
     mkdirSync(issueDir, { recursive: true });
@@ -5728,10 +5781,17 @@ describe('dor -- the staleness advisory reaches both entry points (exit code unc
     expect(stdoutBuf).toMatch(/warn\s+files-touched-since-tracker-update/);
     expect(stdoutBuf).toMatch(/retire the mechanism the row still names/);
     expect(stdoutBuf).toMatch(/^PASS/m);
+    // The #918 attribution wording, which the stub's old fixed string could not
+    // produce because it carried no per-commit file data at all. Asserting it
+    // HERE is what keeps the stub answering in the shape the module asks for:
+    // regress the stub to a separator-less, file-less answer and this line goes
+    // red rather than quietly falling back to the pre-#918 whole-list wording.
+    expect(stdoutBuf).toContain('Declared file(s) actually touched');
+    expect(stdoutBuf).toContain('src/foo.ts — touched by abc1234');
   });
 
   it('the FILE form passes the gate when git reports nothing touching the declared files', () => {
-    stubGitLog('');
+    stubGitLog([]);
     const dir = rootWithDeclaredFile('file-form-quiet');
     const issueDir = join(dir, '.scratch', 'demo', 'issues');
     mkdirSync(issueDir, { recursive: true });
@@ -5762,7 +5822,7 @@ describe('dor -- the staleness advisory reaches both entry points (exit code unc
   });
 
   it('the --id form surfaces the advisory, taking its window off IssueView.trackerUpdatedAt', async () => {
-    stubGitLog(TOUCHING_COMMIT);
+    stubGitLog([TOUCHING_COMMIT]);
     const dir = rootWithDeclaredFile('id-form');
     const store = new MarkdownFsStore({ repoRoot: dir, slug: 'demo' });
     const id = await store.create({ ...DOR_INPUT, files: ['src/foo.ts'] });
@@ -5790,7 +5850,7 @@ describe('dor -- the staleness advisory reaches both entry points (exit code unc
   });
 
   it('the --id form DEFERS -- never passes -- when the store states no tracker-update instant', async () => {
-    stubGitLog(TOUCHING_COMMIT);
+    stubGitLog([TOUCHING_COMMIT]);
     const dir = rootWithDeclaredFile('id-form-no-ts');
     // A store whose read() omits trackerUpdatedAt entirely: the adapter could
     // not state one. The gate must not read that as "nothing moved".
