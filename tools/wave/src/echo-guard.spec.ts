@@ -864,6 +864,62 @@ describe('echo-guard — the honest scope, asserted rather than assumed', () => 
 });
 
 // ---------------------------------------------------------------------------
+// 8b. The Guard declaration (ADR-0052)
+// ---------------------------------------------------------------------------
+
+/**
+ * ADR-0052 gives the ten Guards a third answer kind, a DECLARED Resolution bias
+ * and a named Unmodelled set. This hook needed only the declaration: its answer
+ * set is unchanged, because its bias was already the deliberate one and its own
+ * crash path already names itself. What was missing was the WRITING DOWN — the
+ * ADR's finding about this family was "two hooks, one directory, one class of
+ * not-knowing, opposite silent resolutions, neither declared in the answer."
+ *
+ * The bias claim is not asserted here in the abstract. It is asserted against
+ * behaviour this file ALREADY pins two blocks above: the quote-nesting suite's
+ * negative controls, where a genuinely unbalanced embedded quote widens what
+ * the scanner treats as inert prose. That is the pass direction, observed. The
+ * cross-hook half — the same uncertainty answered in the OPPOSITE direction by
+ * `conv12-guard` — lives in `shell-quoting-conformance.spec.ts`, which reads
+ * this declaration and derives its expectation from it, so declaration and
+ * behaviour cannot drift apart silently in either file.
+ */
+describe('echo-guard — the Guard declaration (ADR-0052)', () => {
+  const SOURCE = readFileSync(GUARD, 'utf-8');
+
+  it('declares its Subject', () => {
+    expect(SOURCE).toContain('**Subject.**');
+  });
+
+  it('declares a Resolution bias, and it is PASSES', () => {
+    expect(SOURCE).toContain('**Resolution bias — PASSES.**');
+  });
+
+  it('declares an Unmodelled set', () => {
+    expect(SOURCE).toContain('**Unmodelled set, named rather than assumed away.**');
+  });
+
+  it('names the sibling hook whose declared bias is the opposite', () => {
+    // The ADR's point is comparative: an undeclared bias is a defect, and two
+    // undeclared opposite biases in one directory is how the family got here.
+    expect(SOURCE).toContain('conv12-guard.cjs');
+    expect(SOURCE).toContain('BLOCK');
+  });
+
+  it('behaves as declared: an unbalanced embedded quote widens inert prose and PASSES', () => {
+    // The declared direction, observed on a command echo-guard demonstrably
+    // cares about when the quote balances (the control below).
+    expectAllowed(
+      runGuard('git commit -m "a note with an unbalanced \' quote; printenv', CONFIGURED_ENV),
+    );
+  });
+
+  it('…and the control proves that probe is a real one', () => {
+    expectBlocked(runGuard('git commit -m "a note"; printenv', CONFIGURED_ENV));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 9. The module's own OPERATOR BLOCK — the text a consumer pastes
 // ---------------------------------------------------------------------------
 

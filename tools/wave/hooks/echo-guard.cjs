@@ -10,6 +10,62 @@
  * a `Bash(...)` rule is a command-PREFIX matcher and the dangerous element can
  * sit anywhere in an arbitrary command, under any interpreter.
  *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Guard declaration (ADR-0052)
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * **Subject.** The COMMAND STRING of a `Bash` tool call, read as shell text by
+ * the four families below and by the literal-span neutralizer they share. Never
+ * the command's OUTPUT — this hook runs before anything executes, so it can
+ * only ever see what a command says, not what it would print.
+ *
+ * **Resolution bias — PASSES.** Where this guard cannot resolve a shape it
+ * WIDENS what it treats as inert prose and lets the command through. The
+ * reason is its traffic: commit messages, issue bodies and PR prose, full of
+ * shell metacharacters and unbalanced apostrophes by nature. Under the opposite
+ * bias it would block on any unbalanced quote in a commit message, which is its
+ * normal case and not its edge case. The same direction covers its own crash:
+ * any internal error exits 0. This is the OPPOSITE of the sibling
+ * `conv12-guard.cjs`, whose declared bias is to BLOCK — two hooks, one
+ * directory, one class of not-knowing, opposite resolutions, each declared on
+ * its own hook rather than left to whichever direction its author picked.
+ *
+ * **Saying is mandatory even where blocking is not.** The one non-verdict this
+ * hook has is its own crash, and it is named: the entry point writes an
+ * `[echo-guard] internal error — failing open: …` line before exiting 0, so a
+ * pass that happened because the guard broke is distinguishable from a pass
+ * that happened because nothing matched. Its other exit-0-without-a-message
+ * branches are NOT non-verdicts — a tool call that is not `Bash`, and a `Bash`
+ * call with no command string, are out of subject, and "this is not my
+ * subject" is a decision. Naming those on every Read or Edit call would be
+ * noise wearing honesty's clothes.
+ *
+ * **Unmodelled set, named rather than assumed away.** This hook's residual is
+ * argued at length further down rather than compressed here; the members are:
+ *
+ *  1. **Indirect expansion and deliberate string assembly.**
+ *     `V=GITHUB_TOKEN; echo "${!V}"` walks past, and so does any command whose
+ *     dangerous element is built at runtime. Passing this guard is not evidence
+ *     that a command is safe.
+ *  2. **Escapes inside a nested frame.** Backslash handling exists only on the
+ *     outermost double-quote branch of {@link neutralizeQuotedSpans}, so a `\"`
+ *     inside a live `$(...)` frame can mis-open or mis-close a nested frame.
+ *  3. **Heredoc detection is a flat pre-pass.** {@link neutralizeHeredocBodies}
+ *     runs over the whole command before any quote scope is known, so a
+ *     heredoc-looking token that is really prose inside an unrelated quoted
+ *     string is folded as if it opened a real heredoc.
+ *  4. **Two vectors that belong to the tracked anchors, not here:** reading a
+ *     gitignored settings/secrets file, and the DIRECT invocation of a
+ *     configured `<VAR>_CMD` lookup command.
+ *  5. **What the command would OUTPUT.** Out of subject entirely.
+ *
+ * The shared conformance suite (`../src/shell-quoting-conformance.spec.ts`)
+ * runs one corpus of shell shapes through BOTH hook scanners and asserts each
+ * one's declared bias, which is how the two stay comparable without sharing a
+ * module — a third scaffolded file is the failure mode ADR-0052 refuses.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
  * ## Honest scope — a speed bump, not an anchor
  *
  * This is a TEXT matcher over the command. `V=GITHUB_TOKEN; echo "${!V}"` walks
