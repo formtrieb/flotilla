@@ -643,8 +643,8 @@ publishing any number. **Not established:** the exact mechanical cause of the wr
 the filed text does not say whether the fused `cd` target was a mis-computed absolute path, a stale
 relative one, or something else, so no mechanism claim is made here beyond "fused, accepted, wrong."
 
-**Occurrence 3** — this same wave's own round one (no wave slug on record at the authoring time of
-this entry). A dispatched Worker's first verify-gate invocation fused a directory change onto the
+**Occurrence 3** — wave `2026-09-22-guards-shapes-and-residues`, row 876, iteration 1, disclosure ref
+`876.5`. A dispatched Worker's first verify-gate invocation fused a directory change onto the
 command; it was not refused and it ran. The Worker caught it itself, re-issued the call unfused with
 the directory carried by flag, and reported that every gate result it published came from the
 corrected calls — disclosed unprompted, under the policy clause it had read. **Observed:** the same
@@ -676,8 +676,9 @@ position.**
   no-dialog case, and the two silent-wrong-directory cases) — a role reading the rule and still
   writing the fused form, caught only by its own self-observation rather than by any guard.
 - **A datapoint about what a structural rung actually does when one exists, recorded beside the
-  above but not as an argument for or against adding one here:** in round four of the same wave that
-  produced occurrence 3 above, a Reviewer's first probe batch was refused by the shipped Echo-Guard
+  above but not as an argument for or against adding one here:** wave
+  `2026-09-22-guards-shapes-and-residues`, row 710, iteration 1, disclosure ref `710.7` — a Reviewer's
+  first probe batch was refused by the shipped Echo-Guard
   (Convention 8's own structural backstop) because it carried a fallback-expansion literal — the
   guard's own documented false-positive class, an unsafe form quoted as prose in an argument (see
   `reference/convention-08-secret-safe-briefs.md`'s Echo-Guard section). The Reviewer did not route
@@ -753,3 +754,62 @@ discriminator taking the shape down with it when it went. The guard was live in 
 the control probe in *Entry 1, re-measured 2026-09-22*.
 
 **Occurrence:** issue #910, 2026-09-22.
+
+### A related, positive occurrence — the reset-refused clause working as designed
+
+**Same wave (`2026-09-22-guards-shapes-and-residues`); no row, iteration or disclosure ref was carried
+forward with the report that named it, so none is invented here** — the same refusal to guess a
+provenance reference this entry itself practises above for occurrence 3, applied to a datapoint that
+never had one to begin with.
+
+This is not Mechanism A or Mechanism B. Workspace-setup step 2's "IF THE RESET IS REFUSED" branch
+exists for a third refusal shape entirely — the harness's OS-level sandbox write-deny, scoped **per
+tool surface, not per path**: a shell `git reset --hard` that must unlink or rewrite a tracked path
+under the agent-configuration directory can be refused where a file-editing tool writing that SAME
+path is not. `.claude/skills/wave-start/evidence/workflow-driver.md` (§"The reset is REFUSED", outside
+this file's own declared scope) records the mechanism and traces it to
+[ADR-0049's 2026-09-06 amendment](../../../../docs/adr/0049-a-dispatched-agent-never-escalates-a-gates-capability-is-declared-provided-or-withheld.md):
+it is a **capability refusal**, policy clause 12's territory, never a shape a re-issue can route
+around — and that file's own citation for the negative case that motivated the clause carries the same
+absence of a row number ("the row that produced this observation touched precisely those paths"),
+which is why none is invented here either.
+
+This occurrence is that clause's own prescribed remedy, exercised live, on a re-dispatch, and it held.
+A Worker's `git reset --hard <anchorSha>` reported the branch switch as successful while refusing —
+under exactly that write-deny — to unlink a tracked skills-corpus path, leaving a stale working copy
+carrying two lines the branch tip does not have; both of the reset's own asserts (`git status
+--porcelain` empty, `git rev-parse HEAD` matching) read clean regardless, exactly as the
+workflow-driver evidence predicts they would. The Worker restored the one surviving path with its
+file-editing tool, re-ran both asserts clean, and the recovered content landed in neither commit — the
+brief clause working as designed, closing the exact gap the negative case left open. **Observed:** the
+false-successful branch switch, the refused unlink, the two false-clean asserts, the file-tool restore,
+the re-assert. **Not established:** a row, iteration or disclosure id for this occurrence — carried
+forward as unknown rather than guessed, matching this same entry's own practice above.
+
+**Recorded beside the negative occurrence the clause answers, not in place of it:** the negative case
+lives in `workflow-driver.md`'s own evidence file, which sits outside this file's declared Files scope
+for this row; this entry adds the matching positive case to this catalog rather than duplicating that
+file's text.
+
+### Open question — does any clause cover a single-path restore discarding an unrelated edit?
+
+**Same wave (`2026-09-22-guards-shapes-and-residues`); no row, iteration or disclosure ref given.** A
+near-miss with the same shape as a falsification restore
+([Convention 11](../reference/convention-11-prove-the-check-can-fail.md)'s break-observe-restore
+cycle): restoring a probe with `git checkout -- <path>` reverts the WHOLE file to `HEAD` — i.e., to the
+wave anchor — rather than to the probe's own pre-change state, and in this occurrence it silently
+discarded an unrelated edit the row had already made to the SAME file. It was caught only because the
+status was read immediately afterward. **Observed:** the discard; the immediate status read that
+caught it. **Not established:** the row's own eventual recovery, or whether the discarded edit was
+later reproduced — neither was carried forward with the report that named this near-miss, and neither
+is guessed at here.
+
+**No clause covers this today, and this entry takes no position on whether one should.** A single-path
+`git checkout --` restore is not fused (Mechanism A), is not too complex for the isolation guard
+(Mechanism B), and is not the write-deny the positive occurrence immediately above documents — it ran,
+it was accepted, and it did exactly what `git checkout --` has always done: overwrite the whole path
+from a ref, never from a saved probe state. Whether Convention 11's falsification-restore guidance, or
+this convention's own catalog, should name "restore a probe from a saved copy of the path, never from
+`HEAD`, whenever another edit to the same path may already be pending" is the open question this entry
+files rather than answers — left explicitly open, per this same file's own "Open question" section
+above, for the next occurrence to weigh rather than for this one to settle by assertion.
