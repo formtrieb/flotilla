@@ -9,6 +9,58 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.9.0] — 2026-09-22
+
+The abstention doctrine stops being a decision and becomes the shipped guard's behaviour: the Convention-12 guard blocks **27** commands where it blocked 62, measured over 3,750 real commands — 37 refusals removed as false, two new true positives caught, zero abstentions ([#710](https://github.com/formtrieb/flotilla/issues/710)). The contract Catalog is finally emitted as data ([#866](https://github.com/formtrieb/flotilla/issues/866)), an import-graph guard builds the engine's module graph from source and names every cycle in it ([#915](https://github.com/formtrieb/flotilla/issues/915)), and a keeper derives the guard population from the filesystem so a declaration cannot go missing unnoticed ([#914](https://github.com/formtrieb/flotilla/issues/914)). Twenty-three landings across two waves, one decision record implemented. Nothing removed.
+
+### Upgrading
+
+1. **Plugin/marketplace:** update the plugin to 2.9.0. Marketplace listing unchanged.
+2. **Engine pin:** `@formtrieb/flotilla-engine` 2.8.0 → 2.9.0. Vendored form: re-copy `tools/wave/`.
+3. **Config keys:** none.
+4. **Hook re-copy: REQUIRED, and it changes behaviour.** `hooks/conv12-guard.cjs` is rewritten ([#710](https://github.com/formtrieb/flotilla/issues/710)) and `hooks/echo-guard.cjs` gains its declaration block (comments only, no executable line). A guard reaches a consumer only by copy, so until you re-copy, nothing in item 6's first bullet applies to you.
+5. **Allowlist parity:** none.
+6. **Behaviour heads-ups** (same input, different outcome):
+   - The Convention-12 guard's verdict set moves once you re-copy it: a command it used to refuse may now run, and a command that slipped past may now be blocked. It gains a third answer — an **Abstention**, which blocks and says the scanner could not decide rather than asserting a defect — and its refusal messages are reworded ([#710](https://github.com/formtrieb/flotilla/issues/710)).
+   - `compose-driver` refuses a `--template` override that does not parse: exit 1 with the syntax error's position in the template's own line numbering, instead of writing a broken script under a receipt reading `ok: true` ([#868](https://github.com/formtrieb/flotilla/issues/868)).
+   - `issue-store create` refuses a malformed `acceptanceCriteria` entry, the rule `annotate` has enforced since 2.8.0 — including a bare string and a missing or non-boolean `checked`. No write reaches the store ([#898](https://github.com/formtrieb/flotilla/issues/898)).
+   - Three surfaces move with the shape declarations: `--help` gains a `shape:` line on all 36 JSON-class verbs, the zero-argument roster loses one line's trailing clause, and the `catalog` verb's emitted JSON changes on 36 of 69 records. No verb's result JSON, flag spelling or exit code moves ([#913](https://github.com/formtrieb/flotilla/issues/913)).
+   - `DorResult.gates` gains a tenth entry, `pr-title-id-independent`, emitted last and **advisory only** — it never changes a row's verdict ([#912](https://github.com/formtrieb/flotilla/issues/912)).
+   - Under a harness that blocks SSH, the orphan-branch sweep retries the remote probe over an HTTPS mirror of the same origin before giving up, so a sweep that could never conclude now can. It never deletes on an inconclusive probe ([#876](https://github.com/formtrieb/flotilla/issues/876)).
+   - Gate 9's staleness advisory names only the declared files the cited commits actually touched, attributed per commit, instead of the row's whole declared list ([#918](https://github.com/formtrieb/flotilla/issues/918)).
+7. **Implementer heads-ups** (additive; nothing renamed or removed): one new root export, `type Catalog` — a TYPE only, so the pinned root **runtime** export count is unchanged. `BranchHygieneSkipReason` widens from one member to two; `RemoteRefProbeResult`'s `probe-failed` variant gains an optional `cause`; `ValidateOptions` gains an optional `prTitle` and `ValidateViewOptions` an optional `title` and `prTitle`. Every JSON-class verb contract now declares a `json.shape`. The shipped Convention-12 hook gains a `module.exports` block; its runtime path is unchanged and nothing in the engine imports it.
+
+### Added
+
+- The ADR-0052 abstention, implemented: quote frames per `$( )` depth, modelled heredocs, comments and backticks, a declared resolution bias and a named unmodelled set on the two shipped hooks ([#710](https://github.com/formtrieb/flotilla/issues/710)) and on the eight drift specs ([#896](https://github.com/formtrieb/flotilla/issues/896)).
+- `catalog` — a bare-form verb emitting the router's aggregate of every Verb contract as JSON, each entry the contract **verbatim** rather than a projection ([#866](https://github.com/formtrieb/flotilla/issues/866)).
+- An import-graph guard: builds the module graph from source with a parser, reports a cycle by naming every edge on its path, and declares the two cycles the graph legitimately contains ([#915](https://github.com/formtrieb/flotilla/issues/915)).
+- A keeper for the guard declarations: derives the population from the filesystem rather than a list, so a new guard landing without a declaration goes red ([#914](https://github.com/formtrieb/flotilla/issues/914)).
+- A tenth readiness gate advising when a row's title leans on a tracker id and no PR title is declared ([#912](https://github.com/formtrieb/flotilla/issues/912)).
+- A named parse gate for the driver template, with a negative control and a compose-time refusal ([#868](https://github.com/formtrieb/flotilla/issues/868)).
+
+### Changed
+
+- `merge-order` and every other JSON-class verb declare their output shape; the emitted-versus-declared agreement is pinned ([#913](https://github.com/formtrieb/flotilla/issues/913)).
+- `issue-store create` runs the acceptance-criteria entry-shape refusal, at the one seam all three stores already pass through ([#898](https://github.com/formtrieb/flotilla/issues/898)).
+- Gate 9's staleness advisory reports the intersection, not the declaration ([#918](https://github.com/formtrieb/flotilla/issues/918)).
+- The corpus guard's split resolution bias is recorded as the ruling rather than an open finding, and `SPLIT` joins the bias vocabulary — a split declaration that names only one direction is itself a reported defect ([#914](https://github.com/formtrieb/flotilla/issues/914)).
+- Convention 13's Catalog entry 1 is re-measured against the current harness: the blanket shell-variable refusal **no longer reproduces**, and the brace-free heredoc size wall is bracketed at 9,576 B clean / 10,032 B refused ([#910](https://github.com/formtrieb/flotilla/issues/910)).
+- The two brief-clause catalogues gain four occurrences, with an open question on whether either prose clause has earned a structural rung ([#917](https://github.com/formtrieb/flotilla/issues/917)).
+
+### Fixed
+
+- A negative control that passed for every placeholder value, so it could not fail ([#909](https://github.com/formtrieb/flotilla/issues/909)).
+- The bare-id strip consumed the separator between two adjacent stripped ids; a title left malformed now raises a compose-time notice ([#888](https://github.com/formtrieb/flotilla/issues/888)).
+- Four residues of the heredoc-trigger correction, and its over-reaching "same body" qualifier ([#911](https://github.com/formtrieb/flotilla/issues/911)); Catalog entry 2's trigger ([#869](https://github.com/formtrieb/flotilla/issues/869)).
+- Two NUL bytes that made a spec file read as binary to `grep` ([#867](https://github.com/formtrieb/flotilla/issues/867)); three usage-render residues ([#892](https://github.com/formtrieb/flotilla/issues/892)); the Reviewer definition's sibling-list description ([#884](https://github.com/formtrieb/flotilla/issues/884)); two `merge-order` references showing strings where the verb prints objects ([#893](https://github.com/formtrieb/flotilla/issues/893)); the retired `! cp` spelling at its last hand-off sites ([#878](https://github.com/formtrieb/flotilla/issues/878)); three stale prose claims outside their rows' globs ([#916](https://github.com/formtrieb/flotilla/issues/916)).
+
+### Not yet proven
+
+- The shipped driver still restates the variable-expansion refusal claim this release retired, in three places every dispatch reads ([#933](https://github.com/formtrieb/flotilla/issues/933)).
+- The tenth readiness gate reports `deferred` on the store-backed path — the one decoration actually uses ([#934](https://github.com/formtrieb/flotilla/issues/934)).
+- The import-graph guard classifies every `require()` as call-time-safe without checking it sits inside a function body; currently theoretical, with one deferred edge in the engine and it behind a main-module guard ([#936](https://github.com/formtrieb/flotilla/issues/936)).
+
 ## [2.8.0] — 2026-09-21
 
 A write verb that quietly destroyed data now refuses instead: `issue-store annotate` no longer replaces every acceptance criterion with the four characters `undefined` when the patch carries strings ([#871](https://github.com/formtrieb/flotilla/issues/871)). The tier→model-id binding becomes an optional `models` config block, so no model name is spelled in the engine any more ([#803](https://github.com/formtrieb/flotilla/issues/803)), and every verb's usage text renders from its contract instead of a hand-written printer ([#856](https://github.com/formtrieb/flotilla/issues/856)). Seventeen landings, two decision records. Nothing removed.
