@@ -185,6 +185,57 @@ function resolveRelativeSpecifier(fromAbs: string, specifier: string): string | 
 }
 
 /**
+ * Whether `node` sits somewhere a `require()` call does NOT run unconditionally
+ * at the point the module is first evaluated top-to-bottom — inside a function
+ * body (only runs when later CALLED) or inside a guarded block: an
+ * if/else/for/while/do/try/catch/switch arm (only runs when that branch is
+ * taken). Walks the parent chain up to the `SourceFile`; the first
+ * function-like or control-flow ancestor found settles it, so nesting depth
+ * doesn't matter.
+ *
+ * This is the enclosing-scope check the header comment's `deferred` bullet
+ * already promised ("inside a function body or a guarded block") and issue
+ * #936 closes: without it, a `require()` sitting directly in a module's
+ * top-level statement list — no function, no guard, as eager as a static
+ * `import` — was read as `deferred` anyway, because "deferred" meant nothing
+ * more than "not a static import".
+ *
+ * The engine's one real relative `require()` edge today
+ * (`spine-cli.ts` → `cli.ts`) sits inside `if (require.main === module) { … }`
+ * — a guarded block, not a function body — and this check keeps it classified
+ * `deferred`, matching {@link PERMITTED_CYCLES}'s `heldBy` for that cycle.
+ */
+function isDeferredScope(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+  while (current && !ts.isSourceFile(current)) {
+    if (
+      ts.isFunctionDeclaration(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isArrowFunction(current) ||
+      ts.isMethodDeclaration(current) ||
+      ts.isGetAccessorDeclaration(current) ||
+      ts.isSetAccessorDeclaration(current) ||
+      ts.isConstructorDeclaration(current) ||
+      ts.isIfStatement(current) ||
+      ts.isForStatement(current) ||
+      ts.isForInStatement(current) ||
+      ts.isForOfStatement(current) ||
+      ts.isWhileStatement(current) ||
+      ts.isDoStatement(current) ||
+      ts.isTryStatement(current) ||
+      ts.isCatchClause(current) ||
+      ts.isSwitchStatement(current) ||
+      ts.isCaseClause(current) ||
+      ts.isDefaultClause(current)
+    ) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+/**
  * Parse every module in `rootDir` with the TypeScript compiler's own parser
  * and return the graph plus every place the reader could not reach a verdict.
  *
@@ -300,7 +351,16 @@ function buildImportGraph(rootDir: string): ImportGraph {
           const construct = isDynamicImport ? 'dynamic import()' : 'require() call';
           const first = node.arguments[0];
           if (first && ts.isStringLiteral(first)) {
-            record(node, first.text, 'deferred', construct);
+            // A dynamic import() is asynchronous regardless of where it sits —
+            // it never blocks the importing module's own evaluation, so it
+            // stays `deferred` unconditionally. A require() is synchronous:
+            // only a `require()` that ALSO sits inside a function body or a
+            // guarded block earns `deferred`; one sitting bare in a module's
+            // top-level statement list is exactly as eager as a static
+            // import, and #936 is what makes that distinction real instead of
+            // asserted.
+            const kind: EdgeKind = isDynamicImport || isDeferredScope(node) ? 'deferred' : 'value';
+            record(node, first.text, kind, construct);
           } else {
             abstain(node, construct, 'the module specifier is not a string literal');
           }
@@ -535,26 +595,28 @@ function reachableFrom(graph: ImportGraph, start: string, kinds: readonly EdgeKi
  *     is an edge. `require.resolve('./x')` is a property access, produces no
  *     edge, and is not an Abstention either — it locates a file without
  *     loading it. The engine writes none today.
- *  5. **WHERE a deferred edge sits.** `deferred` means "not a static import",
- *     nothing more. This reader does not check that a `require()` is inside a
- *     function body rather than at module top level, so a top-level
- *     `require()` would be classified `deferred` and treated as safe when it
- *     is as eager as a static import. The one deferred edge in the graph
- *     today sits behind `if (require.main === module)`, and
- *     {@link PERMITTED_CYCLES} records that by hand.
- *  6. **Whether a call-time read is genuinely call-time.** For the ADR-0037
+ *  5. **Whether a call-time read is genuinely call-time.** For the ADR-0037
  *     cycle that condition is the whole safety argument, and it is
  *     `load-order-drift.spec.ts`'s subject, not this one. This guard sees an
  *     edge; that one loads both modules in both orders and reads the crossing
  *     bindings. Neither substitutes for the other, which is why the
  *     declaration below cites it as the cycle's `heldBy`.
- *  7. **One representative path per component.** A strongly-connected
+ *
+ *     (Formerly a member here: whether a `require()` sits inside a function
+ *     body or a guarded block rather than bare at module top level. Closed by
+ *     issue #936 — {@link isDeferredScope} makes that check real, so a
+ *     `require()` reachable unconditionally at module-evaluation time is now
+ *     classified `value`, not `deferred`. The one deferred edge in the graph
+ *     today, `spine-cli.ts` → `cli.ts`, sits inside `if (require.main ===
+ *     module)` and stays `deferred`; {@link PERMITTED_CYCLES} still records it
+ *     by hand.)
+ *  6. **One representative path per component.** A strongly-connected
  *     component with several distinct cycles through it renders ONE of them —
  *     the deterministic shortest walk from its lexicographically smallest
  *     member. The component's MEMBER SET is the identity that is compared, so
  *     nothing about the tangle can change without changing the verdict; but
  *     the printed path is an example, not an enumeration.
- *  8. **Module resolution beyond three shapes.** `paths` mappings, `exports`
+ *  7. **Module resolution beyond three shapes.** `paths` mappings, `exports`
  *     conditions, `.js`-suffixed specifiers and case-insensitive filesystems
  *     are not modelled; {@link resolveRelativeSpecifier} tries the literal
  *     path, `+ '.ts'` and `/index.ts`. Anything else is an Abstention, which
@@ -752,6 +814,108 @@ describe('import-graph guard — edge classification (type-only vs value vs defe
     // …and the forward edge is a plain static value import, which is what
     // makes this pair a cycle in the full graph and not in the other one.
     expect(edgeBetween('cli.ts', 'spine-cli.ts').map((edge) => edge.kind)).toEqual(['value']);
+  });
+});
+
+// ─── require() enclosing-scope classification (issue #936) ───────────────────
+
+describe('import-graph guard — require() enclosing-scope classification (issue #936)', () => {
+  it('AC1: a bare top-level require() — no function, no guard — is classified `value`, not `deferred`', () => {
+    // Exactly the hazard the header comment names: as eager as a static
+    // import, and now read as one.
+    withFixtureGraph(
+      {
+        'a.ts': "const b = require('./b');\nexport { b };\n",
+        'b.ts': 'export const b = 1;\n',
+      },
+      (graph) => {
+        const edges = graph.edges.filter((edge) => edge.from === 'a.ts' && edge.to === 'b.ts');
+        expect(edges).toHaveLength(1);
+        expect(edges[0].kind).toBe('value');
+        expect(edges[0].text).toContain("require('./b')");
+        expect(graph.abstentions).toEqual([]);
+      },
+    );
+  });
+
+  it('AC2: a require() inside a function body is still classified deferred', () => {
+    withFixtureGraph(
+      {
+        'a.ts': "export function load() {\n  const b = require('./b');\n  return b;\n}\n",
+        'b.ts': 'export const b = 1;\n',
+      },
+      (graph) => {
+        const edges = graph.edges.filter((edge) => edge.from === 'a.ts' && edge.to === 'b.ts');
+        expect(edges).toHaveLength(1);
+        expect(edges[0].kind).toBe('deferred');
+      },
+    );
+  });
+
+  it('AC2: a require() inside a guarded block (an if-statement) at module top level is still classified deferred', () => {
+    // The shape of the engine's one real deferred edge, reproduced as a
+    // fixture: guarded, not inside a function, and still safe — the same
+    // "function body OR a guarded block" the header comment names.
+    withFixtureGraph(
+      {
+        'a.ts': "if (require.main === module) {\n  const b = require('./b');\n  void b;\n}\n",
+        'b.ts': 'export const b = 1;\n',
+      },
+      (graph) => {
+        const edges = graph.edges.filter((edge) => edge.from === 'a.ts' && edge.to === 'b.ts');
+        expect(edges).toHaveLength(1);
+        expect(edges[0].kind).toBe('deferred');
+      },
+    );
+  });
+
+  it('AC2: the engine\'s one real deferred edge (spine-cli.ts → cli.ts) still classifies deferred after the fix', () => {
+    // Same assertion as the "classifies a real require() as deferred" case
+    // above, restated here as this issue's own regression pin: the fix must
+    // not reclassify the one edge it was explicitly built not to disturb.
+    const deferred = edgeBetween('spine-cli.ts', 'cli.ts').filter((edge) => edge.kind === 'deferred');
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0].text).toContain("require('./cli')");
+    // It sits inside `if (require.main === module)`, a guarded block — not a
+    // function body — which is exactly the shape `isDeferredScope` has to
+    // recognize for this pin to hold, confirmed at source rather than assumed.
+    const source = readFileSync(join(SRC_ROOT, 'spine-cli.ts'), 'utf8');
+    expect(source).toContain('if (require.main === module) {');
+    expect(source).toMatch(/if \(require\.main === module\) \{\s*\n\s*const \{ main \} = require\('\.\/cli'\)/);
+  });
+
+  it('AC3 negative control: a cycle closed through a bare top-level require() makes the evaluation-time assertion fail', () => {
+    // Before this fix, `b.ts`'s back edge would have been read `deferred` and
+    // this cycle would never have reached the evaluation-time graph at all —
+    // exactly the hazard the Gap describes as "currently theoretical". This
+    // control makes it concrete rather than described.
+    withFixtureGraph(
+      {
+        'a.ts': "import { b } from './b';\nexport const a = () => b;\n",
+        'b.ts': "const a = require('./a');\nexport { a };\n",
+      },
+      (graph) => {
+        const forward = graph.edges.filter((edge) => edge.from === 'a.ts' && edge.to === 'b.ts');
+        const back = graph.edges.filter((edge) => edge.from === 'b.ts' && edge.to === 'a.ts');
+        expect(forward.map((edge) => edge.kind)).toEqual(['value']);
+        // The fix, isolated: this back edge is `value` now, where the
+        // pre-#936 reader would have read it `deferred` and hidden the cycle
+        // from the evaluation-time graph entirely.
+        expect(back.map((edge) => edge.kind)).toEqual(['value']);
+
+        const cycles = findCycles(graph, ['value']);
+        expect(cycles.map(cycleKey)).toEqual(['a.ts + b.ts']);
+
+        // Run through the SAME reconciliation the two real acyclicity
+        // assertions call: an empty declaration list reports this cycle as
+        // UNDECLARED — the fail state the guard's evaluation-time assertion
+        // exists to produce.
+        expect(reconcileAgainstDeclaration(cycles, [])).toEqual({
+          undeclared: ['a.ts + b.ts'],
+          stale: [],
+        });
+      },
+    );
   });
 });
 
