@@ -2729,19 +2729,44 @@ describe('skill-schema-drift — the shipped driver compose-time human gate (iss
 // already holds for the branch-under-review diff base.
 
 /**
- * The four per-sibling prediction outcomes Check 5 must enumerate. Every one is
+ * The five per-sibling prediction outcomes Check 5 must enumerate. Every one is
  * load-bearing, and the split is the whole point: two of them are real coverage
- * (`predicted-clean`, `predicted-conflict`) and two are NOT coverage at all
- * (`not-on-origin`, `at-anchor`). A copy that names three has quietly dropped a
- * way for a Reviewer to be blind — and `at-anchor` is the one a reader deletes
- * as redundant, because it is the one whose command output looks like success.
+ * of a tip that was read (`predicted-clean`, `predicted-conflict`), two are NOT
+ * coverage at all (`not-on-origin`, `at-anchor`), and one is coverage reached
+ * by a DIFFERENT check (`landed`). A copy that names four has quietly dropped a
+ * way for a Reviewer to be blind — `at-anchor` is the one a reader deletes as
+ * redundant, because it is the one whose command output looks like success.
+ *
+ * `landed` joined with the landed-sibling row (glossary: Sibling, Landed
+ * sibling; the 2026-09-23 grill). A sibling whose merge the spine's PR-log
+ * records is never fetched — in a wave that lands by squash and re-anchors
+ * every round its tip is a stale leftover or gone — and is covered instead by
+ * one merge-tree of the row against the default branch's current tip. None of
+ * the four tip outcomes can spell that honestly, so the vocabulary grows by
+ * one, in all four copies at once.
  */
 const SIBLING_PREDICTION_OUTCOMES = [
   'predicted-clean',
   'predicted-conflict',
   'not-on-origin',
   'at-anchor',
+  'landed',
 ] as const;
+
+/**
+ * How ONE occurrence of an outcome is found in a copy's text. The four
+ * hyphenated tokens have no prose homonym, so any occurrence is the token.
+ * `landed` is an ordinary English word the same copies use freely ("may already
+ * have landed", "landed-ness"), so only its CODE-QUOTED form counts — plain
+ * backticks in a markdown copy, backslash-escaped backticks inside the driver's
+ * template literal. Without that, a copy that dropped `landed` from its list
+ * would still pass on the prose word sitting a sentence away.
+ */
+function outcomeOccurrences(region: string, outcome: string): Array<{ at: number; length: number }> {
+  const pattern =
+    outcome === 'landed' ? /\\?`landed\\?`/g : new RegExp(outcome.replace(/-/g, '\\-'), 'g');
+  return [...region.matchAll(pattern)].map((m) => ({ at: m.index ?? 0, length: m[0].length }));
+}
 
 /**
  * The canonical opening of the mandatory coverage line. All four copies write it
@@ -2820,9 +2845,10 @@ function contractRegion(md: string, label: string, start: string, end: string): 
 }
 
 /**
- * The tightest stretch of `region` that contains ALL FOUR outcomes, measured in
+ * The tightest stretch of `region` that contains ALL FIVE outcomes, measured in
  * characters from the start of the first to the end of the last — or `null` when
- * one of them is absent entirely.
+ * one of them is absent entirely ({@link outcomeOccurrences} decides what counts
+ * as an occurrence).
  *
  * A plain "every outcome appears somewhere in this copy" check was tried first
  * and FALSIFIED live: dropping `at-anchor` from the driver's vocabulary list left
@@ -2835,13 +2861,10 @@ function contractRegion(md: string, label: string, start: string, end: string): 
  * cannot.
  */
 function enumerationSpan(region: string): number | null {
-  const marks: Array<{ at: number; outcome: string }> = [];
+  const marks: Array<{ at: number; length: number; outcome: string }> = [];
   for (const outcome of SIBLING_PREDICTION_OUTCOMES) {
-    for (let from = 0; ; ) {
-      const at = region.indexOf(outcome, from);
-      if (at < 0) break;
-      marks.push({ at, outcome });
-      from = at + 1;
+    for (const { at, length } of outcomeOccurrences(region, outcome)) {
+      marks.push({ at, length, outcome });
     }
   }
   marks.sort((a, b) => a.at - b.at);
@@ -2851,7 +2874,7 @@ function enumerationSpan(region: string): number | null {
     for (let j = i; j < marks.length; j++) {
       seen.add(marks[j].outcome);
       if (seen.size === SIBLING_PREDICTION_OUTCOMES.length) {
-        const span = marks[j].at + marks[j].outcome.length - marks[i].at;
+        const span = marks[j].at + marks[j].length - marks[i].at;
         if (best === null || span < best) best = span;
         break;
       }
@@ -2869,6 +2892,14 @@ function enumerationSpan(region: string): number | null {
  *   - 111  reviewer-checks.md Check 5     (the coverage-line worked example)
  *   - 409  the falsified driver copy      (`at-anchor` dropped from the list,
  *                                          surviving only in the prose below it)
+ *
+ * Re-read with FIVE outcomes by the landed-sibling row, over its own diff:
+ * 82 (SKILL.md, the same slash list), 82 (reviewer-checks.md — now its
+ * outcome heading's inline list, which is tighter than the table or the
+ * coverage-line example), 91 (the driver's reviewerBrief, pipe list) and 82
+ * (the agent definition, pipe list); the falsified driver copy, `at-anchor`
+ * dropped from its list only, now reads 4,472, because `predicted-conflict`
+ * appears nowhere else in that clause. The constant did not need to move.
  *
  * 250 leaves the widest shipped copy better than 2× of headroom and still lands
  * well under the falsified value. Deliberately loose at that: this pin exists to
@@ -2975,7 +3006,7 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     ['wave-reviewer.md agent definition (reduced form)', agentCheck5(reviewerAgentMd)],
   ];
 
-  it.each(COPIES)('%s enumerates all FOUR per-sibling outcomes', (_label, region) => {
+  it.each(COPIES)('%s enumerates all FIVE per-sibling outcomes', (_label, region) => {
     for (const outcome of SIBLING_PREDICTION_OUTCOMES) {
       expect(region).toContain(outcome);
     }
@@ -3040,12 +3071,13 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
   //
   // Driver-copy-only on purpose, and that is the whole design of this row. The
   // list a Reviewer is handed now spans the WAVE — earlier rounds' `pr-created`
-  // rows included — so an unresolvable fetch no longer has one cause. The
-  // obvious fix, a fifth prediction outcome, was REFUSED: the four outcomes are
-  // enumerated in four pinned copies with the span check above, and widening
-  // that vocabulary would cost four documents what a `(state)` suffix plus one
-  // sentence carries in one. The sentence therefore lives where the annotation
-  // does — in the composed brief — and is pinned here, not in `COPIES`.
+  // rows included — so an unresolvable fetch no longer has one cause. A fifth
+  // outcome carrying that CAUSE was refused, and stays refused: a `(state)`
+  // suffix plus one sentence carries it in one document. The sentence therefore
+  // lives where the annotation does — in the composed brief — and is pinned
+  // here, not in `COPIES`. (The fifth outcome that DID arrive, `landed`, is a
+  // different kind of thing — a different METHOD of coverage, not a cause of
+  // missing coverage — and it rides every copy; see the block after this one.)
 
   /**
    * The per-annotation clause's load-bearing fragments (issue #791). Several
@@ -3071,11 +3103,12 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     for (const fragment of SIBLING_ANNOTATION_FRAGMENTS) {
       expect(clause).toContain(fragment);
     }
-    // The annotation EXPLAINS an outcome; it never becomes one. Both halves
-    // said out loud: the cause is attached to `not-on-origin`, and the outcome
-    // vocabulary is still exactly four.
+    // A `(state)` annotation EXPLAINS an outcome; it never becomes one. Both
+    // halves said out loud: the cause is attached to `not-on-origin`, and the
+    // outcome vocabulary is exactly five — the four tip outcomes plus `landed`,
+    // which no `(state)` suffix produces.
     expect(clause).toMatch(/is UNCOVERED and is never/);
-    expect(SIBLING_PREDICTION_OUTCOMES).toHaveLength(4);
+    expect(SIBLING_PREDICTION_OUTCOMES).toHaveLength(5);
   });
 
   it('NEGATIVE CONTROL — #791: a brief copy with the annotation clause cut out is caught', () => {
@@ -3092,6 +3125,192 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
       expect(clause).toContain(fragment); // control: the shipped copy has it
     }
     expect(stripped).not.toMatch(/is UNCOVERED and is never/);
+  });
+
+  // ─── the landed-sibling row: `landed`, a tip confirmed against `origin`, the
+  //     ROUND's anchor, and a coverage line that asks for no re-run ──────────
+  //
+  // One assumption — that a sibling's branch tip is what this row will collide
+  // with — broke in every direction observed live, in waves that land by squash
+  // and re-anchor every round: a landed sibling's stale tip invented conflicts
+  // and invented cleanliness; a deleted branch read as "never pushed"; the
+  // default branch sitting at the anchor read as "nothing landed"; a fetch
+  // failed while the next line resolved a leftover ref from an earlier
+  // dispatch, and another succeeded while exiting non-zero. The vocabulary half
+  // of the fix rides `COPIES` above (all four copies, five outcomes). The
+  // mechanics half is pinned against the driver copy alone, for the reason the
+  // anchor interpolation is: only the brief can render this row's own ids.
+
+  /** The landed rule's own sentence in the reviewerBrief. */
+  const LANDED_RULE = 'sibling is NEVER fetched and never merge-treed by its tip.';
+  /** Where the landed paragraph ends and the in-flight recipe begins. */
+  const IN_FLIGHT_OPENER = '**Every other sibling:';
+  /** A genuine, unescaped `${issue.coordinatorBranch}` interpolation. */
+  const COORDINATOR_BRANCH_INTERPOLATION = /(?<!\\)\$\{issue\.coordinatorBranch\}/;
+  /** The request no step reads — retired from every copy's coverage line. */
+  const RERUN_BEFORE_LANDING = /re-?run(?:ning)?\b[^.]{0,80}\bbefore landing/i;
+  /** What the coverage line asks for instead of a re-run. */
+  const NAMES_THE_REASON = /with the reason it is\s+uncovered/i;
+  /** The in-flight recipe's three commands, in the order the brief prescribes them. */
+  const LS_REMOTE_SIBLING = 'git ls-remote origin refs/heads/<branch>';
+  const FETCH_SIBLING = 'git fetch origin <branch>:refs/review/sib/<sibling-id>';
+  const REV_PARSE_SIBLING = 'git rev-parse refs/review/sib/<sibling-id>';
+  /** Any shape that would read a fetch's exit status. */
+  const READS_FETCH_EXIT = /\$\?|--exit-code|git fetch[^\n]*(?:&&|\|\|)/;
+
+  /** The whole reviewerBrief function, so an anchor-wording pin covers every line of it. */
+  function reviewerBriefSource(js: string): string {
+    return contractRegion(js, 'driver/wave-start-inflight.js', 'function reviewerBrief(', 'function scribeBrief(');
+  }
+
+  it.each(COPIES)('%s names `landed` as a code-quoted outcome, not only as a prose word', (_label, region) => {
+    expect(outcomeOccurrences(region, 'landed').length).toBeGreaterThan(0);
+  });
+
+  it('NEGATIVE CONTROL — a copy whose `landed` survives only as a prose word is caught', () => {
+    for (const [, region] of COPIES) {
+      const proseOnly = region.replace(/\\?`landed\\?`/g, 'landed');
+      expect(proseOnly).not.toEqual(region); // the replace actually matched
+      expect(proseOnly).toContain('landed'); // a bare toContain would still pass…
+      expect(enumerationSpan(proseOnly)).toBeNull(); // …the token-aware span does not
+    }
+  });
+
+  it.each(COPIES)(
+    '%s never asks for a re-run before landing — the coverage line names why each sibling is uncovered',
+    (_label, region) => {
+      expect(region).not.toMatch(RERUN_BEFORE_LANDING);
+      expect(region).toMatch(NAMES_THE_REASON);
+    },
+  );
+
+  it('NEGATIVE CONTROL — both retired re-run phrasings are caught', () => {
+    for (const retired of [
+      'Re-run against <d> and <e> before landing.',
+      'and which siblings are worth re-running before landing.',
+    ]) {
+      expect(retired).toMatch(RERUN_BEFORE_LANDING);
+    }
+    for (const [, region] of COPIES) {
+      expect(`${region}\nRe-run against <d> and <e> before landing.`).toMatch(RERUN_BEFORE_LANDING);
+      const byOutcomeOnly = region.replace(new RegExp(NAMES_THE_REASON.source, 'gi'), 'by outcome');
+      expect(byOutcomeOnly).not.toEqual(region); // the replace actually matched
+      expect(byOutcomeOnly).not.toMatch(NAMES_THE_REASON);
+    }
+  });
+
+  it('the reviewerBrief covers every `(landed)` sibling with ONE default-branch merge-tree, never by its tip', () => {
+    const clause = driverClause(driverJs);
+    expect(clause).toContain(LANDED_RULE);
+    expect(clause).toMatch(/landed-ness is read from that annotation ONLY/);
+    expect(clause).toMatch(/Run it\s+once per review/);
+    expect(clause).toMatch(/on its OWN line/);
+    expect(clause).toMatch(COORDINATOR_BRANCH_INTERPOLATION);
+    // Exactly one merge-tree targets the default-branch ref — "prescribed once".
+    expect(clause.match(/git merge-tree refs\/review\/\$\{issue\.id\} refs\/review\/base\//g)).toHaveLength(1);
+    // …and the landed paragraph never reaches for a sibling's own ref.
+    const from = clause.indexOf(LANDED_RULE);
+    const to = clause.indexOf(IN_FLIGHT_OPENER, from);
+    expect(to).toBeGreaterThan(from);
+    const landedParagraph = clause.slice(from, to);
+    expect(landedParagraph).toContain('refs/review/base/');
+    expect(landedParagraph).not.toContain(SIBLING_NAMED_REF_PATH);
+  });
+
+  it('the reviewerBrief asks origin FIRST for every other sibling and trusts a fetched ref only at the ls-remote SHA', () => {
+    const clause = driverClause(driverJs);
+    const ls = clause.indexOf(LS_REMOTE_SIBLING);
+    const fetch = clause.indexOf(FETCH_SIBLING);
+    const revParse = clause.indexOf(REV_PARSE_SIBLING);
+    expect(ls).toBeGreaterThan(-1);
+    expect(fetch).toBeGreaterThan(ls);
+    expect(revParse).toBeGreaterThan(fetch);
+    expect(clause).toContain('with no fetch at all'); // empty ls-remote → not-on-origin, unfetched
+    expect(clause).toContain('fetched ref ≠ origin tip'); // the mismatch's own reason…
+    expect(clause).toContain('is never a prediction'); // …and what it is never recorded as
+    expect(clause).toMatch(/exit\s+code is never an input/);
+    expect(clause).not.toMatch(READS_FETCH_EXIT);
+  });
+
+  it('NEGATIVE CONTROL — a fetch-before-ls-remote recipe, and a recipe that reads the fetch exit code, are caught', () => {
+    const clause = driverClause(driverJs);
+    // Swap the two commands, the order a "fetch, then check" edit would restore.
+    const swapped = clause
+      .replace(LS_REMOTE_SIBLING, '\u0000')
+      .replace(FETCH_SIBLING, LS_REMOTE_SIBLING)
+      .replace('\u0000', FETCH_SIBLING);
+    expect(swapped).not.toEqual(clause);
+    expect(swapped.indexOf(FETCH_SIBLING)).toBeLessThan(swapped.indexOf(LS_REMOTE_SIBLING));
+    // Every exit-reading shape the pin names, appended in turn.
+    for (const reader of [
+      'git fetch origin <branch>:refs/review/sib/<sibling-id> && echo fetched',
+      'git fetch origin <branch>:refs/review/sib/<sibling-id> || echo not-on-origin',
+      'test $? -eq 0',
+      'git ls-remote --exit-code origin refs/heads/<branch>',
+    ]) {
+      expect(`${clause}\n${reader}`).toMatch(READS_FETCH_EXIT);
+    }
+  });
+
+  it('the reviewerBrief speaks of the ROUND\'s anchor, never the wave\'s, and never reads "at the anchor" as "nothing landed"', () => {
+    const brief = reviewerBriefSource(driverJs);
+    expect(brief).toContain('Round anchor SHA (diff base — NOT main)');
+    expect(brief).not.toMatch(/wave[ -]anchor/i);
+    expect(driverClause(driverJs)).toMatch(/never means that nothing landed/);
+    // The three reviewer docs say it the same way.
+    for (const md of [reviewerSkillMd, reviewerChecksMd, reviewerAgentMd]) {
+      expect(md).not.toMatch(/wave[ -]anchor/i);
+    }
+  });
+
+  it('NEGATIVE CONTROL — the retired wave-anchor header is caught', () => {
+    const brief = reviewerBriefSource(driverJs);
+    const regressed = brief.replace('Round anchor SHA (diff base', 'Wave anchor SHA (diff base');
+    expect(regressed).not.toEqual(brief);
+    expect(regressed).toMatch(/wave[ -]anchor/i);
+  });
+
+  // ─── the probe checkout's stamp (ADR-0042 Amendment 2026-09-23) ────────────
+
+  /** The stamp, as the glossary's Probe checkout entry spells it. */
+  const PROBE_STAMP = 'flotilla-probe-<wave-slug>-<row-id>-i<iteration>';
+
+  /** The agent definition's own probe-license paragraph. */
+  function agentProbeLicense(md: string): string {
+    return contractRegion(md, 'wave-reviewer.md agent definition', '**Probe license.**', '**Deferred valve.**');
+  }
+
+  /** The operator skill's probe-license bullet. */
+  function skillProbeLicense(md: string): string {
+    return contractRegion(md, 'wave-reviewer/SKILL.md', '**The Reviewer holds a probe license.**', '\n- **');
+  }
+
+  it.each([
+    ['wave-reviewer.md agent definition', () => agentProbeLicense(reviewerAgentMd)],
+    ['wave-reviewer/SKILL.md', () => skillProbeLicense(reviewerSkillMd)],
+  ] as const)('%s names the probe checkout by its stamp, outside the repository, and grants no removal', (_label, region) => {
+    const text = region();
+    expect(text).toContain(PROBE_STAMP);
+    expect(text).toMatch(/outside the repository/);
+    expect(text).toMatch(/never removes? it/);
+    expect(text).not.toMatch(/\bmay\b[^.]{0,40}\bremove\b/i);
+  });
+
+  it('the reviewerBrief spells the stamp out from this row\'s own wave slug, id and iteration', () => {
+    const brief = reviewerBriefSource(driverJs);
+    expect(brief).toContain('const probeStamp = `flotilla-probe-${');
+    expect(brief).toMatch(/-\$\{issue\.id\}-i\$\{/);
+    expect(brief).toContain('name its directory exactly \\`${probeStamp}\\`');
+    expect(brief).toMatch(/You never remove it yourself/);
+  });
+
+  it('NEGATIVE CONTROL — a probe licence that drops the stamp, or grants removal, is caught', () => {
+    const text = agentProbeLicense(reviewerAgentMd);
+    const unstamped = text.split(PROBE_STAMP).join('a scratch directory');
+    expect(unstamped).not.toEqual(text);
+    expect(unstamped).not.toContain(PROBE_STAMP);
+    const granted = `${text} You may then remove it with git worktree remove.`;
+    expect(granted).toMatch(/\bmay\b[^.]{0,40}\bremove\b/i);
   });
 
   it.each(COPIES)(

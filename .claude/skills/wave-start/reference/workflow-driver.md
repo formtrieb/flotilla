@@ -195,7 +195,11 @@ each row's `issueSpec` from `issue-store read` + `triage-read`, embedded
 verbatim; the verify-gate block from the config's `verify` profile and
 `depsSetup` through the five-level precedence below;
 `closePhrase` from `store.kind` (Convention 4); `scopeGrants` from
-this row's `scope-extension` disclosures in the spine (ADR-0041); `anchorSha`
+this row's `scope-extension` disclosures in the spine (ADR-0041);
+`siblingBranches` from the spine alone — every other branch-bearing row not
+parked or abandoned, annotated `(landed)` when the PR-Log records its merge,
+else by its state;
+`anchorSha` — this round's anchor, one per compose —
 from `--anchor`, **verified with `git rev-parse --verify <sha>^{commit}`
 before anything is written** — the host-side anchor-resolvability gate, folded
 in. Nothing is typed twice, so nothing can disagree with itself.
@@ -300,7 +304,7 @@ numbered list is cited by name from elsewhere in the skill surface.
    The verb substitutes the array into the template; nothing depends on `args`.
 2. **Briefs are composed in-script** by helpers that string-interpolate the
    structured fields — a function field cannot survive JSON serialization.
-3. **Every Worker is anchored to the wave-anchor SHA** (`git reset --hard
+3. **Every Worker is anchored to its round's anchor SHA** (`git reset --hard
    <anchorSha>`) so the Reviewer diffs against that SHA, not `main`. Presence
    and RESOLVABILITY are now both checked, and both at compose time: the
    template's `REQUIRED_ROW_FIELDS` assertion tests presence, and the verb runs

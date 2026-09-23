@@ -28,10 +28,10 @@ Once the SHA assert holds, every check below diffs against `refs/review/$ROW` �
 
 **Why an assert, not just a fetch ([ADR-0034](../../../../docs/adr/0034-a-rule-earns-its-enforcement-tier.md)).** A rule whose violation fails *silently* — a plausible-but-wrong result, no error, no echo — is exactly the class ADR-0034 names as owed promotion past prose at its second live occurrence, because prose alone has already been shown not to hold it. The `FETCH_HEAD` hazard above is precisely that shape. The SHA assert is the promotion: it turns "maybe verify the wrong tree, silently" into "abort, loudly, every time the fetched ref doesn't match" — the same silent-to-loud conversion the ADR's ladder exists to force.
 
-## The diff base — the wave-anchor SHA, never `main`
+## The diff base — the round's anchor SHA, never `main`
 
 ```bash
-ANCHOR=<wave-anchor SHA, from the dispatch brief>
+ANCHOR=<the round's anchor SHA, from the dispatch brief — one per round, not per wave>
 git diff --name-only "$ANCHOR".."refs/review/$ROW"     # the Worker's actual changed files
 git diff "$ANCHOR".."refs/review/$ROW"                 # the actual change
 ```
@@ -102,42 +102,65 @@ One directed check per hint (Coordinator hints ++ Worker `reviewerFocusItems`). 
 
 ## Check 5 — sibling merge-tree prediction, **with its coverage denominator** (only when the sibling list is non-empty)
 
-The wave driver runs the rows with **no barrier** — row B's Worker runs while row A's Reviewer already runs — so a sibling branch may not be on `origin` yet when you reach for it, or may be there and still sitting at the wave anchor. **Partial coverage is ordinary and honest; silent partial coverage is not.** The sibling list the brief hands you is the **denominator**, and every branch on it gets exactly one outcome.
+The wave driver runs the rows with **no barrier** — row B's Worker runs while row A's Reviewer already runs — so a sibling branch may not be on `origin` yet when you reach for it, or may be there and still sitting at the round's anchor. **Partial coverage is ordinary and honest; silent partial coverage is not.** The sibling list the brief hands you is the **denominator**, and every sibling on it gets exactly one outcome.
+
+Each entry reads `<branch> (<annotation>)`, and the annotation is a fact about the **spine**, never about `origin`: the row's state, or `(landed)` when the spine's PR-log records its merge. **Landed-ness is read from that annotation only** — a branch missing from `origin` proves nothing, and the default branch sitting at the round's anchor never means that nothing landed: whatever landed before this round is already inside the anchor the row was built on.
+
+### A `(landed)` sibling — one check against the default branch, never its tip
+
+In a wave that lands by squash and re-anchors every round, a landed sibling's tip is a stale leftover (a prediction against it invents conflicts, or invents cleanliness) or it is gone. Its content is on the default branch, so it is **never fetched**: one merge-tree of the row against the default branch's **current** tip covers every landed sibling at once, squash or not. Run it once per review, and only when the list carries a `(landed)` entry:
+
+```bash
+git ls-remote origin refs/heads/<default-branch>
+git fetch origin <default-branch>:refs/review/base/<row-id> 2>&1 | tail -3
+git rev-parse refs/review/base/<row-id>                          # MUST equal the ls-remote SHA
+git merge-tree "refs/review/$ROW" refs/review/base/<row-id>      # <<<<<<< → conflict
+```
+
+Report it on its own advisory line — `(advisory) Landed-sibling merge-tree vs <default-branch> tip <sha>: clean — covers wave/<a>, wave/<b>.` (or `conflict at <file>`) — and record each landed sibling `landed`. A tip equal to the anchor is fine here: the landed siblings are already under the row. A rev-parse that does not equal the `ls-remote` SHA covers no landed sibling; each is uncovered, with that reason.
+
+### Every other sibling — ask `origin` first
 
 Run it **per sibling**, writing the branch name and its per-sibling ref key in literally rather than looping over a `$SIB` variable (wave-shared Convention 13: a command naming a shell variable has been refused outright in an isolated dispatch, and a loop that never ran is indistinguishable from a run that found nothing):
 
 ```bash
+git ls-remote origin refs/heads/wave/<sibling-id>-<sibling-slug>        # EMPTY → not-on-origin; no fetch
 git fetch origin wave/<sibling-id>-<sibling-slug>:refs/review/sib/<sibling-id> 2>&1 | tail -3
-git rev-parse refs/review/sib/<sibling-id>                       # the sibling tip — compare this to $ANCHOR FIRST
+git rev-parse refs/review/sib/<sibling-id>                       # MUST equal the ls-remote SHA; then compare to $ANCHOR
 git merge-tree "refs/review/$ROW" refs/review/sib/<sibling-id>   # <<<<<<< → predicted conflict
 ```
 
 Each sibling gets its own **stable named ref** — `refs/review/sib/<sibling-id>` — for exactly the reason the branch under review does: `FETCH_HEAD` is a single ref shared by the whole checkout, and a concurrent sibling Reviewer's own fetch can overwrite it between your fetch and your read. `FETCH_HEAD` is never read for a sibling tip either — same rule, same hazard, same fix, now finished end to end.
 
-### The four per-sibling outcomes — every sibling on the list gets exactly one
+**A fetched ref is trusted only once its rev-parse equals the `ls-remote` SHA.** A mismatch is uncovered, reason "fetched ref ≠ origin tip", and never a prediction. **The fetch's exit code is never an input:** a fetch can fail while the named ref still resolves a leftover from an earlier dispatch, or succeed while exiting non-zero; only the SHA comparison decides.
+
+### The five per-sibling outcomes — `predicted-clean` · `predicted-conflict` · `not-on-origin` · `at-anchor` · `landed`
+
+Every sibling on the list gets exactly one — except one whose fetched ref did not match `origin`'s tip, which gets none and is named uncovered with that reason.
 
 | Outcome | Condition | Coverage? |
 |---|---|---|
-| `predicted-clean` | on `origin`, tip **≠** `$ANCHOR`, `git merge-tree` reports no `<<<<<<<` | **yes** — two real diffs were merged and did not collide |
+| `predicted-clean` | confirmed tip **≠** `$ANCHOR`, `git merge-tree` reports no `<<<<<<<` | **yes** — two real diffs were merged and did not collide |
 | `predicted-conflict` | `git merge-tree` reports `<<<<<<<` | **yes** — name the file(s) |
-| `not-on-origin` | `git fetch` cannot resolve the branch | **no** — not pushed, or landed and gone |
-| `at-anchor` | the fetched tip **equals the wave-anchor SHA the brief carries** | **no** — see below |
+| `not-on-origin` | `git ls-remote` returns nothing for the branch | **no** — not pushed yet, or gone; the annotation says which is likelier |
+| `at-anchor` | the confirmed tip **equals the round's anchor SHA the brief carries** | **no** — see below |
+| `landed` | annotated `(landed)`, covered by the one default-branch merge-tree | **yes** — unless that tip could not be confirmed |
 
 ### `at-anchor` is VACUOUS — never report it as clean
 
-This is the outcome that does not look like missing coverage at all. A sibling branch that exists on `origin` but whose tip is still the wave anchor has an **empty diff**, so `git merge-tree` exits 0 and prints one tree hash — byte-identical to what a genuinely clean prediction prints. Nothing in that output distinguishes the two; only the tip comparison does.
+This is the outcome that does not look like missing coverage at all. A sibling branch that exists on `origin` but whose tip is still the round's anchor has an **empty diff**, so `git merge-tree` exits 0 and prints one tree hash — byte-identical to what a genuinely clean prediction prints. Nothing in that output distinguishes the two; only the tip comparison does.
 
 So **compare before you read the merge-tree result**: `git rev-parse refs/review/sib/<sibling-id>` against the `$ANCHOR` the dispatch brief carries. Equal → record `at-anchor`, and **never** count it as `predicted-clean`, never let it stand in for coverage of that sibling. Live origin: four Reviewers in one wave reported partial coverage; three named missing branches outright, and the fourth found the branch present, at the anchor, and had to name the vacuity itself because no command would.
 
 ### The coverage line is mandatory
 
-Whether or not any conflict was predicted, the sibling advisory in `reviewerFocusItems` carries **one coverage line** naming the denominator and every uncovered sibling by outcome:
+Whether or not any conflict was predicted, the sibling advisory in `reviewerFocusItems` carries **one coverage line** naming the denominator and every uncovered sibling with the reason it is uncovered:
 
 ```
-(advisory) Sibling merge-tree coverage: 3/5 predicted — wave/<a> predicted-clean,
-wave/<b> predicted-clean, wave/<c> predicted-conflict at <file>; NOT covered:
-wave/<d> not-on-origin, wave/<e> at-anchor (tip == wave anchor, prediction vacuous).
-Re-run against <d> and <e> before landing.
+(advisory) Sibling merge-tree coverage: 3/6 covered — wave/<a> predicted-clean,
+wave/<b> landed, wave/<c> predicted-conflict at <file>; NOT covered: wave/<d>
+not-on-origin ((dispatched) — not pushed yet), wave/<e> at-anchor (tip == round
+anchor, prediction vacuous), wave/<f> fetched ref ≠ origin tip.
 ```
 
 A verdict that reports only the conflicts it happened to find, with no denominator, reads as full coverage. `0/N` is a legitimate coverage line — "no sibling was predictable from here" is a real, reportable result; **silence is not**.
