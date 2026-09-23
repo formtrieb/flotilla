@@ -394,7 +394,31 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the same row that catalogues three
+ * Why this number: **RAISED by the row that gives the path form's silently-
+ * dropped `--pr-title` a worked invocation and an operator-facing note**
+ * (issue #955), in the diff that causes the growth. The shared standing load
+ * is NOT a subset of this edit: the one corpus file it touches,
+ * `to-issues/reference/filing-mechanics.md`, is a member of the loaded
+ * corpus but not of `wave-shared/reference/*.md`, so only this constant
+ * ratchets. The added text is a new Gate 10 bullet in the Self-check section
+ * plus the worked `dor --id <id> --pr-title '<title>' --config <path>`
+ * invocation the shipped-invocation guard now resolves — both are
+ * instructions an operator acts on at the moment they read the reference, so
+ * neither belongs in an `evidence/` sibling.
+ *
+ * At this row's anchor commit `500853f1c75eebeea997ac63b3d5fd347bf0afa0` the
+ * population measured **1,242,545 B** over 57 files — 455 B under the previous
+ * 1,243,000 B ceiling. This row's edit lands it at **1,243,211 B** over the
+ * same 57 files, +666 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,244,000 B**. The 789 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 1,243,000 B — **RAISED by the same row that catalogues three
+ * command-shape occurrences the catalogue did not carry, and adds the
+ * file-editing tool's byte-verification caveat** (issue #954), whose reasoning
+ * is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the same row that catalogues three
  * command-shape occurrences the catalogue did not carry, and adds the
  * file-editing tool's byte-verification caveat** (issue #954), in the diff
  * that causes the growth. The shared standing load is a SUBSET of this
@@ -406,14 +430,14 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * `.claude/skills`, and the evidence sidecar it edits is excluded by
  * definition, so none of either file's bytes are priced here.
  *
- * At this row's anchor commit `ee53d4ef07b8dea0973b8d3daeabacbeec2feed8` the
+ * At that row's anchor commit `ee53d4ef07b8dea0973b8d3daeabacbeec2feed8` the
  * population measured **1,241,136 B** over 57 files — 864 B under the previous
- * 1,242,000 B ceiling. This row's edit lands it at **1,242,545 B** over the
- * same 57 files, +1,409 B, so the ceiling moves to that sum rounded UP to the
+ * 1,242,000 B ceiling. That row's edit landed it at **1,242,545 B** over the
+ * same 57 files, +1,409 B, so the ceiling moved to that sum rounded UP to the
  * next full KB (1 KB = 1000 B): **1,243,000 B**. The 455 B of headroom that
- * leaves is a fact about the rounding rule, not a budget.
+ * left was a fact about the rounding rule, not a budget.
  *
- * Previously: 1,242,000 B — **RAISED by the row that teaches the sweep to
+ * Before that: 1,242,000 B — **RAISED by the row that teaches the sweep to
  * collect the Reviewer's stamped probe checkout** (issue #961), whose reasoning
  * is kept below (in ITS voice, so "this row" there means that row).
  *
@@ -685,7 +709,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_243_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_244_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
