@@ -53,7 +53,7 @@ A verify command may arrive with a **declared capability requirement** rendered 
 ### 2. Git-state sanity *(diff base = the anchor SHA)*
 All sub-checks against `<anchorSha>..refs/review/<id>`:
 - **Files-glob match.** `git diff --name-only <anchorSha>..refs/review/<id>` — confirm every changed file is covered by the issue's `Files:` globs. Flag any file outside the declared globs.
-- **Conflict-marker floor** (engine `FLOOR_CHECKS`). Grep start-of-line `<<<<<<<` / `=======` / `>>>>>>>` in every changed file at the SHA. Any hit = hard `changes-requested`; quote `<file>:<line>`.
+- **Conflict-marker floor** (engine `FLOOR_CHECKS`). Grep start-of-line `<<<<<<<` / `=======` / `>>>>>>>` in every changed file at the SHA. Any hit = hard `changes-requested`; quote `<file>:<line>`. This grep is trustworthy only because `source-encoding-guard.spec.ts` has already established that no tracked text file in the review tree carries a raw NUL byte — the one byte that would make this grep report a file clean without having read it at all.
 - **AC-ticks consistent with the diff.** For every AC the Worker claims met, spot-check the diff contains evidence (a file changed, a test added).
 - **Closed-by well-formed.** If the Worker report includes a `Closed-by` line, verify it is a well-formed `Closes #N` referencing the correct issue id.
 Set `gitStateSane` to the conjunction of these four.

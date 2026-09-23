@@ -413,6 +413,22 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * next full KB (1 KB = 1000 B): **1,244,000 B**. The 789 B of headroom that
  * leaves is a fact about the rounding rule, not a budget.
  *
+ * **UNCHANGED by the row that names the conflict-marker floor's dependency on
+ * `source-encoding-guard.spec.ts` (issue #956), which spent 534 B of this
+ * headroom** on one sentence apiece in
+ * `wave-reviewer/reference/reviewer-checks.md`'s Check 2 (+278 B) and
+ * `.claude/agents/wave-reviewer.md`'s own Check 2 bullet (+256 B): the
+ * population lands at **1,243,745 B** over the same 57 files, and 1,243,745 B
+ * rounded UP to the next full KB is 1,244,000 B — this constant already. A
+ * raise here would be a pre-bought one. The shared standing load is NOT
+ * touched: neither edited file is a member of that population (only
+ * `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are), so that class
+ * stays at its own unchanged measure. Headroom is 255 B, which is still a
+ * rounding fact and still not a budget. The row's other two edits
+ * (`source-encoding-guard.spec.ts` and this file) are `tools/wave/src/*.ts`,
+ * outside both populations by construction, so none of their bytes are priced
+ * here either.
+ *
  * Previously: 1,243,000 B — **RAISED by the same row that catalogues three
  * command-shape occurrences the catalogue did not carry, and adds the
  * file-editing tool's byte-verification caveat** (issue #954), whose reasoning
