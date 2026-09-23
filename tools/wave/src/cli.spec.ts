@@ -6130,6 +6130,68 @@ describe('dor --id <id> — the PR-title advisory runs on the store-backed path'
   });
 });
 
+// ─── issue #955: the PATH form silently drops `--pr-title` — one advisory,
+//               never a refusal ─────────────────────────────────────────────
+//
+// `--pr-title` is declared once, on the verb's contract (ADR-0051 decision 5
+// forbids a second declaration of one canonical spelling), so it clears the
+// unknown-flag refusal on the path form same as the --id form. But the path
+// form is variadic over N issue files and has no single row for one declared
+// title to belong to, so it is read nowhere and was silently dropped — an
+// operator who declares a title there believes they answered the advisory
+// that is about to warn anyway. This is the deliberate-accept branch named at
+// #955 (the alternative, refusing it, needs per-form flag narrowing in
+// verb-contract.ts, outside this row's declared Files): one stderr advisory,
+// and the exit code and stdout stay byte-identical to the same call without
+// the flag.
+describe('dor <path> --pr-title <t> — issue #955, the silent-drop advisory', () => {
+  it('writes exactly one stderr line naming --pr-title, the path form and --id; exit code and stdout are byte-identical to the call without the flag', () => {
+    const withoutFlag = main(['dor', issueFile]);
+    const outWithoutFlag = stdoutBuf;
+    const errWithoutFlag = stderrBuf;
+    stdoutBuf = '';
+    stderrBuf = '';
+
+    const withFlag = main(['dor', issueFile, '--pr-title', 'Some declared title']);
+
+    expect(withFlag).toBe(withoutFlag);
+    expect(stdoutBuf).toBe(outWithoutFlag);
+    expect(errWithoutFlag).toBe(''); // the control: no flag, no advisory at all
+
+    const stderrLines = stderrBuf.split('\n').filter((l) => l.length > 0);
+    expect(stderrLines).toHaveLength(1);
+    expect(stderrLines[0]).toContain('--pr-title');
+    expect(stderrLines[0]).toContain('path form');
+    expect(stderrLines[0]).toContain('--id');
+  });
+
+  it('a bare positional --pr-title on the path form is consumed as this flag\'s value, never read as a stray issue path', () => {
+    // Regression guard for the parser step-over: `--pr-title <value>` must not
+    // leave `<value>` as an extra positional the loop then tries to read as an
+    // issue file.
+    const code = main(['dor', issueFile, '--pr-title', 'A title naming no real file']);
+    expect(code).toBe(0);
+    expect(stdoutBuf).not.toMatch(/ENOENT/);
+  });
+});
+
+describe('dor --id <id> --pr-title <t> — the control: the --id form emits no path-form advisory', () => {
+  it('writes no stderr line naming the path form', async () => {
+    const store = tmpStore();
+    const id = await store.create({
+      ...DOR_INPUT,
+      title: 'A clean title with no bare id',
+      filingHint: 'pr-title-control-955',
+    });
+
+    const code = await runDorById(['--id', id, '--pr-title', 'Some declared title'], store);
+
+    expect(code).toBe(0);
+    expect(stderrBuf).not.toContain('path form');
+    expect(stderrBuf).not.toContain('is ignored on the path form');
+  });
+});
+
 // ─── FOR-11 AC1: pre-op-dispatch store failures exit non-zero ────────────────
 //
 // The observed defect (dogfooding, CLAUDE.md): a store/network failure BEFORE

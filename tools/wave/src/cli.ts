@@ -949,6 +949,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       "  The --id form also reads the row's TRACKER title through the triage facet, so the",
       '  PR-title advisory (pr-title-id-independent) runs there instead of deferring; give',
       '  --pr-title to declare the title the PR will open under and the advisory passes.',
+      '  The PATH form IGNORES --pr-title: it is variadic over N issue files, so one',
+      '  declared title has no single row to belong to. Passing it there prints one stderr',
+      '  advisory naming --pr-title, the path form and --id, and otherwise runs exactly as',
+      '  though the flag were absent — same exit code, same stdout.',
     ],
     outputNote: 'text (PASS/FAIL + gate lines), not JSON',
     json: { lead: 'the same result as JSON, in BOTH forms', shape: DOR_JSON_SHAPE },
@@ -1561,6 +1565,25 @@ function runDor(paths: string[]): number {
   // ADR-0051 decision 7, row V5. Read through the SAME contract-aware scan the
   // positionals came from, so a flag's VALUE can never be mistaken for the flag.
   const wantJson = hasFlag(contract, paths, 'json');
+
+  // issue #955: `--pr-title` is declared once on this contract (ADR-0051
+  // decision 5 forbids a second declaration for one canonical spelling), so
+  // it clears the unknown-flag refusal on THIS form too — but this form is
+  // variadic over N issue files and has no single row for one declared title
+  // to belong to, so it is read nowhere below and silently dropped. The other
+  // way out named at #955 — REFUSING it here — needs per-form flag narrowing
+  // in verb-contract.ts (checkUndeclared reads the contract's flags, never a
+  // form's `accepts` list), which sits outside this slice's declared Files;
+  // this takes the deliberate-accept branch instead. One stderr advisory, so
+  // an operator who declared a title here is told it was never read — but
+  // the flag is still consumed by the scan above, so the exit code and
+  // stdout stay byte-identical to the same call without it.
+  if (hasFlag(contract, paths, 'pr-title')) {
+    process.stderr.write(
+      'notice: dor: --pr-title is ignored on the path form (dor <issue-path>...) — ' +
+        'it is read only on the --id form (dor --id <id> --pr-title <title>).\n',
+    );
+  }
 
   let anyFail = false;
   const outputs: string[] = [];
