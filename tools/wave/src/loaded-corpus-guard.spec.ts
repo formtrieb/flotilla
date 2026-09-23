@@ -276,7 +276,30 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: **RAISED by the row that catalogues two live occurrences of
+ * Why this number: **RAISED by the row that catalogues three command-shape
+ * occurrences the catalogue did not carry, and adds the file-editing tool's
+ * byte-verification caveat** (issue #954), in the diff that causes the growth.
+ * `reference/convention-13-one-bash-call-per-step.md` gains a sixth Catalog
+ * entry (an absolute-quoted-path runner refusal, refused with a shape-specific
+ * generated message rather than fusion or a `$VAR` shape), a short caveat
+ * sentence on Catalog entry 2's file-editing-tool remedy — the "no occurrence
+ * on record has it refused" claim is about refusals only, not byte fidelity —
+ * a clause on Catalog entry 4 naming a third occurrence (an accepted fused call
+ * that landed correctly, caught only by its row's own disclosure), and a
+ * matching addition to the closing "Live occurrences" pointer sentence. Every
+ * station table, verbatim refusal text and the caveat's own full narrative
+ * (the escape-sequence-to-raw-codepoint conversion this row measured) went to
+ * the `evidence/` sibling, the class no run reads and neither pinned
+ * population counts.
+ *
+ * At this row's anchor commit `ee53d4ef07b8dea0973b8d3daeabacbeec2feed8` the
+ * class measured **161,176 B** over 18 files — 824 B under the previous
+ * 162,000 B ceiling. This row's edit adds **1,409 B**, landing the class at
+ * **162,585 B** over the same 18 files, so the ceiling moves to that sum
+ * rounded UP to the next full KB (1 KB = 1000 B): **163,000 B**. The 415 B of
+ * headroom that leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 162,000 B — **RAISED by the row that catalogues two live occurrences of
  * a brief clause reaching its limit** (issue #917), in the diff that causes the
  * growth. Its only standing-load edits are two short additions to
  * `reference/convention-13-one-bash-call-per-step.md`: the Catalog's entry 4
@@ -289,14 +312,14 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * went to the `evidence/` siblings, the class no run reads and neither pinned
  * population counts.
  *
- * At this row's anchor commit `7d603e59f3bb559649eed5d40bc8ffc7ee4bad94` the
+ * At that row's anchor commit `7d603e59f3bb559649eed5d40bc8ffc7ee4bad94` the
  * class measured **160,919 B** over 18 files — 81 B under the previous
- * 161,000 B ceiling. This row's edit adds **257 B**, landing the class at
- * **161,176 B** over the same 18 files, so the ceiling moves to that sum
+ * 161,000 B ceiling. That row's edit added **257 B**, landing the class at
+ * **161,176 B** over the same 18 files, so the ceiling moved to that sum
  * rounded UP to the next full KB (1 KB = 1000 B): **162,000 B**. The 824 B of
- * headroom that leaves is a fact about the rounding rule, not a budget.
+ * headroom that left was a fact about the rounding rule, not a budget.
  *
- * Previously: 161,000 B — **RAISED by the row that rebuilds `conv12-guard.cjs`'s
+ * Before that: 161,000 B — **RAISED by the row that rebuilds `conv12-guard.cjs`'s
  * scanner and gives it ADR-0052's third answer kind** (flotilla#710), in the
  * diff that causes the growth. The hook's observable behaviour changed in a way
  * an operator meets mid-wave and cannot infer: it now has an **Abstention** —
@@ -366,12 +389,35 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * rounded up the same way. Lowering a ceiling is still free: the next ratchet row
  * takes this back down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that teaches the sweep to collect the
+ * Why this number: **RAISED by the same row that catalogues three
+ * command-shape occurrences the catalogue did not carry, and adds the
+ * file-editing tool's byte-verification caveat** (issue #954), in the diff
+ * that causes the growth. The shared standing load is a SUBSET of this
+ * population, so the one `wave-shared/reference/convention-13-one-bash-call-per-step.md`
+ * edit moves both measures by the same **1,409 B** and both ceilings ratchet
+ * in this one diff — the reasoning for the edit itself is on that constant and
+ * is not repeated here. The driver asset this row also edits
+ * (`tools/wave/driver/wave-start-inflight.js`) is not a `.md` under
+ * `.claude/skills`, and the evidence sidecar it edits is excluded by
+ * definition, so none of either file's bytes are priced here.
+ *
+ * At this row's anchor commit `ee53d4ef07b8dea0973b8d3daeabacbeec2feed8` the
+ * population measured **1,241,136 B** over 57 files — 864 B under the previous
+ * 1,242,000 B ceiling. This row's edit lands it at **1,242,545 B** over the
+ * same 57 files, +1,409 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,243,000 B**. The 455 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 1,242,000 B — **RAISED by the row that teaches the sweep to
+ * collect the Reviewer's stamped probe checkout** (issue #961), whose reasoning
+ * is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that teaches the sweep to collect the
  * Reviewer's stamped probe checkout** (issue #961), in the diff that causes the
  * growth. ADR-0042 Amendment 2026-09-23 decisions 13–14 make the probe its own
  * sweep population and move its collection to the Coordinator, and three
@@ -386,16 +432,17 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
  * instruction an operator or a Coordinator acts on, so none of it could go to
  * an `evidence/` sibling instead.
  *
- * At this row's anchor commit `c01a76609a0755570fc0ef44dc2d31b36337d543` the
+ * At that row's anchor commit `c01a76609a0755570fc0ef44dc2d31b36337d543` the
  * population measured **1,236,143 B** over 57 files — 857 B under the previous
- * 1,237,000 B ceiling. This row's edit lands it at **1,241,136 B** over the
- * same 57 files, +4,993 B, so the ceiling moves to that sum rounded UP to the
+ * 1,237,000 B ceiling. That row's edit landed it at **1,241,136 B** over the
+ * same 57 files, +4,993 B, so the ceiling moved to that sum rounded UP to the
  * next full KB (1 KB = 1000 B): **1,242,000 B**. The 864 B of headroom that
- * leaves is a fact about the rounding rule, not a budget. The shared standing
- * load is NOT raised: none of the five files is a member of that population,
- * so that class stays at 161,176 B against its unchanged 162,000 B ceiling.
+ * left was a fact about the rounding rule, not a budget. The shared standing
+ * load was NOT raised by it: none of the five files is a member of that
+ * population, so that class stayed at 161,176 B against its unchanged
+ * 162,000 B ceiling.
  *
- * Previously: 1,237,000 B — the raise by the row that rewrites the Reviewer's
+ * Before that: 1,237,000 B — the raise by the row that rewrites the Reviewer's
  * sibling prediction (issue #960), whose reasoning is kept below (in ITS voice,
  * so "this row" there means that row).
  *
@@ -638,7 +685,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_242_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_243_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
