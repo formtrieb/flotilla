@@ -90,6 +90,18 @@ A background agent that executes one issue in its own isolated worktree — crea
 **Reviewer**:
 The independent agent that re-runs the verify gate and judges a worker's output, returning a schema-validated verdict.
 
+**Round**:
+One dispatch of a **Wave**'s rows that may run side by side; a wave whose conflict map has overlap cells serialises the overlapping rows into successive rounds, and may land each round before dispatching the next.
+_Avoid_: batch (the wave itself), phase (a skill's step).
+
+**Anchor**:
+The default-branch commit a **Round** was dispatched against — the base every **Worker** in it resets to and every **Reviewer** in it diffs from. Per round, not per wave: a wave that lands and re-anchors between rounds has one anchor per round, and whatever landed before a round is already inside its anchor — so the default branch sitting *at* the anchor never means "nothing landed".
+_Avoid_: wave anchor (implies one per wave — the premise behind a Reviewer reading landed siblings as never pushed).
+
+**Sibling**:
+Another row of the same **Wave**, as a **Reviewer** sees it when predicting clashes — wave-wide, not only this **Round**'s, each annotated with a fact about the **Spine**, never about the remote. A **Landed sibling** (its merge recorded in the spine's PR-log) is no longer a clash candidate: its content is part of the default branch, so it is covered by one prediction against the current default branch and its leftover branch tip is never read.
+_Avoid_: sibling branch (a landed sibling's branch may be gone or stale — the row is the subject, the branch only its in-flight carrier).
+
 **Documented-Form Comparison**:
 The **Reviewer**'s required substitute evidence for a row whose core path is unreachable from the review environment: a complete divergence list against the mechanism's authoritative documented form (vendor doc, spec), from sources the Reviewer read in its own dispatch — never the Worker's restatement — reported as its own verdict outcome and never an automatic verdict flip (deliberate, commented departures survive review). Triggered by the deferred valve on the core path's ACs, or earlier by an issue AC or a Worker declaration (ADR-0030).
 _Avoid_: docs check (too vague), vendor parity (a divergence is reported, not forbidden).
@@ -211,7 +223,7 @@ _Avoid_: treating a probe result as a landing guarantee (the behind/recomputing 
 ### Cleanup
 
 **Sweep**:
-The removal pass (`worktree-cleanup`, run standalone or as wave-close phase 3) over flotilla's disposable worktree populations — registered agent worktrees, orphan dirs, scribe scratch payloads, detached scratchpad checkouts, review refs, composed drivers — each enumerated only inside the **Containment roots**. It removes what is disposable and *accounts* for the rest: what it cannot remove carries evidence and **Manual recovery**, what it cannot see is reported **Unaccounted**, what it must not touch yet is skipped with a named reason. Removal of the first two belongs to the **Operator** — the sweep owes accounting, never removal (ADR-0042). A wave's own residue that outlives its rows — review refs, composed drivers — stays *live* exactly as long as the wave is not a **Terminal wave** (ADR-0042 Amendment 2026-09-08).
+The removal pass (`worktree-cleanup`, run standalone or as wave-close phase 3) over flotilla's disposable worktree populations — registered agent worktrees, orphan dirs, scribe scratch payloads, detached scratchpad checkouts, review refs, composed drivers — each enumerated only inside the **Containment roots**, plus stamped **Probe checkouts**, which the stamp alone admits wherever they sit (ADR-0042 Amendment 2026-09-23). It removes what is disposable and *accounts* for the rest: what it cannot remove carries evidence and **Manual recovery**, what it cannot see is reported **Unaccounted**, what it must not touch yet is skipped with a named reason. Removal of the first two belongs to the **Operator** — the sweep owes accounting, never removal (ADR-0042). A wave's own residue that outlives its rows — review refs, composed drivers — stays *live* exactly as long as the wave is not a **Terminal wave** (ADR-0042 Amendment 2026-09-08).
 _Avoid_: garbage collection (implies force), cleanup (the generic verb — the Sweep is the pass).
 
 **Terminal wave**:
@@ -219,8 +231,12 @@ A **Wave** every row of which sits in a terminal **Fine state** (`pr-created`, `
 _Avoid_: closed wave (the close is the ceremony; terminality is the precondition), archived wave (that is the state *after* the close's last phase — a terminal wave's residue is sweepable before its spine is archived).
 
 **Containment root**:
-A directory the **Sweep** may reason about: only a worktree *strictly inside* one (equality is not containment) is ever a candidate for anything. The set is the engine's worktree-root markers plus the consumer-declared `cleanup.extraRoots` — static strings by design, so a per-session path is structurally outside every root.
+A directory the **Sweep** may reason about: only a worktree *strictly inside* one (equality is not containment) is ever a candidate for anything. The set is the engine's worktree-root markers plus the consumer-declared `cleanup.extraRoots` — static strings by design, so a per-session path is structurally outside every root. Its one sanctioned substitute is the **Probe checkout**'s stamp — a mark only flotilla writes, admitting exactly that population and nothing unstamped (ADR-0042 Amendment 2026-09-23).
 _Avoid_: allowlist (it gates candidacy, not permission), root (unqualified).
+
+**Probe checkout**:
+The detached checkout a **Reviewer** makes outside the repository to exercise a row's outcome — outside by necessity, since the harness denies agent-configuration files at any depth of an in-repo checkout — named with the stamp `flotilla-probe-<wave-slug>-<row-id>`. The Reviewer removes the one it made and confirms the removal; the **Sweep** collects any that survive, recognised by the stamp rather than by a **Containment root** (ADR-0042 Amendment 2026-09-23).
+_Avoid_: scratch worktree, scratchpad checkout (both name where it once sat, not what it is).
 
 **Transient / Exhausted (removal reading)**:
 The two readings of an incomplete removal after the bounded retry: *transient* — consistent with the race the retry exists to clear, worth a future re-run; *exhausted* — deterministically stuck, no re-run will converge, carries **Manual recovery**. Judged on evidence (the **Survivor set**), never on an errno alone.
@@ -235,7 +251,7 @@ The exhausted removal's handoff payload on the report entry — a why-message pl
 _Avoid_: force fallback (that is the scoped pre-classification step for classifier-disposable entries, not this handoff); escalation (an agent retrying with the sandbox off is exactly what ADR-0049 forbids).
 
 **Unaccounted (worktree)**:
-A registered worktree that is neither the primary checkout nor in any of the **Sweep**'s populations — counted but in no list, typically because it lives outside every **Containment root** (the Reviewer's out-of-repo probe checkout is the canonical case). Reported advisorily (additive field + notice line), never a failure exit: the set has legitimate inhabitants, e.g. a human's long-lived second worktree (ADR-0042).
+A registered worktree that is neither the primary checkout nor in any of the **Sweep**'s populations — counted but in no list, typically because it lives outside every **Containment root** and carries no **Probe checkout** stamp (a human's second worktree, a foreign tool's checkout, an unstamped probe from before the stamp existed). Reported advisorily (additive field + notice line), never a failure exit: the set has legitimate inhabitants, e.g. a human's long-lived second worktree (ADR-0042).
 _Avoid_: orphan (a specific in-root population), leaked (presumes it is a defect — it may be someone's workspace).
 
 ### Auth
