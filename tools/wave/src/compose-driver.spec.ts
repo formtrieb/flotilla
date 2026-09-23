@@ -67,7 +67,7 @@ import {
 } from './compose-driver';
 import type { VerifyCommand } from './verify';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
-import { HUMAN_GATED_WORKER, readSpine, renderSpine, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel } from './wave-md-rw';
+import { HUMAN_GATED_WORKER, readSpine, renderSpine, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel, upsertPrLogRow } from './wave-md-rw';
 import { addDisclosureToSource, setDispositionInSource } from './spine-store';
 
 const TEMPLATE = readFileSync(DRIVER_TEMPLATE_PATH, 'utf8');
@@ -3849,6 +3849,12 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     key: string;
     state: string;
     branchSlug: string | null;
+    /**
+     * When set, the spine's `## PR-Log` carries a row for this key with this
+     * text in its `Merged` cell — a date is what `close-row` writes on a
+     * recorded merge, `—` is the renderer's own not-merged placeholder.
+     */
+    prLogMerged?: string;
   }
 
   /** The branch the fixture recorded for `key`, rebuilt the way the spine has it. */
@@ -3908,6 +3914,16 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
       if (r.branchSlug) {
         spine = upsertDispatchLogEntry(spine, id, branchOf(storeIds, r.key, r.branchSlug));
         spine = upsertDispatchLogModel(spine, id, 'opus');
+      }
+      if (r.prLogMerged !== undefined) {
+        spine = upsertPrLogRow(spine, {
+          created: '2026-09-23',
+          id,
+          prCell: `https://github.com/example/repo/pull/${id.replace(/\D/g, '') || '1'}`,
+          closes: `Closes #${id}`,
+          merged: r.prLogMerged,
+          notes: '—',
+        });
       }
     }
 
@@ -4121,12 +4137,16 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     const bId = storeIds.get('B') as string;
     const brief = calls.find((c) => String(c.opts.label) === `review:${bId}`)?.brief ?? '';
     // The renamed header — "in-flight" was never the membership rule and is now
-    // plainly wrong, since an earlier round's landed PR is on the list.
+    // plainly wrong, since an earlier round's landed PR is on the list. Renamed
+    // again by the landed-sibling row: the ROW is the subject and its branch
+    // only the in-flight carrier (glossary: Sibling), so the header no longer
+    // calls the list "branches".
     expect(brief).toContain(
-      'Sibling branches in this wave (your merge-tree denominator): ' +
+      'Siblings in this wave (your merge-tree denominator): ' +
         `${branchOf(storeIds, 'A', 'first-round')} (pr-created)`,
     );
     expect(brief).not.toContain('Sibling in-flight branches:');
+    expect(brief).not.toContain('Sibling branches in this wave');
     // …and the sentence that tells the Reviewer what the annotation means.
     expect(brief).toMatch(/Each entry reads .*<branch> \(<state>\).*fact about the SPINE/);
     expect(brief).toMatch(/\(pr-created\).*may already have landed/s);
@@ -4183,5 +4203,114 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     expect(
       ['ok', 'aKeyNoShapeNames'].filter((k) => !new RegExp(`\\b${k}\\b`).test(shape)),
     ).toEqual(['aKeyNoShapeNames']);
+  });
+
+  // ─── a landed sibling reads `(landed)`, off the spine's PR-Log alone ───────
+  //
+  // In a wave that lands by squash and re-anchors every round, a landed
+  // sibling's branch tip is a stale leftover — or gone, which reads as "never
+  // pushed" — so the Reviewer covers it through the default branch's current
+  // tip instead of its tip. The composer's share of that is the annotation,
+  // and the annotation is a fact about the SPINE: the PR-Log's `Merged` cell,
+  // which `close-row` writes only once a merge is established. Nothing in the
+  // compose asks `origin` anything; the fixture repo has no remote at all.
+
+  /** Compose, run the composed driver, and hand back the Reviewer brief for `key`. */
+  async function reviewerBriefFor(
+    spinePath: string,
+    configPath: string,
+    storeIds: Map<string, string>,
+    key: string,
+  ): Promise<string> {
+    const out = join(repoRoot, 'driver.js');
+    expect(
+      await runComposeDriver([
+        '--spine', spinePath,
+        '--config', configPath,
+        '--repo-root', repoRoot,
+        '--anchor', anchor,
+        '--out', out,
+        '--reviewer-agent', 'flotilla:wave-reviewer',
+      ]),
+    ).toBe(0);
+    const { calls } = await runComposedDriver(readFileSync(out, 'utf8'));
+    const id = storeIds.get(key) as string;
+    return calls.find((c) => String(c.opts.label) === `review:${id}`)?.brief ?? '';
+  }
+
+  /** One merged sibling (A), the row under review (B), one in-flight sibling (C). */
+  const LANDED_ROWS: readonly FixtureRow[] = [
+    { key: 'A', state: 'pr-created', branchSlug: 'merged-earlier', prLogMerged: '2026-09-23' },
+    { key: 'B', state: 'dispatched', branchSlug: 'under-review' },
+    { key: 'C', state: 'dispatched', branchSlug: 'in-flight' },
+  ];
+
+  it('a sibling with a merged PR-Log entry reads `(landed)`; an in-flight sibling keeps its state; the branch token leads both', async () => {
+    const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
+    const issues = await compose(spinePath, configPath);
+    const b = issues.find((i) => String(i.id) === storeIds.get('B'));
+    const landed = `${branchOf(storeIds, 'A', 'merged-earlier')} (landed)`;
+    const inFlight = `${branchOf(storeIds, 'C', 'in-flight')} (dispatched)`;
+    expect(b?.siblingBranches).toBe([landed, inFlight].join(', '));
+    // The annotation REPLACES the state — the landed row's `pr-created` does
+    // not ride along beside it.
+    expect(String(b?.siblingBranches)).not.toContain('(pr-created)');
+    for (const entry of String(b?.siblingBranches).split(', ')) {
+      expect(entry.split(' ')[0]).toMatch(/^wave\//);
+      expect(entry).toMatch(/^wave\/\S+ \([a-z-]+\)$/);
+    }
+    // …and the in-flight sibling C sees the same landed sibling the same way.
+    const c = issues.find((i) => String(i.id) === storeIds.get('C'));
+    expect(c?.siblingBranches).toBe(
+      [landed, `${branchOf(storeIds, 'B', 'under-review')} (dispatched)`].join(', '),
+    );
+  });
+
+  it('NEGATIVE CONTROL — a PR-Log row whose Merged cell is still the placeholder records a PR, not a landing', async () => {
+    // The same spine shape with the one fact changed: the PR-Log carries A's
+    // PR, but its Merged cell is the renderer's own `—`. An annotation read off
+    // "a PR-Log row exists" instead of "a merge is recorded" would say
+    // `(landed)` here and send the Reviewer past a live branch.
+    const { spinePath, configPath, storeIds } = await seed([
+      { key: 'A', state: 'pr-created', branchSlug: 'open-pr', prLogMerged: '—' },
+      { key: 'B', state: 'dispatched', branchSlug: 'under-review' },
+    ]);
+    const issues = await compose(spinePath, configPath);
+    expect(issues[0].siblingBranches).toBe(`${branchOf(storeIds, 'A', 'open-pr')} (pr-created)`);
+    expect(String(issues[0].siblingBranches)).not.toContain('(landed)');
+  });
+
+  it('the composed Reviewer brief covers a `(landed)` sibling through the default branch, and asks origin first for every other one', async () => {
+    const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
+    const brief = await reviewerBriefFor(spinePath, configPath, storeIds, 'B');
+    const bId = storeIds.get('B') as string;
+    expect(brief).toContain(`${branchOf(storeIds, 'A', 'merged-earlier')} (landed)`);
+    // The landed rule and its one check, rendered with this row's own ids.
+    expect(brief).toContain('A `(landed)` sibling is NEVER fetched and never merge-treed by its tip.');
+    expect(brief).toContain(`git merge-tree refs/review/${bId} refs/review/base/${bId}`);
+    // Every other sibling: `ls-remote` BEFORE the fetch, and the fetch's exit
+    // code is never what decides.
+    const lsRemote = brief.indexOf('git ls-remote origin refs/heads/<branch>');
+    const fetch = brief.indexOf('git fetch origin <branch>:refs/review/sib/<sibling-id>');
+    expect(lsRemote).toBeGreaterThan(-1);
+    expect(fetch).toBeGreaterThan(lsRemote);
+    expect(brief).toMatch(/exit\s+code is never an input/);
+    // The diff base is the ROUND's anchor, and the brief never calls it the wave's.
+    expect(brief).toContain(`Round anchor SHA (diff base — NOT main): \`${anchor}\``);
+    expect(brief).not.toMatch(/wave[ -]anchor/i);
+    expect(brief).toMatch(/never means that nothing landed/);
+    // The coverage line asks for no re-run: no step reads that request.
+    expect(brief).not.toMatch(/before landing/i);
+  });
+
+  it('the composed Reviewer brief names its probe checkout with the stamp — wave slug, row id, iteration', async () => {
+    const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
+    const brief = await reviewerBriefFor(spinePath, configPath, storeIds, 'B');
+    const stamp = `flotilla-probe-${SLUG}-${storeIds.get('B') as string}-i1`;
+    expect(brief).toContain(`name its directory exactly \`${stamp}\``);
+    expect(brief).toMatch(/lives OUTSIDE the repository/);
+    expect(brief).toMatch(/You never remove it yourself/);
+    // Nothing unresolved reached the stamp.
+    expect(brief).not.toMatch(/flotilla-probe-[^`]*undefined/);
   });
 });

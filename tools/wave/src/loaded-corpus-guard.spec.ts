@@ -371,7 +371,40 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that turns the PR-title readiness
+ * Why this number: **RAISED by the row that rewrites the Reviewer's sibling
+ * prediction** (issue #960), in the diff that causes the growth. The prediction
+ * used to assume a sibling's branch tip is what the row will collide with; in a
+ * wave that lands by squash and re-anchors every round that assumption broke in
+ * every direction observed live, and the replacement recipe is Reviewer
+ * contract text that has to live in every copy the drift spec pins: a fifth
+ * outcome (`landed`) with the one default-branch merge-tree that covers it, an
+ * `ls-remote`-first tip confirmation that never reads a fetch's exit code, the
+ * round's anchor in place of the wave's, a coverage line that names why each
+ * sibling is uncovered instead of asking for a re-run nothing reads, and the
+ * probe checkout's stamp (ADR-0042 Amendment 2026-09-23). Four corpus files
+ * carry it, the reviewer skill's checks reference first — its Check 5, the
+ * runnable detail, gains two subsections and the fifth table row (+2,741 B) —
+ * then the reviewer skill's own `SKILL.md` (+1,450 B), the Reviewer's agent
+ * definition (+1,443 B) and the wave-start skill's workflow-driver reference
+ * (+222 B, the `siblingBranches` source and the round's-anchor wording). None of it is
+ * evidence — every sentence is an instruction a Reviewer or an operator acts
+ * on — so none of it could go to an `evidence/` sibling instead.
+ *
+ * At this row's anchor commit `b84405666082116ecbe96644d4e56a0ded8b4846` the
+ * population measured **1,230,287 B** over 57 files — 713 B under the previous
+ * 1,231,000 B ceiling. This row's edit lands it at **1,236,143 B** over the
+ * same 57 files, +5,856 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,237,000 B**. The 857 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget. The shared standing
+ * load is NOT raised: none of the four files is a member of that population
+ * (only `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are), so that
+ * class stays at 161,176 B against its unchanged 162,000 B ceiling.
+ *
+ * Previously: 1,231,000 B — the raise by the row that turns the PR-title
+ * readiness advisory on for the store-backed path (issue #934), whose reasoning
+ * is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that turns the PR-title readiness
  * advisory on for the store-backed path** (issue #934), in the diff that causes
  * the growth. Its one corpus-population edit is a paragraph in
  * `to-issues/SKILL.md`'s self-check step: the tenth readiness gate shipped
@@ -577,7 +610,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_231_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_237_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

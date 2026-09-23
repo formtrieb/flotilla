@@ -45,7 +45,7 @@ import type { IssueView, TriageView } from './contract';
 import { flag, printJson } from './cli-utils';
 import { readDisclosures } from './spine-store';
 import { loadWaveConfig, type ModelsConfig, type WaveConfig } from './wave-config';
-import { readSpine, HUMAN_GATED_WORKER, type PlanTableRow } from './wave-md-rw';
+import { readSpine, HUMAN_GATED_WORKER, type PlanTableRow, type PrLogRow } from './wave-md-rw';
 import { verifyCommands, type VerifyCommand } from './verify';
 import { resolveStore } from './cli-store';
 import {
@@ -1008,10 +1008,11 @@ const DISPATCHABLE_STATES = ['dispatched', 're-dispatched'];
  *
  *  - `pr-created` / `approved` — an earlier ROUND's rows, and the siblings most
  *    likely to collide, because a Conflict-Map cell sharing files is exactly why
- *    they were serialised into their own round in the first place. Whether that
- *    PR has merged makes no difference: a merged sibling's hunks are on the
- *    default branch while this row's diff base is still the wave anchor, so the
- *    Reviewer needs to know the branch exists either way.
+ *    they were serialised into their own round in the first place. A MERGED one
+ *    stays in too — but annotated `(landed)` instead of by its state, when the
+ *    spine's PR-Log records that merge (see {@link siblingRosterFrom}): its
+ *    hunks are on the default branch now, so the Reviewer covers it through the
+ *    default branch's current tip, never through its leftover branch.
  *  - `failed` — Coordinator ruling 2026-09-21: the branch is live and may still
  *    land via a ruled round. The `(state)` annotation is what tells the Reviewer
  *    what it is looking at.
@@ -1041,25 +1042,71 @@ const SIBLING_EXCLUDED_STATES: ReadonlySet<string> = new Set(['parked', 'abandon
  * `readSpine` has already resolved every row's branch off the dispatch log
  * (ADR-0021), so no second source is needed to see them.
  *
- * Each entry renders as `<branch> (<state>)`: the branch token stays the FIRST
- * word so the brief's `git fetch origin <branch>:refs/review/sib/<id>` instruction
- * still parses, and the parenthesised spine state tells the Reviewer what an
- * unresolvable fetch MEANS for that particular sibling — `(dispatched)` reads
- * "not pushed yet", `(pr-created)` reads "landed and the branch is gone". That
- * annotation is deliberately NOT a fifth prediction outcome: the four
- * `predicted-clean | predicted-conflict | not-on-origin | at-anchor` tokens are
- * enumerated in four pinned copies, and widening that vocabulary to carry a cause
- * would cost four documents what one `(state)` suffix carries for free.
+ * Each entry renders as `<branch> (<annotation>)`: the branch token stays the
+ * FIRST word so the brief's per-sibling `git ls-remote origin refs/heads/<branch>`
+ * and `git fetch origin <branch>:refs/review/sib/<id>` instructions still parse.
+ * The annotation is a fact about the SPINE, never about the remote: the row's
+ * spine state, or `landed` when the spine's `## PR-Log` records the row's merge
+ * ({@link landedRowIds}). Nothing here asks `origin` anything — whether a branch
+ * is still there is the Reviewer's question, asked at review time.
+ *
+ * **Why `landed` IS a fifth prediction outcome, when a `(state)` suffix is not.**
+ * A `(dispatched)`, `(pr-created)` or `(failed)` suffix only EXPLAINS an outcome
+ * the Reviewer still reaches the same way — read `origin`'s tip, then predict or
+ * record the sibling uncovered — so a cause-carrying outcome would buy nothing
+ * the suffix does not already carry. A landed sibling changes the METHOD, not
+ * just the reason. In a wave that lands by squash and re-anchors every round,
+ * its branch tip is a stale leftover (a prediction against it invents conflicts,
+ * or invents cleanliness) or it is gone (which reads as "never pushed"); its
+ * content is on the default branch, so it is covered by ONE merge-tree of the
+ * row's branch against the default branch's current tip, which covers every
+ * landed sibling at once. Covered-by-a-different-check has no honest spelling
+ * among `predicted-clean | predicted-conflict | not-on-origin | at-anchor` —
+ * each of those describes a tip that was, or was not, read — so the vocabulary
+ * grows to `landed`, in every pinned copy. It stays inside the existing
+ * advisory strings like the other four: no field is added to the
+ * ReviewerVerdict schema.
  */
 function siblingRosterFrom(
   planTable: readonly PlanTableRow[],
+  prLog: readonly PrLogRow[],
 ): Array<{ id: string; entry: string }> {
+  const landed = landedRowIds(prLog);
   const out: Array<{ id: string; entry: string }> = [];
   for (const row of planTable) {
     const branch = (row.branch ?? '').trim();
     const state = String(row.state).trim();
     if (!branch || SIBLING_EXCLUDED_STATES.has(state)) continue;
-    out.push({ id: row.id, entry: `${branch} (${state})` });
+    const annotation = landed.has(row.id.trim()) ? LANDED_ANNOTATION : state;
+    out.push({ id: row.id, entry: `${branch} (${annotation})` });
+  }
+  return out;
+}
+
+/** The sibling annotation for a row whose merge the spine's PR-Log records. */
+const LANDED_ANNOTATION = 'landed';
+
+/**
+ * The placeholder spellings a PR-Log `Merged` cell carries while the row has
+ * NOT merged — the renderer's own em dash, its hand-typed lookalikes, and an
+ * empty cell. `close-row` is the one writer of this column and writes the merge
+ * DATE there, only once the merge is established (ADR-0023's evidence
+ * hierarchy runs before it is called), so anything that is not one of these
+ * placeholders is a recorded merge.
+ */
+const UNMERGED_PR_LOG_CELLS: ReadonlySet<string> = new Set(['', '—', '–', '-']);
+
+/**
+ * The row ids the spine's `## PR-Log` records as merged — a fact about the
+ * SPINE, never about the remote, and the ONLY source a `(landed)` annotation is
+ * ever derived from. A PR-Log row whose `Merged` cell is still a placeholder
+ * ({@link UNMERGED_PR_LOG_CELLS}) records a PR, not a landing, and leaves its
+ * row annotated by its state.
+ */
+function landedRowIds(prLog: readonly PrLogRow[]): Set<string> {
+  const out = new Set<string>();
+  for (const entry of prLog) {
+    if (!UNMERGED_PR_LOG_CELLS.has(entry.merged.trim())) out.add(entry.id.trim());
   }
   return out;
 }
@@ -1276,7 +1323,8 @@ export async function runComposeDriver(
     // branch and a derivable slug, and a row missing either is a STOP.
     // `siblingRoster` is what this wave has RUNNING OR LANDED — every row the
     // spine records a branch for, this compose's own rows included, whatever
-    // round put them there.
+    // round put them there — each annotated `(landed)` when the spine's PR-Log
+    // records its merge, and by its row state otherwise.
     const roster = dispatchable.map((row) => {
       const branch = row.branch ?? '';
       const slugFromBranch = branch.startsWith(`wave/${row.id}-`)
@@ -1285,7 +1333,7 @@ export async function runComposeDriver(
       return { row, branch, rowSlug: slugFromBranch };
     });
 
-    const siblingRoster = siblingRosterFrom(spine.planTable);
+    const siblingRoster = siblingRosterFrom(spine.planTable, spine.prLog);
 
     const missingBranch = roster.filter((r) => !r.branch || !r.rowSlug);
     if (missingBranch.length > 0) {

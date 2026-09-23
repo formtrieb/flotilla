@@ -382,7 +382,7 @@ const ISSUES = [
     // the engine or in this template — a brand literal in a durable artefact is
     // exactly what ADR-0012 (Amendments 2026-09-16 and 2026-09-21) retired.
     model: '<the concrete model recorded for this row — consumer-owned, never spelled here>',
-    anchorSha: '<COORDINATOR_HEAD_SHA>',   // git rev-parse HEAD at dispatch time — the wave anchor
+    anchorSha: '<COORDINATOR_HEAD_SHA>',   // git rev-parse HEAD at dispatch time — THIS round's anchor (one per round, not per wave)
     coordinatorBranch: 'feat/<slug>',
     // The consumer's own dependency-install command(s), resolved by
     // compose-driver through five precedence levels, most specific first: this
@@ -967,13 +967,20 @@ ${j(issue.reviewerHints)}`
 // below): there is no second code path that could re-derive or re-interpolate
 // an unasserted anchor or branch.
 function reviewerBrief(issue, report) {
+  // The probe checkout's stamp (ADR-0042 Amendment 2026-09-23), composed here
+  // because only this brief knows all three parts. The wave slug is read back
+  // off the already-filled verdicts dir exactly as scribeBrief reads it
+  // (`<REPO_ROOT>/.flotilla/waves/<slug>/verdicts`, second segment from the
+  // end); an absent iteration renders as 1 — the branch `issue.iteration > 1`
+  // already routes it to — never as the literal "undefined".
+  const probeStamp = `flotilla-probe-${VERDICTS_DIR.split('/').slice(-2, -1)[0]}-${issue.id}-i${issue.iteration > 1 ? issue.iteration : 1}`
   return `You are the Wave Reviewer for issue #${issue.id} (${issue.slug}).
 
 ## What to review
 Branch: \`${issue.branch}\`
 Risk class: \`${issue.risk}\`   (dispatch is universal — Risk does NOT gate whether you run)
-Wave anchor SHA (diff base — NOT main): \`${issue.anchorSha}\`
-Sibling branches in this wave (your merge-tree denominator): ${issue.siblingBranches}
+Round anchor SHA (diff base — NOT main): \`${issue.anchorSha}\` — the \`${issue.coordinatorBranch}\` commit THIS round was dispatched against; one per round, never one per wave
+Siblings in this wave (your merge-tree denominator): ${issue.siblingBranches}
 
 ## Resolve the branch — a stable named ref, never \`FETCH_HEAD\`
 
@@ -1047,8 +1054,10 @@ name, never \`FETCH_HEAD\`), per-AC met/partial/not-met with evidence (against t
 embedded spec above), sibling merge-tree prediction.
 
 **SIBLING MERGE-TREE PREDICTION REPORTS ITS COVERAGE DENOMINATOR.** The sibling list above is
-the DENOMINATOR, and every branch on it gets exactly ONE outcome: \`predicted-clean\` |
-\`predicted-conflict\` | \`not-on-origin\` | \`at-anchor\`. The rows run with NO barrier — row
+the DENOMINATOR, and every sibling on it gets exactly ONE outcome: \`predicted-clean\` |
+\`predicted-conflict\` | \`not-on-origin\` | \`at-anchor\` | \`landed\`. One case gets none: a sibling
+whose fetched ref cannot be confirmed against \`origin\`'s tip (below) is named uncovered, with that
+reason, and is never predicted. The rows run with NO barrier — row
 B's Worker is still running while row A's Reviewer already runs — so a sibling may simply not
 be on \`origin\` when you reach for it. Partial coverage is ordinary and honest; what is not
 honest is a verdict that reports the conflicts it found and stays silent about the siblings it
@@ -1058,22 +1067,59 @@ never reached.
 The list is WAVE-WIDE, not this round's dispatch: a wave whose Conflict-Map has overlap cells is run in
 ROUNDS, and the siblings serialised into an earlier round are the ones most likely to collide with you —
 sharing files with this row is precisely why they were serialised away from it. So read the annotation
-before you read a failed fetch. A \`(dispatched)\` or \`(re-dispatched)\` sibling may simply not have been
+before you read \`origin\`. **\`(landed)\` means the spine's PR-log records that sibling's merge, and
+landed-ness is read from that annotation ONLY** — never inferred from \`origin\`, where a missing branch
+proves nothing, and never from \`${issue.coordinatorBranch}\`: that branch sitting AT this round's anchor
+never means that nothing landed, because whatever landed before this round is already inside the anchor
+your row was built on. A \`(dispatched)\` or \`(re-dispatched)\` sibling may simply not have been
 pushed yet — its Worker is still running. A \`(pr-created)\` or \`(approved)\` one may already have landed
-and had its branch deleted. A \`(failed)\` one is on the list on purpose: that branch is live and may yet
-land through a ruled round. In every one of those cases the outcome you record is the same —
-\`not-on-origin\`, which is UNCOVERED and is never \`predicted-clean\` — but the annotation is what lets
-your coverage line say WHY, and which siblings are worth re-running before landing.
-**\`at-anchor\` is the sharp one:** a sibling branch that IS on \`origin\` but
-whose tip still EQUALS this row's wave anchor SHA (\`${issue.anchorSha}\`) has an empty diff, so
-\`git merge-tree\` exits 0 and prints one tree hash — byte-identical to a genuinely clean
-prediction. Nothing in that output tells them apart. So per sibling, \`git fetch origin <branch>:refs/review/sib/<sibling-id>\`
-then \`git rev-parse refs/review/sib/<sibling-id>\` — never \`FETCH_HEAD\`, the same shared-ref
-hazard the branch-under-review resolution above already closed — and compare that tip against
-\`${issue.anchorSha}\` BEFORE you read the merge-tree result: equal → record \`at-anchor\`, which
-is VACUOUS and is never \`predicted-clean\`. Then put ONE coverage line in \`reviewerFocusItems\` naming the denominator
-and every uncovered sibling by outcome — \`(advisory) Sibling merge-tree coverage: 3/5 predicted
-— …; NOT covered: <d> not-on-origin, <e> at-anchor (tip == wave anchor, prediction vacuous).\`
+before the spine recorded it, and had its branch deleted. A \`(failed)\` one is on the list on purpose:
+that branch is live and may yet land through a ruled round. For every one of those, a branch \`origin\`
+does not have is \`not-on-origin\`, which is UNCOVERED and is never \`predicted-clean\` — and the
+annotation is what lets your coverage line say WHY it is uncovered.
+
+**A \`(landed)\` sibling is NEVER fetched and never merge-treed by its tip.** In a wave that lands by
+squash and re-anchors every round, its tip is a stale leftover — a prediction against it invents
+conflicts, or invents cleanliness — or it is gone. Its content is on \`${issue.coordinatorBranch}\` now, so
+ONE merge-tree of your row against that branch's CURRENT tip covers every landed sibling at once, squash
+or not. Run it once per review, and only when the list carries a \`(landed)\` entry:
+\`\`\`bash
+git ls-remote origin refs/heads/${issue.coordinatorBranch}
+git fetch origin ${issue.coordinatorBranch}:refs/review/base/${issue.id} 2>&1 | tail -3
+git rev-parse refs/review/base/${issue.id}
+git merge-tree refs/review/${issue.id} refs/review/base/${issue.id}
+\`\`\`
+The \`rev-parse\` MUST equal the SHA \`ls-remote\` printed; then \`<<<<<<<\` in the merge-tree output is a
+conflict. Report it on its OWN line — \`(advisory) Landed-sibling merge-tree vs ${issue.coordinatorBranch}
+tip <sha>: clean (or: conflict at <file>) — covers <every (landed) branch>.\` — and record each
+\`(landed)\` sibling as \`landed\`, which IS coverage. A tip equal to this round's anchor is fine here:
+the landed siblings are already under your row, so a clean answer is the true one. A \`rev-parse\` that
+does not equal the \`ls-remote\` SHA covers no landed sibling: name each one uncovered, with that reason.
+
+**Every other sibling: ask \`origin\` FIRST, and trust a fetched ref only once it equals \`origin\`'s tip.**
+Write each branch and its per-sibling ref key in literally, one sibling at a time:
+\`\`\`bash
+git ls-remote origin refs/heads/<branch>
+git fetch origin <branch>:refs/review/sib/<sibling-id> 2>&1 | tail -3
+git rev-parse refs/review/sib/<sibling-id>
+git merge-tree refs/review/${issue.id} refs/review/sib/<sibling-id>
+\`\`\`
+An EMPTY \`ls-remote\` answer records \`not-on-origin\`, with no fetch at all. Otherwise fetch into the
+per-sibling named ref — never \`FETCH_HEAD\`, the same shared-ref hazard the branch-under-review
+resolution above already closed — and compare that ref's \`rev-parse\` against the \`ls-remote\` SHA: a
+mismatch is uncovered, reason "fetched ref ≠ origin tip", and is never a prediction. **The fetch's exit
+code is never an input, anywhere in this check:** a fetch can fail while the named ref still resolves a
+leftover from an earlier dispatch, or succeed while exiting non-zero — only the SHA comparison says
+whether the ref holds what \`origin\` holds.
+**\`at-anchor\` is the sharp one:** a confirmed tip that still EQUALS this round's anchor SHA
+(\`${issue.anchorSha}\`) has an empty diff, so \`git merge-tree\` exits 0 and prints one tree hash —
+byte-identical to a genuinely clean prediction. Nothing in that output tells them apart. So compare the
+confirmed tip against \`${issue.anchorSha}\` BEFORE you read the merge-tree result: equal → record
+\`at-anchor\`, which is VACUOUS and is never \`predicted-clean\`. Then put ONE coverage line in
+\`reviewerFocusItems\` naming the denominator and every uncovered sibling with the reason it is
+uncovered — \`(advisory) Sibling merge-tree coverage: 3/6 covered — …; NOT covered: <d> not-on-origin
+((dispatched) — not pushed yet), <e> at-anchor (tip == round anchor, prediction vacuous), <f> fetched
+ref ≠ origin tip.\`
 \`0/N\` is a legitimate coverage line; silence is not. **All of it stays \`(advisory)\`** — a
 predicted conflict is never \`changes-requested\`, and missing coverage is never
 \`questions-blocking\`; the coverage line lives INSIDE the existing advisory strings, so
@@ -1093,6 +1139,14 @@ TOTAL absence on a slice that ships a new check is a finding: say so under
 \`reviewerFocusItems\` rather than filling the gap silently yourself. And an AC phrased
 as an outcome ("the check exists", "the guard is enforced") earns \`met\` only on
 outcome-exercising evidence — the Worker's falsification, or your own probe.
+
+**Your probe checkout, if you make one, lives OUTSIDE the repository and carries its stamp.** The
+probe licence (agent contract Check 3) lets you exercise an outcome in a detached checkout of your
+own: put it under a temp root, never inside this repository — the harness denies agent-configuration
+files at any depth of an in-repo checkout — and name its directory exactly \`${probeStamp}\`. That
+stamp is how the Coordinator's sweep collects it once this row leaves review (ADR-0042 Amendment
+2026-09-23). You never remove it yourself: no dispatched role holds \`git worktree remove\`, and
+leaving it standing is the contract, not an oversight.
 
 **YOU NEVER ESCALATE YOUR OWN PERMISSIONS EITHER, AND YOU RUN AT MOST THE WORKER'S RIGHTS (ADR-0049).**
 The no-escalation rule binds every dispatched role, not just the Worker: you may not disable the
