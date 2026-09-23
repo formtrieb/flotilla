@@ -149,6 +149,10 @@ A DoR check whose data source is absent in the current context — neither pass 
 Delegating an approved wave PR's completion to the code host: flotilla enables the host's server-side auto-merge (or merges an already-clean PR directly, after the same confirm) through the engine host seam — it never pushes `main` itself, and it does not wait (**arm-and-exit**); `done` reconciles on the next wave-close/resume touch (ADR-0023).
 _Avoid_: auto-merge (the host feature is the mechanism; arming is flotilla's act), merging main (flotilla never does that).
 
+**Landing message**:
+The commit title and body a landed PR leaves on the default branch. flotilla authors it: the PR's own title, with the host's number suffix, and the PR's own body, as both stand when the landing verb runs — frozen at **Arming**, read fresh on a direct merge. A consumer whose history is machine-read may cede it to the host's own squash setting instead (ADR-0053).
+_Avoid_: squash message, merge commit message (the host's settings, which flotilla overrides by default); commit message (a Worker's branch commits, which by default never reach the default branch).
+
 **Partial-arm**:
 The `--auto` confirm's shape: exactly the rows in **no** Conflict-Map pair are armed; the overlapping tail keeps the recomputed advisory merge-order as the human playbook. One confirm per wave; a headless run requires explicit pre-authorization (ADR-0023).
 _Avoid_: arm-all (rejected — converts predicted overlaps into needs-attention noise), hard disjointness gate (rejected — forfeits the mixed wave).
