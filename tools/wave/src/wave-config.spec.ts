@@ -30,6 +30,10 @@ import {
   type ModelsConfig,
   type StoreGoalConfig,
 } from './wave-config';
+// The landing verbs' own `--commit-message` vocabulary and default (ADR-0053),
+// imported so `landing.commitMessage` is held to the flag it feeds rather than
+// to a second list restated here.
+import { DEFAULT_COMMIT_MESSAGE_SOURCE, type CommitMessageSource } from './host-pr';
 // The ADAPTER's own state map, imported so the config block below is compared
 // against the declaration it mirrors rather than against a second list restated
 // in this file — the same reason `GoalContainer` is imported for `store.goal`.
@@ -1607,6 +1611,117 @@ describe('loadWaveConfig — models: the REJECT path names the key', () => {
   });
 });
 
+// ── landing.commitMessage — who composes the landed commit (ADR-0053) ───────
+//
+// The config half of the landing verbs' `--commit-message pr|host` flag. The
+// verbs stay store-blind, so this key has one kind of reader: the skills that
+// compose an arm or a merge, which pass its value as the flag. Three cases, each
+// with its control — the two values load verbatim, an absent key means `pr`,
+// and anything else is refused naming the key and both values.
+
+describe('loadWaveConfig — landing.commitMessage: the ACCEPT path', () => {
+  function loadWithLanding(landing: unknown) {
+    return loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, landing }));
+  }
+
+  it('accepts exactly "pr" and "host", and hands each back verbatim', () => {
+    expect(loadWithLanding({ commitMessage: 'pr' }).landing).toEqual({ commitMessage: 'pr' });
+    expect(loadWithLanding({ commitMessage: 'host' }).landing).toEqual({ commitMessage: 'host' });
+  });
+
+  it('the flag\'s own default is a value the key accepts — one vocabulary, not two', () => {
+    // The key is the config half of one flag: a default the flag ships with that
+    // the key refused would make "declare the default explicitly" a refusal.
+    expect(DEFAULT_COMMIT_MESSAGE_SOURCE).toBe('pr');
+    expect(loadWithLanding({ commitMessage: DEFAULT_COMMIT_MESSAGE_SOURCE }).landing?.commitMessage).toBe(
+      DEFAULT_COMMIT_MESSAGE_SOURCE,
+    );
+  });
+
+  it('the key is typed as the landing verbs\' own vocabulary — the compile-time half', () => {
+    // `tsc --noEmit` is the assertion: this only typechecks while the field's
+    // type IS `CommitMessageSource`, the union the flag parses into.
+    const fromFlag: CommitMessageSource = 'host';
+    const config: WaveConfigFromRoot = { store: { kind: 'github' }, landing: { commitMessage: fromFlag } };
+    const back: CommitMessageSource | undefined = config.landing?.commitMessage;
+    expect(back).toBe('host');
+  });
+});
+
+describe('loadWaveConfig — landing.commitMessage: the ABSENCE path means "pr" (the additive guarantee)', () => {
+  it('a config with no landing key loads, reads back undefined, and resolves to "pr"', () => {
+    const config = loadConfigFromString(JSON.stringify({ store: { kind: 'github' } }));
+    expect(config.landing).toBeUndefined();
+    // The one resolution every composing call site applies — the key's value,
+    // else the flag's own default. Absent resolves to `pr`.
+    expect(config.landing?.commitMessage ?? DEFAULT_COMMIT_MESSAGE_SOURCE).toBe('pr');
+  });
+
+  it('a present landing block with no commitMessage is valid and resolves to "pr" too', () => {
+    const config = loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, landing: {} }));
+    expect(config.landing).toEqual({});
+    expect(config.landing?.commitMessage ?? DEFAULT_COMMIT_MESSAGE_SOURCE).toBe('pr');
+  });
+
+  it('absence is not written back — a config that never declared the key does not gain one', () => {
+    const config = loadConfigFromString(JSON.stringify({ store: { kind: 'markdown', repoRoot: '/x', slug: 's' } }));
+    expect(Object.prototype.hasOwnProperty.call(config, 'landing')).toBe(false);
+  });
+
+  it('NEGATIVE CONTROL — "host" does NOT resolve to "pr": the default applies to absence only', () => {
+    const config = loadConfigFromString(
+      JSON.stringify({ store: { kind: 'github' }, landing: { commitMessage: 'host' } }),
+    );
+    expect(config.landing?.commitMessage ?? DEFAULT_COMMIT_MESSAGE_SOURCE).toBe('host');
+  });
+});
+
+describe('loadWaveConfig — landing.commitMessage: the REJECT path names the key and both values', () => {
+  function loadWithLanding(landing: unknown) {
+    return loadConfigFromString(JSON.stringify({ store: { kind: 'github' }, landing }));
+  }
+
+  it('refuses every other value — a merge method, a case variant, an empty string, a non-string', () => {
+    for (const bad of ['squash', 'PR', 'Host', 'github', '', ' pr', null, 7, true, ['pr'], { pr: true }]) {
+      const load = () => loadWithLanding({ commitMessage: bad });
+      expect(load, JSON.stringify(bad)).toThrow(/wave config "landing\.commitMessage" must be "pr" or "host"/);
+    }
+  });
+
+  it('says what it got, so the author finds the offending spelling', () => {
+    expect(() => loadWithLanding({ commitMessage: 'squash' })).toThrow(/got the string "squash"/);
+    expect(() => loadWithLanding({ commitMessage: null })).toThrow(/got null/);
+    expect(() => loadWithLanding({ commitMessage: 7 })).toThrow(/got a number \(7\)/);
+    expect(() => loadWithLanding({ commitMessage: ['pr'] })).toThrow(/got an array/);
+  });
+
+  it('says what each value means and that omitting the key means "pr"', () => {
+    expect(() => loadWithLanding({ commitMessage: 'squash' })).toThrow(
+      /"pr" lands the PR's own title and body, "host" cedes the message to the repository's own squash setting; omit the key for "pr"/,
+    );
+  });
+
+  it('refuses a landing block that is not an object, naming the block, its key and both values', () => {
+    for (const bad of ['host', 7, true, null, ['host']]) {
+      const load = () => loadWithLanding(bad);
+      expect(load, JSON.stringify(bad)).toThrow(/wave config "landing" must be an object/);
+      expect(load, JSON.stringify(bad)).toThrow(/"commitMessage", "pr" or "host"/);
+    }
+  });
+
+  it('NEGATIVE CONTROL — one character is the whole difference between accept and reject', () => {
+    expect(() => loadWithLanding({ commitMessage: 'host' })).not.toThrow();
+    expect(() => loadWithLanding({ commitMessage: 'hosts' })).toThrow(/landing\.commitMessage/);
+  });
+
+  it('NEGATIVE CONTROL — an UNKNOWN key inside the block is NOT refused here', () => {
+    // It is a `config validate` warning instead (config-cli.spec.ts), the tier
+    // `models` uses for its own typos: a misspelled key leaves every landing on
+    // `pr`, which is a binding nothing reads rather than a shape nothing can act on.
+    expect(() => loadWithLanding({ commitMesage: 'host' })).not.toThrow();
+  });
+});
+
 // ── verify.commands[].needs — the declared capability requirement (ADR-0049) ──
 //
 // The field is the config half of "a dispatched agent never escalates": a gate
@@ -1837,6 +1952,7 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
     standard: 'consumer-standard-id',
     scribe: 'consumer-scribe-id',
   };
+  const LANDING = { commitMessage: 'host' };
   const STORES = {
     markdown: { kind: 'markdown', repoRoot: '/x', slug: 's', eligibility: ['ready-for-agent'], goal: { container: 'goal-file' } },
     github: { kind: 'github', eligibility: ['ready-for-agent'], goal: GOAL },
@@ -1853,7 +1969,7 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
 
   /** The fully-declared config for one store kind — every block, every key. */
   function fullConfig(kind: keyof typeof STORES): Record<string, unknown> {
-    return { store: STORES[kind], verify: VERIFY, cleanup: CLEANUP, engine: ENGINE, models: MODELS };
+    return { store: STORES[kind], verify: VERIFY, cleanup: CLEANUP, engine: ENGINE, models: MODELS, landing: LANDING };
   }
 
   it.each([
@@ -1866,6 +1982,9 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
     ['CleanupConfig', WAVE_CONFIG_SRC, Object.keys(CLEANUP)],
     ['EngineConfig', WAVE_CONFIG_SRC, Object.keys(ENGINE)],
     ['ModelsConfig', WAVE_CONFIG_SRC, Object.keys(MODELS)],
+    // Module-local rather than root-exported (see its declaration) — the reader
+    // below finds an interface by name either way, exported or not.
+    ['LandingConfig', WAVE_CONFIG_SRC, Object.keys(LANDING)],
     ['VerifyConfig', VERIFY_SRC, Object.keys(VERIFY)],
     ['VerifyProfile', VERIFY_SRC, Object.keys(VERIFY.profiles[0])],
     ['VerifyCommand', VERIFY_SRC, Object.keys(VERIFY.profiles[0].commands[0])],
@@ -1901,11 +2020,12 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
       cleanup: { ...CLEANUP, disposableNamez: [] },
       engine: { ...ENGINE, instal: 'npm ci' },
       models: { ...MODELS, scribes: 'consumer-scribe-id' },
+      landing: { ...LANDING, commitMesage: 'pr' },
     };
     const { code, warnings } = validateRaw(withTypos);
     expect(code).toBe(0); // still never a refusal
     const named = warnings.join('\n');
-    for (const typo of ['unknownTop', 'eligibilty', 'containerr', 'queuedd', 'disposableNamez', 'instal', 'scribes']) {
+    for (const typo of ['unknownTop', 'eligibilty', 'containerr', 'queuedd', 'disposableNamez', 'instal', 'scribes', 'commitMesage']) {
       expect(named, `expected the walk to name ${typo}`).toContain(`"${typo}"`);
     }
   });

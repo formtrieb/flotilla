@@ -658,6 +658,89 @@ describe('config validate — the models block (ADR-0012 Amendment 2026-09-21)',
   });
 });
 
+describe('config validate — landing.commitMessage (ADR-0053)', () => {
+  // `config validate` is the surface `wave-setup` proves a freshly-written config
+  // with, so it is where an author learns whether the landing choice took. The
+  // three cases of the acceptance criterion, at this seam: the two values
+  // accepted, an absent key accepted as `pr`, and any other value rejected with
+  // the key and both values named.
+
+  it('exits 0 for "pr" and for "host", and reports the declared value on the ok line', () => {
+    for (const value of ['pr', 'host']) {
+      stdoutBuf = '';
+      stderrBuf = '';
+      const path = writeConfig({ store: { kind: 'github' }, landing: { commitMessage: value } });
+      expect(runConfig(['validate', path]), value).toBe(0);
+      expect(warningLines(), value).toEqual([]);
+      expect(stdoutBuf, value).toContain(`landing.commitMessage: ${value}`);
+    }
+  });
+
+  it('exits 0 for an ABSENT key — and says nothing, so an existing config prints today\'s line', () => {
+    // Absent means `pr`. The line stays byte-identical to the one printed before
+    // the key existed: every summary segment is conditional (issue #761).
+    const bare = writeConfig({ store: { kind: 'markdown', repoRoot: '/x', slug: 's' } });
+    expect(runConfig(['validate', bare])).toBe(0);
+    expect(stdoutBuf).toBe(`ok: "${bare}" is a valid wave config (store.kind=markdown)\n`);
+    expect(stderrBuf).toBe('');
+  });
+
+  it('exits 0 for a present landing block with no commitMessage, and reports nothing about it', () => {
+    const path = writeConfig({ store: { kind: 'github' }, landing: {} });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toEqual([]);
+    expect(stdoutBuf).not.toContain('landing');
+  });
+
+  it('exits 1 for any other value, naming the key and BOTH allowed values', () => {
+    for (const bad of ['squash', 'PR', '', null, 1]) {
+      stdoutBuf = '';
+      stderrBuf = '';
+      const path = writeConfig({ store: { kind: 'github' }, landing: { commitMessage: bad } });
+      expect(runConfig(['validate', path]), JSON.stringify(bad)).toBe(1);
+      expect(stderrBuf, JSON.stringify(bad)).toContain('wave config "landing.commitMessage"');
+      expect(stderrBuf, JSON.stringify(bad)).toContain('"pr" or "host"');
+      expect(stdoutBuf, JSON.stringify(bad)).toBe('');
+    }
+  });
+
+  it('exits 1 for a landing block that is not an object', () => {
+    const path = writeConfig({ store: { kind: 'github' }, landing: 'host' });
+    expect(runConfig(['validate', path])).toBe(1);
+    expect(stderrBuf).toContain('wave config "landing" must be an object');
+  });
+
+  it('--json answers ok:false with the same message for a rejected value, still exit 1', () => {
+    const path = writeConfig({ store: { kind: 'github' }, landing: { commitMessage: 'squash' } });
+    expect(runConfig(['validate', path, '--json'])).toBe(1);
+    const answer = JSON.parse(stdoutBuf) as { ok: boolean; message: string };
+    expect(answer.ok).toBe(false);
+    expect(answer.message).toContain('wave config "landing.commitMessage" must be "pr" or "host"');
+  });
+
+  it('an unknown key under landing is ONE warning naming the declared key, exit 0', () => {
+    const path = writeConfig({ store: { kind: 'github' }, landing: { commitMesage: 'host' } });
+    expect(runConfig(['validate', path])).toBe(0); // a typo is never a refusal
+    expect(warningLines()).toHaveLength(1);
+    expect(warningLines()[0]).toContain('wave config "landing"');
+    expect(warningLines()[0]).toContain('"commitMesage"');
+    expect(warningLines()[0]).toContain('declares are: commitMessage');
+  });
+
+  it('NEGATIVE CONTROL — the same config with the key spelled right draws no warning', () => {
+    const path = writeConfig({ store: { kind: 'github' }, landing: { commitMessage: 'host' } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(warningLines()).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — the top-level "landing" key itself is a declared key, not a typo', () => {
+    // Before this key existed, `landing` at the root drew an unknown-key warning.
+    const path = writeConfig({ store: { kind: 'github' }, landing: { commitMessage: 'pr' } });
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stderrBuf).not.toContain('unknown key');
+  });
+});
+
 describe('config validate — the summary line reports what the loader actually read (issue #761)', () => {
   it('names the claim states, the eligibility markers, the category labels, the cleanup block and the goal binding', () => {
     const path = writeConfig({

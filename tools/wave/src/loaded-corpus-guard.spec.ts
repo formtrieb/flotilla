@@ -299,6 +299,19 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * rounded UP to the next full KB (1 KB = 1000 B): **163,000 B**. The 415 B of
  * headroom that leaves is a fact about the rounding rule, not a budget.
  *
+ * **UNCHANGED by the row that composes the landing verbs' `--commit-message`
+ * from `landing.commitMessage` (ADR-0053, issue #964), which spent 396 B of
+ * that headroom** on its one standing-load file,
+ * `reference/convention-07-host-landing-seam.md`: the canonical arm and merge
+ * forms now carry `--commit-message <pr|host>`, and one paragraph states where
+ * its value comes from. At that row's anchor commit
+ * `902d76c5ebf556a2d089f2589634695b140f145a` the class measured **162,585 B**
+ * over 18 files; the edit lands it at **162,981 B** over the same 18 files, and
+ * 162,981 B rounded UP to the next full KB is 163,000 B — this constant
+ * already. A raise here would be a pre-bought one. Headroom is 19 B, which is
+ * still a rounding fact and still not a budget; the loaded-corpus constant
+ * below did have to ratchet, and says why.
+ *
  * Previously: 162,000 B — **RAISED by the row that catalogues two live occurrences of
  * a brief clause reaching its limit** (issue #917), in the diff that causes the
  * growth. Its only standing-load edits are two short additions to
@@ -394,7 +407,39 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that gives the path form's silently-
+ * Why this number: **RAISED by the row that composes the landing verbs'
+ * `--commit-message` from the new `landing.commitMessage` config key**
+ * (ADR-0053, issue #964), in the diff that causes the growth. Every call site
+ * the ADR names has to say so where it is read, because the verbs themselves
+ * never read the config: wave-close's close mechanics gain the one
+ * `--commit-message` resolution section and the flag on both command-table
+ * rows (+844 B), its phase-4 merge and phase-4b arm invocations carry the flag
+ * (+271 B, +388 B, the latter with the frozen-at-arming note), and its
+ * `SKILL.md` phase-4 line names the rule (+108 B); the host-landing-seam
+ * convention's canonical form carries the flag and the one-paragraph rule
+ * (+396 B); wave-setup documents the key, its default and the machine-read-
+ * history case it exists for in `SKILL.md` (+1,015 B) and its shape and
+ * refusal in `setup-mechanics.md` (+963 B); and wave-start's
+ * `workflow-driver.md` says what reaches the default branch beside the title
+ * rule (+384 B). All of it is an instruction a Coordinator or a setup session
+ * acts on at the moment it reads it, so none of it belongs in an `evidence/`
+ * sibling. The Worker-brief correction the same row makes lives in the driver
+ * asset (`tools/wave/driver/wave-start-inflight.js`), which is not a `.md`
+ * under `.claude/skills`, so none of its bytes are priced here.
+ *
+ * At this row's anchor commit `902d76c5ebf556a2d089f2589634695b140f145a` the
+ * population measured **1,243,745 B** over 57 files — 255 B under the
+ * previous 1,244,000 B ceiling. This row's edit lands it at **1,248,114 B**
+ * over the same 57 files, +4,369 B, so the ceiling moves to that sum rounded UP
+ * to the next full KB (1 KB = 1000 B): **1,249,000 B**. The 886 B of headroom
+ * that leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 1,244,000 B — **RAISED by the row that gives the path form's
+ * silently-dropped `--pr-title` a worked invocation and an operator-facing
+ * note** (issue #955), whose reasoning is kept below (in ITS voice, so "this
+ * row" there means that row).
+ *
+ * Why that number: **RAISED by the row that gives the path form's silently-
  * dropped `--pr-title` a worked invocation and an operator-facing note**
  * (issue #955), in the diff that causes the growth. The shared standing load
  * is NOT a subset of this edit: the one corpus file it touches,
@@ -725,7 +770,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_244_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_249_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

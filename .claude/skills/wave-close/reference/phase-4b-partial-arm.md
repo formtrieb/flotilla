@@ -31,12 +31,14 @@ Read two checks:
 
 **The probe is advisory — the arm outcome is the ground truth.** `host-pr preflight` informs the confirm; it never gates it. On any `unknown`, state "posture unknown — the arm outcome decides" and proceed: `host-pr arm`'s per-PR outcome (`merged` vs `armed` vs `refused`, below) is the authority a static probe cannot be (a behind/recomputing race is not probeable).
 
-**Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`), **requesting branch deletion** the same way phase 4's `host-pr merge --delete-branch` does (consumer KW-F6) — `arm` threads the identical `--delete-branch` flag, so a landing driven through this skill actually deletes the head branch on the paths that merge immediately:
+**Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`), **requesting branch deletion** the same way phase 4's `host-pr merge --delete-branch` does (consumer KW-F6) — `arm` threads the identical `--delete-branch` flag, so a landing driven through this skill actually deletes the head branch on the paths that merge immediately. `--commit-message` carries `wave.config.json`'s `landing.commitMessage`, else `pr` ([close-mechanics.md](close-mechanics.md#--commit-message-resolution-adr-0053)):
 
 ```bash
-{{wave-cli}} host-pr arm --branch <wave-branch> --delete-branch   # detect-host-routed; NO --config (landing talks to the code host, not the tracker)
-# → { ok, verb: "arm", host, branch, method: "squash", outcome, prNumber?, prUrl?, reason, branchDeletion? }
+{{wave-cli}} host-pr arm --branch <wave-branch> --commit-message <pr|host> --delete-branch   # detect-host-routed; NO --config (landing talks to the code host, not the tracker)
+# → { ok, verb: "arm", host, branch, method: "squash", commitMessage, outcome, prNumber?, prUrl?, reason, branchDeletion?, landingMessage? }
 ```
+
+Under `pr` the title and body are **frozen at arming**: `landingMessage` shows what will land. A PR edited after arming lands its old text unless you arm it again.
 
 `host-pr arm` itself decides the mechanism per PR — **checks pending → enable auto-merge** (GraphQL); **already clean → direct merge now** (REST). Read the `outcome`, and — with `--delete-branch` — what to expect of the branch per outcome:
 
