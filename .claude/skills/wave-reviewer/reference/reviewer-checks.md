@@ -66,6 +66,8 @@ git show "refs/review/$ROW" -- <relevant file>
 ```
 Set `gitStateSane` true iff all four hold.
 
+The conflict-marker grep above is trustworthy only because `source-encoding-guard.spec.ts` has already established that no tracked text file in the review tree carries a raw NUL byte — the one byte that would make this grep report a file clean without having read it at all.
+
 **Reading the pull request itself goes through the engine seam, never a raw `gh`.** The Closed-by sub-check reads the Worker *report*; when you need the pull request — its state, its url, or whether its body really carries the close phrase — ask the code host the way every other station does, through `host-pr` ([Convention 7](../../wave-shared/reference/convention-07-host-landing-seam.md)), invoked through the consumer's configured engine CLI:
 
 ```bash
