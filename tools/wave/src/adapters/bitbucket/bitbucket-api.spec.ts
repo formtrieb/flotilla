@@ -27,7 +27,7 @@ import {
   type BitbucketHttpRequest,
   type BitbucketHttpResponse,
 } from './bitbucket-api';
-import { AutoMergeUnavailableError } from '../../host-pr';
+import { AutoMergeUnavailableError, armPullRequest, mergePullRequestNow } from '../../host-pr';
 
 // ─── the seam fixture ────────────────────────────────────────────────────────
 
@@ -548,6 +548,106 @@ describe('RealBitbucketApi.mergePullRequest', () => {
     const { http, calls } = fakeHttp([mergeRoute({ status: 200, json: {} })]);
     await api(http).mergePullRequest(7);
     expect(JSON.parse(calls[0].body as string)).not.toHaveProperty('close_source_branch');
+  });
+
+  // ── ADR-0053: the landing message on Bitbucket's wire ──────────────────────
+  //
+  // Bitbucket's merge takes ONE string for it — `message`, "The commit message
+  // that will be used on the resulting commit" (pullrequest_merge_parameters,
+  // Atlassian's OpenAPI document, read 2026-09-23) — so title and body travel
+  // in git's own subject / blank line / body form.
+  it('with a landing message, sends `message` as title, blank line, body — the whole request body pinned', async () => {
+    const { http, calls } = fakeHttp([mergeRoute({ status: 200, json: {} })]);
+    await api(http).mergePullRequest(7, 'squash', {
+      title: 'Land the fix (pull request #7)',
+      body: 'Why it changed.\n\nCloses #461',
+    });
+    expect(JSON.parse(calls[0].body as string)).toEqual({
+      merge_strategy: 'squash',
+      message: 'Land the fix (pull request #7)\n\nWhy it changed.\n\nCloses #461',
+    });
+  });
+
+  it('an EMPTY body sends the title ALONE — no trailing blank line, never "undefined" or "null"', async () => {
+    const { http, calls } = fakeHttp([mergeRoute({ status: 200, json: {} })]);
+    await api(http).mergePullRequest(7, 'squash', { title: 'Land the fix (pull request #7)', body: '' });
+    expect(JSON.parse(calls[0].body as string)).toEqual({
+      merge_strategy: 'squash',
+      message: 'Land the fix (pull request #7)',
+    });
+    expect(calls[0].body).not.toMatch(/undefined|null/);
+  });
+
+  it('without a message (--commit-message host) sends NO `message` key — Bitbucket composes its default, as before', async () => {
+    const { http, calls } = fakeHttp([mergeRoute({ status: 200, json: {} })]);
+    await api(http).mergePullRequest(7, 'squash');
+    const sent = JSON.parse(calls[0].body as string);
+    expect(sent).toEqual({ merge_strategy: 'squash' });
+    expect('message' in sent).toBe(false);
+  });
+
+  it('enableAutoMerge with a message still issues NO request — there is no arming call to freeze it into', async () => {
+    const { http, calls } = fakeHttp([]);
+    await expect(
+      api(http).enableAutoMerge(7, 'squash', { title: 'T (pull request #7)', body: 'B' }),
+    ).rejects.toMatchObject({ reason: 'not-allowed' });
+    expect(calls).toEqual([]);
+  });
+});
+
+// ─── ADR-0053 end to end: the PR's own title/description → the merge `message` ─
+
+describe('the landing message through the landing verbs, over RealBitbucketApi (ADR-0053)', () => {
+  const titled = (over: Record<string, unknown> = {}) =>
+    openPr({ title: 'Land the Bitbucket fix', description: 'The reviewed record.\n\nCloses #461', ...over });
+
+  it('merge: the POST carries "<title> (pull request #7)", a blank line, then the description verbatim', async () => {
+    const { http, calls } = fakeHttp([
+      [urlHas('/pullrequests?'), page([titled()])],
+      NO_RESTRICTIONS,
+      [both(isMethod('POST'), urlHas('/pullrequests/7/merge')), { status: 200, json: { merge_commit: { hash: 'c1' } } }],
+    ]);
+    const out = await mergePullRequestNow(api(http), 'wave/461-x', 'squash', { host: 'bitbucket' });
+    const post = calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(post.body as string)).toEqual({
+      merge_strategy: 'squash',
+      message: 'Land the Bitbucket fix (pull request #7)\n\nThe reviewed record.\n\nCloses #461',
+    });
+    expect(out).toMatchObject({
+      outcome: 'merged',
+      landingMessage: {
+        title: 'Land the Bitbucket fix (pull request #7)',
+        bodyBytes: Buffer.byteLength('The reviewed record.\n\nCloses #461', 'utf8'),
+      },
+    });
+  });
+
+  it('arm (the direct-merge degrade — this host cannot arm) lands the same message', async () => {
+    const { http, calls } = fakeHttp([
+      [urlHas('/pullrequests?'), page([titled()])],
+      NO_RESTRICTIONS,
+      [both(isMethod('POST'), urlHas('/pullrequests/7/merge')), { status: 200, json: { merge_commit: { hash: 'c2' } } }],
+    ]);
+    expect(await armPullRequest(api(http), 'wave/461-x', 'squash', { host: 'bitbucket' })).toMatchObject({
+      outcome: 'merged',
+    });
+    const post = calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(post.body as string).message).toBe(
+      'Land the Bitbucket fix (pull request #7)\n\nThe reviewed record.\n\nCloses #461',
+    );
+  });
+
+  it('a PR with an empty description lands under its title alone', async () => {
+    const { http, calls } = fakeHttp([
+      [urlHas('/pullrequests?'), page([titled({ description: '' })])],
+      [both(isMethod('POST'), urlHas('/pullrequests/7/merge')), { status: 200, json: {} }],
+    ]);
+    await mergePullRequestNow(api(http), 'wave/461-x', 'squash', { host: 'bitbucket' });
+    const post = calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(post.body as string)).toEqual({
+      merge_strategy: 'squash',
+      message: 'Land the Bitbucket fix (pull request #7)',
+    });
   });
 });
 

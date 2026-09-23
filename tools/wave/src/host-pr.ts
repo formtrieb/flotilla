@@ -893,6 +893,61 @@ export type MergeMethod = 'squash' | 'merge' | 'rebase';
 export const DEFAULT_MERGE_METHOD: MergeMethod = 'squash';
 
 /**
+ * Who composes the commit a landing leaves on the default branch (ADR-0053) —
+ * the value of the landing verbs' `--commit-message` flag, which is built
+ * exactly like `--method`:
+ *
+ *   - `pr`   — flotilla authors it: the PR's own title with the host's number
+ *              suffix, and the PR's own body verbatim ({@link LandingMessage}).
+ *   - `host` — flotilla sends no title and no body at all, so the repository's
+ *              own squash/merge setting composes the message, exactly as every
+ *              landing did before ADR-0053. The escape hatch for a consumer
+ *              whose history is machine-read (semantic-release, commitlint, a
+ *              changelog generator).
+ *
+ * The verbs stay store-blind: they take this from their caller and never read
+ * a configuration file for it (ADR-0053 decision 4).
+ */
+export type CommitMessageSource = 'pr' | 'host';
+
+/** The default: flotilla authors the landing message (ADR-0053 decision 1). */
+export const DEFAULT_COMMIT_MESSAGE_SOURCE: CommitMessageSource = 'pr';
+
+/**
+ * The landing message flotilla hands the host (ADR-0053; CONTEXT.md "Landing
+ * message"). Both fields are FINAL by the time an adapter sees them:
+ *
+ *   - `title` — the PR's own title with the host's number suffix already
+ *     appended (` (#N)` on GitHub, ` (pull request #N)` on Bitbucket Cloud).
+ *   - `body`  — the PR's own body, verbatim, and `''` when the PR has none:
+ *     never the text `undefined` or `null`.
+ *
+ * An adapter sends both in its host's own wire form and composes, trims or
+ * re-wraps neither — the composition has one owner, the landing verb.
+ */
+export interface LandingMessage {
+  title: string;
+  body: string;
+}
+
+/**
+ * What a landing outcome reports about the {@link LandingMessage} it handed the
+ * host: the title verbatim, and the body's size in UTF-8 bytes. The body itself
+ * is not repeated — it is the PR's own body, which `host-pr status` already
+ * prints — but its length is, so a caller can tell an empty body from a real
+ * one without a second read.
+ *
+ * On an `armed` outcome this is the message the host has FROZEN (ADR-0053
+ * decision 3: an edit to the PR after arming lands only if `arm` runs again);
+ * on `merged` it is the message that landed; on a `refused` outcome that
+ * follows a landing write, it is what was offered and not taken.
+ */
+export interface LandingMessageReport {
+  title: string;
+  bodyBytes: number;
+}
+
+/**
  * A PR's landing posture — the host's merge-state, normalised.
  *
  * Mirrors GitHub's REST `mergeable_state` / GraphQL `mergeStateStatus` vocab,
@@ -1028,10 +1083,25 @@ export interface LandingHost {
    * Arm the PR to merge itself once its checks pass. MUST throw
    * {@link AutoMergeUnavailableError} for the two known refusals (the PR is
    * already clean / the repo forbids auto-merge) so the intent logic can route.
+   *
+   * `message` (ADR-0053): when given, the host must FREEZE exactly this title
+   * and body as the commit the armed PR will land with. A PR that is ALREADY
+   * armed must end this call armed with THIS message — arming again is how an
+   * edit to the PR after the first arm reaches the default branch, so a re-arm
+   * is a refresh, never a no-op that keeps the older frozen text. How to get
+   * there (the host accepts a re-arm as a refresh, or needs a disable and a
+   * re-enable) is the adapter's to establish for its host. When absent, send no
+   * title and no body: the host composes the message from its own settings.
+   *
+   * Optional and trailing, so an implementation written before it existed
+   * still satisfies this interface — it simply never freezes a message.
    */
-  enableAutoMerge(prNumber: number, method?: MergeMethod): Promise<void>;
-  /** Merge the PR now. */
-  mergePullRequest(prNumber: number, method?: MergeMethod): Promise<MergeResult>;
+  enableAutoMerge(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<void>;
+  /**
+   * Merge the PR now. `message` (ADR-0053): when given, the landed commit's
+   * title and body are exactly these; when absent, the host composes them.
+   */
+  mergePullRequest(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<MergeResult>;
   /**
    * Delete the remote head branch `branch` through the host API (GitHub REST
    * `DELETE …/git/refs/heads/{branch}`) — the `host-pr merge --delete-branch`
@@ -1604,10 +1674,35 @@ export type LandingOutcome =
        * (this stays `merged`).
        */
       branchDeletion?: BranchDeletionResult;
+      /**
+       * The landing message this merge handed the host (ADR-0053) — see
+       * {@link LandingMessageReport}. Absent when none was handed over:
+       * `--commit-message host`, or a host that reported no PR title (the
+       * reason then says so).
+       */
+      landingMessage?: LandingMessageReport;
     }
-  | { outcome: 'armed'; prNumber: number; prUrl?: string; reason: string }
+  | {
+      outcome: 'armed';
+      prNumber: number;
+      prUrl?: string;
+      reason: string;
+      /** The message the host has now FROZEN for this PR (ADR-0053 decision 3); same presence rule as on `merged`. */
+      landingMessage?: LandingMessageReport;
+    }
   | { outcome: 'already-merged'; prNumber?: number; prUrl?: string; reason: string }
-  | { outcome: 'refused'; prNumber?: number; prUrl?: string; reason: string }
+  | {
+      outcome: 'refused';
+      prNumber?: number;
+      prUrl?: string;
+      reason: string;
+      /**
+       * Present only when the refusal FOLLOWED a landing write that carried a
+       * message (a rejected arm, a declined merge): what was offered and not
+       * taken. A refusal decided before any write carries none.
+       */
+      landingMessage?: LandingMessageReport;
+    }
   | { outcome: 'no-pr'; reason: string };
 
 // ─── Aligned PR reference (one url/number field name across every verb) ───────
@@ -1710,16 +1805,27 @@ export interface ArmOptions {
    */
   deleteBranch?: boolean;
   /**
-   * Which code host this arm is running against, for the REFUSAL PROSE only —
-   * never for a decision. Every branch of the arm intent is host-neutral and
-   * stays so; what is not host-neutral is the REMEDY a refusal teaches, and a
-   * remedy naming a control the host does not have is worse than none.
+   * Which code host this arm is running against, for the REFUSAL PROSE and the
+   * landing message's NUMBER SUFFIX only — never for a decision. Every branch of
+   * the arm intent is host-neutral and stays so; what is not host-neutral is
+   * the REMEDY a refusal teaches (a remedy naming a control the host does not
+   * have is worse than none), and the way the host writes a PR number into a
+   * commit title (` (#N)` on GitHub, ` (pull request #N)` on Bitbucket Cloud —
+   * see {@link landingTitle}).
    *
-   * Omitted → the GitHub wording, byte-identical to what shipped before this
-   * option existed (the {@link LandingHost} seam carries no host tag, so an
-   * injected test double and any pre-existing caller keep their exact text).
+   * Omitted → the GitHub wording and the GitHub suffix, byte-identical to what
+   * shipped before this option existed (the {@link LandingHost} seam carries no
+   * host tag, so an injected test double and any pre-existing caller keep their
+   * exact text). The `host-pr` CLI always passes the detected host.
    */
   host?: Host;
+  /**
+   * Who composes the landed commit message (ADR-0053) — `pr` (the default:
+   * the PR's own title and body, read from the status this call takes) or
+   * `host` (send none, the repository's setting governs). See
+   * {@link CommitMessageSource}.
+   */
+  commitMessage?: CommitMessageSource;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -1867,6 +1973,110 @@ async function readCheckAttachment(
   }
 }
 
+// ─── The landing message (ADR-0053) ──────────────────────────────────────────
+//
+// Both landing paths used to send the host a merge METHOD and nothing else, so
+// the host's own squash setting composed the landed commit. On GitHub's
+// defaults that setting splits by commit count: a single-commit PR lands under
+// its COMMIT's subject (measured: 23 of the last 29 single-commit PRs landed
+// under a subject that was not their PR title), and a multi-commit PR lands
+// with every branch commit message concatenated — which once carried a false
+// sentence AND its correction into permanent history. The one text a Reviewer
+// has read, the PR body, reached history on neither path.
+//
+// So the landing verb now authors the message itself, from the PR, as the PR
+// stands when the verb runs. One owner for the composition (this section); the
+// adapters only put the finished title and body on their own wire.
+
+/**
+ * The landing title: the PR's own title with the host's number suffix.
+ *
+ * GitHub writes a PR number into a commit title as ` (#N)` — the suffix its own
+ * PR-title squash default carries (ADR-0053 decision 1). Bitbucket Cloud writes
+ * it as `(pull request #N)`: its own default merge message for the merge-commit
+ * and squash strategies is "Merged in <source branch name> (pull request #<Pull
+ * Request Number>) <Pull Request Title>…" (support.atlassian.com/bitbucket-cloud/
+ * kb, "Understanding the Default Pull Request Title, Description and Merge
+ * Commit Message", read 2026-09-23). The host tag is {@link ArmOptions.host} /
+ * {@link MergeOptions.host}; an unrecognised or omitted host takes the GitHub
+ * form, the same default the refusal prose takes.
+ */
+function landingTitle(host: Host | undefined, prTitle: string, prNumber: number): string {
+  return host === 'bitbucket' ? `${prTitle} (pull request #${prNumber})` : `${prTitle} (#${prNumber})`;
+}
+
+/**
+ * The sentence a landing's reason gains when `pr` was asked for and could not
+ * be honoured because the host reported no PR title. Neither shipped adapter
+ * reaches it — GitHub and Bitbucket both require a PR title and both surface it
+ * on `getPrStatus` — so it exists for a `LandingHost` written before
+ * `PrLandingStatus.title` did. Such an adapter keeps landing exactly as it
+ * always has (the host composes), and the reason SAYS so instead of letting an
+ * absent key pass for a delivered message (ADR-0052: a guard that cannot
+ * decide abstains, and saying so is mandatory).
+ */
+const NO_PR_TITLE_NOTE =
+  'No landing message was handed over: the host reported no PR title to author it from, so the ' +
+  "host's own merge setting composes the landed commit message, as `--commit-message host` would (ADR-0053).";
+
+/** The landing message ONE landing call hands the host, decided once, from the status it just read. */
+interface LandingMessagePlan {
+  /** The message to hand over; absent when the host composes it. */
+  message?: LandingMessage;
+  /** Set when `pr` was asked for and cannot be honoured — appended to the outcome's reason. */
+  unavailable?: string;
+}
+
+/**
+ * Decide the landing message from the PR status THIS verb run read (ADR-0053
+ * decision 3: "read when the landing verb runs"). Never cached across calls:
+ * `status` is the argument, and every caller passes the read it just took — so
+ * an edit to the PR between two `arm` runs is what the second run hands over.
+ *
+ * The body is `status.body` verbatim, and `''` when the PR has none.
+ * `PrLandingStatus.body` is two-valued (an empty description is an ABSENT
+ * key), so without the string check an empty-bodied PR would hand the host
+ * `undefined` — which a JSON wire drops (the host would then compose its own
+ * body, the thing this row removes) and a string template would spell out
+ * literally. The check is `typeof`, not `??`, so an adapter that answers
+ * `null` at runtime — outside its type — is held to the same `''`.
+ */
+function planLandingMessage(
+  status: PrLandingStatus,
+  prNumber: number,
+  source: CommitMessageSource,
+  host: Host | undefined,
+): LandingMessagePlan {
+  if (source === 'host') return {};
+  const prTitle = status.title;
+  if (typeof prTitle !== 'string' || prTitle.length === 0) return { unavailable: NO_PR_TITLE_NOTE };
+  const body = typeof status.body === 'string' ? status.body : '';
+  return { message: { title: landingTitle(host, prTitle, prNumber), body } };
+}
+
+/** The report form of a handed-over message: title verbatim, body as a UTF-8 byte count. */
+function landingMessageReport(message: LandingMessage): LandingMessageReport {
+  return { title: message.title, bodyBytes: Buffer.byteLength(message.body, 'utf8') };
+}
+
+/**
+ * Attach the landing message to an outcome reached AFTER a landing write — the
+ * arm mutation or the merge — was issued with it. Callers invoke this only on
+ * those paths (a terminal status or a pre-write refusal never reaches it), so
+ * every `merged`/`armed` outcome, and every `refused` one that followed a
+ * write, reports exactly what the host was handed. With nothing handed over it
+ * is the identity — except that an unhonoured `pr` request adds its sentence to
+ * the reason.
+ */
+function withLandingMessage(outcome: LandingOutcome, plan: LandingMessagePlan): LandingOutcome {
+  if (outcome.outcome !== 'merged' && outcome.outcome !== 'armed' && outcome.outcome !== 'refused') {
+    return outcome;
+  }
+  if (plan.message !== undefined) return { ...outcome, landingMessage: landingMessageReport(plan.message) };
+  if (plan.unavailable !== undefined) return { ...outcome, reason: `${outcome.reason} ${plan.unavailable}` };
+  return outcome;
+}
+
 /** Memoise {@link readCheckAttachment} so the three merge legs share ONE read. */
 function checkAttachmentOnce(
   host: LandingHost,
@@ -1970,6 +2180,15 @@ function notAllowedPendingReason(host: Host | undefined, errMessage: string): st
  * (never merged), and a host that then refuses the arm as clean is `refused`, not
  * merged. A host that cannot answer, or a repo with no required checks, behaves
  * exactly as before — and the outcome's `reason` always says which of those it was.
+ *
+ * Landing message (ADR-0053): every landing write this function issues — the
+ * arm mutation and each of the three direct merges — carries the SAME message,
+ * composed once from the status this call settled on (never from an earlier
+ * call's read), unless `opts.commitMessage` is `host`. Arming freezes it at the
+ * host; arming again after the PR was edited hands over the edited text, and
+ * the adapter's {@link LandingHost.enableAutoMerge} contract makes that second
+ * arm a refresh. Every outcome that follows such a write reports it
+ * ({@link LandingMessageReport}).
  */
 export async function armPullRequest(
   host: LandingHost,
@@ -1989,6 +2208,14 @@ export async function armPullRequest(
   if (terminal !== null) return terminal;
 
   const prNumber = status.number as number;
+  // The message is read off the SETTLED status — the last read this call took,
+  // after the recompute retry — so it is the PR as it stands when the verb acts.
+  const plan = planLandingMessage(
+    status,
+    prNumber,
+    opts.commitMessage ?? DEFAULT_COMMIT_MESSAGE_SOURCE,
+    opts.host,
+  );
   // An open PR with no reported mergeability is `unknown`, NEVER `clean`.
   const mergeability = status.mergeability ?? 'unknown';
   // ONE attach read, shared by every leg that could merge immediately, and taken
@@ -2002,21 +2229,78 @@ export async function armPullRequest(
     fromMergeability.action === 'merge'
       ? refineArmDecisionForCheckAttach(fromMergeability, await attachOnce())
       : fromMergeability;
+
+  if (decision.action === 'refuse') {
+    // Decided before any write: nothing was handed to the host, so no message is reported.
+    return { outcome: 'refused', prNumber, prUrl: status.url, reason: decision.reason };
+  }
+
+  // From here on every path issues a landing write carrying `plan.message`
+  // before it returns (or throws), so every outcome it returns reports it.
+  return withLandingMessage(
+    await landDecided(decision.action, {
+      host,
+      branch,
+      status,
+      prNumber,
+      mergeability,
+      decisionReason: decision.reason,
+      method,
+      opts,
+      attachOnce,
+      message: plan.message,
+    }),
+    plan,
+  );
+}
+
+/** Everything {@link landDecided} acts on — the facts {@link armPullRequest} settled. */
+interface ArmLanding {
+  host: LandingHost;
+  branch: string;
+  status: PrLandingStatus;
+  prNumber: number;
+  mergeability: PrMergeability;
+  decisionReason: string;
+  method: MergeMethod;
+  opts: ArmOptions;
+  attachOnce: () => Promise<CheckAttachEvidence>;
+  /** The landing message every write below carries; absent → the host composes it. */
+  message: LandingMessage | undefined;
+}
+
+/**
+ * The write half of {@link armPullRequest}: act on an `enable-auto-merge` or
+ * `merge` decision, routing the two typed arm refusals. Split out so the caller
+ * can attach the landing message to whatever this returns — every path in here
+ * issues a landing write carrying `message` first.
+ */
+async function landDecided(
+  action: 'merge' | 'enable-auto-merge',
+  {
+    host,
+    branch,
+    status,
+    prNumber,
+    mergeability,
+    decisionReason,
+    method,
+    opts,
+    attachOnce,
+    message,
+  }: ArmLanding,
+): Promise<LandingOutcome> {
   // Only an IMMEDIATE merge (below) has a synchronous post-merge moment to
   // delete from — thread the same head branch every merge() call site inside
   // this function shares (FOR-66-class fix, now on the arm route too).
   const deleteBranchOf = opts.deleteBranch === true ? branch : undefined;
 
-  if (decision.action === 'refuse') {
-    return { outcome: 'refused', prNumber, prUrl: status.url, reason: decision.reason };
-  }
-
-  if (decision.action === 'merge') {
-    return merge(host, prNumber, status.url, method, decision.reason, deleteBranchOf);
+  if (action === 'merge') {
+    return merge(host, prNumber, status.url, method, decisionReason, deleteBranchOf, message);
   }
 
   try {
-    await host.enableAutoMerge(prNumber, method);
+    await host.enableAutoMerge(prNumber, method, message);
     // `armed` DEFERS the actual merge to the host — there is no synchronous
     // moment here to delete the branch from, so a requested deletion is
     // recorded as deferred (never silently dropped) rather than attempted.
@@ -2024,7 +2308,7 @@ export async function armPullRequest(
       outcome: 'armed',
       prNumber,
       prUrl: status.url,
-      reason: armedReason(decision.reason, opts.deleteBranch === true),
+      reason: armedReason(decisionReason, opts.deleteBranch === true),
     };
   } catch (err) {
     if (err instanceof AutoMergeUnavailableError && err.reason === 'clean-status') {
@@ -2054,6 +2338,7 @@ export async function armPullRequest(
         method,
         `Host rejected the arm: the PR is already clean (nothing pending) — merged directly instead. [${err.message}]`,
         deleteBranchOf,
+        message,
       );
     }
     if (err instanceof AutoMergeUnavailableError && err.reason === 'not-allowed') {
@@ -2081,6 +2366,7 @@ export async function armPullRequest(
           method,
           `Host rejected the arm: this repository does not permit auto-merge, and no required check is pending — merged directly instead (controlled degrade). [${err.message}]`,
           deleteBranchOf,
+          message,
         );
       }
       // Deliberately NOT a merge fallback: a required check IS reported
@@ -2117,12 +2403,27 @@ export interface MergeOptions {
    * lands.
    */
   deleteBranch?: boolean;
+  /**
+   * Who composes the landed commit message (ADR-0053) — `pr` (the default) or
+   * `host`. Same meaning as {@link ArmOptions.commitMessage}.
+   */
+  commitMessage?: CommitMessageSource;
+  /**
+   * Which code host this merge runs against — read for the landing title's
+   * number suffix and nothing else. Same meaning, and the same GitHub default
+   * when omitted, as {@link ArmOptions.host}.
+   */
+  host?: Host;
 }
 
 /**
  * Merge a branch's PR NOW — the `merge` verb. No decision, no arming: the caller
  * (a human at the wave-close confirm) has already decided. Same idempotency as
  * {@link armPullRequest}.
+ *
+ * Landing message (ADR-0053): the merge carries the PR's own title (plus the
+ * host's number suffix) and body, read from the status THIS call takes the
+ * moment before it merges — unless `opts.commitMessage` is `host`.
  */
 export async function mergePullRequestNow(
   host: LandingHost,
@@ -2133,15 +2434,26 @@ export async function mergePullRequestNow(
   const status = await host.getPrStatus(branch);
   const terminal = terminalStatus(status, branch);
   if (terminal !== null) return terminal;
-  return merge(
-    host,
-    status.number as number,
-    status.url,
-    method,
-    'Direct merge requested — no arm intent evaluated.',
-    // Delete the just-merged head branch only when the flag was passed (KW-F6);
-    // the branch is the PR's own source branch (`--branch`), which IS the head.
-    opts.deleteBranch ? branch : undefined,
+  const prNumber = status.number as number;
+  const plan = planLandingMessage(
+    status,
+    prNumber,
+    opts.commitMessage ?? DEFAULT_COMMIT_MESSAGE_SOURCE,
+    opts.host,
+  );
+  return withLandingMessage(
+    await merge(
+      host,
+      prNumber,
+      status.url,
+      method,
+      'Direct merge requested — no arm intent evaluated.',
+      // Delete the just-merged head branch only when the flag was passed (KW-F6);
+      // the branch is the PR's own source branch (`--branch`), which IS the head.
+      opts.deleteBranch ? branch : undefined,
+      plan.message,
+    ),
+    plan,
   );
 }
 
@@ -2197,6 +2509,10 @@ function terminalStatus(status: PrLandingStatus, branch: string): LandingOutcome
  * when the caller asked. The deletion is best-effort: a failure is captured on
  * `branchDeletion` (a reported degradation), never propagated, so the merge
  * result never flips to a failure.
+ *
+ * `message` (ADR-0053) is the landing message the merge carries — the same one
+ * for every merge call-site, composed by the caller from its own status read;
+ * absent, the host composes the commit message from its own settings.
  */
 async function merge(
   host: LandingHost,
@@ -2205,8 +2521,9 @@ async function merge(
   method: MergeMethod,
   reason: string,
   deleteBranchOf?: string,
+  message?: LandingMessage,
 ): Promise<LandingOutcome> {
-  const res = await host.mergePullRequest(prNumber, method);
+  const res = await host.mergePullRequest(prNumber, method, message);
   if (!res.merged) {
     return {
       outcome: 'refused',

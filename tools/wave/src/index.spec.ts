@@ -171,7 +171,18 @@ import {
   // that can say so. Nothing enumerable changed: types are erased, so the
   // runtime delta probe above is deliberately silent about this one.
   type PrLandingStatus as PrLandingStatusFromRoot,
+  // ADR-0053 — the landing message. One runtime name (the default) and the
+  // types a LandingHost implementer and a landing-verb caller now name.
+  DEFAULT_COMMIT_MESSAGE_SOURCE as DEFAULT_COMMIT_MESSAGE_SOURCE_FROM_ROOT,
+  type CommitMessageSource as CommitMessageSourceFromRoot,
+  type LandingMessage as LandingMessageFromRoot,
+  type LandingMessageReport as LandingMessageReportFromRoot,
+  type LandingHost as LandingHostFromRoot,
+  type LandingOutcome as LandingOutcomeFromRoot,
+  type ArmOptions as ArmOptionsFromRoot,
+  type MergeOptions as MergeOptionsFromRoot,
 } from './index';
+import { DEFAULT_COMMIT_MESSAGE_SOURCE } from './host-pr';
 
 /** Write a package manifest to a fresh tmp dir and hand back its path. */
 function manifestAt(pkg: Record<string, unknown>): string {
@@ -854,6 +865,29 @@ const WAVE_MD_RW_TARGETED_WRITER_FAMILY_ADDED_AT_ROOT = [
 const TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT = ['TERMINAL_ROW_STATES'];
 
 /**
+ * The landing-message family (ADR-0053) — ONE runtime name.
+ *
+ * `DEFAULT_COMMIT_MESSAGE_SOURCE` is to the new `--commit-message pr|host` flag
+ * what the already-root-exported `DEFAULT_MERGE_METHOD` is to `--method`: the
+ * default a library caller of `armPullRequest`/`mergePullRequestNow` gets when
+ * it passes no `commitMessage`, named so it can be read rather than re-spelled.
+ *
+ * Its type half is erased and adds nothing to the count: `CommitMessageSource`
+ * (the flag's vocabulary), `LandingMessage` (the new optional third parameter of
+ * `LandingHost.enableAutoMerge`/`mergePullRequest`, which an adapter implementing
+ * the seam must be able to name), and `LandingMessageReport` (the
+ * `landingMessage` member the `merged`/`armed`/`refused` outcomes gained). The
+ * composition rule itself stays module-local — nothing outside the landing verbs
+ * composes a landing message.
+ *
+ * Semver: additions, and two optional trailing parameters on an interface an
+ * adapter implements — so minor (ADR-0035), with the heads-up ADR-0053 names:
+ * what lands in a consumer's history changes for the same input, and
+ * `--commit-message host` is the way back.
+ */
+const LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT = ['DEFAULT_COMMIT_MESSAGE_SOURCE'];
+
+/**
  * How many runtime names the package root carried before this slice, recorded
  * the same way. This is the widest net in the file: it catches a stowaway from
  * ANY module, including one that has nothing to do with worktree-cleanup.
@@ -1304,7 +1338,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   GOAL_FACET_FAMILY_ADDED_AT_ROOT.length +
   GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT.length +
   GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT.length +
-  TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT.length;
+  TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT.length +
+  LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1855,6 +1890,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
     expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT),
+    );
+    expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(VERB_CONTRACT_FAMILY_ADDED_AT_ROOT),
     );
     expect(Object.keys(rootExports)).toEqual(
@@ -2067,5 +2105,72 @@ describe('the tier→model-id block reaches the PACKAGE ROOT as a TYPE, and move
     // Non-vacuity: the namespace really does carry names, so the absence above
     // is a reading of the surface rather than of an empty object.
     expect(Object.keys(rootExports).length).toBeGreaterThan(100);
+  });
+});
+
+// ─── ADR-0053 — the landing message crosses the barrel ───────────────────────
+//
+// One runtime name (the default) and four shapes a consumer meets: the flag's
+// vocabulary, the message an adapter is handed, the report an outcome carries,
+// and the widened `LandingHost` seam. Types are erased, so the shape half is
+// asserted the way this file asserts every shape — annotations compiled against
+// the ROOT import, with `tsc --noEmit` as the check and the runtime lines only
+// proving that real values flowed through them.
+
+describe('the landing-message family is reachable from the PACKAGE ROOT (ADR-0053)', () => {
+  it('re-exports the same default binding, not a lookalike string', () => {
+    expect(DEFAULT_COMMIT_MESSAGE_SOURCE_FROM_ROOT).toBe(DEFAULT_COMMIT_MESSAGE_SOURCE);
+    expect(DEFAULT_COMMIT_MESSAGE_SOURCE_FROM_ROOT).toBe('pr');
+  });
+
+  it('annotates the flag vocabulary, the message and the report from the root', () => {
+    const sources: CommitMessageSourceFromRoot[] = ['pr', 'host'];
+    // @ts-expect-error — the vocabulary is closed at the root surface too.
+    const typo: CommitMessageSourceFromRoot = 'hsot';
+    const message: LandingMessageFromRoot = { title: 'Land it (#1)', body: '' };
+    const report: LandingMessageReportFromRoot = { title: message.title, bodyBytes: 0 };
+    expect(sources).toHaveLength(2);
+    expect(typo).toBe('hsot');
+    expect(report.title).toBe('Land it (#1)');
+  });
+
+  it("the landing verbs' options take `commitMessage`, and the outcomes carry `landingMessage`, as root types", () => {
+    const arm: ArmOptionsFromRoot = { commitMessage: 'host', host: 'bitbucket' };
+    const merge: MergeOptionsFromRoot = { commitMessage: 'pr', host: 'github' };
+    const armed: LandingOutcomeFromRoot = {
+      outcome: 'armed',
+      prNumber: 1,
+      reason: 'r',
+      landingMessage: { title: 'Land it (#1)', bodyBytes: 3 },
+    };
+    expect(arm.commitMessage).toBe('host');
+    expect(merge.host).toBe('github');
+    expect(armed.outcome === 'armed' ? armed.landingMessage?.bodyBytes : undefined).toBe(3);
+  });
+
+  it('a LandingHost written BEFORE the message parameter existed still satisfies the root seam (the change is additive)', async () => {
+    // Two-argument landing methods — the shape every adapter had before ADR-0053.
+    // Had the new parameter landed as required, this literal would not compile.
+    const legacy: LandingHostFromRoot = {
+      async getPrStatus() {
+        return { state: 'none' };
+      },
+      async enableAutoMerge(_n: number, _m?: 'squash' | 'merge' | 'rebase') {},
+      async mergePullRequest(_n: number, _m?: 'squash' | 'merge' | 'rebase') {
+        return { merged: true };
+      },
+      async deleteBranch() {},
+    };
+    // …and a current one names the message it is handed.
+    const seen: (LandingMessageFromRoot | undefined)[] = [];
+    const current: LandingHostFromRoot = {
+      ...legacy,
+      async enableAutoMerge(_n: number, _m?: 'squash' | 'merge' | 'rebase', message?: LandingMessageFromRoot) {
+        seen.push(message);
+      },
+    };
+    await current.enableAutoMerge(1, 'squash', { title: 'Land it (#1)', body: '' });
+    expect(seen).toEqual([{ title: 'Land it (#1)', body: '' }]);
+    expect(typeof legacy.enableAutoMerge).toBe('function');
   });
 });

@@ -31,6 +31,7 @@ import { runHostPr, HOST_PR_CONTRACTS } from './host-pr-cli';
 import {
   AutoMergeUnavailableError,
   type LandingHost,
+  type LandingMessage,
   type LandingPosture,
   type MergeMethod,
   type MergeResult,
@@ -57,19 +58,27 @@ function fakeHost(opts: {
   onEnableAutoMerge?: () => void;
   onMerge?: () => MergeResult;
   onDeleteBranch?: () => void;
-}): { host: LandingHost; calls: string[] } {
+}): {
+  host: LandingHost;
+  calls: string[];
+  /** Each landing write's `message` argument, in call order (ADR-0053) — kept apart from `calls` so no existing sequence assertion moves. */
+  messages: (LandingMessage | undefined)[];
+} {
   const calls: string[] = [];
+  const messages: (LandingMessage | undefined)[] = [];
   const host: LandingHost = {
     async getPrStatus(branch) {
       calls.push(`getPrStatus:${branch}`);
       return opts.status ?? { state: 'none' };
     },
-    async enableAutoMerge(n: number, m?: MergeMethod) {
+    async enableAutoMerge(n: number, m?: MergeMethod, message?: LandingMessage) {
       calls.push(`enableAutoMerge:${n}:${m ?? ''}`);
+      messages.push(message);
       opts.onEnableAutoMerge?.();
     },
-    async mergePullRequest(n: number, m?: MergeMethod) {
+    async mergePullRequest(n: number, m?: MergeMethod, message?: LandingMessage) {
       calls.push(`mergePullRequest:${n}:${m ?? ''}`);
+      messages.push(message);
       return opts.onMerge?.() ?? { merged: true, sha: 'sha1' };
     },
     async deleteBranch(branch: string) {
@@ -77,7 +86,7 @@ function fakeHost(opts: {
       opts.onDeleteBranch?.();
     },
   };
-  return { host, calls };
+  return { host, calls, messages };
 }
 
 const openPr = (mergeability: PrLandingStatus['mergeability']): PrLandingStatus => ({
@@ -529,6 +538,140 @@ describe('host-pr arm', () => {
   });
 });
 
+// ─── ADR-0053 — `--commit-message pr|host` and the landing message at the CLI edge ─
+//
+// The engine composes the message (host-pr.spec.ts) and each adapter puts it on
+// its wire (real-github-api.spec.ts, bitbucket-api.spec.ts); what is under test
+// HERE is the flag — declared on exactly the two landing verbs, validated like
+// `--method`, threaded to the engine — and the JSON a caller reads back.
+
+describe('host-pr arm | merge --commit-message (ADR-0053)', () => {
+  const titledPr = (mergeability: PrLandingStatus['mergeability']): PrLandingStatus => ({
+    ...openPr(mergeability),
+    title: 'Land the widget fix',
+    body: 'The reviewed record.',
+  });
+  const MESSAGE: LandingMessage = { title: 'Land the widget fix (#42)', body: 'The reviewed record.' };
+
+  it('arm, by default: the host is handed the PR\'s title + " (#42)" and body, and the JSON echoes commitMessage and reports landingMessage', async () => {
+    const { host, messages } = fakeHost({ status: titledPr('blocked') });
+    const code = await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], host);
+    expect(code).toBe(0);
+    expect(messages).toEqual([MESSAGE]);
+    expect(out()).toMatchObject({
+      ok: true,
+      outcome: 'armed',
+      method: 'squash',
+      commitMessage: 'pr',
+      landingMessage: { title: 'Land the widget fix (#42)', bodyBytes: 20 },
+    });
+  });
+
+  it('merge, by default: the same message and the same report', async () => {
+    const { host, messages } = fakeHost({ status: titledPr('blocked') });
+    expect(await runHostPr(['merge', '--branch', 'b', '--remote', GITHUB_REMOTE], host)).toBe(0);
+    expect(messages).toEqual([MESSAGE]);
+    expect(out()).toMatchObject({ outcome: 'merged', commitMessage: 'pr', landingMessage: { bodyBytes: 20 } });
+  });
+
+  it('an explicit `--commit-message pr` is the default, spelled out', async () => {
+    const { host, messages } = fakeHost({ status: titledPr('clean') });
+    await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE, '--commit-message', 'pr'], host);
+    expect(messages).toEqual([MESSAGE]);
+    expect(out()).toMatchObject({ commitMessage: 'pr' });
+  });
+
+  it('`--commit-message host` hands the host NO message on either verb, and the JSON carries no landingMessage', async () => {
+    for (const verb of ['arm', 'merge'] as const) {
+      stdout = '';
+      const { host, messages } = fakeHost({ status: titledPr('blocked') });
+      const code = await runHostPr([verb, '--branch', 'b', '--remote', GITHUB_REMOTE, '--commit-message', 'host'], host);
+      expect(code).toBe(0);
+      expect(messages).toEqual([undefined]);
+      expect(out()).toMatchObject({ verb, commitMessage: 'host' });
+      expect('landingMessage' in out()).toBe(false);
+    }
+  });
+
+  it('an undeclared value is a usage error (exit 2) naming both values — never a silent fall-back to `pr` — decided before any host call', async () => {
+    for (const verb of ['arm', 'merge']) {
+      stderr = '';
+      const { host, calls } = fakeHost({ status: titledPr('blocked') });
+      const code = await runHostPr([verb, '--branch', 'b', '--remote', GITHUB_REMOTE, '--commit-message', 'hsot'], host);
+      expect(code).toBe(2);
+      expect(stderr).toContain('invalid --commit-message "hsot" — expected one of: pr, host');
+      expect(stderr).toContain(`usage: host-pr ${verb} --branch`);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('is declared on arm and merge ONLY — status, create and preflight refuse it (exit 2) naming the verbs that own it', async () => {
+    for (const args of [
+      ['status', '--branch', 'b'],
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'x'],
+      ['preflight'],
+    ]) {
+      stderr = '';
+      const { host, calls } = fakeHost({ status: titledPr('blocked') });
+      const code = await runHostPr([...args, '--remote', GITHUB_REMOTE, '--commit-message', 'pr'], host);
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/--commit-message is only supported by 'arm' and 'merge'/);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('the two landing verbs\' own usage names the flag and its two values', () => {
+    for (const verb of ['arm', 'merge'] as const) {
+      expect(HOST_PR_CONTRACTS[verb].usage[0]).toContain('[--commit-message <pr|host>]');
+    }
+    for (const verb of ['status', 'create', 'preflight'] as const) {
+      expect(HOST_PR_CONTRACTS[verb].usage[0]).not.toContain('--commit-message');
+    }
+  });
+
+  it('on Bitbucket the CLI threads the host through, so the landed title carries " (pull request #7)"', async () => {
+    const calls: BitbucketHttpRequest[] = [];
+    const http: BitbucketHttp = {
+      async request(req) {
+        calls.push(req);
+        if (req.url.includes('/pullrequests?')) {
+          return {
+            status: 200,
+            json: {
+              values: [
+                {
+                  id: 7,
+                  state: 'OPEN',
+                  title: 'Land the Bitbucket fix',
+                  description: 'The reviewed record.',
+                  links: { html: { href: 'https://bitbucket.org/ws/repo/pull-requests/7' } },
+                  source: { branch: { name: 'b' }, commit: { hash: 'abc123' } },
+                  destination: { branch: { name: 'main' } },
+                },
+              ],
+            },
+          };
+        }
+        if (req.url.includes('/branch-restrictions')) return { status: 200, json: { values: [] } };
+        if (req.method === 'POST' && req.url.endsWith('/merge')) return { status: 200, json: { merge_commit: { hash: 'c1' } } };
+        return { status: 404, json: null };
+      },
+    };
+    const code = await runHostPr(['merge', '--branch', 'b', '--remote', BITBUCKET_REMOTE], new RealBitbucketApi('ws', 'repo', 'Bearer t', http));
+    expect(code).toBe(0);
+    const post = calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(post.body as string)).toEqual({
+      merge_strategy: 'squash',
+      message: 'Land the Bitbucket fix (pull request #7)\n\nThe reviewed record.',
+    });
+    expect(out()).toMatchObject({
+      host: 'bitbucket',
+      commitMessage: 'pr',
+      landingMessage: { title: 'Land the Bitbucket fix (pull request #7)', bodyBytes: 20 },
+    });
+  });
+});
+
 describe('host-pr merge', () => {
   it('merges a blocked PR without arming (the human already decided), exit 0', async () => {
     const { host, calls } = fakeHost({ status: openPr('blocked') });
@@ -775,8 +918,19 @@ describe('host-pr usage errors — per-verb contract vs the full dump (issue #50
     expect(stderr).toMatch(/--branch/);
     expect(stderr).toContain('usage: host-pr arm --branch');
     // The oversized-price tell: the full dump runs to dozens of lines; the
-    // per-verb contract is a handful.
-    expect(stderr.trim().split('\n').length).toBeLessThan(10);
+    // per-verb contract is a fraction of it. Measured against the full dump
+    // itself rather than against a hand-typed count: the old `< 10` was arm's
+    // own size plus one, so it failed the first time arm's contract legitimately
+    // grew (ADR-0053's `--commit-message` and `landingMessage`, 9 → 13 lines)
+    // while the misfire it guards against — the ~70-line dump — stayed as
+    // distinguishable as ever. The absolute ceiling stays, so the per-verb
+    // section cannot quietly bloat toward the dump either.
+    const armOnlyLines = stderr.trim().split('\n').length;
+    stderr = '';
+    await runHostPr([]);
+    const fullDumpLines = stderr.trim().split('\n').length;
+    expect(armOnlyLines).toBeLessThan(fullDumpLines / 3);
+    expect(armOnlyLines).toBeLessThan(16);
   });
 
   it("a wrong --method on a KNOWN verb (merge) names merge's own contract, not create's or preflight's", async () => {
@@ -2270,6 +2424,17 @@ describe('host-pr — every emitted key is named in the verb\'s declared shape',
     const { host } = fakeHost({ status: openPr('clean') });
     expect(await runHostPr(['merge', '--branch', 'b', '--remote', GITHUB_REMOTE], host)).toBe(0);
     expect(keysNotInShape('merge', out())).toEqual([]);
+  });
+
+  it('arm | merge: a landing that handed the host a message prints `commitMessage` and `landingMessage`, both named in the shape (ADR-0053)', async () => {
+    for (const [verb, mergeability] of [['arm', 'blocked'], ['merge', 'clean']] as const) {
+      stdout = '';
+      const { host } = fakeHost({ status: { ...openPr(mergeability), title: 'T', body: 'B' } });
+      expect(await runHostPr([verb, '--branch', 'b', '--remote', GITHUB_REMOTE], host)).toBe(0);
+      expect(out()).toHaveProperty('landingMessage');
+      expect(out()).toHaveProperty('commitMessage');
+      expect(keysNotInShape(verb, out())).toEqual([]);
+    }
   });
 
   it('create: both the reuse and the create outcome print nothing the shape omits', async () => {

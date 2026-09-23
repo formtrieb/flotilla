@@ -70,6 +70,7 @@ import {
   DEFAULT_MERGE_METHOD,
   type AutoMergeSetting,
   type LandingHost,
+  type LandingMessage,
   type LandingPosture,
   type MergeMethod,
   type MergeResult,
@@ -422,7 +423,14 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
    * checks-pending Bitbucket PR ends at `refused` with the merge-order
    * instruction — never at a merge.
    */
-  async enableAutoMerge(prNumber: number, _method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<void> {
+  async enableAutoMerge(
+    prNumber: number,
+    _method: MergeMethod = DEFAULT_MERGE_METHOD,
+    // Nothing to freeze a landing message INTO (ADR-0053): with no arming call
+    // there is no frozen message either. The same message reaches the host
+    // through {@link mergePullRequest} on every leg that lands this PR.
+    _message?: LandingMessage,
+  ): Promise<void> {
     throw new AutoMergeUnavailableError(
       'not-allowed',
       `Bitbucket Cloud offers no per-pull-request auto-merge arming call in its REST API, so PR #${prNumber} cannot be armed ` +
@@ -456,8 +464,24 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
    * Every non-2xx is a typed throw carrying Bitbucket's own message — a merge
    * refused by an unmet merge check surfaces verbatim, which is what keeps the
    * host the final gate.
+   *
+   * `message` (ADR-0053) travels as the body's `message`, the one field
+   * Bitbucket's merge takes for it: "The commit message that will be used on
+   * the resulting commit. Note that the size of the message is limited to 128
+   * KiB." (`pullrequest_merge_parameters`, Atlassian's OpenAPI document,
+   * dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json, read 2026-09-23).
+   * One string, so the title and body are joined in git's own commit form —
+   * see {@link bitbucketCommitMessage}. No message → no `message` key, and
+   * Bitbucket composes its default ("Merged in <branch> (pull request #N)…"),
+   * as before this parameter. A body past the 128 KiB limit is Bitbucket's to
+   * refuse, and its refusal surfaces verbatim through the throw below — the
+   * adapter never truncates a reviewed text to fit.
    */
-  async mergePullRequest(prNumber: number, method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<MergeResult> {
+  async mergePullRequest(
+    prNumber: number,
+    method: MergeMethod = DEFAULT_MERGE_METHOD,
+    message?: LandingMessage,
+  ): Promise<MergeResult> {
     const strategy = BB_MERGE_STRATEGY[method];
     if (strategy === undefined) {
       throw new BitbucketApiError(
@@ -495,6 +519,7 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
     // start — Bitbucket's own message surfaces verbatim through the throw below.
     const res = await this.send('POST', `${this.base()}/pullrequests/${prNumber}/merge`, {
       merge_strategy: strategy,
+      ...(message !== undefined ? { message: bitbucketCommitMessage(message) } : {}),
     });
     if (res.status === 202) {
       // Accepted as an async merge task: the merge WILL happen, the commit is
@@ -1001,6 +1026,25 @@ function commitHashOf(node: unknown): string | null {
   const commit = (node as Record<string, unknown>)?.commit as Record<string, unknown> | undefined;
   const hash = commit?.hash;
   return typeof hash === 'string' && hash.length > 0 ? hash : null;
+}
+
+/**
+ * A {@link LandingMessage} as the ONE string Bitbucket's merge `message` takes:
+ * the title, a blank line, the body — the subject/body layout git itself reads
+ * a commit message by, and the layout Bitbucket's own default merge message
+ * uses (a first line naming the pull request, a blank line, then the PR title
+ * and the rest).
+ *
+ * An empty body yields the title ALONE: no trailing blank line, and never the
+ * text `undefined` or `null`, because `LandingMessage.body` is `''` for a PR
+ * with no description and nothing here interpolates a missing value.
+ *
+ * Module-local on purpose: nothing outside this adapter needs to name it (the
+ * spec pins its output through the request body, the stronger pin), and an
+ * export would widen the package root for no caller.
+ */
+function bitbucketCommitMessage(message: LandingMessage): string {
+  return message.body.length > 0 ? `${message.title}\n\n${message.body}` : message.title;
 }
 
 /** A merged PR payload's `merge_commit.hash`, or `null`. */

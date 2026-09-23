@@ -34,6 +34,7 @@ import {
   AutoMergeUnavailableError,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
+  DEFAULT_COMMIT_MESSAGE_SOURCE,
   type ArmDecision,
   type ArmOptions,
   type CheckAttachReader,
@@ -42,6 +43,7 @@ import {
   type HttpRequest,
   type HttpResponse,
   type LandingHost,
+  type LandingMessage,
   type LandingPosture,
   type MergeMethod,
   type MergeResult,
@@ -1041,8 +1043,19 @@ function fakeLandingHost(opts: {
   onEnableAutoMerge?: () => void;
   onMerge?: () => MergeResult;
   onDeleteBranch?: () => void;
-}): { host: LandingHost; calls: string[] } {
+}): {
+  host: LandingHost;
+  calls: string[];
+  /**
+   * Every landing write's `message` argument, in call order, keyed by the same
+   * string `calls` records for that write — so a spec can say WHICH write
+   * carried which message. Kept apart from `calls` so that every pre-existing
+   * call-sequence assertion reads exactly as it always did.
+   */
+  messages: { call: string; message: LandingMessage | undefined }[];
+} {
   const calls: string[] = [];
+  const messages: { call: string; message: LandingMessage | undefined }[] = [];
   let statusCall = 0;
   const host: LandingHost = {
     async getPrStatus(branch: string): Promise<PrLandingStatus> {
@@ -1054,12 +1067,16 @@ function fakeLandingHost(opts: {
       }
       return opts.status ?? { state: 'none' };
     },
-    async enableAutoMerge(prNumber: number, method?: MergeMethod): Promise<void> {
-      calls.push(`enableAutoMerge:${prNumber}:${method ?? ''}`);
+    async enableAutoMerge(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<void> {
+      const call = `enableAutoMerge:${prNumber}:${method ?? ''}`;
+      calls.push(call);
+      messages.push({ call, message });
       opts.onEnableAutoMerge?.();
     },
-    async mergePullRequest(prNumber: number, method?: MergeMethod): Promise<MergeResult> {
-      calls.push(`mergePullRequest:${prNumber}:${method ?? ''}`);
+    async mergePullRequest(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<MergeResult> {
+      const call = `mergePullRequest:${prNumber}:${method ?? ''}`;
+      calls.push(call);
+      messages.push({ call, message });
       return opts.onMerge?.() ?? { merged: true, sha: 'deadbeef' };
     },
     async deleteBranch(branch: string): Promise<void> {
@@ -1067,14 +1084,28 @@ function fakeLandingHost(opts: {
       opts.onDeleteBranch?.();
     },
   };
-  return { host, calls };
+  return { host, calls, messages };
 }
 
+/** The open PR's own title and body — what the landing message is authored from (ADR-0053). */
+const PR_TITLE = 'Land the widget fix';
+const PR_BODY = 'Why the widget changed.\n\nCloses #42';
+/** {@link PR_TITLE} with GitHub's number suffix — the landing title the fixtures below expect. */
+const LANDING_TITLE = `${PR_TITLE} (#42)`;
+
+/**
+ * An open PR in the shape BOTH shipped adapters return it: title and body
+ * included (each reads them off the payload it already fetched). A PR the host
+ * reports WITHOUT a title is the degrade case, and the specs that exercise it
+ * build that status explicitly.
+ */
 const openPr = (mergeability: PrMergeability): PrLandingStatus => ({
   state: 'open',
   number: 42,
   url: 'https://github.com/acme/widgets/pull/42',
   mergeability,
+  title: PR_TITLE,
+  body: PR_BODY,
 });
 
 /** No-op {@link ArmOptions.sleep} — keeps recompute-retry specs hermetic and fast. */
@@ -1452,13 +1483,17 @@ describe('mergePullRequestNow — --delete-branch (consumer KW-F6)', () => {
   it('without the flag, the merge is BYTE-IDENTICAL — no delete call, no branchDeletion key', async () => {
     const { host, calls } = fakeLandingHost({ status: openPr('blocked') });
     const out = await mergePullRequestNow(host, 'b');
-    // The exact shape the `merge` verb has always returned (no new key).
+    // The exact shape the `merge` verb returns without --delete-branch: no
+    // `branchDeletion` key. The ONE key beside the historical shape is
+    // `landingMessage` (ADR-0053), which rides on every landing that handed the
+    // host a message — never a deletion artefact.
     expect(out).toEqual({
       outcome: 'merged',
       prNumber: 42,
       prUrl: 'https://github.com/acme/widgets/pull/42',
       sha: 'deadbeef',
       reason: 'Direct merge requested — no arm intent evaluated.',
+      landingMessage: { title: LANDING_TITLE, bodyBytes: Buffer.byteLength(PR_BODY, 'utf8') },
     });
     expect('branchDeletion' in out).toBe(false);
     expect(calls).toEqual(['getPrStatus:b', 'mergePullRequest:42:squash']);
@@ -1618,6 +1653,223 @@ describe('armPullRequest — --delete-branch (FOR-66-class reproduction, issue #
       outcome: 'armed',
       reason: 'A required check or review is still pending — arm the PR to land itself once it passes.',
     });
+  });
+});
+
+// ─── The landing message (ADR-0053) ──────────────────────────────────────────
+//
+// Both landing paths used to hand the host a merge METHOD and nothing else, so
+// the host's own squash setting composed the landed commit. These specs pin the
+// engine half of the fix: WHICH message each write carries, WHEN it is read,
+// and what the outcome reports. The wire half — the request bodies — is pinned
+// per adapter (real-github-api.spec.ts, bitbucket-api.spec.ts).
+
+describe('the landing message — every landing write carries the PR\'s own title and body (ADR-0053)', () => {
+  const MESSAGE: LandingMessage = { title: LANDING_TITLE, body: PR_BODY };
+  const REPORT = { title: LANDING_TITLE, bodyBytes: Buffer.byteLength(PR_BODY, 'utf8') };
+
+  it('defaults to `pr` — flotilla authors the message unless told otherwise', () => {
+    expect(DEFAULT_COMMIT_MESSAGE_SOURCE).toBe('pr');
+  });
+
+  it('a direct merge hands the host the PR title + " (#N)" and the PR body VERBATIM, and reports them', async () => {
+    const { host, messages } = fakeLandingHost({ status: openPr('blocked') });
+    const out = await mergePullRequestNow(host, 'b');
+    expect(messages).toEqual([{ call: 'mergePullRequest:42:squash', message: MESSAGE }]);
+    expect(out).toMatchObject({ outcome: 'merged', landingMessage: REPORT });
+  });
+
+  it('arming hands the host the same message, and `armed` reports the FROZEN title and the body\'s byte length', async () => {
+    const { host, messages } = fakeLandingHost({ status: openPr('blocked') });
+    const out = await armPullRequest(host, 'b');
+    expect(messages).toEqual([{ call: 'enableAutoMerge:42:squash', message: MESSAGE }]);
+    expect(out).toMatchObject({ outcome: 'armed', landingMessage: REPORT });
+  });
+
+  it('arm\'s `clean` decision merges with the message', async () => {
+    const { host, messages } = fakeLandingHost({ status: openPr('clean') });
+    const out = await armPullRequest(host, 'b');
+    expect(messages).toEqual([{ call: 'mergePullRequest:42:squash', message: MESSAGE }]);
+    expect(out).toMatchObject({ outcome: 'merged', landingMessage: REPORT });
+  });
+
+  it('the clean-status recovery: BOTH the rejected arm and the merge that follows carry the one message', async () => {
+    const { host, messages } = fakeLandingHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
+      },
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(messages).toEqual([
+      { call: 'enableAutoMerge:42:squash', message: MESSAGE },
+      { call: 'mergePullRequest:42:squash', message: MESSAGE },
+    ]);
+    expect(out).toMatchObject({ outcome: 'merged', landingMessage: REPORT });
+  });
+
+  it('the not-allowed controlled degrade: the merge it falls back to carries the message too', async () => {
+    const { host, messages } = fakeLandingHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'Auto merge is not allowed for this repository');
+      },
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(messages.map((m) => m.message)).toEqual([MESSAGE, MESSAGE]);
+    expect(out).toMatchObject({ outcome: 'merged', landingMessage: REPORT });
+  });
+
+  it('a refusal that FOLLOWED a landing write reports what was offered; one decided before any write reports nothing', async () => {
+    // After a write: the arm was refused (not-allowed, a required check pending).
+    const afterWrite = fakeLandingHost({
+      status: openPr('blocked'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'Auto merge is not allowed for this repository');
+      },
+    });
+    expect(await armPullRequest(afterWrite.host, 'b')).toMatchObject({ outcome: 'refused', landingMessage: REPORT });
+    // After a write: the host declined the merge (merged:false).
+    const declined = fakeLandingHost({ status: openPr('blocked'), onMerge: () => ({ merged: false }) });
+    expect(await mergePullRequestNow(declined.host, 'b')).toMatchObject({ outcome: 'refused', landingMessage: REPORT });
+    // Before any write: a conflicted PR is refused by the decision itself.
+    const dirty = fakeLandingHost({ status: openPr('dirty') });
+    const refused = await armPullRequest(dirty.host, 'b');
+    expect(refused).toMatchObject({ outcome: 'refused' });
+    expect('landingMessage' in refused).toBe(false);
+    expect(dirty.messages).toEqual([]);
+  });
+
+  it('terminal statuses hand the host nothing and report nothing', async () => {
+    for (const status of [
+      { state: 'none' },
+      { state: 'merged', number: 42, url: 'u', title: PR_TITLE },
+      { state: 'closed-unmerged', number: 42, title: PR_TITLE },
+    ] as PrLandingStatus[]) {
+      const { host, messages } = fakeLandingHost({ status });
+      for (const out of [await armPullRequest(host, 'b'), await mergePullRequestNow(host, 'b')]) {
+        expect('landingMessage' in out).toBe(false);
+      }
+      expect(messages).toEqual([]);
+    }
+  });
+
+  it('an ABSENT PR description sends an EMPTY body — never the text "undefined" or "null" — and reports 0 bytes', async () => {
+    const bodiless: PrLandingStatus = { ...openPr('blocked'), body: undefined };
+    const { host, messages } = fakeLandingHost({ status: bodiless });
+    const out = await mergePullRequestNow(host, 'b');
+    expect(messages[0].message).toEqual({ title: LANDING_TITLE, body: '' });
+    const serialised = JSON.stringify(messages[0].message);
+    expect(serialised).not.toContain('undefined');
+    expect(serialised).not.toContain('null');
+    expect(out).toMatchObject({ landingMessage: { title: LANDING_TITLE, bodyBytes: 0 } });
+    // A host adapter that answered `null` at runtime (outside the type) is held to the same rule.
+    const nulled = fakeLandingHost({ status: { ...openPr('blocked'), body: null as unknown as string } });
+    await armPullRequest(nulled.host, 'b');
+    expect(nulled.messages[0].message).toEqual({ title: LANDING_TITLE, body: '' });
+  });
+
+  it('bodyBytes counts UTF-8 BYTES, not UTF-16 code units', async () => {
+    const body = 'Größe — ✓';
+    const { host } = fakeLandingHost({ status: { ...openPr('blocked'), body } });
+    const out = await mergePullRequestNow(host, 'b');
+    expect(body.length).toBe(9);
+    expect(out).toMatchObject({ landingMessage: { bodyBytes: 15 } });
+  });
+
+  it('Bitbucket writes the number as " (pull request #N)" — its own default merge message\'s form', async () => {
+    const armed = fakeLandingHost({ status: openPr('blocked') });
+    await armPullRequest(armed.host, 'b', DEFAULT_MERGE_METHOD, { host: 'bitbucket' });
+    const merged = fakeLandingHost({ status: openPr('blocked') });
+    await mergePullRequestNow(merged.host, 'b', DEFAULT_MERGE_METHOD, { host: 'bitbucket' });
+    for (const { messages } of [armed, merged]) {
+      expect(messages[0].message).toEqual({ title: `${PR_TITLE} (pull request #42)`, body: PR_BODY });
+    }
+    // …and GitHub, named or defaulted, keeps " (#N)".
+    const github = fakeLandingHost({ status: openPr('blocked') });
+    await mergePullRequestNow(github.host, 'b', DEFAULT_MERGE_METHOD, { host: 'github' });
+    expect(github.messages[0].message?.title).toBe(LANDING_TITLE);
+  });
+
+  // ── Read when the verb runs, never cached (ADR-0053 decision 3) ──────────
+  it('the message is read off the SETTLED status — the last read this call took, after the recompute retry', async () => {
+    const { host, messages } = fakeLandingHost({
+      statuses: [
+        { ...openPr('behind'), title: 'A title from the first probe' },
+        { ...openPr('blocked'), title: 'The title as it stands when the verb acts' },
+      ],
+    });
+    await armPullRequest(host, 'b', DEFAULT_MERGE_METHOD, { sleep: instantSleep });
+    expect(messages).toEqual([
+      {
+        call: 'enableAutoMerge:42:squash',
+        message: { title: 'The title as it stands when the verb acts (#42)', body: PR_BODY },
+      },
+    ]);
+  });
+
+  it('arming AGAIN after the PR was edited hands the host the EDITED message — nothing from the first arm is reused', async () => {
+    // One host, two arms, the PR edited between them — the re-arm refresh as the
+    // ENGINE sees it. Whether the host freezes the second message over the
+    // first is the adapter's contract (`LandingHost.enableAutoMerge`), pinned
+    // per adapter; what is pinned here is that the engine hands it over.
+    let status: PrLandingStatus = openPr('blocked');
+    const { host, messages } = fakeLandingHost({});
+    host.getPrStatus = async () => status;
+    const first = await armPullRequest(host, 'b');
+    status = { ...openPr('blocked'), title: 'Land the widget fix, corrected', body: 'The corrected record.' };
+    const second = await armPullRequest(host, 'b');
+
+    expect(messages.map((m) => m.message)).toEqual([
+      MESSAGE,
+      { title: 'Land the widget fix, corrected (#42)', body: 'The corrected record.' },
+    ]);
+    expect(first).toMatchObject({ outcome: 'armed', landingMessage: REPORT });
+    expect(second).toMatchObject({
+      outcome: 'armed',
+      landingMessage: { title: 'Land the widget fix, corrected (#42)', bodyBytes: 21 },
+    });
+  });
+
+  // ── Opting out: --commit-message host ─────────────────────────────────────
+  it('`host` hands the host NO message on any write, reports none, and keeps the pre-ADR-0053 outcome byte-identical', async () => {
+    const merged = fakeLandingHost({ status: openPr('blocked') });
+    const out = await mergePullRequestNow(merged.host, 'b', DEFAULT_MERGE_METHOD, { commitMessage: 'host' });
+    expect(out).toEqual({
+      outcome: 'merged',
+      prNumber: 42,
+      prUrl: 'https://github.com/acme/widgets/pull/42',
+      sha: 'deadbeef',
+      reason: 'Direct merge requested — no arm intent evaluated.',
+    });
+    expect(merged.messages).toEqual([{ call: 'mergePullRequest:42:squash', message: undefined }]);
+
+    // Every arm leg, including both writes of the clean-status recovery.
+    const recovered = fakeLandingHost({
+      status: openPr('unstable'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', 'Pull request is in clean status');
+      },
+    });
+    const armOut = await armPullRequest(recovered.host, 'b', DEFAULT_MERGE_METHOD, { commitMessage: 'host' });
+    expect(recovered.messages.map((m) => m.message)).toEqual([undefined, undefined]);
+    expect('landingMessage' in armOut).toBe(false);
+  });
+
+  // ── A host that reports no PR title (a LandingHost written before the key existed) ──
+  it('no PR title reported → no message handed over, no report, and the REASON says why (it never passes silently)', async () => {
+    const untitled: PrLandingStatus = { state: 'open', number: 42, url: 'u', mergeability: 'blocked' };
+    const { host, messages } = fakeLandingHost({ status: untitled });
+    const out = await armPullRequest(host, 'b');
+    expect(messages).toEqual([{ call: 'enableAutoMerge:42:squash', message: undefined }]);
+    expect(out).toMatchObject({ outcome: 'armed' });
+    expect('landingMessage' in out).toBe(false);
+    expect((out as { reason: string }).reason).toMatch(/No landing message was handed over: the host reported no PR title/);
+    expect((out as { reason: string }).reason).toMatch(/--commit-message host/);
+    // …while `host` on the same PR adds no sentence: nothing was asked for that was not delivered.
+    const { host: h2 } = fakeLandingHost({ status: untitled });
+    const hostOut = await armPullRequest(h2, 'b', DEFAULT_MERGE_METHOD, { commitMessage: 'host' });
+    expect((hostOut as { reason: string }).reason).not.toMatch(/No landing message/);
   });
 });
 

@@ -78,6 +78,15 @@
  *                  through `LandingHost.deleteBranch`; a failed delete is a
  *                  structural `branchDeletion` degradation, never a merge
  *                  failure. `arm` accepts the same flag independently — see above.
+ *   arm | merge  `--commit-message pr|host` (ADR-0053, default `pr`, built like
+ *                  `--method`): `pr` lands the PR's own title (plus the host's
+ *                  number suffix) and body, read when the verb runs and frozen
+ *                  at arming; `host` sends neither, so the repository's own
+ *                  merge setting composes the commit. The verbs stay store-blind
+ *                  — the flag, never a config read, carries the choice; the
+ *                  skills compose it from `landing.commitMessage`. Both verbs
+ *                  echo `commitMessage` and report `landingMessage` (the title
+ *                  handed over and the body's UTF-8 byte count).
  *   status       → `LandingHost.getPrStatus`
  *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
  *                  the three code-host checks (pr-merge-token, allow-auto-merge,
@@ -132,6 +141,8 @@ import {
   alignedPrRef,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
+  DEFAULT_COMMIT_MESSAGE_SOURCE,
+  type CommitMessageSource,
   type Host,
   type HostInfo,
   type LandingHost,
@@ -213,6 +224,17 @@ const MERGE_METHODS: MergeMethod[] = ['squash', 'merge', 'rebase'];
 const METHOD_PLACEHOLDER = `<${MERGE_METHODS.join('|')}>`;
 
 /**
+ * `--commit-message`'s vocabulary (ADR-0053) — who composes the landed commit:
+ * `pr` (flotilla, from the PR's own title and body) or `host` (the repository's
+ * own merge setting). Built exactly like {@link MERGE_METHODS}: one list, read
+ * by the validator and by the placeholder, never spelled twice.
+ */
+const COMMIT_MESSAGE_SOURCES: CommitMessageSource[] = ['pr', 'host'];
+
+/** How `--commit-message`'s value is spelled in the two landing verbs' own sections. */
+const COMMIT_MESSAGE_PLACEHOLDER = `<${COMMIT_MESSAGE_SOURCES.join('|')}>`;
+
+/**
  * The FULL multi-verb usage dump — every verb's usage line, its prose, and the
  * shared credential-resolution + flag-default footer. Reserved for when the
  * caller hasn't named a verb we recognize yet (no verb at all, or an unknown
@@ -262,11 +284,16 @@ function fullUsageLines(): string[] {
     '            — best-effort, reported in `branchDeletion`, never an arm failure. When the decision instead',
     '            ARMS (auto-merge enabled, the host merges later out of process), nothing is deleted at this',
     '            call — the deferral is recorded explicitly in the armed outcome\'s `reason`.',
+    '            The landed commit carries the PR\'s own title (plus the host\'s number suffix) and body, read',
+    '            when this runs. Arming FREEZES them at the host, so an edit to the PR after arming lands only',
+    '            if arm runs again — which refreshes the frozen message. `landingMessage` reports what was',
+    '            handed over: the title, and the body\'s length in bytes.',
     '            Output: a single JSON object on stdout.',
     '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
     '            With --delete-branch, deletes the PR head branch after a successful merge (branch hygiene,',
     '            consumer KW-F6) — best-effort: a failed delete is reported in `branchDeletion`, never a merge',
     '            failure. `arm` accepts the same flag with its own (partially deferred) semantics — see above.',
+    '            Lands with the PR\'s own title (plus the host\'s number suffix) and body, read when this runs.',
     '            Output: a single JSON object on stdout.',
     '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only.',
     '            Also prints the PR\'s live `title` and `body` when the host surfaces them — read off the same',
@@ -289,6 +316,9 @@ function fullUsageLines(): string[] {
     '',
     '  --remote defaults to `git remote get-url origin`.',
     `  --method defaults to '${DEFAULT_MERGE_METHOD}' (arm | merge only).`,
+    `  --commit-message defaults to '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (arm | merge only): the landed commit carries the PR's own`,
+    "    title and body. 'host' sends neither, so the repository's own merge setting composes the message —",
+    '    for a consumer whose history is machine-read (ADR-0053).',
     '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
     '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
     '  --body-file <path> (create only) is the alternative to --body: the file\'s bytes become the PR body,',
@@ -359,8 +389,17 @@ const HOST_PR_REF_SHAPE = 'url+prUrl?, number+prNumber?';
  * it follow from it.
  */
 const HOST_PR_LANDING_SHAPE =
-  `{ ok, verb, host, branch, method, outcome, reason, ${HOST_PR_REF_SHAPE}, ` +
-  'sha?, branchDeletion?: { branch, deleted, error? } }';
+  `{ ok, verb, host, branch, method, commitMessage, outcome, reason, ${HOST_PR_REF_SHAPE}, ` +
+  'sha?, branchDeletion?: { branch, deleted, error? }, landingMessage?: { title, bodyBytes } }';
+
+/**
+ * The continuation line both landing verbs print about `landingMessage`
+ * (ADR-0053) — one copy, because the rule is the same on both.
+ */
+const LANDING_MESSAGE_SHAPE_NOTE = [
+  '         `landingMessage` is what a landing write handed the host (title; body as UTF-8 bytes) — frozen on `armed`,',
+  '         landed on `merged`; absent under --commit-message host or with no PR title (the reason says so).',
+];
 
 /**
  * Every host-pr verb's Verb contract (ADR-0051 decision 2), EXTENDING the
@@ -421,6 +460,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     flags: [
       { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
       { canonical: '--method', value: 'one', valueType: 'enum', placeholder: METHOD_PLACEHOLDER },
+      { canonical: '--commit-message', value: 'one', valueType: 'enum', placeholder: COMMIT_MESSAGE_PLACEHOLDER },
       { canonical: '--delete-branch', value: 'none', valueType: 'none' },
       ...HOST_PR_COMMON_FLAGS,
     ],
@@ -429,6 +469,8 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     notes: [
       '  Lands the PR by deciding per-PR from its live merge state: pending checks → enable auto-merge; already clean → direct',
       '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
+      `  --commit-message '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (default) lands the PR's own title (+ number suffix) and body, FROZEN at arming —`,
+      "  arm again after editing the PR to refresh them; 'host' sends neither: the repository's setting composes it.",
     ],
     outputNote: 'a single JSON object on stdout',
     json: {
@@ -438,6 +480,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
         '         `sha` rides only on `merged`; `branchDeletion` only where --delete-branch was passed AND the',
         '         path merged immediately. A `no-pr` outcome carries no PR reference at all. ok is true for',
         '         merged | armed | already-merged, false otherwise — and the exit code mirrors it.',
+        ...LANDING_MESSAGE_SHAPE_NOTE,
       ],
     },
   }),
@@ -446,6 +489,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     flags: [
       { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
       { canonical: '--method', value: 'one', valueType: 'enum', placeholder: METHOD_PLACEHOLDER },
+      { canonical: '--commit-message', value: 'one', valueType: 'enum', placeholder: COMMIT_MESSAGE_PLACEHOLDER },
       { canonical: '--delete-branch', value: 'none', valueType: 'none' },
       ...HOST_PR_COMMON_FLAGS,
     ],
@@ -454,11 +498,14 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     notes: [
       '  Merges the PR now, no arm intent (the caller has already decided). Idempotent. --delete-branch deletes',
       '  the PR head branch after a successful merge (best-effort).',
+      `  --commit-message '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (default) lands the PR's own title (+ number suffix) and body, read now;`,
+      "  'host' sends neither: the repository's setting composes it (ADR-0053).",
     ],
     outputNote: 'a single JSON object on stdout',
     json: {
       shape: HOST_PR_LANDING_SHAPE,
       trail: 'the same shape `arm` prints — `armed` is the one outcome this verb never returns',
+      continuation: [...LANDING_MESSAGE_SHAPE_NOTE],
     },
   }),
   status: defineVerb({
@@ -541,6 +588,7 @@ const HOST_PR_ANY_CONTRACT: VerbContract = {
     { canonical: '--base', value: 'one', valueType: 'branch' },
     { canonical: '--allow-close-phrase-loss', value: 'none', valueType: 'none' },
     { canonical: '--method', value: 'one', valueType: 'enum' },
+    { canonical: '--commit-message', value: 'one', valueType: 'enum' },
     { canonical: '--delete-branch', value: 'none', valueType: 'none' },
     ...HOST_PR_COMMON_FLAGS,
   ],
@@ -677,6 +725,19 @@ export async function runHostPr(
     );
   }
 
+  // `--commit-message` (ADR-0053) chooses who composes the LANDED commit, so it
+  // belongs to the two verbs that land — the same cross-verb refusal
+  // `--delete-branch` gets, for the same reason. Unlike `--method`, `status`
+  // does not accept-and-ignore it: `--method` is tolerated there because the
+  // router has always read it on all three landing verbs from one branch,
+  // while this flag is new and only the arm/merge call sites compose it.
+  if (hasFlag(HOST_PR_ANY_CONTRACT, args, 'commit-message') && verb !== 'merge' && verb !== 'arm') {
+    return usage(
+      `--commit-message is only supported by 'arm' and 'merge' (it chooses who composes the landed commit); '${verb}' lands nothing`,
+      verb,
+    );
+  }
+
   // The ONE refusal path (ADR-0051 decision 4), run AFTER the three cross-verb
   // refusals above (each of which teaches which verbs own the flag) and BEFORE
   // any required-flag read, host build, credential resolve or network call:
@@ -786,6 +847,25 @@ export async function runHostPr(
     method = (rawMethod as MergeMethod) ?? DEFAULT_MERGE_METHOD;
   }
 
+  // `--commit-message` is validated exactly as `--method` is, and for the same
+  // reason: a value flotilla does not know is a usage error (exit 2), never a
+  // silent fall-back to the default — a caller who asked for `hsot` must not
+  // quietly get the PR-authored message it was trying to opt out of.
+  let commitMessage: CommitMessageSource = DEFAULT_COMMIT_MESSAGE_SOURCE;
+  if (verb === 'arm' || verb === 'merge') {
+    const rawCommitMessage = flag(args, contract, 'commit-message');
+    if (
+      rawCommitMessage !== undefined &&
+      !COMMIT_MESSAGE_SOURCES.includes(rawCommitMessage as CommitMessageSource)
+    ) {
+      return usage(
+        `invalid --commit-message "${rawCommitMessage}" — expected one of: ${COMMIT_MESSAGE_SOURCES.join(', ')}`,
+        verb,
+      );
+    }
+    commitMessage = (rawCommitMessage as CommitMessageSource) ?? DEFAULT_COMMIT_MESSAGE_SOURCE;
+  }
+
   let remoteUrl: string;
   try {
     remoteUrl = flag(args, contract, 'remote') ?? gitRemoteUrl();
@@ -825,7 +905,7 @@ export async function runHostPr(
   // ── arm | merge | status: build the LandingHost adapter + run the verb. ──
   try {
     const host: LandingHost = injected ?? (await landingHostFor(info, remoteUrl, deps));
-    return await dispatch(verb, host, branch as string, method, info.host, deleteBranch);
+    return await dispatch(verb, host, branch as string, method, info.host, deleteBranch, commitMessage);
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
     printJson({
@@ -1131,6 +1211,7 @@ async function dispatch(
   method: MergeMethod,
   hostName: Host,
   deleteBranch: boolean,
+  commitMessage: CommitMessageSource,
 ): Promise<number> {
   if (verb === 'status') {
     const status = await host.getPrStatus(branch);
@@ -1153,19 +1234,24 @@ async function dispatch(
 
   const outcome =
     verb === 'arm'
-      ? // `host: hostName` is REFUSAL PROSE only (ArmOptions.host) — the arm
-        // intent itself stays host-neutral. Without it, a Bitbucket refusal
-        // would teach GitHub's "tick Allow auto-merge" remedy for a control
-        // Bitbucket has no equivalent of, on this host's most common outcome.
-        await armPullRequest(host, branch, method, { deleteBranch, host: hostName })
-      : await mergePullRequestNow(host, branch, method, { deleteBranch });
+      ? // `host: hostName` is REFUSAL PROSE and the landing title's NUMBER
+        // SUFFIX only (ArmOptions.host) — the arm intent itself stays
+        // host-neutral. Without it, a Bitbucket refusal would teach GitHub's
+        // "tick Allow auto-merge" remedy for a control Bitbucket has no
+        // equivalent of, on this host's most common outcome, and a Bitbucket
+        // landing would carry GitHub's ` (#N)` instead of its own suffix.
+        await armPullRequest(host, branch, method, { deleteBranch, host: hostName, commitMessage })
+      : await mergePullRequestNow(host, branch, method, { deleteBranch, host: hostName, commitMessage });
 
   const ok = outcome.outcome === 'merged' || outcome.outcome === 'armed' || outcome.outcome === 'already-merged';
   // Aligned url/number field names across every verb (FOR-54): the landing
   // outcomes natively carry `prUrl`/`prNumber`; add the `url`/`number` aliases so
   // the shape matches status/create. A `no-pr` outcome carries neither → `{}`.
   const prRef = outcome.outcome === 'no-pr' ? {} : { url: outcome.prUrl, number: outcome.prNumber };
-  printJson({ ok, verb, host: hostName, branch, method, ...outcome, ...alignedPrRef(prRef) });
+  // `commitMessage` is echoed beside `method`, the flag it is built like: the
+  // SOURCE this call was asked for. What was actually handed over is
+  // `landingMessage`, present only when there was one.
+  printJson({ ok, verb, host: hostName, branch, method, commitMessage, ...outcome, ...alignedPrRef(prRef) });
   return ok ? 0 : 1;
 }
 

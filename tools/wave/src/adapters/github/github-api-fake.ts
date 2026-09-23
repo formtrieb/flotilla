@@ -22,6 +22,7 @@ import type {
 import {
   AutoMergeUnavailableError,
   DEFAULT_MERGE_METHOD,
+  type LandingMessage,
   type MergeMethod,
   type MergeResult,
   type PrLandingStatus,
@@ -311,8 +312,14 @@ export class InMemoryGitHubApi implements GitHubApi {
   // implementable and the CLI is drivable, not to re-test either.
 
   private readonly prsByBranch = new Map<string, PrLandingStatus>();
-  private readonly armed = new Map<number, MergeMethod>();
-  private readonly merges: { prNumber: number; method: MergeMethod }[] = [];
+  /**
+   * prNumber → how it is armed. Keyed by PR, so arming an armed PR again
+   * REPLACES what it froze — the ADR-0053 refresh contract of
+   * `LandingHost.enableAutoMerge`, modelled directly rather than via the
+   * disable-then-enable sequence the real adapter needs to reach it.
+   */
+  private readonly armed = new Map<number, { method: MergeMethod; message?: LandingMessage }>();
+  private readonly merges: { prNumber: number; method: MergeMethod; message?: LandingMessage }[] = [];
   private readonly deletedBranches: string[] = [];
   private deleteBranchError: string | null = null;
   private autoMergeSetting: AutoMergeSetting = 'on';
@@ -378,14 +385,21 @@ export class InMemoryGitHubApi implements GitHubApi {
     this.rulesetChecks = info;
   }
 
-  /** Test affordance: which PRs were armed, and how. */
-  get armedPrs(): { prNumber: number; method: MergeMethod }[] {
-    return [...this.armed].map(([prNumber, method]) => ({ prNumber, method }));
+  /**
+   * Test affordance: which PRs are armed, and how — including the landing
+   * message each one froze (ADR-0053), present only when one was handed over.
+   */
+  get armedPrs(): { prNumber: number; method: MergeMethod; message?: LandingMessage }[] {
+    return [...this.armed].map(([prNumber, a]) => ({
+      prNumber,
+      method: a.method,
+      ...(a.message !== undefined ? { message: { ...a.message } } : {}),
+    }));
   }
 
-  /** Test affordance: which PRs were merged, and how. */
-  get mergedPrs(): { prNumber: number; method: MergeMethod }[] {
-    return [...this.merges];
+  /** Test affordance: which PRs were merged, and how — landing message included when one was handed over. */
+  get mergedPrs(): { prNumber: number; method: MergeMethod; message?: LandingMessage }[] {
+    return this.merges.map((m) => ({ ...m, ...(m.message !== undefined ? { message: { ...m.message } } : {}) }));
   }
 
   /** Test affordance (KW-F6): the remote branches deleted through the host API. */
@@ -407,18 +421,28 @@ export class InMemoryGitHubApi implements GitHubApi {
     return this.prsByBranch.get(branch) ?? { state: 'none' };
   }
 
-  async enableAutoMerge(prNumber: number, method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<void> {
+  async enableAutoMerge(
+    prNumber: number,
+    method: MergeMethod = DEFAULT_MERGE_METHOD,
+    message?: LandingMessage,
+  ): Promise<void> {
     // Mirrors the real host's two typed refusals so a CLI-level spec can drive
     // the arm-vs-merge routing against the fake exactly as against GitHub. Only a
     // VISIBLE off refuses; `unknown` (the token cannot see the setting) does not.
     if (this.autoMergeSetting === 'off') {
       throw new AutoMergeUnavailableError('not-allowed', 'Auto merge is not allowed for this repository');
     }
-    this.armed.set(prNumber, method);
+    // Copied, so a caller that mutates its object afterwards cannot rewrite
+    // what the "host" froze.
+    this.armed.set(prNumber, { method, ...(message !== undefined ? { message: { ...message } } : {}) });
   }
 
-  async mergePullRequest(prNumber: number, method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<MergeResult> {
-    this.merges.push({ prNumber, method });
+  async mergePullRequest(
+    prNumber: number,
+    method: MergeMethod = DEFAULT_MERGE_METHOD,
+    message?: LandingMessage,
+  ): Promise<MergeResult> {
+    this.merges.push({ prNumber, method, ...(message !== undefined ? { message: { ...message } } : {}) });
     return { merged: true, sha: `sha-${prNumber}` };
   }
 
