@@ -232,6 +232,12 @@ import {
   type ComposedDriverDir,
   type ComposedDriverRemover,
   type ComposedDriverSweepPlan,
+  // The stamped-probe sweep (issue #961).
+  STAMPED_PROBE_PREFIX,
+  listStampedProbeWorktrees,
+  planStampedProbeSweep,
+  sweepStampedProbes,
+  type StampedProbeSpine,
 } from './worktree-cleanup';
 // The SAME five names, imported through the PACKAGE ROOT rather than the module
 // file directly — proves the barrel actually re-exports the detached-sweep trio,
@@ -274,6 +280,14 @@ import {
   type ReviewRefSweepPlan as ReviewRefSweepPlanFromRoot,
   type ReviewRefSweepResult as ReviewRefSweepResultFromRoot,
   type ReviewRefSweepOptions as ReviewRefSweepOptionsFromRoot,
+  // The stamped-probe sweep's root surface (issue #961) — the values by
+  // identity in its own section below, the types by `tsc --noEmit`.
+  STAMPED_PROBE_PREFIX as STAMPED_PROBE_PREFIX_FROM_ROOT,
+  listStampedProbeWorktrees as listStampedProbeWorktreesFromRoot,
+  planStampedProbeSweep as planStampedProbeSweepFromRoot,
+  sweepStampedProbes as sweepStampedProbesFromRoot,
+  type StampedProbeSpine as StampedProbeSpineFromRoot,
+  type StampedProbeSweepOptions as StampedProbeSweepOptionsFromRoot,
 } from './index';
 
 // node:child_process is mocked module-wide so Section 10's real
@@ -10467,5 +10481,437 @@ describe('the sweep under a blocked probe transport (issue #876)', () => {
       },
     ]);
     expect(result.branchesDeleted).not.toContain('wave/876-blocked');
+  });
+});
+
+// ─── Stamped Reviewer probe checkouts (issue #961) ────────────────────────────
+//
+// ADR-0042 Amendment 2026-09-23, decisions 12–14. The amendment's falsification
+// plan IS this section's test list: the positive control (a probe whose row has
+// left review is removed), and the four negative controls — an unstamped
+// detached checkout outside every root stays unaccounted and untouched, a
+// `reviewing` row's probe is `live-row`, a modified tracked file is `dirty`, an
+// unmatched slug is `unknown-wave` — plus the two this row's criteria add: a
+// basename that only RESEMBLES the stamp is untouched, and a stamped worktree
+// with a branch is never removed.
+
+describe('the stamped-probe plan — ownership by the declared spine (issue #961)', () => {
+  const SLUG = '2026-09-23-probe-sweep';
+  const PROBE = `/tmp/probes/flotilla-probe-${SLUG}-961-i1`;
+
+  function probe(over: Partial<WorktreeEntry> = {}): WorktreeEntry {
+    return {
+      path: PROBE,
+      branch: null,
+      head: 'c'.repeat(40),
+      dirty: false,
+      locked: false,
+      ...over,
+    };
+  }
+
+  function spine(states: Record<string, string>, slug = SLUG): StampedProbeSpine {
+    return { slug, rowStates: new Map(Object.entries(states)) };
+  }
+
+  it('the stamp head is the one the Reviewer contract spells', () => {
+    expect(STAMPED_PROBE_PREFIX).toBe('flotilla-probe-');
+  });
+
+  it('POSITIVE CONTROL: a clean probe whose row is in ANY state but `reviewing` is selected', () => {
+    // Every other row state — the ten the vocabulary knows, plus a cell the
+    // reader does not recognise — means no Reviewer is running for the row.
+    for (const state of [
+      'planned',
+      'dispatched',
+      'report-in',
+      'verdict-in',
+      're-dispatched',
+      'approved',
+      'pr-created',
+      'failed',
+      'abandoned',
+      'parked',
+      'some-future-state',
+    ]) {
+      const plan = planStampedProbeSweep([probe()], spine({ '961': state }));
+      expect(plan.selected.map((w) => w.path), `row state ${state}`).toEqual([PROBE]);
+      expect(plan.skipped, `row state ${state}`).toEqual([]);
+    }
+  });
+
+  it("a probe whose row is `reviewing` is skipped 'live-row' — its Reviewer may still be reading it", () => {
+    const plan = planStampedProbeSweep([probe()], spine({ '961': 'reviewing' }));
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['live-row']);
+  });
+
+  it("a probe whose slug matches no declared spine is skipped 'unknown-wave' — named, never removed", () => {
+    const plan = planStampedProbeSweep(
+      [probe()],
+      spine({ '961': 'pr-created' }, '2026-01-01-some-other-wave'),
+    );
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['unknown-wave']);
+  });
+
+  it("with NO spine declared at all, every probe is 'unknown-wave' — the sweep fails closed", () => {
+    const plan = planStampedProbeSweep([probe(), probe({ path: `/x/flotilla-probe-${SLUG}-7-i2` })]);
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['unknown-wave', 'unknown-wave']);
+  });
+
+  it("a probe naming a row the declared spine does not carry is 'unknown-wave' too", () => {
+    const plan = planStampedProbeSweep([probe()], spine({ '962': 'pr-created' }));
+
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['unknown-wave']);
+  });
+
+  it('matches LITERALLY, never by parsing: a hyphenated row id resolves, and a slug that merely PREFIXES another wave does not claim its probe', () => {
+    // A Linear-style opaque id carries a hyphen, and so does every slug; the
+    // pair can only be read by matching the declared spellings.
+    const linear = probe({ path: `/t/flotilla-probe-${SLUG}-FOR-437-i2` });
+    expect(
+      planStampedProbeSweep([linear], spine({ 'FOR-437': 'pr-created' })).selected,
+    ).toHaveLength(1);
+
+    // Wave `2026-09-23-probe` is a PREFIX of wave `2026-09-23-probe-sweep`.
+    // Sharing a row id (961) is not enough for the shorter wave's spine to
+    // claim the longer wave's probe: `<slug>-<row id>-i` must spell the whole
+    // name, and `2026-09-23-probe` + `961` does not.
+    const prefixWave = planStampedProbeSweep(
+      [probe()],
+      spine({ '961': 'pr-created' }, '2026-09-23-probe'),
+    );
+    expect(prefixWave.selected).toEqual([]);
+    expect(prefixWave.skipped.map((w) => w.reason)).toEqual(['unknown-wave']);
+  });
+
+  it('the iteration must be spelled exactly: a leading zero, a zero, or a trailing suffix names no row', () => {
+    for (const tail of ['i01', 'i0', 'i1-old', 'i', 'x1']) {
+      const plan = planStampedProbeSweep(
+        [probe({ path: `/t/flotilla-probe-${SLUG}-961-${tail}` })],
+        spine({ '961': 'pr-created' }),
+      );
+      expect(plan.selected, `tail ${tail}`).toEqual([]);
+    }
+  });
+
+  it("a DIRTY probe is skipped 'dirty' even though its row has left review — the safety invariant is untouched", () => {
+    const plan = planStampedProbeSweep([probe({ dirty: true })], spine({ '961': 'pr-created' }));
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['dirty']);
+  });
+
+  it('a probe dirty with EXCLUSIVELY the classified-disposable shape is still selected — the same junk allowlist', () => {
+    const plan = planStampedProbeSweep(
+      [probe({ dirty: true, dirtyAllJunk: true })],
+      spine({ '961': 'pr-created' }),
+    );
+
+    expect(plan.selected).toHaveLength(1);
+  });
+
+  it("a stamped worktree with a BRANCH checked out is skipped 'live-branch' — never removed", () => {
+    const plan = planStampedProbeSweep(
+      [probe({ branch: 'wave/961-stamped-probe-sweep' })],
+      spine({ '961': 'pr-created' }),
+    );
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['live-branch']);
+  });
+
+  it("a LOCKED probe is skipped 'locked', and an orphaned one holding real files 'orphan-with-real-files'", () => {
+    const plan = planStampedProbeSweep(
+      [probe({ locked: true }), probe({ orphan: true, orphanAllJunk: false })],
+      spine({ '961': 'pr-created' }),
+    );
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['locked', 'orphan-with-real-files']);
+  });
+
+  it('the structural refusals are the DETACHED sweep\'s, verbatim — same inputs, same verdicts', () => {
+    // The amendment's safety claim is "the same refusals the detached sweep
+    // applies". Pinned by feeding both planners the same refused shapes.
+    const refused = [
+      probe({ locked: true }),
+      probe({ branch: 'wave/x' }),
+      probe({ orphan: true, orphanAllJunk: false }),
+      probe({ dirty: true }),
+    ];
+    expect(
+      planStampedProbeSweep(refused, spine({ '961': 'pr-created' })).skipped.map((w) => w.reason),
+    ).toEqual(planDetachedScratchpadSweep(refused).skipped.map((w) => w.reason));
+  });
+
+  it('every skip carries a machine-readable reason and candidate order is preserved', () => {
+    const plan = planStampedProbeSweep(
+      [
+        probe({ path: `/t/flotilla-probe-${SLUG}-1-i1` }),
+        probe({ path: `/t/flotilla-probe-${SLUG}-2-i1` }),
+        probe({ path: `/t/flotilla-probe-${SLUG}-3-i1`, dirty: true }),
+        probe({ path: `/t/flotilla-probe-${SLUG}-4-i1` }),
+      ],
+      spine({ '1': 'pr-created', '2': 'reviewing', '3': 'pr-created' }),
+    );
+
+    expect(plan.selected.map((w) => w.path)).toEqual([`/t/flotilla-probe-${SLUG}-1-i1`]);
+    expect(plan.skipped.map((w) => [w.path, w.reason])).toEqual([
+      [`/t/flotilla-probe-${SLUG}-2-i1`, 'live-row'],
+      [`/t/flotilla-probe-${SLUG}-3-i1`, 'dirty'],
+      [`/t/flotilla-probe-${SLUG}-4-i1`, 'unknown-wave'],
+    ]);
+  });
+
+  it('is reachable from the PACKAGE ROOT as the same bindings', () => {
+    expect(STAMPED_PROBE_PREFIX_FROM_ROOT).toBe(STAMPED_PROBE_PREFIX);
+    expect(listStampedProbeWorktreesFromRoot).toBe(listStampedProbeWorktrees);
+    expect(planStampedProbeSweepFromRoot).toBe(planStampedProbeSweep);
+    expect(sweepStampedProbesFromRoot).toBe(sweepStampedProbes);
+    // The types, annotated through the root: `tsc --noEmit` is the assertion.
+    const rootSpine: StampedProbeSpineFromRoot = spine({ '961': 'reviewing' });
+    const rootOpts: StampedProbeSweepOptionsFromRoot = { spine: rootSpine };
+    expect(planStampedProbeSweepFromRoot([probe()], rootOpts.spine).skipped[0]?.reason).toBe(
+      'live-row',
+    );
+  });
+});
+
+// The same falsification plan against REAL git: a probe that genuinely lives
+// OUTSIDE the repository, registered by `git worktree add --detach`, in no
+// containment root — the shape the in-repo measurement forced (decision 12).
+describe('stamped-probe sweep — real git, a probe outside the repository (issue #961)', () => {
+  const SLUG = '2026-09-23-probe-sweep';
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+    vi.clearAllMocks();
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /** A real repo at `<root>/<mainName>`, and an OUTSIDE directory `<root>/probes`. */
+  function makeRepo(label: string, mainName = 'main'): { mainRoot: string; outside: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cleanup-961-${label}-`)));
+    tempRoots.push(root);
+    const mainRoot = join(root, mainName);
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    writeFileSync(join(mainRoot, 'README.md'), '# fixture\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    const outside = join(root, 'probes');
+    mkdirSync(outside, { recursive: true });
+    return { mainRoot, outside };
+  }
+
+  /** Register a DETACHED checkout at `<dir>/<name>` — the Reviewer's probe shape. */
+  function plantDetached(mainRoot: string, dir: string, name: string): string {
+    const path = join(dir, name);
+    realGit(['worktree', 'add', '-q', '--detach', path, 'HEAD'], mainRoot);
+    return path;
+  }
+
+  function stillRegistered(mainRoot: string, path: string): boolean {
+    return realGit(['worktree', 'list', '--porcelain'], mainRoot)
+      .split('\n')
+      .some((line) => line.trim() === `worktree ${path}`);
+  }
+
+  function spineWith(states: Record<string, string>): StampedProbeSpine {
+    return { slug: SLUG, rowStates: new Map(Object.entries(states)) };
+  }
+
+  function sweep(mainRoot: string, spine?: StampedProbeSpine) {
+    return sweepStampedProbes({
+      repoRoot: mainRoot,
+      spine,
+      skipBranchHygiene: true,
+      retryPause: () => {},
+    });
+  }
+
+  it('POSITIVE CONTROL: a stamped probe outside every containment root is removed once its row has left review — gone from disk AND deregistered', () => {
+    const { mainRoot, outside } = makeRepo('positive');
+    const probePath = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    // The gap: the detached sweep, bounded by containment, never sees it.
+    expect(
+      listDetachedScratchpadWorktrees({ repoRoot: mainRoot }).map((w) => w.path),
+    ).not.toContain(probePath);
+
+    const result = sweep(mainRoot, spineWith({ '961': 'pr-created' }));
+
+    expect(result.errors).toEqual([]);
+    expect(result.deregisteredNotDeleted).toEqual([]);
+    expect(result.erroredStillListed).toEqual([]);
+    expect(result.removed.map((w) => w.path)).toEqual([probePath]);
+    expect(existsSync(probePath)).toBe(false);
+    expect(stillRegistered(mainRoot, probePath)).toBe(false);
+  });
+
+  it("NEGATIVE CONTROL: a probe whose row is still `reviewing` is skipped 'live-row' and survives", () => {
+    const { mainRoot, outside } = makeRepo('live-row');
+    const probePath = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    const result = sweep(mainRoot, spineWith({ '961': 'reviewing' }));
+
+    expect(result.removed).toEqual([]);
+    expect(result.skipped.map((w) => [w.path, w.reason])).toEqual([[probePath, 'live-row']]);
+    expect(existsSync(probePath)).toBe(true);
+    expect(stillRegistered(mainRoot, probePath)).toBe(true);
+  });
+
+  it("NEGATIVE CONTROL: a probe whose slug matches no spine is skipped 'unknown-wave' and survives — with or without a spine", () => {
+    const { mainRoot, outside } = makeRepo('unknown');
+    const probePath = plantDetached(
+      mainRoot,
+      outside,
+      'flotilla-probe-2026-01-01-a-stranger-wave-7-i1',
+    );
+
+    for (const spine of [spineWith({ '7': 'pr-created' }), undefined]) {
+      const result = sweep(mainRoot, spine);
+      expect(result.removed).toEqual([]);
+      expect(result.skipped.map((w) => [w.path, w.reason])).toEqual([
+        [probePath, 'unknown-wave'],
+      ]);
+    }
+    expect(existsSync(probePath)).toBe(true);
+    expect(stillRegistered(mainRoot, probePath)).toBe(true);
+  });
+
+  it("NEGATIVE CONTROL: a stamped probe with a MODIFIED tracked file is skipped 'dirty' and survives", () => {
+    const { mainRoot, outside } = makeRepo('dirty');
+    const probePath = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+    writeFileSync(join(probePath, 'README.md'), '# fixture\nlocal edit\n');
+
+    const result = sweep(mainRoot, spineWith({ '961': 'pr-created' }));
+
+    expect(result.removed).toEqual([]);
+    expect(result.skipped.map((w) => [w.path, w.reason])).toEqual([[probePath, 'dirty']]);
+    expect(result.skipped[0].blockingPaths?.otherTracked).toEqual(['README.md']);
+    expect(readFileSync(join(probePath, 'README.md'), 'utf-8')).toContain('local edit');
+    expect(stillRegistered(mainRoot, probePath)).toBe(true);
+  });
+
+  it("NEGATIVE CONTROL: a stamped worktree with a BRANCH checked out is skipped 'live-branch' and never removed", () => {
+    const { mainRoot, outside } = makeRepo('branch');
+    const stamped = join(outside, `flotilla-probe-${SLUG}-961-i1`);
+    realGit(['worktree', 'add', '-q', '-b', 'wave/961-someones-branch', stamped, 'HEAD'], mainRoot);
+
+    const result = sweep(mainRoot, spineWith({ '961': 'pr-created' }));
+
+    expect(result.removed).toEqual([]);
+    expect(result.skipped.map((w) => [w.path, w.reason])).toEqual([[stamped, 'live-branch']]);
+    expect(existsSync(stamped)).toBe(true);
+    expect(stillRegistered(mainRoot, stamped)).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL: an UNSTAMPED detached checkout outside every root is not in the population, is untouched, and stays unaccounted', () => {
+    const { mainRoot, outside } = makeRepo('unstamped');
+    const probePath = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+    const human = plantDetached(mainRoot, outside, 'my-second-worktree');
+
+    const candidates = listStampedProbeWorktrees({ repoRoot: mainRoot });
+    expect(candidates.map((w) => w.path)).toEqual([probePath]);
+
+    const result = sweep(mainRoot, spineWith({ '961': 'pr-created' }));
+    expect(result.removed.map((w) => w.path)).toEqual([probePath]);
+    expect(existsSync(human)).toBe(true);
+    expect(stillRegistered(mainRoot, human)).toBe(true);
+
+    // What the count-vs-lists reconciliation says once the probe population is
+    // the only one declared: the unstamped checkout is still named.
+    const advisory = checkWorktreeCountAdvisory({
+      repoRoot: mainRoot,
+      accountedPaths: candidates.map((w) => w.path),
+    });
+    expect(advisory.unaccounted?.entries.map((e) => e.path)).toEqual([human]);
+  });
+
+  it('NEGATIVE CONTROL: a basename that only RESEMBLES the stamp is not in the population and survives a sweep that would remove the real stamp', () => {
+    const { mainRoot, outside } = makeRepo('resembles');
+    const lookalikes = [
+      `flotilla-probe-${SLUG}-961-i01`, // leading zero
+      `flotilla-probe-${SLUG}-961-i1-old`, // trailing suffix
+      `flotilla-probe-${SLUG}-961`, // no iteration
+      'flotilla-probe-961-i1', // no wave segment
+      `xflotilla-probe-${SLUG}-961-i1`, // not the head
+      `flotilla-probes-${SLUG}-961-i1`, // near-miss head
+    ].map((name) => plantDetached(mainRoot, outside, name));
+    const real = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i2`);
+
+    expect(listStampedProbeWorktrees({ repoRoot: mainRoot }).map((w) => w.path)).toEqual([real]);
+
+    const result = sweep(mainRoot, spineWith({ '961': 'pr-created' }));
+    expect(result.removed.map((w) => w.path)).toEqual([real]);
+    for (const path of lookalikes) {
+      expect(existsSync(path), path).toBe(true);
+      expect(stillRegistered(mainRoot, path), path).toBe(true);
+    }
+  });
+
+  it('the primary checkout is never a candidate, even when its own directory name carries the stamp', () => {
+    const { mainRoot } = makeRepo('primary', `flotilla-probe-${SLUG}-961-i1`);
+
+    expect(listStampedProbeWorktrees({ repoRoot: mainRoot })).toEqual([]);
+    const result = sweep(mainRoot, spineWith({ '961': 'pr-created' }));
+    expect(result.removed).toEqual([]);
+    expect(existsSync(join(mainRoot, 'README.md'))).toBe(true);
+  });
+
+  it('is idempotent: a re-run after the probe is gone finds nothing and removes nothing', () => {
+    const { mainRoot, outside } = makeRepo('idem');
+    plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    expect(sweep(mainRoot, spineWith({ '961': 'pr-created' })).removed).toHaveLength(1);
+    const second = sweep(mainRoot, spineWith({ '961': 'pr-created' }));
+    expect(second.removed).toEqual([]);
+    expect(second.skipped).toEqual([]);
+    expect(second.errors).toEqual([]);
   });
 });

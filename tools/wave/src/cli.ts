@@ -11,7 +11,7 @@
  *   npx tsx tools/wave/src/cli.ts closed-by <closed-by-line>
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
  *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>] [--body <t> | --body-file <path>]
- *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --spine <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [...]
+ *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --spine <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [--probes-only] [...]
  *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [...]
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
@@ -168,6 +168,28 @@
  *                    marker-derived roots. Undeclared, an out-of-root checkout
  *                    is left strictly alone (the conservative default).
  *
+ *                    probes (issue #961, ADR-0042 Amendment 2026-09-23) is the
+ *                    SEVENTH population and needs NO flag, so every run prints
+ *                    it: registered worktrees whose basename carries the stamp
+ *                    `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` — a
+ *                    Reviewer's probe checkout, which must live OUTSIDE the
+ *                    repository and so sits in no containment root; the stamp
+ *                    stands in for one. The detached sweep's refusals apply
+ *                    verbatim (locked, live-branch, orphan-with-real-files,
+ *                    dirty); a probe that passes them is removed once the
+ *                    --spine spine shows its row in any state but `reviewing`,
+ *                    skipped `live-row` while it is, and skipped
+ *                    `unknown-wave` — named, never removed — when no declared
+ *                    wave-and-row pair names it (every probe, without
+ *                    --spine). A plan on --dry-run, a full CleanupResult on the
+ *                    run. An unstamped out-of-root registration stays in
+ *                    `unaccounted`, untouched.
+ *                    --probes-only runs that population ALONE — the
+ *                    Coordinator's call when it routes a round's verdicts —
+ *                    and prints { dryRun, probesOnly, probes, worktreeCount,
+ *                    commandLine }; it refuses --orphans, --detached and
+ *                    --branches (exit 2).
+ *
  *                    worktreeCount (issue #238) is printed on BOTH shapes,
  *                    unconditionally: { count, threshold, level, advisory } from
  *                    the engine's checkWorktreeCountAdvisory — `count` is the
@@ -264,16 +286,19 @@
  *   0 — success (nothing to remove, or all selected removed cleanly). The
  *       worktreeCount advisory NEVER affects this — it is advisory by design.
  *   1 — completed with per-worktree removal errors (registered GC, --detached
- *       sweep, or --orphans sweep), a failed Scribe-payload removal
+ *       sweep, the stamped-probe sweep, or --orphans sweep), a failed
+ *       Scribe-payload removal
  *       (orphans.scratch.errors, issue #417), a failed review-ref delete
  *       (orphans.reviewRefs.errors, issue #732), or a failed composed-driver
  *       directory removal (orphans.drivers.errors, issue #748). Every REFUSAL
  *       in this verb is accounting rather than an unfinished attempt and none
  *       of them affects this: the review-ref sweep's live-row,
  *       unresolvable-row and live-rows-unknown; the composed-driver sweep's
- *       live-wave and unknown-wave; and branchHygieneDeferred, which names
+ *       live-wave and unknown-wave; the stamped-probe sweep's live-row and
+ *       unknown-wave (issue #961); and branchHygieneDeferred, which names
  *       branches a live worktree is holding for the next run.
- *   2 — usage / unexpected error
+ *   2 — usage / unexpected error — including --probes-only combined with
+ *       --orphans, --detached or --branches
  *
  * verdict-acked (FOR-17 — the dead --acked wire, ADR-0004) — the single-owner
  * engine derivation of `issue-store close`'s `--acked` indexes from the FINAL
@@ -536,6 +561,13 @@ import {
   listComposedDriverDirs,
   planComposedDriverSweep,
   executeComposedDriverSweep,
+  // The stamped-probe sweep (issue #961) — imported as its list/plan PAIR for
+  // the detached sweep's reason, never as the one-shot `sweepStampedProbes`:
+  // ONE plan object, printed by the preview and handed verbatim to the same
+  // `executeCleanup` every other registered population uses.
+  listStampedProbeWorktrees,
+  planStampedProbeSweep,
+  type StampedProbeSpine,
 } from './worktree-cleanup';
 import { runConflictMap, runConflictMapById, CONFLICT_MAP_CONTRACT } from './conflict-map-cli';
 import { runCrossWave, CROSS_WAVE_CONTRACT } from './cross-wave-cli';
@@ -795,18 +827,26 @@ const VERSION_JSON_SHAPE = '{ version, expected, match, outcome, detail, repair 
  * conditional spreads, all genuinely absent otherwise. Confirmed live: a
  * `--dry-run --branches …` run printed exactly `dryRun, branchFilter, selected,
  * skipped, worktreeCount, unaccounted, commandLine`, which is this shape with
- * its three optional sweeps absent.
+ * its three optional sweeps absent (measured before issue #961 added `probes`).
+ *
+ * `probes` (issue #961) is NOT conditional: the stamped-probe population needs
+ * no flag, so every run prints it — the plan on the preview, the executed
+ * `CleanupResult` on the run. `--probes-only` narrows a run to that one
+ * population and prints a THIRD, smaller shape, stated whole on its own line.
  */
 const WORKTREE_CLEANUP_JSON_SHAPE =
-  '{ dryRun, branchFilter?, selected, skipped, orphans?, detached?, orphanBranches?, ' +
+  '{ dryRun, branchFilter?, selected, skipped, orphans?, detached?, probes, orphanBranches?, ' +
   'worktreeCount, unaccounted, commandLine }';
 const WORKTREE_CLEANUP_JSON_CONTINUATION = [
   '         Without --dry-run the RESULT shape is printed instead:',
   '           { dryRun, branchFilter?, removed, skipped, errors, deregisteredNotDeleted,',
   '             erroredStillListed, branchesDeleted, branchHygieneSkipped, branchHygieneDeferred,',
-  '             orphans?, detached?, worktreeCount, unaccounted, commandLine }',
+  '             orphans?, detached?, probes, worktreeCount, unaccounted, commandLine }',
   '         orphans? = { selected, skipped, scratch?, reviewRefs?, drivers? } on the preview and the',
   '         executed sweep\'s own result on the run; orphanBranches? is preview-only.',
+  '         probes = the stamped-probe sweep: { selected, skipped } on the preview, a full',
+  '         cleanup result on the run; skip reasons add live-row and unknown-wave.',
+  '         With --probes-only: { dryRun, probesOnly, probes, worktreeCount, commandLine }.',
 ];
 
 /**
@@ -975,6 +1015,7 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { canonical: '--dry-run', value: 'none', valueType: 'none' },
       { canonical: '--orphans', value: 'none', valueType: 'none' },
       { canonical: '--detached', value: 'none', valueType: 'none' },
+      { canonical: '--probes-only', value: 'none', valueType: 'none' },
       { canonical: '--spine', aliases: ['--wave'], value: 'one', valueType: 'path', placeholder: '<spine>' },
       { canonical: '--branches', value: 'one', valueType: 'list', placeholder: '<b1,b2>' },
       { canonical: '--config', value: 'one', valueType: 'path' },
@@ -988,6 +1029,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  --wave is accepted as an alias of --spine.',
       '  --detached also sweeps REGISTERED detached-HEAD scratch checkouts under the',
       '  worktrees root (the E2BIG population); --dry-run previews the same plan.',
+      '  Every run also sweeps stamped Reviewer probe checkouts (flotilla-probe-*),',
+      '  wherever they sit, under probes: removed once the --spine row is not',
+      '  reviewing; with no --spine nothing is removed. --probes-only runs that',
+      '  population alone (never with --orphans, --detached or --branches).',
     ],
     // It used to say `# prints JSON` inline on the signature line and carry no
     // `output:` line at all — the one JSON verb in the engine that advertised
@@ -2334,10 +2379,27 @@ function resolveLiveWaveScope(args: string[], repoRoot: string): LiveWaveScope {
       liveRowIds: terminal ? [] : ids,
       slug: basename(absSpine, '.md'),
       wavesDir: dirname(absSpine),
+      // Per ROW, and from the whole Plan-Table rather than the branch-keyed
+      // map above (issue #961): a stamped probe's liveness is its own row's
+      // state (ADR-0042 Amendment 2026-09-23 decision 13), and every row the
+      // table names is a row a Reviewer could have been dispatched for.
+      rowStates: new Map(spine.planTable.map((row) => [row.id, String(row.state)])),
     };
   } catch {
     return UNDECLARED_WAVE_SCOPE;
   }
+}
+
+/**
+ * The spine the stamped-probe sweep resolves ownership against (issue #961),
+ * from the one `--spine` read {@link resolveLiveWaveScope} already made — or
+ * `undefined` when none was declared, which the sweep reads as fail-closed:
+ * every probe is `unknown-wave` and nothing is removed.
+ */
+function probeSpineOf(scope: LiveWaveScope): StampedProbeSpine | undefined {
+  return scope.declared && scope.slug !== null
+    ? { slug: scope.slug, rowStates: scope.rowStates }
+    : undefined;
 }
 
 /**
@@ -2371,6 +2433,11 @@ interface LiveWaveScope {
    * keeps its spines somewhere other than the default.
    */
   wavesDir: string | null;
+  /**
+   * Every Plan-Table row id → its `State` cell (issue #961) — the per-row
+   * liveness the stamped-probe sweep reads. Empty when undeclared.
+   */
+  rowStates: ReadonlyMap<string, string>;
 }
 
 /** The fail-closed answer: nothing declared, nothing terminal, nothing spared. */
@@ -2380,6 +2447,7 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
   liveRowIds: [],
   slug: null,
   wavesDir: null,
+  rowStates: new Map(),
 };
 
 /**
@@ -2608,6 +2676,16 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
  * sweep this verb performs would have moved nothing. Advisory too, on the same
  * grounds, and likewise never part of the exit code.
  *
+ * `probes` (issue #961, ADR-0042 Amendment 2026-09-23) rides EVERY run, with
+ * no flag: stamped Reviewer probe checkouts, wherever they sit — the plan on
+ * `--dry-run`, the executed `CleanupResult` on the run — removed only once the
+ * `--spine` spine shows the probe's row in any state but `reviewing`, and
+ * otherwise named with a skip reason. No flag because the close's ordinary
+ * call must reach it (decision 14: the close collects what routing missed),
+ * and because it fails closed without a spine. `--probes-only` is the one
+ * narrowing: the Coordinator's routing-step call, handled by
+ * {@link runStampedProbeSweepAlone}.
+ *
  * Idempotent: a re-run after everything is cleaned reports an empty plan and
  * exits 0 (nothing selected → nothing removed).
  *
@@ -2615,12 +2693,13 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
  *   0 — success (incl. nothing-to-do)
  *   1 — a removal error, a deregistered-but-not-deleted directory, an
  *       errored-yet-still-listed worktree (FOR-73) — from the registered GC OR
- *       (issue #238) from the `--detached` sweep, which rides the same three
+ *       (issue #238) from the `--detached` sweep OR (issue #961) the
+ *       stamped-probe sweep, which ride the same three
  *       classes — an orphan-sweep removal error, (issue #417) a
  *       Scribe-scratch payload-removal error under `orphans.scratch.errors`,
  *       or (issue #748) a composed-driver directory-removal error under
  *       `orphans.drivers.errors`
- *   2 — usage / unexpected error
+ *   2 — usage / unexpected error, or `--probes-only` with a widening flag
  */
 function runWorktreeCleanup(args: string[]): number {
   const contract = ROUTER_VERB_CONTRACTS['worktree-cleanup'];
@@ -2638,9 +2717,29 @@ function runWorktreeCleanup(args: string[]): number {
   const dryRun = hasFlag(contract, args, 'dry-run');
   const orphans = hasFlag(contract, args, 'orphans');
   const detached = hasFlag(contract, args, 'detached');
+  const probesOnly = hasFlag(contract, args, 'probes-only');
   const positional = positionalsOf(contract, args);
   const repoRoot =
     positional.length > 0 ? resolve(positional[0]) : process.cwd();
+
+  // `--probes-only` (issue #961) NARROWS a run to the stamped-probe population,
+  // so a flag that WIDENS it is a contradiction, refused before anything is
+  // read. Silently dropping one would be the fail-open shape issue #141 closed
+  // for the scoping flags: the caller asked for two things and got one.
+  if (probesOnly) {
+    const widening = [
+      ...(orphans ? ['--orphans'] : []),
+      ...(detached ? ['--detached'] : []),
+      ...(flag(args, contract, 'branches') !== undefined ? ['--branches'] : []),
+    ];
+    if (widening.length > 0) {
+      process.stderr.write(
+        'error: worktree-cleanup --probes-only runs the stamped-probe population alone; ' +
+          `it cannot be combined with ${widening.join(', ')}\n`,
+      );
+      return 2;
+    }
+  }
 
   // The consumer's cleanup declarations (issue #184 — the last-mile wiring gap
   // left by issue #115 — and issue #451 for `extraRoots`): `loadWaveConfig`
@@ -2672,7 +2771,13 @@ function runWorktreeCleanup(args: string[]): number {
   }
 
   try {
+    // Runs in BOTH modes: under `--probes-only` its filter is unused, but its
+    // refusal is not — an unreadable or branchless `--spine` is exit 2 here
+    // exactly as it is on the full sweep, never a quiet "nothing removed".
     const branchFilter = resolveBranchFilter(args, repoRoot);
+    if (probesOnly) {
+      return runStampedProbeSweepAlone(args, repoRoot, dryRun, disposableNames);
+    }
     const worktrees = listAgentWorktrees(repoRoot, undefined, disposableNames);
     const plan = planCleanup(worktrees, branchFilter);
 
@@ -2733,12 +2838,15 @@ function runWorktreeCleanup(args: string[]): number {
     // Read BEFORE any removal, harmlessly: ref namespaces are disjoint by
     // construction from every worktrees root and from the scratch directory, so
     // nothing this verb removes can change what this listing saw.
-    // ONE read of the `--wave` spine, feeding BOTH scoped populations (issue
+    // ONE read of the `--wave` spine, feeding EVERY scoped population (issue
     // #748): the review-ref sweep below and the composed-driver sweep beside
-    // it. Reading it once is not merely thrift — the two must agree about
-    // whether this wave is finished, and two independent reads could disagree
-    // if the spine were rewritten between them.
-    const waveScope = orphans ? resolveLiveWaveScope(args, repoRoot) : UNDECLARED_WAVE_SCOPE;
+    // it, and (issue #961) the stamped-probe sweep further down. Reading it
+    // once is not merely thrift — they must agree about the wave's state, and
+    // two independent reads could disagree if the spine were rewritten between
+    // them. Read on every run now, not only under `--orphans`, because the
+    // probe population needs no flag; the two `--orphans` populations still
+    // consult it only when that flag is set, so nothing they do moves.
+    const waveScope = resolveLiveWaveScope(args, repoRoot);
     const reviewRefPlan = orphans
       ? planReviewRefSweep(
           listReviewRefs({ repoRoot }),
@@ -2826,9 +2934,40 @@ function runWorktreeCleanup(args: string[]): number {
     // agreeing reads. Undeclared (`undefined`) leaves the roots exactly as the
     // markers derived them — the conservative default, byte-identical to
     // before the key existed.
-    const alreadyPlanned = new Set(
+    const gcPlanned = new Set(
       [...plan.selected, ...plan.skipped].map((wt) => wt.path),
     );
+
+    // The stamped-probe sweep (issue #961, ADR-0042 Amendment 2026-09-23) —
+    // the SEVENTH population, and the one no containment root admits: a
+    // Reviewer's probe checkout lives outside the repository, and the stamp
+    // `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` stands in for a root.
+    //
+    // NO FLAG, deliberately. The population is safe by construction — the
+    // stamp admits only what flotilla named, the detached sweep's refusals
+    // apply verbatim, and ownership fails CLOSED: without a `--spine` every
+    // probe is `unknown-wave` and nothing is removed. So the close's ordinary
+    // call reaches it (decision 14: the close collects whatever routing
+    // missed), and a run that is not scoped to a wave still ACCOUNTS for every
+    // stamped probe by name instead of leaving it in `unaccounted`.
+    //
+    // Computed HERE, above the `--dry-run` branch, for the issue #377 reason:
+    // ONE plan, printed by the preview and executed verbatim by the run.
+    // De-duplicated against the registered-GC plan, the way the detached sweep
+    // is; the detached sweep is in turn de-duplicated against THIS plan, so a
+    // stamped probe inside a containment root is judged by its row's liveness
+    // rather than removed by a sweep that cannot ask the question.
+    const probePlan = planStampedProbeSweep(
+      listStampedProbeWorktrees({ repoRoot, disposableNames }).filter(
+        (wt) => !gcPlanned.has(wt.path),
+      ),
+      probeSpineOf(waveScope),
+    );
+
+    const alreadyPlanned = new Set([
+      ...gcPlanned,
+      ...[...probePlan.selected, ...probePlan.skipped].map((wt) => wt.path),
+    ]);
     const detachedPlan = detached
       ? planDetachedScratchpadSweep(
           listDetachedScratchpadWorktrees({
@@ -2882,6 +3021,10 @@ function runWorktreeCleanup(args: string[]): number {
       ...(detachedPlan !== null
         ? [...detachedPlan.selected, ...detachedPlan.skipped].map((wt) => wt.path)
         : []),
+      // Every stamped probe, selected OR skipped (issue #961): a skip is still
+      // accounting — the probe is named under `probes.skipped` with its reason —
+      // so it must not ALSO read as something no population claimed.
+      ...[...probePlan.selected, ...probePlan.skipped].map((wt) => wt.path),
     ];
     const countAdvisory = checkWorktreeCountAdvisory({ repoRoot, accountedPaths });
     // `advisory` carries `WorktreeCountAdvisory.message` VERBATIM — the engine
@@ -2889,12 +3032,7 @@ function runWorktreeCleanup(args: string[]): number {
     // cleanup-plus-RESTART recovery), and this boundary never paraphrases it.
     // count/threshold/level ride alongside as their own named fields so a
     // consumer never has to re-derive the verdict from the prose.
-    const worktreeCount = {
-      count: countAdvisory.count,
-      threshold: countAdvisory.threshold,
-      level: countAdvisory.level,
-      advisory: countAdvisory.message,
-    };
+    const worktreeCount = worktreeCountJson(countAdvisory);
 
     // The count-vs-lists reconciliation (issue #557), printed as `worktreeCount`'s
     // sibling under the same no-flag-to-remember rule and with `notice` carrying
@@ -2931,37 +3069,7 @@ function runWorktreeCleanup(args: string[]): number {
     const cmdlineAdvisory = checkCommandLineSizeAdvisory();
     // `advisory` carries `CommandLineSizeAdvisory.message` VERBATIM, exactly as
     // `worktreeCount.advisory` does — same engine-owns-the-wording boundary.
-    const commandLine = {
-      bytes: cmdlineAdvisory.bytes,
-      argvBytes: cmdlineAdvisory.argvBytes,
-      envBytes: cmdlineAdvisory.envBytes,
-      argCount: cmdlineAdvisory.argCount,
-      envCount: cmdlineAdvisory.envCount,
-      threshold: cmdlineAdvisory.threshold,
-      // The PER-STRING term's two numbers (issue #340's second condition,
-      // surfaced here by issue #377). PURELY ADDITIVE: every key above keeps its
-      // name, its type and its meaning — `bytes`/`threshold` are still the TOTAL
-      // pair, and nothing is re-pointed at the per-string term.
-      //
-      // Without them the CLI printed the per-string VERDICT — folded into
-      // `level`, and stated in the verbatim `advisory` prose — while withholding
-      // the two numbers a machine reader needs to act on it. That is the same
-      // "ships the correction's premise, withholds the correction" shape the
-      // barrel gap (issue #357) closed one layer up, recurring at the CLI
-      // boundary. `maxEntryBytes` is the single LARGEST argv/env entry;
-      // `maxEntryThreshold` is the effective MAX_ARG_STRLEN budget it was
-      // compared against — the exact sibling of `bytes`/`threshold` for execve's
-      // OTHER, independent E2BIG condition, which fires on its own even when the
-      // total sits comfortably under budget.
-      //
-      // Byte counts only, like every number beside them: the engine never
-      // returns an argument or a variable's name or value, so nothing here can
-      // leak one into the JSON.
-      maxEntryBytes: cmdlineAdvisory.maxEntryBytes,
-      maxEntryThreshold: cmdlineAdvisory.maxEntryThreshold,
-      level: cmdlineAdvisory.level,
-      advisory: cmdlineAdvisory.message,
-    };
+    const commandLine = commandLineJson(cmdlineAdvisory);
 
     if (dryRun) {
       // Orphan-BRANCH preview (issue #148): planOrphanBranchSweep is the SAME
@@ -3028,6 +3136,9 @@ function runWorktreeCleanup(args: string[]): number {
                   },
                 }
               : {}),
+            // The SAME `probePlan` the real run executes (issue #961) — never
+            // conditional, since the population needs no flag.
+            probes: { selected: probePlan.selected, skipped: probePlan.skipped },
             ...(orphanBranchPlan !== null
               ? {
                   orphanBranches: {
@@ -3113,6 +3224,11 @@ function runWorktreeCleanup(args: string[]): number {
         ? executeCleanup(detachedPlan, { repoRoot, disposableNames })
         : null;
 
+    // Execute EXACTLY the `probePlan` the `--dry-run` branch prints (issue
+    // #961), through the same `executeCleanup` — the bounded retry and the
+    // incomplete-removal classes are inherited, not reimplemented.
+    const probeResult = executeCleanup(probePlan, { repoRoot, disposableNames });
+
     // Standalone orphaned-BRANCH sweep (FOR-72 — W15-F1, 3× reproduced): the
     // counterpart to the orphan-DIRECTORY sweep, gated on the same --orphans
     // flag. It deletes local wave branches whose remote ref is gone and harness
@@ -3143,11 +3259,13 @@ function runWorktreeCleanup(args: string[]): number {
     const branchesDeleted = [
       ...result.branchesDeleted,
       ...(detachedResult?.branchesDeleted ?? []),
+      ...probeResult.branchesDeleted,
       ...(orphanBranchResult?.branchesDeleted ?? []),
     ];
     const branchHygieneSkipped = [
       ...result.branchHygieneSkipped,
       ...(detachedResult?.branchHygieneSkipped ?? []),
+      ...probeResult.branchHygieneSkipped,
       ...(orphanBranchResult?.branchHygieneSkipped ?? []),
     ];
     // Issue #748 — the third member of that same family, folded the same way.
@@ -3218,6 +3336,10 @@ function runWorktreeCleanup(args: string[]): number {
           // populations answer different questions, and a `live-branch` skip
           // read as a GC skip would be actively misleading.
           ...(detachedResult !== null ? { detached: detachedResult } : {}),
+          // The stamped-probe sweep's own CleanupResult (issue #961), whole and
+          // under its own key: a `live-row` or `unknown-wave` skip read as a GC
+          // or detached skip would be actively misleading.
+          probes: probeResult,
           worktreeCount,
           // Issue #557 — the same object the `--dry-run` branch above printed,
           // computed once from the pre-removal plans. It is what a reader
@@ -3295,7 +3417,14 @@ function runWorktreeCleanup(args: string[]): number {
       (detachedResult !== null &&
         (detachedResult.errors.length > 0 ||
           detachedResult.deregisteredNotDeleted.length > 0 ||
-          detachedResult.erroredStillListed.length > 0));
+          detachedResult.erroredStillListed.length > 0)) ||
+      // The stamped-probe sweep rides the same three incomplete-outcome classes
+      // (issue #961), joining on the reading the review-ref and driver sweeps
+      // joined on: a removal this run SELECTED and did not finish is exactly as
+      // incomplete as any other. Only an attempted removal can move the exit —
+      // its REFUSALS (`live-row`, `unknown-wave` and the detached four) are
+      // accounting and are never terms here.
+      stampedProbeRunFailed(probeResult);
     return anyFailure ? 1 : 0;
   } catch (err) {
     process.stderr.write(
@@ -3303,6 +3432,142 @@ function runWorktreeCleanup(args: string[]): number {
     );
     return 2;
   }
+}
+
+/**
+ * `worktree-cleanup --probes-only` (issue #961, ADR-0042 Amendment 2026-09-23
+ * decision 14) — the stamped-probe population ALONE, for the one caller that
+ * must not run anything else: the Coordinator, collecting a round's probes
+ * right after it routes the round's verdicts, mid-wave. The full sweep there
+ * would also run the registered GC over the wave's own branches, and on a
+ * sandboxed harness every Worker worktree it selected would read EXHAUSTED and
+ * turn each routing call red.
+ *
+ * Its own shape — `{ dryRun, probesOnly, probes, worktreeCount, commandLine }`
+ * — because a GC key printed here would claim a pass that never ran.
+ * `unaccounted` is left out on the reasoning `checkWorktreeCountAdvisory`
+ * gives a preflight: a run that enumerates ONE population by design would name
+ * every other registration as unaccounted, which is noise, not a finding. The
+ * two E2BIG advisories stay, since neither ever needs a flag to be remembered.
+ *
+ * Exit 1 exactly when a SELECTED probe did not finish its removal (the three
+ * incomplete-outcome classes); every refusal is accounting and exits 0.
+ */
+function runStampedProbeSweepAlone(
+  args: string[],
+  repoRoot: string,
+  dryRun: boolean,
+  disposableNames: readonly string[] | undefined,
+): number {
+  const probePlan = planStampedProbeSweep(
+    listStampedProbeWorktrees({ repoRoot, disposableNames }),
+    probeSpineOf(resolveLiveWaveScope(args, repoRoot)),
+  );
+  // Read BEFORE any removal, as on the full sweep, so the preview and the run
+  // report the same starting population.
+  const worktreeCount = worktreeCountJson(checkWorktreeCountAdvisory({ repoRoot }));
+  const commandLine = commandLineJson(checkCommandLineSizeAdvisory());
+
+  if (dryRun) {
+    printJson({
+      dryRun: true,
+      probesOnly: true,
+      probes: { selected: probePlan.selected, skipped: probePlan.skipped },
+      worktreeCount,
+      commandLine,
+    });
+    return 0;
+  }
+
+  const probeResult = executeCleanup(probePlan, { repoRoot, disposableNames });
+  printJson({
+    dryRun: false,
+    probesOnly: true,
+    probes: probeResult,
+    worktreeCount,
+    commandLine,
+  });
+  return stampedProbeRunFailed(probeResult) ? 1 : 0;
+}
+
+/**
+ * Did the stamped-probe sweep leave a SELECTED probe incompletely removed
+ * (issue #961)? The same three classes the detached sweep's term reads.
+ */
+function stampedProbeRunFailed(result: ReturnType<typeof executeCleanup>): boolean {
+  return (
+    result.errors.length > 0 ||
+    result.deregisteredNotDeleted.length > 0 ||
+    result.erroredStillListed.length > 0
+  );
+}
+
+/**
+ * `worktreeCount` as `worktree-cleanup` prints it (issue #238). `advisory`
+ * carries `WorktreeCountAdvisory.message` VERBATIM — the engine owns that
+ * wording (the E2BIG shape, the subagent scope, the cleanup-plus-RESTART
+ * recovery), and this boundary never paraphrases it; count/threshold/level
+ * ride alongside so a consumer never re-derives the verdict from the prose.
+ * One function, so the full sweep and `--probes-only` cannot print two shapes.
+ */
+function worktreeCountJson(adv: ReturnType<typeof checkWorktreeCountAdvisory>): {
+  count: number;
+  threshold: number;
+  level: 'ok' | 'advisory';
+  advisory: string | null;
+} {
+  return {
+    count: adv.count,
+    threshold: adv.threshold,
+    level: adv.level,
+    advisory: adv.message,
+  };
+}
+
+/**
+ * `commandLine` as `worktree-cleanup` prints it (issue #266) — the OTHER term
+ * of the same exec argument budget, with the engine's text verbatim in
+ * `advisory`, exactly as `worktreeCount.advisory`.
+ *
+ * `maxEntryBytes`/`maxEntryThreshold` are the PER-STRING term's two numbers
+ * (issue #340's second condition, surfaced by issue #377). PURELY ADDITIVE:
+ * `bytes`/`threshold` are still the TOTAL pair, and nothing is re-pointed at
+ * the per-string term. Without them the CLI printed the per-string VERDICT —
+ * folded into `level`, stated in the verbatim `advisory` prose — while
+ * withholding the two numbers a machine reader needs to act on it: the same
+ * "ships the correction's premise, withholds the correction" shape the barrel
+ * gap (issue #357) closed one layer up. `maxEntryBytes` is the single LARGEST
+ * argv/env entry; `maxEntryThreshold` the effective MAX_ARG_STRLEN budget it
+ * was compared against — execve's OTHER, independent E2BIG condition, which
+ * fires on its own even when the total sits comfortably under budget.
+ *
+ * Byte counts only: the engine never returns an argument or a variable's name
+ * or value, so nothing here can leak one into the JSON.
+ */
+function commandLineJson(adv: ReturnType<typeof checkCommandLineSizeAdvisory>): {
+  bytes: number;
+  argvBytes: number;
+  envBytes: number;
+  argCount: number;
+  envCount: number;
+  threshold: number;
+  maxEntryBytes: number;
+  maxEntryThreshold: number;
+  level: 'ok' | 'advisory';
+  advisory: string | null;
+} {
+  return {
+    bytes: adv.bytes,
+    argvBytes: adv.argvBytes,
+    envBytes: adv.envBytes,
+    argCount: adv.argCount,
+    envCount: adv.envCount,
+    threshold: adv.threshold,
+    maxEntryBytes: adv.maxEntryBytes,
+    maxEntryThreshold: adv.maxEntryThreshold,
+    level: adv.level,
+    advisory: adv.message,
+  };
 }
 
 /** Node fs-backed {@link SidecarReader} — mirrors resume-cli.ts's `defaultSidecarReader`

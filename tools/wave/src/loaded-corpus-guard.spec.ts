@@ -371,7 +371,35 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that rewrites the Reviewer's sibling
+ * Why this number: **RAISED by the row that teaches the sweep to collect the
+ * Reviewer's stamped probe checkout** (issue #961), in the diff that causes the
+ * growth. ADR-0042 Amendment 2026-09-23 decisions 13–14 make the probe its own
+ * sweep population and move its collection to the Coordinator, and three
+ * operator documents have to say so where they are read: wave-close's phase-3
+ * reference gains the `probes` section — the key, its two new skip reasons,
+ * and what a close still collects (+2,468 B); wave-start's mechanics reference
+ * gains step 7d, the exact routing-step command and why it must run before any
+ * re-compose (+1,531 B), and its `SKILL.md` the step-7 line that prescribes it
+ * (+839 B); the wave-setup permission scaffold's "named, not reaped"
+ * justification is replaced by the stamp sweep (+99 B), and wave-close's
+ * `SKILL.md` phase-3 line names the population (+56 B). Every sentence is an
+ * instruction an operator or a Coordinator acts on, so none of it could go to
+ * an `evidence/` sibling instead.
+ *
+ * At this row's anchor commit `c01a76609a0755570fc0ef44dc2d31b36337d543` the
+ * population measured **1,236,143 B** over 57 files — 857 B under the previous
+ * 1,237,000 B ceiling. This row's edit lands it at **1,241,136 B** over the
+ * same 57 files, +4,993 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,242,000 B**. The 864 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget. The shared standing
+ * load is NOT raised: none of the five files is a member of that population,
+ * so that class stays at 161,176 B against its unchanged 162,000 B ceiling.
+ *
+ * Previously: 1,237,000 B — the raise by the row that rewrites the Reviewer's
+ * sibling prediction (issue #960), whose reasoning is kept below (in ITS voice,
+ * so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that rewrites the Reviewer's sibling
  * prediction** (issue #960), in the diff that causes the growth. The prediction
  * used to assume a sibling's branch tip is what the row will collide with; in a
  * wave that lands by squash and re-anchors every round that assumption broke in
@@ -610,7 +638,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 162_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_237_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_242_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

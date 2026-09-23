@@ -9203,3 +9203,266 @@ describe('`catalog` emits the router aggregate as JSON (ADR-0051 decision 2)', (
     expect(JSON.stringify(live)).toBe(JSON.stringify(asJson(contract)));
   });
 });
+
+// ─── worktree-cleanup — the stamped-probe population's CLI wiring (issue #961)
+//
+// ADR-0042 Amendment 2026-09-23 decision 14: the close's ordinary phase-3 call
+// collects whatever routing missed, with NO extra flag; the Coordinator's
+// routing step collects a round's probes with `--probes-only`. Same discipline
+// as the #557 block above: a REAL git repository, a REAL spine on disk, the
+// REAL router — what is under test is the wiring and the report surface; the
+// planner's own logic is worktree-cleanup.spec.ts's.
+describe('worktree-cleanup — stamped Reviewer probe checkouts under `probes` (issue #961)', () => {
+  const SLUG = '2026-09-23-probe-sweep';
+  const tempRoots: string[] = [];
+  let realExecFileSync: typeof execFileSync;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+    realExecFileSync = actual.execFileSync;
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asExecFileSyncMock(execFileSync).mockImplementation(
+      (...args: unknown[]) =>
+        (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args),
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(() => '');
+    while (tempRoots.length > 0) {
+      const dir = tempRoots.pop();
+      if (dir) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  function realGit(args: string[], cwd: string): string {
+    return realExecFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as unknown as string;
+  }
+
+  /**
+   * A real repo at `<root>/main`, a directory OUTSIDE it at `<root>/probes`
+   * (where a Reviewer's probe has to live), and a spine at
+   * `<root>/main/.flotilla/waves/<SLUG>.md` whose row 961 is in `state`.
+   */
+  function makeWave(label: string, state: string): { mainRoot: string; outside: string; spine: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cli-961-${label}-`)));
+    tempRoots.push(root);
+    const mainRoot = join(root, 'main');
+    mkdirSync(mainRoot, { recursive: true });
+    realGit(['init', '-q'], mainRoot);
+    realGit(['config', 'user.email', 'test@example.com'], mainRoot);
+    realGit(['config', 'user.name', 'Test'], mainRoot);
+    realGit(['config', 'core.excludesFile', '/dev/null'], mainRoot);
+    writeFileSync(join(mainRoot, 'README.md'), '# fixture\n');
+    writeFileSync(join(mainRoot, '.gitignore'), '.flotilla/\n');
+    realGit(['add', '-A'], mainRoot);
+    realGit(['commit', '-q', '-m', 'init'], mainRoot);
+    mkdirSync(join(mainRoot, '.claude', 'worktrees'), { recursive: true });
+    const outside = join(root, 'probes');
+    mkdirSync(outside, { recursive: true });
+    const wavesDir = join(mainRoot, '.flotilla', 'waves');
+    mkdirSync(wavesDir, { recursive: true });
+    const spine = join(wavesDir, `${SLUG}.md`);
+    writeFileSync(
+      spine,
+      [
+        `# Wave ${SLUG}`,
+        '',
+        '**Status:** ready',
+        '',
+        '## Plan-Table',
+        '',
+        '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
+        '|---|---|---|---|---|---|---|---|---|',
+        `| 961 | Probe sweep | background | public-API-change | universal | — | ${state} | 1 | — |`,
+        '',
+        '## Resume-Metadata',
+        '',
+        '```yaml',
+        'dispatch-log:',
+        '  - "961 → agent wf_aaa (sonnet) branch wave/961-probe-sweep"',
+        '```',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    return { mainRoot, outside, spine };
+  }
+
+  function plantDetached(mainRoot: string, dir: string, name: string): string {
+    const path = join(dir, name);
+    realGit(['worktree', 'add', '-q', '--detach', path, 'HEAD'], mainRoot);
+    return path;
+  }
+
+  function stillRegistered(mainRoot: string, path: string): boolean {
+    return realGit(['worktree', 'list', '--porcelain'], mainRoot)
+      .split('\n')
+      .some((line) => line.trim() === `worktree ${path}`);
+  }
+
+  type ProbeEntry = { path: string; reason?: string };
+  type ProbesJson = {
+    dryRun: boolean;
+    probesOnly?: boolean;
+    removed?: unknown[];
+    probes: {
+      selected?: ProbeEntry[];
+      removed?: ProbeEntry[];
+      skipped: ProbeEntry[];
+      errors?: unknown[];
+      erroredStillListed?: ProbeEntry[];
+    };
+    unaccounted?: { entries: Array<{ path: string }> };
+  };
+
+  function parse(): ProbesJson {
+    expect(stdoutBuf, `stderr was: ${stderrBuf}`).not.toBe('');
+    return JSON.parse(stdoutBuf) as ProbesJson;
+  }
+
+  it("AC4 — wave-close phase 3's own call reaches the population with NO extra flag: preview selects, run removes, and an unstamped out-of-root checkout stays unaccounted and untouched", () => {
+    const { mainRoot, outside, spine } = makeWave('phase-3', 'pr-created');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+    const unstamped = plantDetached(mainRoot, outside, 'someones-second-checkout');
+
+    // Exactly the invocation phase 3 documents — --spine, --orphans, --detached.
+    expect(
+      main(['worktree-cleanup', '--dry-run', '--spine', spine, '--orphans', '--detached', mainRoot]),
+    ).toBe(0);
+    const preview = parse();
+    expect((preview.probes.selected ?? []).map((w) => w.path)).toEqual([probe]);
+    expect(preview.unaccounted?.entries.map((e) => e.path)).toEqual([unstamped]);
+    expect(existsSync(probe)).toBe(true);
+
+    stdoutBuf = '';
+    expect(
+      main(['worktree-cleanup', '--spine', spine, '--orphans', '--detached', mainRoot]),
+    ).toBe(0);
+    const run = parse();
+    expect((run.probes.removed ?? []).map((w) => w.path)).toEqual([probe]);
+    expect(run.unaccounted?.entries.map((e) => e.path)).toEqual([unstamped]);
+    expect(existsSync(probe)).toBe(false);
+    expect(stillRegistered(mainRoot, probe)).toBe(false);
+    // The negative control, in the same run: never touched.
+    expect(existsSync(unstamped)).toBe(true);
+    expect(stillRegistered(mainRoot, unstamped)).toBe(true);
+  });
+
+  it("a probe whose row is still `reviewing` is skipped 'live-row', survives, and exits 0", () => {
+    const { mainRoot, outside, spine } = makeWave('live-row', 'reviewing');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    expect(main(['worktree-cleanup', '--spine', spine, '--orphans', '--detached', mainRoot])).toBe(0);
+    const run = parse();
+    expect(run.probes.removed).toEqual([]);
+    expect(run.probes.skipped.map((w) => [w.path, w.reason])).toEqual([[probe, 'live-row']]);
+    expect(existsSync(probe)).toBe(true);
+    // Named under `probes`, so NOT also unaccounted.
+    expect(run.unaccounted?.entries).toEqual([]);
+  });
+
+  it("without --spine every probe is 'unknown-wave' — named, never removed, and not unaccounted", () => {
+    const { mainRoot, outside } = makeWave('no-spine', 'pr-created');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    expect(main(['worktree-cleanup', '--detached', mainRoot])).toBe(0);
+    const run = parse();
+    expect(run.probes.removed).toEqual([]);
+    expect(run.probes.skipped.map((w) => [w.path, w.reason])).toEqual([[probe, 'unknown-wave']]);
+    expect(run.unaccounted?.entries).toEqual([]);
+    expect(existsSync(probe)).toBe(true);
+  });
+
+  it('AC5 — `--probes-only` collects the round\'s probe and NOTHING else: a clean Worker worktree the GC would select survives', () => {
+    const { mainRoot, outside, spine } = makeWave('probes-only', 'pr-created');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+    // A clean dispatch worktree on the spine's own branch — the full sweep's
+    // registered GC selects exactly this; the routing call must not.
+    const worker = join(mainRoot, '.claude', 'worktrees', 'wf_961');
+    realGit(['worktree', 'add', '-q', '-b', 'wave/961-probe-sweep', worker, 'HEAD'], mainRoot);
+
+    expect(
+      main(['worktree-cleanup', '--dry-run', '--probes-only', '--spine', spine, mainRoot]),
+    ).toBe(0);
+    const preview = parse();
+    expect(Object.keys(preview).sort()).toEqual(
+      ['commandLine', 'dryRun', 'probes', 'probesOnly', 'worktreeCount'].sort(),
+    );
+    expect(preview.probesOnly).toBe(true);
+    expect((preview.probes.selected ?? []).map((w) => w.path)).toEqual([probe]);
+
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', '--probes-only', '--spine', spine, mainRoot])).toBe(0);
+    const run = parse();
+    expect(Object.keys(run).sort()).toEqual(
+      ['commandLine', 'dryRun', 'probes', 'probesOnly', 'worktreeCount'].sort(),
+    );
+    expect((run.probes.removed ?? []).map((w) => w.path)).toEqual([probe]);
+    expect(existsSync(probe)).toBe(false);
+    expect(existsSync(worker)).toBe(true);
+    expect(stillRegistered(mainRoot, worker)).toBe(true);
+  });
+
+  it('`--probes-only` refuses a widening flag with exit 2 and removes nothing', () => {
+    const { mainRoot, outside, spine } = makeWave('refuse', 'pr-created');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    for (const widening of [['--orphans'], ['--detached'], ['--branches', 'wave/961-probe-sweep']]) {
+      stdoutBuf = '';
+      stderrBuf = '';
+      expect(
+        main(['worktree-cleanup', '--probes-only', '--spine', spine, ...widening, mainRoot]),
+      ).toBe(2);
+      expect(stderrBuf).toContain(widening[0]);
+      expect(stdoutBuf).toBe('');
+    }
+    expect(existsSync(probe)).toBe(true);
+  });
+
+  it('a SELECTED probe whose removal does not finish exits 1 — on both forms (the refusals above all exit 0)', () => {
+    const { mainRoot, outside, spine } = makeWave('seeded', 'pr-created');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+    // Only the deregistration of THIS path fails; the physical delete and every
+    // other git call run for real — the #265 fixture, aimed at this population.
+    asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'worktree' && cmdArgs[1] === 'remove' && cmdArgs[2] === probe) {
+        throw new Error(`git worktree remove: cannot remove worktree at '${probe}'`);
+      }
+      return (realExecFileSync as unknown as (...a: unknown[]) => unknown)(...args);
+    });
+
+    expect(main(['worktree-cleanup', '--probes-only', '--spine', spine, mainRoot])).toBe(1);
+    const run = parse();
+    expect((run.probes.erroredStillListed ?? []).map((w) => w.path)).toEqual([probe]);
+
+    // The full sweep reads the SAME incomplete outcome the same way: the
+    // registration survived, so the next run selects it again and exits 1.
+    stdoutBuf = '';
+    expect(main(['worktree-cleanup', '--spine', spine, mainRoot])).toBe(1);
+    expect(parse().probes.erroredStillListed?.map((w) => w.path)).toEqual([probe]);
+  });
+
+  it('AC7 — the usage names the new key and the narrowing flag', () => {
+    expect(main(['worktree-cleanup', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('probes');
+    expect(stdoutBuf).toContain('--probes-only');
+    expect(stdoutBuf).toContain('live-row and unknown-wave');
+  });
+});
