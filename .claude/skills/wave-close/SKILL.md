@@ -87,7 +87,7 @@ Each phase's full worked body — guards, worked command blocks, live-finding an
 
 ### 3. Worktree cleanup — BEFORE the merge
 
-[phase 3](reference/phase-3-worktree-cleanup.md). Clean up this wave's agent worktrees and sweep orphaned branches/directories — unconditionally, every time — so nothing still holds a wave branch locally by the time anyone reaches the merge step.
+[phase 3](reference/phase-3-worktree-cleanup.md). Clean up this wave's agent worktrees and any stamped Reviewer probe checkout routing missed, and sweep orphaned branches/directories — unconditionally, every time — so nothing still holds a wave branch locally by the time anyone reaches the merge step.
 
 ### 4. Advisory merge-order (print-only) — the merge happens here, verify branch deletion separately
 

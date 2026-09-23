@@ -821,6 +821,28 @@ export {
   type DeferredBranchReason,
 } from './worktree-cleanup';
 
+// The STAMPED-PROBE sweep (issue #961, ADR-0042 Amendment 2026-09-23) — the
+// SEVENTH population, and the first no containment root admits: a Reviewer's
+// probe checkout must live outside the repository, so the stamp
+// `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` stands in for a root, and
+// a probe is removable once its own row is no longer `reviewing`.
+//
+// Shipped WHOLE by the rule every sweep here ships by — list, plan, the
+// one-shot — plus `STAMPED_PROBE_PREFIX`, the stamp's fixed head, for the
+// reason `SCRIBE_SCRATCH_RELATIVE_DIR` rides along: it is what the operator
+// references cite. There is no separate execute: the plan is an ordinary
+// `CleanupPlan`, executed by the already-exported `executeCleanup`. The
+// ownership vocabulary (`live-row`, `unknown-wave`) widens `SkipReason` above
+// rather than adding a type.
+export {
+  STAMPED_PROBE_PREFIX,
+  listStampedProbeWorktrees,
+  planStampedProbeSweep,
+  sweepStampedProbes,
+  type StampedProbeSpine,
+  type StampedProbeSweepOptions,
+} from './worktree-cleanup';
+
 export {
   detectDrift,
   deriveProjectScopes,

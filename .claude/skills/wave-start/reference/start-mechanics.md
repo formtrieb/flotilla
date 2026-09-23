@@ -406,7 +406,8 @@ fi
 
 # 7. Route each returned tuple (see below) — incl. the sidecar existence check (7.0),
 #    the disclosure capture (7.0a, ADR-0027 — every tuple, before the outcome/verdict
-#    branch), and, for a new-check row, the Convention 11 falsification read (below)
+#    branch), and, for a new-check row, the Convention 11 falsification read (below);
+#    after the round's last tuple, the probe sweep (7d)
 
 # 9. Report-only. Sidecars are ALREADY on disk (Scribe stages in step 6; any
 #    missing one written at 7.0). No bundled write here — that was the P-1 kill
@@ -731,7 +732,8 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #   worktree-isolated agent, and the exact second edge W26-F1 hit right behind
 #   the stale-registration one (recovered only by hand via `git symbolic-ref`).
 
-#   RE-COMPOSE BY RE-RUNNING THE VERB — never hand-edit the round-1 script.
+#   RE-COMPOSE BY RE-RUNNING THE VERB — never hand-edit the round-1 script,
+#   and only once 7d has swept this round's probes.
 #   `{{wave-cli}} compose-driver` again (step 6, same flags, the row now at
 #   State `re-dispatched` and Iter 2) writes a fresh script for the rows that
 #   are still dispatchable. The re-fetch is the VERB's, unconditional and
@@ -746,6 +748,26 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #   full rule, the same-round boundary it deliberately does NOT retroactively
 #   fix, and why a wave-resume `redispatch` hand-off is the identical case,
 #   not a separate one.
+
+# 7d. Collect the round's probe checkouts — ONE call, after the round's LAST
+#     tuple is routed, before any re-compose (ADR-0042 Amendment 2026-09-23,
+#     decision 14). A Reviewer's probe lives outside the repo, named
+#     flotilla-probe-<slug>-<id>-i<iter>; only this stamp lets a sweep reach it.
+{{wave-cli}} worktree-cleanup --probes-only --spine "$SPINE" --config wave.config.json
+#   Removes every stamped probe whose --spine row is not `reviewing`, and
+#   NOTHING else: no registered GC, no orphan or detached pass (a full sweep
+#   mid-wave would select the round's Worker worktrees). Prints { dryRun,
+#   probesOnly, probes, worktreeCount, commandLine }; add --dry-run to preview.
+#   WHY THE ORDER: the spine never records `reviewing` — rows read
+#   dispatched/re-dispatched while a round runs — so the `live-row` gate cannot
+#   spare a probe an iteration-2 Reviewer is using. Placement does: run it
+#   while no Reviewer of this wave is running.
+#   Read `probes`: `removed` is the round's residue, gone. `skipped` is
+#   accounting, never a STOP — `unknown-wave` is a probe this spine names no
+#   row for (a sibling wave's, or a typo'd stamp), `dirty`/`locked`/
+#   `live-branch` are a probe someone kept using. Exit 1 = a probe it SELECTED
+#   and could not remove (`erroredStillListed`/`errors`): report it in step 9;
+#   wave-close phase 3 collects it again. Never a reason to flag a row.
 
 # 8. stop → flag needs-attention. `--question` and each `--option` land VERBATIM
 #    in a tracker field a person reads, so they are operator-directed output

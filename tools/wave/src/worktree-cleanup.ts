@@ -1586,12 +1586,20 @@ export interface WorktreeEntry {
  * appear on a {@link planCleanup} skip (that planner's candidates are already
  * name-allowlisted and it never asks the question), so the widening is additive
  * for every pre-existing reader of this type.
+ *
+ * `'live-row'` and `'unknown-wave'` are the stamped-probe sweep's two ownership
+ * refusals (issue #961, ADR-0042 Amendment 2026-09-23 decision 13) — see
+ * {@link planStampedProbeSweep}. The same additive argument holds: neither
+ * {@link planCleanup} nor {@link planDetachedScratchpadSweep} ever produces
+ * them, so no pre-existing skip changes its reason.
  */
 export type SkipReason =
   | 'dirty'
   | 'locked'
   | 'orphan-with-real-files'
-  | 'live-branch';
+  | 'live-branch'
+  | 'live-row'
+  | 'unknown-wave';
 
 /**
  * The result of a cleanup plan — which worktrees are selected for removal and
@@ -2130,38 +2138,52 @@ export function listAgentWorktrees(
   // (FOR-59 — see `probeWorktreeGitState`'s doc comment for why the guard
   // exists: an unguarded `git status --porcelain` silently leaks an
   // ancestor repository's status for a deregistered/prunable directory).
-  return entries.map((entry) => {
-    // The probe now runs for an already-dirty entry too (issue #111). Porcelain's
-    // `dirty` line answers WHETHER the worktree is dirty; it never says WHAT is
-    // dirty, and that second question is the one `dirtyAllJunk` needs. The old
-    // short-circuit returned before ever asking it, which is why a worktree the
-    // harness had written into stayed unremovable for as long as it existed.
-    const probe = probeWorktreeGitState(entry.path);
-    if (probe.orphan) {
-      return {
-        ...entry,
-        dirty: false,
-        orphan: true,
-        orphanAllJunk: isDirExclusivelyJunk(entry.path, declared),
-      };
-    }
-    // Either source reporting dirty means dirty — porcelain's line stays
-    // authoritative, so no worktree becomes removable that was not before.
-    // The disposability verdict comes only from a status the probe actually
-    // read: if porcelain called it dirty and the probe could not confirm it,
-    // there is nothing to classify and the entry stays skipped.
-    const dirty = entry.dirty || probe.dirty;
-    if (!dirty) return { ...entry, dirty: false };
+  return entries.map((entry) => withProbedGitState(entry, declared));
+}
+
+/**
+ * One parsed entry, classified by the toplevel-guarded probe — the dirty /
+ * orphan / junk verdicts every population in this module reasons about.
+ *
+ * Its own function (issue #961) so the stamped-probe listing classifies its
+ * entries with the SAME code {@link listAgentWorktrees} runs, rather than a
+ * copy of it: that population's safety claim is "the same dirty-worktree
+ * invariant and junk allowlist", and a shared function is what makes it true.
+ */
+function withProbedGitState(
+  entry: WorktreeEntry,
+  declared: ReadonlySet<string>,
+): WorktreeEntry {
+  // The probe now runs for an already-dirty entry too (issue #111). Porcelain's
+  // `dirty` line answers WHETHER the worktree is dirty; it never says WHAT is
+  // dirty, and that second question is the one `dirtyAllJunk` needs. The old
+  // short-circuit returned before ever asking it, which is why a worktree the
+  // harness had written into stayed unremovable for as long as it existed.
+  const probe = probeWorktreeGitState(entry.path);
+  if (probe.orphan) {
     return {
       ...entry,
-      dirty: true,
-      dirtyAllJunk: probe.dirty && probe.dirtyAllJunk,
-      // issue #718 — rides along only when the probe actually computed it
-      // (dirty and not all-junk); absent on every other shape, same as the
-      // probe itself leaves it.
-      ...(probe.blockingPaths ? { blockingPaths: probe.blockingPaths } : {}),
+      dirty: false,
+      orphan: true,
+      orphanAllJunk: isDirExclusivelyJunk(entry.path, declared),
     };
-  });
+  }
+  // Either source reporting dirty means dirty — porcelain's line stays
+  // authoritative, so no worktree becomes removable that was not before.
+  // The disposability verdict comes only from a status the probe actually
+  // read: if porcelain called it dirty and the probe could not confirm it,
+  // there is nothing to classify and the entry stays skipped.
+  const dirty = entry.dirty || probe.dirty;
+  if (!dirty) return { ...entry, dirty: false };
+  return {
+    ...entry,
+    dirty: true,
+    dirtyAllJunk: probe.dirty && probe.dirtyAllJunk,
+    // issue #718 — rides along only when the probe actually computed it
+    // (dirty and not all-junk); absent on every other shape, same as the
+    // probe itself leaves it.
+    ...(probe.blockingPaths ? { blockingPaths: probe.blockingPaths } : {}),
+  };
 }
 
 /**
@@ -3982,31 +4004,31 @@ export function planDetachedScratchpadSweep(
   const skipped: WorktreeEntry[] = [];
 
   for (const wt of candidates) {
-    if (wt.locked) {
-      skipped.push({ ...wt, reason: 'locked' });
-      continue;
+    const reason = detachedCheckoutRefusal(wt);
+    if (reason === null) {
+      selected.push(wt);
+    } else {
+      skipped.push({ ...wt, reason });
     }
-    // The defining gate: a branch means this is not a scratch checkout.
-    if (wt.branch !== null) {
-      skipped.push({ ...wt, reason: 'live-branch' });
-      continue;
-    }
-    if (wt.orphan) {
-      if (wt.orphanAllJunk) {
-        selected.push(wt);
-      } else {
-        skipped.push({ ...wt, reason: 'orphan-with-real-files' });
-      }
-      continue;
-    }
-    if (wt.dirty && !wt.dirtyAllJunk) {
-      skipped.push({ ...wt, reason: 'dirty' });
-      continue;
-    }
-    selected.push(wt);
   }
 
   return { selected, skipped };
+}
+
+/**
+ * The four refusals a detached checkout owes before anything may remove it,
+ * in {@link planDetachedScratchpadSweep}'s evaluation order — or `null` when
+ * none applies. Shared with {@link planStampedProbeSweep} (issue #961), so the
+ * stamped-probe population applies these refusals by calling this function,
+ * not by restating them.
+ */
+function detachedCheckoutRefusal(wt: WorktreeEntry): SkipReason | null {
+  if (wt.locked) return 'locked';
+  // The defining gate: a branch means this is not a scratch checkout.
+  if (wt.branch !== null) return 'live-branch';
+  if (wt.orphan) return wt.orphanAllJunk ? null : 'orphan-with-real-files';
+  if (wt.dirty && !wt.dirtyAllJunk) return 'dirty';
+  return null;
 }
 
 /**
@@ -4025,6 +4047,231 @@ export function sweepDetachedScratchpadWorktrees(
 ): CleanupResult {
   const repoRoot = opts.repoRoot ?? process.cwd();
   const plan = planDetachedScratchpadSweep(listDetachedScratchpadWorktrees(opts));
+  return executeCleanup(plan, {
+    repoRoot,
+    disposableNames: opts.disposableNames,
+    remover: opts.remover,
+    pathExists: opts.pathExists,
+    stillListed: opts.stillListed,
+    retryPause: opts.retryPause,
+    purgeJunk: opts.purgeJunk,
+    skipBranchHygiene: opts.skipBranchHygiene,
+    branchHygiene: opts.branchHygiene,
+    defaultBranch: opts.defaultBranch,
+  });
+}
+
+// ─── Stamped Reviewer probe checkouts (issue #961) ────────────────────────────
+//
+// The SEVENTH population, and the first one no containment root admits
+// (ADR-0042 Amendment 2026-09-23, decisions 12–14). A Reviewer's probe
+// checkout has to live OUTSIDE the repository: the harness denies
+// agent-configuration files at any depth of an in-repo checkout, so
+// `git worktree add` aborts under every root this module owns. Outside, it sat
+// in no population at all — `unaccounted` named it (Decision 3), and every one
+// was removed by hand, each costing a sandbox deny entry until then.
+//
+// THE STAMP IS THE CONTAINMENT. The Reviewer names its probe directory
+// `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` — a basename only
+// flotilla writes. A registered worktree carrying that stamp is this
+// population's member wherever it sits; permission to touch it is inherited
+// from the mark, exactly as it is otherwise inherited from a root flotilla
+// alone owns. The register only ENUMERATES, as it does for every population
+// here — this is not the register-following sweep ADR-0042 rejected, and an
+// UNSTAMPED out-of-root registration (a human's second worktree, a foreign
+// tool's checkout) stays unaccounted and untouched.
+//
+// THE REFUSALS, in order:
+//
+//   · the detached sweep's four, applied by calling the same function —
+//     `locked`, `live-branch` (a stamped worktree with a branch is never
+//     removed), `orphan-with-real-files`, `dirty`;
+//   · OWNERSHIP, asked only of a probe that is otherwise removable. The stamp
+//     is matched LITERALLY against the declared spine's own slug and row ids —
+//     never parsed, since both a slug and an opaque row id may carry hyphens —
+//     and a probe no declared pair names is `unknown-wave`: reported, never
+//     removed (accounting, never removal). A probe whose row reads `reviewing`
+//     is `live-row`. Any other state removes it.
+//
+// LIVENESS IS PER ROW, not per wave (decision 13): a probe is read by nobody
+// but the Reviewer that made it, so the objection that keeps review refs
+// wave-scoped — a running Worker reading a finished sibling's ref — does not
+// reach it. The spine is the only row-state source this module is handed, and
+// only the CALLER reads it: row states are the spine reader's vocabulary.
+
+/**
+ * The stamp's fixed head — every stamped probe basename begins with it
+ * (issue #961). Exported as the one spelling the operator-facing references
+ * cite, the reason {@link SCRIBE_SCRATCH_RELATIVE_DIR} is.
+ */
+export const STAMPED_PROBE_PREFIX = 'flotilla-probe-';
+
+/**
+ * The stamp's SHAPE — `<prefix><wave-slug>-<row-id>-i<iteration>`, each part
+ * non-empty and the iteration a positive integer with no leading zero. This is
+ * population membership only; whether a declared spine names the pair is
+ * {@link stampedProbeRowState}'s question. A basename that merely resembles the
+ * stamp (no iteration, no row segment, a trailing suffix) is not a member, so
+ * this sweep never considers it.
+ */
+const STAMPED_PROBE_SHAPE = new RegExp(`^${STAMPED_PROBE_PREFIX}.+-.+-i[1-9][0-9]*$`);
+
+/** An iteration suffix exactly as the stamp spells it. */
+const STAMPED_PROBE_ITERATION = /^[1-9][0-9]*$/;
+
+/**
+ * The spine a stamped-probe sweep resolves ownership against (issue #961).
+ * Built by the caller from a spine it has read — this module never reads one.
+ */
+export interface StampedProbeSpine {
+  /** The wave slug — the spine's filename without `.md`, matched literally. */
+  slug: string;
+  /**
+   * Every Plan-Table row, id → its `State` cell verbatim. An id is opaque and
+   * is matched, never parsed; a state is compared to `reviewing` only, so an
+   * unrecognized cell reads as "no Reviewer running" exactly as any other
+   * non-`reviewing` state does.
+   */
+  rowStates: ReadonlyMap<string, string>;
+}
+
+/** Options for the stamped-probe sweep (issue #961). */
+export interface StampedProbeSweepOptions {
+  /** Absolute repo root `git worktree list` is invoked in. Defaults to `process.cwd()`. */
+  repoRoot?: string;
+  /**
+   * The spine ownership is resolved against. ABSENT is fail-closed: every
+   * candidate that survives the structural refusals is `unknown-wave`, and
+   * nothing is removed.
+   */
+  spine?: StampedProbeSpine;
+  /** Consumer-declared disposable names — same semantics as {@link DetachedSweepOptions.disposableNames}. */
+  disposableNames?: readonly string[];
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.remover}. */
+  remover?: WorktreeRemover;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.pathExists}. */
+  pathExists?: (path: string) => boolean;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.stillListed}. */
+  stillListed?: (path: string) => boolean;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.retryPause}. */
+  retryPause?: () => void;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.purgeJunk}. */
+  purgeJunk?: (worktreePath: string) => void;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.skipBranchHygiene}. */
+  skipBranchHygiene?: boolean;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.branchHygiene}. */
+  branchHygiene?: BranchHygieneOps;
+  /** Forwarded to {@link executeCleanup} — see {@link CleanupOptions.defaultBranch}. */
+  defaultBranch?: string;
+}
+
+/** Is `name` a stamped probe basename (population membership, issue #961)? */
+function isStampedProbeName(name: string): boolean {
+  return STAMPED_PROBE_SHAPE.test(name);
+}
+
+/**
+ * The declared row state a stamped probe basename belongs to, or `null` when
+ * no declared `(slug, row id)` pair names it. Literal matching: the basename
+ * must be exactly `<prefix><slug>-<row id>-i<iteration>` for the spine's slug
+ * and one of its row ids. The stamp's grammar cannot itself tell slug `a` +
+ * row `b-c` from slug `a-b` + row `c`; the DECLARED pair decides, so a spine
+ * claims a probe only when one of its own rows completes the exact spelling.
+ */
+function stampedProbeRowState(
+  name: string,
+  spine: StampedProbeSpine | undefined,
+): string | null {
+  if (spine === undefined) return null;
+  const waveHead = `${STAMPED_PROBE_PREFIX}${spine.slug}-`;
+  if (!name.startsWith(waveHead)) return null;
+  for (const [rowId, state] of spine.rowStates) {
+    const rowHead = `${waveHead}${rowId}-i`;
+    if (
+      name.startsWith(rowHead) &&
+      STAMPED_PROBE_ITERATION.test(name.slice(rowHead.length))
+    ) {
+      return state;
+    }
+  }
+  return null;
+}
+
+/**
+ * Every REGISTERED worktree whose directory basename carries the probe stamp
+ * (issue #961), wherever it sits — no containment root is consulted — with
+ * the same toplevel-guarded dirty/orphan/junk classification
+ * {@link listAgentWorktrees} applies. The primary checkout is excluded by
+ * `repoRoot` identity. Branch-bearing, dirty and locked members are listed
+ * too, so {@link planStampedProbeSweep} can name each refusal.
+ */
+export function listStampedProbeWorktrees(
+  opts: StampedProbeSweepOptions = {},
+): WorktreeEntry[] {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const declared = toDisposableSet(opts.disposableNames);
+  const primary = realpathForCompare(repoRoot);
+  const raw = shellGit(['worktree', 'list', '--porcelain'], repoRoot);
+  return parseWorktreeList(raw, [''])
+    .filter((wt) => isStampedProbeName(nodePath.basename(wt.path)))
+    .filter((wt) => realpathForCompare(wt.path) !== primary)
+    .map((wt) => withProbedGitState(wt, declared));
+}
+
+/**
+ * Plan a stamped-probe sweep (issue #961) — an ordinary {@link CleanupPlan},
+ * handed to the SAME {@link executeCleanup} every removal path uses.
+ *
+ * Each candidate first answers {@link detachedCheckoutRefusal} — the detached
+ * sweep's own four refusals, by the same function. A candidate none of them
+ * refuses is then asked who owns it, against `spine`:
+ *
+ *   - no declared `(slug, row id)` pair names its basename → skipped
+ *     `unknown-wave`. Named, never removed. With no `spine` at all, every
+ *     such candidate lands here.
+ *   - its row's state is `reviewing` → skipped `live-row`.
+ *   - its row is in any other state → selected.
+ *
+ * Pure: no filesystem, no git. Candidate order is preserved in both lists.
+ */
+export function planStampedProbeSweep(
+  candidates: WorktreeEntry[],
+  spine?: StampedProbeSpine,
+): CleanupPlan {
+  const selected: WorktreeEntry[] = [];
+  const skipped: WorktreeEntry[] = [];
+
+  for (const wt of candidates) {
+    const refusal = detachedCheckoutRefusal(wt);
+    if (refusal !== null) {
+      skipped.push({ ...wt, reason: refusal });
+      continue;
+    }
+    const state = stampedProbeRowState(nodePath.basename(wt.path), spine);
+    if (state === null) {
+      skipped.push({ ...wt, reason: 'unknown-wave' });
+      continue;
+    }
+    if (state === 'reviewing') {
+      skipped.push({ ...wt, reason: 'live-row' });
+      continue;
+    }
+    selected.push(wt);
+  }
+
+  return { selected, skipped };
+}
+
+/**
+ * High-level stamped-probe sweep (issue #961): list → plan → execute in one
+ * call, mirroring {@link sweepDetachedScratchpadWorktrees}. A caller that must
+ * preview the plan splits it into {@link listStampedProbeWorktrees} +
+ * {@link planStampedProbeSweep} + {@link executeCleanup}, as the
+ * `worktree-cleanup` verb does.
+ */
+export function sweepStampedProbes(opts: StampedProbeSweepOptions = {}): CleanupResult {
+  const repoRoot = opts.repoRoot ?? process.cwd();
+  const plan = planStampedProbeSweep(listStampedProbeWorktrees(opts), opts.spine);
   return executeCleanup(plan, {
     repoRoot,
     disposableNames: opts.disposableNames,
@@ -4182,8 +4429,9 @@ export interface WorktreeCountAdvisoryOptions {
   countWorktrees?: () => number;
   /**
    * Every worktree path THIS run's populations account for (issue #557) — the
-   * registered-GC listing, the orphan-directory sweep, the Scribe scratch sweep
-   * and the detached sweep, unioned. Passing it turns on the reconciliation and
+   * registered-GC listing, the orphan-directory sweep, the Scribe scratch sweep,
+   * the detached sweep and the stamped-probe sweep (issue #961), unioned.
+   * Passing it turns on the reconciliation and
    * populates {@link WorktreeCountAdvisory.unaccounted}; omitting it leaves that
    * field `null` and this function byte-identical to its pre-#557 self.
    *
@@ -4299,7 +4547,7 @@ function unaccountedNoticeMessage(entries: readonly UnaccountedWorktree[]): stri
   return (
     `${entries.length} registered git worktree(s) are accounted for by NO sweep list in this run — ` +
     'neither the primary checkout nor in the registered GC, the orphan-directory sweep, ' +
-    'the Scribe scratch sweep or the detached sweep. They are counted (each costs its ' +
+    'the Scribe scratch sweep, the detached sweep or the stamped-probe sweep. They are counted (each costs its ' +
     'sandbox filesystem-deny entry like every other registration) and selected by nothing:\n' +
     lines.join('\n') +
     '\nADVISORY, NEVER A FAILURE: this never changes the exit code. The set has a legitimate ' +
@@ -4312,7 +4560,8 @@ function unaccountedNoticeMessage(entries: readonly UnaccountedWorktree[]): stri
     'For a checkout that IS present: if it is an agent scratch checkout under a STABLE root, ' +
     'declare that root in the wave config\'s `cleanup.extraRoots` and re-run with `--detached`, ' +
     'which brings it into the sweep; if its location is per-session (a harness scratchpad), no ' +
-    'static declaration can name it — remove it by hand. The sweep NAMES this residue, it never ' +
+    'static declaration can name it — remove it by hand (a Reviewer probe carrying the ' +
+    `\`${STAMPED_PROBE_PREFIX}\` stamp never lands here: the stamped-probe sweep owns it). The sweep NAMES this residue, it never ` +
     'removes what it does not contain: removal authority stays with the Operator (ADR-0042).'
   );
 }

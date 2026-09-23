@@ -197,6 +197,8 @@ Two calls per tuple, in this order — the disclosure capture, then the routing 
 
    Every step carries `performed` or `performed-before`, so a re-run after an interruption is safe and tells you what it found already done: the open PR is reused rather than duplicated, no second verdict section is stacked into its body, and a rung already at `in-review` is left alone. Exit 1 is a refusal that wrote nothing past the step it names — read the message, fix what it names, re-run.
 
+4. **After the round's LAST tuple is routed, sweep its probe checkouts — one call, before any re-compose.** Each Reviewer made its probe outside the repo, stamped `flotilla-probe-<wave-slug>-<row-id>-i<iteration>`; `{{wave-cli}} worktree-cleanup --probes-only --spine <spine> --config <cfg>` removes every stamped probe whose row is no longer `reviewing`, and nothing else ([ADR-0042](../../../docs/adr/0042-the-sweep-owes-accounting-never-removal.md) Amendment 2026-09-23). Run it while no Reviewer of this wave is running: the spine never records `reviewing`, so the order, not the gate, protects an iteration-2 Reviewer's probe. Skips are accounting, never a STOP; exit 1 names a probe it could not remove — report it, wave-close collects it again. Reading guide: [reference/start-mechanics.md](reference/start-mechanics.md) §7d.
+
 ### 8. STOP → flag needs-attention
 
 A `stop` outcome (`public-api-approval-required`, `reviewer-questions-blocking`, `re-dispatch-cap-exhausted`, `same-file-conflict`, `worker-failed`, `worker-stalled`) halts that row. Set the orthogonal `needs-attention` flag on the tracker so a concurrent wave / human sees it, then ping the Operator:

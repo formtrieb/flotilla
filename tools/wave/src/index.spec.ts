@@ -888,6 +888,36 @@ const TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT = ['TERMINAL_ROW_STATES'];
 const LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT = ['DEFAULT_COMMIT_MESSAGE_SOURCE'];
 
 /**
+ * The VALUE half of the STAMPED-PROBE sweep (issue #961, ADR-0042 Amendment
+ * 2026-09-23) — worktree-cleanup.ts's SEVENTH population, and the first one no
+ * containment root admits: a Reviewer's probe checkout lives outside the
+ * repository, so the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>`
+ * stands in for a root. Sorted, as the probe sorts.
+ *
+ * Its own family rather than an append to either sweep list above, for the
+ * reason their own doc comments give: each records what ITS issue decided at
+ * ITS anchor.
+ *
+ * Four names — list, plan, the one-shot, and the stamp's fixed head. No execute
+ * rides along: the plan is an ordinary `CleanupPlan`, and `executeCleanup` was
+ * root-reachable before this slice. The TYPE half (`StampedProbeSpine`,
+ * `StampedProbeSweepOptions`) is erased at runtime and invisible to this
+ * enumeration; barrel-drift.spec.ts's identity comparison and
+ * worktree-cleanup.spec.ts's root import pin those. The ownership vocabulary
+ * (`live-row`, `unknown-wave`) WIDENS the already-exported `SkipReason` rather
+ * than adding a name, so it moves no number here.
+ *
+ * Semver: additions plus a widened union no shipped planner produced before —
+ * minor (ADR-0035).
+ */
+const STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT = [
+  'STAMPED_PROBE_PREFIX',
+  'listStampedProbeWorktrees',
+  'planStampedProbeSweep',
+  'sweepStampedProbes',
+];
+
+/**
  * How many runtime names the package root carried before this slice, recorded
  * the same way. This is the widest net in the file: it catches a stowaway from
  * ANY module, including one that has nothing to do with worktree-cleanup.
@@ -1339,7 +1369,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   GOAL_MEMBER_KIND_FAMILY_ADDED_AT_ROOT.length +
   GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT.length +
   TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT.length +
-  LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT.length;
+  LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT.length +
+  STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1500,6 +1531,8 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
         // The composed-driver sweep (issue #748) — the sixth population, and
         // its own recorded family for the same reason.
         ...COMPOSED_DRIVER_SWEEP_FAMILY_ADDED_AT_ROOT,
+        // The stamped-probe sweep (issue #961) — the seventh population.
+        ...STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT,
       ].sort(),
     );
 
@@ -1511,6 +1544,7 @@ describe('the E2BIG asymmetry is closed at the root — runtime enumeration (iss
         ...WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT,
         ...REVIEW_REF_SWEEP_FAMILY_ADDED_AT_ROOT,
         ...COMPOSED_DRIVER_SWEEP_FAMILY_ADDED_AT_ROOT,
+        ...STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT,
       ].sort(),
     );
   });
@@ -1889,6 +1923,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // The count alone is necessary but not sufficient: a stowaway arriving in
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT),
+    );
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT),
     );
