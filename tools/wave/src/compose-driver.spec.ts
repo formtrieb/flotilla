@@ -3729,6 +3729,89 @@ describe('compose-driver — the RENDERED briefs carry the re-measured variable-
   });
 });
 
+describe('compose-driver — the RENDERED Worker brief states truthfully what lands on the default branch (ADR-0053)', () => {
+  const rows = [row({ id: '42', slug: 'first' })];
+
+  /**
+   * The claim ADR-0053 retired. The brief told the Worker its PR title was,
+   * "on a single-commit squash, what lands on the default branch" — the inverse
+   * of GitHub's defaults, under which a single-commit PR lands under its
+   * COMMIT's subject and a multi-commit PR under the PR title with every branch
+   * commit concatenated. The landing verb now authors the message from the PR
+   * on every commit count, so the claim is wrong in both halves.
+   */
+  const RETIRED = 'on a single-commit squash, what lands on the default branch';
+
+  /**
+   * The three statements the acceptance criterion asks for, as they read AFTER
+   * rendering (the template escapes its backticks; the brief does not). Each is
+   * pinned separately so a partial regression names the half it lost.
+   */
+  const CORRECTED: ReadonlyArray<{ half: string; text: string }> = [
+    {
+      half: 'the default: PR title and body, any commit count',
+      text:
+        'Under the default (`landing.commitMessage` absent or `pr`), the PR title and body are the ' +
+        'landed message on any commit count: the landing verb writes the squash commit from them ' +
+        'whether your branch carries one commit or several.',
+    },
+    {
+      half: 'the Worker commit messages do not reach the default branch',
+      text:
+        'Your own commit messages do not reach the default branch under the default, so the PR body ' +
+        'is where the durable record goes, never a commit message.',
+    },
+    {
+      half: 'under host, the repository squash setting decides',
+      text: "Under `host`, the repository's own squash setting decides what lands instead.",
+    },
+  ];
+
+  async function workerBrief(template: string): Promise<string> {
+    const { calls } = await runComposedDriver(
+      composeDriverScript({ template, ...CONSTANTS, rows }),
+    );
+    const brief = calls.find((c) => String(c.opts.label) === 'worker:42')?.brief ?? '';
+    expect(brief).toContain('You are a Wave Worker'); // guard the fixture before any claim rests on it
+    return brief;
+  }
+
+  /** The halves of the corrected statement the RENDERED brief is missing. */
+  function missingHalves(brief: string): string[] {
+    return CORRECTED.filter((c) => !brief.includes(c.text)).map((c) => c.half);
+  }
+
+  it('the dispatched brief carries all three halves of the corrected statement', async () => {
+    expect(missingHalves(await workerBrief(TEMPLATE))).toEqual([]);
+  });
+
+  it('CONTROL — the retired single-commit claim is gone from the dispatched brief AND from the template', async () => {
+    expect(await workerBrief(TEMPLATE)).not.toContain(RETIRED);
+    // The template too, so the claim cannot survive in a branch of the asset
+    // this fixture's composition happens not to render.
+    expect(TEMPLATE).not.toContain(RETIRED);
+    expect(TEMPLATE).not.toContain('single-commit squash');
+  });
+
+  it('the title rule now says what the title is under the default, not under a commit count', async () => {
+    expect(await workerBrief(TEMPLATE)).toContain(
+      'it is what the reviewer reads first and, under the default, the subject of the commit that ' +
+        'lands on the default branch.',
+    );
+  });
+
+  it('NEGATIVE CONTROL — a template drifted back to the retired claim renders a brief both pins reject', async () => {
+    const drifted = TEMPLATE.replace(
+      /under the default, the subject of the commit that lands on the default branch\.\n\n {3}\*\*What lands on the default branch is your PR[\s\S]*?decides what lands instead\.\n/,
+      `${RETIRED}.\n`,
+    );
+    expect(drifted).not.toEqual(TEMPLATE); // the replace actually matched
+    const brief = await workerBrief(drifted);
+    expect(brief).toContain(RETIRED);
+    expect(missingHalves(brief)).toEqual(CORRECTED.map((c) => c.half));
+  });
+});
+
 describe('compose-driver — the PR-create title is rendered single-quoted, and the row data stays plain (issue #776, folded into #753)', () => {
   /**
    * A title carrying every character that survives inside double quotes and

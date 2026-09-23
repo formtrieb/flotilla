@@ -91,7 +91,7 @@ Each phase's full worked body — guards, worked command blocks, live-finding an
 
 ### 4. Advisory merge-order (print-only) — the merge happens here, verify branch deletion separately
 
-[phase 4](reference/phase-4-advisory-merge-order.md). Recompute and print the advisory merge order, merge each PR through the engine host seam, and verify branch deletion as its own checked step — the merge command's exit code alone is never evidence the branch is gone.
+[phase 4](reference/phase-4-advisory-merge-order.md). Recompute and print the advisory merge order, merge each PR through the engine host seam (every merge and arm passes `--commit-message`: `landing.commitMessage` from `wave.config.json`, else `pr`), and verify branch deletion as its own checked step — the merge command's exit code alone is never evidence the branch is gone.
 
 ### 4a. Self-repair check + pull to completion before you reconcile (W4-F1 / W5-F3)
 

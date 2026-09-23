@@ -175,6 +175,7 @@ Same discipline as the GitHub table above: neither preflight substitutes for che
 | `cleanup` | no | `CleanupConfig` — omit entirely unless this consumer's toolchain leaves build output inside a worktree |
 | `engine` | no | `EngineConfig` — `{ cli?: string }` (ADR-0032); see below |
 | `models` | no | `ModelsConfig` — `{ heavy?, standard?, scribe? }`, this consumer's standing tier→model-id binding (ADR-0012 Amendment 2026-09-21); see below |
+| `landing` | no | `{ commitMessage?: "pr" \| "host" }` — who writes the landed commit (ADR-0053); absent means `"pr"`; see below |
 
 ### `EngineConfig`
 
@@ -238,6 +239,10 @@ The engine derives an abstract **tier** from a row's Risk and has never been all
 `models.scribe` is the one key with a behaviour of its own: the Scribe stage binds `models.scribe`, else `models.standard`, else the row's own recorded model — never an omitted model, because a stage dispatched without one silently re-inherits whatever model coordinates the session. Declare it to keep that stage cheap; it carried a hard-coded cheap-tier id until this key existed, the brand-in-a-durable-artefact ADR-0012 forbids.
 
 Absent `models`, and an absent key inside it, mean "nothing standing is declared". A **present** key must be a non-empty string: the loader refuses a non-object block, a non-string value and an empty id, each naming the dotted key (`wave config "models.heavy"`), and grades nothing about the id itself — a model id is opaque and consumer-owned. A misspelled key (`models.scribes`) is a `config validate` WARNING naming the three declared keys, never a refusal; that verb also echoes the bound values on its `ok:` line.
+
+### `landing` — who writes the landed commit (ADR-0053)
+
+`commitMessage`, optional: exactly `"pr"` or `"host"`; absent means `"pr"`. `pr` sends the PR's own title (plus the host's number suffix) and body as the landed commit, on any commit count, so the Worker's commit messages never reach the default branch. `host` sends nothing, so the repository's own squash setting composes the commit; it is for a history a tool reads (semantic-release, commitlint, a changelog generator). The landing verbs never read this key; wave-close passes it as `--commit-message` on every `host-pr arm` and `merge`. `config validate` refuses any other value at exit 1, naming `landing.commitMessage` and both values, echoes a declared one on its `ok:` line (`landing.commitMessage: host`), and only warns on a misspelled key inside `landing`.
 
 ### The shared `store.goal` block (every store kind)
 

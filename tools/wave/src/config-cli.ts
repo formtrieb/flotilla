@@ -4,8 +4,9 @@
  *
  * Store-INDEPENDENT: it calls loadWaveConfig (which validates `store`, `verify`
  * — including each command's ADR-0049 `needs` declaration against its closed set
- * of three — `cleanup`, the ADR-0032 `engine.cli` / `engine.install` bindings and
- * the ADR-0012 `models` tier→model-id block)
+ * of three — `cleanup`, the ADR-0032 `engine.cli` / `engine.install` bindings,
+ * the ADR-0012 `models` tier→model-id block and the ADR-0053
+ * `landing.commitMessage` choice, whose value must be exactly `pr` or `host`)
  * but never buildStore, so it validates a `github` config too — buildStore throws
  * the pre-P8 GitHub deferral, loadWaveConfig does not. This is how `wave-setup`
  * proves a freshly-written config loads (ADR-0016 skill-half grill 2026-06-18).
@@ -205,7 +206,7 @@ const STORE_KEYS: Readonly<Record<'markdown' | 'github' | 'linear', readonly str
   github: ['kind', 'eligibility', 'goal'],
   linear: ['kind', 'team', 'project', 'eligibility', 'states', 'categoryLabels', 'goal'],
 };
-const TOP_LEVEL_KEYS: readonly string[] = ['store', 'verify', 'cleanup', 'engine', 'models'];
+const TOP_LEVEL_KEYS: readonly string[] = ['store', 'verify', 'cleanup', 'engine', 'models', 'landing'];
 const STORE_GOAL_KEYS: readonly string[] = ['container'];
 /** The claim rungs plus the two non-rung write targets and the opt-in done state. */
 const STORE_STATES_KEYS: readonly string[] = [
@@ -225,6 +226,13 @@ const ENGINE_KEYS: readonly string[] = ['cli', 'install'];
  * exactly the misspelled KEY, which would otherwise bind nothing in silence.
  */
 const MODELS_KEYS: readonly string[] = ['heavy', 'standard', 'scribe'];
+/**
+ * The landing-message choice (ADR-0053 decision 4). The loader refuses a
+ * non-object block and any value but `pr`/`host`, so — exactly as for `models`
+ * — what is left for this table is the misspelled KEY, which would otherwise
+ * leave every landing on `pr` in silence.
+ */
+const LANDING_KEYS: readonly string[] = ['commitMessage'];
 const VERIFY_KEYS: readonly string[] = ['profiles'];
 const VERIFY_PROFILE_KEYS: readonly string[] = ['name', 'appliesTo', 'commands'];
 // `needs` is deliberately absent from the walk below: its keys are a CLOSED set
@@ -364,7 +372,8 @@ function collectAbsoluteArgvWords(
  * Walks the value `loadWaveConfig` handed back — which IS the parsed JSON, so
  * the keys nothing declares are still on it — block by block, top level
  * downwards. Order is stable and structural (root, store, store's sub-blocks,
- * verify, cleanup, engine) so two runs over one file print the same lines.
+ * verify, cleanup, engine, models, landing) so two runs over one file print the
+ * same lines.
  */
 function collectConfigWarnings(config: WaveConfig): ConfigWarning[] {
   const raw = config as unknown as Record<string, unknown>;
@@ -472,6 +481,11 @@ function collectConfigWarnings(config: WaveConfig): ConfigWarning[] {
   const models = raw.models;
   if (isPlainObject(models)) collectUnknownKeys(models, 'models', MODELS_KEYS, out);
 
+  // ADR-0053 — the landing-message block, by the same rule as `models` above:
+  // the loader already refuses a non-object `landing`, so `isPlainObject`.
+  const landing = raw.landing;
+  if (isPlainObject(landing)) collectUnknownKeys(landing, 'landing', LANDING_KEYS, out);
+
   return out;
 }
 
@@ -564,6 +578,14 @@ function summarySegments(config: WaveConfig, warnings: readonly ConfigWarning[])
   if (isPlainObject(models)) {
     const pairs = renderPairs(models, MODELS_KEYS);
     if (pairs !== '') segments.push(`models: ${pairs}`);
+  }
+
+  // ADR-0053 — the DECLARED landing-message choice, reported for the same
+  // reason the bindings above are: an operator confirming that `host` took
+  // reads it here. Conditional like every segment, so an absent key — which
+  // means `pr` — prints the line it printed before the key existed.
+  if (typeof config.landing?.commitMessage === 'string') {
+    segments.push(`landing.commitMessage: ${config.landing.commitMessage}`);
   }
 
   if (warnings.length > 0) segments.push(`${warnings.length} warning(s)`);

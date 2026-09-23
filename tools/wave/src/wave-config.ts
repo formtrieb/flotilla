@@ -15,6 +15,11 @@ import { normalizeDisposableNames } from './worktree-cleanup';
 // union here would be a defect rather than a convenience. TYPE-ONLY, so it is
 // erased at runtime and adds no module edge in either direction.
 import type { GoalContainer } from './adapters/issue-store';
+// The landing verbs' own `--commit-message` vocabulary (ADR-0053), imported for
+// the same reason and in the same form: `landing.commitMessage` is the config
+// half of that one flag, so a second hand-spelled `'pr' | 'host'` here could
+// drift from the flag it feeds. TYPE-ONLY — erased at runtime, no module edge.
+import type { CommitMessageSource } from './host-pr';
 
 // ── the Goal container binding: `store.goal.container` (ADR-0044 decision 4) ──
 //
@@ -958,6 +963,109 @@ function validateModels(value: unknown, block = 'models'): void {
   }
 }
 
+// ── the landing message: `landing.commitMessage` (ADR-0053 decision 4) ──────
+//
+// Who composes the commit a landing leaves on the default branch. The landing
+// verbs (`host-pr arm | merge`) take the answer as `--commit-message pr|host`
+// and stay store-blind — they never read this file — so this key has exactly
+// one kind of reader: the skills that compose an arm or a merge, which read it
+// here and pass it as the flag. Absent means `pr`, the flag's own default
+// (`DEFAULT_COMMIT_MESSAGE_SOURCE`, host-pr.ts), so a consumer that never
+// declares the key lands exactly what the flag's default lands.
+//
+// The case it exists for is a consumer whose default-branch history is
+// MACHINE-READ — semantic-release, commitlint, a changelog generator — where
+// the Worker's commits follow a convention flotilla's prose PR titles do not.
+// `host` hands the message back to the repository's own squash setting.
+
+/**
+ * The `landing` block of a wave config (ADR-0053 decision 4).
+ *
+ * MODULE-LOCAL, not root-exported, and that is a placement fact rather than a
+ * design one — the same constraint `store.goal` shipped under before it was
+ * promoted: a new exported symbol here fails `barrel-drift.spec.ts` unless
+ * `index.ts` moves in the same diff, and neither was in the declaring row's
+ * Files globs. A root-only consumer names the shape as
+ * `NonNullable<WaveConfig['landing']>` until a row that owns the barrel
+ * promotes it. The key-set conformance test in `wave-config.spec.ts` reads
+ * this declaration by name either way.
+ */
+interface LandingConfig {
+  /**
+   * `pr` — the landing verb authors the message from the PR's own title (plus
+   * the host's number suffix) and body, on any commit count. `host` — it sends
+   * none, and the repository's own squash setting composes it. Absent means
+   * `pr`.
+   */
+  commitMessage?: CommitMessageSource;
+}
+
+/**
+ * The closed set `landing.commitMessage` accepts — spelled as a record keyed
+ * by the flag's own union so the compiler holds it to that union in BOTH
+ * directions: a value the flag gains and this table lacks is a missing-key
+ * error, a value this table invents is an excess-key error.
+ */
+const LANDING_COMMIT_MESSAGE_VALUES = { pr: true, host: true } satisfies Record<
+  CommitMessageSource,
+  true
+>;
+
+/** The allowed values, quoted, in declaration order — `"pr" or "host"`. */
+const LANDING_ALLOWED = (Object.keys(LANDING_COMMIT_MESSAGE_VALUES) as CommitMessageSource[])
+  .map((v) => JSON.stringify(v))
+  .join(' or ');
+
+/** What each allowed value means, spelled out for the author of a refused config. */
+const LANDING_MEANING =
+  '"pr" lands the PR\'s own title and body, "host" cedes the message to the repository\'s own ' +
+  'squash setting; omit the key for "pr" (ADR-0053)';
+
+/**
+ * Validate a `landing` block.
+ *
+ * Refuses a block that is not an object and a PRESENT `commitMessage` that is
+ * not exactly one of the two values — `null`, an empty string, a different
+ * case (`"PR"`), a merge method (`"squash"`) all included. Each refusal names
+ * the dotted key and both allowed values. Nothing is normalized: the value is
+ * a two-word enum, not a string anyone pads, and a near-miss is a refusal
+ * rather than a guess.
+ *
+ * An UNKNOWN key under `landing` is not refused here — `config validate`
+ * reports it as a warning naming the declared keys, the tier `models` and
+ * `store.states` use for their own typos.
+ *
+ * A new refusal, and legitimately so, for the reason every earlier new key's
+ * refusal was: no config validating today can carry a meaningful `landing`
+ * block, because nothing read one until this key existed.
+ */
+function validateLanding(value: unknown): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    const got = value === null ? 'null' : Array.isArray(value) ? 'an array' : `a ${typeof value}`;
+    throw new Error(
+      `wave config "landing" must be an object — got ${got}. Its one key is "commitMessage", ` +
+        `${LANDING_ALLOWED}: ${LANDING_MEANING}.`,
+    );
+  }
+  const declared: unknown = (value as Record<string, unknown>).commitMessage;
+  if (declared === undefined) return;
+  if (typeof declared === 'string' && Object.hasOwn(LANDING_COMMIT_MESSAGE_VALUES, declared)) return;
+  const got =
+    declared === null
+      ? 'null'
+      : Array.isArray(declared)
+        ? 'an array'
+        : typeof declared === 'object'
+          ? 'an object'
+          : typeof declared === 'string'
+            ? `the string ${JSON.stringify(declared)}`
+            : `a ${typeof declared} (${JSON.stringify(declared)})`;
+  throw new Error(
+    `wave config "landing.commitMessage" must be ${LANDING_ALLOWED} — got ${got}. ${LANDING_MEANING}.`,
+  );
+}
+
 export interface WaveConfig {
   store: StoreConfig;
   /** Optional inline verify profile (ADR-0016). No DEFAULT_VERIFY — verify is purely consumer config. */
@@ -976,6 +1084,12 @@ export interface WaveConfig {
    * binds the model its Coordinator recorded, exactly as before.
    */
   models?: ModelsConfig;
+  /**
+   * Optional landing-message choice (ADR-0053 decision 4) — see
+   * {@link LandingConfig}. Additive: omit the whole `landing` key and every
+   * landing passes `--commit-message pr`, the flag's own default.
+   */
+  landing?: LandingConfig;
 }
 
 /**
@@ -999,8 +1113,10 @@ export interface WaveConfig {
  * both additions to this schema have been strictly additive: no key here has
  * ever been renamed, removed or re-typed, which is what lets an existing
  * consumer config keep validating unchanged (the `wave.config` schema is a
- * semver contract). `models` (ADR-0012 Amendment 2026-09-21) is the newest
- * entry on that list, validated by {@link validateModels} — the block's SHAPE
+ * semver contract). `landing` (ADR-0053) is the newest entry on that list,
+ * validated by {@link validateLanding} against the landing verbs' own
+ * two-value `--commit-message` vocabulary; `models` (ADR-0012 Amendment
+ * 2026-09-21) precedes it, validated by {@link validateModels} — the block's SHAPE
  * only, because a model id is an opaque consumer-owned string the engine has no
  * vocabulary to grade; `engine.install` (issue #717) precedes it, validated by
  * the same rule as `engine.cli` below.
@@ -1123,6 +1239,13 @@ export function loadWaveConfig(path: string): WaveConfig {
       if (typeof declared === 'string') block[key] = declared.trim();
     }
   }
+
+  // ADR-0053 decision 4 — the landing-message choice. Absent `landing` (or an
+  // absent `commitMessage` inside it) is valid and means `pr`; nothing is
+  // written back, so the reader that composes `--commit-message` applies that
+  // default itself, exactly as the flag does. A present value must be exactly
+  // one of the flag's two values.
+  validateLanding((raw as { landing?: unknown }).landing);
 
   return raw as WaveConfig;
 }
