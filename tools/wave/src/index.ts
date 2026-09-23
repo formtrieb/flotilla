@@ -342,6 +342,16 @@ export {
 //     attach live gap this closed).
 //   - merge — `mergePullRequestNow`, `MergeOptions`, `MergeMethod`,
 //     `DEFAULT_MERGE_METHOD`, `MergeResult`, `BranchDeletionResult`.
+//   - the landing message (ADR-0053) — `CommitMessageSource` and its default
+//     `DEFAULT_COMMIT_MESSAGE_SOURCE` (the `--commit-message pr|host` value,
+//     built like `MergeMethod`/`DEFAULT_MERGE_METHOD` above), `LandingMessage`
+//     (the title + body a landing hands the host — the new optional third
+//     parameter of `LandingHost.enableAutoMerge`/`mergePullRequest`, so an
+//     adapter implementing the seam can name it), and `LandingMessageReport`
+//     (the `landingMessage` member the `merged`/`armed`/`refused` outcomes
+//     gained). One RUNTIME name; the three types are erased. The composition
+//     rule itself (`landingTitle`/`planLandingMessage`) stays module-local:
+//     no caller outside the landing verbs composes a landing message.
 //   - the host-adapter contract — `LandingHost`, `LandingPosture`,
 //     `AutoMergeUnavailableError`, `LandingNotImplementedError` (a Bitbucket
 //     or other host adapter implements these).
@@ -388,6 +398,7 @@ export {
   asCheckAttachReader,
   mergePullRequestNow,
   DEFAULT_MERGE_METHOD,
+  DEFAULT_COMMIT_MESSAGE_SOURCE,
   preflightHost,
   mergeRequiredChecks,
   AutoMergeUnavailableError,
@@ -411,6 +422,9 @@ export {
   type CreateOrReuseOptions,
   type CreateOrReuseResult,
   type MergeMethod,
+  type CommitMessageSource,
+  type LandingMessage,
+  type LandingMessageReport,
   type PrMergeability,
   type PrLandingStatus,
   type MergeResult,

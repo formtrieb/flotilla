@@ -14,6 +14,7 @@ import {
   AutoMergeUnavailableError,
   mergeRequiredChecks,
   DEFAULT_MERGE_METHOD,
+  type LandingMessage,
   type MergeMethod,
   type MergeResult,
   type PrLandingStatus,
@@ -207,6 +208,59 @@ const GQL_MERGE_METHOD: Record<MergeMethod, string> = {
   merge: 'MERGE',
   rebase: 'REBASE',
 };
+
+/**
+ * The arm mutation WITHOUT a landing message — the exact query every arm sent
+ * before ADR-0053, kept byte-identical for `--commit-message host`, where the
+ * host composes the message and nothing about the request may change.
+ */
+const ENABLE_AUTO_MERGE_MUTATION =
+  'mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod}){pullRequest{number autoMergeRequest{enabledAt}}}}';
+
+/**
+ * The arm mutation WITH a landing message (ADR-0053). `commitHeadline` and
+ * `commitBody` are the input fields GitHub's GraphQL schema documents on
+ * `EnablePullRequestAutoMergeInput` — "Commit headline to use for the commit
+ * when the PR is mergable; if omitted, a default message will be used", and the
+ * same for the body (docs.github.com/public/fpt/schema.docs.graphql, read
+ * 2026-09-23). The same input documents one limit this adapter cannot lift:
+ * "when merging with a merge queue any input value for commit headline is
+ * ignored" — a repository that lands through a merge queue keeps the queue's
+ * message whatever is sent here.
+ */
+const ENABLE_AUTO_MERGE_WITH_MESSAGE_MUTATION =
+  'mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!,$commitHeadline:String!,$commitBody:String!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod,commitHeadline:$commitHeadline,commitBody:$commitBody}){pullRequest{number autoMergeRequest{enabledAt}}}}';
+
+/**
+ * Take a PR's existing auto-merge request down — `disablePullRequestAutoMerge`,
+ * "Disable auto merge on the given pull request" (same schema, same reading).
+ * Used ONLY as the first half of a message refresh; see
+ * {@link RealGitHubApi.enableAutoMerge}.
+ */
+const DISABLE_AUTO_MERGE_MUTATION =
+  'mutation($pullRequestId:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId}){pullRequest{number}}}';
+
+/**
+ * A PR payload's `auto_merge` object, as the REST "Get a pull request" response
+ * documents it (`enabled_by`, `merge_method`, `commit_title`, `commit_message`
+ * — docs.github.com/en/rest/pulls/pulls, read 2026-09-23), or `null` when the
+ * PR is not armed. A field of the wrong type reads as `undefined`, which can
+ * never equal a message flotilla sends, so a malformed payload refreshes rather
+ * than being mistaken for "already frozen as asked".
+ */
+function frozenAutoMerge(
+  json: unknown,
+): { mergeMethod?: string; commitTitle?: string; commitMessage?: string } | null {
+  const am = (json as Record<string, unknown> | null)?.auto_merge;
+  if (am === null || am === undefined || typeof am !== 'object') return null;
+  const o = am as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+  return {
+    mergeMethod: str(o.merge_method),
+    commitTitle: str(o.commit_title),
+    commitMessage: str(o.commit_message),
+  };
+}
 
 export class RealGitHubApi implements GitHubApi {
   constructor(
@@ -774,9 +828,33 @@ export class RealGitHubApi implements GitHubApi {
    * returned (the caller normalises it to `refused`); every non-200 is a typed
    * throw carrying GitHub's own message (405 "not mergeable", 409 "head branch
    * was modified" — both things an operator must read verbatim).
+   *
+   * `message` (ADR-0053): sent as the endpoint's `commit_title` and
+   * `commit_message`, verbatim — an empty body goes out as `""`, never dropped,
+   * because an ABSENT `commit_message` is exactly what lets GitHub compose its
+   * own body from the branch commits. No message → neither field is sent, and
+   * the repository's squash setting composes both, as before this parameter.
+   *
+   * Vendor wording, compared and recorded rather than assumed away
+   * (docs.github.com/en/rest/pulls/pulls "Merge a pull request", read
+   * 2026-09-23): `commit_title` is "Title for the automatic commit message" and
+   * `commit_message` is "Extra detail to append to automatic commit message".
+   * "Append" is the page's word; the arm path's GraphQL input documents the
+   * same field as the body "to use for the commit". Which of the two describes
+   * a squash landing is observable only on a live merge, which no spec here
+   * can make — so the field names are the documented ones, and the "replaces
+   * the body" reading rests on the GraphQL wording until the first live landing
+   * after ADR-0053 is read back with `git log -1` on the default branch.
    */
-  async mergePullRequest(prNumber: number, method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<MergeResult> {
-    const res = await this.send('PUT', `${this.base()}/pulls/${prNumber}/merge`, { merge_method: method });
+  async mergePullRequest(
+    prNumber: number,
+    method: MergeMethod = DEFAULT_MERGE_METHOD,
+    message?: LandingMessage,
+  ): Promise<MergeResult> {
+    const res = await this.send('PUT', `${this.base()}/pulls/${prNumber}/merge`, {
+      merge_method: method,
+      ...(message !== undefined ? { commit_title: message.title, commit_message: message.body } : {}),
+    });
     if (res.status !== 200) {
       throw new GitHubApiError(res.status, 'mergePullRequest', ghMessage(res.json, 'mergePullRequest'));
     }
@@ -824,8 +902,52 @@ export class RealGitHubApi implements GitHubApi {
    *     caller REFUSES (never merges: checks may still be pending).
    *   - FORBIDDEN / anything else → {@link GitHubApiError}, so a credentials or
    *     unknown failure can never be mistaken for a landing decision.
+   *
+   * ## The landing message, and how a re-arm refreshes it (ADR-0053)
+   *
+   * With a `message`, the mutation carries `commitHeadline` and `commitBody`
+   * and the host freezes them until the PR lands. Without one, the request is
+   * byte-identical to every arm before ADR-0053.
+   *
+   * Arming a PR that is ALREADY armed must leave it armed with THIS message —
+   * that is how an edit made after the first arm reaches the default branch —
+   * and the question the row put was whether GitHub accepts a second
+   * `enablePullRequestAutoMerge` as a refresh or needs a disable and a
+   * re-enable. Read in GitHub's own GraphQL schema (docs.github.com/public/fpt/
+   * schema.docs.graphql, 2026-09-23): the mutation is documented only as
+   * "Enable the default auto-merge on a pull request", and neither it, its input
+   * type nor `AutoMergeRequest` says what a second enable on an armed PR does —
+   * nor does the "Automatically merging a pull request" guide. So this adapter
+   * relies on the one sequence whose every step IS documented:
+   * `disablePullRequestAutoMerge` ("Disable auto merge on the given pull
+   * request"), then `enablePullRequestAutoMerge` with the new headline and body.
+   * It lands the edited message whether or not a bare re-enable would also
+   * have done so, which is the property that matters; it was not live-measured.
+   *
+   * Whether the PR is armed is read off the `auto_merge` object of the SAME
+   * `GET …/pulls/{n}` this method already makes for `node_id` — no extra read.
+   * When that object already holds exactly this method, title and body, the
+   * call is a no-op: nothing to refresh, and an idempotent re-run of `arm`
+   * (wave-close re-runs) then neither disarms the PR for an instant nor writes
+   * two timeline events onto it. Any difference — or a field the payload does
+   * not carry as a string — takes the refresh.
+   *
+   * Only with a `message`: under `--commit-message host` an armed PR is armed
+   * again exactly as before ADR-0053, because that flag's whole promise is
+   * that nothing about the request changes.
+   *
+   * The refresh's residual risk, stated rather than hidden: between the two
+   * mutations the PR is not armed. If the re-enable is then refused, the arm
+   * routes that refusal exactly as it routes any other (a `clean-status` merges
+   * directly, carrying the new message; a `not-allowed` degrades or refuses),
+   * and a disable that fails is a loud {@link GitHubApiError} — never routed as
+   * a landing decision — after which a re-run reads `auto_merge` afresh.
    */
-  async enableAutoMerge(prNumber: number, method: MergeMethod = DEFAULT_MERGE_METHOD): Promise<void> {
+  async enableAutoMerge(
+    prNumber: number,
+    method: MergeMethod = DEFAULT_MERGE_METHOD,
+    message?: LandingMessage,
+  ): Promise<void> {
     const pr = await this.send('GET', `${this.base()}/pulls/${prNumber}`);
     if (pr.status !== 200) {
       throw new GitHubApiError(pr.status, 'enableAutoMerge', ghMessage(pr.json, 'enableAutoMerge'));
@@ -835,12 +957,38 @@ export class RealGitHubApi implements GitHubApi {
       throw new GitHubApiError(pr.status, 'enableAutoMerge', `PR #${prNumber} carries no node_id — cannot address the auto-merge mutation`);
     }
 
-    const query =
-      'mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod}){pullRequest{number autoMergeRequest{enabledAt}}}}';
-    const res = await this.send('POST', '/graphql', {
-      query,
-      variables: { pullRequestId: nodeId, mergeMethod: GQL_MERGE_METHOD[method] },
-    });
+    if (message !== undefined) {
+      const frozen = frozenAutoMerge(pr.json);
+      if (frozen !== null) {
+        if (
+          frozen.mergeMethod === method &&
+          frozen.commitTitle === message.title &&
+          frozen.commitMessage === message.body
+        ) {
+          return; // already armed with exactly this landing — nothing to refresh
+        }
+        await this.disableAutoMerge(nodeId, prNumber);
+      }
+    }
+
+    const res = await this.send(
+      'POST',
+      '/graphql',
+      message === undefined
+        ? {
+            query: ENABLE_AUTO_MERGE_MUTATION,
+            variables: { pullRequestId: nodeId, mergeMethod: GQL_MERGE_METHOD[method] },
+          }
+        : {
+            query: ENABLE_AUTO_MERGE_WITH_MESSAGE_MUTATION,
+            variables: {
+              pullRequestId: nodeId,
+              mergeMethod: GQL_MERGE_METHOD[method],
+              commitHeadline: message.title,
+              commitBody: message.body,
+            },
+          },
+    );
     if (res.status !== 200) {
       throw new GitHubApiError(res.status, 'enableAutoMerge', ghMessage(res.json, 'enableAutoMerge'));
     }
@@ -848,6 +996,37 @@ export class RealGitHubApi implements GitHubApi {
     const errors = (res.json as Record<string, unknown>)?.errors;
     if (Array.isArray(errors) && errors.length > 0) {
       throw mapArmError(errors as Record<string, unknown>[], res.status, prNumber);
+    }
+  }
+
+  /**
+   * The first half of a landing-message refresh: take the PR's current
+   * auto-merge request down, so the re-enable that follows freezes the new
+   * message (see {@link enableAutoMerge}).
+   *
+   * Every failure is a plain {@link GitHubApiError}, deliberately NEVER routed
+   * through `mapArmError`: that mapper turns a "clean status" message into the
+   * `clean-status` refusal the arm answers with a DIRECT MERGE, and a failed
+   * disable is no evidence that the PR is clean. The error names what it was
+   * doing, so an operator reading `arm`'s stderr knows the PR may still hold
+   * its older frozen message and that re-running `arm` retries the refresh.
+   */
+  private async disableAutoMerge(nodeId: string, prNumber: number): Promise<void> {
+    const res = await this.send('POST', '/graphql', {
+      query: DISABLE_AUTO_MERGE_MUTATION,
+      variables: { pullRequestId: nodeId },
+    });
+    const refreshFailed = `PR #${prNumber} is already armed, and refreshing its frozen landing message failed while disabling the existing auto-merge (ADR-0053)`;
+    if (res.status !== 200) {
+      throw new GitHubApiError(res.status, 'enableAutoMerge', `${refreshFailed}: ${ghMessage(res.json, 'enableAutoMerge')}`);
+    }
+    const errors = (res.json as Record<string, unknown>)?.errors;
+    if (Array.isArray(errors) && errors.length > 0) {
+      throw new GitHubApiError(
+        res.status,
+        'enableAutoMerge',
+        `${refreshFailed}: GraphQL error: ${JSON.stringify(errors)}. The PR may still hold its earlier message; re-run \`host-pr arm\` to retry the refresh.`,
+      );
     }
   }
 

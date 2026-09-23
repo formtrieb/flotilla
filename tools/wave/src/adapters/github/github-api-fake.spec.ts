@@ -130,6 +130,43 @@ describe('InMemoryGitHubApi deleteBranch (consumer KW-F6)', () => {
   });
 });
 
+describe('InMemoryGitHubApi landing message (ADR-0053)', () => {
+  const FIRST = { title: 'Land the fix (#42)', body: 'The first record.' };
+  const EDITED = { title: 'Land the fix, corrected (#42)', body: 'The corrected record.' };
+
+  it('arming records the message the "host" froze; merging records the message that landed', async () => {
+    const api = new InMemoryGitHubApi();
+    await api.enableAutoMerge(42, 'squash', FIRST);
+    await api.mergePullRequest(43, 'squash', FIRST);
+    expect(api.armedPrs).toEqual([{ prNumber: 42, method: 'squash', message: FIRST }]);
+    expect(api.mergedPrs).toEqual([{ prNumber: 43, method: 'squash', message: FIRST }]);
+  });
+
+  it('arming an ARMED PR again REPLACES the frozen message — the LandingHost re-arm contract', async () => {
+    const api = new InMemoryGitHubApi();
+    await api.enableAutoMerge(42, 'squash', FIRST);
+    await api.enableAutoMerge(42, 'squash', EDITED);
+    expect(api.armedPrs).toEqual([{ prNumber: 42, method: 'squash', message: EDITED }]);
+  });
+
+  it('without a message (--commit-message host) nothing is recorded as frozen — the key is absent, not undefined', async () => {
+    const api = new InMemoryGitHubApi();
+    await api.enableAutoMerge(42, 'squash');
+    await api.mergePullRequest(43);
+    expect(api.armedPrs).toEqual([{ prNumber: 42, method: 'squash' }]);
+    expect('message' in api.armedPrs[0]).toBe(false);
+    expect('message' in api.mergedPrs[0]).toBe(false);
+  });
+
+  it('holds a COPY — a caller mutating its object afterwards cannot rewrite what was frozen', async () => {
+    const api = new InMemoryGitHubApi();
+    const message = { ...FIRST };
+    await api.enableAutoMerge(42, 'squash', message);
+    message.title = 'rewritten after the fact';
+    expect(api.armedPrs[0].message).toEqual(FIRST);
+  });
+});
+
 describe('InMemoryGitHubApi milestones (the Goal container substrate, ADR-0044)', () => {
   it('milestones number in their OWN space, independent of issues', async () => {
     // Real GitHub numbers milestones separately from issues, so milestone #1 and

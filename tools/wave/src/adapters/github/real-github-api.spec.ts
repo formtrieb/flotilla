@@ -7,7 +7,7 @@ import {
   ARM_FORBIDDEN_ERROR_TYPE,
   ARM_TOKEN_REQUIREMENTS,
 } from './real-github-api';
-import { AutoMergeUnavailableError, armPullRequest } from '../../host-pr';
+import { AutoMergeUnavailableError, armPullRequest, mergePullRequestNow } from '../../host-pr';
 import { FakeGitHubHttp } from './github-http-fake';
 import type { GitHubHttpRequest, GitHubHttpResponse } from './github-http';
 
@@ -968,6 +968,34 @@ describe('RealGitHubApi', () => {
       const { api } = makeApi(() => ({ status: 409, json: { message: 'Head branch was modified. Review and try the merge again.' } }));
       await expect(api.mergePullRequest(42)).rejects.toMatchObject({ status: 409, op: 'mergePullRequest' });
     });
+
+    // ── ADR-0053: the landing message on the wire ──────────────────────────
+    it('with a landing message, sends it as commit_title + commit_message — the whole body pinned', async () => {
+      const { api, http } = makeApi(() => ({ status: 200, json: { merged: true, sha: 's' } }));
+      await api.mergePullRequest(42, 'squash', { title: 'Land the fix (#42)', body: 'Why.\n\nCloses #42' });
+      expect(JSON.parse(http.requests[0].body!)).toEqual({
+        merge_method: 'squash',
+        commit_title: 'Land the fix (#42)',
+        commit_message: 'Why.\n\nCloses #42',
+      });
+    });
+
+    it('an EMPTY body is sent as "" — never dropped, which would let GitHub compose its own from the commits', async () => {
+      const { api, http } = makeApi(() => ({ status: 200, json: { merged: true, sha: 's' } }));
+      await api.mergePullRequest(42, 'squash', { title: 'T (#42)', body: '' });
+      const sent = JSON.parse(http.requests[0].body!);
+      expect(sent).toEqual({ merge_method: 'squash', commit_title: 'T (#42)', commit_message: '' });
+      expect('commit_message' in sent).toBe(true);
+    });
+
+    it('without a message (--commit-message host) sends NEITHER field — the body is exactly the pre-ADR-0053 one', async () => {
+      const { api, http } = makeApi(() => ({ status: 200, json: { merged: true, sha: 's' } }));
+      await api.mergePullRequest(42, 'squash');
+      const sent = JSON.parse(http.requests[0].body!);
+      expect(sent).toEqual({ merge_method: 'squash' });
+      expect('commit_title' in sent).toBe(false);
+      expect('commit_message' in sent).toBe(false);
+    });
   });
 
   describe('deleteBranch (REST DELETE .../git/refs/heads/{branch}, consumer KW-F6)', () => {
@@ -1114,6 +1142,231 @@ describe('RealGitHubApi', () => {
         req.method === 'GET' ? { status: 200, json: { node_id: 'n' } } : { status: 502, json: null },
       );
       await expect(api.enableAutoMerge(42)).rejects.toMatchObject({ status: 502 });
+    });
+
+    // ── ADR-0053: the landing message is frozen at arming ────────────────────
+    const MESSAGE = { title: 'Land the fix (#42)', body: 'Why.\n\nCloses #42' };
+    /** Which GraphQL mutation a request carries, read off its query — or the REST verb for a non-GraphQL call. */
+    const opOf = (req: GitHubHttpRequest): string => {
+      if (req.url !== 'https://api.github.com/graphql') return `${req.method} ${req.url.replace('https://api.github.com/repos/example-org/example-repo', '')}`;
+      const q = JSON.parse(req.body!).query as string;
+      return /disablePullRequestAutoMerge/.test(q) ? 'disable' : 'enable';
+    };
+
+    it('with a landing message, the mutation carries commitHeadline + commitBody — the variables pinned whole', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'PR_kwDO42', auto_merge: null } }
+          : { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } },
+      );
+      await api.enableAutoMerge(42, 'squash', MESSAGE);
+      const sent = JSON.parse(http.requests[1].body!);
+      expect(sent.variables).toEqual({
+        pullRequestId: 'PR_kwDO42',
+        mergeMethod: 'SQUASH',
+        commitHeadline: 'Land the fix (#42)',
+        commitBody: 'Why.\n\nCloses #42',
+      });
+      // The input fields are WIRED into the mutation, not merely sent as unused variables.
+      expect(sent.query).toContain('commitHeadline:$commitHeadline');
+      expect(sent.query).toContain('commitBody:$commitBody');
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'enable']);
+    });
+
+    it('an EMPTY body is sent as commitBody "" — never omitted (GitHub: "if omitted, a default message will be used")', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'n' } }
+          : { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } },
+      );
+      await api.enableAutoMerge(42, 'squash', { title: 'T (#42)', body: '' });
+      const vars = JSON.parse(http.requests[1].body!).variables;
+      expect(vars.commitBody).toBe('');
+      expect('commitBody' in vars).toBe(true);
+    });
+
+    it('without a message (--commit-message host) the mutation is the pre-ADR-0053 one: no headline, no body', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'n' } }
+          : { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } },
+      );
+      await api.enableAutoMerge(42, 'squash');
+      const sent = JSON.parse(http.requests[1].body!);
+      expect(sent.variables).toEqual({ pullRequestId: 'n', mergeMethod: 'SQUASH' });
+      expect(sent.query).not.toContain('commitHeadline');
+      expect(sent.query).not.toContain('commitBody');
+    });
+
+    // ── The re-arm refresh (AC6): disable, then enable — the pinned sequence ──
+    //
+    // GitHub's own GraphQL schema documents `enablePullRequestAutoMerge` only as
+    // "Enable the default auto-merge on a pull request" and says nothing of a
+    // second enable on an armed PR, so the adapter relies on the sequence whose
+    // every step IS documented: disable, then enable with the new message.
+    it('a PR already armed with a DIFFERENT message is refreshed: GET → disable → enable(new message), in that order', async () => {
+      const { api, http } = makeApi((req) => {
+        if (req.method === 'GET') {
+          return {
+            status: 200,
+            json: {
+              node_id: 'PR_kwDO42',
+              auto_merge: { merge_method: 'squash', commit_title: 'The old title (#42)', commit_message: 'The old body.' },
+            },
+          };
+        }
+        return opOf(req) === 'disable'
+          ? { status: 200, json: { data: { disablePullRequestAutoMerge: { pullRequest: { number: 42 } } } } }
+          : { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } };
+      });
+      await api.enableAutoMerge(42, 'squash', MESSAGE);
+
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'disable', 'enable']);
+      expect(JSON.parse(http.requests[1].body!).variables).toEqual({ pullRequestId: 'PR_kwDO42' });
+      expect(JSON.parse(http.requests[2].body!).variables).toMatchObject({
+        commitHeadline: 'Land the fix (#42)',
+        commitBody: 'Why.\n\nCloses #42',
+      });
+    });
+
+    it('a changed MERGE METHOD alone also refreshes — the frozen request is the whole landing, not just its text', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'n', auto_merge: { merge_method: 'merge', commit_title: MESSAGE.title, commit_message: MESSAGE.body } } }
+          : { status: 200, json: { data: {} } },
+      );
+      await api.enableAutoMerge(42, 'squash', MESSAGE);
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'disable', 'enable']);
+    });
+
+    it('a PR already armed with EXACTLY this method, title and body is a no-op — an idempotent re-run never disarms it', async () => {
+      const { api, http } = makeApi(() => ({
+        status: 200,
+        json: { node_id: 'n', auto_merge: { merge_method: 'squash', commit_title: MESSAGE.title, commit_message: MESSAGE.body } },
+      }));
+      await expect(api.enableAutoMerge(42, 'squash', MESSAGE)).resolves.toBeUndefined();
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42']);
+    });
+
+    it('under --commit-message host an armed PR is re-enabled exactly as before ADR-0053 — no disable', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'n', auto_merge: { merge_method: 'squash', commit_title: 'x', commit_message: 'y' } } }
+          : { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } },
+      );
+      await api.enableAutoMerge(42, 'squash');
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'enable']);
+    });
+
+    it('a FAILED disable is a loud GitHubApiError, sends no enable, and is never routed as clean-status — even when its text says "clean status"', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'n', auto_merge: { merge_method: 'squash', commit_title: 'old', commit_message: '' } } }
+          : { status: 200, json: { errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is in clean status' }] } },
+      );
+      const err = await api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
+      // A clean-status mapping here would send the arm into a DIRECT MERGE on
+      // the strength of a failed disable — the one routing this must never do.
+      expect(err).toBeInstanceOf(GitHubApiError);
+      expect(err).not.toBeInstanceOf(AutoMergeUnavailableError);
+      expect((err as Error).message).toMatch(/refreshing its frozen landing message failed while disabling/);
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'disable']);
+    });
+
+    it('a non-200 disable is a loud GitHubApiError too', async () => {
+      const { api } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'n', auto_merge: { merge_method: 'squash', commit_title: 'old', commit_message: '' } } }
+          : { status: 502, json: null },
+      );
+      await expect(api.enableAutoMerge(42, 'squash', MESSAGE)).rejects.toMatchObject({
+        name: 'GitHubApiError',
+        status: 502,
+        op: 'enableAutoMerge',
+      });
+    });
+  });
+
+  // ── ADR-0053 end to end: from the PR payload's title/body to the wire ────────
+  //
+  // The engine composes the message from the status read; the adapter puts it
+  // on the wire. These drive BOTH through a real RealGitHubApi, so the pinned
+  // request bodies are the ones a live landing sends for this PR payload.
+  describe('the landing message, from the PR payload to the request body (ADR-0053)', () => {
+    const PR_TITLE = 'Three residues around the staleness advisory';
+    const PR_BODY = 'What changed and why.\n\nCloses #42\n';
+
+    /** A GitHub whose PR #42 carries PR_TITLE/PR_BODY; `mergeable` is the detail read's mergeable_state. */
+    function landingApi(mergeable: string, body: string | null = PR_BODY) {
+      return makeApi((req) => {
+        if (req.url.includes('/pulls?head=')) {
+          return { status: 200, json: [{ number: 42, state: 'open', html_url: 'https://github.com/example-org/example-repo/pull/42' }] };
+        }
+        if (req.method === 'GET' && req.url.endsWith('/pulls/42')) {
+          return { status: 200, json: { number: 42, node_id: 'PR_42', mergeable_state: mergeable, title: PR_TITLE, body, auto_merge: null } };
+        }
+        if (req.method === 'PUT') return { status: 200, json: { merged: true, sha: 'm1' } };
+        if (req.url.endsWith('/graphql')) return { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } };
+        // A `clean` arm also consults the required checks: answer "none required".
+        if (req.url.includes('/protection/required_status_checks')) return { status: 404, json: {} };
+        if (req.url.includes('/rules/branches/')) return { status: 200, json: [] };
+        if (req.method === 'GET' && req.url.endsWith('/example-repo')) return { status: 200, json: { default_branch: 'main' } };
+        throw new Error(`unexpected request: ${req.method} ${req.url}`);
+      });
+    }
+
+    it('merge: the PUT carries commit_title "<PR title> (#42)" and commit_message = the PR body verbatim', async () => {
+      const { api, http } = landingApi('blocked');
+      const out = await mergePullRequestNow(api, 'b');
+      const put = http.requests.find((r) => r.method === 'PUT')!;
+      expect(JSON.parse(put.body!)).toEqual({
+        merge_method: 'squash',
+        commit_title: `${PR_TITLE} (#42)`,
+        commit_message: PR_BODY,
+      });
+      expect(out).toMatchObject({
+        outcome: 'merged',
+        landingMessage: { title: `${PR_TITLE} (#42)`, bodyBytes: Buffer.byteLength(PR_BODY, 'utf8') },
+      });
+    });
+
+    it('arm: the mutation carries commitHeadline/commitBody with the SAME two values', async () => {
+      const { api, http } = landingApi('blocked');
+      const out = await armPullRequest(api, 'b');
+      const gql = http.requests.find((r) => r.url.endsWith('/graphql'))!;
+      expect(JSON.parse(gql.body!).variables).toEqual({
+        pullRequestId: 'PR_42',
+        mergeMethod: 'SQUASH',
+        commitHeadline: `${PR_TITLE} (#42)`,
+        commitBody: PR_BODY,
+      });
+      expect(out).toMatchObject({ outcome: 'armed', landingMessage: { title: `${PR_TITLE} (#42)` } });
+    });
+
+    it('arm on a clean PR merges with the same title and body', async () => {
+      const { api, http } = landingApi('clean');
+      expect(await armPullRequest(api, 'b')).toMatchObject({ outcome: 'merged' });
+      const put = http.requests.find((r) => r.method === 'PUT')!;
+      expect(JSON.parse(put.body!)).toMatchObject({ commit_title: `${PR_TITLE} (#42)`, commit_message: PR_BODY });
+    });
+
+    it('a PR with NO description (GitHub sends body: null) lands with commit_message "" — not "null", not "undefined"', async () => {
+      const { api, http } = landingApi('blocked', null);
+      await mergePullRequestNow(api, 'b');
+      const put = http.requests.find((r) => r.method === 'PUT')!;
+      expect(put.body).not.toMatch(/null|undefined/);
+      expect(JSON.parse(put.body!)).toEqual({ merge_method: 'squash', commit_title: `${PR_TITLE} (#42)`, commit_message: '' });
+    });
+
+    it('--commit-message host: neither path sends any title or body field', async () => {
+      const merged = landingApi('blocked');
+      await mergePullRequestNow(merged.api, 'b', 'squash', { commitMessage: 'host' });
+      expect(JSON.parse(merged.http.requests.find((r) => r.method === 'PUT')!.body!)).toEqual({ merge_method: 'squash' });
+
+      const armed = landingApi('blocked');
+      await armPullRequest(armed.api, 'b', 'squash', { commitMessage: 'host' });
+      const vars = JSON.parse(armed.http.requests.find((r) => r.url.endsWith('/graphql'))!.body!).variables;
+      expect(vars).toEqual({ pullRequestId: 'PR_42', mergeMethod: 'SQUASH' });
     });
   });
 
