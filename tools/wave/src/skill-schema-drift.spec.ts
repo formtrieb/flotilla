@@ -748,6 +748,39 @@ describe("skill-schema-drift — the Worker brief carries Convention 13's FOURTH
     // …and only the remedy pin notices.
     expect(clause).not.toContain(REMEDY_HEAD);
   });
+
+  // Issue #954: the remedy's own "no occurrence on record has it refused" claim
+  // is about REFUSALS only. A live occurrence had this tool convert a
+  // six-character escape sequence in handed content into its raw codepoint on
+  // write — refusal-free, but not byte-preserving. The caveat added beside the
+  // remedy must survive, and must not turn the remedy into a choice between the
+  // tool and a heredoc.
+  const BYTE_CAVEAT_START = '**That claim is about refusals only';
+  const BYTE_CAVEAT =
+    'convert a six-character escape sequence in handed content into the actual raw codepoint on write';
+
+  it('carries the byte-verification caveat beside the remedy, and does not weaken it (issue #954)', () => {
+    const clause = fourthShapeClause(driverJs);
+    expect(clause).toContain(BYTE_CAVEAT);
+    // The caveat is a companion check, not a replacement for the remedy above it.
+    expect(clause).toContain(REMEDY_HEAD);
+    expect(clause).toMatch(/the byte check is its companion, not a substitute/);
+  });
+
+  it('NEGATIVE CONTROL — dropping the byte-verification caveat fails only its own pin (issue #954)', () => {
+    const from = driverJs.indexOf(BYTE_CAVEAT_START);
+    expect(from).toBeGreaterThan(-1);
+    const to = driverJs.indexOf(CLAUSE_END, from);
+    expect(to).toBeGreaterThan(from);
+    const gutted = driverJs.slice(0, from) + driverJs.slice(to);
+    expect(gutted).not.toEqual(driverJs);
+
+    const clause = fourthShapeClause(gutted);
+    expect(clause).not.toContain(BYTE_CAVEAT);
+    // The remedy itself, sitting before the caveat in the clause, survives untouched.
+    expect(clause).toContain(REMEDY_HEAD);
+    expect(clause).toMatch(/not a local convenience of the sidecar-write step/);
+  });
 });
 
 // ─── the variable-expansion REASON, after the 2026-09-22 re-measurement ─────

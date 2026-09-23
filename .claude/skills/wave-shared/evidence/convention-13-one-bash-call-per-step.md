@@ -519,7 +519,9 @@ It takes the path directly, creates the parent directory, involves no shell at a
 on record has it refused — including the two field occurrences, where both Workers recovered through
 exactly that surface. The driver's `workerBrief()` policy clause 11 now names it for every content
 write rather than only inside the sidecar-write step, which is the whole point of this correction:
-the field cost was two Workers each discovering the working surface by trial.
+the field cost was two Workers each discovering the working surface by trial. **That claim is about
+refusals, not about byte fidelity** — see the byte-verification caveat this file records below, added
+after a live occurrence in which the tool itself altered the bytes it was handed.
 
 **Probe 6 is an accepted brace shape and still a dead end.** Capturing the heredoc through a command
 substitution (`PATCH="$(cat <<'EOF' … EOF)"`) was accepted here, exactly as the original entry
@@ -585,7 +587,8 @@ refused" was a correlation, not a cause — was right about the 2026-09-21 occur
 right: a 3,309-B append ran. But a Worker writing a long spec section through a heredoc will cross
 ~10 KB long before it notices, and will then be told only that its command is "too complex to
 verify." Write the content with the file-editing tool; it has no ceiling of this kind and no
-occurrence on record has it refused.
+occurrence on record has it refused. Refusal-free is not the same as byte-preserving — see the
+byte-verification caveat below.
 
 **Occurrence:** issue #910, 2026-09-22.
 
@@ -658,6 +661,34 @@ fused shape it could in principle apply to, so "accepted" is not "safe" — a gr
 fused directory change can be validating the wrong tree entirely, not only the wrong subdirectory of
 the right one (compare the cwd-reset entries under "Splitting is not always a preceding `cd`" above,
 every one of which stayed inside the right worktree even when it ran in the wrong subdirectory).
+
+### Entry 4, occurrence 4 — an accepted fused call that landed correctly, caught only by disclosure
+
+Not every accepted fused call is silently wrong — occurrences 2 and 3 above are; this one is not, and
+it belongs beside them anyway because nothing about its own acceptance told anyone that in advance.
+A Bash call was issued in the fused directory-change-plus-command shape this convention forbids —
+neither refused by mechanism (b) nor mis-targeted: the edit it carried applied, and the very next call
+confirmed all four of its call sites were present and correct. The shape was not repeated. The row's
+own Reviewer, working independently, confirmed no verify gate was missing and that all three verify
+commands re-ran with matching results.
+
+**Observed:** the fused shape; its acceptance by mechanism (a); a correct result; the Worker's own
+disclosure of the slip, unprompted; the Reviewer's independent re-run confirming nothing was missing.
+**Not established:** a row, iteration or disclosure id — none was carried forward with the report that
+named it, so none is invented here, matching this file's own practice elsewhere (the reset-refused
+occurrence below carries the same gap, for the same reason).
+
+**Why this occurrence earns its own number rather than folding into 2 or 3.** Those two show "accepted"
+silently validating the WRONG checkout — the acceptance and the defect arrive together. This one shows
+an accepted fused call landing on the RIGHT result, and still being a rule violation worth disclosing:
+the only thing that told anyone the shape had been used at all was the row's own report, not the guard,
+not the result, and not the Reviewer's independent gates (which came back green either way). Read
+together, the three occurrences say the same thing from two directions: an accepted fused call reads as
+a clean run whether it is one or not, so acceptance is never the signal to trust — only disclosure and
+an independent re-run are.
+
+**Occurrence:** cited at the close of wave `2026-09-22-guard-reach-and-provenance`, from disclosures
+captured at routing; no row, iteration or disclosure ref was carried forward with the filed gap.
 
 ### Open question — has a prose-tier clause here earned a structural rung?
 
@@ -813,3 +844,77 @@ this convention's own catalog, should name "restore a probe from a saved copy of
 `HEAD`, whenever another edit to the same path may already be pending" is the open question this entry
 files rather than answers — left explicitly open, per this same file's own "Open question" section
 above, for the next occurrence to weigh rather than for this one to settle by assertion.
+
+### Entry 6 — absolute, shell-quoted path to a runner, full reproduction
+
+```bash
+# ✗ refused — the runner invoked by its absolute, shell-quoted path
+"/absolute/path/to/tools/wave/node_modules/.bin/vitest" run --root tools/wave
+
+# ✓ not refused — the repo-relative form the verify profile prescribes
+./tools/wave/node_modules/.bin/vitest run --root tools/wave
+```
+
+Live-reproduced: running the test runner by its absolute, double-quoted path was refused outright —
+nothing was pending and nothing ran. The refusal was the harness's own **generated**, shape-specific
+message (the same family Entry 1's 2026-09-22 re-measurement records for the `cp`-then-`node --check`
+chain, not the generic "too complex to verify" wording Entries 1 and 2 quote):
+
+> This agent is isolated in the worktree \<worktree-path\>, but this command runs a command whose name
+> is computed at runtime in a plain command, so it cannot be shown not to be git. Refusing to run it —
+> a worktree-isolated agent's git operations must target its own worktree.
+
+This is a **shape** refusal, not a capability refusal (policy clause 12's territory): no gate was
+dropped and no count was reported for a command that did not run — the command was re-issued, not
+abandoned. Re-issued in the repo-relative form this consumer's verify profile prescribes — the same
+form Convention 13's own code example already recommends under "Splitting is not always a preceding
+`cd`" (`npm ci --prefix tools/wave`, `git -C tools/wave status`, and by the same logic a repo-relative
+runner path) — it ran clean, with matching results.
+
+**What this adds to the catalog.** An absolute, quoted path to a runner is an ordinary reflex — outside
+a dispatched-agent context it is unremarkable, and nothing about it looks like fusion or a shell
+variable, the two shapes this convention already names. The guard nonetheless reads a quoted, absolute,
+runtime-supplied executable path as a command whose identity it cannot verify, and refuses on that basis
+alone, exactly as it does for the `cp`-then-`node --check` chain Entry 1's re-measurement records. Reach
+for the repo-relative form the consumer's verify profile already prescribes; an absolute path bought
+nothing here that the relative form did not already have.
+
+**Occurrence:** cited at the close of wave `2026-09-22-guard-reach-and-provenance`, from disclosures
+captured at routing; no row, iteration or disclosure ref was carried forward with the filed gap,
+matching this file's own practice for occurrences without one (see the reset-refused entry above).
+
+### A caveat on the file-editing-tool remedy — verify the bytes (issue #954)
+
+Every recommendation in this file and in the packaged driver to prefer the file-editing or file-writing
+tool over a shell heredoc rests on one measured claim: no occurrence on record has that tool **refused**.
+That claim still holds. It was never a claim that the tool preserves bytes exactly, and a live occurrence
+shows it does not always.
+
+**The occurrence.** Content handed to the file-editing tool carried a six-character escape sequence; the
+tool converted it into the actual raw codepoint on write. The written file was well-formed and passed
+every guard — nothing about it looked wrong from a diff, and no check on record was positioned to catch
+it — but it planted an invisible, unprintable character into source where no reviewer would see it, and
+it directly contradicted the comment written beside it, which described the value as an escape sequence
+rather than a raw byte. The same conversion then hit the pull-request body composed for the same row: a
+code sample containing the same escape rendered, once posted, as an empty string. Both were found by the
+Worker itself — not by any guard — rewritten at the byte level, and re-verified; a full-tree rescan
+afterward found zero raw Private Use Area codepoints across all 149 source files, confirming the fix and
+that this was the only place the conversion had landed.
+
+**The generalizable rule.** Do not trust an escape sequence to survive the file-editing tool — verify the
+bytes. A clean diff and a passing guard both under-report this class of defect, because the file is
+well-formed either way; only a byte-level check (grepping for the raw codepoint, a hex or byte dump of
+the written region, or an explicit non-ASCII scan) distinguishes "the escape survived" from "the escape
+became the codepoint it named". This applies wherever content carrying an escape sequence is handed to
+the file-editing or file-writing tool — a spec file, a PR body, a payload file a verb will read — not
+only the sidecar-write step that first measured the tool's refusal-free record.
+
+**What does not change.** The recommendation itself stands, unweakened: still prefer the file-editing
+tool over a shell heredoc for every content write, for the reasons the rest of this file and the
+packaged driver already establish (no occurrence on record has it refused, a heredoc's own hazards are
+measured and cannot be predicted safe from its text). This caveat adds a verification step beside the
+recommendation; it does not offer the heredoc as an alternative, and it does not ask a dispatched role to
+choose between the two.
+
+**Occurrence:** cited at the close of wave `2026-09-22-guard-reach-and-provenance`, from disclosures
+captured at routing; no row, iteration or disclosure ref was carried forward with the filed gap.
