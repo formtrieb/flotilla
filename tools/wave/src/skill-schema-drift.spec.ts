@@ -669,14 +669,43 @@ describe("skill-schema-drift — the Worker brief carries Convention 13's FOURTH
     expect(clause).toContain('near its head');
   });
 
-  it('states what the trigger is NOT — the redirect target, the tool, the payload size', () => {
+  it('states what the trigger is NOT — the redirect target, the tool', () => {
     // The corrected half. A copy that names the shape but keeps the old
     // "redirects straight to a file" framing sends a Worker hunting for a
     // redirect to remove, which is exactly the move the probe matrix falsified.
     const clause = fourthShapeClause(driverJs);
     expect(clause).toMatch(/neither the redirect target nor the tool/);
-    expect(clause).toMatch(/not payload size either/);
     expect(clause).toContain('no brace-bearing heredoc can be predicted safe from its own text');
+  });
+
+  // The convention entry this passage cites (Catalog entry 2) was itself
+  // corrected on 2026-09-22: size is now a SECOND, INDEPENDENT trigger,
+  // measured — a brace-free body ran clean at 9,576 B and was refused at
+  // 10,032 B in the same dispatch. The passage used to say the opposite
+  // ("it is not payload size either"), citing an older, smaller pair
+  // (3,309 B clean / 46 B refused) that the entry no longer carries. Same
+  // retired/current shape as the SITES table below, kept local to this
+  // describe block because the site lives inside THIS clause's own span.
+  const SIZE_TRIGGER_RETIRED =
+    'it is not payload size either (a 3,309-B brace-free append ran clean while a 46-B brace-bearing one was refused)';
+  const SIZE_TRIGGER_CURRENT =
+    'size is a second, independent trigger of its own — a brace-free body ran clean at 9,576 B and was ' +
+    'refused at 10,032 B in the same dispatch, so a heredoc can refuse on size alone, with no brace in it at all';
+
+  it('names size as a SECOND, independent trigger, measured, and no longer says size is not one (issue #952)', () => {
+    const clause = fourthShapeClause(driverJs);
+    expect(clause).toContain(SIZE_TRIGGER_CURRENT);
+    expect(clause).not.toMatch(/not payload size either/);
+  });
+
+  it('NEGATIVE CONTROL — drifting the size sentence back to its retired wording fails the pin', () => {
+    const clause = fourthShapeClause(driverJs);
+    expect(clause).toContain(SIZE_TRIGGER_CURRENT); // guard: really there before we drift it away
+    const drifted = driverJs.replace(SIZE_TRIGGER_CURRENT, SIZE_TRIGGER_RETIRED);
+    expect(drifted).not.toEqual(driverJs); // the replace actually matched
+    const driftedClause = fourthShapeClause(drifted);
+    expect(driftedClause).not.toContain(SIZE_TRIGGER_CURRENT);
+    expect(driftedClause).toMatch(/not payload size either/); // the pin above would now fail
   });
 
   it('carries the REMEDY, and carries it as the GENERAL rule', () => {
