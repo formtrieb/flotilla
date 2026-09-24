@@ -500,10 +500,10 @@ describe('allowlist-scaffold-guard — direction 1: every live allow entry is ci
   });
 
   it('extracts the generic scaffold, the documented exception, and the dogfood-only table with non-trivial populations', () => {
-    expect(extractGenericScaffoldAllow(setupMd).length).toBe(16); // 14 + jq (#345) + git show (#744)
+    expect(extractGenericScaffoldAllow(setupMd).length).toBe(17); // 14 + jq (#345) + git show (#744) + git ls-remote (#979)
     expect(extractVendoredExceptionEntries(setupMd).length).toBe(2);
     expect(extractDogfoodOnlyEntries(setupMd).length).toBe(5);
-    expect(sets.canonical.size).toBe(16); // 16 generic - 2 replaced + 2 exception
+    expect(sets.canonical.size).toBe(17); // 17 generic - 2 replaced + 2 exception
   });
 
   it('every live allow entry classifies as canonical, dogfood-only, or seeded-legacy (AC1/AC2, real assertion)', () => {

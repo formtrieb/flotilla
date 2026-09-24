@@ -434,6 +434,17 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * to the next full KB (1 KB = 1000 B): **1,249,000 B**. The 886 B of headroom
  * that leaves is a fact about the rounding rule, not a budget.
  *
+ * **UNCHANGED by the maintainer change that allowlists `git ls-remote origin`
+ * for the Reviewer's remote-tip confirmation (issue #979), which spent 494 B of
+ * this headroom** on one allow entry in the scaffold's JSON block and one
+ * rationale bullet beside the merge-tree entry's, both in
+ * `wave-setup/reference/setup-mechanics.md`: the population lands at
+ * **1,248,608 B** over the same 57 files, and 1,248,608 B rounded UP to the
+ * next full KB is 1,249,000 B — this constant already. A raise here would be a
+ * pre-bought one. The shared standing load is NOT touched: the edited file is
+ * not a member of that population (only `wave-shared/SKILL.md` plus
+ * `wave-shared/reference/*.md` are).
+ *
  * Previously: 1,244,000 B — **RAISED by the row that gives the path form's
  * silently-dropped `--pr-title` a worked invocation and an operator-facing
  * note** (issue #955), whose reasoning is kept below (in ITS voice, so "this
