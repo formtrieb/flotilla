@@ -39,6 +39,7 @@
       "Bash(./tools/wave/node_modules/.bin/vitest run:*)",
       "Bash(./tools/wave/node_modules/.bin/tsc -p tools/wave --noEmit)",
       "Bash(git fetch origin:*)",
+      "Bash(git ls-remote origin:*)",
       "Bash(git reset --hard:*)",
       "Bash(git checkout:*)",
       "Bash(git add:*)",
