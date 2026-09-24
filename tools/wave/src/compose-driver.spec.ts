@@ -4386,6 +4386,21 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     expect(brief).not.toMatch(/before landing/i);
   });
 
+  it('the composed Reviewer brief reads every merge-tree by its exit status and carries no conflict marker at all (issue #975)', async () => {
+    // The drift spec holds the asset's template text; this holds what the
+    // composed driver actually hands a running Reviewer, after the template's
+    // escaped backticks are rendered. The two-argument merge-tree never prints
+    // a conflict marker, so the rendered brief has no reason to carry one.
+    const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
+    const brief = await reviewerBriefFor(spinePath, configPath, storeIds, 'B');
+    expect(brief).toMatch(/BY ITS EXIT STATUS — NEVER BY CONFLICT MARKERS ON STDOUT/);
+    expect(brief).toMatch(/exit 0 → clean, subject to the `at-anchor` rule below; exit 1 →\s+`predicted-conflict`, naming the files from its `CONFLICT \(` lines/);
+    expect(brief).toMatch(/any other exit →\s+that sibling is NOT covered, reported with the error on the coverage line/);
+    expect(brief).toMatch(/then read the merge-tree by its EXIT STATUS/);
+    expect(brief).not.toContain('<<<<<<<');
+    expect(brief).not.toContain('>>>>>>>');
+  });
+
   it('the composed Reviewer brief names its probe checkout with the stamp — wave slug, row id, iteration', async () => {
     const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
     const brief = await reviewerBriefFor(spinePath, configPath, storeIds, 'B');
