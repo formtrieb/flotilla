@@ -407,7 +407,38 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that composes the landing verbs'
+ * Why this number: **RAISED by the row that has the Reviewer read a
+ * `git merge-tree` result by its exit status instead of by conflict markers on
+ * stdout** (issue #975), in the diff that causes the growth. The two-argument
+ * form never prints the markers — they go into the tree it writes — so every
+ * copy of the sibling-prediction recipe has to state the criterion that
+ * replaces them where a Reviewer reads it: the reviewer skill's checks
+ * reference gains the Check 5 subsection with the three exit-status cases and
+ * the exit-status wording in both command comments, the outcome table and the
+ * coverage-line example (+917 B); its `SKILL.md` gains one bullet (+337 B);
+ * the Reviewer's agent definition gains one sentence in its Check 5 (+297 B).
+ * Every sentence is an instruction a Reviewer acts on while it reads it. The
+ * measurements and live occurrences behind it went to the new
+ * `wave-reviewer/evidence/reviewer-checks.md`, which this population excludes
+ * by definition, so none of that is priced here. The driver asset the same row
+ * edits (`tools/wave/driver/wave-start-inflight.js`) is not a `.md` under
+ * `.claude/skills`, so its bytes are not priced here either.
+ *
+ * At this row's anchor commit `e2666d786c34346caf421374f9be855ac5ec6955` the
+ * population measured **1,248,608 B** over 57 files — 392 B under the previous
+ * 1,249,000 B ceiling. This row's edit lands it at **1,250,159 B** over the
+ * same 57 files, +1,551 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,251,000 B**. The 841 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget. The shared standing
+ * load is NOT touched: none of the three files is a member of that population
+ * (only `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are).
+ *
+ * Previously: 1,249,000 B — **RAISED by the row that composes the landing
+ * verbs' `--commit-message` from the new `landing.commitMessage` config key**
+ * (ADR-0053, issue #964), whose reasoning is kept below (in ITS voice, so
+ * "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that composes the landing verbs'
  * `--commit-message` from the new `landing.commitMessage` config key**
  * (ADR-0053, issue #964), in the diff that causes the growth. Every call site
  * the ADR names has to say so where it is read, because the verbs themselves
@@ -781,7 +812,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_249_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_251_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

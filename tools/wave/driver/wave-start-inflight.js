@@ -1093,12 +1093,13 @@ git fetch origin ${issue.coordinatorBranch}:refs/review/base/${issue.id} 2>&1 | 
 git rev-parse refs/review/base/${issue.id}
 git merge-tree refs/review/${issue.id} refs/review/base/${issue.id}
 \`\`\`
-The \`rev-parse\` MUST equal the SHA \`ls-remote\` printed; then \`<<<<<<<\` in the merge-tree output is a
-conflict. Report it on its OWN line — \`(advisory) Landed-sibling merge-tree vs ${issue.coordinatorBranch}
+The \`rev-parse\` MUST equal the SHA \`ls-remote\` printed; then read the merge-tree by its EXIT STATUS
+(below). Report it on its OWN line — \`(advisory) Landed-sibling merge-tree vs ${issue.coordinatorBranch}
 tip <sha>: clean (or: conflict at <file>) — covers <every (landed) branch>.\` — and record each
 \`(landed)\` sibling as \`landed\`, which IS coverage. A tip equal to this round's anchor is fine here:
 the landed siblings are already under your row, so a clean answer is the true one. A \`rev-parse\` that
-does not equal the \`ls-remote\` SHA covers no landed sibling: name each one uncovered, with that reason.
+does not equal the \`ls-remote\` SHA, or a merge-tree that errored, covers no landed sibling: name each
+one uncovered, with that reason.
 
 **Every other sibling: ask \`origin\` FIRST, and trust a fetched ref only once it equals \`origin\`'s tip.**
 Write each branch and its per-sibling ref key in literally, one sibling at a time:
@@ -1115,15 +1116,26 @@ mismatch is uncovered, reason "fetched ref ≠ origin tip", and is never a predi
 code is never an input, anywhere in this check:** a fetch can fail while the named ref still resolves a
 leftover from an earlier dispatch, or succeed while exiting non-zero — only the SHA comparison says
 whether the ref holds what \`origin\` holds.
+**READ EVERY \`git merge-tree\` BY ITS EXIT STATUS — NEVER BY CONFLICT MARKERS ON STDOUT.** The
+two-argument form runs in \`--write-tree\` mode: a conflict's markers go into the tree whose id it
+prints, never to stdout, so scanning its output for them records every real conflict as clean. Read
+the exit status the tool reports for the merge-tree call itself — keep it ONE command, never fused
+with anything that echoes its status (wave-shared Convention 13). Unlike the fetch's, this exit
+status IS the answer: exit 0 → clean, subject to the \`at-anchor\` rule below; exit 1 →
+\`predicted-conflict\`, naming the files from its \`CONFLICT (\` lines — an exit 1 that prints NO
+\`CONFLICT (\` line is an error, not a conflict (an unresolvable ref exits 1 too); any other exit →
+that sibling is NOT covered, reported with the error on the coverage line — never clean. The
+landed-sibling check above reads its one result the same way, minus the \`at-anchor\` rule (a
+default-branch tip at the anchor is fine there, as it says).
 **\`at-anchor\` is the sharp one:** a confirmed tip that still EQUALS this round's anchor SHA
 (\`${issue.anchorSha}\`) has an empty diff, so \`git merge-tree\` exits 0 and prints one tree hash —
 byte-identical to a genuinely clean prediction. Nothing in that output tells them apart. So compare the
 confirmed tip against \`${issue.anchorSha}\` BEFORE you read the merge-tree result: equal → record
 \`at-anchor\`, which is VACUOUS and is never \`predicted-clean\`. Then put ONE coverage line in
 \`reviewerFocusItems\` naming the denominator and every uncovered sibling with the reason it is
-uncovered — \`(advisory) Sibling merge-tree coverage: 3/6 covered — …; NOT covered: <d> not-on-origin
+uncovered — \`(advisory) Sibling merge-tree coverage: 3/7 covered — …; NOT covered: <d> not-on-origin
 ((dispatched) — not pushed yet), <e> at-anchor (tip == round anchor, prediction vacuous), <f> fetched
-ref ≠ origin tip.\`
+ref ≠ origin tip, <g> merge-tree exit 128 (<its error>).\`
 \`0/N\` is a legitimate coverage line; silence is not. **All of it stays \`(advisory)\`** — a
 predicted conflict is never \`changes-requested\`, and missing coverage is never
 \`questions-blocking\`; the coverage line lives INSIDE the existing advisory strings, so

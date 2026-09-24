@@ -3594,6 +3594,176 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
       ),
     ).toThrow(/EMPTY in synthetic/);
   });
+
+  // ─── a merge-tree result is read by its EXIT STATUS, never by markers on stdout (#975) ───
+  //
+  // Every copy of this recipe used to say a conflict marker in the
+  // `git merge-tree` output marks a conflict. The two-argument form runs in
+  // `--write-tree` mode: on a conflict it exits 1 and prints `CONFLICT (…)`
+  // lines, and the markers go into the tree it writes, never to stdout. A
+  // Reviewer who scanned stdout for them recorded every real conflict as
+  // predicted-clean. Live: even with a hint in their brief, three Reviewers
+  // of one wave still judged a merge-tree clean by the missing marker, and one
+  // read the exit status. The git behaviour the new wording rests on is pinned
+  // against a real repository in `merge-tree-conflict-signal.spec.ts`; these
+  // pins hold the wording, in all four copies (the acceptance criterion names
+  // the driver brief and the checks reference; the SKILL and the agent
+  // definition state the same rule, so they are held to it too).
+  //
+  // Two halves, opposite polarity, the same shape the FETCH_HEAD pins above
+  // use: the exit-status criterion must be PRESENT as one ordered statement,
+  // and a marker-on-stdout criterion must be ABSENT. The committed-content
+  // conflict-marker floor (Check 2) is a different check and sits outside
+  // every region sliced here, so neither half touches it.
+
+  /**
+   * The exit-status criterion, as one statement in the order every copy
+   * states it: exit 0 → clean, subject to the at-anchor rule; exit 1 →
+   * `predicted-conflict`, with the files named from the `CONFLICT (` lines;
+   * any other exit → not covered. Each gap is bounded, so the eight parts have
+   * to sit together — words scattered across a copy do not satisfy it, and a
+   * copy that maps the exits the wrong way round does not either.
+   *
+   * Case-SENSITIVE on purpose, and falsified into it: with the `i` flag,
+   * `CONFLICT \(` also matched the prose "not a conflict (an unresolvable
+   * ref…" in the checks reference, so a copy that had dropped every
+   * `CONFLICT (` line still passed. Only `not covered` varies in case across
+   * the copies (the driver brief writes `NOT covered`), so only it is spelled
+   * both ways.
+   */
+  const EXIT_STATUS_CRITERION = new RegExp(
+    [
+      String.raw`\bexit 0\b`,
+      String.raw`\bclean\b`,
+      String.raw`at-anchor`,
+      String.raw`\bexit 1\b`,
+      String.raw`predicted-conflict`,
+      String.raw`CONFLICT \(`,
+      String.raw`\bany other exit\b`,
+      String.raw`\b(?:not|NOT) covered\b`,
+    ].join(String.raw`[\s\S]{0,240}?`),
+  );
+
+  /** A conflict marker, literally — the form every retired copy spelled. */
+  const CONFLICT_MARKER_LITERAL = /<{7}|>{7}/;
+
+  /**
+   * The segments of a copy that state a marker-on-stdout criterion: any
+   * segment carrying a marker literally, and any segment that speaks of
+   * conflict markers WITHOUT the word `never`. A copy may say the markers
+   * never reach stdout — every shipped copy does, because the live occurrence
+   * shows a Reviewer needs telling — but "no markers on stdout, so clean" is
+   * exactly the retired criterion, so `no`/`not` do not count as the
+   * negation: only `never` does. Segments are sentences, clauses after a
+   * colon or semicolon, paragraphs and table cells.
+   */
+  function markerCriterionSegments(region: string): string[] {
+    return region
+      .split(/(?<=[.;:])\s+|\n\s*\n|\s\|\s/)
+      .filter(
+        (s) =>
+          CONFLICT_MARKER_LITERAL.test(s) ||
+          (/\bconflict markers?\b|\bmarkers\b/i.test(s) && !/\bnever\b/i.test(s)),
+      );
+  }
+
+  it.each(COPIES)('%s reads a merge-tree by its exit status: 0 clean, 1 predicted-conflict, any other not covered', (_label, region) => {
+    expect(region).toMatch(EXIT_STATUS_CRITERION);
+  });
+
+  it.each(COPIES)('%s names no conflict marker on stdout as the conflict signal', (_label, region) => {
+    expect(markerCriterionSegments(region)).toEqual([]);
+  });
+
+  it('the reviewerBrief keeps the merge-tree call ONE command and reads its status off the call itself', () => {
+    const clause = driverClause(driverJs);
+    expect(clause).toMatch(/exit status the tool reports for the merge-tree call itself/);
+    expect(clause).toMatch(/ONE command, never fused/);
+    // An exit 1 with no `CONFLICT (` line is an error, not a conflict — the
+    // measured case (an unresolvable ref exits 1 too) the git spec pins.
+    expect(clause).toMatch(/exit 1 that prints NO\s+\\`CONFLICT \(\\` line is an error/);
+    // …and every merge-tree the clause prescribes stays a bare command line:
+    // nothing chained onto it, nothing piped out of it.
+    const calls = clause.split('\n').filter((l) => l.startsWith('git merge-tree '));
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call).not.toMatch(/&&|\|\||;|\||\$\(/);
+  });
+
+  it('the checks reference reads the landed-sibling merge-tree the same way, and counts an errored one uncovered', () => {
+    const check5 = checksCheck5(reviewerChecksMd);
+    const calls = check5.split('\n').filter((l) => l.startsWith('git merge-tree '));
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call).toMatch(/# read by exit status \(above\)$/);
+    expect(check5).toMatch(/or a merge-tree that errored, covers no landed sibling/);
+    expect(check5).toMatch(/\| `predicted-conflict` \| `git merge-tree` exits 1 and prints `CONFLICT \(` lines \|/);
+    expect(check5).toMatch(/\| `predicted-clean` \| confirmed tip \*\*≠\*\* `\$ANCHOR`, `git merge-tree` exits 0 \|/);
+  });
+
+  /** The retired criterion, as each copy shipped it before this row. */
+  const RETIRED_MARKER_CRITERIA = [
+    'then \\`<<<<<<<\\` in the merge-tree output is a\nconflict.',
+    'git merge-tree "refs/review/$ROW" refs/review/sib/<sibling-id>   # <<<<<<< → predicted conflict',
+    '| `predicted-clean` | confirmed tip **≠** `$ANCHOR`, `git merge-tree` reports no `<<<<<<<` | **yes** |',
+    '| `predicted-conflict` | `git merge-tree` reports `<<<<<<<` | **yes** — name the file(s) |',
+  ] as const;
+
+  it('NEGATIVE CONTROL — a copy that brings back a marker-on-stdout criterion is caught', () => {
+    for (const [, region] of COPIES) {
+      expect(markerCriterionSegments(region)).toEqual([]); // control: the shipped copy is clean
+      // Every retired spelling, appended in turn.
+      for (const retired of RETIRED_MARKER_CRITERIA) {
+        expect(markerCriterionSegments(`${region}\n${retired}\n`).length).toBeGreaterThan(0);
+      }
+      // …and the same criterion in prose, with no marker literal: `no` is not
+      // `never`, so "no markers, so clean" is refused.
+      for (const prose of [
+        'Conflict markers in the merge-tree output mark a conflict.',
+        'No conflict markers on stdout means the prediction is clean.',
+        'A clean merge-tree prints no markers on stdout.',
+      ]) {
+        expect(markerCriterionSegments(`${region}\n\n${prose}\n`).length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('NEGATIVE CONTROL — a copy that drops or inverts the exit-status criterion is caught', () => {
+    for (const [, region] of COPIES) {
+      expect(region).toMatch(EXIT_STATUS_CRITERION); // control
+      // Drop the error case.
+      const noErrorCase = region.replace(/any other exit/gi, 'otherwise');
+      expect(noErrorCase).not.toEqual(region);
+      expect(noErrorCase).not.toMatch(EXIT_STATUS_CRITERION);
+      // Invert the mapping: exit 1 read as clean, exit 0 as the conflict.
+      const inverted = region
+        .replace(/exit 0/g, '\u0000')
+        .replace(/exit 1/g, 'exit 0')
+        .replace(/\u0000/g, 'exit 1');
+      expect(inverted).not.toEqual(region);
+      expect(inverted).not.toMatch(EXIT_STATUS_CRITERION);
+      // Drop the `CONFLICT (` lines the files are named from.
+      const noConflictLines = region.split('CONFLICT (').join('conflict output');
+      expect(noConflictLines).not.toEqual(region);
+      expect(noConflictLines).not.toMatch(EXIT_STATUS_CRITERION);
+    }
+  });
+
+  it('NEGATIVE CONTROL — the pre-fix copies at the anchor fail both halves', () => {
+    // The two copies the acceptance criterion names, reconstructed from the
+    // retired text itself: the checks reference's command comment and table,
+    // and the driver's landed-sibling sentence. Neither states the exit-status
+    // criterion, and each names the marker as the signal.
+    const oldChecks = [
+      'git merge-tree "refs/review/$ROW" refs/review/base/<row-id>      # <<<<<<< → conflict',
+      '| `predicted-clean` | confirmed tip **≠** `$ANCHOR`, `git merge-tree` reports no `<<<<<<<` | **yes** — two real diffs were merged and did not collide |',
+      '| `predicted-conflict` | `git merge-tree` reports `<<<<<<<` | **yes** — name the file(s) |',
+    ].join('\n');
+    const oldDriver =
+      'The \\`rev-parse\\` MUST equal the SHA \\`ls-remote\\` printed; then \\`<<<<<<<\\` in the merge-tree output is a\nconflict.';
+    for (const old of [oldChecks, oldDriver]) {
+      expect(old).not.toMatch(EXIT_STATUS_CRITERION);
+      expect(markerCriterionSegments(old).length).toBeGreaterThan(0);
+    }
+  });
 });
 
 // ─── The FETCH_HEAD named-ref clause rides all FOUR contract copies (#407) ───
