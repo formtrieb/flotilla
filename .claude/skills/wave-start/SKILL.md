@@ -187,7 +187,7 @@ Two calls per tuple, in this order — the disclosure capture, then the routing 
      --anchor <anchorSha> --config <cfg> [--title "<pr title>"]
    ```
 
-   It performs the whole post-return sequence in the write-ahead order and prints one JSON result: the sidecar presence-and-validation check (recovering a missing record from the passed payload through the same writer, and refusing rather than guessing if it cannot), the worker-phase route, the verdict-phase route, the verdict render, find-before-create of the PR, the host status re-query, the two spine writes, and the `in-review` rung transition. The two `--state` derivations that used to be retyped each wave — iteration-keyed for the worker phase, **verdict**-keyed for the reviewer phase — are the verb's now.
+   It performs the whole post-return sequence in the write-ahead order and prints one JSON result: the sidecar presence-and-validation check (recovering a missing record from the passed payload through the same writer, and refusing rather than guessing if it cannot; a present record that disagrees with a valid payload is rewritten from that payload, with a `warning:` naming each differing field, and listed under `repaired`), the worker-phase route, the verdict-phase route, the verdict render, find-before-create of the PR, the host status re-query, the two spine writes, and the `in-review` rung transition. The two `--state` derivations that used to be retyped each wave — iteration-keyed for the worker phase, **verdict**-keyed for the reviewer phase — are the verb's now.
 
 3. **Read the result.** `disposition` is the answer:
 

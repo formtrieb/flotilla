@@ -790,6 +790,20 @@ describe('verb-contract drift — a JSON verb declares the shape of its JSON', (
     expect(rendered).toContain('shape: { algorithmic: [ { issueId, nn, fileCount, branch');
   });
 
+  it('route-tuple — its declared shape carries `repaired` beside `recovered` (issue #977)', () => {
+    // The one additive key the divergence repair put on the result: it sits in
+    // the `sidecar-check` step's detail, beside `recovered`, so the envelope
+    // names the pair on the step entry and a continuation line says what they
+    // list. A result key the contract does not declare is the omission this
+    // describe block exists to stop.
+    const contract = AGGREGATE['route-tuple'];
+    const shape = contract.json?.shape ?? '';
+    expect(shape).toContain('steps: [ { step, status, recovered?, repaired?, ...detail } ]');
+    const rendered = contract.usage.join('\n');
+    expect(rendered).toContain(`shape: ${shape}`);
+    expect(rendered).toContain('sidecar-check:     recovered / repaired: [ report | verdict ]');
+  });
+
   it('NEGATIVE CONTROL — a json verb with no shape, and a malformed one, both fail', () => {
     // The two predicates above are worth exactly what they can fail on, so a
     // defect of each kind is built by hand here and run through the SAME

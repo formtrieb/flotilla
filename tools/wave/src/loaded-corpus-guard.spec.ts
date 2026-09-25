@@ -407,7 +407,29 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that makes a stamped probe live only
+ * Why this number: **RAISED by the row that has `route-tuple`'s sidecar step
+ * repair a report or verdict sidecar that disagrees with the payload it is
+ * handed** (issue #977), in the diff that causes the growth. The Coordinator
+ * reads the repair where it reads the recovery of a missing sidecar: wave-start's
+ * `SKILL.md` step-7 routing item names it (+161 B) and the mechanics
+ * reference's step-7a sequence comment states it (+319 B). The live occurrence
+ * behind it went to the `wave-start` `evidence/` sibling, which this
+ * population excludes by definition.
+ *
+ * At this row's anchor commit `59e3f14ac7f8852dac6e9d1a3f3489ceacb9aafb` the
+ * population measured **1,251,710 B** over 57 files — 290 B under the previous
+ * 1,252,000 B ceiling. This row's edit lands it at **1,252,190 B** over the
+ * same 57 files, +480 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,253,000 B**. The 810 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget. The shared standing
+ * load is NOT touched: neither file is a member of that population (only
+ * `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are).
+ *
+ * Previously: 1,252,000 B — **RAISED by the row that makes a stamped probe live
+ * only while its row runs at the probe's own iteration** (issue #974), whose
+ * reasoning is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that makes a stamped probe live only
  * while its row runs at the probe's own iteration, and makes the Reviewer's
  * stamp instruction unambiguous** (issue #974, ADR-0042 Correction
  * 2026-09-25), in the diff that causes the growth. The liveness rule and the
@@ -857,7 +879,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_252_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_253_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
