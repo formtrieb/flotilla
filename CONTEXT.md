@@ -106,6 +106,10 @@ _Avoid_: wave anchor (implies one per wave — the premise behind a Reviewer rea
 Another row of the same **Wave**, as a **Reviewer** sees it when predicting clashes — wave-wide, not only this **Round**'s, each annotated with a fact about the **Spine**, never about the remote. A **Landed sibling** (its merge recorded in the spine's PR-log) is no longer a clash candidate: its content is part of the default branch, so it is covered by one prediction against the current default branch and its leftover branch tip is never read.
 _Avoid_: sibling branch (a landed sibling's branch may be gone or stale — the row is the subject, the branch only its in-flight carrier).
 
+**Reviewed head**:
+The commit a **Reviewer**'s verdict was given for — the last commit of the row's branch at review time. It is the only commit of that row that may land. A change after the verdict, whoever makes it and whatever the reason, is a new iteration that gets its own review; the landing step refuses a branch whose head is no longer the reviewed head.
+_Avoid_: Coordinator fix-up (there is no sanctioned commit after the verdict), approved branch (a branch moves; the approval is for one commit).
+
 **Documented-Form Comparison**:
 The **Reviewer**'s required substitute evidence for a row whose core path is unreachable from the review environment: a complete divergence list against the mechanism's authoritative documented form (vendor doc, spec), from sources the Reviewer read in its own dispatch — never the Worker's restatement — reported as its own verdict outcome and never an automatic verdict flip (deliberate, commented departures survive review). Triggered by the deferred valve on the core path's ACs, or earlier by an issue AC or a Worker declaration (ADR-0030).
 _Avoid_: docs check (too vague), vendor parity (a divergence is reported, not forbidden).
