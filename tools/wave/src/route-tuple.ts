@@ -301,9 +301,10 @@ export interface ResolvedTitle {
  * **Why the live title comes before the row title — the asymmetry this closes.**
  * One change used to carry three titles: the Worker's commit subject and the
  * title it opened the PR with (from the driver's `prTitle`), the row title this
- * verb wrote over it on reuse, and — because a single-commit squash takes its
- * subject from the commit — the Worker's again on the default branch. The
- * middle one was the odd one out, and it was odd against this verb's OWN rule:
+ * verb wrote over it on reuse, and — because, under the host's own default
+ * squash message before ADR-0053, a single-commit squash took its subject
+ * from the commit — the Worker's again on the default branch. The middle
+ * one was the odd one out, and it was odd against this verb's OWN rule:
  * {@link workerSummaryFromBody} preserves the live BODY on reuse precisely
  * because a Worker's account of its change outranks a generated summary. A
  * title is that same claim in one line, so whatever argument keeps the body

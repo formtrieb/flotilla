@@ -560,7 +560,7 @@ ISSUES.forEach(assertNotHumanGated)
 // because the earlier attempt's WorkerReport never reached the Coordinator.
 // Live occurrence (row 716, disclosure 716.1): a Worker found three declared
 // files edited and a new spec file written, uncommitted, on a wave branch still
-// sitting at the wave anchor. It chose well — it reviewed every inherited line
+// sitting at the round's anchor. It chose well — it reviewed every inherited line
 // against every acceptance criterion, re-ran the measurement, and ran the full
 // verify gate before touching anything — but the brief gave it nothing to
 // choose BY, so the outcome rested on one agent's judgment.
@@ -569,7 +569,7 @@ ISSUES.forEach(assertNotHumanGated)
 // distinguishable on purpose: iteration >= 2 is a Coordinator decision that
 // KEEPS the branch's committed work (WORKSPACE_SETUP_REDISPATCH below, which
 // says RE-DISPATCH in its own heading and forbids re-anchoring), whereas a
-// retried FIRST iteration re-anchors to the wave anchor exactly as a first
+// retried FIRST iteration re-anchors to the round's anchor exactly as a first
 // attempt does. Conflating them would let a retried Worker skip the re-anchor
 // and build on a base nobody chose — a worse failure than the one step 2 fixes.
 //
@@ -620,13 +620,13 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
    can SET: a \`cd\` in one call is invisible in the next (wave-shared Convention 13,
    §Splitting is not always a preceding \`cd\`), so never issue one to set up a later step,
    and never fuse one onto the command that matters.
-2. Anchor to the wave anchor SHA — and read \`git status --porcelain\` BEFORE you reset,
+2. Anchor to the round's anchor SHA — and read \`git status --porcelain\` BEFORE you reset,
    because **this worktree may already carry work of your own.** A harness retry re-runs
    you in the SAME worktree your earlier attempt was working in, so you can arrive to
    uncommitted edits, untracked new files, or an already-created wave branch. **A harness
    retry is NOT a re-dispatch:** a re-dispatch is iteration ≥ 2, announces itself in its own
    heading, and tells you to keep the branch's committed work. This heading announces no
-   such thing, so a retried FIRST iteration re-anchors to the wave anchor SHA exactly as a
+   such thing, so a retried FIRST iteration re-anchors to the round's anchor SHA exactly as a
    first attempt does — the steps below are the whole instruction either way.
 
    **INHERITED WORK-IN-PROGRESS — two honest options, and DISCARDING IS THE DEFAULT.**
@@ -772,7 +772,7 @@ const WORKSPACE_SETUP_REDISPATCH = (issue) => `## Workspace setup (do first) —
    fuse one onto the command that matters.
 2. This is a re-dispatch: \`${issue.branch}\` ALREADY EXISTS,
    carrying your iteration-1 commits — do not discard them, do not re-anchor to
-   the wave anchor SHA and branch fresh. Land on the existing branch with a
+   the round's anchor SHA and branch fresh. Land on the existing branch with a
    TRACKING-FREE checkout — never \`git checkout -B <branch> origin/<branch>\`,
    which writes upstream-tracking into the SHARED .git/config of the MAIN repo
    (sandbox-write-denied for a worktree-isolated agent; that form half-applies
