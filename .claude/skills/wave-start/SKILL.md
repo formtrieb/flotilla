@@ -217,6 +217,12 @@ Do **not** auto-proceed past a STOP — these are the human gates the protocol p
 
 **A Reviewer STOP leaves the finished Reviewer's probe standing.** `reviewer-questions-blocking` and `public-api-approval-required` write nothing to the spine, so the row still reads the running state at the probe's own iteration and the sweep (step 7, item 4) spares that probe `live-row` until the row moves. Remove it yourself — `git -C <consumer-root> worktree remove <probe>`, a right only the Coordinator holds — before a re-review at the same iteration, whose Reviewer would otherwise collide with the stamped directory, and at the latest before the wave closes. Invocation: [reference/start-mechanics.md](reference/start-mechanics.md) §8.
 
+**An answered `reviewer-questions-blocking` goes back to review at the SAME iteration, in four steps.** First capture the question and the ruling as spine disclosures (step 7, item 1): the re-review overwrites the verdict sidecar, and the disclosures are what outlive it.
+1. The Operator answers.
+2. If the answer changes how an acceptance criterion reads, rewrite **exactly that criterion** in the ticket through `to-issues`' decorate path — every other criterion byte-identical, the new text naming the ruling and its date. **Never carry the answer as a `reviewerHint`**: a Coordinator hint is not ground truth for marking a criterion met against its own wording, and a re-review handed one returns `questions-blocking` again. The compose re-reads the ticket, so the rewritten criterion is what the Reviewer reads.
+3. Remove the finished Reviewer's probe — the paragraph above.
+4. Compose with `--reviewer-only` (step 6's flags plus that one) and dispatch: no Worker runs, the row's saved report goes to a schema-validated Reviewer, and the verb refuses (exit 1, naming the row) when that report sidecar is missing or invalid. Route the returned tuple as usual (step 7). Invocation: [reference/start-mechanics.md](reference/start-mechanics.md) §8.
+
 **The flag records that a decision is needed — it is not the decision.** When you (or the Coordinator, after investigation) resolve a `terminal-failure` STOP, the menu has more than one exit; do not default to `abandoned` just because it is the terminal state you already know:
 
 1. **Retry within this wave.** Fix the problem and re-run `wave-start` — no extra state write; the existing cap=1 re-dispatch already governs how far a retry can go.

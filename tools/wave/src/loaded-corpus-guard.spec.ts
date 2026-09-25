@@ -455,7 +455,30 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that closes the three observed ways a
+ * Why this number: **RAISED by the row that gives an Operator's answer to a
+ * Reviewer's question a documented path back to a re-review** (issue #992), in
+ * the diff that causes the growth. wave-start's `SKILL.md` step 8 gains the
+ * four-step path for an answered `reviewer-questions-blocking` — the criterion
+ * rewrite (never a hint), the probe removal, the `--reviewer-only` round
+ * (+1,256 B); `start-mechanics.md` gains the matching `compose-driver
+ * --reviewer-only` invocation in §8, the flag and the receipt's `mode` in step
+ * 6, and the new refusal (+1,404 B); `workflow-driver.md` gains the mode
+ * paragraph beside the compose-time refusals (+612 B). The live occurrence and
+ * the hand-patched copy the flag replaces went to the `wave-start` `evidence/`
+ * siblings, which this population excludes.
+ *
+ * At this row's anchor commit `3b3dac2d6978b4957d9292e260472898c4a9134a` the
+ * population measured **1,263,791 B** over 57 files — 209 B under the previous
+ * 1,264,000 B ceiling. This row's edit lands it at **1,267,063 B** over the
+ * same 57 files, +3,272 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,268,000 B**. The shared standing load is
+ * NOT touched: none of the three files is a member of that population.
+ *
+ * Previously: 1,264,000 B — **RAISED by the row that closes the three observed
+ * ways a stamped Reviewer probe outlives its review** (issue #991), whose
+ * reasoning is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that closes the three observed ways a
  * stamped Reviewer probe outlives its review** (issue #991), in the diff that
  * causes the growth. Every Reviewer-facing copy gains the revert-and-verify-
  * clean rule for the Reviewer's own probe edits — the agent definition
@@ -1029,7 +1052,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_264_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_268_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
