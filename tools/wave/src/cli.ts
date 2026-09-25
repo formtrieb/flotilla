@@ -397,7 +397,9 @@
  * ten guarded shell calls the routing mechanics used to prescribe. In order:
  * the sidecar presence + validation check (recovering a missing record from the
  * passed `--report`/`--verdict` payload through the same renderer `write-report`
- * uses), the worker-phase route, the verdict-phase route, the verdict render,
+ * uses, and repairing a present one that disagrees with a valid payload — the
+ * payload wins, a `warning:` names every differing field, and the step's
+ * `repaired` lists it beside `recovered`), the worker-phase route, the verdict-phase route, the verdict render,
  * find-before-create of the PR, the host status re-query, the two spine writes
  * (row state, PR cell), and the `in-review` rung transition. Every step reports
  * `performed` or `performed-before`, so a re-run on the same tuple is a

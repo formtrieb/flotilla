@@ -39,7 +39,8 @@
  *
  * The sequence is `start-mechanics.md` §"Routing a tuple" 7.0 → 7c, verbatim:
  *
- *   1. sidecar presence + validation (7.0)
+ *   1. sidecar presence + validation (7.0) — a missing record recovered, a
+ *      divergent one repaired, both from the passed payload
  *   2. outcome routing        — `outcomeToEvent` → `transition` (7a)
  *   3. verdict routing        — `verdictToEvent` → `transition` (7b)
  *   4. verdict render         — the max-iter sidecar → the PR-body section (7c)
@@ -463,15 +464,22 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
   // terminator). They share an envelope and diverge after it, so the clause
   // states the envelope and the continuation lines state each branch — a single
   // flat key list would advertise `prUrl` on a STOP that never carries one.
+  //
+  // Issue #977 adds ONE key, `repaired`, and it lives beside `recovered` in the
+  // `sidecar-check` step's detail — so the envelope names that pair on the
+  // step entry (`?`: the sidecar-check step only) and one continuation line
+  // says what each lists. Every disposition carries it, because the sidecar
+  // step runs before routing decides anything.
   json: {
     shape:
-      '{ ok, verb, id, iter, disposition, steps: [ { step, status, ...detail } ], ' +
+      '{ ok, verb, id, iter, disposition, steps: [ { step, status, recovered?, repaired?, ...detail } ], ' +
       'wrote: { spine, host, tracker }, ... }',
     trail: 'the rest follows the disposition',
     continuation: [
       '         pr-created adds:   branch, prUrl, title, titleSource, ruled?, reportOutcome',
       '         re-dispatched adds: reason, nextIteration, next: [ <step> ]',
       '         stop adds:         stop: { phase, reason, severity }, ruled?, next: <text>',
+      '         sidecar-check:     recovered / repaired: [ report | verdict ] rewritten from the payload',
     ],
   },
 });
@@ -525,6 +533,17 @@ class RouteTupleRefusal extends Error {
  * OWNS — the spine, the host, the tracker — and this step re-materialises a
  * record that was already owed, from the very payload it was handed, never new
  * information.
+ *
+ * **Recovered vs repaired — the two writes, and the one rule they share.**
+ * `recovered` names a half whose sidecar was MISSING (or corrupt) at the routed
+ * iteration and was rebuilt from the passed payload. `repaired` names a half
+ * whose sidecar was PRESENT and valid there but disagreed with a readable, valid
+ * payload after the write path's own normalisation: the passed payload wins
+ * (Operator ruling), the sidecar is rewritten from it through the same renderer
+ * and writer, a `warning:` names every differing top-level field, and routing
+ * proceeds from it. A payload that is unreadable or invalid while a valid
+ * sidecar exists leaves the sidecar standing and writes nothing — a record is
+ * never replaced by something the recovery itself would have refused.
  */
 interface SidecarStepResult {
   report: WorkerReport;
@@ -532,6 +551,116 @@ interface SidecarStepResult {
   /** The iteration the max-iter verdict sidecar was read from (what the render is of). */
   verdictIter: number;
   detail: Record<string, unknown>;
+}
+
+/**
+ * How a sidecar at the routed iteration disagrees with the payload the verb was
+ * handed, as three top-level field lists. Named from the SIDECAR's side, because
+ * the sidecar is the record being judged: `missing` is a field the payload
+ * carries and the sidecar lost (the live case: `prUrl`), `extra` a field only the
+ * sidecar carries, `different` a field both carry with unequal values.
+ */
+interface SidecarDivergence {
+  missing: string[];
+  extra: string[];
+  different: string[];
+}
+
+/**
+ * A JSON value rendered with object keys sorted at every depth — the equality
+ * the divergence check compares by.
+ *
+ * Key ORDER is deliberately not a difference. The sidecar and the payload file
+ * are serialised by different hands (the Scribe's `write-report` call and
+ * whatever staged the tuple's payload), and two serialisations of the same
+ * record that differ only in key order hold the same facts; repairing on that
+ * would print a warning about nothing and rewrite a record that was right.
+ * Array order IS a difference — `commitShas` and `acVerification` are ordered.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Compare a sidecar's parsed record with a normalised payload, top-level field
+ * by top-level field. `null` means they hold the same record — the silent case,
+ * and the only one a Reviewer-only round that overwrote its verdict sidecar at
+ * the same iteration (last-writer-wins) ever produces.
+ */
+function sidecarDivergence(sidecar: unknown, payload: unknown): SidecarDivergence | null {
+  const onDisk = sidecar as Record<string, unknown>;
+  const passed = payload as Record<string, unknown>;
+  const has = (record: Record<string, unknown>, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(record, key);
+  const missing = Object.keys(passed).filter((key) => !has(onDisk, key));
+  const extra = Object.keys(onDisk).filter((key) => !has(passed, key));
+  const different = Object.keys(passed).filter(
+    (key) => has(onDisk, key) && canonicalJson(onDisk[key]) !== canonicalJson(passed[key]),
+  );
+  return missing.length + extra.length + different.length === 0
+    ? null
+    : { missing, extra, different };
+}
+
+/**
+ * The passed payload as the WRITE path would persist it, or `null` when it is
+ * unreadable or invalid — the only form the divergence check may compare.
+ *
+ * "As the write path would persist it" is the point: `write-report` validates,
+ * then reconciles a decorated `issue` to the bare row id, then renders. A
+ * payload carrying `issue: "#<id>"` against a sidecar that already carries the
+ * bare id is therefore the SAME record, not a divergence, and a payload naming a
+ * different row entirely is one this verb would refuse to recover from — so it
+ * may not overwrite a valid sidecar either. The verdict path has no
+ * reconciliation (a verdict carries no issue field), only validation.
+ */
+function comparablePayload(kind: 'report' | 'verdict', path: string, id: string): unknown {
+  const raw = readJsonOrNull(path);
+  if (raw === null) return null;
+  if (kind === 'verdict') return validateReviewerVerdict(raw).valid ? raw : null;
+  if (!validateWorkerReport(raw).valid) return null;
+  const reconciled = reconcileReportIssue(raw, id);
+  return 'error' in reconciled ? null : reconciled.payload;
+}
+
+/**
+ * The repair's one `warning:` line (plus a legend beneath it), naming the row,
+ * the iteration, the kind and every differing top-level field — so the finding
+ * is greppable on one line and the explanation follows.
+ */
+function divergentSidecarWarning(input: {
+  kind: 'report' | 'verdict';
+  id: string;
+  iter: number;
+  path: string;
+  divergence: SidecarDivergence;
+}): string {
+  const { kind, id, iter, path, divergence } = input;
+  const fields = (
+    [
+      ['missing', divergence.missing],
+      ['extra', divergence.extra],
+      ['different', divergence.different],
+    ] as const
+  )
+    .filter(([, keys]) => keys.length > 0)
+    .map(([label, keys]) => `${label}: ${keys.join(', ')}`)
+    .join('; ');
+  return (
+    `warning: route-tuple: REPAIRED the ${kind} sidecar for row ${JSON.stringify(id)} at iteration ${iter} — ` +
+    `it disagreed with the --${kind}-file payload (${fields}).\n` +
+    '  missing = in the payload, not the sidecar; extra = in the sidecar, not the payload.\n' +
+    `  The passed payload wins: ${JSON.stringify(path)} was rewritten from it through the\n` +
+    '  renderer write-report/write-verdict use, and routing proceeds from it.\n'
+  );
 }
 
 /**
@@ -585,6 +714,7 @@ function loadSidecars(input: {
   warn: (text: string) => void;
 }): SidecarStepResult {
   const recovered: string[] = [];
+  const repaired: string[] = [];
   const misnamed: string[] = [];
 
   /**
@@ -599,6 +729,41 @@ function loadSidecars(input: {
     }
   };
 
+  /**
+   * Compare a valid sidecar AT THE ROUTED ITERATION with the passed payload and,
+   * when they disagree, rewrite the sidecar from the payload. Returns whether it
+   * wrote. Only the routed iteration is compared: a usable sidecar from a LATER
+   * iteration is a different round's record, and the payload is not its source.
+   *
+   * The write goes through the recovery's own renderer and writer, then the
+   * warning, then the sweep — the recovery's order, so a `warning:` about the
+   * repair only ever follows bytes that landed.
+   */
+  const repairIfDivergent = (
+    kind: 'report' | 'verdict',
+    onDisk: unknown,
+    payloadPath: string,
+  ): boolean => {
+    const payload = comparablePayload(kind, payloadPath, input.id);
+    // Unreadable or invalid: the valid sidecar stands, and nothing is written.
+    if (payload === null) return false;
+    const divergence = sidecarDivergence(onDisk, payload);
+    if (divergence === null) return false;
+    const dir = kind === 'report' ? input.reportsDir : input.verdictsDir;
+    const file = `${input.id}-${input.iter}.md`;
+    input.writer(
+      dir,
+      file,
+      renderSidecarBody(kind === 'report' ? 'WorkerReport' : 'ReviewerVerdict', input.id, input.iter, payload),
+    );
+    repaired.push(kind);
+    input.warn(
+      divergentSidecarWarning({ kind, id: input.id, iter: input.iter, path: join(dir, file), divergence }),
+    );
+    sweep(dir, kind);
+    return true;
+  };
+
   const readIndex = () => readSidecars(input.reportsDir, input.verdictsDir, input.reader);
   let index = readIndex();
 
@@ -607,6 +772,16 @@ function loadSidecars(input: {
 
   // ── the report half ──
   let reportHit = index.reportFor(input.id);
+  if (
+    reportHit !== null &&
+    reportHit.iter === input.iter &&
+    repairIfDivergent('report', reportHit.report, input.reportPayloadPath)
+  ) {
+    // Read back through the reader, as the recovery does: what routes is what
+    // is durable, and the renderer's JSON round-trip makes that the payload.
+    index = readIndex();
+    reportHit = index.reportFor(input.id);
+  }
   const reportUsable = reportHit !== null && reportHit.iter >= input.iter;
   if (!reportUsable) {
     const payload = readJsonOrNull(input.reportPayloadPath);
@@ -644,6 +819,14 @@ function loadSidecars(input: {
 
   // ── the verdict half ──
   let verdictHit = index.verdictFor(input.id);
+  if (
+    verdictHit !== null &&
+    verdictHit.iter === input.iter &&
+    repairIfDivergent('verdict', verdictHit.verdict, input.verdictPayloadPath)
+  ) {
+    index = readIndex();
+    verdictHit = index.verdictFor(input.id);
+  }
   const verdictUsable = verdictHit !== null && verdictHit.iter >= input.iter;
   if (!verdictUsable) {
     const payload = readJsonOrNull(input.verdictPayloadPath);
@@ -696,6 +879,7 @@ function loadSidecars(input: {
       reportIter: reportHit.iter,
       verdictIter: verdictHit.iter,
       recovered,
+      repaired,
       corrupt: index.corruptFor(input.id).length,
       misnamed,
     },
@@ -822,8 +1006,15 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       // the record this step just persisted.
       warn: (text) => void process.stderr.write(text),
     });
+    // `performed` whenever this step wrote a record now — a recovery of a
+    // missing one or a repair of a divergent one alike.
     const recovered = sidecars.detail.recovered as string[];
-    push('sidecar-check', recovered.length === 0 ? 'performed-before' : 'performed', sidecars.detail);
+    const repaired = sidecars.detail.repaired as string[];
+    push(
+      'sidecar-check',
+      recovered.length === 0 && repaired.length === 0 ? 'performed-before' : 'performed',
+      sidecars.detail,
+    );
 
     const report = sidecars.report;
     const verdict = sidecars.verdict;

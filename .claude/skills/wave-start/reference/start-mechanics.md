@@ -615,6 +615,10 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #                                     `recovered`. If it cannot be recovered the
 #                                     verb REFUSES (exit 1) naming write-report /
 #                                     write-verdict — it never guesses a record.
+#                                     A PRESENT one that disagrees with a valid
+#                                     payload is rewritten from it (the payload
+#                                     wins), a `warning:` names each differing
+#                                     field, and it is listed under `repaired`.
 #     route-outcome                   --state derived from the iteration
 #     route-verdict                   --state derived from the VERDICT (see below)
 #     render-verdict                  the MAX-iter valid verdict sidecar, so a

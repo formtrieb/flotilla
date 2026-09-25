@@ -1006,6 +1006,335 @@ describe('route-tuple', () => {
     });
   });
 
+  // ── the divergence repair ──────────────────────────────────────────────────
+  //
+  // The live occurrence this block pins: a Worker's in-band report carried a
+  // `prUrl`, the Scribe-written sidecar for the same row and iteration did not,
+  // and `write-report`'s absent-`prUrl` notice fired on the sidecar write. The
+  // row landed anyway (the terminator re-queries the host), but the DURABLE
+  // record disagreed with the in-band one — and a resume reads only the durable
+  // one. The sidecar step used to read the passed payload only when the sidecar
+  // was missing, so it never saw the disagreement. It now compares, and on a
+  // divergence the passed payload wins (Operator ruling).
+
+  describe('a sidecar that DISAGREES with its payload — the passed payload wins and the record is repaired', () => {
+    /** A writer that records every write and still lands the bytes, as production does. */
+    function spyWriter(): { writer: NonNullable<RouteTupleDeps['sidecarWriter']>; writes: string[] } {
+      const writes: string[] = [];
+      return {
+        writes,
+        writer: (dir, file, content) => {
+          writes.push(join(dir, file));
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, file), content, 'utf8');
+        },
+      };
+    }
+
+    /** The two payloads exactly as `landTuple` fills them — what the tuple carried in band. */
+    const filledReport = (over: Partial<WorkerReport> = {}): WorkerReport => ({
+      ...report(over),
+      issue: id,
+      branch,
+    });
+    const filledVerdict = (over: Partial<ReviewerVerdict> = {}): ReviewerVerdict => ({
+      ...verdict(over),
+      branchReviewed: branch,
+    });
+
+    /** Overwrite one sidecar at `iter` with an arbitrary (schema-valid) record. */
+    function writeSidecar(kind: 'report' | 'verdict', iter: number, record: unknown): void {
+      writeFileSync(
+        join(kind === 'report' ? reportsDir : verdictsDir, `${id}-${iter}.md`),
+        renderSidecarBody(kind === 'report' ? 'WorkerReport' : 'ReviewerVerdict', id, iter, record),
+        'utf8',
+      );
+    }
+
+    it('a report sidecar that LOST prUrl is rewritten from the payload, the warning names prUrl, and the result records the repair', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      // The live shape, exactly: everything the in-band report carried, minus prUrl.
+      const lost: Partial<WorkerReport> = filledReport();
+      delete lost.prUrl;
+      writeSidecar('report', 1, lost);
+
+      const { writer, writes } = spyWriter();
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      // Rewritten to match the payload — byte-identical to what write-report
+      // renders from it, through the one renderer the recovery also uses.
+      expect(readFileSync(join(reportsDir, `${id}-1.md`), 'utf8')).toBe(
+        renderSidecarBody('WorkerReport', id, 1, filledReport()),
+      );
+      expect(readFileSync(join(reportsDir, `${id}-1.md`), 'utf8')).toContain(`"prUrl": "${EXISTING_PR}"`);
+      // Exactly one write — the report — and none to the verdict that agreed.
+      expect(writes).toEqual([join(reportsDir, `${id}-1.md`)]);
+      // Loud: ONE `warning:` line naming the row, the iteration, the kind and
+      // the field. Written as a literal, not assembled from the code under test.
+      expect(stderr).toContain(
+        `warning: route-tuple: REPAIRED the report sidecar for row ${JSON.stringify(id)} at iteration 1 — ` +
+          'it disagreed with the --report-file payload (missing: prUrl).\n',
+      );
+      expect(stderr.split('\n').filter((l) => l.startsWith('warning:'))).toHaveLength(1);
+      // The result records the repair, beside `recovered` — which stays empty,
+      // because the sidecar was never missing.
+      expect(step('sidecar-check')).toMatchObject({
+        status: 'performed',
+        recovered: [],
+        repaired: ['report'],
+        reportIter: 1,
+      });
+      // Routing proceeds (from the payload — the next spec makes that visible
+      // on a field routing actually reads, which prUrl is not).
+      expect(result()).toMatchObject({ disposition: 'pr-created', reportOutcome: 'done' });
+    });
+
+    it('routing follows the PAYLOAD, not the stale sidecar — a divergent outcome routes the payload\'s way', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      // A stale sidecar whose outcome would re-dispatch the row, and which lost
+      // prUrl besides; the payload says `done`.
+      const stale: Partial<WorkerReport> = filledReport({ outcome: 'needs-context' });
+      delete stale.prUrl;
+      writeSidecar('report', 1, stale);
+
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(stderr).toContain('(missing: prUrl; different: outcome)');
+      // Routed from the payload: the Worker phase saw `done`, so the row landed
+      // rather than re-dispatching on the sidecar's `needs-context`.
+      expect(step('route-outcome')).toMatchObject({ workerOutcome: 'done', event: 'worker-done' });
+      expect(result()).toMatchObject({ disposition: 'pr-created', reportOutcome: 'done' });
+      expect(step('sidecar-check')).toMatchObject({ repaired: ['report'] });
+    });
+
+    it('sidecar and payload EQUAL — no write, no warning, no repair entry', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      const reportBytes = readFileSync(join(reportsDir, `${id}-1.md`), 'utf8');
+      const verdictBytes = readFileSync(join(verdictsDir, `${id}-1.md`), 'utf8');
+
+      const { writer, writes } = spyWriter();
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(writes).toEqual([]);
+      expect(stderr).toBe('');
+      expect(step('sidecar-check')).toMatchObject({
+        status: 'performed-before',
+        recovered: [],
+        repaired: [],
+      });
+      expect(readFileSync(join(reportsDir, `${id}-1.md`), 'utf8')).toBe(reportBytes);
+      expect(readFileSync(join(verdictsDir, `${id}-1.md`), 'utf8')).toBe(verdictBytes);
+    });
+
+    it('EQUAL after the write path\'s normalisation — key order and a decorated issue are not a divergence', async () => {
+      // "Equal" is judged after the normalisation `write-report` applies: a
+      // decorated `issue` reconciles to the bare row id, and a payload staged
+      // by a different hand in a different key order holds the same facts.
+      await seed();
+      landTuple(1, report(), verdict());
+      const reordered = Object.fromEntries(Object.entries(filledReport()).reverse());
+      writeFileSync(
+        join(payloadDir, 'report.json'),
+        JSON.stringify({ ...reordered, issue: `#${id}`, filesChanged: { renamed: 0, modified: 2, new: 1 } }),
+        'utf8',
+      );
+
+      const { writer, writes } = spyWriter();
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(writes).toEqual([]);
+      expect(stderr).toBe('');
+      expect(step('sidecar-check')).toMatchObject({ status: 'performed-before', repaired: [] });
+    });
+
+    it('a Reviewer-only round that OVERWROTE its verdict sidecar at the same iteration (last-writer-wins) stays silent', async () => {
+      // Two such rounds ran in one wave: the verdict sidecar at iteration N was
+      // overwritten by the round's own Scribe, and the Coordinator routed with
+      // the matching payload. Sidecar and payload are equal after the overwrite,
+      // so the comparison must say nothing.
+      await seed();
+      landTuple(1, report(), verdict({ workerReportDigest: 'the first round, against a bad anchor' }));
+      writeSidecar('verdict', 1, filledVerdict());
+      writeFileSync(join(payloadDir, 'verdict.json'), JSON.stringify(filledVerdict()), 'utf8');
+
+      const { writer, writes } = spyWriter();
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(writes).toEqual([]);
+      expect(stderr).toBe('');
+      expect(step('sidecar-check')).toMatchObject({ repaired: [] });
+    });
+
+    it('the VERDICT half repairs the same way — every missing, extra and different field named, and the PR body renders from the payload', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      // A stale verdict sidecar: an older digest, no lint summary, and a field
+      // the payload does not carry — one of each divergence kind.
+      const stale: Partial<ReviewerVerdict> = filledVerdict({
+        workerReportDigest: 'STALE digest from an earlier write.',
+        gitStateSane: true,
+      });
+      delete stale.lintTestSummary;
+      writeSidecar('verdict', 1, stale);
+
+      const { writer, writes } = spyWriter();
+      let posted: Record<string, string> = {};
+      const { http } = fakeHttp({
+        get: () => ({ status: 200, json: [] }),
+        post: (_url, body) => {
+          posted = JSON.parse(body ?? '{}') as Record<string, string>;
+          return { status: 201, json: { html_url: NEW_PR } };
+        },
+      });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(readFileSync(join(verdictsDir, `${id}-1.md`), 'utf8')).toBe(
+        renderSidecarBody('ReviewerVerdict', id, 1, filledVerdict()),
+      );
+      expect(writes).toEqual([join(verdictsDir, `${id}-1.md`)]);
+      expect(stderr).toContain(
+        `warning: route-tuple: REPAIRED the verdict sidecar for row ${JSON.stringify(id)} at iteration 1 — ` +
+          'it disagreed with the --verdict-file payload ' +
+          '(missing: lintTestSummary; extra: gitStateSane; different: workerReportDigest).\n',
+      );
+      expect(step('sidecar-check')).toMatchObject({
+        status: 'performed',
+        recovered: [],
+        repaired: ['verdict'],
+      });
+      // Rendered from the payload: the create path's summary IS the verdict's
+      // digest, so the stale one would be visible here if it had routed.
+      expect(posted.body.startsWith('Worker reports 4161/4161 green')).toBe(true);
+      expect(posted.body).not.toContain('STALE digest');
+    });
+
+    it.each([
+      ['report', 'unreadable', 'not json at all'],
+      ['report', 'invalid', JSON.stringify({ outcome: 'done' })],
+      ['verdict', 'unreadable', 'not json at all'],
+      ['verdict', 'invalid', JSON.stringify({ verdict: 'approve' })],
+    ] as const)(
+      'a %s payload that is %s, with a valid sidecar present — no write, no warning, routing from the sidecar',
+      async (kind, _why, content) => {
+        await seed();
+        landTuple(1, report(), verdict());
+        // The sidecar lost prUrl — a divergence a VALID payload would repair —
+        // so a write here would be visible. An unusable payload repairs nothing.
+        const lost: Partial<WorkerReport> = filledReport();
+        delete lost.prUrl;
+        writeSidecar('report', 1, lost);
+        const reportBytes = readFileSync(join(reportsDir, `${id}-1.md`), 'utf8');
+        const verdictBytes = readFileSync(join(verdictsDir, `${id}-1.md`), 'utf8');
+        writeFileSync(join(payloadDir, `${kind}.json`), content, 'utf8');
+
+        const { writer, writes } = spyWriter();
+        const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+        const code = await runRouteTuple(
+          argv(1),
+          deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+        );
+
+        expect(code).toBe(0);
+        expect(result()).toMatchObject({ disposition: 'pr-created' });
+        // The unusable half wrote nothing; the verdict half had nothing to repair.
+        const unusableDir = kind === 'report' ? reportsDir : verdictsDir;
+        expect(writes.filter((w) => w.startsWith(unusableDir))).toEqual([]);
+        expect(readFileSync(join(verdictsDir, `${id}-1.md`), 'utf8')).toBe(verdictBytes);
+        if (kind === 'report') {
+          expect(writes).toEqual([]);
+          expect(stderr).toBe('');
+          expect(step('sidecar-check')).toMatchObject({ status: 'performed-before', repaired: [] });
+          expect(readFileSync(join(reportsDir, `${id}-1.md`), 'utf8')).toBe(reportBytes);
+        } else {
+          // The REPORT payload is still valid here, so the report half repairs
+          // exactly as it would alone: the halves are independent.
+          expect(step('sidecar-check')).toMatchObject({ repaired: ['report'] });
+          expect(stderr).not.toContain('REPAIRED the verdict sidecar');
+        }
+      },
+    );
+
+    it('a report payload that names a DIFFERENT row is refused as a source — the valid sidecar stands, nothing written', async () => {
+      // The one payload the write path refuses after validation: reconciliation
+      // finds a mis-paired record. A record this verb would refuse to RECOVER
+      // from may not OVERWRITE a valid one either.
+      await seed();
+      landTuple(1, report(), verdict());
+      const reportBytes = readFileSync(join(reportsDir, `${id}-1.md`), 'utf8');
+      writeFileSync(
+        join(payloadDir, 'report.json'),
+        // `issue` set AFTER the fill, which would otherwise restore the row id.
+        JSON.stringify({ ...filledReport({ tests: 'a different row entirely' }), issue: `${id}999` }),
+        'utf8',
+      );
+
+      const { writer, writes } = spyWriter();
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(code).toBe(0);
+      expect(writes).toEqual([]);
+      expect(stderr).toBe('');
+      expect(readFileSync(join(reportsDir, `${id}-1.md`), 'utf8')).toBe(reportBytes);
+      expect(step('sidecar-check')).toMatchObject({ repaired: [] });
+    });
+
+    it('a usable sidecar from a LATER iteration is not compared — the payload is not that round\'s source', async () => {
+      await seed();
+      // A report sidecar at iteration 2 exists; the call routes iteration 1
+      // with a payload that differs from it. Only the routed iteration is
+      // compared, so nothing is repaired and nothing is written.
+      landTuple(1, report(), verdict());
+      mkdirSync(reportsDir, { recursive: true });
+      writeSidecar('report', 2, filledReport({ tests: 'the iteration-2 run' }));
+
+      const { writer, writes } = spyWriter();
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      await runRouteTuple(
+        argv(1),
+        deps({ http, sidecarWriter: writer, landingHost: fakeLanding({ state: 'open', url: NEW_PR }) }),
+      );
+
+      expect(writes).toEqual([]);
+      expect(step('sidecar-check')).toMatchObject({ reportIter: 2, repaired: [] });
+    });
+  });
+
   // ── the host refusals ──────────────────────────────────────────────────────
 
   describe('host refusals stop the sequence before any spine or tracker write', () => {
