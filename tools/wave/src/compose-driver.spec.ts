@@ -4422,4 +4422,20 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     // Nothing unresolved reached the stamp.
     expect(brief).not.toMatch(/flotilla-probe-[^`]*undefined/);
   });
+
+  // Issue #991: Reviewers who falsified a check inside their probe left the
+  // edit behind; the sweep skipped each `dirty` and each needed a hand
+  // removal. The composed brief — what a running Reviewer actually reads,
+  // backticks rendered — tells it to revert and verify the probe clean.
+  it('the composed Reviewer brief tells the Reviewer to revert its own probe edits and verify the probe clean before returning', async () => {
+    const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
+    const flat = (await reviewerBriefFor(spinePath, configPath, storeIds, 'B')).replace(/\s+/g, ' ');
+    expect(flat).toContain('revert every edit you made inside your probe');
+    expect(flat).toContain('a falsification break included');
+    expect(flat).toContain('verify the probe clean before you return');
+    expect(flat).toContain('`git -C <probe> status --porcelain` must print nothing');
+    expect(flat).toMatch(/The sweep skips a dirty probe \(`dirty`\), so an edit you leave behind is never collected and needs a removal by hand/);
+    // The rendered form carries no template escape: a Reviewer reads backticks.
+    expect(flat).not.toContain('\\`git -C <probe>');
+  });
 });

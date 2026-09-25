@@ -455,7 +455,31 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that documents a `.claude/**` restore
+ * Why this number: **RAISED by the row that closes the three observed ways a
+ * stamped Reviewer probe outlives its review** (issue #991), in the diff that
+ * causes the growth. Every Reviewer-facing copy gains the revert-and-verify-
+ * clean rule for the Reviewer's own probe edits — the agent definition
+ * (+340 B), wave-reviewer's `SKILL.md` (+285 B) and its `reviewer-checks.md`
+ * (+361 B); wave-start's `SKILL.md` step 8 names what a Reviewer STOP leaves
+ * standing and when to remove it, and its step-7 running set gains the two
+ * resumed states (+680 B together); `start-mechanics.md` gains the matching
+ * removal invocation and running set (+701 B); wave-close's phase-3 reference
+ * moves to the path-ends-in-the-stamp wording and the five-state running set
+ * (+131 B). The live occurrences behind all three went to the `wave-start` and
+ * `wave-close` `evidence/` siblings, which this population excludes.
+ *
+ * At this row's anchor commit `87904ba1a8aafaeb16816918aa34e74c58916abb` the
+ * population measured **1,261,293 B** over 57 files — 707 B under the previous
+ * 1,262,000 B ceiling. This row's edit lands it at **1,263,791 B** over the
+ * same 57 files, +2,498 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,264,000 B**. The shared standing load is
+ * NOT touched: none of the six files is a member of that population.
+ *
+ * Previously: 1,262,000 B — **RAISED by the row that documents a `.claude/**`
+ * restore half-applying under the sandbox write-deny** (issue #994), whose
+ * reasoning is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that documents a `.claude/**` restore
  * half-applying under the sandbox write-deny and rewrites the between-rounds
  * default-branch update to fetch + `merge --ff-only`** (issue #994), in the
  * diff that causes the growth. Three loaded files grow: `wave-shared`'s
@@ -1005,7 +1029,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_262_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_264_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

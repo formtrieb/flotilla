@@ -1165,6 +1165,10 @@ end in \`${probeStamp}\`: the stamp is the checkout directory's own basename, ne
 stamp is how the Coordinator's sweep collects it once this row stops running at this iteration
 (ADR-0042 Amendment 2026-09-23, Correction 2026-09-25). You never remove it yourself: no dispatched
 role holds \`git worktree remove\`, and leaving it standing is the contract, not an oversight.
+**Leave it clean, though: revert every edit you made inside your probe** — a falsification break
+included, and any file you added — **and verify the probe clean before you return**:
+\`git -C <probe> status --porcelain\` must print nothing. The sweep skips a dirty probe (\`dirty\`),
+so an edit you leave behind is never collected and needs a removal by hand.
 
 **YOU NEVER ESCALATE YOUR OWN PERMISSIONS EITHER, AND YOU RUN AT MOST THE WORKER'S RIGHTS (ADR-0049).**
 The no-escalation rule binds every dispatched role, not just the Worker: you may not disable the

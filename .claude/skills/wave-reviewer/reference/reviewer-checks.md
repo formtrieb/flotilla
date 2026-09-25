@@ -82,6 +82,8 @@ One `acVerification` row per AC: `{ ac, met, evidence }` where `met ∈ met|part
 
 An outcome-phrased AC earns `met` only on outcome-*exercising* evidence (a slice test, or your own probe). **A failing probe is `not-met`; an outcome unreachable from this review environment is `deferred`** — that is the line between "I could not verify" and "this cannot be verified", and it is drawn here, per-AC, not as a separate ruling. A `deferred` landing on the row's **core** path is what makes Check 6 below required.
 
+**Revert your own probe edits before you return, and verify the probe clean** — every edit you made inside your stamped probe (a falsification break included, and any file you added) is undone, and `git -C <probe> status --porcelain` prints nothing. The sweep skips a dirty probe (`dirty`), so a leftover edit is never collected and needs a removal by hand.
+
 ### The deferred valve's four triggers
 
 | Trigger | The outcome is unreachable because… |

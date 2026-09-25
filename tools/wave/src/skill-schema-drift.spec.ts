@@ -3478,23 +3478,48 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     expect(brief).toMatch(/You never remove it yourself/);
   });
 
-  it('NEGATIVE CONTROL — a copy that reverts to "name its directory exactly" is caught (issue #974)', () => {
-    const text = agentProbeLicense(reviewerAgentMd);
-    const reverted = text
-      .split(STAMP_IS_THE_CHECKOUT_BASENAME)
-      .join('directory is named exactly the stamp');
-    expect(reverted).not.toEqual(text);
-    expect(reverted).not.toContain(STAMP_IS_THE_CHECKOUT_BASENAME);
-
-    const brief = reviewerBriefSource(driverJs);
-    const revertedBrief = brief.replace(
-      /the path you hand to \\`git worktree add\\` must itself\s+end in/,
-      'name its directory exactly',
-    );
-    expect(revertedBrief).not.toEqual(brief);
-    expect(revertedBrief).toContain('name its directory exactly');
-    expect(revertedBrief).not.toMatch(/the path you hand to \\`git worktree add\\` must itself\s+end in/);
+  it.each([
+    ['wave-reviewer.md agent definition', () => agentProbeLicense(reviewerAgentMd)],
+    ['wave-reviewer/SKILL.md', () => skillProbeLicense(reviewerSkillMd)],
+    ['the reviewerBrief', () => reviewerBriefSource(driverJs)],
+  ] as const)('%s passes the shared stamp-wording predicate (issue #991)', (_label, region) => {
+    expect(stampWordingGaps(region())).toEqual([]);
   });
+
+  // The negative control RUNS the pin's own predicate against a reverted copy
+  // (issue #991). The first version of this control only checked that a
+  // string replacement changed the text — true of any replacement, so it
+  // could not show the pins would fail. Each reverted copy below swaps the
+  // current sentence back to the pre-#974 wording that copy actually carried.
+  it.each([
+    [
+      'wave-reviewer.md agent definition',
+      () => agentProbeLicense(reviewerAgentMd),
+      "and it carries the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` — the dispatched brief spells yours out. The path you hand to `git worktree add` must itself end in the stamp: the stamp is the checkout directory's own basename, never a parent directory.",
+      'and its directory is named with the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` — the dispatched brief spells yours out.',
+    ],
+    [
+      'wave-reviewer/SKILL.md',
+      () => skillProbeLicense(reviewerSkillMd),
+      ' and carries the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` — the path handed to `git worktree add` must itself end in the stamp, never a parent directory;',
+      ', named with the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>`;',
+    ],
+    [
+      'the reviewerBrief',
+      () => reviewerBriefSource(driverJs),
+      "and the path you hand to \\`git worktree add\\` must itself\nend in \\`${probeStamp}\\`: the stamp is the checkout directory's own basename, never a parent directory\n(the sweep matches the registered checkout's basename, so \\`<stamp>/probe\\` is never collected).",
+      'and name its directory exactly \\`${probeStamp}\\`.',
+    ],
+  ] as const)(
+    'NEGATIVE CONTROL — the stamp-wording predicate FAILS on a %s reverted to its pre-#974 wording (issues #974, #991)',
+    (_label, region, current, retired) => {
+      const text = region();
+      expect(text).toContain(current); // the swap below has something to swap
+      const reverted = text.split(current).join(retired);
+      expect(stampWordingGaps(text)).toEqual([]);
+      expect(stampWordingGaps(reverted)).not.toEqual([]);
+    },
+  );
 
   it('NEGATIVE CONTROL — a probe licence that drops the stamp, or grants removal, is caught', () => {
     const text = agentProbeLicense(reviewerAgentMd);
@@ -4769,4 +4794,158 @@ describe('skill-schema-drift — wave-setup teaches every declared models.* key 
     );
     expect(() => assertModelsKeysTaught(setupMechanicsMd, [])).toThrow(/pass vacuously/);
   });
+});
+
+// ─── the stamped probe's lifecycle copies (issue #991) ──────────────────────
+//
+// Two halves, one population: every copy that tells a Reviewer how to make its
+// stamped probe, and every copy that tells it how to leave one.
+//
+//   1. THE NAMING RULE. "The path handed to `git worktree add` must itself end
+//      in the stamp" reached the Reviewer-facing copies with issue #974, and
+//      setup-mechanics' allowlist rationale carried it too — but nothing pinned
+//      that copy, and wave-close's phase-3 reference still said the Reviewer
+//      "names the directory flotilla-probe-…". Both are pinned here, by the
+//      same predicate the Reviewer-facing copies answer to above.
+//   2. LEAVING IT CLEAN. Reviewers who falsified a check inside their probe
+//      left the edit behind; the sweep skipped each `dirty`, and each needed a
+//      hand removal. Every Reviewer-facing copy — the packaged brief, the agent
+//      definition, the skill and its checks reference — now says to revert its
+//      own probe edits and verify the probe clean before returning.
+
+/**
+ * The stamp-wording predicate — every missing or retired part of the naming
+ * rule in `text`, `[]` when the copy holds. Shared by the Reviewer-facing pins
+ * and the setup/close pins so one predicate is what every negative control
+ * runs. The driver source escapes its backticks inside a template literal and
+ * hard-wraps its prose, so backticks are unescaped and whitespace runs folded
+ * to one space first.
+ */
+function stampWordingGaps(text: string): string[] {
+  const t = text.replace(/\\`/g, '`').replace(/\s+/g, ' ');
+  const gaps: string[] = [];
+  if (!/`git worktree add` must itself\s+end in/.test(t)) gaps.push('path-ends-in-the-stamp');
+  if (!/never a parent directory/.test(t)) gaps.push('never-a-parent');
+  if (/name(?:s|d)? (?:its|the) directory (?:exactly|`flotilla-probe)/.test(t)) gaps.push('retired-directory-naming');
+  if (/directory (?:is named|carries the stamp)/.test(t)) gaps.push('retired-directory-naming');
+  return gaps;
+}
+
+/**
+ * The probe-clean predicate — every missing part of the leave-it-clean rule in
+ * `text`, `[]` when the copy holds: the revert, the falsification edit named as
+ * one of the edits, the clean check itself, and the reason (the sweep skips a
+ * dirty probe and it then needs a removal by hand).
+ */
+function probeCleanGaps(text: string): string[] {
+  const t = text.replace(/\\`/g, '`').replace(/\s+/g, ' ');
+  const gaps: string[] = [];
+  if (!/\brevert/i.test(t)) gaps.push('revert');
+  if (!t.includes('a falsification break included')) gaps.push('falsification-edit');
+  if (!/verif(?:y|ies) the probe clean/.test(t)) gaps.push('verify-clean');
+  if (!t.includes('`git -C <probe> status --porcelain`')) gaps.push('clean-check');
+  if (!/skips a dirty probe/.test(t)) gaps.push('reason-dirty-skip');
+  if (!/removal by hand/.test(t)) gaps.push('reason-hand-removal');
+  return gaps;
+}
+
+describe('skill-schema-drift — the stamped probe: every naming-rule copy pinned, and every Reviewer copy leaves it clean (#991)', () => {
+  const reviewerAgentMd = readFileSync(WAVE_REVIEWER_AGENT_MD, 'utf-8');
+  const reviewerSkillMd = readFileSync(WAVE_REVIEWER_SKILL_MD, 'utf-8');
+  const reviewerChecksMd = readFileSync(REVIEWER_CHECKS_MD, 'utf-8');
+  const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
+  const setupMechanicsMd = readFileSync(SETUP_MECHANICS_MD, 'utf-8');
+  const phase3Md = readFileSync(PHASE_3_WORKTREE_CLEANUP_MD, 'utf-8');
+
+  /** setup-mechanics' allowlist-rationale bullet for the probe's creation entry. */
+  const setupProbeBullet = (): string =>
+    contractRegion(setupMechanicsMd, 'setup-mechanics.md', '- **Probe-worktree creation.**', '\n- **');
+  /** wave-close phase 3's own probe section. */
+  const phase3ProbeSection = (): string =>
+    contractRegion(phase3Md, 'phase-3-worktree-cleanup.md', "## The Reviewer's probe checkouts", '\n## ');
+  /** The agent definition's probe-license paragraph. */
+  const agentProbeLicense = (): string =>
+    contractRegion(reviewerAgentMd, 'wave-reviewer.md agent definition', '**Probe license.**', '**Deferred valve.**');
+  /** The operator skill's probe-license bullet. */
+  const skillProbeLicense = (): string =>
+    contractRegion(reviewerSkillMd, 'wave-reviewer/SKILL.md', '**The Reviewer holds a probe license.**', '\n- **');
+  /** The checks reference's Check 3 section. */
+  const checksCheck3 = (): string =>
+    contractRegion(reviewerChecksMd, 'reviewer-checks.md', '## Check 3 —', '## Check 4 —');
+  /** The packaged reviewerBrief's probe paragraph, up to the next headline. */
+  const briefProbeParagraph = (): string =>
+    contractRegion(
+      driverJs,
+      'driver/wave-start-inflight.js',
+      '**Your probe checkout, if you make one,',
+      '**YOU NEVER ESCALATE YOUR OWN PERMISSIONS EITHER',
+    );
+
+  // ─── 1. the naming rule's two copies nothing pinned ───────────────────────
+
+  it.each([
+    ['setup-mechanics.md', setupProbeBullet],
+    ['wave-close phase-3 reference', phase3ProbeSection],
+  ] as const)('%s says the path handed to `git worktree add` must itself end in the stamp', (_label, region) => {
+    const text = region();
+    expect(text).toContain('flotilla-probe-<wave-slug>-<row-id>-i<iteration>');
+    expect(stampWordingGaps(text)).toEqual([]);
+  });
+
+  // Each reverted copy is the sentence that copy carried before this row (the
+  // phase-3 reference) or before issue #974 (setup-mechanics), swapped back in
+  // verbatim. The predicate the pin runs must reject it.
+  it.each([
+    [
+      'setup-mechanics.md',
+      setupProbeBullet,
+      'instead the path handed to `git worktree add` must itself end in the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` (never a parent directory),',
+      'instead its directory carries the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>`,',
+    ],
+    [
+      'wave-close phase-3 reference',
+      phase3ProbeSection,
+      "so a Reviewer makes its probe under a temp root, and the path it hands to `git worktree add` must itself end in the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` — the checkout directory's own basename, never a parent directory.",
+      'so a Reviewer makes its probe under a temp root and names the directory `flotilla-probe-<wave-slug>-<row-id>-i<iteration>`.',
+    ],
+  ] as const)(
+    'NEGATIVE CONTROL — the stamp-wording predicate FAILS on the %s copy reverted to its earlier wording',
+    (_label, region, current, retired) => {
+      const text = region();
+      expect(text).toContain(current);
+      const reverted = text.split(current).join(retired);
+      expect(stampWordingGaps(reverted)).not.toEqual([]);
+    },
+  );
+
+  // ─── 2. every Reviewer-facing copy leaves the probe clean ─────────────────
+
+  const REVIEWER_COPIES = [
+    ['the packaged reviewerBrief', briefProbeParagraph, '**Leave it clean, though:'],
+    ['wave-reviewer.md agent definition', agentProbeLicense, '**Revert your own probe edits before you return**'],
+    ['wave-reviewer/SKILL.md', skillProbeLicense, 'The Reviewer **reverts its own probe edits**'],
+    ['reviewer-checks.md Check 3', checksCheck3, '**Revert your own probe edits before you return, and verify the probe clean**'],
+  ] as const;
+
+  it.each(REVIEWER_COPIES)(
+    '%s tells the Reviewer to revert its own probe edits and verify the probe clean before returning, with the reason',
+    (_label, region) => {
+      expect(probeCleanGaps(region())).toEqual([]);
+    },
+  );
+
+  // A reverted copy is the region with the rule's sentence cut out — the
+  // shape every copy had before this row. The predicate must reject each.
+  it.each(REVIEWER_COPIES)(
+    'NEGATIVE CONTROL — the probe-clean predicate FAILS on the %s with the rule cut out',
+    (_label, region, start) => {
+      const text = region();
+      const from = text.indexOf(start);
+      expect(from).toBeGreaterThan(-1);
+      const to = text.indexOf('removal by hand.', from) + 'removal by hand.'.length;
+      expect(to).toBeGreaterThan(from);
+      const reverted = text.slice(0, from) + text.slice(to);
+      expect(probeCleanGaps(reverted)).not.toEqual([]);
+    },
+  );
 });
