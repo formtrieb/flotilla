@@ -1285,6 +1285,164 @@ describe('RealGitHubApi', () => {
         op: 'enableAutoMerge',
       });
     });
+
+    // ── The refresh's one failure edge: disable succeeded, re-enable failed ──
+    //
+    // The disable has run, so the PR is no longer the PR the operator armed: it
+    // is UNARMED. An error that only says "the enable failed" reads as "nothing
+    // changed". So every UNTYPED re-enable failure must say what state it left
+    // the PR in and how to get back — while the two TYPED refusals keep the
+    // routing they had before the refresh existed.
+    const ARMED_WITH_OLD = { node_id: 'n', auto_merge: { merge_method: 'squash', commit_title: 'old (#42)', commit_message: 'old' } };
+    /** GET → the PR armed with an older message; disable → ok; enable → `enable(req)`. */
+    function refreshApi(enable: (req: GitHubHttpRequest) => GitHubHttpResponse) {
+      return makeApi((req) => {
+        if (req.method === 'GET') return { status: 200, json: ARMED_WITH_OLD };
+        return opOf(req) === 'disable'
+          ? { status: 200, json: { data: { disablePullRequestAutoMerge: { pullRequest: { number: 42 } } } } }
+          : enable(req);
+      });
+    }
+    /** The three things the unarmed error has to say — each its own assertion, so a regression names which one went. */
+    function expectSaysUnarmed(err: unknown): void {
+      expect(err).toBeInstanceOf(GitHubApiError);
+      expect(err).not.toBeInstanceOf(AutoMergeUnavailableError);
+      const text = (err as Error).message;
+      expect(text).toMatch(/DISABLED its auto-merge/);
+      expect(text).toMatch(/PR #42 is now UNARMED/);
+      expect(text).toMatch(/Re-running `host-pr arm` restores it/);
+      expect((err as GitHubApiError).op).toBe('enableAutoMerge');
+    }
+
+    it.each([
+      ['a non-200 answer', (): GitHubHttpResponse => ({ status: 502, json: { message: 'Bad Gateway' } }), 502, /Bad Gateway/],
+      [
+        'an unrecognised GraphQL error',
+        (): GitHubHttpResponse => ({ status: 200, json: { errors: [{ type: 'INTERNAL', message: 'something else entirely' }] } }),
+        200,
+        /something else entirely/,
+      ],
+      [
+        'a FORBIDDEN GraphQL error — its token guidance kept',
+        (): GitHubHttpResponse => ({
+          status: 200,
+          json: { errors: [{ type: ARM_FORBIDDEN_ERROR_TYPE, message: 'Resource not accessible by personal access token' }] },
+        }),
+        200,
+        /Pull requests: Read and write/,
+      ],
+    ])('re-enable fails with %s after the disable → the error says auto-merge was disabled, the PR is unarmed, and re-running arm restores it', async (_label, answer, status, cause) => {
+      const { api, http } = refreshApi(answer);
+      const err = await api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
+      expectSaysUnarmed(err);
+      // The underlying failure is kept, verbatim, and its HTTP status carried over.
+      expect((err as Error).message).toMatch(cause);
+      expect((err as GitHubApiError).status).toBe(status);
+      // The disable DID run — the claim in the message is about a write that happened.
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'disable', 'enable']);
+    });
+
+    it('re-enable request THROWS before any answer (transport) after the disable → the same three statements, status 0', async () => {
+      const { api } = makeApi((req) => {
+        if (req.method === 'GET') return { status: 200, json: ARMED_WITH_OLD };
+        if (opOf(req) === 'disable') return { status: 200, json: { data: {} } };
+        throw new TypeError('fetch failed');
+      });
+      const err = await api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
+      expectSaysUnarmed(err);
+      expect((err as Error).message).toMatch(/fetch failed/);
+      expect((err as GitHubApiError).status).toBe(0);
+    });
+
+    it('CONTROL — the same untyped failure on a FIRST arm (nothing disabled) claims no disable and no unarmed PR', async () => {
+      // The wording is conditional on the disable having run. A PR that was never
+      // armed was never disarmed, and saying so would send an operator hunting
+      // for a state change that did not happen.
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET' ? { status: 200, json: { node_id: 'n', auto_merge: null } } : { status: 502, json: { message: 'Bad Gateway' } },
+      );
+      const err = await api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GitHubApiError);
+      expect((err as Error).message).not.toMatch(/DISABLED|UNARMED|restores it/);
+      expect((err as Error).message).toBe('GitHub enableAutoMerge failed: Bad Gateway');
+      expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'enable']);
+    });
+
+    it.each([
+      ['clean-status', ARM_CLEAN_STATUS_ERROR],
+      ['not-allowed', ARM_NOT_ALLOWED_ERROR],
+    ] as const)('a TYPED %s refusal on the re-enable is rethrown untouched — the same class, reason and message as on a first arm', async (reason, hostSays) => {
+      const typed = (): GitHubHttpResponse => ({ status: 200, json: { errors: [{ type: 'UNPROCESSABLE', message: hostSays }] } });
+      const afterRefresh = await refreshApi(typed).api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
+      const firstArm = await makeApi((req) =>
+        req.method === 'GET' ? { status: 200, json: { node_id: 'n', auto_merge: null } } : typed(),
+      ).api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
+
+      expect(afterRefresh).toBeInstanceOf(AutoMergeUnavailableError);
+      expect((afterRefresh as AutoMergeUnavailableError).reason).toBe(reason);
+      expect((afterRefresh as Error).message).toBe((firstArm as Error).message);
+      expect((afterRefresh as Error).message).not.toMatch(/UNARMED/);
+    });
+  });
+
+  // ── The typed refusals after a refresh, routed by the arm intent itself ──────
+  //
+  // The adapter rethrowing them untouched is half the claim; the other half is
+  // that `armPullRequest` still routes each one exactly as it would on a first
+  // arm. Driven through a real RealGitHubApi so the refresh's disable is on the
+  // wire in front of the refusal.
+  describe('typed refusals on a refresh re-enable keep their routing (ADR-0053)', () => {
+    const PR_TITLE = 'Land the fix';
+    /** PR #42 on branch `b`, armed with an OLDER message; the re-enable answers with `refusal`. */
+    function armedApi(refusal: string, mergeable = 'blocked') {
+      return makeApi((req) => {
+        if (req.url.includes('/pulls?head=')) {
+          return { status: 200, json: [{ number: 42, state: 'open', html_url: 'https://github.com/example-org/example-repo/pull/42' }] };
+        }
+        if (req.method === 'GET' && req.url.endsWith('/pulls/42')) {
+          return {
+            status: 200,
+            json: {
+              number: 42,
+              node_id: 'PR_42',
+              mergeable_state: mergeable,
+              title: PR_TITLE,
+              body: 'New body.',
+              auto_merge: { merge_method: 'squash', commit_title: 'Old (#42)', commit_message: 'Old body.' },
+            },
+          };
+        }
+        if (req.url.endsWith('/graphql')) {
+          return /disablePullRequestAutoMerge/.test(JSON.parse(req.body!).query)
+            ? { status: 200, json: { data: { disablePullRequestAutoMerge: { pullRequest: { number: 42 } } } } }
+            : { status: 200, json: { errors: [{ type: 'UNPROCESSABLE', message: refusal }] } };
+        }
+        if (req.method === 'PUT') return { status: 200, json: { merged: true, sha: 'm1' } };
+        if (req.url.includes('/protection/required_status_checks')) return { status: 404, json: {} };
+        if (req.url.includes('/rules/branches/')) return { status: 200, json: [] };
+        if (req.method === 'GET' && req.url.endsWith('/example-repo')) return { status: 200, json: { default_branch: 'main' } };
+        throw new Error(`unexpected request: ${req.method} ${req.url}`);
+      });
+    }
+
+    it('clean-status → still merged directly, carrying the new message', async () => {
+      const { api, http } = armedApi(ARM_CLEAN_STATUS_ERROR);
+      const out = await armPullRequest(api, 'b');
+      expect(out).toMatchObject({ outcome: 'merged', landingMessage: { title: `${PR_TITLE} (#42)` } });
+      expect(out.reason).toMatch(/already clean/);
+      expect(out.reason).not.toMatch(/UNARMED/);
+      const put = http.requests.find((r) => r.method === 'PUT')!;
+      expect(JSON.parse(put.body!)).toMatchObject({ commit_title: `${PR_TITLE} (#42)`, commit_message: 'New body.' });
+    });
+
+    it('not-allowed with a required check pending → still refused, with the not-allowed reason', async () => {
+      const { api, http } = armedApi(ARM_NOT_ALLOWED_ERROR, 'blocked');
+      const out = await armPullRequest(api, 'b');
+      expect(out.outcome).toBe('refused');
+      expect(out.reason).toMatch(/does not permit auto-merge/);
+      expect(out.reason).not.toMatch(/UNARMED/);
+      expect(http.requests.some((r) => r.method === 'PUT')).toBe(false);
+    });
   });
 
   // ── ADR-0053 end to end: from the PR payload's title/body to the wire ────────

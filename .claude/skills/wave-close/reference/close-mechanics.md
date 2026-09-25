@@ -12,7 +12,7 @@ Read every `{{wave-cli}}` below as that one string: `{{wave-cli}} <verb> …` fo
 
 ## `--commit-message` resolution (ADR-0053)
 
-Every `host-pr arm` and `host-pr merge` this skill composes passes `--commit-message <pr|host>`: **`wave.config.json`'s `landing.commitMessage`, read once per run; absent means `pr`.** Pass it on every call, the default included, so each call shows which message lands; the verbs never read the config. `pr` lands the PR's own title (plus the host's number suffix) and body, on any commit count; `host` cedes the message to the repository's squash setting. The result's `landingMessage` (`{ title, bodyBytes }`) is what the host was handed, frozen at arming; it is absent under `host`.
+Every `host-pr arm` and `host-pr merge` this skill composes passes `--commit-message <pr|host>`: **`wave.config.json`'s `landing.commitMessage`, read once per run; absent means `pr`.** Pass it on every call, the default included, so each call shows which message lands; the verbs never read the config. `pr` lands the PR's own title (plus the host's number suffix) and body, on any commit count — except under a merge queue, which composes its own commit and ignores the message, and `--method rebase`, which replays the commits with no single message to shape; `host` cedes the message to the repository's squash setting. The result's `landingMessage` (`{ title, bodyBytes }`) is what the host was handed, frozen at arming (under those two exceptions, not what lands); it is absent under `host`.
 
 ## Commands
 

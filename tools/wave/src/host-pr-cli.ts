@@ -86,7 +86,11 @@
  *                  — the flag, never a config read, carries the choice; the
  *                  skills compose it from `landing.commitMessage`. Both verbs
  *                  echo `commitMessage` and report `landingMessage` (the title
- *                  handed over and the body's UTF-8 byte count).
+ *                  handed over and the body's UTF-8 byte count). Two exceptions
+ *                  under `pr`, named in the help rather than detected: a merge
+ *                  queue composes its own commit and ignores the message, and
+ *                  `--method rebase` replays the commits, so there is no single
+ *                  message to shape ({@link PR_MESSAGE_EXCEPTIONS}).
  *   status       → `LandingHost.getPrStatus`
  *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
  *                  the three code-host checks (pr-merge-token, allow-auto-merge,
@@ -235,6 +239,23 @@ const COMMIT_MESSAGE_SOURCES: CommitMessageSource[] = ['pr', 'host'];
 const COMMIT_MESSAGE_PLACEHOLDER = `<${COMMIT_MESSAGE_SOURCES.join('|')}>`;
 
 /**
+ * The two exceptions to "under `pr` the PR's title and body land" (ADR-0053,
+ * dated note 2026-09-25) — one wording, printed wherever this module's help
+ * states what lands, each caller indenting it to its own column.
+ *
+ * Wording only: nothing detects a merge queue or reads the method back. The
+ * two facts are the host's own: GitHub's GraphQL schema notes on
+ * `EnablePullRequestAutoMergeInput` that "when merging with a merge queue any
+ * input value for commit headline is ignored" (and the same for the body and
+ * the method), and `REBASE` adds the commits "individually", so no single
+ * commit exists for a title and body to shape.
+ */
+const PR_MESSAGE_EXCEPTIONS = [
+  "Two exceptions under 'pr': a merge queue composes its own commit and ignores the message, and",
+  '--method rebase replays the commits, so there is no single message to shape.',
+] as const;
+
+/**
  * The FULL multi-verb usage dump — every verb's usage line, its prose, and the
  * shared credential-resolution + flag-default footer. Reserved for when the
  * caller hasn't named a verb we recognize yet (no verb at all, or an unknown
@@ -285,15 +306,17 @@ function fullUsageLines(): string[] {
     '            ARMS (auto-merge enabled, the host merges later out of process), nothing is deleted at this',
     '            call — the deferral is recorded explicitly in the armed outcome\'s `reason`.',
     '            The landed commit carries the PR\'s own title (plus the host\'s number suffix) and body, read',
-    '            when this runs. Arming FREEZES them at the host, so an edit to the PR after arming lands only',
-    '            if arm runs again — which refreshes the frozen message. `landingMessage` reports what was',
-    '            handed over: the title, and the body\'s length in bytes.',
+    '            when this runs — except under a merge queue or --method rebase (see --commit-message below).',
+    '            Arming FREEZES them at the host, so an edit to the PR after arming lands only if arm runs',
+    '            again — which refreshes the frozen message. `landingMessage` reports what was handed over:',
+    '            the title, and the body\'s length in bytes.',
     '            Output: a single JSON object on stdout.',
     '  merge     Merge the PR now, no arm intent (the caller has already decided). Idempotent.',
     '            With --delete-branch, deletes the PR head branch after a successful merge (branch hygiene,',
     '            consumer KW-F6) — best-effort: a failed delete is reported in `branchDeletion`, never a merge',
     '            failure. `arm` accepts the same flag with its own (partially deferred) semantics — see above.',
-    '            Lands with the PR\'s own title (plus the host\'s number suffix) and body, read when this runs.',
+    '            Lands with the PR\'s own title (plus the host\'s number suffix) and body, read when this runs —',
+    '            except under a merge queue or --method rebase (see --commit-message below).',
     '            Output: a single JSON object on stdout.',
     '  status    Report the PR for a branch: open | merged | closed-unmerged | none (+ url). Read-only.',
     '            Also prints the PR\'s live `title` and `body` when the host surfaces them — read off the same',
@@ -319,6 +342,7 @@ function fullUsageLines(): string[] {
     `  --commit-message defaults to '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (arm | merge only): the landed commit carries the PR's own`,
     "    title and body. 'host' sends neither, so the repository's own merge setting composes the message —",
     '    for a consumer whose history is machine-read (ADR-0053).',
+    ...PR_MESSAGE_EXCEPTIONS.map((line) => `    ${line}`),
     '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
     '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
     '  --body-file <path> (create only) is the alternative to --body: the file\'s bytes become the PR body,',
@@ -394,11 +418,15 @@ const HOST_PR_LANDING_SHAPE =
 
 /**
  * The continuation line both landing verbs print about `landingMessage`
- * (ADR-0053) — one copy, because the rule is the same on both.
+ * (ADR-0053) — one copy, because the rule is the same on both. "Frozen" and
+ * "landed" carry the same two exceptions as {@link PR_MESSAGE_EXCEPTIONS}: the
+ * report says what was HANDED OVER, which under a merge queue or a rebase
+ * landing is not what lands. Still two lines — `arm`'s own section sits under
+ * a line ceiling (host-pr-cli.spec.ts, the `--pr` misfire test).
  */
 const LANDING_MESSAGE_SHAPE_NOTE = [
-  '         `landingMessage` is what a landing write handed the host (title; body as UTF-8 bytes) — frozen on `armed`,',
-  '         landed on `merged`; absent under --commit-message host or with no PR title (the reason says so).',
+  '         `landingMessage` is what a landing write handed the host (title; body as UTF-8 bytes): frozen on `armed`,',
+  "         landed on `merged` — not under a merge queue or --method rebase; absent under 'host' or with no PR title (the reason says so).",
 ];
 
 /**
@@ -471,6 +499,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  merge. Idempotent. --delete-branch deletes the head branch only on the paths that merge IMMEDIATELY.',
       `  --commit-message '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (default) lands the PR's own title (+ number suffix) and body, FROZEN at arming —`,
       "  arm again after editing the PR to refresh them; 'host' sends neither: the repository's setting composes it.",
+      ...PR_MESSAGE_EXCEPTIONS.map((line) => `  ${line}`),
     ],
     outputNote: 'a single JSON object on stdout',
     json: {
@@ -500,6 +529,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  the PR head branch after a successful merge (best-effort).',
       `  --commit-message '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (default) lands the PR's own title (+ number suffix) and body, read now;`,
       "  'host' sends neither: the repository's setting composes it (ADR-0053).",
+      ...PR_MESSAGE_EXCEPTIONS.map((line) => `  ${line}`),
     ],
     outputNote: 'a single JSON object on stdout',
     json: {

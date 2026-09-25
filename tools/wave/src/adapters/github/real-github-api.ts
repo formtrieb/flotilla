@@ -226,7 +226,13 @@ const ENABLE_AUTO_MERGE_MUTATION =
  * 2026-09-23). The same input documents one limit this adapter cannot lift:
  * "when merging with a merge queue any input value for commit headline is
  * ignored" — a repository that lands through a merge queue keeps the queue's
- * message whatever is sent here.
+ * message whatever is sent here. (Re-read 2026-09-25: the same NOTE sits on
+ * `commitBody` — "any input value for commit message is ignored" — and on
+ * `mergeMethod`.) A second limit is the method's, not the queue's: `REBASE` is
+ * "Add all commits from the head branch onto the base branch individually"
+ * (`PullRequestMergeMethod`, same schema), so there is no single commit for a
+ * headline and body to shape. Neither is detected here — `landingMessage` still
+ * reports what was handed over, and the shipped prose names both exceptions.
  */
 const ENABLE_AUTO_MERGE_WITH_MESSAGE_MUTATION =
   'mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!,$commitHeadline:String!,$commitBody:String!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod,commitHeadline:$commitHeadline,commitBody:$commitBody}){pullRequest{number autoMergeRequest{enabledAt}}}}';
@@ -845,6 +851,11 @@ export class RealGitHubApi implements GitHubApi {
    * can make — so the field names are the documented ones, and the "replaces
    * the body" reading rests on the GraphQL wording until the first live landing
    * after ADR-0053 is read back with `git log -1` on the default branch.
+   *
+   * Under `rebase` neither field shapes anything: a rebase landing adds the
+   * branch commits "individually without a merge commit"
+   * (docs.github.com "About pull request merges", read 2026-09-25), so there is
+   * no automatic commit message for a title or a body to go into.
    */
   async mergePullRequest(
     prNumber: number,
@@ -937,11 +948,19 @@ export class RealGitHubApi implements GitHubApi {
    * that nothing about the request changes.
    *
    * The refresh's residual risk, stated rather than hidden: between the two
-   * mutations the PR is not armed. If the re-enable is then refused, the arm
-   * routes that refusal exactly as it routes any other (a `clean-status` merges
-   * directly, carrying the new message; a `not-allowed` degrades or refuses),
-   * and a disable that fails is a loud {@link GitHubApiError} — never routed as
-   * a landing decision — after which a re-run reads `auto_merge` afresh.
+   * mutations the PR is not armed. If the re-enable is then refused with one
+   * of the two TYPED refusals, the arm routes it exactly as it routes any other
+   * (a `clean-status` merges directly, carrying the new message; a
+   * `not-allowed` degrades or refuses) — that error is rethrown untouched. If
+   * the re-enable fails for ANY other reason — a non-200, an untyped GraphQL
+   * error such as FORBIDDEN, a request that never got an answer — the disable
+   * has already run and the PR is left UNARMED, so the error this throws says
+   * exactly that: auto-merge was disabled, the PR will not merge itself, and
+   * re-running `host-pr arm` restores it (the re-run reads `auto_merge` as
+   * empty, so it arms afresh with no second disable) — see
+   * {@link unarmedByRefresh}. A disable that fails is a loud
+   * {@link GitHubApiError} too — never routed as a landing decision — after
+   * which a re-run reads `auto_merge` afresh.
    */
   async enableAutoMerge(
     prNumber: number,
@@ -968,9 +987,33 @@ export class RealGitHubApi implements GitHubApi {
           return; // already armed with exactly this landing — nothing to refresh
         }
         await this.disableAutoMerge(nodeId, prNumber);
+        // From here the PR is UNARMED until the re-enable below succeeds.
+        try {
+          await this.requestAutoMerge(nodeId, prNumber, method, message);
+        } catch (err) {
+          // The two typed refusals keep their routing, byte for byte.
+          if (err instanceof AutoMergeUnavailableError) throw err;
+          throw unarmedByRefresh(err, prNumber);
+        }
+        return;
       }
     }
 
+    await this.requestAutoMerge(nodeId, prNumber, method, message);
+  }
+
+  /**
+   * The enable half of {@link enableAutoMerge}: the one
+   * `enablePullRequestAutoMerge` request, and the mapping of its failures —
+   * split out so a refresh can tell a failure AFTER its disable apart from a
+   * first arm's, without the request itself differing between the two.
+   */
+  private async requestAutoMerge(
+    nodeId: string,
+    prNumber: number,
+    method: MergeMethod,
+    message: LandingMessage | undefined,
+  ): Promise<void> {
     const res = await this.send(
       'POST',
       '/graphql',
@@ -1152,6 +1195,37 @@ export class RealGitHubApi implements GitHubApi {
     const b = (res.json as Record<string, unknown>)?.default_branch;
     return typeof b === 'string' && b.length > 0 ? b : 'main';
   }
+}
+
+/**
+ * The error a message refresh throws when its re-enable fails for any reason
+ * other than the two typed refusals ({@link RealGitHubApi.enableAutoMerge}).
+ *
+ * The disable has already succeeded by then, so the PR the operator reads about
+ * is NOT the PR they armed: its auto-merge is gone, and nothing will land it
+ * when its checks pass. The generic "the enable failed" says none of that, and
+ * reads as "the PR is as it was" — the one state it is not in. So this says
+ * three things, in the order an operator needs them: auto-merge was disabled,
+ * the PR is now unarmed, and re-running `host-pr arm` restores it. The re-run
+ * really does: the PR's `auto_merge` now reads as empty, so the next arm takes
+ * the first-arm path (no disable, one enable carrying the current message) —
+ * or, if the checks finished in the meantime, merges it directly.
+ *
+ * The underlying failure is kept verbatim at the end — a FORBIDDEN's token
+ * guidance included — and a {@link GitHubApiError}'s own status is carried
+ * over. A request that threw before any HTTP answer has no status to carry,
+ * and reports `0`.
+ */
+function unarmedByRefresh(err: unknown, prNumber: number): GitHubApiError {
+  const cause = err instanceof Error ? err.message : String(err);
+  return new GitHubApiError(
+    err instanceof GitHubApiError ? err.status : 0,
+    'enableAutoMerge',
+    `PR #${prNumber} was already armed, so refreshing its frozen landing message (ADR-0053) DISABLED its ` +
+      `auto-merge first — and the re-enable then failed. PR #${prNumber} is now UNARMED: it will not merge ` +
+      `itself when its checks pass. Re-running \`host-pr arm\` restores it — the re-run finds no auto-merge ` +
+      `left to refresh and arms the PR afresh with its current message. Re-enable failure: ${cause}`,
+  );
 }
 
 /**

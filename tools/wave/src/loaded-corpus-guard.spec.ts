@@ -276,7 +276,29 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: **RAISED by the row that catalogues three command-shape
+ * Why this number: **RAISED by the row that names the landing message's two
+ * exceptions wherever the shipped prose says what lands under `pr`** (issue
+ * #980, ADR-0053 dated note 2026-09-25), in the diff that causes the growth.
+ * Its one standing-load edit is a single clause in
+ * `reference/convention-07-host-landing-seam.md` — "not under a merge queue (it
+ * composes its own commit) or `--method rebase` (no single commit)" — because
+ * that sentence is the convention every arm/merge caller follows, and it
+ * promised without condition what a queue or a rebase never delivers. The
+ * vendor quotes behind the two exceptions went to the ADR's dated note, which
+ * neither pinned population counts.
+ *
+ * At this row's anchor commit `9098c29d71545656ea98e24029d1822022179657` the
+ * class measured **162,981 B** over 18 files — 19 B under the previous
+ * 163,000 B ceiling. This row's edit adds **97 B**, landing the class at
+ * **163,078 B** over the same 18 files, so the ceiling moves to that sum
+ * rounded UP to the next full KB (1 KB = 1000 B): **164,000 B**. The 922 B of
+ * headroom that leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 163,000 B — **RAISED by the row that catalogues three
+ * command-shape occurrences** (issue #954), whose reasoning is kept below (in
+ * ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that catalogues three command-shape
  * occurrences the catalogue did not carry, and adds the file-editing tool's
  * byte-verification caveat** (issue #954), in the diff that causes the growth.
  * `reference/convention-13-one-bash-call-per-step.md` gains a sixth Catalog
@@ -402,12 +424,38 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * rounded up the same way. Lowering a ceiling is still free: the next ratchet row
  * takes this back down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 164_000;
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that gives a wave that lands each round
+ * Why this number: **RAISED by the row that names the landing message's two
+ * exceptions wherever the shipped prose says what lands under `pr`** (issue
+ * #980, ADR-0053 dated note 2026-09-25), in the diff that causes the growth.
+ * A merge queue composes its own commit and ignores the message; a rebase
+ * landing replays the commits with no single message to shape — and six
+ * loaded files said without condition that the PR's title and body land. Each
+ * gains one clause where a Coordinator or an operator reads it: wave-close's
+ * `close-mechanics.md` `--commit-message` resolution (+213 B) and
+ * `phase-4b-partial-arm.md` frozen-at-arming line (+174 B), wave-setup's
+ * reference `commitMessage` paragraph (+153 B) and its `SKILL.md` landing
+ * concern (+119 B), wave-start's `workflow-driver.md` landing sentence
+ * (+130 B), and the host-landing-seam convention (+97 B, the standing-load
+ * raise above). The vendor quotes behind the two exceptions went to the ADR's
+ * dated note, which this population does not count.
+ *
+ * At this row's anchor commit `9098c29d71545656ea98e24029d1822022179657` the
+ * population measured **1,256,803 B** over 57 files — 197 B under the previous
+ * 1,257,000 B ceiling. This row's edit lands it at **1,257,689 B** over the
+ * same 57 files, +886 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,258,000 B**. The 311 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 1,257,000 B — **RAISED by the row that gives a wave that lands
+ * each round a documented between-rounds sequence** (issue #976), whose
+ * reasoning is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that gives a wave that lands each round
  * a documented between-rounds sequence, naming `close-row` before the next
  * round's compose** (issue #976), in the diff that causes the growth. The
  * Coordinator reads the sequence, and its why, every round a wave lands before
@@ -905,7 +953,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_257_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_258_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

@@ -972,6 +972,14 @@ export {
   // reads or authors one — the same reason `CleanupConfig` and
   // `StoreGoalConfig` above are here.
   type ModelsConfig,
+  // The `landing` block (ADR-0053 decision 4), promoted from module-local for
+  // the placement reason `StoreGoalConfig` was: the row that declared it owned
+  // neither this file nor the drift guard, so a root-only consumer could name
+  // the shape only as `NonNullable<WaveConfig['landing']>`. TYPE ONLY, for the
+  // reason `ModelsConfig` is: its refusal is a plain `Error` and the skills
+  // read the key, so the shape is the whole of what a consumer needs — and the
+  // pinned root RUNTIME export count does not move (index.spec.ts).
+  type LandingConfig,
 } from './wave-config';
 
 // The plugin/engine LOCKSTEP COMPARISON (ADR-0032) — the other half of the same

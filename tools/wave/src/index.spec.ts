@@ -133,6 +133,10 @@ import {
   // the pairing: an annotation against a type the barrel does not re-export
   // fails `tsc --noEmit` before a single `it` runs.
   type ModelsConfig as ModelsConfigFromRoot,
+  // ADR-0053 decision 4 — the `landing` block, promoted from module-local as a
+  // TYPE. Same compile-time half as `ModelsConfig` above: an annotation against
+  // a type the barrel does not re-export fails `tsc --noEmit`.
+  type LandingConfig as LandingConfigFromRoot,
   // issue #338 — the command-line advisory family, plus the count-advisory pair
   // it was asymmetric with. The count side was already root-reachable before
   // this slice; it is named here so the closed asymmetry can be asserted from
@@ -2209,5 +2213,35 @@ describe('the landing-message family is reachable from the PACKAGE ROOT (ADR-005
     await current.enableAutoMerge(1, 'squash', { title: 'Land it (#1)', body: '' });
     expect(seen).toEqual([{ title: 'Land it (#1)', body: '' }]);
     expect(typeof legacy.enableAutoMerge).toBe('function');
+  });
+});
+
+// ─── ADR-0053 decision 4 — `LandingConfig` reaches the root, as a type ────────
+//
+// It shipped module-local, nameable from the root only as
+// `NonNullable<WaveConfig['landing']>`. The promotion is TYPE ONLY, so — as
+// for `ModelsConfig` above — the claim is two-sided: the name resolves from
+// the root, and the pinned runtime surface does not move.
+
+describe('the `landing` block reaches the PACKAGE ROOT as a TYPE, and moves no runtime name (ADR-0053)', () => {
+  it('annotates `config.landing` from the root — the same shape WaveConfig carries, in both directions', () => {
+    // Compile-time half — `tsc --noEmit` is the assertion. A barrel without the
+    // name, or a name that drifted from `WaveConfig['landing']`, fails here.
+    const cede: LandingConfigFromRoot = { commitMessage: 'host' };
+    const empty: LandingConfigFromRoot = {};
+    // @ts-expect-error — the value set is closed at the root surface too.
+    const typo: LandingConfigFromRoot = { commitMessage: 'squash' };
+    const config: WaveConfigFromRoot = { store: { kind: 'github' }, landing: cede };
+    const back: LandingConfigFromRoot | undefined = config.landing;
+    expect(back?.commitMessage).toBe('host');
+    expect(Object.keys(empty)).toEqual([]);
+    expect(typo.commitMessage).toBe('squash');
+  });
+
+  it('brings no runtime name with it — the enumerated root surface is unchanged', () => {
+    expect(Object.keys(rootExports)).toHaveLength(ROOT_RUNTIME_EXPORT_COUNT_NOW);
+    expect(Object.keys(rootExports)).not.toContain('LandingConfig');
+    // Non-vacuity: the namespace really does carry names.
+    expect(Object.keys(rootExports).length).toBeGreaterThan(100);
   });
 });
