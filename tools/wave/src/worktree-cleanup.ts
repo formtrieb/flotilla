@@ -1269,6 +1269,10 @@ import { execFileSync } from 'node:child_process';
 import { rmSync, readdirSync, realpathSync, existsSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
+// Type-only, and erased: the stamped-probe sweep's running-state set is typed
+// against the spine vocabulary so a typo is a compile error (issue #974). No
+// runtime edge — this module still reads no spine.
+import type { RowState } from './wave-md-rw';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -1588,7 +1592,8 @@ export interface WorktreeEntry {
  * for every pre-existing reader of this type.
  *
  * `'live-row'` and `'unknown-wave'` are the stamped-probe sweep's two ownership
- * refusals (issue #961, ADR-0042 Amendment 2026-09-23 decision 13) — see
+ * refusals (issue #961, ADR-0042 Amendment 2026-09-23 decision 13; the
+ * `live-row` rule as corrected on 2026-09-25, issue #974) — see
  * {@link planStampedProbeSweep}. The same additive argument holds: neither
  * {@link planCleanup} nor {@link planDetachedScratchpadSweep} ever produces
  * them, so no pre-existing skip changes its reason.
@@ -4090,8 +4095,22 @@ export function sweepDetachedScratchpadWorktrees(
 //     is matched LITERALLY against the declared spine's own slug and row ids —
 //     never parsed, since both a slug and an opaque row id may carry hyphens —
 //     and a probe no declared pair names is `unknown-wave`: reported, never
-//     removed (accounting, never removal). A probe whose row reads `reviewing`
-//     is `live-row`. Any other state removes it.
+//     removed (accounting, never removal).
+//   · LIVENESS, asked only of an owned probe (ADR-0042 Correction 2026-09-25,
+//     issue #974). A probe is `live-row` while its row reads a RUNNING state —
+//     `dispatched`, `re-dispatched` or `reviewing` — AND the row's `Iter`
+//     equals the stamp's `i<n>`. Any other pair removes it. An `Iter` cell that
+//     is not a positive integer cannot be compared, so the probe fails closed:
+//     skipped `live-row`, never selected.
+//
+// WHY THE STATE ALONE CANNOT DECIDE: the spine never records `reviewing`.
+// wave-start writes `dispatched`, and routing writes only `re-dispatched` or
+// `pr-created`, so while a Reviewer runs its row reads `dispatched` (iteration
+// 1) or `re-dispatched` (iteration 2). The first rule — live only while
+// `reviewing` — therefore never fired: a Reviewer's own running probe was
+// removable. The iteration is what separates the two probes a re-dispatched
+// row can carry: the iteration-1 Reviewer's is residue once the row reads
+// iteration 2, and the iteration-2 Reviewer's is live.
 //
 // LIVENESS IS PER ROW, not per wave (decision 13): a probe is read by nobody
 // but the Reviewer that made it, so the objection that keeps review refs
@@ -4120,6 +4139,22 @@ const STAMPED_PROBE_SHAPE = new RegExp(`^${STAMPED_PROBE_PREFIX}.+-.+-i[1-9][0-9
 const STAMPED_PROBE_ITERATION = /^[1-9][0-9]*$/;
 
 /**
+ * The row states during which a Worker or a Reviewer can still be running for
+ * a row (issue #974) — the states the spine actually holds while a round runs
+ * (`dispatched`, `re-dispatched`), plus `reviewing`, which the vocabulary
+ * defines and a hand-written or future spine may carry. Typed against
+ * {@link RowState} so a typo here is a compile error, the way
+ * `TERMINAL_ROW_STATES` is (issue #772). A state outside this set — a terminal
+ * one, `planned`, or a cell the reader does not recognise — means no probe of
+ * that row is being read.
+ */
+const STAMPED_PROBE_RUNNING_STATES: ReadonlySet<string> = new Set<RowState>([
+  'dispatched',
+  're-dispatched',
+  'reviewing',
+]);
+
+/**
  * The spine a stamped-probe sweep resolves ownership against (issue #961).
  * Built by the caller from a spine it has read — this module never reads one.
  */
@@ -4128,11 +4163,20 @@ export interface StampedProbeSpine {
   slug: string;
   /**
    * Every Plan-Table row, id → its `State` cell verbatim. An id is opaque and
-   * is matched, never parsed; a state is compared to `reviewing` only, so an
-   * unrecognized cell reads as "no Reviewer running" exactly as any other
-   * non-`reviewing` state does.
+   * is matched, never parsed. A state counts as running only when it is
+   * `dispatched`, `re-dispatched` or `reviewing`; an unrecognized cell reads
+   * as "nothing running" exactly as a terminal state does.
    */
   rowStates: ReadonlyMap<string, string>;
+  /**
+   * Every Plan-Table row, id → its `Iter` cell as the spine reader parsed it
+   * (issue #974): a number when the cell is numeric, the raw text otherwise —
+   * `PlanTableRow.iter` verbatim. A probe of a running row is live only while
+   * this equals the stamp's `i<n>`. A value that is not a positive integer, or
+   * a row missing from this map, cannot be compared, so the probe fails
+   * closed: skipped `live-row`, never selected.
+   */
+  rowIters: ReadonlyMap<string, number | string>;
 }
 
 /** Options for the stamped-probe sweep (issue #961). */
@@ -4170,31 +4214,59 @@ function isStampedProbeName(name: string): boolean {
   return STAMPED_PROBE_SHAPE.test(name);
 }
 
+/** The declared row a stamped probe belongs to, and the iteration its stamp names. */
+interface StampedProbeOwner {
+  /** The row's `State` cell verbatim. */
+  state: string;
+  /** The row's `Iter` cell as the caller parsed it, or `undefined` when the caller named none. */
+  rowIter: number | string | undefined;
+  /** The stamp's own `i<n>` — a positive integer by {@link STAMPED_PROBE_ITERATION}. */
+  stampIter: number;
+}
+
 /**
- * The declared row state a stamped probe basename belongs to, or `null` when
- * no declared `(slug, row id)` pair names it. Literal matching: the basename
- * must be exactly `<prefix><slug>-<row id>-i<iteration>` for the spine's slug
- * and one of its row ids. The stamp's grammar cannot itself tell slug `a` +
- * row `b-c` from slug `a-b` + row `c`; the DECLARED pair decides, so a spine
- * claims a probe only when one of its own rows completes the exact spelling.
+ * The declared row a stamped probe basename belongs to, or `null` when no
+ * declared `(slug, row id)` pair names it. Literal matching: the basename must
+ * be exactly `<prefix><slug>-<row id>-i<iteration>` for the spine's slug and
+ * one of its row ids. The stamp's grammar cannot itself tell slug `a` + row
+ * `b-c` from slug `a-b` + row `c`; the DECLARED pair decides, so a spine claims
+ * a probe only when one of its own rows completes the exact spelling.
  */
-function stampedProbeRowState(
+function stampedProbeOwner(
   name: string,
   spine: StampedProbeSpine | undefined,
-): string | null {
+): StampedProbeOwner | null {
   if (spine === undefined) return null;
   const waveHead = `${STAMPED_PROBE_PREFIX}${spine.slug}-`;
   if (!name.startsWith(waveHead)) return null;
   for (const [rowId, state] of spine.rowStates) {
     const rowHead = `${waveHead}${rowId}-i`;
-    if (
-      name.startsWith(rowHead) &&
-      STAMPED_PROBE_ITERATION.test(name.slice(rowHead.length))
-    ) {
-      return state;
+    const iteration = name.slice(rowHead.length);
+    if (name.startsWith(rowHead) && STAMPED_PROBE_ITERATION.test(iteration)) {
+      // `?.` on a declared-required member, deliberately: a JavaScript caller
+      // built against the shape before `rowIters` existed hands no map, and
+      // that must fail closed below rather than throw mid-plan.
+      return { state, rowIter: spine.rowIters?.get(rowId), stampIter: Number(iteration) };
     }
   }
   return null;
+}
+
+/**
+ * Is an owned stamped probe live — still being read by the Reviewer that made
+ * it (ADR-0042 Correction 2026-09-25, issue #974)? True while its row reads a
+ * running state AND the row's `Iter` equals the stamp's iteration.
+ *
+ * FAIL CLOSED: a row `Iter` that is not a positive integer — a non-numeric
+ * cell, a hand-edited `0` or `1.5`, a row absent from `rowIters` — cannot be
+ * compared with the stamp, so the probe reads live whatever the state says.
+ * The sweep owes accounting, never removal (ADR-0042 Decision 1): the probe is
+ * named under `live-row` and survives to a run whose spine can answer.
+ */
+function stampedProbeIsLive(owner: StampedProbeOwner): boolean {
+  const { rowIter } = owner;
+  if (typeof rowIter !== 'number' || !Number.isInteger(rowIter) || rowIter < 1) return true;
+  return STAMPED_PROBE_RUNNING_STATES.has(owner.state) && rowIter === owner.stampIter;
 }
 
 /**
@@ -4229,8 +4301,13 @@ export function listStampedProbeWorktrees(
  *   - no declared `(slug, row id)` pair names its basename → skipped
  *     `unknown-wave`. Named, never removed. With no `spine` at all, every
  *     such candidate lands here.
- *   - its row's state is `reviewing` → skipped `live-row`.
- *   - its row is in any other state → selected.
+ *   - its row reads a running state (`dispatched`, `re-dispatched`,
+ *     `reviewing`) AND the row's `Iter` equals the stamp's `i<n>` → skipped
+ *     `live-row`. So is a probe whose row `Iter` is not a positive integer:
+ *     the comparison cannot be made, and the probe fails closed.
+ *   - anything else → selected: a terminal row releases every probe it
+ *     carries, and a re-dispatched row at iteration 2 releases its `i1` probe
+ *     while its `i2` probe stays live (issue #974).
  *
  * Pure: no filesystem, no git. Candidate order is preserved in both lists.
  */
@@ -4247,12 +4324,12 @@ export function planStampedProbeSweep(
       skipped.push({ ...wt, reason: refusal });
       continue;
     }
-    const state = stampedProbeRowState(nodePath.basename(wt.path), spine);
-    if (state === null) {
+    const owner = stampedProbeOwner(nodePath.basename(wt.path), spine);
+    if (owner === null) {
       skipped.push({ ...wt, reason: 'unknown-wave' });
       continue;
     }
-    if (state === 'reviewing') {
+    if (stampedProbeIsLive(owner)) {
       skipped.push({ ...wt, reason: 'live-row' });
       continue;
     }

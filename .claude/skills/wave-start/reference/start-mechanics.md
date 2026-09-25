@@ -754,14 +754,18 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #     decision 14). A Reviewer's probe lives outside the repo, named
 #     flotilla-probe-<slug>-<id>-i<iter>; only this stamp lets a sweep reach it.
 {{wave-cli}} worktree-cleanup --probes-only --spine "$SPINE" --config wave.config.json
-#   Removes every stamped probe whose --spine row is not `reviewing`, and
-#   NOTHING else: no registered GC, no orphan or detached pass (a full sweep
-#   mid-wave would select the round's Worker worktrees). Prints { dryRun,
-#   probesOnly, probes, worktreeCount, commandLine }; add --dry-run to preview.
-#   WHY THE ORDER: the spine never records `reviewing` — rows read
-#   dispatched/re-dispatched while a round runs — so the `live-row` gate cannot
-#   spare a probe an iteration-2 Reviewer is using. Placement does: run it
-#   while no Reviewer of this wave is running.
+#   Removes every stamped probe whose --spine row is not running (dispatched,
+#   re-dispatched, reviewing) at the probe's own iteration, and NOTHING else:
+#   no registered GC, no orphan or detached pass (a full sweep mid-wave would
+#   select the round's Worker worktrees). Prints { dryRun, probesOnly, probes,
+#   worktreeCount, commandLine }; add --dry-run to preview.
+#   WHY THE ITERATION (ADR-0042 Correction 2026-09-25): the spine never records
+#   `reviewing` — a running Reviewer's row reads dispatched (Iter 1) or
+#   re-dispatched (Iter 2) — so the state alone cannot tell a live probe from
+#   residue. After a re-dispatch the `i1` probe goes and the `i2` probe stays
+#   `live-row`; an Iter cell that is not a number fails closed (`live-row`).
+#   The placement stays as defence in depth: run it while no Reviewer of this
+#   wave is running.
 #   Read `probes`: `removed` is the round's residue, gone. `skipped` is
 #   accounting, never a STOP — `unknown-wave` is a probe this spine names no
 #   row for (a sibling wave's, or a typo'd stamp), `dirty`/`locked`/

@@ -825,7 +825,10 @@ export {
 // SEVENTH population, and the first no containment root admits: a Reviewer's
 // probe checkout must live outside the repository, so the stamp
 // `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` stands in for a root, and
-// a probe is removable once its own row is no longer `reviewing`.
+// a probe is removable unless its own row reads a running state (`dispatched`,
+// `re-dispatched`, `reviewing`) at the stamp's own iteration (ADR-0042
+// Correction 2026-09-25). `StampedProbeSpine` therefore carries each row's
+// `Iter` as well as its `State` — `rowIters`, a required member (issue #974).
 //
 // Shipped WHOLE by the rule every sweep here ships by — list, plan, the
 // one-shot — plus `STAMPED_PROBE_PREFIX`, the stamp's fixed head, for the

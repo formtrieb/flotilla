@@ -10510,23 +10510,39 @@ describe('the stamped-probe plan — ownership by the declared spine (issue #961
     };
   }
 
-  function spine(states: Record<string, string>, slug = SLUG): StampedProbeSpine {
-    return { slug, rowStates: new Map(Object.entries(states)) };
+  /**
+   * A declared spine: each row's `State`, and its `Iter` — `1` unless `iters`
+   * names another value (issue #974: liveness reads both).
+   */
+  function spine(
+    states: Record<string, string>,
+    slug = SLUG,
+    iters: Record<string, number | string> = {},
+  ): StampedProbeSpine {
+    return {
+      slug,
+      rowStates: new Map(Object.entries(states)),
+      rowIters: new Map(Object.keys(states).map((id) => [id, iters[id] ?? 1])),
+    };
+  }
+
+  /** The probe path this suite's wave stamps for `row` at iteration `i`. */
+  function stamped(row: string, i: number): string {
+    return `/tmp/probes/flotilla-probe-${SLUG}-${row}-i${i}`;
   }
 
   it('the stamp head is the one the Reviewer contract spells', () => {
     expect(STAMPED_PROBE_PREFIX).toBe('flotilla-probe-');
   });
 
-  it('POSITIVE CONTROL: a clean probe whose row is in ANY state but `reviewing` is selected', () => {
-    // Every other row state — the ten the vocabulary knows, plus a cell the
-    // reader does not recognise — means no Reviewer is running for the row.
+  it('POSITIVE CONTROL: a clean probe whose row is in NO running state is selected, at the stamp\'s own iteration too', () => {
+    // Every state outside `dispatched`/`re-dispatched`/`reviewing` — the
+    // vocabulary's other eight, plus a cell the reader does not recognise —
+    // means nothing is running for the row, so the iteration never matters.
     for (const state of [
       'planned',
-      'dispatched',
       'report-in',
       'verdict-in',
-      're-dispatched',
       'approved',
       'pr-created',
       'failed',
@@ -10540,11 +10556,111 @@ describe('the stamped-probe plan — ownership by the declared spine (issue #961
     }
   });
 
-  it("a probe whose row is `reviewing` is skipped 'live-row' — its Reviewer may still be reading it", () => {
+  // ─── liveness is the row's RUNNING state at the stamp's OWN iteration (#974)
+  //
+  // The spine never records `reviewing`: wave-start writes `dispatched`, and
+  // routing writes only `re-dispatched` or `pr-created`. So while a Reviewer
+  // runs, its row reads `dispatched` (iteration 1) or `re-dispatched`
+  // (iteration 2) — and the first rule, live only while `reviewing`, removed a
+  // running Reviewer's own probe. These are the criteria that rule failed.
+
+  it("a probe whose row reads `dispatched` at the stamp's iteration is skipped 'live-row' — the state the spine actually holds while a Reviewer runs", () => {
+    const plan = planStampedProbeSweep([probe()], spine({ '961': 'dispatched' }));
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => [w.path, w.reason])).toEqual([[PROBE, 'live-row']]);
+  });
+
+  it("a probe whose row reads `re-dispatched` at the stamp's iteration is skipped 'live-row'", () => {
+    const i2 = probe({ path: stamped('961', 2) });
+    const plan = planStampedProbeSweep([i2], spine({ '961': 're-dispatched' }, SLUG, { '961': 2 }));
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((w) => [w.path, w.reason])).toEqual([[stamped('961', 2), 'live-row']]);
+  });
+
+  it("a probe whose row reads `reviewing` at the stamp's iteration is skipped 'live-row' — its Reviewer may still be reading it", () => {
     const plan = planStampedProbeSweep([probe()], spine({ '961': 'reviewing' }));
 
     expect(plan.selected).toEqual([]);
     expect(plan.skipped.map((w) => w.reason)).toEqual(['live-row']);
+  });
+
+  it("a row re-dispatched to iteration 2 releases its `i1` probe and keeps its `i2` probe 'live-row'", () => {
+    // changes-requested at iteration 1 → route-tuple writes `re-dispatched`
+    // and bumps Iter to 2. The iteration-1 Reviewer is done; the iteration-2
+    // Reviewer, once it runs, is not.
+    const plan = planStampedProbeSweep(
+      [probe({ path: stamped('961', 1) }), probe({ path: stamped('961', 2) })],
+      spine({ '961': 're-dispatched' }, SLUG, { '961': 2 }),
+    );
+
+    expect(plan.selected.map((w) => w.path)).toEqual([stamped('961', 1)]);
+    expect(plan.skipped.map((w) => [w.path, w.reason])).toEqual([[stamped('961', 2), 'live-row']]);
+  });
+
+  it('a running row releases every probe stamped at ANOTHER iteration — in each running state', () => {
+    for (const state of ['dispatched', 're-dispatched', 'reviewing']) {
+      const plan = planStampedProbeSweep(
+        [probe({ path: stamped('961', 1) })],
+        spine({ '961': state }, SLUG, { '961': 2 }),
+      );
+      expect(plan.selected.map((w) => w.path), `row state ${state}`).toEqual([stamped('961', 1)]);
+      expect(plan.skipped, `row state ${state}`).toEqual([]);
+    }
+  });
+
+  it('a TERMINAL row releases every probe it carries — at the stamp\'s iteration and at any other', () => {
+    for (const state of ['pr-created', 'failed', 'parked', 'approved', 'abandoned']) {
+      const plan = planStampedProbeSweep(
+        [probe({ path: stamped('961', 1) }), probe({ path: stamped('961', 2) })],
+        spine({ '961': state }, SLUG, { '961': 2 }),
+      );
+      expect(plan.selected.map((w) => w.path), `row state ${state}`).toEqual([
+        stamped('961', 1),
+        stamped('961', 2),
+      ]);
+      expect(plan.skipped, `row state ${state}`).toEqual([]);
+    }
+  });
+
+  it("an `Iter` cell that is not a positive integer FAILS CLOSED — skipped 'live-row' and named, never selected, whatever the state", () => {
+    // The reader hands a non-numeric cell over as its raw text; a hand-edited
+    // `0` or `1.5` parses as a number no stamp can spell. Neither can be
+    // compared with the stamp, so the rule cannot decide — and a terminal
+    // state does not rescue it: a row whose Iter cell is garbled is not
+    // evidence about anything on that row.
+    for (const iter of ['—', '', 'two', '1a', 0, -1, 1.5, Number.NaN]) {
+      for (const state of ['dispatched', 'pr-created', 'failed']) {
+        const plan = planStampedProbeSweep([probe()], spine({ '961': state }, SLUG, { '961': iter }));
+        expect(plan.selected, `iter ${String(iter)} / ${state}`).toEqual([]);
+        expect(plan.skipped.map((w) => [w.path, w.reason]), `iter ${String(iter)} / ${state}`).toEqual([
+          [PROBE, 'live-row'],
+        ]);
+      }
+    }
+  });
+
+  it('a row missing from `rowIters` — or a caller that hands no map at all — fails closed the same way, and never throws', () => {
+    const noRowIter: StampedProbeSpine = {
+      slug: SLUG,
+      rowStates: new Map([['961', 'pr-created']]),
+      rowIters: new Map([['962', 1]]),
+    };
+    expect(planStampedProbeSweep([probe()], noRowIter).skipped.map((w) => w.reason)).toEqual(['live-row']);
+
+    // A JavaScript caller built against the shape before `rowIters` existed.
+    const legacy = { slug: SLUG, rowStates: new Map([['961', 'pr-created']]) } as unknown as StampedProbeSpine;
+    expect(planStampedProbeSweep([probe()], legacy).skipped.map((w) => w.reason)).toEqual(['live-row']);
+  });
+
+  it('unknown-wave still outranks the liveness question — a probe no declared pair names is never read against a row', () => {
+    const plan = planStampedProbeSweep(
+      [probe({ path: `/t/flotilla-probe-${SLUG}-999-i1` })],
+      spine({ '961': 'dispatched' }),
+    );
+
+    expect(plan.skipped.map((w) => w.reason)).toEqual(['unknown-wave']);
   });
 
   it("a probe whose slug matches no declared spine is skipped 'unknown-wave' — named, never removed", () => {
@@ -10761,8 +10877,16 @@ describe('stamped-probe sweep — real git, a probe outside the repository (issu
       .some((line) => line.trim() === `worktree ${path}`);
   }
 
-  function spineWith(states: Record<string, string>): StampedProbeSpine {
-    return { slug: SLUG, rowStates: new Map(Object.entries(states)) };
+  /** Each row at `Iter` 1 unless `iters` says otherwise (issue #974). */
+  function spineWith(
+    states: Record<string, string>,
+    iters: Record<string, number> = {},
+  ): StampedProbeSpine {
+    return {
+      slug: SLUG,
+      rowStates: new Map(Object.entries(states)),
+      rowIters: new Map(Object.keys(states).map((id) => [id, iters[id] ?? 1])),
+    };
   }
 
   function sweep(mainRoot: string, spine?: StampedProbeSpine) {
@@ -10803,6 +10927,34 @@ describe('stamped-probe sweep — real git, a probe outside the repository (issu
     expect(result.skipped.map((w) => [w.path, w.reason])).toEqual([[probePath, 'live-row']]);
     expect(existsSync(probePath)).toBe(true);
     expect(stillRegistered(mainRoot, probePath)).toBe(true);
+  });
+
+  it("NEGATIVE CONTROL (issue #974): a probe whose row reads `dispatched` at its own iteration — what the spine holds while its Reviewer runs — is skipped 'live-row' and survives", () => {
+    const { mainRoot, outside } = makeRepo('dispatched');
+    const probePath = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    const result = sweep(mainRoot, spineWith({ '961': 'dispatched' }));
+
+    expect(result.removed).toEqual([]);
+    expect(result.skipped.map((w) => [w.path, w.reason])).toEqual([[probePath, 'live-row']]);
+    expect(existsSync(probePath)).toBe(true);
+    expect(stillRegistered(mainRoot, probePath)).toBe(true);
+  });
+
+  it('a row re-dispatched to iteration 2: the `i1` probe is removed, the `i2` probe survives live-row (issue #974)', () => {
+    const { mainRoot, outside } = makeRepo('redispatched');
+    const i1 = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+    const i2 = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i2`);
+
+    const result = sweep(mainRoot, spineWith({ '961': 're-dispatched' }, { '961': 2 }));
+
+    expect(result.errors).toEqual([]);
+    expect(result.removed.map((w) => w.path)).toEqual([i1]);
+    expect(result.skipped.map((w) => [w.path, w.reason])).toEqual([[i2, 'live-row']]);
+    expect(existsSync(i1)).toBe(false);
+    expect(stillRegistered(mainRoot, i1)).toBe(false);
+    expect(existsSync(i2)).toBe(true);
+    expect(stillRegistered(mainRoot, i2)).toBe(true);
   });
 
   it("NEGATIVE CONTROL: a probe whose slug matches no spine is skipped 'unknown-wave' and survives — with or without a spine", () => {

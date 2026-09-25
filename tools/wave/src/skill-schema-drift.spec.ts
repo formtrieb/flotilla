@@ -3358,12 +3358,49 @@ describe('skill-schema-drift — sibling merge-tree prediction states its covera
     expect(text).not.toMatch(/\bmay\b[^.]{0,40}\bremove\b/i);
   });
 
+  // The stamp is the CHECKOUT's own basename (issue #974). "Name its directory
+  // exactly <stamp>" read, live, as licence to make `<stamp>/probe` — the stamp
+  // as a PARENT — and the sweep, which matches the registered worktree's own
+  // basename, collected nothing. Every copy now says the path handed to
+  // `git worktree add` must itself end in the stamp.
+  const STAMP_IS_THE_CHECKOUT_BASENAME = '`git worktree add` must itself end in the stamp';
+
+  it.each([
+    ['wave-reviewer.md agent definition', () => agentProbeLicense(reviewerAgentMd)],
+    ['wave-reviewer/SKILL.md', () => skillProbeLicense(reviewerSkillMd)],
+  ] as const)('%s says the path handed to `git worktree add` must itself end in the stamp — never a parent directory', (_label, region) => {
+    const text = region();
+    expect(text).toContain(STAMP_IS_THE_CHECKOUT_BASENAME);
+    expect(text).toMatch(/never a parent directory/);
+    expect(text).not.toMatch(/name(?:s|d)? its directory exactly/);
+  });
+
   it('the reviewerBrief spells the stamp out from this row\'s own wave slug, id and iteration', () => {
     const brief = reviewerBriefSource(driverJs);
     expect(brief).toContain('const probeStamp = `flotilla-probe-${');
     expect(brief).toMatch(/-\$\{issue\.id\}-i\$\{/);
-    expect(brief).toContain('name its directory exactly \\`${probeStamp}\\`');
+    expect(brief).toMatch(/the path you hand to \\`git worktree add\\` must itself\s+end in \\`\$\{probeStamp\}\\`/);
+    expect(brief).toMatch(/own basename, never a parent directory/);
+    expect(brief).not.toContain('name its directory exactly');
     expect(brief).toMatch(/You never remove it yourself/);
+  });
+
+  it('NEGATIVE CONTROL — a copy that reverts to "name its directory exactly" is caught (issue #974)', () => {
+    const text = agentProbeLicense(reviewerAgentMd);
+    const reverted = text
+      .split(STAMP_IS_THE_CHECKOUT_BASENAME)
+      .join('directory is named exactly the stamp');
+    expect(reverted).not.toEqual(text);
+    expect(reverted).not.toContain(STAMP_IS_THE_CHECKOUT_BASENAME);
+
+    const brief = reviewerBriefSource(driverJs);
+    const revertedBrief = brief.replace(
+      /the path you hand to \\`git worktree add\\` must itself\s+end in/,
+      'name its directory exactly',
+    );
+    expect(revertedBrief).not.toEqual(brief);
+    expect(revertedBrief).toContain('name its directory exactly');
+    expect(revertedBrief).not.toMatch(/the path you hand to \\`git worktree add\\` must itself\s+end in/);
   });
 
   it('NEGATIVE CONTROL — a probe licence that drops the stamp, or grants removal, is caught', () => {

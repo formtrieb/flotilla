@@ -176,14 +176,18 @@
  *                    repository and so sits in no containment root; the stamp
  *                    stands in for one. The detached sweep's refusals apply
  *                    verbatim (locked, live-branch, orphan-with-real-files,
- *                    dirty); a probe that passes them is removed once the
- *                    --spine spine shows its row in any state but `reviewing`,
- *                    skipped `live-row` while it is, and skipped
- *                    `unknown-wave` — named, never removed — when no declared
- *                    wave-and-row pair names it (every probe, without
- *                    --spine). A plan on --dry-run, a full CleanupResult on the
- *                    run. An unstamped out-of-root registration stays in
- *                    `unaccounted`, untouched.
+ *                    dirty); a probe that passes them is skipped `live-row`
+ *                    while the --spine spine shows its row in a running state
+ *                    (dispatched, re-dispatched, reviewing) at the stamp's own
+ *                    iteration — or shows an Iter cell that is not a number,
+ *                    which fails closed — and is removed otherwise (issue
+ *                    #974: the spine never records `reviewing`, so the state
+ *                    alone cannot decide). It is skipped `unknown-wave` —
+ *                    named, never removed — when no declared wave-and-row pair
+ *                    names it (every probe, without --spine). A plan on
+ *                    --dry-run, a full CleanupResult on the run. An unstamped
+ *                    out-of-root registration stays in `unaccounted`,
+ *                    untouched.
  *                    --probes-only runs that population ALONE — the
  *                    Coordinator's call when it routes a round's verdicts —
  *                    and prints { dryRun, probesOnly, probes, worktreeCount,
@@ -1034,9 +1038,11 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  --detached also sweeps REGISTERED detached-HEAD scratch checkouts under the',
       '  worktrees root (the E2BIG population); --dry-run previews the same plan.',
       '  Every run also sweeps stamped Reviewer probe checkouts (flotilla-probe-*),',
-      '  wherever they sit, under probes: removed once the --spine row is not',
-      '  reviewing; with no --spine nothing is removed. --probes-only runs that',
-      '  population alone (never with --orphans, --detached or --branches).',
+      '  wherever they sit, under probes: spared live-row while the --spine row is',
+      '  dispatched, re-dispatched or reviewing at the stamp\'s own iteration (or',
+      '  its Iter is not a number), removed otherwise; with no --spine nothing is',
+      '  removed. --probes-only runs that population alone (never with --orphans,',
+      '  --detached or --branches).',
     ],
     // It used to say `# prints JSON` inline on the signature line and carry no
     // `output:` line at all — the one JSON verb in the engine that advertised
@@ -2407,6 +2413,12 @@ function resolveLiveWaveScope(args: string[], repoRoot: string): LiveWaveScope {
       // state (ADR-0042 Amendment 2026-09-23 decision 13), and every row the
       // table names is a row a Reviewer could have been dispatched for.
       rowStates: new Map(spine.planTable.map((row) => [row.id, String(row.state)])),
+      // And each row's `Iter` as the reader parsed it (issue #974): a probe is
+      // live only at its row's CURRENT iteration, because the spine never
+      // records `reviewing` and the state alone cannot tell a running
+      // Reviewer's probe from the previous iteration's. Handed over verbatim —
+      // a non-numeric cell is the planner's to fail closed on, not ours to fix.
+      rowIters: new Map(spine.planTable.map((row) => [row.id, row.iter])),
     };
   } catch {
     return UNDECLARED_WAVE_SCOPE;
@@ -2421,7 +2433,7 @@ function resolveLiveWaveScope(args: string[], repoRoot: string): LiveWaveScope {
  */
 function probeSpineOf(scope: LiveWaveScope): StampedProbeSpine | undefined {
   return scope.declared && scope.slug !== null
-    ? { slug: scope.slug, rowStates: scope.rowStates }
+    ? { slug: scope.slug, rowStates: scope.rowStates, rowIters: scope.rowIters }
     : undefined;
 }
 
@@ -2461,6 +2473,12 @@ interface LiveWaveScope {
    * liveness the stamped-probe sweep reads. Empty when undeclared.
    */
   rowStates: ReadonlyMap<string, string>;
+  /**
+   * Every Plan-Table row id → its `Iter` cell as the spine reader parsed it
+   * (issue #974) — the other half of that liveness: a probe is live only at
+   * its row's current iteration. Empty when undeclared.
+   */
+  rowIters: ReadonlyMap<string, number | string>;
 }
 
 /** The fail-closed answer: nothing declared, nothing terminal, nothing spared. */
@@ -2471,6 +2489,7 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
   slug: null,
   wavesDir: null,
   rowStates: new Map(),
+  rowIters: new Map(),
 };
 
 /**
@@ -2701,9 +2720,11 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
  *
  * `probes` (issue #961, ADR-0042 Amendment 2026-09-23) rides EVERY run, with
  * no flag: stamped Reviewer probe checkouts, wherever they sit — the plan on
- * `--dry-run`, the executed `CleanupResult` on the run — removed only once the
- * `--spine` spine shows the probe's row in any state but `reviewing`, and
- * otherwise named with a skip reason. No flag because the close's ordinary
+ * `--dry-run`, the executed `CleanupResult` on the run — removed unless the
+ * `--spine` spine shows the probe's row running (`dispatched`, `re-dispatched`,
+ * `reviewing`) at the stamp's own iteration or an `Iter` cell it cannot compare
+ * (ADR-0042 Correction 2026-09-25, issue #974), and otherwise named with a
+ * skip reason. No flag because the close's ordinary
  * call must reach it (decision 14: the close collects what routing missed),
  * and because it fails closed without a spine. `--probes-only` is the one
  * narrowing: the Coordinator's routing-step call, handled by

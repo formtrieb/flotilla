@@ -97,3 +97,9 @@ The last three rows are the **Operator-ruled round**: the documented Reviewer-on
 ## The PR title/body reuse rule — why it is worth a paragraph
 
 Before the reuse rule (`route-tuple`'s title/body handling on a PR reuse), one change carried THREE titles — the Worker's commit subject and the title it opened the PR with, the row title the terminator wrote over it on reuse, and the Worker's again on the squash commit that landed (a single-commit PR takes its subject from the commit). Preserving the live title collapses all three back into one.
+
+## Step 7d — why the probe sweep reads the iteration (issue #974)
+
+The first liveness rule (ADR-0042 Amendment 2026-09-23) spared a stamped probe only while its row read `reviewing`. No writer on the dispatch path ever writes that state: step 5 writes `dispatched`, and `route-tuple` writes only `re-dispatched` or `pr-created`. So while a Reviewer ran, its row read `dispatched` (Iter 1) or `re-dispatched` (Iter 2), and the gate never fired. The implementing row's own Reviewer showed it: against a copy of the live spine of wave `2026-09-23-sibling-truth-and-landing-message`, `worktree-cleanup --probes-only` selected and removed a clean probe carrying that Reviewer's own running stamp. Only the call's placement — after the round's last tuple, before any re-compose — had been protecting a running probe.
+
+The same wave's four live reads of the routing call: round 2 removed the one stamped probe and left an unstamped probe alone; round 3 removed nothing, because the Reviewer made `<stamp>/probe` (the stamp as a parent directory) and the sweep matches the registered checkout's own basename; round 4 removed nothing, since no probe was made; round 6, with the hint that the path handed to `git worktree add` must itself end in the stamp, removed the stamped probe. The corrected rule (ADR-0042 Correction 2026-09-25) reads the row's `Iter` beside its state; the stamp wording now says what round 6's hint said.
