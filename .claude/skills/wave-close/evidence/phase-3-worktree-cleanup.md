@@ -96,3 +96,13 @@ That manual loop is retired — `--detached` now reaches the same population thr
 The `probes` population first shipped with `live-row` meaning "the row reads `reviewing`". Nothing on the dispatch path writes that state — rows read `dispatched`, then `re-dispatched` or `pr-created` — so in wave `2026-09-23-sibling-truth-and-landing-message` a Reviewer, running `worktree-cleanup --probes-only` against a copy of the live spine, watched it select and remove a clean probe carrying its own running stamp. A close is unaffected either way (every row is terminal there, so every clean probe of the wave goes), which is why phase 3 never showed the defect; the routing call is where it bit. ADR-0042's Correction 2026-09-25 moved `live-row` to "a running state (`dispatched`, `re-dispatched`, `reviewing`) at the stamp's own iteration", with a non-numeric `Iter` cell failing closed.
 
 The same wave also measured the stamp's spelling: a probe made at `<stamp>/probe` — the stamp as a parent directory — is not a member of the population, because the sweep matches the registered checkout's own basename, and outside every root it lands in `unaccounted` instead.
+
+## Probe liveness: the two states `resume()` reconstructs (issue #991)
+
+No routing writer writes `report-in` or `verdict-in`, but `resume()` reconstructs both from the sidecars it finds. With the running set at `dispatched`/`re-dispatched`/`reviewing`, a Reviewer resumed while its row read one of the two `-in` states would have had its own probe removable at its stamp's iteration. Not observed live — found by reading the corrected rule against `resume()`'s output. The running set now carries both; a terminal row still releases the probe.
+
+The reference beside this file still described the probe as one that "names the directory `flotilla-probe-…`" after every Reviewer-facing copy had moved to "the path handed to `git worktree add` must itself end in the stamp". It now uses the latter wording, and a drift pin holds it.
+
+## Dirty probes: a Reviewer's own falsification left behind (issue #991)
+
+Two Reviewers of wave `2026-09-25-review-signals-and-round-hygiene` who falsified a check inside their stamped probe (rounds 5 and 6) left the edit unrestored, and a third Reviewer did the same in the following wave. The sweep correctly skipped each `dirty`; the Coordinator removed each by hand. Every Reviewer-facing copy now says to revert its own probe edits and to verify the probe clean before returning.

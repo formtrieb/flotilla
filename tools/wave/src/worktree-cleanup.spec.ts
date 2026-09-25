@@ -10707,13 +10707,14 @@ describe('the stamped-probe plan — ownership by the declared spine (issue #961
   });
 
   it('POSITIVE CONTROL: a clean probe whose row is in NO running state is selected, at the stamp\'s own iteration too', () => {
-    // Every state outside `dispatched`/`re-dispatched`/`reviewing` — the
-    // vocabulary's other eight, plus a cell the reader does not recognise —
-    // means nothing is running for the row, so the iteration never matters.
+    // Every state outside the running five (`dispatched`, `re-dispatched`,
+    // `report-in`, `reviewing`, `verdict-in`) — the vocabulary's other six,
+    // plus a cell the reader does not recognise — means nothing is running for
+    // the row, so the iteration never matters. (`report-in` and `verdict-in`
+    // left this list with issue #991: `resume()` reconstructs them, and a
+    // Reviewer resumed under either is running.)
     for (const state of [
       'planned',
-      'report-in',
-      'verdict-in',
       'approved',
       'pr-created',
       'failed',
@@ -10770,8 +10771,42 @@ describe('the stamped-probe plan — ownership by the declared spine (issue #961
     expect(plan.skipped.map((w) => [w.path, w.reason])).toEqual([[stamped('961', 2), 'live-row']]);
   });
 
+  // ─── the two states `resume()` reconstructs are running states too (#991)
+  //
+  // No routing writer writes `report-in` or `verdict-in`, but `resume()`
+  // rebuilds both from the sidecars it finds. A Reviewer resumed while its
+  // row reads one of them is running exactly as under `dispatched` — and with
+  // the two outside the running set, its own probe was removable at its
+  // stamp's iteration. Each is live at the stamp's iteration, and a terminal
+  // row still releases the same probe.
+
+  it.each(['report-in', 'verdict-in'])(
+    "a probe whose row reads `%s` (a resumed state) at the stamp's iteration is skipped 'live-row'",
+    (state) => {
+      const plan = planStampedProbeSweep([probe()], spine({ '961': state }));
+
+      expect(plan.selected).toEqual([]);
+      expect(plan.skipped.map((w) => [w.path, w.reason])).toEqual([[PROBE, 'live-row']]);
+    },
+  );
+
+  it.each(['report-in', 'verdict-in'])(
+    "the same probe a `%s` row spares is selected once that row is terminal",
+    (state) => {
+      const i2 = probe({ path: stamped('961', 2) });
+      const running = planStampedProbeSweep([i2], spine({ '961': state }, SLUG, { '961': 2 }));
+      expect(running.skipped.map((w) => [w.path, w.reason])).toEqual([[stamped('961', 2), 'live-row']]);
+
+      for (const terminal of ['pr-created', 'failed', 'parked', 'abandoned']) {
+        const plan = planStampedProbeSweep([i2], spine({ '961': terminal }, SLUG, { '961': 2 }));
+        expect(plan.selected.map((w) => w.path), `${state} → ${terminal}`).toEqual([stamped('961', 2)]);
+        expect(plan.skipped, `${state} → ${terminal}`).toEqual([]);
+      }
+    },
+  );
+
   it('a running row releases every probe stamped at ANOTHER iteration — in each running state', () => {
-    for (const state of ['dispatched', 're-dispatched', 'reviewing']) {
+    for (const state of ['dispatched', 're-dispatched', 'report-in', 'reviewing', 'verdict-in']) {
       const plan = planStampedProbeSweep(
         [probe({ path: stamped('961', 1) })],
         spine({ '961': state }, SLUG, { '961': 2 }),

@@ -759,7 +759,8 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #     flotilla-probe-<slug>-<id>-i<iter>; only this stamp lets a sweep reach it.
 {{wave-cli}} worktree-cleanup --probes-only --spine "$SPINE" --config wave.config.json
 #   Removes every stamped probe whose --spine row is not running (dispatched,
-#   re-dispatched, reviewing) at the probe's own iteration, and NOTHING else:
+#   re-dispatched, report-in, reviewing, verdict-in — the -in pair is what
+#   resume() reconstructs) at the probe's own iteration, and NOTHING else:
 #   no registered GC, no orphan or detached pass (a full sweep mid-wave would
 #   select the round's Worker worktrees). Prints { dryRun, probesOnly, probes,
 #   worktreeCount, commandLine }; add --dry-run to preview.
@@ -792,6 +793,14 @@ The script ships as an engine package asset (`tools/wave/driver/wave-start-infli
 #   needs-attention` (takes precedence over the rung in the coarse projection
 #   — see the Disclaimer at the end of this file). Never pipe this call
 #   before reading its exit code (wave-shared "Verify the write").
+#   A REVIEWER STOP (reviewer-questions-blocking, public-api-approval-required)
+#   writes nothing to the spine, so 7d spares that Reviewer's probe `live-row`
+#   until the row moves. Before a re-review at the SAME iteration — and at the
+#   latest before the close — remove it by hand (Coordinator right only):
+git -C "$REPO" worktree remove "$PROBE"   # $PROBE: the stamped path, ends -i<iter>
+#   A refusal naming modified or untracked files means the Reviewer left an
+#   edit behind: read `git -C "$PROBE" status --porcelain`, then add --force —
+#   a probe holds only that Reviewer's experiment, never branch work.
 
 # 8a. OPTIONAL Coordinator disposition of a `terminal-failure` STOP — park instead
 #     of abandoning (ADR-0022 §Consequences). The stopped row is still live

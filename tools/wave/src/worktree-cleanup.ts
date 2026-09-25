@@ -4098,7 +4098,9 @@ export function sweepDetachedScratchpadWorktrees(
 //     removed (accounting, never removal).
 //   · LIVENESS, asked only of an owned probe (ADR-0042 Correction 2026-09-25,
 //     issue #974). A probe is `live-row` while its row reads a RUNNING state —
-//     `dispatched`, `re-dispatched` or `reviewing` — AND the row's `Iter`
+//     `dispatched`, `re-dispatched`, `report-in`, `reviewing` or `verdict-in`
+//     (the two `-in` states are ones `resume()` reconstructs, issue #991) —
+//     AND the row's `Iter`
 //     equals the stamp's `i<n>`. Any other pair removes it. An `Iter` cell that
 //     is not a positive integer cannot be compared, so the probe fails closed:
 //     skipped `live-row`, never selected.
@@ -4147,11 +4149,20 @@ const STAMPED_PROBE_ITERATION = /^[1-9][0-9]*$/;
  * `TERMINAL_ROW_STATES` is (issue #772). A state outside this set — a terminal
  * one, `planned`, or a cell the reader does not recognise — means no probe of
  * that row is being read.
+ *
+ * `report-in` and `verdict-in` are here too (issue #991): no routing writer
+ * writes either, but `resume()` reconstructs both from the sidecars it finds,
+ * and a Reviewer resumed while its row reads one of them is running exactly as
+ * it would be under `dispatched`. Leaving them out made such a Reviewer's own
+ * probe removable at its stamp's iteration. A terminal row still releases it.
+ * Not root-exported: the rule's only public face is {@link planStampedProbeSweep}.
  */
 const STAMPED_PROBE_RUNNING_STATES: ReadonlySet<string> = new Set<RowState>([
   'dispatched',
   're-dispatched',
+  'report-in',
   'reviewing',
+  'verdict-in',
 ]);
 
 /**
@@ -4164,7 +4175,8 @@ export interface StampedProbeSpine {
   /**
    * Every Plan-Table row, id → its `State` cell verbatim. An id is opaque and
    * is matched, never parsed. A state counts as running only when it is
-   * `dispatched`, `re-dispatched` or `reviewing`; an unrecognized cell reads
+   * `dispatched`, `re-dispatched`, `report-in`, `reviewing` or `verdict-in`;
+   * an unrecognized cell reads
    * as "nothing running" exactly as a terminal state does.
    */
   rowStates: ReadonlyMap<string, string>;
@@ -4302,7 +4314,8 @@ export function listStampedProbeWorktrees(
  *     `unknown-wave`. Named, never removed. With no `spine` at all, every
  *     such candidate lands here.
  *   - its row reads a running state (`dispatched`, `re-dispatched`,
- *     `reviewing`) AND the row's `Iter` equals the stamp's `i<n>` → skipped
+ *     `report-in`, `reviewing`, `verdict-in`) AND the row's `Iter` equals the
+ *     stamp's `i<n>` → skipped
  *     `live-row`. So is a probe whose row `Iter` is not a positive integer:
  *     the comparison cannot be made, and the probe fails closed.
  *   - anything else → selected: a terminal row releases every probe it
