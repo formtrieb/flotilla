@@ -884,8 +884,18 @@ disclosures are open."
 ```bash
 # 1. land the round's PRs — however this wave lands (host-pr arm, a manual
 #    merge, --auto); no engine call of its own.
-# 2. bring the local default branch to the remote tip
-git -C "$REPO" pull
+# 2. bring the local default branch to the remote tip — fetch + ff-only
+#    merge, never `git pull` alone. When the landed change touches
+#    sandbox-protected paths (.claude/**), run this step outside the
+#    sandbox: a merge that has to write such a path can HALF-APPLY under
+#    the harness write-deny and still exit 0 (issue #994). Either way,
+#    confirm HEAD actually moved rather than trusting the exit code — the
+#    two SHAs below MUST be equal; a half-applied merge leaves HEAD short
+#    of origin/<default-branch> while still exiting 0.
+git -C "$REPO" fetch origin
+git -C "$REPO" merge --ff-only origin/<default-branch>
+git -C "$REPO" rev-parse HEAD
+git -C "$REPO" rev-parse origin/<default-branch>
 # 3. close-row for every row that landed THIS round — before the next
 #    compose. (landed) is read only from the spine's `## PR-Log`
 #    (workflow-driver.md's reviewerBrief); this verb is its only writer.

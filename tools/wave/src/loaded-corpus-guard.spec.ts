@@ -276,7 +276,33 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: **RAISED by the row that names the landing message's two
+ * Why this number: **RAISED by the row that documents a `.claude/**` restore
+ * half-applying under the sandbox write-deny and adds the null-result
+ * classifier-refusal measurement that follows from it** (issue #994), in the
+ * diff that causes the growth. Its one standing-load edit is entirely inside
+ * `reference/convention-13-one-bash-call-per-step.md`: a new Catalog entry 7
+ * (a multi-path `git checkout`/`merge`/`pull` half-applying under the
+ * `.claude/**` write-deny — a Worker's falsification-restore and the
+ * between-rounds default-branch update, each with its own working form) and
+ * a matching addition to the closing "Live occurrences" pointer sentence.
+ * The full symptom detail, the raw per-attempt measurement table (30
+ * file-editing-tool edit-and-revert cycles across three targets, zero
+ * refusals) and the reproduction record went to the `evidence/` sibling, the
+ * class no run reads and neither pinned measure counts.
+ *
+ * At this row's anchor commit `de2e1c3536cb641e04f5863c7a1952a657240ec5` the
+ * class measured **163,078 B** over 18 files — 922 B under the previous
+ * 164,000 B ceiling. This row's edit adds **2,391 B**, landing the class at
+ * **165,469 B** over the same 18 files, so the ceiling moves to that sum
+ * rounded UP to the next full KB (1 KB = 1000 B): **166,000 B**. The 531 B of
+ * headroom that leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 164,000 B — **RAISED by the row that names the landing
+ * message's two exceptions wherever the shipped prose says what lands under
+ * `pr`** (issue #980, ADR-0053 dated note 2026-09-25), whose reasoning is
+ * kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that names the landing message's two
  * exceptions wherever the shipped prose says what lands under `pr`** (issue
  * #980, ADR-0053 dated note 2026-09-25), in the diff that causes the growth.
  * Its one standing-load edit is a single clause in
@@ -287,14 +313,14 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * vendor quotes behind the two exceptions went to the ADR's dated note, which
  * neither pinned population counts.
  *
- * At this row's anchor commit `9098c29d71545656ea98e24029d1822022179657` the
+ * At that row's anchor commit `9098c29d71545656ea98e24029d1822022179657` the
  * class measured **162,981 B** over 18 files — 19 B under the previous
- * 163,000 B ceiling. This row's edit adds **97 B**, landing the class at
- * **163,078 B** over the same 18 files, so the ceiling moves to that sum
+ * 163,000 B ceiling. That row's edit added **97 B**, landing the class at
+ * **163,078 B** over the same 18 files, so the ceiling moved to that sum
  * rounded UP to the next full KB (1 KB = 1000 B): **164,000 B**. The 922 B of
- * headroom that leaves is a fact about the rounding rule, not a budget.
+ * headroom that left was a fact about the rounding rule, not a budget.
  *
- * Previously: 163,000 B — **RAISED by the row that catalogues three
+ * Before that: 163,000 B — **RAISED by the row that catalogues three
  * command-shape occurrences** (issue #954), whose reasoning is kept below (in
  * ITS voice, so "this row" there means that row).
  *
@@ -424,12 +450,38 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * rounded up the same way. Lowering a ceiling is still free: the next ratchet row
  * takes this back down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 164_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000;
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that names the landing message's two
+ * Why this number: **RAISED by the row that documents a `.claude/**` restore
+ * half-applying under the sandbox write-deny and rewrites the between-rounds
+ * default-branch update to fetch + `merge --ff-only`** (issue #994), in the
+ * diff that causes the growth. Three loaded files grow: `wave-shared`'s
+ * `reference/convention-13-one-bash-call-per-step.md` gains Catalog entry 7
+ * and its "Live occurrences" addition (+2,391 B, the standing-load raise
+ * above), wave-start's `SKILL.md` between-rounds step 2 is rewritten from a
+ * one-line `git pull` mention to the fetch/merge/HEAD-check form with the
+ * sandbox sentence (+566 B), and its `reference/start-mechanics.md` gains the
+ * matching invocation-by-invocation rewrite of that same step (+647 B). The
+ * two symptoms' full detail and the classifier-refusal measurement's raw
+ * per-attempt table went to the `wave-shared` and `wave-start` `evidence/`
+ * siblings, which this population excludes by definition.
+ *
+ * At this row's anchor commit `de2e1c3536cb641e04f5863c7a1952a657240ec5` the
+ * population measured **1,257,689 B** over 57 files — 311 B under the previous
+ * 1,258,000 B ceiling. This row's edit lands it at **1,261,293 B** over the
+ * same 57 files, +3,604 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,262,000 B**. The 707 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 1,258,000 B — **RAISED by the row that names the landing
+ * message's two exceptions wherever the shipped prose says what lands under
+ * `pr`** (issue #980, ADR-0053 dated note 2026-09-25), whose reasoning is
+ * kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that names the landing message's two
  * exceptions wherever the shipped prose says what lands under `pr`** (issue
  * #980, ADR-0053 dated note 2026-09-25), in the diff that causes the growth.
  * A merge queue composes its own commit and ignores the message; a rebase
@@ -440,18 +492,18 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 164_000;
  * `phase-4b-partial-arm.md` frozen-at-arming line (+174 B), wave-setup's
  * reference `commitMessage` paragraph (+153 B) and its `SKILL.md` landing
  * concern (+119 B), wave-start's `workflow-driver.md` landing sentence
- * (+130 B), and the host-landing-seam convention (+97 B, the standing-load
- * raise above). The vendor quotes behind the two exceptions went to the ADR's
- * dated note, which this population does not count.
+ * (+130 B), and the host-landing-seam convention (+97 B, that row's own
+ * standing-load raise). The vendor quotes behind the two exceptions went to
+ * the ADR's dated note, which this population does not count.
  *
- * At this row's anchor commit `9098c29d71545656ea98e24029d1822022179657` the
+ * At that row's anchor commit `9098c29d71545656ea98e24029d1822022179657` the
  * population measured **1,256,803 B** over 57 files — 197 B under the previous
- * 1,257,000 B ceiling. This row's edit lands it at **1,257,689 B** over the
- * same 57 files, +886 B, so the ceiling moves to that sum rounded UP to the
+ * 1,257,000 B ceiling. That row's edit landed it at **1,257,689 B** over the
+ * same 57 files, +886 B, so the ceiling moved to that sum rounded UP to the
  * next full KB (1 KB = 1000 B): **1,258,000 B**. The 311 B of headroom that
- * leaves is a fact about the rounding rule, not a budget.
+ * left was a fact about the rounding rule, not a budget.
  *
- * Previously: 1,257,000 B — **RAISED by the row that gives a wave that lands
+ * Before that: 1,257,000 B — **RAISED by the row that gives a wave that lands
  * each round a documented between-rounds sequence** (issue #976), whose
  * reasoning is kept below (in ITS voice, so "this row" there means that row).
  *
@@ -953,7 +1005,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 164_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_258_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_262_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
