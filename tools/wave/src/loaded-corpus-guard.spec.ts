@@ -437,6 +437,16 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * load is NOT touched: none of the seven files is a member of that population
  * (only `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are).
  *
+ * **UNCHANGED by the row that gives the landed-sibling check's
+ * `refs/review/base/<id>` a review-ref namespace of its own (issue #978), which
+ * spent 307 B of that headroom** on wave-close's phase-3 reference alone: it
+ * names the base ref, the `review-base` namespace and the fourth documented
+ * form, with a pointer to the measured reading now in the `evidence/` sibling.
+ * At anchor `49747d7489bc4c7d23355d408c8ec6e8cc80d11e` the population measured
+ * **1,251,403 B**; the edit lands it at **1,251,710 B** over the same 57 files,
+ * and that rounded UP to the next full KB is 1,252,000 B — this constant
+ * already. Headroom is 290 B, still a rounding fact and not a budget.
+ *
  * Previously: 1,251,000 B — **RAISED by the row that has the Reviewer read a
  * `git merge-tree` result by its exit status instead of by conflict markers on
  * stdout** (issue #975), whose reasoning is kept below (in ITS voice, so "this

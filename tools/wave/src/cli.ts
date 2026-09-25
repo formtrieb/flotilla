@@ -100,8 +100,10 @@
  *                    --orphans finally carries the REVIEW-REF sweep (issue
  *                    #732), under `orphans.reviewRefs`: the refs a Reviewer
  *                    fetches a branch tip into — refs/review/<id>,
- *                    refs/review/sib/<id> and refs/sib/<id> — which outlive the
- *                    worktree, the local branch and the remote branch alike, and
+ *                    refs/review/sib/<id>, refs/review/base/<id> (the
+ *                    landed-sibling check's default-branch tip, issue #978)
+ *                    and refs/sib/<id> — which outlive the worktree, the
+ *                    local branch and the remote branch alike, and
  *                    which no other pass here reaches (187 had accumulated in one
  *                    shared .git before a human swept them by hand). ONE plan
  *                    object again: a plan under --dry-run, a full result on the
@@ -2865,12 +2867,13 @@ function runWorktreeCleanup(args: string[]): number {
     // calls that happen to agree.
     //
     // A FIFTH population, and the first that is not a path at all: the
-    // `refs/review/<id>`, `refs/review/sib/<id>` and `refs/sib/<id>` refs a
-    // Reviewer fetches a branch tip into. They outlive the worktree (removed
-    // above), the local branch (swept below) and the remote branch (deleted by
-    // the merge), and no pass in this verb previously reached a ref namespace at
-    // all — 187 of them had accumulated in one shared `.git` before a human swept
-    // them by hand with `git update-ref -d`.
+    // `refs/review/<id>`, `refs/review/sib/<id>`, `refs/review/base/<id>`
+    // (issue #978) and `refs/sib/<id>` refs a Reviewer fetches a branch tip
+    // into. They outlive the worktree (removed above), the local branch (swept
+    // below) and the remote branch (deleted by the merge), and no pass in this
+    // verb previously reached a ref namespace at all — 187 of them had
+    // accumulated in one shared `.git` before a human swept them by hand with
+    // `git update-ref -d`.
     //
     // Scoped by `liveRowIds`, derived from the SAME `--wave` spine the branch
     // filter is derived from — see `resolveLiveRowIds` for why the ids come from

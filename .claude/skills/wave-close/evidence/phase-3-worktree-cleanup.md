@@ -60,6 +60,10 @@ Those refs are exactly as durable as the fix required. They outlive the worktree
 
 Until this landed, every ref a wave produced belonged to one of its own rows, so at that wave's close **all** of them read `live-row` and none was removed — measured at one close, ten refs spared, zero swept. They became sweepable only at the **next** wave's close, a one-wave lag on exactly the refs a later Reviewer's own fetch silently overwrites.
 
+## The landed-sibling base ref no sweep could attribute (issue #978)
+
+The Reviewer's landed-sibling check fetches the default branch's tip into `refs/review/base/<id>` — per row, for the same shared-ref reason every other review ref is per row. The classifier recognized only the `sib/` nesting under `refs/review/`, so `base/<id>` read as a two-segment `review` name with no row id, and the sweep skipped it `unresolvable-row` at every close — the refusal meant for names nobody can attribute, applied to a name the recipe itself creates. **Measured by a Reviewer's own probe** in wave `2026-09-23-sibling-truth-and-landing-message`: `planReviewRefSweep` on a terminal wave selected `refs/review/960` and `refs/review/sib/963` and skipped `refs/review/base/960`. The Coordinator deleted the base refs by hand in every round of that wave, and again after the next wave's round 2 (`refs/review/base/974`). The fix gave the shape a namespace of its own, `review-base`, with the liveness and terminal-wave rules `refs/review/<id>` already had; the enumeration prefix did not move, because `refs/review` already listed those refs — the classification was the only gap.
+
 ## The E2BIG incident (2026-07-30)
 
 Live occurrence 2026-07-30, during the resume of a seven-row wave on the third dispatch run of the day; the subagent scope (every subagent inherits the same cached sandbox profile, not only the Coordinator) was confirmed with a minimal probe agent that hit the identical `E2BIG`. Verified live in the same incident: `git worktree remove` + `git worktree prune` did not restore the session; only restarting the harness did.
