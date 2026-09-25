@@ -8995,6 +8995,42 @@ describe('review-ref sweep — real git end-to-end (issue #732)', () => {
     expect(second.errors).toEqual([]);
     expect(reviewRefsOnDisk(root)).toEqual(['refs/review/732']);
   });
+
+  it('the landed-sibling check\'s `refs/review/base/<id>` (issue #978) is enumerated by the UNCHANGED `refs/review` prefix and removed from `.git` at a terminal wave\'s close', () => {
+    const root = makeRepoWithRefs([
+      'refs/review/960',
+      'refs/review/sib/960',
+      'refs/review/base/960',
+      'refs/review/base/a/b', // deeper than one id segment — never guessed at
+    ]);
+
+    const result = sweepReviewRefs({ repoRoot: root, liveRowIds: [], liveRowsDeclared: true });
+
+    expect(result.removed.map((r) => r.ref).sort()).toEqual(
+      ['refs/review/960', 'refs/review/base/960', 'refs/review/sib/960'].sort(),
+    );
+    expect(result.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/base/a/b', 'unresolvable-row'],
+    ]);
+    expect(result.errors).toEqual([]);
+    expect(reviewRefsOnDisk(root)).toEqual(['refs/review/base/a/b']);
+  });
+
+  it('a row literally named `base` owns the flat `refs/review/base` — real git keeps it apart from the nested namespace, and the sweep attributes it to row `base`', () => {
+    const root = makeRepoWithRefs(['refs/review/base']);
+
+    const live = sweepReviewRefs({ repoRoot: root, liveRowIds: ['base'] });
+    expect(live.skipped).toEqual([
+      { ref: 'refs/review/base', namespace: 'review', rowId: 'base', reason: 'live-row' },
+    ]);
+    expect(reviewRefsOnDisk(root)).toEqual(['refs/review/base']);
+
+    const stale = sweepReviewRefs({ repoRoot: root, liveRowIds: ['960'] });
+    expect(stale.removed).toEqual([
+      { ref: 'refs/review/base', namespace: 'review', rowId: 'base' },
+    ]);
+    expect(reviewRefsOnDisk(root)).toEqual([]);
+  });
 });
 
 // ─── 40. The orphan-branch sweep NAMES what it defers (issue #748, ADR-0042
@@ -9462,6 +9498,141 @@ describe('the review-ref plan distinguishes a declared-EMPTY live set from an un
     const closed = fakeReviewRefOps(REFS);
     sweepReviewRefs({ ops: closed, liveRowIds: [] });
     expect(closed.deleted).toEqual([]);
+  });
+});
+
+// ─── 42b. The landed-sibling check's base ref belongs to a row (issue #978) ──
+//
+// The Reviewer's landed-sibling check fetches the default branch's tip into
+// `refs/review/base/<id>` — per row, for the same shared-ref reason every other
+// review ref is per row. The classifier special-cased only `refs/review/sib/`,
+// so `base/<id>` read as a two-segment `review` name with no row id and the
+// sweep skipped it `unresolvable-row` at every close: the measured reading on a
+// TERMINAL wave selected `refs/review/960` and `refs/review/sib/963` and left
+// `refs/review/base/960` behind, and each round's base refs were deleted by
+// hand. Section 37e carries the real-git half of this.
+
+describe('the landed-sibling check\'s base ref is attributed to its row (issue #978)', () => {
+  /** One row's three refs: branch under review, a sibling tip, the default-branch tip. */
+  const ROW_960 = ['refs/review/960', 'refs/review/sib/960', 'refs/review/base/960'];
+
+  it('`refs/review/base/960` classifies with row id 960 in its own `review-base` namespace, the id carried verbatim', () => {
+    const listing = listReviewRefs({
+      ops: fakeReviewRefOps(['refs/review/base/960', 'refs/review/base/FOR-432']),
+    });
+
+    expect(listing.refs).toEqual([
+      { ref: 'refs/review/base/960', namespace: 'review-base', rowId: '960' },
+      { ref: 'refs/review/base/FOR-432', namespace: 'review-base', rowId: 'FOR-432' },
+    ]);
+  });
+
+  it('a deeper path under `refs/review/base/` stays UNRESOLVABLE — skipped `unresolvable-row` even on a terminal wave', () => {
+    const listing = listReviewRefs({
+      ops: fakeReviewRefOps(['refs/review/base/a/b', 'refs/review/base/']),
+    });
+
+    expect(listing.refs.map((r) => [r.ref, r.namespace, r.rowId])).toEqual([
+      ['refs/review/base/a/b', 'review-base', null],
+      ['refs/review/base/', 'review-base', null],
+    ]);
+    const plan = planReviewRefSweep(listing, [], { liveRowsDeclared: true });
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/base/a/b', 'unresolvable-row'],
+      ['refs/review/base/', 'unresolvable-row'],
+    ]);
+  });
+
+  it('`refs/review/base` with no further segment is a row whose id is literally "base", in the PLAIN review namespace', () => {
+    const listing = listReviewRefs({ ops: fakeReviewRefOps(['refs/review/base']) });
+
+    expect(listing.refs).toEqual([
+      { ref: 'refs/review/base', namespace: 'review', rowId: 'base' },
+    ]);
+  });
+
+  it('on a TERMINAL wave the base ref is SELECTED alongside the row\'s `refs/review/<id>` and `refs/review/sib/<id>`', () => {
+    const plan = planReviewRefSweep(listReviewRefs({ ops: fakeReviewRefOps(ROW_960) }), [], {
+      liveRowsDeclared: true,
+    });
+
+    expect(plan.liveRowIds).toEqual([]);
+    expect(plan.selected.map((r) => [r.ref, r.namespace, r.rowId])).toEqual([
+      ['refs/review/960', 'review', '960'],
+      ['refs/review/sib/960', 'review-sib', '960'],
+      ['refs/review/base/960', 'review-base', '960'],
+    ]);
+    expect(plan.skipped).toEqual([]);
+
+    // The measured reading this row exists for, replayed: the base ref no
+    // longer stays behind while its two siblings are collected.
+    const measured = planReviewRefSweep(
+      listReviewRefs({
+        ops: fakeReviewRefOps(['refs/review/960', 'refs/review/sib/963', 'refs/review/base/960']),
+      }),
+      [],
+      { liveRowsDeclared: true },
+    );
+    expect(measured.selected.map((r) => r.ref)).toEqual([
+      'refs/review/960',
+      'refs/review/sib/963',
+      'refs/review/base/960',
+    ]);
+    expect(measured.skipped).toEqual([]);
+  });
+
+  it('with the row LIVE, all three of its refs are skipped `live-row` — the base ref gets exactly the liveness rule its siblings get', () => {
+    const plan = planReviewRefSweep(listReviewRefs({ ops: fakeReviewRefOps(ROW_960) }), ['960'], {
+      liveRowsDeclared: true,
+    });
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/960', 'live-row'],
+      ['refs/review/sib/960', 'live-row'],
+      ['refs/review/base/960', 'live-row'],
+    ]);
+  });
+
+  it('BOTH directions in one plan — a stale row\'s base ref is selected while the live row\'s is spared', () => {
+    const plan = planReviewRefSweep(
+      listReviewRefs({ ops: fakeReviewRefOps(['refs/review/base/960', 'refs/review/base/974']) }),
+      ['974'],
+    );
+
+    expect(plan.selected.map((r) => r.ref)).toEqual(['refs/review/base/960']);
+    expect(plan.skipped.map((r) => [r.ref, r.reason])).toEqual([
+      ['refs/review/base/974', 'live-row'],
+    ]);
+  });
+
+  it('with NO live set declared the base ref FAILS CLOSED like every other — nothing selected, `live-rows-unknown`', () => {
+    const plan = planReviewRefSweep(listReviewRefs({ ops: fakeReviewRefOps(ROW_960) }));
+
+    expect(plan.selected).toEqual([]);
+    expect(plan.liveRowIds).toBeNull();
+    expect(plan.skipped.map((r) => r.reason)).toEqual([
+      'live-rows-unknown',
+      'live-rows-unknown',
+      'live-rows-unknown',
+    ]);
+  });
+
+  it('the listing\'s enumeration scope is UNCHANGED — `refs/review` already reaches the nested base namespace', () => {
+    const listing = listReviewRefs({ ops: fakeReviewRefOps(ROW_960) });
+
+    expect(listing.namespaces).toEqual(['refs/review', 'refs/sib']);
+    for (const entry of listing.refs) {
+      expect(listing.namespaces.some((prefix) => entry.ref.startsWith(`${prefix}/`))).toBe(true);
+    }
+  });
+
+  it('the widened `ReviewRefNamespace` union is nameable from the package root', () => {
+    const namespace: ReviewRefNamespaceFromRoot = 'review-base';
+    const entry: ReviewRefFromRoot = { ref: 'refs/review/base/960', namespace, rowId: '960' };
+
+    expect(listReviewRefsFromRoot({ ops: fakeReviewRefOps([entry.ref]) }).refs).toEqual([entry]);
   });
 });
 

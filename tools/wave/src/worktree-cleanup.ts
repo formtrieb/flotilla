@@ -5606,13 +5606,17 @@ function collectLiveWorktreeBasenames(
 // `git fetch origin <branch>:refs/review/<id>` for the branch under review, and
 // `refs/review/sib/<id>` for each sibling tip the merge-tree prediction reads.
 // A Worker running that same sibling prediction for itself has also been
-// observed reaching for a third, ad-hoc namespace, `refs/sib/<id>`.
+// observed reaching for a third, ad-hoc namespace, `refs/sib/<id>`. The
+// landed-sibling check added a fourth (issue #978): it fetches the default
+// branch's tip into `refs/review/base/<id>`, per row for the same shared-ref
+// reason, and until that shape was recognized every review that ran the check
+// left one ref behind that this sweep skipped as `unresolvable-row`.
 //
 // Those refs are exactly as durable as the fix required them to be, and nothing
 // has ever removed them. They outlive the worktree (removed at close), the local
 // branch (swept by the orphan-branch pass above) and the remote branch (deleted
 // by the merge) — no pass in this module reaches a ref namespace at all. The
-// measured accumulation at one wave's close: 187 refs under the three
+// measured accumulation at one wave's close: 187 refs under the first three
 // namespaces, the oldest rows from six weeks earlier, swept by hand with
 // `git update-ref -d`. A person reaching for a plumbing ref-delete command is
 // the finding; the refs themselves are harmless individually and unbounded
@@ -5625,7 +5629,7 @@ function collectLiveWorktreeBasenames(
 //
 //   - `unresolvable-row` — the ref name does not yield exactly one row-id
 //     segment. A row id is OPAQUE (ADR-0001): this module matches it, never
-//     parses it, so a ref carrying more (or fewer) segments than the three
+//     parses it, so a ref carrying more (or fewer) segments than the four
 //     documented shapes is something whose owner cannot be named — and an
 //     unreadable name is never an argument for deletion.
 //   - `live-rows-unknown` — the caller did not say which rows are live. FAIL
@@ -5640,10 +5644,16 @@ function collectLiveWorktreeBasenames(
 
 /**
  * The ref-name prefixes this sweep enumerates (issue #732), passed verbatim to
- * `git for-each-ref`. `refs/review` covers BOTH the branch-under-review
- * namespace and the `refs/review/sib/` sibling namespace nested inside it;
- * `refs/sib` is the separate, flat namespace a Worker's own sibling prediction
- * has been observed fetching into.
+ * `git for-each-ref`. `refs/review` covers the branch-under-review namespace
+ * AND the two namespaces nested inside it — `refs/review/sib/` (sibling tips)
+ * and `refs/review/base/` (the default-branch tip the landed-sibling check
+ * reads, issue #978); `refs/sib` is the separate, flat namespace a Worker's own
+ * sibling prediction has been observed fetching into.
+ *
+ * A nested namespace is deliberately NOT listed as a prefix of its own: the
+ * prefix is an enumeration SCOPE, and `refs/review` already enumerates every
+ * ref under both nested paths. Which namespace a listed ref belongs to is the
+ * per-entry {@link ReviewRef.namespace}, never this list.
  *
  * Exported because it is the authority the operator-facing close phase cites —
  * the same reason {@link SCRIBE_SCRATCH_RELATIVE_DIR} and
@@ -5657,11 +5667,17 @@ export const REVIEW_REF_NAMESPACE_PREFIXES: readonly string[] = [
 ];
 
 /**
- * Which of the three namespaces a listed ref sits in (issue #732). Reported per
- * entry so a reader can tell a branch-under-review ref from a sibling-tip ref
- * without re-parsing the name.
+ * Which of the four namespaces a listed ref sits in (issue #732). Reported per
+ * entry so a reader can tell a branch-under-review ref from a sibling-tip ref,
+ * or from the landed-sibling check's default-branch ref, without re-parsing
+ * the name.
+ *
+ * `review-base` (issue #978) is the fourth member, added after the union first
+ * shipped: `refs/review/base/<id>`, the default-branch tip a Reviewer's
+ * landed-sibling check fetches per row. A consumer switching exhaustively over
+ * this union sees a new member.
  */
-export type ReviewRefNamespace = 'review' | 'review-sib' | 'sib';
+export type ReviewRefNamespace = 'review' | 'review-sib' | 'review-base' | 'sib';
 
 /** Machine-readable cause a review-ref skip is tagged with (issue #732). */
 export type ReviewRefSkipReason =
@@ -5833,25 +5849,38 @@ export interface ReviewRefPlanOptions {
 }
 
 /**
+ * The namespaces nested one segment inside `refs/review/`, keyed by that
+ * segment. Module-private: it is the classifier's table, not a scope — the
+ * enumeration scope is {@link REVIEW_REF_NAMESPACE_PREFIXES}, whose
+ * `refs/review` prefix already reaches both.
+ */
+const NESTED_REVIEW_NAMESPACES: ReadonlyArray<readonly [string, ReviewRefNamespace]> = [
+  ['sib', 'review-sib'],
+  ['base', 'review-base'],
+];
+
+/**
  * Classify ONE ref name into its namespace and row id, or `null` when the name
  * sits under none of {@link REVIEW_REF_NAMESPACE_PREFIXES} at all (not this
  * sweep's population — never listed, never a skip entry, the same way
  * {@link listScribeScratchEntries} never descends into a subdirectory).
  *
- * The three recognized shapes, and nothing else:
- *   - `refs/review/<id>`     → `review`
- *   - `refs/review/sib/<id>` → `review-sib`
- *   - `refs/sib/<id>`        → `sib`
+ * The four recognized shapes, and nothing else:
+ *   - `refs/review/<id>`      → `review`
+ *   - `refs/review/sib/<id>`  → `review-sib`
+ *   - `refs/review/base/<id>` → `review-base` (issue #978)
+ *   - `refs/sib/<id>`         → `sib`
  *
  * `<id>` must be EXACTLY ONE path segment. A row id is opaque (ADR-0001) and is
  * therefore never parsed, only delimited — so a name carrying extra segments
- * (`refs/review/a/b`) or none at all (`refs/sib/`) yields `rowId: null` rather
- * than a guess at which part of it is the id.
+ * (`refs/review/a/b`, `refs/review/base/a/b`) or none at all (`refs/sib/`)
+ * yields `rowId: null` rather than a guess at which part of it is the id.
  *
  * `refs/review/sib` with NO further segment resolves as `review` / `rowId: 'sib'`
- * — a row whose id is literally `sib`. That reading is unambiguous rather than
- * merely convenient: git's own directory/file ref rule makes `refs/review/sib`
- * and `refs/review/sib/<id>` mutually exclusive in one repository, so the flat
+ * — a row whose id is literally `sib` — and `refs/review/base` likewise as
+ * `review` / `rowId: 'base'`. That reading is unambiguous rather than merely
+ * convenient: git's own directory/file ref rule makes `refs/review/<name>` and
+ * `refs/review/<name>/<id>` mutually exclusive in one repository, so the flat
  * form can only ever have been created as a row's own ref.
  */
 function classifyReviewRef(ref: string): ReviewRef | null {
@@ -5859,13 +5888,11 @@ function classifyReviewRef(ref: string): ReviewRef | null {
 
   if (ref.startsWith('refs/review/')) {
     const rest = ref.slice('refs/review/'.length);
-    if (rest.startsWith('sib/')) {
-      const id = rest.slice('sib/'.length);
-      return {
-        ref,
-        namespace: 'review-sib',
-        rowId: isSingleSegment(id) ? id : null,
-      };
+    for (const [segment, namespace] of NESTED_REVIEW_NAMESPACES) {
+      if (rest.startsWith(`${segment}/`)) {
+        const id = rest.slice(segment.length + 1);
+        return { ref, namespace, rowId: isSingleSegment(id) ? id : null };
+      }
     }
     return { ref, namespace: 'review', rowId: isSingleSegment(rest) ? rest : null };
   }
@@ -5879,7 +5906,7 @@ function classifyReviewRef(ref: string): ReviewRef | null {
 }
 
 /**
- * List every ref under the three review/sibling namespaces, classified
+ * List every ref under the four review/sibling namespaces, classified
  * (issue #732). Read-only: {@link ReviewRefOps.deleteRef} is never called here.
  *
  * A repository where no Reviewer has ever fetched has no such refs at all, and
