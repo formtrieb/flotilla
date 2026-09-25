@@ -1933,6 +1933,99 @@ describe('skill-schema-drift — issue.branch matches the Coordinator spine set-
   });
 });
 
+// ─── the between-rounds sequence names close-row before the next compose ─────
+//
+// issue #976: no step in wave-start or wave-close ran close-row between
+// rounds of a wave that lands each round, so a sibling that landed in an
+// earlier round never read (landed) — the annotation is read from the
+// spine's PR-Log, and close-row is its only writer. This pins the
+// documented between-rounds sequence in both wave-start/SKILL.md and its
+// mechanics reference to name close-row strictly BEFORE the next round's
+// compose step, each within its own file (the shipped-invocation guard
+// already holds every {{wave-cli}} call in both files to a canonical
+// contract spelling; this pin is about ORDER, which that guard does not
+// check).
+
+const BETWEEN_ROUNDS_SKILL_CLOSE_ROW =
+  '**`{{wave-cli}} close-row --spine <spine> --id <id>` for every row that landed this round';
+const BETWEEN_ROUNDS_SKILL_COMPOSE = 'Compose the next round and dispatch';
+const BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW =
+  '{{wave-cli}} close-row --spine "$SPINE" --id "$ID"';
+const BETWEEN_ROUNDS_MECHANICS_COMPOSE = '8. compose the next round and dispatch';
+
+describe('skill-schema-drift — the between-rounds sequence names close-row before the next round compose (issue #976)', () => {
+  const skillMd = readFileSync(WAVE_START_SKILL_MD, 'utf-8');
+  const mechanicsMd = readFileSync(START_MECHANICS_MD, 'utf-8');
+
+  it('wave-start/SKILL.md carries a between-rounds section stating WHY close-row runs there', () => {
+    const region = regionBetween(
+      skillMd,
+      'wave-start/SKILL.md between-rounds',
+      '### Between rounds',
+      '## Common Mistakes',
+    );
+    expect(region).toContain(BETWEEN_ROUNDS_SKILL_CLOSE_ROW);
+    expect(region).toMatch(/`\(landed\)`.{0,80}read only from the spine's `## PR-Log`/s);
+    expect(region).toMatch(/`close-row`\s+is\s+its\s+only\s+writer/);
+  });
+
+  it("the SKILL.md sequence, and start-mechanics.md's own invocation copy, both name close-row strictly before the next round's compose", () => {
+    const skillRegion = regionBetween(
+      skillMd,
+      'wave-start/SKILL.md between-rounds',
+      '### Between rounds',
+      '## Common Mistakes',
+    );
+    const skillCloseIdx = skillRegion.indexOf(BETWEEN_ROUNDS_SKILL_CLOSE_ROW);
+    const skillComposeIdx = skillRegion.indexOf(BETWEEN_ROUNDS_SKILL_COMPOSE);
+    expect(skillCloseIdx).toBeGreaterThan(-1);
+    expect(skillComposeIdx).toBeGreaterThan(-1);
+    expect(skillCloseIdx).toBeLessThan(skillComposeIdx);
+
+    const mechRegion = regionBetween(
+      mechanicsMd,
+      'start-mechanics.md between-rounds',
+      '## Between rounds',
+      '## STOP-reason',
+    );
+    const mechCloseIdx = mechRegion.indexOf(BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW);
+    const mechComposeIdx = mechRegion.indexOf(BETWEEN_ROUNDS_MECHANICS_COMPOSE);
+    expect(mechCloseIdx).toBeGreaterThan(-1);
+    expect(mechComposeIdx).toBeGreaterThan(-1);
+    expect(mechCloseIdx).toBeLessThan(mechComposeIdx);
+  });
+
+  it('NEGATIVE CONTROL — issue #976: close-row removed from, or moved after, the compose step is caught', () => {
+    const mechRegion = regionBetween(
+      mechanicsMd,
+      'start-mechanics.md between-rounds',
+      '## Between rounds',
+      '## STOP-reason',
+    );
+    // Removed entirely — the shape a "trim this step" edit would produce.
+    const withoutCloseRow = mechRegion.replace(BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW, '');
+    expect(withoutCloseRow).not.toEqual(mechRegion); // the replace actually matched
+    expect(withoutCloseRow.indexOf(BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW)).toBe(-1);
+
+    // Moved after the compose step — swap the two markers' positions, the
+    // shape a "move the compose earlier" edit would produce.
+    const swapped = mechRegion
+      .replace(BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW, '\u0000')
+      .replace(BETWEEN_ROUNDS_MECHANICS_COMPOSE, BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW)
+      .replace('\u0000', BETWEEN_ROUNDS_MECHANICS_COMPOSE);
+    expect(swapped).not.toEqual(mechRegion); // the replace actually matched
+    expect(swapped.indexOf(BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW)).toBeGreaterThan(
+      swapped.indexOf(BETWEEN_ROUNDS_MECHANICS_COMPOSE),
+    );
+    // …while the real, shipped copy still passes the order assertion the
+    // previous test makes — this control only proves the check CAN fail, it
+    // does not touch the file.
+    expect(mechRegion.indexOf(BETWEEN_ROUNDS_MECHANICS_CLOSE_ROW)).toBeLessThan(
+      mechRegion.indexOf(BETWEEN_ROUNDS_MECHANICS_COMPOSE),
+    );
+  });
+});
+
 // ─── the worktree-count advisory threshold is pinned to the engine constant ───
 //
 // Same class of pin as the schema literals above, applied to a NUMBER instead of

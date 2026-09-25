@@ -407,7 +407,34 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that has `route-tuple`'s sidecar step
+ * Why this number: **RAISED by the row that gives a wave that lands each round
+ * a documented between-rounds sequence, naming `close-row` before the next
+ * round's compose** (issue #976), in the diff that causes the growth. The
+ * Coordinator reads the sequence, and its why, every round a wave lands before
+ * dispatching the next: wave-start's `SKILL.md` gains its own `### Between
+ * rounds` section (+2,050 B) and the mechanics reference gains the matching
+ * `## Between rounds` invocation copy (+1,867 B); wave-close's
+ * `phase-5-done-reconcile.md` gains the no-op-at-close note the sequence's
+ * idempotence relies on (+696 B). The live occurrence behind it — the
+ * six-round wave whose Coordinator ran this by hand every round — went to the
+ * `wave-start` `evidence/` sibling, which this population excludes by
+ * definition.
+ *
+ * At this row's anchor commit `5aea0cbe2d7546f02f11664124f6228efbd8fd91` the
+ * population measured **1,252,190 B** over 57 files — 810 B under the previous
+ * 1,253,000 B ceiling. This row's edit lands it at **1,256,803 B** over the
+ * same 57 files, +4,613 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,257,000 B**. The 197 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget. The shared standing
+ * load is NOT touched: none of the three files is a member of that population
+ * (only `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are).
+ *
+ * Previously: 1,253,000 B — **RAISED by the row that has `route-tuple`'s
+ * sidecar step repair a report or verdict sidecar that disagrees with the
+ * payload it is handed** (issue #977), whose reasoning is kept below (in ITS
+ * voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that has `route-tuple`'s sidecar step
  * repair a report or verdict sidecar that disagrees with the payload it is
  * handed** (issue #977), in the diff that causes the growth. The Coordinator
  * reads the repair where it reads the recovery of a missing sidecar: wave-start's
@@ -416,13 +443,12 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * behind it went to the `wave-start` `evidence/` sibling, which this
  * population excludes by definition.
  *
- * At this row's anchor commit `59e3f14ac7f8852dac6e9d1a3f3489ceacb9aafb` the
+ * At that row's anchor commit `59e3f14ac7f8852dac6e9d1a3f3489ceacb9aafb` the
  * population measured **1,251,710 B** over 57 files — 290 B under the previous
- * 1,252,000 B ceiling. This row's edit lands it at **1,252,190 B** over the
- * same 57 files, +480 B, so the ceiling moves to that sum rounded UP to the
- * next full KB (1 KB = 1000 B): **1,253,000 B**. The 810 B of headroom that
- * leaves is a fact about the rounding rule, not a budget. The shared standing
- * load is NOT touched: neither file is a member of that population (only
+ * 1,252,000 B ceiling. That row's edit landed it at **1,252,190 B** over the
+ * same 57 files, +480 B, so the ceiling moved to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,253,000 B**. The shared standing load was
+ * NOT touched: neither file is a member of that population (only
  * `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are).
  *
  * Previously: 1,252,000 B — **RAISED by the row that makes a stamped probe live
@@ -879,7 +905,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_253_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_257_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

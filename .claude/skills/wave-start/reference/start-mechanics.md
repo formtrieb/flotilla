@@ -877,6 +877,36 @@ Fold the BLOCKED listing verbatim into the step-9 report — this is the handove
 `wave-close`: it names precisely what that gate will block on, not a vague "some
 disclosures are open."
 
+## Between rounds — the sequence, invocation by invocation (issue #976)
+
+`SKILL.md`'s between-rounds section states the order and the why; this is the same eight steps as engine calls. Step 3 is the one item that MUST run before step 8 — every other step is unchanged from its numbered-step twin above.
+
+```bash
+# 1. land the round's PRs — however this wave lands (host-pr arm, a manual
+#    merge, --auto); no engine call of its own.
+# 2. bring the local default branch to the remote tip
+git -C "$REPO" pull
+# 3. close-row for every row that landed THIS round — before the next
+#    compose. (landed) is read only from the spine's `## PR-Log`
+#    (workflow-driver.md's reviewerBrief); this verb is its only writer.
+#    Run once per landed row, any order. Safe here: it is the same
+#    idempotent verb wave-close's done-reconcile calls again at the wave's
+#    end (phase-5-done-reconcile.md) — a row already closed is a no-op there.
+{{wave-cli}} close-row --spine "$SPINE" --id "$ID"
+# 4. the probe sweep (7d), only if it has not already run this round
+{{wave-cli}} worktree-cleanup --probes-only --spine "$SPINE" --config wave.config.json
+# 5. worktree + branch cleanup for the landed row (7c's scoped form); its
+#    refs/review/<id> / refs/review/base/<id> stay untouched — spared until
+#    the whole wave is terminal, swept at wave-close phase 3, not here
+{{wave-cli}} worktree-cleanup --branches "wave/$ID-$ROW_SLUG"
+# 6. re-anchor — the round anchor, re-derived fresh, never carried over
+ANCHOR_SHA=$(git -C "$REPO" rev-parse HEAD)
+# 7. re-run step 3's DOR + Conflict-Map against $ANCHOR_SHA for the next round's rows
+# 8. compose the next round and dispatch — step 6 above, with the new $ANCHOR_SHA
+```
+
+Evidence for the gap this closes — the six-round wave that ran this by hand every round — is in `../evidence/start-mechanics.md`.
+
 ## STOP-reason → flag kind
 
 | `stop.reason` | `--kind` | Why |

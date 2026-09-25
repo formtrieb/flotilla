@@ -255,6 +255,23 @@ Full mechanics: [reference/workflow-driver.md](reference/workflow-driver.md) §R
 
 This step is **report-only**. When every dispatched, non-parked row is at `pr-created` / `in-review` (or flagged `needs-attention`): print the spine path, the per-row final state (including any HELD rows and which unresolved blocker(s) they're waiting on; any **HUMAN-HELD** rows and **which human action each is waiting on**, stated as an action a person can go and do; and any rows parked this pass — all three plainly, without a flag), and the open-PR URLs. **Also list this wave's still-open disclosures** — every entry captured at step 7's 0a that has not yet reached a disposition other than `open`: `{{wave-cli}} spine check-disclosures <spine>` prints exactly this list (ref, row, source, text), non-mutating and advisory here — it is not a gate at this step, only at `wave-close`'s own (ADR-0027). This is the handover: it names precisely what that archive gate will block on, not a vague "some disclosures are open." **State that the wave is NOT closed** — the next step is `wave-close` (which passes `parked` rows through its terminality gate silently, per ADR-0022, reports a HUMAN-HELD row as awaiting-human, and enforces the disclosure gate just named) or a later `wave-start` re-entry to pick up any HELD row once its blocker resolves, or any HUMAN-HELD row once the human has acted.
 
+### Between rounds — a wave that lands each round
+
+Some waves land each round's PRs and re-anchor before dispatching the next, rather than waiting for `wave-close`. **No step above runs `close-row` between rounds**, and the gap is observable: the sibling list's `(landed)` annotation is read only from the spine's `## PR-Log`, and `close-row` is its only writer (ADR-0042 Amendment 2026-09-23). Skip it and a row that landed last round still reads `(pr-created)` this round, sending the next round's Reviewer down the every-other-sibling tip-prediction recipe against a branch and worktree that may already be gone.
+
+Run this sequence once a round's PRs are merged, **before** composing the next round:
+
+1. Land the round's PRs.
+2. Bring the local default branch to the remote tip (`git pull`, or `fetch` + `reset --hard`).
+3. **`{{wave-cli}} close-row --spine <spine> --id <id>` for every row that landed this round — before the next round's compose.** This is the only step that writes `(landed)`.
+4. The probe sweep (step 7, item 4), if it has not already run after the round's last tuple.
+5. Worktree and branch cleanup for the landed rows (`{{wave-cli}} worktree-cleanup --branches <branch>`, step 7c's scoped form, per row). Their review refs stay untouched here — a live wave's `refs/review/<id>` / `refs/review/base/<id>` are spared until the whole wave is terminal, and are swept at `wave-close` (phase 3).
+6. Re-anchor to the new default-branch tip — the round anchor is per round, never carried over.
+7. Re-check the next round's rows' premises against that tip (step 3's DOR + Conflict-Map re-run).
+8. Compose the next round and dispatch (step 6, with the new anchor).
+
+`close-row` is idempotent, and running it here is safe: it is the same verb `wave-close`'s done-reconcile calls again at the end of the wave, and a row it already closed is a no-op there ([wave-close phase 5](../wave-close/reference/phase-5-done-reconcile.md)). Full invocations: [reference/start-mechanics.md](reference/start-mechanics.md) §Between rounds.
+
 ## Common Mistakes
 
 - **Merging or closing from wave-start.** The loop ends at `in-review` / `pr-created`. Never merge or fast-forward here — that is `wave-close`. `done` is derived from a merged PR out-of-band, never written by this skill.
