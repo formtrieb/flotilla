@@ -951,16 +951,21 @@ export class RealGitHubApi implements GitHubApi {
    * mutations the PR is not armed. If the re-enable is then refused with one
    * of the two TYPED refusals, the arm routes it exactly as it routes any other
    * (a `clean-status` merges directly, carrying the new message; a
-   * `not-allowed` degrades or refuses) — that error is rethrown untouched. If
-   * the re-enable fails for ANY other reason — a non-200, an untyped GraphQL
-   * error such as FORBIDDEN, a request that never got an answer — the disable
-   * has already run and the PR is left UNARMED, so the error this throws says
-   * exactly that: auto-merge was disabled, the PR will not merge itself, and
-   * re-running `host-pr arm` restores it (the re-run reads `auto_merge` as
-   * empty, so it arms afresh with no second disable) — see
-   * {@link unarmedByRefresh}. A disable that fails is a loud
-   * {@link GitHubApiError} too — never routed as a landing decision — after
-   * which a re-run reads `auto_merge` afresh.
+   * `not-allowed` degrades or refuses) — the refusal's CLASS and its routing
+   * key (`.reason`) are rethrown untouched, but its MESSAGE now also states
+   * that this refresh's own disable already ran and the PR is unarmed
+   * (Symptom 1, issue #995 — a byte-identical rethrow said nothing of it, the
+   * same silence the untyped branch below existed to close) — see
+   * {@link disarmedRefusal}. If the re-enable fails for ANY other reason — a
+   * non-200, an untyped GraphQL error such as FORBIDDEN, a request that never
+   * got an answer — the disable has already run and the PR is left UNARMED, so
+   * the error this throws says exactly that: auto-merge was disabled, the PR
+   * will not merge itself, and re-running `host-pr arm` restores it WHEN THE
+   * FAILURE WAS TRANSIENT (Symptom 2, issue #995) — a PERSISTENT cause, quoted
+   * verbatim in the error, fails the re-run's own enable the same way, on the
+   * ordinary first-arm path — see {@link unarmedByRefresh}. A disable that
+   * fails is a loud {@link GitHubApiError} too — never routed as a landing
+   * decision — after which a re-run reads `auto_merge` afresh.
    */
   async enableAutoMerge(
     prNumber: number,
@@ -991,8 +996,14 @@ export class RealGitHubApi implements GitHubApi {
         try {
           await this.requestAutoMerge(nodeId, prNumber, method, message);
         } catch (err) {
-          // The two typed refusals keep their routing, byte for byte.
-          if (err instanceof AutoMergeUnavailableError) throw err;
+          // The two typed refusals keep their CLASS and their ROUTING KEY
+          // (`.reason`) byte for byte — the arm intent's `err.reason ===
+          // 'clean-status' | 'not-allowed'` switch (host-pr.ts) still fires
+          // exactly as it does on a first arm. Only the MESSAGE changes, to say
+          // what a byte-identical rethrow could not (Symptom 1, issue #995): the
+          // disable already ran, so the refusal is about a PR that is not the PR
+          // the caller armed a moment ago.
+          if (err instanceof AutoMergeUnavailableError) throw disarmedRefusal(err, prNumber);
           throw unarmedByRefresh(err, prNumber);
         }
         return;
@@ -1206,10 +1217,30 @@ export class RealGitHubApi implements GitHubApi {
  * when its checks pass. The generic "the enable failed" says none of that, and
  * reads as "the PR is as it was" — the one state it is not in. So this says
  * three things, in the order an operator needs them: auto-merge was disabled,
- * the PR is now unarmed, and re-running `host-pr arm` restores it. The re-run
- * really does: the PR's `auto_merge` now reads as empty, so the next arm takes
- * the first-arm path (no disable, one enable carrying the current message) —
- * or, if the checks finished in the meantime, merges it directly.
+ * the PR is now unarmed, and — CONDITIONALLY (Symptom 2, issue #995; the
+ * earlier wording claimed this unconditionally) — that re-running
+ * `host-pr arm` restores it. It restores it only when the re-enable's own
+ * failure above was TRANSIENT: the re-run reads `auto_merge` as empty, so it
+ * takes the ordinary first-arm path (no second disable) and arms afresh with
+ * the PR's current message — or merges directly if the checks finished in the
+ * meantime. A PERSISTENT cause — a token scope the disable never needed but
+ * the enable does, an org policy — fails that SAME first-arm enable the same
+ * way, so the re-run would not restore anything; the message states the
+ * condition rather than asserting the unconditional claim, and the cause is
+ * quoted verbatim at the end so an operator can tell which one they are
+ * looking at without re-running anything first.
+ *
+ * The "restores it" half also rests on one assumption this adapter has never
+ * observed live and states rather than hides: that a REST `GET …/pulls/{n}`
+ * read immediately after this GraphQL `disablePullRequestAutoMerge` reports
+ * `auto_merge: null` — i.e. that the disable is visible to the very next read,
+ * with no propagation delay across GitHub's REST/GraphQL boundary. Neither
+ * GitHub's REST "Get a pull request" response schema nor its GraphQL schema
+ * documents read-after-write consistency between the two APIs (both re-read
+ * 2026-09-23/25 for the mutations and fields this file already cites — neither
+ * says anything about this). UNVERIFIED — flagged here rather than asserted as
+ * fact, the same posture the pinned ADR-0023 spike constants above take for a
+ * schema shape this adapter cannot observe without live credentials.
  *
  * The underlying failure is kept verbatim at the end — a FORBIDDEN's token
  * guidance included — and a {@link GitHubApiError}'s own status is carried
@@ -1223,8 +1254,33 @@ function unarmedByRefresh(err: unknown, prNumber: number): GitHubApiError {
     'enableAutoMerge',
     `PR #${prNumber} was already armed, so refreshing its frozen landing message (ADR-0053) DISABLED its ` +
       `auto-merge first — and the re-enable then failed. PR #${prNumber} is now UNARMED: it will not merge ` +
-      `itself when its checks pass. Re-running \`host-pr arm\` restores it — the re-run finds no auto-merge ` +
-      `left to refresh and arms the PR afresh with its current message. Re-enable failure: ${cause}`,
+      `itself when its checks pass. Re-running \`host-pr arm\` restores it IF THE FAILURE BELOW WAS ` +
+      `TRANSIENT — the re-run finds no auto-merge left to refresh and arms the PR afresh with its current ` +
+      `message, on the ordinary first-arm path. A PERSISTENT cause fails that same first-arm re-enable the ` +
+      `exact same way, and re-running will not restore anything. Re-enable failure: ${cause}`,
+  );
+}
+
+/**
+ * A typed refusal ({@link AutoMergeUnavailableError}) on the re-enable half of a
+ * landing-message refresh (ADR-0053). The disable has already succeeded by
+ * then, so this refusal is about a PR that is NOT the PR the caller armed a
+ * moment ago — it is unarmed, and rethrowing the refusal byte-identical to a
+ * first arm's said nothing of that (Symptom 1, issue #995).
+ *
+ * CLASS and REASON are preserved EXACTLY — a new {@link AutoMergeUnavailableError}
+ * is constructed with the same `reason`, so the arm intent's routing
+ * (`armPullRequest`'s `err.reason === 'clean-status' | 'not-allowed'` switch,
+ * host-pr.ts) reads both unchanged and fires identically to a first arm's
+ * refusal: a `clean-status` still merges directly, a `not-allowed` still
+ * degrades or refuses. Only the MESSAGE is extended, with the disarm stated
+ * before the host's own refusal text, which is kept verbatim.
+ */
+function disarmedRefusal(err: AutoMergeUnavailableError, prNumber: number): AutoMergeUnavailableError {
+  return new AutoMergeUnavailableError(
+    err.reason,
+    `PR #${prNumber} was already armed, and refreshing its frozen landing message (ADR-0053) disabled its ` +
+      `auto-merge first — the PR is now unarmed. ${err.message}`,
   );
 }
 

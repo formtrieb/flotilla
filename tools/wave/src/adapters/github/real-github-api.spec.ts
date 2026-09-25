@@ -1303,7 +1303,12 @@ describe('RealGitHubApi', () => {
           : enable(req);
       });
     }
-    /** The three things the unarmed error has to say — each its own assertion, so a regression names which one went. */
+    /**
+     * The things the unarmed error has to say — each its own assertion, so a
+     * regression names which one went. The recovery sentence (Symptom 2, issue
+     * #995) is CONDITIONAL: "restores it" must never stand alone — it is
+     * qualified by a transient/persistent split, both halves present.
+     */
     function expectSaysUnarmed(err: unknown): void {
       expect(err).toBeInstanceOf(GitHubApiError);
       expect(err).not.toBeInstanceOf(AutoMergeUnavailableError);
@@ -1311,6 +1316,11 @@ describe('RealGitHubApi', () => {
       expect(text).toMatch(/DISABLED its auto-merge/);
       expect(text).toMatch(/PR #42 is now UNARMED/);
       expect(text).toMatch(/Re-running `host-pr arm` restores it/);
+      // The recovery is CONDITIONAL, not asserted flat — no unconditional
+      // "restores it" (AC3). Both the transient case (restores) and the
+      // persistent case (fails the re-run the same way) are named.
+      expect(text).toMatch(/restores it[^.]*transient/i);
+      expect(text).toMatch(/persistent[^.]*fails[^.]*same way/i);
       expect((err as GitHubApiError).op).toBe('enableAutoMerge');
     }
 
@@ -1368,20 +1378,48 @@ describe('RealGitHubApi', () => {
       expect(http.requests.map(opOf)).toEqual(['GET /pulls/42', 'enable']);
     });
 
+    // AC1 (not-allowed) and AC2 (clean-status), driven by the same table: a
+    // TYPED refusal that follows a successful disable keeps its ERROR CLASS
+    // and its ROUTING KEY (`.reason`) exactly as a first arm's — the arm
+    // intent's `err.reason` switch (host-pr.ts) must fire identically either
+    // way — but its MESSAGE now additionally states that the refresh's own
+    // disable already ran and the PR is unarmed (Symptom 1, issue #995).
+    //
+    // NEGATIVE CONTROL for the first row (`not-allowed`): reverting the
+    // `disarmedRefusal` production change and re-running this exact spec was
+    // observed to fail on the two new assertions below (`toMatch(/disabled its
+    // auto-merge/)` and `toMatch(/now unarmed/)`) while the pre-existing
+    // class/reason assertions kept passing — see the PR body for the verbatim
+    // failing output.
     it.each([
-      ['clean-status', ARM_CLEAN_STATUS_ERROR],
       ['not-allowed', ARM_NOT_ALLOWED_ERROR],
-    ] as const)('a TYPED %s refusal on the re-enable is rethrown untouched — the same class, reason and message as on a first arm', async (reason, hostSays) => {
+      ['clean-status', ARM_CLEAN_STATUS_ERROR],
+    ] as const)('a TYPED %s refusal on the re-enable keeps its class and reason, but the message now names the disarm', async (reason, hostSays) => {
       const typed = (): GitHubHttpResponse => ({ status: 200, json: { errors: [{ type: 'UNPROCESSABLE', message: hostSays }] } });
       const afterRefresh = await refreshApi(typed).api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
       const firstArm = await makeApi((req) =>
         req.method === 'GET' ? { status: 200, json: { node_id: 'n', auto_merge: null } } : typed(),
       ).api.enableAutoMerge(42, 'squash', MESSAGE).catch((e: unknown) => e);
 
+      // CLASS and ROUTING (`.reason`) — unchanged on both paths.
       expect(afterRefresh).toBeInstanceOf(AutoMergeUnavailableError);
       expect((afterRefresh as AutoMergeUnavailableError).reason).toBe(reason);
-      expect((afterRefresh as Error).message).toBe((firstArm as Error).message);
-      expect((afterRefresh as Error).message).not.toMatch(/UNARMED/);
+      expect(firstArm).toBeInstanceOf(AutoMergeUnavailableError);
+      expect((firstArm as AutoMergeUnavailableError).reason).toBe(reason);
+
+      // A first arm (nothing was ever disabled) says nothing about a disarm —
+      // its message is the host's refusal text, untouched.
+      expect((firstArm as Error).message).toBe(hostSays);
+      expect((firstArm as Error).message).not.toMatch(/disabled its auto-merge/i);
+
+      // The refresh path's message differs from the first-arm one: it now
+      // names the disarm, says the PR is unarmed, AND keeps the host's own
+      // refusal text verbatim (so an operator loses no information).
+      const text = (afterRefresh as Error).message;
+      expect(text).not.toBe((firstArm as Error).message);
+      expect(text).toMatch(/disabled its auto-merge/i);
+      expect(text).toMatch(/now unarmed/i);
+      expect(text.endsWith(hostSays)).toBe(true);
     });
   });
 

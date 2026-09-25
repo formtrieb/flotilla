@@ -775,6 +775,11 @@ describe('host-pr arm — a refresh whose re-enable fails leaves the PR unarmed,
     expect(failed.error).toMatch(/DISABLED its auto-merge/);
     expect(failed.error).toMatch(/PR #42 is now UNARMED/);
     expect(failed.error).toMatch(/Re-running `host-pr arm` restores it/);
+    // The recovery sentence is CONDITIONAL end to end, not just in the adapter
+    // unit tests (Symptom 2, issue #995): the CLI's own error text names the
+    // transient case that restores and the persistent case that does not.
+    expect(failed.error).toMatch(/restores it[^.]*transient/i);
+    expect(failed.error).toMatch(/persistent[^.]*fails[^.]*same way/i);
     expect(failed.error).toMatch(/Bad Gateway/);
     expect(stderr).toMatch(/PR #42 is now UNARMED/);
     // …and the claim is TRUE of the host, not only printed: nothing is armed.
