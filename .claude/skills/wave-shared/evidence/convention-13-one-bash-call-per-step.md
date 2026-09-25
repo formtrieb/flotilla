@@ -918,3 +918,119 @@ choose between the two.
 
 **Occurrence:** cited at the close of wave `2026-09-22-guard-reach-and-provenance`, from disclosures
 captured at routing; no row, iteration or disclosure ref was carried forward with the filed gap.
+
+### Entry 7 — a multi-path checkout/merge/pull half-applies under the `.claude/**` write-deny, plus the classifier-refusal null-result measurement (issue #994)
+
+**A different mechanism from Entries 1–6** — the harness's OS-level sandbox write-deny on `.claude/**`
+paths, the same mechanism the "positive occurrence" above (workspace-setup step 2's reset) already
+documents for a single-verb `git reset --hard` — catalogued in this file's Catalog anyway (entry 7,
+`reference/convention-13-one-bash-call-per-step.md`) because it wears the family trait every entry
+here shares: a command that reads as refused, or as clean, is neither, and the only way to tell is to
+read `git status --porcelain` afterward rather than trust the exit code.
+
+**Symptom 1 — a Worker's revert-and-restore falsification half-applies (disclosure 975.4).** A
+worktree-isolated Worker's [Convention 11](../reference/convention-11-prove-the-check-can-fail.md)
+break-observe-restore cycle ran a two-path restore, `git checkout <anchor> -- <driver-path>
+.claude/skills/wave-reviewer/reference/reviewer-checks.md`. It printed `unable to unlink old
+'.claude/skills/…': Operation not permitted` and exited 255 — and still reverted the FIRST path
+(`<driver-path>`, outside `.claude/`) while leaving the second staged at its anchor content in the
+index, its working-tree copy untouched. The Worker recovered without escalating: an index-only reset
+for the half-applied path, its file-editing tool for the `.claude/skills/**` content.
+
+**Symptom 2 — the between-rounds default-branch update half-applies the same way (disclosure 976.2).**
+`wave-start/reference/start-mechanics.md`'s between-rounds sequence (issue #976) prescribed `git -C
+"$REPO" pull` to bring the local default branch to the remote tip. Every round of wave
+`2026-09-23-sibling-truth-and-landing-message` — the wave issue #976 was itself written down from —
+actually ran `git fetch` + `git merge --ff-only origin/main` **outside the sandbox** instead, because a
+`pull`/`merge` that has to write a `.claude/**` path half-applies exactly like Symptom 1's checkout: it
+can exit 0 while HEAD lands short of `origin/<default-branch>`, with nothing in the exit status to
+distinguish that from a clean fast-forward.
+
+**The working form, one per symptom.** For a Worker's own restore: the file-editing tool on the denied
+path, never the shell form — `git show <anchor-sha>:<path>` to read the anchor's content first if
+needed — and `git status --porcelain` afterward to confirm. For the between-rounds update: `git -C
+"$REPO" fetch origin` then `git -C "$REPO" merge --ff-only origin/<default-branch>`, run outside the
+sandbox when the landed change touches `.claude/**`, with `git -C "$REPO" rev-parse HEAD` confirmed
+equal to `git -C "$REPO" rev-parse origin/<default-branch>` rather than trusting the merge's own exit
+code. Both are now in the packaged driver (`workerBrief()` policy clause 9) and in
+`wave-start/SKILL.md` / `wave-start/reference/start-mechanics.md` respectively; full symptom detail
+also lives in `wave-start/evidence/start-mechanics.md`.
+
+**Occurrence:** issue #994, filed bare at the close of wave `2026-09-25-review-signals-and-round-hygiene`
+(disclosures 975.4, 976.2, both iteration 1).
+
+#### The classifier-refusal measurement this same row ran, before touching the falsification clause's STOP
+
+The Gap's own "Added from the environment-profile grill" section (issue #994) records two PRIOR
+occurrences of a different mechanism again — the auto-mode PERMISSION CLASSIFIER itself refusing an
+Edit-tool call on a `.claude/**` path ("Self-Modification" / "Modify Shared Resources"), distinct from
+both the sandbox write-deny above and Mechanisms A/B: disclosure 754.1 (a Worker's restore Edit refused
+1–7 times per hunk before an identical retry went through) and disclosure 777.6 (one Edit on the
+Reviewer agent definition refused, one identical retry succeeded, while the same edit on a Convention
+reference file went through unrefused). Both occurrences are refusal-then-successful-retry; neither is
+a null result.
+
+**This row re-measured it live rather than assuming the pattern still holds**, per this file's own
+standing practice (Entry 1: "reproduce before you write it down"). From inside this row's own
+worktree, 10 identical file-editing-tool edit-and-revert cycles were run on each of three targets: a
+`.claude/skills/**` file (`wave-shared/reference/convention-13-one-bash-call-per-step.md`, this file's
+own reference sibling), a `.claude/agents/**` file (`.claude/agents/wave-reviewer.md`), and a control
+file outside `.claude/` (`README.md`). Each cycle was two Edit calls — insert a one-line HTML-comment
+probe marker after a unique anchor line, then remove it — issued as its own tool call with nothing
+fused onto it; the three targets' insert calls were issued together (independent files, no ordering
+constraint), and likewise their revert calls, but each target's own insert always preceded its own
+revert so the file returned to its anchor content before the next cycle began.
+
+**Result: zero refusals, 60 of 60 calls (30 inserts + 30 reverts).** A null result.
+
+| target | attempt | insert refused? | revert refused? |
+|---|---|---|---|
+| `.claude/skills/**` (convention-13-one-bash-call-per-step.md) | 1 | no | no |
+| `.claude/skills/**` | 2 | no | no |
+| `.claude/skills/**` | 3 | no | no |
+| `.claude/skills/**` | 4 | no | no |
+| `.claude/skills/**` | 5 | no | no |
+| `.claude/skills/**` | 6 | no | no |
+| `.claude/skills/**` | 7 | no | no |
+| `.claude/skills/**` | 8 | no | no |
+| `.claude/skills/**` | 9 | no | no |
+| `.claude/skills/**` | 10 | no | no |
+| `.claude/agents/**` (wave-reviewer.md) | 1 | no | no |
+| `.claude/agents/**` | 2 | no | no |
+| `.claude/agents/**` | 3 | no | no |
+| `.claude/agents/**` | 4 | no | no |
+| `.claude/agents/**` | 5 | no | no |
+| `.claude/agents/**` | 6 | no | no |
+| `.claude/agents/**` | 7 | no | no |
+| `.claude/agents/**` | 8 | no | no |
+| `.claude/agents/**` | 9 | no | no |
+| `.claude/agents/**` | 10 | no | no |
+| control, outside `.claude/` (README.md) | 1 | no | no |
+| control | 2 | no | no |
+| control | 3 | no | no |
+| control | 4 | no | no |
+| control | 5 | no | no |
+| control | 6 | no | no |
+| control | 7 | no | no |
+| control | 8 | no | no |
+| control | 9 | no | no |
+| control | 10 | no | no |
+
+No attempt needed a retry — there was no refusal for a retry to answer. `git status --porcelain` after
+the full sweep confirmed all three targets clean (byte-identical to their anchor content), matching the
+measurement's own design (each cycle returns the file to the state the next cycle's identical calls
+depend on).
+
+**What this does and does not establish.** It does not contradict disclosures 754.1 and 777.6 — both
+are dated occurrences from different sessions and, per this file's own repeated finding (Entry 1's
+2026-09-22 re-measurement, Entry 2's refusal-wording drift table), this class of guard is known to
+drift across harness versions and even across commands within one version. This row's zero-for-30
+is one more dated data point, not a claim that the classifier can never refuse a `.claude/**` Edit. What
+it DOES establish is the answer the packaged brief needed: per the acceptance criterion this
+measurement was run to satisfy, a null result keeps the falsification clause's STOP `blocked` on an
+unresolvable `.claude/**` restore exactly as it stood, rather than inventing a bounded-retry allowance
+with no measured floor to bound it against. A future occurrence that DOES measure a refusal followed by
+a successful identical retry is what would earn the clause a bounded retry (the bound being that
+measurement's own observed maximum plus one, capped at 5) in place of the immediate STOP.
+
+**Occurrence:** issue #994's own Worker dispatch, 2026-09-25.

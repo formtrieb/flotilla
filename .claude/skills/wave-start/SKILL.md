@@ -262,7 +262,7 @@ Some waves land each round's PRs and re-anchor before dispatching the next, rath
 Run this sequence once a round's PRs are merged, **before** composing the next round:
 
 1. Land the round's PRs.
-2. Bring the local default branch to the remote tip (`git pull`, or `fetch` + `reset --hard`).
+2. Bring the local default branch to the remote tip: `git -C "$REPO" fetch origin`, then `git -C "$REPO" merge --ff-only origin/<default-branch>` — never `git pull` alone. When the landed change touches sandbox-protected paths (`.claude/**`), run this step outside the sandbox: a merge that has to write such a path can HALF-APPLY under the harness write-deny and still exit 0. Either way, confirm HEAD actually moved — `git -C "$REPO" rev-parse HEAD` must equal `git -C "$REPO" rev-parse origin/<default-branch>` — rather than trusting the exit code alone. Full invocations: [reference/start-mechanics.md](reference/start-mechanics.md) §Between rounds.
 3. **`{{wave-cli}} close-row --spine <spine> --id <id>` for every row that landed this round — before the next round's compose.** This is the only step that writes `(landed)`.
 4. The probe sweep (step 7, item 4), if it has not already run after the round's last tuple.
 5. Worktree and branch cleanup for the landed rows (`{{wave-cli}} worktree-cleanup --branches <branch>`, step 7c's scoped form, per row). Their review refs stay untouched here — a live wave's `refs/review/<id>` / `refs/review/base/<id>` are spared until the whole wave is terminal, and are swept at `wave-close` (phase 3).
