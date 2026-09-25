@@ -96,7 +96,7 @@ The last three rows are the **Operator-ruled round**: the documented Reviewer-on
 
 ## The PR title/body reuse rule — why it is worth a paragraph
 
-Before the reuse rule (`route-tuple`'s title/body handling on a PR reuse), one change carried THREE titles — the Worker's commit subject and the title it opened the PR with, the row title the terminator wrote over it on reuse, and the Worker's again on the squash commit that landed (a single-commit PR takes its subject from the commit). Preserving the live title collapses all three back into one.
+Before the reuse rule (`route-tuple`'s title/body handling on a PR reuse), one change carried THREE titles — the Worker's commit subject and the title it opened the PR with, the row title the terminator wrote over it on reuse, and the Worker's again on the squash commit that landed (under the host's own default squash message, before ADR-0053, a single-commit PR took its subject from the commit). Preserving the live title collapses all three back into one.
 
 ## Step 7d — why the probe sweep reads the iteration (issue #974)
 

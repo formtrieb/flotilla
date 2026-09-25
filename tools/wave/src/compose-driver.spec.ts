@@ -505,6 +505,10 @@ describe('compose-driver — a composed driver runs under the Workflow-tool cont
     expect(brief).toContain('Do the thing.');
     expect(brief).toContain(CONSTANTS.waveCli);
     expect(brief).not.toContain('undefined');
+    // The anchor is per ROUND, never per wave (glossary Anchor, Avoid: "wave
+    // anchor" — issue #981), and the Worker brief now agrees with the
+    // Reviewer brief's own such pin below.
+    expect(brief).not.toMatch(/wave[ -]anchor/i);
   });
 
   it('the Reviewer brief carries the anchor, the named ref, the sibling denominator and the Worker digest', async () => {
@@ -1245,7 +1249,7 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
   const REFUSAL_BLOCKED = /STOP and report `blocked`, naming the residual paths/;
   const RETRY_NOT_REDISPATCH = /A harness\s+retry is NOT a re-dispatch:/;
   const RETRY_REANCHORS =
-    /a retried FIRST iteration re-anchors to the wave anchor SHA exactly as a\s+first attempt does/;
+    /a retried FIRST iteration re-anchors to the round's anchor SHA exactly as a\s+first attempt does/;
 
   // ── issue #744: the two allowlist rulings the refused-reset remedy rests on ──
   //
@@ -1408,7 +1412,8 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
 
     // Iteration ≥ 2: the opposite instruction, unchanged by this row, and none
     // of the iteration-1 clauses leaked into it.
-    expect(redispatch).toMatch(/do not re-anchor to\s+the wave anchor SHA and branch fresh/);
+    expect(redispatch).toMatch(/do not re-anchor to\s+the round's anchor SHA and branch fresh/);
+    expect(redispatch).not.toMatch(/wave[ -]anchor/i);
     expect(redispatch).not.toContain(WIP_HEADLINE);
     expect(redispatch).not.toContain(REFUSAL_HEADLINE);
     expect(redispatch).not.toMatch(RETRY_REANCHORS);
