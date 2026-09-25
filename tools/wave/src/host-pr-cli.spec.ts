@@ -11,8 +11,9 @@
  *      host-pr.spec.ts's job; the request shaping is real-github-api.spec.ts's
  *      and bitbucket-api.spec.ts's.
  *
- * Every test injects a LandingHost (or, for the Bitbucket end-to-end block, a
- * real `RealBitbucketApi` over a fixture HTTP seam), so neither adapter factory
+ * Every test injects a LandingHost (or, for the Bitbucket end-to-end block and
+ * the GitHub re-arm-refresh failure edge, a real `RealBitbucketApi` /
+ * `RealGitHubApi` over a fixture HTTP seam), so neither adapter factory
  * — and therefore no credential resolution and no network — is ever reached
  * except where a test is specifically about that failure.
  *
@@ -48,6 +49,8 @@ import {
   type BitbucketHttpRequest,
   type BitbucketHttpResponse,
 } from './adapters/bitbucket/bitbucket-api';
+import { RealGitHubApi } from './adapters/github/real-github-api';
+import { FakeGitHubHttp } from './adapters/github/github-http-fake';
 
 const GITHUB_REMOTE = 'git@github.com:example-org/example-repo.git';
 const BITBUCKET_REMOTE = 'git@bitbucket.org:example-team/example-repo.git';
@@ -669,6 +672,128 @@ describe('host-pr arm | merge --commit-message (ADR-0053)', () => {
       commitMessage: 'pr',
       landingMessage: { title: 'Land the Bitbucket fix (pull request #7)', bodyBytes: 20 },
     });
+  });
+
+  it('every help statement of what lands under `pr` names both exceptions: a merge queue, and a rebase landing', async () => {
+    // Wording only — nothing detects a merge queue at runtime — so the text is
+    // the whole of the fix, and this pins it where a caller reads it: each
+    // landing verb's own contract and the full multi-verb dump.
+    const sections: [string, string[]][] = [];
+    for (const verb of ['arm', 'merge'] as const) {
+      stderr = '';
+      await runHostPr([verb, '--remote', GITHUB_REMOTE]); // missing --branch → that verb's own contract
+      sections.push([verb, stderr.split('\n')]);
+    }
+    stderr = '';
+    await runHostPr([]);
+    sections.push(['full dump', stderr.split('\n')]);
+
+    for (const [name, lines] of sections) {
+      const text = lines.join('\n');
+      expect(text, name).toMatch(/merge queue composes its own commit/);
+      expect(text, name).toMatch(/--method rebase/);
+      expect(text, name).toMatch(/no single message/);
+    }
+    // `arm` qualifies "frozen" the same way, on the `landingMessage` line it prints.
+    const armLines = sections[0][1];
+    const frozenAt = armLines.findIndex((l) => l.includes('frozen on `armed`'));
+    expect(frozenAt).toBeGreaterThan(-1);
+    expect(armLines.slice(frozenAt, frozenAt + 2).join(' ')).toMatch(/not under a merge queue or --method rebase/);
+  });
+});
+
+// ─── ADR-0053 — the re-arm refresh's one failure edge, end to end ────────────
+//
+// Arming an already-armed PR with a new message DISABLES its auto-merge and
+// then re-enables it. If the re-enable fails for an untyped reason, the PR is
+// left UNARMED — not in the state the operator armed. Driven here through the
+// real `RealGitHubApi` over a STATEFUL fake GitHub, so both halves are observed
+// rather than asserted of a double: the error text AND the host's own state,
+// then the re-run the error tells the operator to make.
+
+describe('host-pr arm — a refresh whose re-enable fails leaves the PR unarmed, says so, and a re-run restores it (ADR-0053)', () => {
+  type AutoMerge = { merge_method: string; commit_title: string; commit_message: string } | null;
+
+  /**
+   * A stateful fake GitHub: PR #42 on branch `b`, open and `blocked` (so `arm`
+   * arms rather than merges), titled and bodied, holding whatever `auto_merge`
+   * the mutations leave on it. `disable` clears it; `enable` sets it from its
+   * own variables — or, while `failEnables` is above zero, answers 502 and
+   * changes nothing.
+   */
+  function statefulGitHub(autoMerge: AutoMerge, failEnables: number) {
+    const state = { autoMerge, failEnables };
+    const ops: string[] = [];
+    const http = new FakeGitHubHttp((req) => {
+      if (req.url.includes('/pulls?head=')) {
+        return { status: 200, json: [{ number: 42, state: 'open', html_url: 'https://github.com/example-org/example-repo/pull/42' }] };
+      }
+      if (req.method === 'GET' && req.url.endsWith('/pulls/42')) {
+        return {
+          status: 200,
+          json: {
+            number: 42,
+            node_id: 'PR_42',
+            mergeable_state: 'blocked',
+            title: 'Land the widget fix',
+            body: 'The reviewed record.',
+            auto_merge: state.autoMerge,
+          },
+        };
+      }
+      if (req.url.endsWith('/graphql')) {
+        const { query, variables } = JSON.parse(req.body!) as { query: string; variables: Record<string, string> };
+        if (/disablePullRequestAutoMerge/.test(query)) {
+          ops.push('disable');
+          state.autoMerge = null;
+          return { status: 200, json: { data: { disablePullRequestAutoMerge: { pullRequest: { number: 42 } } } } };
+        }
+        ops.push('enable');
+        if (state.failEnables > 0) {
+          state.failEnables -= 1;
+          return { status: 502, json: { message: 'Bad Gateway' } };
+        }
+        state.autoMerge = {
+          merge_method: variables.mergeMethod.toLowerCase(),
+          commit_title: variables.commitHeadline,
+          commit_message: variables.commitBody,
+        };
+        return { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } };
+      }
+      throw new Error(`unexpected request: ${req.method} ${req.url}`);
+    });
+    return { api: new RealGitHubApi('example-org', 'example-repo', 'tok-fixture', http), state, ops };
+  }
+
+  it('run 1: disable succeeds, re-enable fails → exit 1 naming the disable, the unarmed PR and the remedy; run 2 (the re-run) re-arms it', async () => {
+    const gh = statefulGitHub({ merge_method: 'squash', commit_title: 'An older title (#42)', commit_message: 'An older body.' }, 1);
+
+    const first = await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], gh.api);
+    expect(first).toBe(1);
+    const failed = out();
+    expect(failed).toMatchObject({ ok: false, verb: 'arm', host: 'github', branch: 'b' });
+    expect(failed.error).toMatch(/DISABLED its auto-merge/);
+    expect(failed.error).toMatch(/PR #42 is now UNARMED/);
+    expect(failed.error).toMatch(/Re-running `host-pr arm` restores it/);
+    expect(failed.error).toMatch(/Bad Gateway/);
+    expect(stderr).toMatch(/PR #42 is now UNARMED/);
+    // …and the claim is TRUE of the host, not only printed: nothing is armed.
+    expect(gh.state.autoMerge).toBeNull();
+    expect(gh.ops).toEqual(['disable', 'enable']);
+
+    // Run 2 — exactly the re-run the error names.
+    stdout = '';
+    stderr = '';
+    const second = await runHostPr(['arm', '--branch', 'b', '--remote', GITHUB_REMOTE], gh.api);
+    expect(second).toBe(0);
+    expect(out()).toMatchObject({ ok: true, outcome: 'armed', landingMessage: { title: 'Land the widget fix (#42)' } });
+    expect(gh.state.autoMerge).toEqual({
+      merge_method: 'squash',
+      commit_title: 'Land the widget fix (#42)',
+      commit_message: 'The reviewed record.',
+    });
+    // The re-run found nothing armed, so it took the first-arm path: no second disable.
+    expect(gh.ops).toEqual(['disable', 'enable', 'enable']);
   });
 });
 

@@ -38,7 +38,7 @@ Read two checks:
 # → { ok, verb: "arm", host, branch, method: "squash", commitMessage, outcome, prNumber?, prUrl?, reason, branchDeletion?, landingMessage? }
 ```
 
-Under `pr` the title and body are **frozen at arming**: `landingMessage` shows what will land. A PR edited after arming lands its old text unless you arm it again.
+Under `pr` the title and body are **frozen at arming**: `landingMessage` shows what will land — except under a merge queue or `--method rebase`, where it shows only what was handed over ([close-mechanics.md](close-mechanics.md#--commit-message-resolution-adr-0053)). A PR edited after arming lands its old text unless you arm it again.
 
 `host-pr arm` itself decides the mechanism per PR — **checks pending → enable auto-merge** (GraphQL); **already clean → direct merge now** (REST). Read the `outcome`, and — with `--delete-branch` — what to expect of the branch per outcome:
 

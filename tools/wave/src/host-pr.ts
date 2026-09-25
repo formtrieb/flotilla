@@ -899,6 +899,10 @@ export const DEFAULT_MERGE_METHOD: MergeMethod = 'squash';
  *
  *   - `pr`   — flotilla authors it: the PR's own title with the host's number
  *              suffix, and the PR's own body verbatim ({@link LandingMessage}).
+ *              Two exceptions, named rather than detected (ADR-0053, dated note
+ *              2026-09-25): a merge queue composes its own commit and ignores
+ *              the message, and a `rebase` landing replays the branch commits,
+ *              so there is no single message to shape.
  *   - `host` — flotilla sends no title and no body at all, so the repository's
  *              own squash/merge setting composes the message, exactly as every
  *              landing did before ADR-0053. The escape hatch for a consumer
@@ -941,6 +945,12 @@ export interface LandingMessage {
  * decision 3: an edit to the PR after arming lands only if `arm` runs again);
  * on `merged` it is the message that landed; on a `refused` outcome that
  * follows a landing write, it is what was offered and not taken.
+ *
+ * "Frozen" and "landed" both hold only where the host USES the message. Under
+ * a merge queue the queue composes its own commit and ignores it, and under
+ * `rebase` the branch commits are replayed with no single message to shape —
+ * in both, this still reports what was HANDED OVER, which is not what lands.
+ * Neither case is detected (ADR-0053, dated note 2026-09-25).
  */
 export interface LandingMessageReport {
   title: string;
@@ -1090,7 +1100,10 @@ export interface LandingHost {
    * edit to the PR after the first arm reaches the default branch, so a re-arm
    * is a refresh, never a no-op that keeps the older frozen text. How to get
    * there (the host accepts a re-arm as a refresh, or needs a disable and a
-   * re-enable) is the adapter's to establish for its host. When absent, send no
+   * re-enable) is the adapter's to establish for its host. A refresh that can
+   * fail half-way must say so when it does: an error thrown after the PR was
+   * disarmed names that state and the re-run that restores it (the GitHub
+   * adapter's disable-then-enable does). When absent, send no
    * title and no body: the host composes the message from its own settings.
    *
    * Optional and trailing, so an implementation written before it existed
@@ -1687,7 +1700,11 @@ export type LandingOutcome =
       prNumber: number;
       prUrl?: string;
       reason: string;
-      /** The message the host has now FROZEN for this PR (ADR-0053 decision 3); same presence rule as on `merged`. */
+      /**
+       * The message the host has now FROZEN for this PR (ADR-0053 decision 3)
+       * — except under a merge queue or `rebase`, where it is only what was
+       * handed over ({@link LandingMessageReport}). Same presence rule as on `merged`.
+       */
       landingMessage?: LandingMessageReport;
     }
   | { outcome: 'already-merged'; prNumber?: number; prUrl?: string; reason: string }
@@ -2188,7 +2205,8 @@ function notAllowedPendingReason(host: Host | undefined, errMessage: string): st
  * host; arming again after the PR was edited hands over the edited text, and
  * the adapter's {@link LandingHost.enableAutoMerge} contract makes that second
  * arm a refresh. Every outcome that follows such a write reports it
- * ({@link LandingMessageReport}).
+ * ({@link LandingMessageReport}) — under a merge queue or `rebase`, as what
+ * was handed over rather than what lands (see {@link CommitMessageSource}).
  */
 export async function armPullRequest(
   host: LandingHost,
@@ -2423,7 +2441,9 @@ export interface MergeOptions {
  *
  * Landing message (ADR-0053): the merge carries the PR's own title (plus the
  * host's number suffix) and body, read from the status THIS call takes the
- * moment before it merges — unless `opts.commitMessage` is `host`.
+ * moment before it merges — unless `opts.commitMessage` is `host`. Under a
+ * merge queue or `rebase` it is handed over and shapes nothing (see
+ * {@link CommitMessageSource}).
  */
 export async function mergePullRequestNow(
   host: LandingHost,

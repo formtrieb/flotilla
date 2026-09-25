@@ -981,21 +981,23 @@ function validateModels(value: unknown, block = 'models'): void {
 /**
  * The `landing` block of a wave config (ADR-0053 decision 4).
  *
- * MODULE-LOCAL, not root-exported, and that is a placement fact rather than a
- * design one — the same constraint `store.goal` shipped under before it was
- * promoted: a new exported symbol here fails `barrel-drift.spec.ts` unless
- * `index.ts` moves in the same diff, and neither was in the declaring row's
- * Files globs. A root-only consumer names the shape as
- * `NonNullable<WaveConfig['landing']>` until a row that owns the barrel
- * promotes it. The key-set conformance test in `wave-config.spec.ts` reads
- * this declaration by name either way.
+ * Root-exported as a TYPE, the way `ModelsConfig` and `CleanupConfig` are: a
+ * root-only consumer that reads or authors `config.landing` names the shape
+ * directly instead of as `NonNullable<WaveConfig['landing']>`. It shipped
+ * module-local first for a placement reason only — the declaring row owned
+ * neither `index.ts` nor `barrel-drift.spec.ts`. A type is erased, so the
+ * promotion moves no runtime name (`index.spec.ts` pins both halves). The
+ * key-set conformance test in `wave-config.spec.ts` reads this declaration by
+ * name, exported or not.
  */
-interface LandingConfig {
+export interface LandingConfig {
   /**
    * `pr` — the landing verb authors the message from the PR's own title (plus
-   * the host's number suffix) and body, on any commit count. `host` — it sends
-   * none, and the repository's own squash setting composes it. Absent means
-   * `pr`.
+   * the host's number suffix) and body, on any commit count — except under a
+   * merge queue, which composes its own commit and ignores the message, and a
+   * `rebase` landing, which replays the branch commits with no single message
+   * to shape. `host` — it sends none, and the repository's own squash setting
+   * composes it. Absent means `pr`.
    */
   commitMessage?: CommitMessageSource;
 }
@@ -1016,10 +1018,14 @@ const LANDING_ALLOWED = (Object.keys(LANDING_COMMIT_MESSAGE_VALUES) as CommitMes
   .map((v) => JSON.stringify(v))
   .join(' or ');
 
-/** What each allowed value means, spelled out for the author of a refused config. */
+/**
+ * What each allowed value means, spelled out for the author of a refused
+ * config — `pr`'s two exceptions included, so the refusal does not promise
+ * more than the landing delivers.
+ */
 const LANDING_MEANING =
   '"pr" lands the PR\'s own title and body, "host" cedes the message to the repository\'s own ' +
-  'squash setting; omit the key for "pr" (ADR-0053)';
+  'squash setting; omit the key for "pr" (ADR-0053: under a merge queue or a rebase landing, "pr" shapes nothing)';
 
 /**
  * Validate a `landing` block.
