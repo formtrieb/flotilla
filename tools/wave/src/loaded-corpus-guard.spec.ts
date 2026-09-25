@@ -407,7 +407,42 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that has the Reviewer read a
+ * Why this number: **RAISED by the row that makes a stamped probe live only
+ * while its row runs at the probe's own iteration, and makes the Reviewer's
+ * stamp instruction unambiguous** (issue #974, ADR-0042 Correction
+ * 2026-09-25), in the diff that causes the growth. The liveness rule and the
+ * stamp sentence both live in copies a Coordinator or a Reviewer acts on as it
+ * reads them: wave-close's phase-3 reference restates `removed`/`live-row` for
+ * the corrected rule and names `probes` in its result-key paragraph (+342 B);
+ * wave-start's mechanics reference rewrites step 7d's rule and its WHY
+ * (+283 B), and its `SKILL.md` step-7 items name the sweep before the
+ * re-compose and state the corrected rule (+98 B); wave-resume's mechanics
+ * reference names `probes` in the result shape it lists (+180 B); the
+ * Reviewer's agent definition (+149 B), the reviewer skill's `SKILL.md`
+ * (+115 B) and the wave-setup permission scaffold's probe bullet (+77 B) say
+ * the path handed to `git worktree add` must itself end in the stamp. The live
+ * reads behind it — the Reviewer's copy-of-the-spine removal and the wave's
+ * four sweep readings — went to the `wave-start` and `wave-close` `evidence/`
+ * siblings, which this population excludes by definition. The driver asset
+ * (`tools/wave/driver/wave-start-inflight.js`), `CONTEXT.md` and the ADR are
+ * not `.md` files under `.claude/skills` or `.claude/agents`, so none of their
+ * bytes are priced here.
+ *
+ * At this row's anchor commit `32910da481715c6721d61ba5098dc85b20b58551` the
+ * population measured **1,250,159 B** over 57 files — 841 B under the previous
+ * 1,251,000 B ceiling. This row's edit lands it at **1,251,403 B** over the
+ * same 57 files, +1,244 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,252,000 B**. The 597 B of headroom that
+ * leaves is a fact about the rounding rule, not a budget. The shared standing
+ * load is NOT touched: none of the seven files is a member of that population
+ * (only `wave-shared/SKILL.md` plus `wave-shared/reference/*.md` are).
+ *
+ * Previously: 1,251,000 B — **RAISED by the row that has the Reviewer read a
+ * `git merge-tree` result by its exit status instead of by conflict markers on
+ * stdout** (issue #975), whose reasoning is kept below (in ITS voice, so "this
+ * row" there means that row).
+ *
+ * Why that number: **RAISED by the row that has the Reviewer read a
  * `git merge-tree` result by its exit status instead of by conflict markers on
  * stdout** (issue #975), in the diff that causes the growth. The two-argument
  * form never prints the markers — they go into the tree it writes — so every
@@ -812,7 +847,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 163_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_251_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_252_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

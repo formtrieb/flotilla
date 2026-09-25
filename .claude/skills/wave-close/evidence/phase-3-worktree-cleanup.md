@@ -86,3 +86,9 @@ git worktree remove <path>                             # per confirmed-clean lef
 ```
 
 That manual loop is retired — `--detached` now reaches the same population through the engine's own safety invariants (dirty / locked / live-branch refusals) rather than a human eyeballing `git worktree list --porcelain` and deciding by hand what looks safe.
+
+## Probe liveness: the `reviewing` state the spine never writes (issue #974)
+
+The `probes` population first shipped with `live-row` meaning "the row reads `reviewing`". Nothing on the dispatch path writes that state — rows read `dispatched`, then `re-dispatched` or `pr-created` — so in wave `2026-09-23-sibling-truth-and-landing-message` a Reviewer, running `worktree-cleanup --probes-only` against a copy of the live spine, watched it select and remove a clean probe carrying its own running stamp. A close is unaffected either way (every row is terminal there, so every clean probe of the wave goes), which is why phase 3 never showed the defect; the routing call is where it bit. ADR-0042's Correction 2026-09-25 moved `live-row` to "a running state (`dispatched`, `re-dispatched`, `reviewing`) at the stamp's own iteration", with a non-numeric `Iter` cell failing closed.
+
+The same wave also measured the stamp's spelling: a probe made at `<stamp>/probe` — the stamp as a parent directory — is not a member of the population, because the sweep matches the registered checkout's own basename, and outside every root it lands in `unaccounted` instead.

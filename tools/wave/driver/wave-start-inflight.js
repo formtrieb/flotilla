@@ -1159,10 +1159,12 @@ outcome-exercising evidence — the Worker's falsification, or your own probe.
 **Your probe checkout, if you make one, lives OUTSIDE the repository and carries its stamp.** The
 probe licence (agent contract Check 3) lets you exercise an outcome in a detached checkout of your
 own: put it under a temp root, never inside this repository — the harness denies agent-configuration
-files at any depth of an in-repo checkout — and name its directory exactly \`${probeStamp}\`. That
-stamp is how the Coordinator's sweep collects it once this row leaves review (ADR-0042 Amendment
-2026-09-23). You never remove it yourself: no dispatched role holds \`git worktree remove\`, and
-leaving it standing is the contract, not an oversight.
+files at any depth of an in-repo checkout — and the path you hand to \`git worktree add\` must itself
+end in \`${probeStamp}\`: the stamp is the checkout directory's own basename, never a parent directory
+(the sweep matches the registered checkout's basename, so \`<stamp>/probe\` is never collected). That
+stamp is how the Coordinator's sweep collects it once this row stops running at this iteration
+(ADR-0042 Amendment 2026-09-23, Correction 2026-09-25). You never remove it yourself: no dispatched
+role holds \`git worktree remove\`, and leaving it standing is the contract, not an oversight.
 
 **YOU NEVER ESCALATE YOUR OWN PERMISSIONS EITHER, AND YOU RUN AT MOST THE WORKER'S RIGHTS (ADR-0049).**
 The no-escalation rule binds every dispatched role, not just the Worker: you may not disable the

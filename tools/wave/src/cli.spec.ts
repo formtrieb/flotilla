@@ -9319,9 +9319,14 @@ describe('worktree-cleanup — stamped Reviewer probe checkouts under `probes` (
   /**
    * A real repo at `<root>/main`, a directory OUTSIDE it at `<root>/probes`
    * (where a Reviewer's probe has to live), and a spine at
-   * `<root>/main/.flotilla/waves/<SLUG>.md` whose row 961 is in `state`.
+   * `<root>/main/.flotilla/waves/<SLUG>.md` whose row 961 is in `state` at
+   * `Iter` `iter` (issue #974: liveness reads both cells).
    */
-  function makeWave(label: string, state: string): { mainRoot: string; outside: string; spine: string } {
+  function makeWave(
+    label: string,
+    state: string,
+    iter: string = '1',
+  ): { mainRoot: string; outside: string; spine: string } {
     const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-cli-961-${label}-`)));
     tempRoots.push(root);
     const mainRoot = join(root, 'main');
@@ -9351,7 +9356,7 @@ describe('worktree-cleanup — stamped Reviewer probe checkouts under `probes` (
         '',
         '| ID | Title | Worker | Risk | Reviewer | PR | State | Iter | Reports → Verdicts |',
         '|---|---|---|---|---|---|---|---|---|',
-        `| 961 | Probe sweep | background | public-API-change | universal | — | ${state} | 1 | — |`,
+        `| 961 | Probe sweep | background | public-API-change | universal | — | ${state} | ${iter} | — |`,
         '',
         '## Resume-Metadata',
         '',
@@ -9437,6 +9442,46 @@ describe('worktree-cleanup — stamped Reviewer probe checkouts under `probes` (
     expect(existsSync(probe)).toBe(true);
     // Named under `probes`, so NOT also unaccounted.
     expect(run.unaccounted?.entries).toEqual([]);
+  });
+
+  // The live read that falsified the first rule (issue #974): against a copy of
+  // the running wave's spine, a Reviewer's `--probes-only` call removed a clean
+  // probe carrying its own running stamp, because the row read `dispatched` —
+  // the spine never records `reviewing`. The REAL spine reader, the REAL router.
+  it("`--probes-only` spares a probe whose row reads `dispatched` at the stamp's iteration — 'live-row', survives, exit 0", () => {
+    const { mainRoot, outside, spine } = makeWave('dispatched', 'dispatched');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    expect(main(['worktree-cleanup', '--probes-only', '--spine', spine, mainRoot])).toBe(0);
+    const run = parse();
+    expect(run.probes.removed).toEqual([]);
+    expect(run.probes.skipped.map((w) => [w.path, w.reason])).toEqual([[probe, 'live-row']]);
+    expect(existsSync(probe)).toBe(true);
+    expect(stillRegistered(mainRoot, probe)).toBe(true);
+  });
+
+  it('`--probes-only` on a row re-dispatched to Iter 2 removes the `i1` probe and spares the `i2` probe live-row', () => {
+    const { mainRoot, outside, spine } = makeWave('redispatched', 're-dispatched', '2');
+    const i1 = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+    const i2 = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i2`);
+
+    expect(main(['worktree-cleanup', '--probes-only', '--spine', spine, mainRoot])).toBe(0);
+    const run = parse();
+    expect((run.probes.removed ?? []).map((w) => w.path)).toEqual([i1]);
+    expect(run.probes.skipped.map((w) => [w.path, w.reason])).toEqual([[i2, 'live-row']]);
+    expect(existsSync(i1)).toBe(false);
+    expect(existsSync(i2)).toBe(true);
+  });
+
+  it("a spine row whose Iter cell is not a number fails closed through the real reader — 'live-row', never removed", () => {
+    const { mainRoot, outside, spine } = makeWave('iter-text', 'pr-created', '—');
+    const probe = plantDetached(mainRoot, outside, `flotilla-probe-${SLUG}-961-i1`);
+
+    expect(main(['worktree-cleanup', '--probes-only', '--spine', spine, mainRoot])).toBe(0);
+    const run = parse();
+    expect(run.probes.removed).toEqual([]);
+    expect(run.probes.skipped.map((w) => [w.path, w.reason])).toEqual([[probe, 'live-row']]);
+    expect(existsSync(probe)).toBe(true);
   });
 
   it("without --spine every probe is 'unknown-wave' — named, never removed, and not unaccounted", () => {

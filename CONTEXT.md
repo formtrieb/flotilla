@@ -239,7 +239,7 @@ A directory the **Sweep** may reason about: only a worktree *strictly inside* on
 _Avoid_: allowlist (it gates candidacy, not permission), root (unqualified).
 
 **Probe checkout**:
-The detached checkout a **Reviewer** makes outside the repository to exercise a row's outcome — outside by necessity, since the harness denies agent-configuration files at any depth of an in-repo checkout — named with the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>`. It belongs to exactly one row and is live only while that row is under review; the **Coordinator** collects it through the **Sweep** when it routes the verdict, recognised by the stamp rather than by a **Containment root** — the Reviewer never removes it (ADR-0042 Amendment 2026-09-23).
+The detached checkout a **Reviewer** makes outside the repository to exercise a row's outcome — outside by necessity, since the harness denies agent-configuration files at any depth of an in-repo checkout — named with the stamp `flotilla-probe-<wave-slug>-<row-id>-i<iteration>`, which is the checkout directory's own basename, never a parent of it. It belongs to exactly one row and one iteration, and is live only while that row reads a running state (`dispatched`, `re-dispatched`, `reviewing`) at that iteration; the **Coordinator** collects it through the **Sweep** when it routes the verdict, recognised by the stamp rather than by a **Containment root** — the Reviewer never removes it (ADR-0042 Amendment 2026-09-23, Correction 2026-09-25).
 _Avoid_: scratch worktree, scratchpad checkout (both name where it once sat, not what it is).
 
 **Transient / Exhausted (removal reading)**:

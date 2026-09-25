@@ -4405,7 +4405,13 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
     const brief = await reviewerBriefFor(spinePath, configPath, storeIds, 'B');
     const stamp = `flotilla-probe-${SLUG}-${storeIds.get('B') as string}-i1`;
-    expect(brief).toContain(`name its directory exactly \`${stamp}\``);
+    // The stamp is the checkout's OWN basename, never a parent (issue #974):
+    // the path handed to `git worktree add` must itself end in it.
+    expect(brief.replace(/\s+/g, ' ')).toContain(
+      `the path you hand to \`git worktree add\` must itself end in \`${stamp}\``,
+    );
+    expect(brief).toMatch(/own basename, never a parent directory/);
+    expect(brief).not.toContain('name its directory exactly');
     expect(brief).toMatch(/lives OUTSIDE the repository/);
     expect(brief).toMatch(/You never remove it yourself/);
     // Nothing unresolved reached the stamp.
