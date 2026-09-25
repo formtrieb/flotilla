@@ -974,33 +974,41 @@ function prIdentity(pr: Record<string, unknown>): { number?: number; url?: strin
  *
  * Read off the SAME list entry `prIdentity`/`prRefs` read: no request of its own.
  *
- * **Two accepted spellings for the body, and the reason is a documented
- * discrepancy, not defensive guessing** (Atlassian's own OpenAPI document,
- * `dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json`, read 2026-09-16):
+ * **Three accepted spellings for the body, tried in this order**
+ * (Atlassian's own OpenAPI document, `dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json`,
+ * read 2026-09-16):
  *
  *   - `description` — a plain string. It is NOT among the `pullrequest` schema's
- *     listed `properties`, yet the create endpoint documents it in prose against
- *     that very schema ("Other fields: `description` - a string"), and it is the
- *     field `host-pr create` already writes and `findOpenPr` already reads back.
- *     So the vendor's schema is incomplete here, not authoritative — the inverse
- *     of the caution `docs/CAPABILITIES.md` records about permissive schemas.
- *   - `summary.raw` — the shape the schema DOES list: `{ raw, markup, html }`,
+ *     listed response `properties` anywhere this engine has found — Atlassian
+ *     does not document it as a response field. It wins anyway, because it is
+ *     the field this engine writes itself (`createBody`'s POST body, in
+ *     `host-pr create`) and reads back itself (`bbRef`, off the very same
+ *     find-before-create query `findOpenPr` runs) — a fact this engine has
+ *     observed of its own request/response cycle, not a vendor guarantee.
+ *   - `summary.raw` — a shape the schema DOES list: `{ raw, markup, html }`,
  *     where `raw` is documented as "The text as it was typed by a user", i.e.
  *     the same authored text before rendering.
+ *   - `rendered.description.raw` — also schema-listed, under
+ *     `rendered: { title, description: { raw, markup, html } }`: the rendered
+ *     counterpart's own `raw`, i.e. the same pre-render text again.
  *
- * `description` wins when both are present, because it is the field this engine
- * writes; `summary.raw` is the fallback that keeps the read working against the
- * documented representation. Neither present → absent, which the verb treats as
- * "this host did not surface a body", never as a failure.
+ * `description` wins when more than one is present, because it is the field
+ * this engine's own write and read already agree on; `summary.raw` is the
+ * next fallback, then `rendered.description.raw` — both schema-listed
+ * representations of the same authored text. None present → absent, which
+ * the verb treats as "this host did not surface a body", never as a failure.
  */
 function prContent(pr: Record<string, unknown>): { title?: string; body?: string } {
   const title = pr.title;
   const summary = pr.summary as Record<string, unknown> | undefined;
-  const raw = summary?.raw;
-  const body = typeof pr.description === 'string' ? pr.description : raw;
+  const rendered = pr.rendered as Record<string, unknown> | undefined;
+  const renderedDescription = rendered?.description as Record<string, unknown> | undefined;
+  const nonEmpty = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.length > 0 ? v : undefined;
+  const body = nonEmpty(pr.description) ?? nonEmpty(summary?.raw) ?? nonEmpty(renderedDescription?.raw);
   return {
     ...(typeof title === 'string' && title.length > 0 ? { title } : {}),
-    ...(typeof body === 'string' && body.length > 0 ? { body } : {}),
+    ...(body !== undefined ? { body } : {}),
   };
 }
 

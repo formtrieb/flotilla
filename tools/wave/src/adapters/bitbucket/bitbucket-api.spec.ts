@@ -256,13 +256,16 @@ describe('RealBitbucketApi.getPrStatus', () => {
   //
   // Bitbucket's body spelling was settled against Atlassian's own OpenAPI
   // document (dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json, read
-  // 2026-09-16), which disagrees with itself: the `pullrequest` schema's
-  // `properties` do NOT list `description`, yet the create endpoint's prose
-  // documents it against that same schema ("Other fields: `description` - a
-  // string"), and `summary: { raw, markup, html }` IS listed, with `raw`
-  // documented as "The text as it was typed by a user". Both spellings are
-  // therefore accepted, `description` first — it is the one `host-pr create`
-  // writes and `findOpenPr` reads back.
+  // 2026-09-16): the `pullrequest` schema's response `properties` do NOT list
+  // `description` anywhere this engine has found, yet it is the one
+  // `host-pr create` writes (`createBody`'s POST body) and `findOpenPr`
+  // reads back (`bbRef`, off the very same find-before-create query) — a
+  // fact this engine has observed of its own request/response cycle, not a
+  // vendor-documented response field. `summary: { raw, markup, html }` and
+  // `rendered: { title, description: { raw, markup, html } }` ARE listed,
+  // with `raw` in each documented as "The text as it was typed by a user".
+  // All three spellings are therefore accepted, in this order: `description`,
+  // then `summary.raw`, then `rendered.description.raw`.
 
   it('an OPEN PR surfaces title + body (description) off the list response — no extra request', async () => {
     const { http, calls } = fakeHttp([
@@ -304,6 +307,43 @@ describe('RealBitbucketApi.getPrStatus', () => {
     expect((await api(http).getPrStatus('b')).body).toBe('authoritative');
   });
 
+  it('falls back to the schema-listed `rendered.description.raw` when neither description nor summary.raw is sent', async () => {
+    const { http } = fakeHttp([
+      [
+        urlHas('/pullrequests'),
+        page([
+          openPr({
+            title: 'T',
+            rendered: { description: { raw: 'rendered pre-render text', markup: 'markdown', html: '<p/>' } },
+          }),
+        ]),
+      ],
+      NO_RESTRICTIONS,
+    ]);
+    expect((await api(http).getPrStatus('b')).body).toBe('rendered pre-render text');
+  });
+
+  it('pins the full fallback order: description > summary.raw > rendered.description.raw', async () => {
+    const allThree = {
+      description: 'top wins',
+      summary: { raw: 'middle' },
+      rendered: { description: { raw: 'last' } },
+    };
+    {
+      const { http } = fakeHttp([[urlHas('/pullrequests'), page([openPr(allThree)])], NO_RESTRICTIONS]);
+      expect((await api(http).getPrStatus('b')).body).toBe('top wins');
+    }
+    // With `description` absent, `summary.raw` outranks `rendered.description.raw`.
+    {
+      const { description: _omit, ...summaryAndRendered } = allThree;
+      const { http } = fakeHttp([
+        [urlHas('/pullrequests'), page([openPr(summaryAndRendered)])],
+        NO_RESTRICTIONS,
+      ]);
+      expect((await api(http).getPrStatus('b')).body).toBe('middle');
+    }
+  });
+
   it('a MERGED PR surfaces them too, off the same single list read', async () => {
     const { http, calls } = fakeHttp([
       [
@@ -329,8 +369,15 @@ describe('RealBitbucketApi.getPrStatus', () => {
     expect('body' in status).toBe(false);
   });
 
-  it('a payload lacking both — and one sending empty strings — leaves both keys absent, never `\'\'`', async () => {
-    for (const over of [{}, { title: '', description: '' }, { title: '', summary: { raw: '' } }]) {
+  it('a payload lacking all three — and one sending empty or non-string values at every rung — leaves both keys absent, never `\'\'`', async () => {
+    for (const over of [
+      {},
+      { title: '', description: '' },
+      { title: '', summary: { raw: '' } },
+      { title: '', rendered: { description: { raw: '' } } },
+      { title: '', description: '', summary: { raw: '' }, rendered: { description: { raw: '' } } },
+      { title: '', description: 42, summary: { raw: null }, rendered: { description: { raw: [] } } },
+    ]) {
       const { http } = fakeHttp([
         [urlHas('/pullrequests'), page([openPr(over)])],
         NO_RESTRICTIONS,
