@@ -11,8 +11,12 @@ The engine's canonical, tracker-agnostic view of one issue. The adapter's whole 
 _Avoid_: ticket, card, task, HeaderBlock (the narrower term the Ur used for it).
 
 **wave Header-Block**:
-The wave-orchestration metadata flotilla authors on an issue so the engine can plan it — `Files` (the conflict-map globs), `Risk`, `Worker`, the optional `Parent` backlink (to the **PRD** a slice came from), plus `Blocked-by` and the acceptance criteria. It lives on the tracker issue (body `## Files` + `risk/*`/`worker/*` labels), round-tripping through `IssueView`. `to-issues` writes it (create-mode) or adds it to an existing triage-ready issue (decorate-mode) — ADR-0010.
+The wave-orchestration metadata flotilla authors on an issue so the engine can plan it — `Files` (the conflict-map globs), `Risk`, `Worker`, the optional `Parent` backlink (to the **PRD** a slice came from), plus `Blocked-by` and the acceptance criteria. It lives on the tracker issue (body `## Files` + `risk/*`/`worker/*` labels), round-tripping through `IssueView`. `to-issues` writes it (create-mode) or adds it to an existing triage-ready issue (decorate-mode) — ADR-0010. After filing, `Blocked-by` changes one edge at a time through **block** / **unblock**, never as a list (ADR-0054).
 _Avoid_: frontmatter, metadata (unqualified).
+
+**Block** / **Unblock**:
+Recording, or withdrawing, one dependency between two issues that both already exist: "this issue waits for that one". It is the only way a dependency changes after filing. It is one edge at a time, never a replaced list, because a dependency is usually discovered on its own while a second issue is sharpened. A block that would close a cycle is refused. An unblock that cannot make the dependency disappear from what every gate reads says so instead of reporting success.
+_Avoid_: re-decorate for a dependency, editing the `Blocked by` section by hand, link (unqualified — a tracker has several kinds).
 
 **id**:
 The opaque, tracker-native, human-visible identifier of an issue (`"412"` on GitHub, `"ENG-123"` on Linear, `"<slug>#NN"` on MarkdownFs). The engine treats it as an opaque key and never parses, orders, or assumes a format for it (ADR-0001).
@@ -135,7 +139,7 @@ A PR the running Coordinator session authors and lands itself — no Worker, no 
 _Avoid_: doc-only lane (file class is not the boundary — provenance is), self-merge (that is a landing mechanic, not this lane's definition).
 
 **Amend**:
-The intent-shaped change of an issue's *authored content* — its title and its free-prose body sections — through the **IssueStore**, upsert-by-heading, everything unmodeled preserved. Deliberately narrow: the modeled surfaces each keep their own verb (the wave Header-Block fields → decorate/annotate, triage state and comments → the Triage facet, claims → the ledger), so an amend can never silently clobber a managed list. A full re-scope is the *composition* amend + annotate, not one call.
+The intent-shaped change of an issue's *authored content* — its title and its free-prose body sections — through the **IssueStore**, upsert-by-heading, everything unmodeled preserved. Deliberately narrow: the modeled surfaces each keep their own verb (the wave Header-Block fields → decorate/annotate, except a dependency after filing → **block** / **unblock**; triage state and comments → the Triage facet, claims → the ledger), so an amend can never silently clobber a managed list. A full re-scope is the *composition* amend + annotate, not one call.
 _Avoid_: update/edit (say which surface), body replace (never whole-body).
 
 **Definition of Ready (DoR)**:
