@@ -76,7 +76,7 @@ Re-query is available far more often than it looks: `git rev-parse` re-reads a r
 
 #### Form 2 — where the value genuinely cannot be re-queried: capture and check inside ONE call
 
-When the producing command is not idempotent, or the value exists nowhere but in that one invocation's stdout, keep the capture and its check **in a single Bash call** — written inline, with `if`, never `case`/`esac` (Convention 13's Catalog entry 1: `case`/`esac` is refused outright from a worktree-isolated dispatch), and never via a helper defined in an earlier call:
+When the producing command is not idempotent, or the value exists nowhere but in that one invocation's stdout, keep the capture and its check **in a single Bash call** — written inline, with `if`, never `case`/`esac` (Convention 13's Catalog entry 1 recorded `case`/`esac` refused outright from a worktree-isolated dispatch as a dated 2026-07-31 finding; a 2026-09-22 re-measurement no longer reproduces that refusal, but `if` stays the form taught here), and never via a helper defined in an earlier call:
 
 ```bash
 # ONE Bash call. The capture, its guard, and the consuming command all live here
@@ -98,7 +98,7 @@ Three deliberate details, unchanged from the retired helper because each was rig
 
 #### Form 3 — a worktree-isolated dispatch has no shell variables at all
 
-**Form 2 is not available to a Worker.** Live-reproduced in this convention's own repair dispatch (issue #303, 2026-07-31, `isolation: 'worktree'`): the isolation guard refuses **any** command carrying a `$VAR` expansion — in a conditional, in a `printf`, standing alone as `test -n "$VAR"` — and it refuses it whether the variable was assigned in a previous Bash call **or in the same one**. A same-call capture-plus-`if` is refused just as flatly as the two-call split. The full probe-by-probe record, including the shapes that *do* pass, is Convention 13's Catalog entry 1.
+**Form 2 was not available to a Worker, as a dated finding — and the prescription below does not rest on that finding surviving.** Live-reproduced in this convention's own repair dispatch (issue #303, 2026-07-31, `isolation: 'worktree'`): the isolation guard refused **any** command carrying a `$VAR` expansion — in a conditional, in a `printf`, standing alone as `test -n "$VAR"` — whether the variable was assigned in a previous Bash call **or in the same one**; a same-call capture-plus-`if` was refused just as flatly as the two-call split. **A 2026-09-22 re-measurement retired that refusal**: a bare `$VAR` expansion is no longer refused in any position probed (Convention 13's Catalog entry 1, *re-measured 2026-09-22*, where the full probe-by-probe record — including the shapes that *do* pass — lives). The prescription that follows does not relax with it, for Convention 13's own reason: shell state does not survive between a dispatched role's Bash calls, so a captured value is unreadable in the call that would spend it whether or not anything refuses the shape — a worktree-isolated role handed a shell-variable recipe is left improvising the exact step it was told to follow precisely. **Never hand a worktree-isolated role a shell-variable recipe.**
 
 So from a worktree-isolated role there are exactly two admissible shapes, and neither names a shell variable:
 
@@ -112,7 +112,7 @@ So from a worktree-isolated role there are exactly two admissible shapes, and ne
    jq -e -r '.url' pr-create.json
    ```
 
-Do not prescribe a shell-variable guard to a dispatched role. It comes back refused, and a refused guard is a guard that did not run — the same defect as no guard at all, wearing a diligent-looking recipe.
+Do not prescribe a shell-variable guard to a dispatched role. Even now that the isolation guard itself no longer refuses the shape (2026-09-22 re-measurement, Convention 13's Catalog entry 1), the recipe is still the wrong one: the variable it names is unset in the call that would read it, so the guard inspects nothing — the same defect as no guard at all, wearing a diligent-looking recipe.
 
 #### `require_capture()` is retired
 
@@ -167,7 +167,7 @@ The site-by-site record of what each site this repair reshaped used to carry and
 - **Binding `{{wave-cli}}` to a shell variable.** `CLI="npx tsx tools/wave/src/cli.ts"; $CLI spine …` is the original W4-F10 line. Bind a function — in the same Bash call that uses it.
 - **Guarding a capture in a later Bash call than the one that produced it.** The variable is unset in that shell, so the check is not about the value it names. Same call, or re-query.
 - **Defining a guard helper "once per session".** A shell function is session state, and there is no session across Bash calls. This is the shape this convention itself shipped for months.
-- **Prescribing a shell-variable guard to a worktree-isolated role.** The isolation guard refuses any `$VAR` expansion, same call or not — the recipe reads as diligent and cannot run. Use the re-query, or a single command whose exit status is the verdict.
+- **Prescribing a shell-variable guard to a worktree-isolated role.** A 2026-07-31 finding had the isolation guard refusing any `$VAR` expansion, same call or not; a 2026-09-22 re-measurement retired that refusal (Convention 13's Catalog entry 1). The mistake stands regardless — shell state does not survive between a dispatched role's Bash calls, so the recipe still cannot be followed as written. Use the re-query, or a single command whose exit status is the verdict.
 - **Reading exit 127 as "the command failed."** It means the command was never found and never ran — no partial effect, and an empty capture that is indistinguishable from a legitimate empty result.
 - **Guarding a capture whose emptiness is a valid answer** (`grep` with no match, `ACKED` with nothing met). That is a false alarm, and false alarms are how guards get removed.
 - **Trusting `set -e` or `$?` after a pipe.** A pipeline's status is the last stage's; a 127 on the left is invisible. Check the value.
