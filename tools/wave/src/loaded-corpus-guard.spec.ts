@@ -486,6 +486,12 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * takes this back down to its own landed measure.
  */
 const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — see the docblock above.
+// NOT raised or lowered by issue #818 (the wave-shared schema-copies-to-evidence move): the two
+// WORKER_REPORT_SCHEMA/REVIEWER_VERDICT_SCHEMA literals and their notes moved out of
+// wave-shared/SKILL.md into its evidence/ sibling (excluded from this measure by definition), leaving
+// a short pointer in their place. That row's own edit re-measures the population at 159,720 B over
+// the same 18 files — 8,280 B of headroom, up from row #997's 819 B — and leaves this constant
+// exactly where row #998 set it, for a later ratchet row to lower.
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
@@ -1161,6 +1167,12 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // edit re-measures the population at 1,270,990 B over the same 57 files — 5,010 B of headroom,
 // up from row #998's 27 B — and leaves this constant exactly where row #998 set it, for a later
 // ratchet row to lower.
+// NOT raised or lowered by issue #818 (the wave-shared schema-copies-to-evidence move): the two
+// schema literals and their notes moved out of wave-shared/SKILL.md into its evidence/ sibling
+// (excluded from this measure by definition) and wave-reviewer/SKILL.md's schema-reach sentence grew
+// by 358 B to match the new home, net −7,103 B. That row's own edit re-measures the population at
+// 1,263,887 B over the same 57 files — 12,113 B of headroom, up from row #817's 5,010 B — and leaves
+// this constant exactly where row #998 set it, for a later ratchet row to lower.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
