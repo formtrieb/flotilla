@@ -378,6 +378,12 @@
  * receipt: the rows composed, the model and branch per row, the anchor, the
  * Reviewer agent name and how it was derived, the template and its size.
  *
+ * `--reviewer-only` (issue #992) composes the re-review that follows an
+ * answered `reviewer-questions-blocking`: each row carries its own report
+ * sidecar at its current iteration, the script's Worker stage returns it
+ * instead of dispatching a Worker, and its report Scribe stage is skipped. The
+ * receipt's `mode` names which round the script runs.
+ *
  * THE ENGINE STILL DISPATCHES NOTHING (ADR-0009). This verb writes a file; the
  * harness runs it; the schema-validated-return guarantee stays a property of
  * the driver script's own `agent({ schema })` calls. No agent-harness primitive
@@ -388,7 +394,8 @@
  *   0 — the script was written; the receipt is on stdout
  *   1 — a compose refusal (an unresolvable anchor, a human-gated or foreground
  *       row, a row with no recorded branch, an underivable Reviewer agent name,
- *       a missing required row field) or a store/domain failure
+ *       a missing required row field, or — under `--reviewer-only` — a row with
+ *       no valid report sidecar at its iteration) or a store/domain failure
  *   2 — usage, an unreadable/invalid config, an unreadable spine, or a config
  *       with no `engine.cli` binding (a STOP — wave-setup has not finished)
  *

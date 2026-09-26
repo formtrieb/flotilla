@@ -67,8 +67,10 @@ import {
 } from './compose-driver';
 import type { VerifyCommand } from './verify';
 import { MarkdownFsStore } from './adapters/markdown-fs-store';
-import { HUMAN_GATED_WORKER, readSpine, renderSpine, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel, upsertPrLogRow } from './wave-md-rw';
+import { HUMAN_GATED_WORKER, readSpine, renderSpine, setRowIter, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel, upsertPrLogRow } from './wave-md-rw';
 import { addDisclosureToSource, setDispositionInSource } from './spine-store';
+import { renderSidecarBody } from './route-cli';
+import { main as cliMain, verbContracts } from './cli';
 
 const TEMPLATE = readFileSync(DRIVER_TEMPLATE_PATH, 'utf8');
 
@@ -4437,5 +4439,266 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     expect(flat).toMatch(/The sweep skips a dirty probe \(`dirty`\), so an edit you leave behind is never collected and needs a removal by hand/);
     // The rendered form carries no template escape: a Reviewer reads backticks.
     expect(flat).not.toContain('\\`git -C <probe>');
+  });
+});
+
+// ─── `--reviewer-only`: the path back from an answered question (issue #992) ──
+//
+// An Operator's answer to a Reviewer's `questions-blocking` is followed by a
+// re-review at the SAME iteration, and that round used to be composed by
+// hand-patching a copy of an ordinary driver. It is a mode the verb fills now:
+// the row carries its own saved report, and the template's Worker stage
+// returns it instead of dispatching, while its report Scribe is skipped. Every
+// claim below is observed on a COMPOSED script run under the Workflow-tool
+// stubs, never read off the template's text.
+
+/** A schema-valid WorkerReport — the shape a finished Worker returned. */
+function savedReport(id: string, commit: string): Record<string, unknown> {
+  return {
+    outcome: 'done',
+    issue: id,
+    branch: `wave/${id}-saved`,
+    commitShas: [commit],
+    prUrl: 'https://example.invalid/pr/7',
+    filesChanged: { new: 0, modified: 2, renamed: 0 },
+    tests: '12 passed',
+    lint: 'clean',
+    conflictMarkers: 'none',
+    judgmentCalls: ['the saved call'],
+    reviewerFocusItems: ['the saved focus item'],
+  };
+}
+
+describe('compose-driver — a Reviewer-only row switches exactly two stages, per row (issue #992)', () => {
+  const report = savedReport('42', 'feedf00d');
+  const rows = [
+    row({ id: '42', slug: 'answered', reviewerOnlyReport: report as unknown as DriverRow['reviewerOnlyReport'] }),
+    row({ id: '43', slug: 'ordinary', closePhrase: 'Closes #43' }),
+  ];
+  const script = composeDriverScript({ template: TEMPLATE, ...CONSTANTS, rows });
+
+  it('the Reviewer-only row dispatches no Worker and no report Scribe; the ordinary row beside it still runs all four', async () => {
+    const { calls, logs } = await runComposedDriver(script);
+    const labels = calls.map((c) => String(c.opts.label));
+    expect(labels.filter((l) => l.endsWith(':42'))).toEqual(['review:42', 'scribe-verdict:42']);
+    expect(labels.filter((l) => l.endsWith(':43'))).toEqual([
+      'worker:43',
+      'scribe-report:43',
+      'review:43',
+      'scribe-verdict:43',
+    ]);
+    // Not one worktree-isolated dispatch for the Reviewer-only row.
+    expect(calls.filter((c) => c.opts.isolation === 'worktree').map((c) => c.opts.label)).toEqual(['worker:43']);
+    expect(logs.some((l) => l.startsWith('REVIEWER-ONLY 42:'))).toBe(true);
+    expect(logs.some((l) => l.startsWith('REVIEWER-ONLY 43:'))).toBe(false);
+  });
+
+  it('the Reviewer reviews the SAVED report, through the unchanged schema-validated stage, and the verdict Scribe writes at the same iteration', async () => {
+    const { calls, result } = await runComposedDriver(script);
+    const reviewer = calls.find((c) => c.opts.label === 'review:42')!;
+    expect(reviewer.opts.agentType).toBe(CONSTANTS.reviewerAgent);
+    expect(reviewer.opts.model).toBe('sonnet');
+    const schema = reviewer.opts.schema as { required: string[] };
+    expect(schema.required).toContain('verdict');
+    expect(schema.required).toContain('acVerification');
+    expect(reviewer.brief).toContain('feedf00d');
+    expect(reviewer.brief).not.toContain('c0ffee1'); // the stub Worker's commit never reached it
+
+    const verdictScribe = calls.find((c) => c.opts.label === 'scribe-verdict:42')!;
+    expect(verdictScribe.brief).toContain(
+      `write-verdict --verdict-file "${CONSTANTS.repoRoot}/.flotilla/tmp/verdict-42-1.json" --verdicts-dir "${CONSTANTS.verdictsDir}" --id 42 --iter 1`,
+    );
+
+    const tuple = result.find((t) => t.id === '42')!;
+    expect(Object.keys(tuple)).toEqual(['id', 'risk', 'iteration', 'report', 'verdict']);
+    expect(tuple.report).toEqual(report);
+    expect(tuple.iteration).toBe(1);
+  });
+
+  it('CONTROL — the same rows composed WITHOUT the field run the ordinary four stages each', async () => {
+    const plain = composeDriverScript({
+      template: TEMPLATE,
+      ...CONSTANTS,
+      rows: rows.map(({ reviewerOnlyReport: _drop, ...r }) => r),
+    });
+    expect(plain).not.toContain('"reviewerOnlyReport"');
+    const { calls, logs } = await runComposedDriver(plain);
+    expect(calls).toHaveLength(8);
+    expect(logs.some((l) => l.startsWith('REVIEWER-ONLY'))).toBe(false);
+  });
+});
+
+describe('compose-driver --reviewer-only — the verb, end to end (issue #992)', () => {
+  let repoRoot: string;
+  let anchor: string;
+  let stdout: string;
+  let stderr: string;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const SLUG = '2026-09-25-reviewer-only';
+
+  function reportsDir(): string {
+    return join(repoRoot, '.flotilla', 'waves', SLUG, 'reports');
+  }
+
+  /** Persist a report sidecar exactly as `write-report` renders one. */
+  function writeReportSidecar(id: string, iter: number, payload: unknown): void {
+    mkdirSync(reportsDir(), { recursive: true });
+    writeFileSync(join(reportsDir(), `${id}-${iter}.md`), renderSidecarBody('WorkerReport', id, iter, payload), 'utf8');
+  }
+
+  async function seed(iter = 1): Promise<{ id: string; spinePath: string; configPath: string }> {
+    const store = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const id = await store.create({
+      title: 'Answer the question',
+      filingHint: 'answer-the-question',
+      risk: 'public-API-change',
+      worker: 'background-heavy',
+      files: ['tools/wave/**'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'the criterion, as the ruling rewrote it', checked: false }],
+      bodySections: [{ heading: 'What to build', markdown: 'Re-review it.' }],
+    });
+    let spine = renderSpine(
+      { slug: SLUG, description: 'ro', coordinator: 'c', model: 'm', created: '2026-09-25', lastUpdated: '2026-09-25' },
+      [{ id, title: 'Answer the question', worker: 'background-heavy', risk: 'public-API-change' }],
+      { issues: [], cells: [] },
+      'ok',
+    );
+    spine = setRowState(spine, id, iter > 1 ? 're-dispatched' : 'dispatched');
+    if (iter > 1) spine = setRowIter(spine, id, iter);
+    spine = upsertDispatchLogEntry(spine, id, `wave/${id}-answer-the-question`);
+    spine = upsertDispatchLogModel(spine, id, 'opus');
+    const spinePath = join(repoRoot, '.flotilla', 'waves', `${SLUG}.md`);
+    mkdirSync(join(repoRoot, '.flotilla', 'waves'), { recursive: true });
+    writeFileSync(spinePath, spine, 'utf8');
+    const configPath = join(repoRoot, 'wave.config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: { cli: SOURCE_FORM_CLI, install: 'npm ci --prefix tools/wave' },
+      }),
+      'utf8',
+    );
+    return { id, spinePath, configPath };
+  }
+
+  function compose(spinePath: string, configPath: string, ...extra: string[]): Promise<number> {
+    return runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', join(repoRoot, 'driver.js'),
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+      ...extra,
+    ]);
+  }
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'compose-driver-ro-'));
+    execFileSync('git', ['-C', repoRoot, 'init', '-q']);
+    execFileSync('git', [
+      '-C', repoRoot, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t',
+      'commit', '--allow-empty', '-q', '-m', 'anchor',
+    ]);
+    anchor = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    stdout = '';
+    stderr = '';
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      stdout += String(c);
+      return true;
+    });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('AC2 — the composed script returns the row’s report sidecar at its iteration from the Worker stage, dispatches no Worker, and skips the report Scribe', async () => {
+    const { id, spinePath, configPath } = await seed();
+    const saved = savedReport(id, 'feedf00d');
+    writeReportSidecar(id, 1, saved);
+    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(0);
+    expect(stderr).toBe('');
+
+    const { calls, result } = await runComposedDriver(readFileSync(join(repoRoot, 'driver.js'), 'utf8'));
+    expect(calls.map((c) => c.opts.label)).toEqual([`review:${id}`, `scribe-verdict:${id}`]);
+    expect(calls.some((c) => String(c.opts.label).startsWith('worker:'))).toBe(false);
+    expect(calls.some((c) => String(c.opts.label).startsWith('scribe-report:'))).toBe(false);
+    expect(result).toHaveLength(1);
+    expect(result[0].report).toEqual(saved);
+    expect(calls[0].brief).toContain('feedf00d');
+    // The re-fetched spec is what the Reviewer reads — the rewritten criterion included.
+    expect(calls[0].brief).toContain('the criterion, as the ruling rewrote it');
+  });
+
+  it('AC4 — the receipt names the mode: `reviewer-only` with the flag, `full` without it', async () => {
+    const { id, spinePath, configPath } = await seed();
+    writeReportSidecar(id, 1, savedReport(id, 'feedf00d'));
+    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(0);
+    expect((JSON.parse(stdout) as Record<string, unknown>).mode).toBe('reviewer-only');
+
+    stdout = '';
+    expect(await compose(spinePath, configPath)).toBe(0);
+    expect((JSON.parse(stdout) as Record<string, unknown>).mode).toBe('full');
+    // …and the ordinary compose carries no saved report even though one is on disk.
+    const { calls } = await runComposedDriver(readFileSync(join(repoRoot, 'driver.js'), 'utf8'));
+    expect(calls.map((c) => c.opts.label)).toEqual([`worker:${id}`, `scribe-report:${id}`, `review:${id}`, `scribe-verdict:${id}`]);
+  });
+
+  it('reads the row’s CURRENT iteration, never the newest sidecar on disk', async () => {
+    const { id, spinePath, configPath } = await seed(2);
+    writeReportSidecar(id, 1, savedReport(id, 'aaaa1111'));
+    writeReportSidecar(id, 2, savedReport(id, 'bbbb2222'));
+    writeReportSidecar(id, 3, savedReport(id, 'cccc3333'));
+    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(0);
+    const { calls, result } = await runComposedDriver(readFileSync(join(repoRoot, 'driver.js'), 'utf8'));
+    expect((result[0].report as { commitShas: string[] }).commitShas).toEqual(['bbbb2222']);
+    expect(calls.find((c) => c.opts.label === `scribe-verdict:${id}`)!.brief).toContain(`--iter 2`);
+  });
+
+  it('AC3 — REFUSES, exit 1 naming the row, when no report sidecar exists at the row’s iteration — and writes nothing', async () => {
+    const { id, spinePath, configPath } = await seed(2);
+    // A sidecar at ANOTHER iteration is not one at this row's iteration.
+    writeReportSidecar(id, 1, savedReport(id, 'aaaa1111'));
+    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`--reviewer-only: row ${id} has no valid report sidecar at its iteration 2`);
+    expect(stderr).toContain('does not exist');
+    expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
+  });
+
+  it('AC3 — REFUSES, exit 1 naming the row, when the sidecar at the row’s iteration does not validate', async () => {
+    const { id, spinePath, configPath } = await seed();
+    const { commitShas: _drop, ...invalid } = savedReport(id, 'feedf00d');
+    writeReportSidecar(id, 1, invalid);
+    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`--reviewer-only: row ${id} has no valid report sidecar at its iteration 1`);
+    expect(stderr).toContain('does not validate');
+    expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
+  });
+
+  it('AC4 — the Verb contract declares the switch, `--help` renders it, and the Catalog carries it', () => {
+    const declared = COMPOSE_DRIVER_CONTRACT.flags.find((f) => f.canonical === '--reviewer-only');
+    expect(declared).toBeDefined();
+    expect(declared?.value).toBe('none');
+    expect(COMPOSE_DRIVER_CONTRACT.usage.join('\n')).toContain('--reviewer-only');
+    expect(verbContracts()['compose-driver'].flags.map((f) => f.canonical)).toContain('--reviewer-only');
+
+    expect(cliMain(['catalog'])).toBe(0);
+    const catalog = JSON.parse(stdout) as { verbs: Array<{ verb: string; flags: Array<{ canonical: string }> }> };
+    const entry = catalog.verbs.find((v) => v.verb === 'compose-driver');
+    expect(entry?.flags.map((f) => f.canonical)).toContain('--reviewer-only');
+    expect(COMPOSE_DRIVER_CONTRACT.json?.shape).toMatch(/\bmode\b/);
   });
 });

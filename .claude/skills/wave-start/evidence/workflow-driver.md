@@ -81,3 +81,11 @@ The reference document's `## Composition constraints` section states each of the
 **Behind constraint 3 (every Worker anchored to the wave-anchor SHA, presence and resolvability both checked at compose time).** Live occurrence: a fabricated anchor SHA with a correct 7-char prefix passed compose and reached four parallel briefs; all four Workers independently caught it themselves.
 
 **Behind constraint 5 (free-form brief text never hand-escaped into a JS literal — the verb serializes every row field through `JSON.stringify`).** Observed failure shape (W17-F1): the first Workflow launch of a wave failed at the script parser — not at any `agent()` call — because a hand-composed `reviewerHint` carried a backslash-escaped apostrophe inside a single-quoted string. Cost was zero (no agent had started, no state was touched), but the whole compose round was lost.
+
+## `--reviewer-only` — the hand-patched copy it replaces (issue #992)
+
+The one Reviewer-only re-review composed before this flag existed (wave `2026-09-25-review-signals-and-round-hygiene`, round 3, disclosures `978.5`) was an ordinary composed driver whose COPY the Coordinator edited: Stage 1 made to return the saved Worker report instead of calling `agent()`, Stage 2 made to pass it through, `REVIEWER_VERDICT_SCHEMA` and the verdict Scribe kept. That is precisely the second copy the compose verb exists to retire, so the mode now lives in the shipped template and is filled per row by the verb.
+
+Why a per-row field rather than a seventh compose-time constant: the mode needs the saved report itself, which is per-row data, and the field's presence is sufficient to switch the two stages — a separate constant would be a second fact that could disagree with it. It also keeps an ordinary compose byte-identical to one made before the flag existed (the field is absent from every ordinary row), which is what `compose-driver.spec.ts`'s substitution pin checks.
+
+Why the compose reads the sidecar at the row's CURRENT iteration and not the newest on disk: the sidecar reader keeps the max iteration per id, and a stray later file (a mis-iterated recovery write) would otherwise be reviewed in place of the report the round is about. The verb hands the reader exactly one file, `<id>-<iter>.md`, and refuses when it is absent or fails the schema.

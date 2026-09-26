@@ -43,7 +43,9 @@ import { Script } from 'node:vm';
 import type { IssueStore } from './adapters/issue-store';
 import type { IssueView, TriageView } from './contract';
 import { flag, printJson } from './cli-utils';
+import { readSidecars } from './sidecar';
 import { readDisclosures } from './spine-store';
+import type { WorkerReport } from './worker-report-schema';
 import { loadWaveConfig, type ModelsConfig, type WaveConfig } from './wave-config';
 import { readSpine, HUMAN_GATED_WORKER, type PlanTableRow, type PrLogRow } from './wave-md-rw';
 import { verifyCommands, type VerifyCommand } from './verify';
@@ -115,6 +117,61 @@ export interface DriverRow {
   reviewerHints: string[];
   siblingBranches: string;
   iteration1HeadSha?: string;
+  /**
+   * Present ONLY on a row composed with `--reviewer-only`: the row's own report
+   * sidecar at its current iteration, read and validated at compose time. Its
+   * presence IS the mode for that row — the template's Worker stage returns it
+   * instead of dispatching a Worker, and its report Scribe stage passes it
+   * through instead of re-writing the sidecar it came from. Absent on every
+   * ordinary row, so an ordinary compose is byte-identical to before it existed.
+   */
+  reviewerOnlyReport?: WorkerReport;
+}
+
+/**
+ * The two modes a compose runs in, as the receipt names them. `full` is the
+ * ordinary four-stage round; `reviewer-only` re-reviews reports a Worker already
+ * returned (the path back from an answered `reviewer-questions-blocking`).
+ * Module-local: a caller reads the mode off the receipt JSON, never this type.
+ */
+type DriverMode = 'full' | 'reviewer-only';
+
+/**
+ * The row's report sidecar at exactly `iteration`, validated — or a throw that
+ * names the row, the iteration and the path (the `--reviewer-only` refusal).
+ *
+ * Read through the engine's own sidecar reader, handed a reader that lists only
+ * the one file `<id>-<iteration>.md`, so the schema validation and the
+ * filename-id cross-check are the ones a resume applies, not a second copy. The
+ * reader keeps the MAX iteration per id; listing exactly one file is what makes
+ * its answer the row's CURRENT iteration rather than whatever is newest on disk.
+ * `readSidecars` also lists a verdicts directory: `''` is never the absolute
+ * reports directory, so that listing answers empty.
+ *
+ * Module-local on purpose: the consumer surface of this is the flag and its
+ * refusal, not a reader anyone imports.
+ */
+function savedReportAt(reportsDir: string, id: string, iteration: number): WorkerReport {
+  const file = `${id}-${iteration}.md`;
+  const path = join(reportsDir, file);
+  const refusal = (why: string): Error =>
+    new Error(
+      `compose-driver: --reviewer-only: row ${id} has no valid report sidecar at its iteration ` +
+        `${iteration} — ${why}. A Reviewer-only round re-reviews the report a Worker already ` +
+        'returned at that iteration, so without one there is nothing to review: compose an ' +
+        'ordinary round instead, or restore the sidecar through write-report, then re-compose.',
+    );
+  if (!existsSync(path)) throw refusal(`${path} does not exist`);
+  const index = readSidecars(reportsDir, '', {
+    list: (dir) => (dir === reportsDir ? [file] : []),
+    read: (dir, name) => readFileSync(join(dir, name), 'utf8'),
+  });
+  const hit = index.reportFor(id);
+  if (hit === null || hit.iter !== iteration) {
+    const reasons = index.corruptFor(id).map((c) => c.reason);
+    throw refusal(`${path} does not validate (${reasons.join('; ') || 'unreadable'})`);
+  }
+  return hit.report;
 }
 
 /**
@@ -1146,6 +1203,12 @@ export const COMPOSE_DRIVER_CONTRACT: VerbContract = defineVerb({
     { canonical: '--template', value: 'one', valueType: 'path' },
     { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
     { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
+    // Issue #992. A switch, not a value: every composed row's Worker stage
+    // returns the row's report sidecar at its current iteration (read from the
+    // reports dir above) and dispatches no Worker, and its report Scribe stage is
+    // skipped. Refused, exit 1 naming the row, when that sidecar is absent or
+    // does not validate. The Reviewer and verdict-Scribe stages are unchanged.
+    { canonical: '--reviewer-only', value: 'none', valueType: 'none' },
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
@@ -1158,9 +1221,11 @@ export const COMPOSE_DRIVER_CONTRACT: VerbContract = defineVerb({
   json: {
     shape:
       '{ ok, verb, out, scriptBytes, template, templateBytes, wave, anchor, ' +
-      'reviewerAgent, reviewerAgentForm, pluginName, waveCli, scribeModel, ' +
+      'reviewerAgent, reviewerAgentForm, pluginName, waveCli, scribeModel, mode, ' +
       'rows: [ { id, slug, branch, model, iteration, risk, worker, scopeGrants, depsSetupSource } ] }',
-    trail: 'scribeModel is null when this consumer states none; a failure prints no JSON',
+    trail:
+      'scribeModel is null when this consumer states none; mode is full | reviewer-only; ' +
+      'a failure prints no JSON',
   },
 });
 
@@ -1270,6 +1335,13 @@ export async function runComposeDriver(
   const repoRoot = resolve(flag(args, '--repo-root') ?? process.cwd());
   const spineAbs = isAbsolute(spinePath) ? spinePath : resolve(repoRoot, spinePath);
   const slug = slugFromSpinePath(spineAbs);
+  // Resolved ONCE, here, because two readers need the same answer: the
+  // template's REPORTS_DIR constant (where the Scribe writes) and, under
+  // `--reviewer-only`, the saved-report read (where this compose reads). One
+  // value means a Reviewer-only round reads exactly the sidecar the ordinary
+  // round's Scribe wrote.
+  const reportsDir = flag(args, '--reports-dir') ?? join(repoRoot, '.flotilla', 'waves', slug, 'reports');
+  const mode: DriverMode = args.includes('--reviewer-only') ? 'reviewer-only' : 'full';
 
   let spineSource: string;
   try {
@@ -1360,10 +1432,14 @@ export async function runComposeDriver(
     const rows: DriverRow[] = [];
     for (const { row, branch, rowSlug } of roster) {
       const meta = rowMeta[row.id] ?? {};
+      const iteration = typeof row.iter === 'number' ? row.iter : Number(row.iter) || 1;
+      // The `--reviewer-only` refusal (issue #992) runs FIRST for the row, before
+      // any store read: without a valid report at this iteration there is
+      // nothing for the round to review, and nothing else about the row matters.
+      const savedReport = mode === 'reviewer-only' ? savedReportAt(reportsDir, row.id, iteration) : undefined;
       const view: IssueView = await store.read(row.id);
       const triage: TriageView = await store.readTriage(row.id);
       const verify = config.verify ? verifyCommands(view.files, config.verify) : [];
-      const iteration = typeof row.iter === 'number' ? row.iter : Number(row.iter) || 1;
       const siblings = siblingRoster.filter((s) => s.id !== row.id).map((s) => s.entry);
       const deps = resolveDepsSetup({
         rowMeta: meta.depsSetup,
@@ -1481,6 +1557,7 @@ export async function runComposeDriver(
           (siblings.length ? siblings.join(', ') : '(none — no sibling branches in this wave)'),
       };
       if (meta.iteration1HeadSha) composed.iteration1HeadSha = meta.iteration1HeadSha;
+      if (savedReport !== undefined) composed.reviewerOnlyReport = savedReport;
 
       assertDispatchableWorker(composed);
       assertRequiredRowFields({ ...composed, branch });
@@ -1498,7 +1575,7 @@ export async function runComposeDriver(
       template,
       repoRoot,
       waveCli: `NODE_USE_ENV_PROXY=1 ${engineCli}`,
-      reportsDir: flag(args, '--reports-dir') ?? join(repoRoot, '.flotilla', 'waves', slug, 'reports'),
+      reportsDir,
       verdictsDir: flag(args, '--verdicts-dir') ?? join(repoRoot, '.flotilla', 'waves', slug, 'verdicts'),
       reviewerAgent: reviewer.name,
       scribeModel,
@@ -1548,6 +1625,11 @@ export async function runComposeDriver(
       // the same reason every row's `model` is on the receipt: an operator
       // reads which model each dispatch bound, rather than inferring it.
       scribeModel: scribeModel === '' ? null : scribeModel,
+      // Which round this script runs (issue #992): `full`, or `reviewer-only`
+      // — every row's Worker stage returns its saved report and no Worker runs.
+      // On the receipt because the script's own behaviour is invisible until
+      // the harness runs it, and the dispatch record is where it is checked.
+      mode,
       rows: rows.map((r) => ({
         id: r.id,
         slug: r.slug,

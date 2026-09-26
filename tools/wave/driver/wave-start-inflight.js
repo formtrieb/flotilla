@@ -334,7 +334,7 @@ const renderGrants = (grants) =>
 // ── Per-row data — Coordinator fills this from the spine before invoking ──
 // Each: { id, slug, worker, risk, iteration, model, anchorSha, coordinatorBranch,
 //         depsSetup, issueSpec, prTitle, closePhrase, reviewerHints, siblingBranches,
-//         iteration1HeadSha?, scopeGrants? }
+//         iteration1HeadSha?, scopeGrants?, reviewerOnlyReport? }
 // `worker` is copied straight off the row's Plan-Table Worker cell. It is not
 // interpolated into any brief — it exists so `assertNotHumanGated` below can
 // refuse to compose a row no agent may pick up (see §The human gate).
@@ -359,6 +359,15 @@ const renderGrants = (grants) =>
 // spine already holds for this row. Absent, or an empty array, on a row with no
 // scope-extension disclosures yet — both render as "none" in both briefs
 // (renderGrants below), which is the ordinary case.
+// reviewerOnlyReport is OPTIONAL and is THE REVIEWER-ONLY MODE (issue #992):
+// present only when `compose-driver --reviewer-only` composed the row, it
+// carries the row's own report sidecar at its current iteration, read and
+// schema-validated at compose time. Its presence switches exactly two stages
+// for that row — Stage 1 returns it instead of dispatching a Worker, and
+// Stage 2 passes it through instead of re-writing the sidecar it was read
+// from — and leaves the Reviewer stage (schema-validated) and the verdict
+// Scribe untouched. It is a mode the VERB fills; never add it by hand, and
+// never patch a composed copy's stages to get the same effect.
 const ISSUES = [
   {
     id: 'NN',
@@ -472,6 +481,8 @@ ISSUES.forEach((issue) => { issue.branch = `wave/${issue.id}-${issue.slug}` })
 // Deliberately EXCLUDED, with reasons (not merely forgotten):
 //   - depsSetup, iteration1HeadSha — legitimately optional; both briefs
 //     guard their interpolation with `|| <fallback text>` already.
+//   - reviewerOnlyReport — an object, absent on every ordinary row; its
+//     presence is the Reviewer-only mode, and compose-driver validated it.
 //   - reviewerHints — an array, not a scalar. An EMPTY array is valid ("no
 //     hints yet" — `j()` already renders it as `- none`); a naive
 //     string-emptiness check would wrongly reject that valid empty case
@@ -1420,15 +1431,30 @@ async function scribe(kind, issue, iter, payload, passthrough) {
 phase('Dispatch')
 const results = await pipeline(
   ISSUES,
-  // Stage 1 — Worker: worktree-isolated, schema-validated WorkerReport
-  (issue) => agent(workerBrief(issue), {
-    label: `worker:${issue.id}`, phase: 'Dispatch',
-    isolation: 'worktree', schema: WORKER_REPORT_SCHEMA,
-    model: issue.model,
-  }),
+  // Stage 1 — Worker: worktree-isolated, schema-validated WorkerReport.
+  // REVIEWER-ONLY (issue #992): a row carrying `reviewerOnlyReport` dispatches
+  // NO Worker — the stage returns the report the row's Worker already returned
+  // at this iteration, which compose-driver read off its sidecar and validated.
+  // `async`, so this stage hands pipeline() a promise on both paths exactly as
+  // every other stage does.
+  async (issue) => {
+    if (issue.reviewerOnlyReport) {
+      log(`REVIEWER-ONLY ${issue.id}: no Worker dispatched — the saved report at iteration ${issue.iteration} goes to review`)
+      return issue.reviewerOnlyReport
+    }
+    return agent(workerBrief(issue), {
+      label: `worker:${issue.id}`, phase: 'Dispatch',
+      isolation: 'worktree', schema: WORKER_REPORT_SCHEMA,
+      model: issue.model,
+    })
+  },
   // Stage 2 — Scribe(report): durable BEFORE the review even starts. Passes the
-  // report through unchanged so the Reviewer stage still receives it.
-  (report, issue) => scribe('report', issue, issue.iteration, report, report),
+  // report through unchanged so the Reviewer stage still receives it. Skipped
+  // for a Reviewer-only row: its report IS the sidecar, already durable, and
+  // re-writing it from itself would buy nothing but a second agent.
+  async (report, issue) => issue.reviewerOnlyReport
+    ? report
+    : scribe('report', issue, issue.iteration, report, report),
   // Stage 3 — Reviewer: universal dispatch, schema-validated ReviewerVerdict.
   // Risk routes the Reviewer's model tier: standard for mechanical/isolated-
   // refactor, heavy otherwise; scope, checklist, and universal dispatch stay

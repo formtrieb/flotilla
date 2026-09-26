@@ -158,14 +158,14 @@ Full derivation — the false-success shape this contract forecloses, why the te
   --out <consumer-root>/.flotilla/tmp/<slug>/driver.js \
   [--plugin-manifest <plugin-clone-root>/.claude-plugin/plugin.json] \
   [--reviewer-agent <name>] [--coordinator-branch <b>] [--deps-setup "<cmd>"] \
-  [--row-meta '{"<id>":{"prTitle":"…","reviewerHints":["…"],"note":"…"}}']
+  [--row-meta '{"<id>":{"prTitle":"…","reviewerHints":["…"],"note":"…"}}'] [--reviewer-only]
 ```
 
 It writes the finished script to `--out` — the path the harness Workflow tool
 takes as its `scriptPath`, unchanged in shape — and prints ONE JSON receipt:
 the rows composed, each row's branch, model, iteration, risk, worker and
 grant-count, the anchor, the Reviewer agent name and how it was derived, the
-template path and its byte size. Read the receipt; do not re-derive any of it.
+mode, the template path and its byte size. Read the receipt; do not re-derive any of it.
 
 **Keep `--out` inside the repo** — under the Scribe's gitignored `.flotilla/tmp/`,
 not in the `/tmp` scratch directory the run's other files use. Those files are
@@ -216,6 +216,15 @@ The shipped script keeps its own copies of the first two as the backstop for a
 hand-edited script, and `tools/wave/src/skill-schema-drift.spec.ts` pins those
 copies to the engine's own `REQUIRED_ROW_FIELDS` and `HUMAN_GATED_WORKER`, so
 the two cannot disagree.
+
+**`--reviewer-only` is a mode the verb fills, never a copy anyone patches.**
+The re-review after an answered `reviewer-questions-blocking` (SKILL.md step 8)
+reads each row's report sidecar at its current iteration into the row as
+`reviewerOnlyReport`; the template's Stage 1 returns it instead of dispatching a
+Worker, and Stage 2 passes it through instead of re-writing it. Stage 3 (the
+schema-validated Reviewer) and Stage 4 (the verdict Scribe) are unchanged. A
+missing or invalid sidecar is a fifth refusal, naming the row; the receipt's
+`mode` says which round the script runs.
 
 ### `depsSetup` — five precedence levels, and one refusal
 
