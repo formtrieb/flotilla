@@ -655,7 +655,8 @@ function rootNamesOwnedByWaveMdRw(): string[] {
 
 /**
  * The worktree-cleanup names the root re-exported BEFORE this slice, recorded
- * from the wave anchor commit by running the same enumeration this spec runs.
+ * from the commit this slice's own diff started from, by running the same
+ * enumeration this spec runs.
  * It is a baseline, not a wish list: the delta assertions below are what turn
  * "exactly the named family was added" into a checkable claim, and no smaller
  * form of this check can make it — a probe with nothing to subtract from can

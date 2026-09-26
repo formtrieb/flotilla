@@ -11,7 +11,7 @@ A check that works and a check that cannot fail are indistinguishable from their
 Ask them of the diff, never of the effort:
 
 1. **After this diff, does a check exist that reports pass/fail** — a test, an assertion, a guard, a smoke probe, a lint rule, a CI gate, a preflight, a validator, a schema constraint?
-2. **Is that check's failing condition new with this slice** — absent at the wave anchor SHA?
+2. **Is that check's failing condition new with this slice** — absent at the round's Anchor SHA?
 
 Two yeses ⇒ in the class. There is deliberately no third question about whether the falsification is worth the time: **cost is not a trigger condition.** It is an input to the *"could not falsify"* disclosure below, which is where an expensive falsification is meant to land — not a reason the class quietly stops applying.
 

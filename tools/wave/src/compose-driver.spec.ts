@@ -3763,10 +3763,13 @@ describe('compose-driver — the RENDERED Worker brief states truthfully what la
         'whether your branch carries one commit or several.',
     },
     {
-      half: 'the Worker commit messages do not reach the default branch',
+      half: 'the Worker commit messages do not reach the default branch, with the merge-queue and rebase exceptions named',
       text:
         'Your own commit messages do not reach the default branch under the default, so the PR body ' +
-        'is where the durable record goes, never a commit message.',
+        'is where the durable record goes, never a commit message — except under a merge queue, which ' +
+        'composes its own commit and ignores this message, or under a `--method rebase` landing, which ' +
+        "replays the branch's own commits individually with no single message to shape (ADR-0053, dated " +
+        'note 2026-09-25); under either exception, it is your own commit messages, not the PR body, that land.',
     },
     {
       half: 'under host, the repository squash setting decides',

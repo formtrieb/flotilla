@@ -1982,8 +1982,9 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
     ['CleanupConfig', WAVE_CONFIG_SRC, Object.keys(CLEANUP)],
     ['EngineConfig', WAVE_CONFIG_SRC, Object.keys(ENGINE)],
     ['ModelsConfig', WAVE_CONFIG_SRC, Object.keys(MODELS)],
-    // Module-local rather than root-exported (see its declaration) — the reader
-    // below finds an interface by name either way, exported or not.
+    // Root-exported (type only — see its declaration in index.ts, ADR-0053
+    // decision 4) — the reader below finds an interface by name either way,
+    // exported or not.
     ['LandingConfig', WAVE_CONFIG_SRC, Object.keys(LANDING)],
     ['VerifyConfig', VERIFY_SRC, Object.keys(VERIFY)],
     ['VerifyProfile', VERIFY_SRC, Object.keys(VERIFY.profiles[0])],
