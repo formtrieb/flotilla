@@ -135,7 +135,7 @@ Report it on its own advisory line — `(advisory) Landed-sibling merge-tree vs 
 
 ### Every other sibling — ask `origin` first
 
-Run it **per sibling**, writing the branch name and its per-sibling ref key in literally rather than looping over a `$SIB` variable (wave-shared Convention 13: a command naming a shell variable has been refused outright in an isolated dispatch, and a loop that never ran is indistinguishable from a run that found nothing):
+Run it **per sibling**, writing the branch name and its per-sibling ref key in literally rather than looping over a `$SIB` variable (wave-shared Convention 13: a 2026-08-09 finding had a loop referencing its own loop variable refused outright in an isolated dispatch, a refusal a 2026-09-22 re-measurement no longer reproduces — the prescription holds anyway, because a loop that never ran is indistinguishable from a run that found nothing):
 
 ```bash
 git ls-remote origin refs/heads/wave/<sibling-id>-<sibling-slug>        # EMPTY → not-on-origin; no fetch

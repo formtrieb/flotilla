@@ -232,9 +232,12 @@ WORKTREE_COUNT=$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree '
 #   ONE Bash call — the capture, its guard and the branch it decides all live
 #   together, because a shell variable exists only in the call that set it
 #   (Convention 12, half two, Form 2). `case`/`esac` is gone with the same
-#   change: Convention 13's Catalog entry 1 has it refused outright from a
-#   worktree-isolated dispatch, and one dialect across the skill surface is
-#   worth more than the pattern-match's brevity here.
+#   change: Convention 13's Catalog entry 1 recorded `case`/`esac` refused
+#   outright from a worktree-isolated dispatch as a dated 2026-07-31 finding
+#   that a 2026-09-22 re-measurement no longer reproduces — the prescription
+#   does not rest on that refusal surviving, because one dialect (`if`) across
+#   the skill surface is worth more than the pattern-match's brevity here
+#   regardless.
 WAVE_CONFIG="$REPO/wave.config.json"   # or wherever this consumer keeps it
 ENGINE_CLI=$(node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String((c.engine||{}).cli||""))' "$WAVE_CONFIG")
 #   An empty ENGINE_CLI is never "unbound, carry on": every engine-CLI call in
