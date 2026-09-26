@@ -1157,6 +1157,10 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
  * to its own landed measure.
  */
 const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see the docblock above.
+// NOT raised or lowered by issue #817 (wave-setup's second residual-form diet): that row's own
+// edit re-measures the population at 1,270,990 B over the same 57 files — 5,010 B of headroom,
+// up from row #998's 27 B — and leaves this constant exactly where row #998 set it, for a later
+// ratchet row to lower.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
