@@ -251,17 +251,74 @@
  *      not recognize cannot cost a consumer the remedy.
  *   2. A DISTINCT REASON when it still cannot conclude.
  *      {@link BranchHygieneSkipReason} gains
- *      `'branch-probe-transport-blocked'` for the case where the probe never
- *      reached the remote at all — the kind that does not clear on the next
- *      close — while every other failure keeps `'branch-probe-failed'`
- *      unchanged. The classification abstains toward the original reason (see
+ *      `'branch-probe-transport-blocked'` for the case where the configured
+ *      transport could not complete the read at all — it never reached the
+ *      remote, OR the remote refused the caller at the connection or
+ *      authentication layer before any ref was listed (a wrong SSH key, a
+ *      host-key mismatch — both reached the remote and were turned away, and
+ *      both are exactly as permanent on the affected consumer shape as never
+ *      reaching it at all) — the kind that does not clear on the next close —
+ *      while every other failure keeps `'branch-probe-failed'` unchanged. The
+ *      classification abstains toward the original reason (see
  *      {@link TRANSPORT_BLOCKED_PROBE_SIGNATURES} for subject, resolution bias
  *      and unmodelled set), so an unrecognized text behaves exactly as it did
- *      before this ticket.
+ *      before this ticket. (Widened, membership unchanged, by issue #938 —
+ *      the original wording undersold what the signature list already
+ *      caught: two of its members, `'host key verification failed'` and
+ *      `'permission denied (publickey'`, are refusals, not unreachability.)
  *
  * What is NOT changed, and is pinned by a negative control in the spec: no
  * classification, no second attempt and no transport can turn a failure into
  * `gone`. A branch whose remote state is unknown is still never deleted.
+ *
+ * ── the mirror addresses a host, not necessarily THE repository (issue #938) ──
+ *
+ * {@link httpsMirrorOf} assumes the SSH and HTTPS endpoints of a remote name
+ * the same host and the same path — true for the common hosting shapes
+ * (GitHub, GitLab, the self-hosted Gitea/Gitolite-style pattern), not true in
+ * general. An Azure-DevOps-style origin translates to a URL the operator
+ * never configured; a deployment with a separate SSH-only hostname is the
+ * same shape. Every constructed case of this fails CLOSED today — git returns
+ * exit `128` against a host that does not serve the translated path, never
+ * the exit `2` that is the only `gone` — but the one way this remedy COULD
+ * delete a branch the pre-#876 code would not have is the residual case: a
+ * host that serves a valid but EMPTY repository at the translated address, so
+ * the mirror's `ls-remote` authoritatively (and correctly, for that URL)
+ * reports the branch absent while addressing the wrong repository entirely.
+ *
+ * Operator ruling (2026-09-25): keep the mirror for every host — narrowing it
+ * to an allowlist was rejected — but trust its `'gone'` answer only when the
+ * SAME mirror also lists the repository's default branch (`HEAD`) as
+ * present. A repository that is actually the intended one and has ever had a
+ * commit always has a `HEAD`; a mirror that cannot show one is either not the
+ * intended repository or not answering authoritatively, and either way the
+ * probe fails closed — `probe-failed`, never `gone` — instead of trusting an
+ * unconfirmed answer. {@link defaultBranchHygieneOps}'s `probeRemoteRef`
+ * performs this confirmation with a SEPARATE `git ls-remote --exit-code
+ * <mirror> HEAD` call (deliberately without `--heads`: that flag restricts
+ * pattern matching to `refs/heads/*` and excludes the `HEAD` pseudo-ref
+ * entirely — live-verified against a real remote, exit `2` with `--heads`,
+ * exit `0` without, for the identical remote and ref). Any outcome short of
+ * that call's own exit `0` — not-found, a network failure, a timeout — reads
+ * as "cannot confirm" and downgrades the branch-probe's `'gone'` to
+ * `'probe-failed'`; nothing about the FIRST, unconfirmed `'present'` answer
+ * changes, because a false `'present'` costs nothing (the branch is left
+ * alone either way) and only a false `'gone'` can delete something real.
+ *
+ * A second, independent narrowing from the same issue: {@link httpsMirrorOf}
+ * now declines (returns `null`, no second attempt) two address forms it
+ * previously mistranslated rather than refused, both failing closed today and
+ * neither able to produce a `gone` on its own — but both uncommented
+ * divergences from the documented URL forms this function's doc comment
+ * otherwise enumerates. A tilde home-relative path (`~[user]/repo.git`,
+ * documented for both the scp-like and the explicit `ssh://` forms) was
+ * carried verbatim into an `https://` URL, which cannot resolve a `~` at all.
+ * Git's own remote-helper syntax, `<transport>::<address>` (git-remote-helpers(7),
+ * e.g. `ext::ssh -i key %S user@host:path`), was READ AS scp-like — the
+ * scp-like pattern's own negative lookahead only excludes a `/` right after
+ * the first colon, not a second colon, so `foo::bar` parsed as host `foo`,
+ * path `:bar`. The helper's address is helper-defined, not a host and a path
+ * this function can read out with certainty, so it now declines up front.
  *
  * ── errored-still-listed — a THIRD ENOTEMPTY-family removal form (FOR-73 —
  *    W18-F1) ─────────────────────────────────────────────────────────────────
@@ -2713,8 +2770,10 @@ function runBranchHygiene(
       } else if (probe.status === 'probe-failed') {
         skipped.push({
           branch: dispatchBranch,
-          // issue #876 — a probe that never reached the remote is named as
-          // such; anything else keeps the original reason verbatim.
+          // issue #876 — a probe whose transport could not complete (never
+          // reached the remote, or was refused there before any ref was
+          // listed) is named as such; anything else keeps the original
+          // reason verbatim.
           reason: branchHygieneSkipReasonFor(probe),
           detail: probe.reason,
         });
@@ -6364,11 +6423,18 @@ export type RemoteRefProbeResult =
       status: 'probe-failed';
       reason: string;
       /**
-       * `'transport-blocked'` — the probe never reached the remote: the
-       * transport itself refused, was cut, or could not be opened (an SSH
-       * dispatch cut under a sandbox, an unresolvable host, a refused
-       * connection, a timeout). This is the kind that does not clear on a
-       * retry when the harness is the thing blocking the transport.
+       * `'transport-blocked'` — the configured transport could not complete
+       * the read: EITHER it never reached the remote at all (an SSH dispatch
+       * cut under a sandbox, an unresolvable host, a refused connection, a
+       * timeout), OR the remote WAS reached and refused the caller at the
+       * connection or authentication layer before any ref was listed (a
+       * wrong SSH key rejected with "permission denied (publickey", a
+       * host-key verification failure). Widened to the second half by issue
+       * #938: an auth/policy refusal is exactly as permanent on the affected
+       * consumer shape as never reaching the remote, and the membership below
+       * already caught both — only the docstring undersold it. This is the
+       * kind that does not clear on a retry when the harness or the
+       * consumer's own configuration is the thing blocking the transport.
        *
        * `'unclassified'` — the probe failed and this seam could not say in
        * which kind. NEVER a synonym for "not transport": it is an abstention,
@@ -6397,13 +6463,18 @@ export type RemoteRefProbeResult =
  *   • `'branch-probe-failed'` — the original, unchanged in meaning: the probe
  *     failed and the failure was not identified as a blocked transport. The
  *     ordinary reading is still "try again"; a flaky remote clears.
- *   • `'branch-probe-transport-blocked'` — the probe never REACHED the remote.
- *     On a consumer whose harness blocks the transport `origin` is configured
- *     with, this does not clear on the next close, or the one after: the sweep
- *     reports success and leaves every `wave/*` branch behind, every close,
- *     forever. Measured in two repositories on two engine versions in one
- *     evening (see the file-level section). A caller that treats it as a blip
- *     is the reason branch hygiene silently never completed there.
+ *   • `'branch-probe-transport-blocked'` — the configured transport could not
+ *     complete the read: it never reached the remote, OR the remote refused
+ *     the caller at the connection or authentication layer before any ref was
+ *     listed (widened by issue #938 — a wrong SSH key or a host-key mismatch
+ *     is an auth/policy refusal, not unreachability, but is exactly as
+ *     permanent here). On a consumer whose harness blocks the transport
+ *     `origin` is configured with, or whose configured credential is simply
+ *     wrong, this does not clear on the next close, or the one after: the
+ *     sweep reports success and leaves every `wave/*` branch behind, every
+ *     close, forever. Measured in two repositories on two engine versions in
+ *     one evening (see the file-level section). A caller that treats it as a
+ *     blip is the reason branch hygiene silently never completed there.
  *
  * ADDITIVE, and additive in the direction that is safe to ignore: the two
  * members answer the SAME question (this branch was left in place because its
@@ -6504,8 +6575,14 @@ export interface BranchHygieneOps {
 //      it never decides whether to delete.
 
 /**
- * Failure texts that identify a probe which never reached the remote — the
- * `'transport-blocked'` kind. In the spirit of ADR-0052 (this is not one of
+ * Failure texts that identify a probe whose configured transport could not
+ * complete the read — the `'transport-blocked'` kind. That covers TWO
+ * distinct situations, not one: the transport never reached the remote at
+ * all, OR it reached the remote and was refused there, at the connection or
+ * authentication layer, before any ref was listed (issue #938 widened this
+ * declaration; the membership below is unchanged — two of its entries,
+ * `'host key verification failed'` and `'permission denied (publickey'`, are
+ * refusals and always were). In the spirit of ADR-0052 (this is not one of
  * the ten Guards, but the same three declarations are what make a classifier
  * readable):
  *
@@ -6539,10 +6616,15 @@ const TRANSPORT_BLOCKED_PROBE_SIGNATURES: readonly string[] = [
   'connection reset by peer',
   'broken pipe',
   'kex_exchange_identification',
-  'host key verification failed',
-  'permission denied (publickey',
   'ssh: connect to host',
   'ssh: could not resolve hostname',
+  // ssh, REACHED and refused at the auth/host-identity layer before any ref
+  // was listed — an auth/policy refusal, not unreachability, but exactly as
+  // permanent on the affected consumer shape as never reaching the remote at
+  // all (issue #938 widened the docstrings above to say so; membership here
+  // is unchanged — both lines were already caught, only undersold).
+  'host key verification failed',
+  'permission denied (publickey',
   // https/git transport, unreachable.
   'could not resolve host',
   'failed to connect to',
@@ -6585,20 +6667,48 @@ function classifyProbeFailure(message: string): 'transport-blocked' | 'unclassif
  *     transport, so a second identical call can only fail identically;
  *   • `git://`, `file://`, a bare local path, a relative path — no HTTPS
  *     spelling exists to derive;
- *   • any URL whose host or path this cannot read off with certainty.
+ *   • any URL whose host or path this cannot read off with certainty;
+ *   • (issue #938) git's own foreign-transport-helper syntax,
+ *     `<transport>::<address>` (git-remote-helpers(7), e.g.
+ *     `ext::ssh -i key %S user@host:path`, `fd::17`) — the address after `::`
+ *     is defined by the named helper, not necessarily a host and a path at
+ *     all, so nothing here can read one out with certainty. Declined up
+ *     front: the scp-like pattern below only excludes a `/` right after the
+ *     FIRST colon, not a second colon, so without this check `foo::bar` would
+ *     parse as host `foo`, path `:bar` — a misread, not a translation;
+ *   • (issue #938) a tilde home-relative path — `~[user]/repo.git` — in
+ *     EITHER documented form (`ssh://host/~user/repo.git` or the scp-like
+ *     `host:~user/repo.git`). `~` is resolved by the SSH server against the
+ *     account's home directory; an `https://` URL has no such resolution, so
+ *     carrying it over verbatim would name a path that cannot resolve on the
+ *     mirror host at all.
  *
- * The mirror is a READ over a different transport to the same host and path.
- * It cannot delete anything, and its answer is used exactly like `origin`'s
- * would have been — `gone` only on git's own exit `2`.
+ * The mirror is a READ over a different transport, ASSUMED (not verified by
+ * this function) to address the same host and path — true for the common
+ * hosting shapes, not true in general (an Azure-DevOps-style origin, or a
+ * deployment with a separate SSH-only hostname, translate to a URL the
+ * operator never configured — see the file-level "the mirror addresses a
+ * host, not necessarily THE repository" section). It cannot delete anything,
+ * and an authoritative answer from it is read exactly like `origin`'s would
+ * have been — `gone` only on git's own exit `2`, and (issue #938) only once
+ * {@link defaultBranchHygieneOps}'s caller has separately confirmed the SAME
+ * mirror also serves the repository's default branch; that confirmation is
+ * this function's caller's job, not this function's.
  */
 function httpsMirrorOf(remoteUrl: string): string | null {
   const url = remoteUrl.trim();
   if (url.length === 0) return null;
 
+  // Foreign-transport-helper syntax, `<transport>::<address>` — declined
+  // before either translation below gets a chance to misread it as scp-like
+  // (issue #938; see the doc comment's null-case list).
+  if (/^[a-z0-9+.-]+::/i.test(url)) return null;
+
   // Explicit ssh:// (and its git+ssh alias). Host may carry a :port to drop.
   const explicit = /^(?:git\+)?ssh:\/\/(?:[^@/]*@)?([^/:]+)(?::\d+)?\/(.+)$/i.exec(url);
   if (explicit !== null) {
     const [, host, path] = explicit;
+    if (path.startsWith('~')) return null; // tilde home-relative — issue #938.
     return `https://${host}/${path.replace(/^\/+/, '')}`;
   }
 
@@ -6610,7 +6720,11 @@ function httpsMirrorOf(remoteUrl: string): string | null {
       const [, host, path] = scpLike;
       // A Windows drive letter (`C:\repos\x`) reads as scp-like; a single
       // character before the colon is never a hostname worth trusting.
-      if (host.length > 1) return `https://${host}/${path.replace(/^\/+/, '')}`;
+      // A tilde home-relative path is declined too (issue #938), same reason
+      // as the ssh:// branch above.
+      if (host.length > 1 && !path.startsWith('~')) {
+        return `https://${host}/${path.replace(/^\/+/, '')}`;
+      }
     }
   }
 
@@ -6702,6 +6816,50 @@ function branchHygieneSkipReasonFor(probe: {
 }
 
 /**
+ * Whether `mirror` demonstrably serves the repository's default branch
+ * (`HEAD`) — the SOLE confirmation the Operator ruling (2026-09-25, issue
+ * #938) requires before a mirror's `'gone'` answer for one branch is trusted.
+ * See the file-level "the mirror addresses a host, not necessarily THE
+ * repository" section for why: a mirror translated from `origin`'s SSH URL
+ * is not guaranteed to name the same repository (an Azure-DevOps-style host,
+ * a separate SSH-only hostname), and the one residual case this whole remedy
+ * could get wrong is a host that serves a valid but EMPTY repository at the
+ * translated address — which would answer "branch not found" authoritatively
+ * while addressing the wrong repository entirely. Any repository that is
+ * genuinely the intended one and has ever had a commit has a `HEAD`; a mirror
+ * that cannot show one is either not the intended repository or not
+ * answering authoritatively, and either way this returns `false`.
+ *
+ * Deliberately `git ls-remote --exit-code <mirror> HEAD` WITHOUT `--heads`:
+ * that flag restricts pattern matching to `refs/heads/*` and excludes the
+ * `HEAD` pseudo-ref entirely — live-verified against a real remote, exit `2`
+ * with `--heads` and exit `0` without it, for the identical remote and ref.
+ * {@link lsRemoteProbe} always passes `--heads`, so this call cannot reuse it
+ * and runs its own `execFileSync` instead.
+ *
+ * Boolean, not a {@link RemoteRefProbeResult}: this check never itself
+ * produces `gone` or a caller-visible skip reason, it only gates whether the
+ * BRANCH probe's own `'gone'` is trusted. Any outcome other than git's own
+ * "found" (exit `0`) — not-found, a network failure, a timeout, `git` itself
+ * missing — reads as "cannot confirm", because an unconfirmed mirror is
+ * exactly the case the ruling says must fail closed.
+ */
+function mirrorServesDefaultBranch(repoRoot: string, mirror: string): boolean {
+  try {
+    execFileSync('git', ['ls-remote', '--exit-code', mirror, 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      timeout: 15_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Default {@link BranchHygieneOps} backed by real git.
  */
 export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
@@ -6784,10 +6942,30 @@ export function defaultBranchHygieneOps(repoRoot: string): BranchHygieneOps {
       const mirror = httpsMirrorOf(shellGit(['remote', 'get-url', 'origin'], repoRoot));
       if (mirror !== null) {
         const viaMirror = lsRemoteProbe(repoRoot, mirror, branch);
-        // An authoritative answer over the mirror IS the answer — `present`
-        // and `gone` mean exactly what they mean over `origin`, because the
-        // mirror addresses the same host and path.
-        if (viaMirror.status !== 'probe-failed') return viaMirror;
+        // A mirror `'present'` IS the answer, unconditionally — a false
+        // `'present'` costs nothing (the branch is left alone either way),
+        // so there is nothing to confirm before trusting it.
+        if (viaMirror.status === 'present') return viaMirror;
+        if (viaMirror.status === 'gone') {
+          // Operator ruling (2026-09-25, issue #938): a mirror's `'gone'`
+          // answer is trusted only once the SAME mirror also demonstrably
+          // serves the repository's default branch — proof it is answering
+          // for the intended, non-empty repository rather than, say, a valid
+          // but empty one that happens to sit at the translated address (see
+          // {@link mirrorServesDefaultBranch} and the file-level section it
+          // points to). Anything short of that confirmation fails closed: a
+          // probe failure, never `gone`.
+          if (mirrorServesDefaultBranch(repoRoot, mirror)) return viaMirror;
+          return {
+            status: 'probe-failed',
+            reason:
+              `${viaOrigin.reason} (https mirror ${mirror} reported branch ` +
+              `"${branch}" absent, but the same mirror's default branch ` +
+              `(HEAD) could not be confirmed present, so the mirror's "gone" ` +
+              'answer is not trusted)',
+            cause: classifyProbeFailure(viaOrigin.reason),
+          };
+        }
         // Both transports failed. The label is still the FIRST failure's —
         // that is the one describing the transport this consumer configured,
         // which is what an operator has to act on — and the mirror's own text
