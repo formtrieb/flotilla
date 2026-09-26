@@ -10295,83 +10295,119 @@ describe('a gutted tree re-reads EXHAUSTED on the next run, real git/fs (issue #
 // (a distinct reason, not the generic one), and — the negative control that
 // must survive every one of these — that nothing here can make the sweep
 // delete a branch it cannot prove is gone.
+/**
+ * The verbatim failure the field report carried, from the repository whose
+ * remote branch had ALREADY been deleted by the merge. Shared by the issue
+ * #876 and issue #938 describe blocks below — both drive the same
+ * `probeRemoteRef` seam and the same failure shape.
+ */
+const FIELD_SSH_PROBE_FAILURE = [
+  'Command failed: git ls-remote --exit-code --heads origin wave/DES-197-flow-tests-ci',
+  'ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Broken pipe',
+  'fatal: Could not read from remote repository.',
+].join('\n');
+
+/** How one `git ls-remote` attempt behaves in a fixture. */
+type ProbeOutcome = 'present' | 'gone' | { fail: string };
+
+function runOutcome(outcome: ProbeOutcome): string {
+  if (outcome === 'present') {
+    return 'a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\trefs/heads/wave/x\n';
+  }
+  if (outcome === 'gone') {
+    // git's own documented `--exit-code` no-match status. The remote WAS
+    // reached; it reported no matching ref.
+    const err = new Error('') as NodeJS.ErrnoException & { status?: number };
+    err.status = 2;
+    throw err;
+  }
+  const err = new Error(outcome.fail) as NodeJS.ErrnoException & { status?: number };
+  err.status = 128;
+  throw err;
+}
+
+/**
+ * Drive the mocked `execFileSync` for one `probeRemoteRef` call, dispatching
+ * on the argv the implementation actually passes. Records every `git`
+ * invocation so a test can assert which transports were tried — and, just as
+ * importantly, which were NOT.
+ */
+function gitProbeHarness(spec: {
+  /** What `git remote get-url origin` prints; `null` makes that call fail. */
+  originUrl: string | null;
+  /** The attempt against the literal remote name `origin`. */
+  origin: ProbeOutcome;
+  /**
+   * The attempt against a URL. Omitted means the fixture does not expect a
+   * second attempt at all — if one happens anyway the harness throws a
+   * distinctive error rather than silently answering.
+   */
+  mirror?: ProbeOutcome;
+  /**
+   * The confirmatory `git ls-remote --exit-code <mirror> HEAD` call issued
+   * ONLY after a `mirror: 'gone'` answer (Operator ruling 2026-09-25, issue
+   * #938). Omitted defaults to `'present'` — every fixture written before
+   * this confirmation existed cares only about the branch-level
+   * translation and keeps behaving exactly as it did before this ticket;
+   * a test that wants to exercise the confirmation itself sets this
+   * explicitly.
+   */
+  mirrorDefaultBranch?: 'present' | 'absent' | { fail: string };
+}): { calls: string[][] } {
+  const calls: string[][] = [];
+  asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
+    const argv = (args[1] as string[]) ?? [];
+    calls.push(argv);
+    if (argv[0] === 'remote' && argv[1] === 'get-url') {
+      if (spec.originUrl === null) throw new Error("fatal: No such remote 'origin'");
+      return `${spec.originUrl}\n`;
+    }
+    if (argv[0] === 'ls-remote') {
+      // The default-branch confirmation call is structurally distinct from
+      // a branch probe: no `--heads`, and it asks for the literal `HEAD`
+      // pseudo-ref (argv = ['ls-remote', '--exit-code', <mirror>, 'HEAD'],
+      // four elements — a branch probe is
+      // ['ls-remote', '--exit-code', '--heads', <remote>, <branch>], five).
+      if (argv[2] !== '--heads' && argv[3] === 'HEAD') {
+        const outcome = spec.mirrorDefaultBranch ?? 'present';
+        if (outcome === 'present') {
+          return 'a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\tHEAD\n';
+        }
+        return runOutcome(outcome === 'absent' ? 'gone' : outcome);
+      }
+      const remote = argv[3];
+      if (remote === 'origin') return runOutcome(spec.origin);
+      if (spec.mirror === undefined) {
+        throw new Error(`UNEXPECTED second ls-remote against ${String(remote)}`);
+      }
+      return runOutcome(spec.mirror);
+    }
+    return '';
+  });
+  return { calls };
+}
+
+/** Every BRANCH-level `git ls-remote` argv the harness recorded, in order —
+ * the default-branch confirmation call (distinct shape, see
+ * {@link gitProbeHarness}) is deliberately excluded so every assertion
+ * written before that confirmation existed keeps reading the same targets
+ * it always did. */
+function lsRemoteTargets(calls: string[][]): string[] {
+  return calls.filter((a) => a[0] === 'ls-remote' && a[2] === '--heads').map((a) => a[3]);
+}
+
+/** Every default-branch CONFIRMATION `git ls-remote` argv the harness
+ * recorded (issue #938) — the complement of {@link lsRemoteTargets}. */
+function lsRemoteHeadConfirmations(calls: string[][]): string[] {
+  return calls
+    .filter((a) => a[0] === 'ls-remote' && a[2] !== '--heads' && a[3] === 'HEAD')
+    .map((a) => a[2]);
+}
+
 describe('the remote probe transport (issue #876)', () => {
   afterEach(() => {
     asExecFileSyncMock(execFileSync).mockImplementation(() => '');
   });
-
-  /**
-   * The verbatim failure the field report carried, from the repository whose
-   * remote branch had ALREADY been deleted by the merge.
-   */
-  const FIELD_SSH_PROBE_FAILURE = [
-    'Command failed: git ls-remote --exit-code --heads origin wave/DES-197-flow-tests-ci',
-    'ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Broken pipe',
-    'fatal: Could not read from remote repository.',
-  ].join('\n');
-
-  /** How one `git ls-remote` attempt behaves in a fixture. */
-  type ProbeOutcome = 'present' | 'gone' | { fail: string };
-
-  function runOutcome(outcome: ProbeOutcome): string {
-    if (outcome === 'present') {
-      return 'a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4\trefs/heads/wave/x\n';
-    }
-    if (outcome === 'gone') {
-      // git's own documented `--exit-code` no-match status. The remote WAS
-      // reached; it reported no matching ref.
-      const err = new Error('') as NodeJS.ErrnoException & { status?: number };
-      err.status = 2;
-      throw err;
-    }
-    const err = new Error(outcome.fail) as NodeJS.ErrnoException & { status?: number };
-    err.status = 128;
-    throw err;
-  }
-
-  /**
-   * Drive the mocked `execFileSync` for one `probeRemoteRef` call, dispatching
-   * on the argv the implementation actually passes. Records every `git`
-   * invocation so a test can assert which transports were tried — and, just as
-   * importantly, which were NOT.
-   */
-  function gitProbeHarness(spec: {
-    /** What `git remote get-url origin` prints; `null` makes that call fail. */
-    originUrl: string | null;
-    /** The attempt against the literal remote name `origin`. */
-    origin: ProbeOutcome;
-    /**
-     * The attempt against a URL. Omitted means the fixture does not expect a
-     * second attempt at all — if one happens anyway the harness throws a
-     * distinctive error rather than silently answering.
-     */
-    mirror?: ProbeOutcome;
-  }): { calls: string[][] } {
-    const calls: string[][] = [];
-    asExecFileSyncMock(execFileSync).mockImplementation((...args: unknown[]) => {
-      const argv = (args[1] as string[]) ?? [];
-      calls.push(argv);
-      if (argv[0] === 'remote' && argv[1] === 'get-url') {
-        if (spec.originUrl === null) throw new Error("fatal: No such remote 'origin'");
-        return `${spec.originUrl}\n`;
-      }
-      if (argv[0] === 'ls-remote') {
-        const remote = argv[3];
-        if (remote === 'origin') return runOutcome(spec.origin);
-        if (spec.mirror === undefined) {
-          throw new Error(`UNEXPECTED second ls-remote against ${String(remote)}`);
-        }
-        return runOutcome(spec.mirror);
-      }
-      return '';
-    });
-    return { calls };
-  }
-
-  /** Every `git ls-remote` argv the harness recorded, in order. */
-  function lsRemoteTargets(calls: string[][]): string[] {
-    return calls.filter((a) => a[0] === 'ls-remote').map((a) => a[3]);
-  }
 
   // ── AC1, first limb: the probe reads remote state successfully ────────────
 
@@ -10529,6 +10565,221 @@ describe('the remote probe transport (issue #876)', () => {
 
     expect(result.status).not.toBe('gone');
     expect(result.status).toBe('probe-failed');
+  });
+});
+
+// ─── 30a0. `transport-blocked`'s meaning is WIDENED, its membership is PINNED
+//           (issue #938, finding 1) ────────────────────────────────────────────
+//
+// The docstrings above now say `transport-blocked` covers BOTH "never reached
+// the remote" and "reached the remote and was refused there, at the
+// connection or authentication layer, before any ref was listed" — but the
+// SIGNATURE LIST itself does not change membership. These controls pin
+// today's labels exactly as they were before this ticket: a public-key
+// denial (with git's own standard trailer) and a host-key verification
+// failure were ALREADY `transport-blocked` (they always matched
+// {@link TRANSPORT_BLOCKED_PROBE_SIGNATURES}); only the docstring undersold
+// them as unreachability. An unresolvable host pins the other half of the
+// widened meaning (genuine unreachability, unchanged). A fourth control pins
+// the abstention this widening does NOT touch: an unmodelled text stays
+// `unclassified`.
+describe("transport-blocked's meaning is widened, membership is pinned (issue #938, finding 1)", () => {
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+  });
+
+  it("CONTROL: a public-key denial, with git's own standard trailer, classifies `transport-blocked` — REACHED and refused, not unreachable", () => {
+    gitProbeHarness({
+      originUrl: 'https://github.com/acme/consumer-repo.git',
+      origin: {
+        fail: [
+          'git@github.com: Permission denied (publickey).',
+          'fatal: Could not read from remote repository.',
+        ].join('\n'),
+      },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect((result as { cause?: string }).cause).toBe('transport-blocked');
+  });
+
+  it('CONTROL: a host-key verification failure classifies `transport-blocked` — REACHED and refused at the identity layer', () => {
+    gitProbeHarness({
+      originUrl: 'https://github.com/acme/consumer-repo.git',
+      origin: {
+        fail: [
+          'Host key verification failed.',
+          'fatal: Could not read from remote repository.',
+        ].join('\n'),
+      },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect((result as { cause?: string }).cause).toBe('transport-blocked');
+  });
+
+  it("CONTROL: an unresolvable host classifies `transport-blocked` too — never reached at all, the OTHER half of the widened meaning", () => {
+    gitProbeHarness({
+      originUrl: 'https://github.com/acme/consumer-repo.git',
+      origin: {
+        fail: 'ssh: Could not resolve hostname git.example.com: Name or service not known',
+      },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect((result as { cause?: string }).cause).toBe('transport-blocked');
+  });
+
+  it('CONTROL: an unmodelled failure text still stays `unclassified` — the widened MEANING never widens the signature LIST', () => {
+    gitProbeHarness({
+      originUrl: 'https://github.com/acme/consumer-repo.git',
+      origin: { fail: 'error: object file .git/objects/ab/cdef is empty' },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect((result as { cause?: string }).cause).toBe('unclassified');
+  });
+});
+
+// ─── 30a. The mirror's own scope — declined address forms and a confirmed
+//          "gone" (issue #938) ───────────────────────────────────────────────
+//
+// Two independent narrowings on the issue #876 remedy, neither changing what
+// counts as `gone` (still git's own exit `2`, and nothing else):
+//
+//   1. `httpsMirrorOf` now DECLINES (no second attempt at all) two address
+//      forms it previously mistranslated: git's foreign-transport-helper
+//      `<transport>::<address>` syntax, and a tilde home-relative path in
+//      either the scp-like or the explicit `ssh://` form.
+//   2. A mirror's `'gone'` answer is trusted only once the SAME mirror also
+//      demonstrably serves the repository's default branch (`HEAD`) —
+//      Operator ruling 2026-09-25. Anything short of that confirmation is a
+//      probe failure, never `gone`.
+describe('the mirror\'s own scope (issue #938)', () => {
+  afterEach(() => {
+    asExecFileSyncMock(execFileSync).mockImplementation(() => '');
+  });
+
+  // ── Declined translations — no second attempt, no `gone` possible ────────
+
+  it('AC3: the remote-helper `<transport>::<address>` syntax makes EXACTLY ONE ls-remote call and yields a probe failure — no second attempt, and the failure is NOT misread as scp-like', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'ext::ssh -i key %S user@host:/path/to/repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      // No `mirror` — a second attempt here would throw inside the harness.
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect(lsRemoteTargets(calls)).toEqual(['origin']);
+    expect(calls.filter((a) => a[0] === 'ls-remote')).toHaveLength(1);
+  });
+
+  it('AC3: a tilde home-relative path in scp-like form makes EXACTLY ONE ls-remote call and yields a probe failure — `host:~user/repo.git` is not carried verbatim into an https URL', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:~acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect(lsRemoteTargets(calls)).toEqual(['origin']);
+    expect(calls.filter((a) => a[0] === 'ls-remote')).toHaveLength(1);
+  });
+
+  it('AC3: a tilde home-relative path in explicit `ssh://` form makes EXACTLY ONE ls-remote call and yields a probe failure — same reason as the scp-like case', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'ssh://git@git.example.com/~acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect(lsRemoteTargets(calls)).toEqual(['origin']);
+    expect(calls.filter((a) => a[0] === 'ls-remote')).toHaveLength(1);
+  });
+
+  // ── AC4: a mirror's "gone" is trusted only with a confirmed default branch ─
+
+  it('AC4: a mirror not-found WITH the default branch listed IS `gone` — the confirmation call is made against the SAME mirror, without `--heads`', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: 'gone',
+      mirrorDefaultBranch: 'present',
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result).toEqual({ status: 'gone' });
+    expect(lsRemoteHeadConfirmations(calls)).toEqual([
+      'https://github.com/acme/consumer-repo.git',
+    ]);
+  });
+
+  it('AC4: a mirror not-found with the default branch ABSENT is a probe failure, never `gone`', () => {
+    gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: 'gone',
+      mirrorDefaultBranch: 'absent',
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).not.toBe('gone');
+    expect(result.status).toBe('probe-failed');
+  });
+
+  it('AC4: a mirror not-found whose default-branch READ ITSELF FAILS (network error, not a clean not-found) is a probe failure, never `gone`', () => {
+    gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: 'gone',
+      mirrorDefaultBranch: { fail: 'fatal: unable to access: proxy refused' },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).not.toBe('gone');
+    expect(result.status).toBe('probe-failed');
+  });
+
+  it('a mirror `present` answer needs no confirmation at all — no HEAD call is ever made', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: 'present',
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result).toEqual({ status: 'present' });
+    expect(lsRemoteHeadConfirmations(calls)).toEqual([]);
+  });
+
+  it('both transports failing outright needs no confirmation either — there is no `gone` answer to confirm', () => {
+    const { calls } = gitProbeHarness({
+      originUrl: 'git@github.com:acme/consumer-repo.git',
+      origin: { fail: FIELD_SSH_PROBE_FAILURE },
+      mirror: { fail: 'fatal: unable to access: proxy refused' },
+    });
+
+    const result = defaultBranchHygieneOps('/repo').probeRemoteRef('wave/938-x');
+
+    expect(result.status).toBe('probe-failed');
+    expect(lsRemoteHeadConfirmations(calls)).toEqual([]);
   });
 });
 
