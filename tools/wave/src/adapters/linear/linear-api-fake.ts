@@ -19,6 +19,7 @@ import type {
   LinearProjectStatusType,
   LinearStateType,
   LinearCreateIssueInput,
+  LinearGitAutomationState,
   LinearPrAttachment,
   LinearUpdateInput,
   LinearUpdateResult,
@@ -71,6 +72,15 @@ interface FakeUpdateRecord {
    * {@link InMemoryLinearApi.recordUpdate}.
    */
   readonly health?: string;
+}
+
+/** A deep copy, so a caller mutating what it got back cannot reach the fake's own list. */
+function copyGitAutomationState(rule: LinearGitAutomationState): LinearGitAutomationState {
+  return {
+    event: rule.event,
+    stateName: rule.stateName,
+    targetBranch: rule.targetBranch === null ? null : { ...rule.targetBranch },
+  };
 }
 
 /** State categories that make an issue closed (excluded from listOpenIssues). */
@@ -143,6 +153,13 @@ export class InMemoryLinearApi implements LinearApi {
   private catalog: { name: string; type: LinearStateType }[] = [...DEFAULT_STATE_CATALOG];
   /** Store-preflight substrate (FOR-12): is the workspace's GitHub integration installed? Default yes. */
   private githubIntegrationInstalled = true;
+  /**
+   * Store-preflight substrate (the advisory `gitAutomation` reading): the team's
+   * PR-automation rules, held EXPLICITLY. Default empty — a team with no rule the
+   * fake can vouch for — rather than a guess at what Linear ships by default,
+   * which no read of the schema can settle.
+   */
+  private gitAutomationRules: LinearGitAutomationState[] = [];
   /** When set, the production {@link addBlockedBy} mirror rejects with it (models a failed `issueRelationCreate`). */
   private relationWriteError: Error | undefined;
   /** When set, {@link removeBlockedBy} rejects with it (models a refused `issueRelationDelete`). */
@@ -354,6 +371,15 @@ export class InMemoryLinearApi implements LinearApi {
 
   async listStates(): Promise<{ name: string; type: LinearStateType }[]> {
     return this.catalog.map((s) => ({ ...s }));
+  }
+
+  /**
+   * The explicit rule list {@link setGitAutomationStates} holds, as copies —
+   * modelling `RealLinearApi.listGitAutomationStates`, which reports every rule
+   * and grades none.
+   */
+  async listGitAutomationStates(): Promise<LinearGitAutomationState[]> {
+    return this.gitAutomationRules.map(copyGitAutomationState);
   }
 
   // ── Document facet substrate (ADR-0017) — a separate store from issues ──────
@@ -724,6 +750,15 @@ export class InMemoryLinearApi implements LinearApi {
    */
   setGitHubIntegration(installed: boolean): void {
     this.githubIntegrationInstalled = installed;
+  }
+
+  /**
+   * Test affordance: replace the team's PR-automation rule list. NOT part of
+   * `LinearApi` — the store-preflight spec reaches it to drive each case of the
+   * advisory `gitAutomation` reading. Mirrors setStateCatalog's stance.
+   */
+  setGitAutomationStates(rules: LinearGitAutomationState[]): void {
+    this.gitAutomationRules = rules.map(copyGitAutomationState);
   }
 
   /**

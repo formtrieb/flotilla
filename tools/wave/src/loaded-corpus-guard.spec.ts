@@ -1177,6 +1177,9 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // re-measured at 1,264,343 B over the same 57 files — 11,657 B of headroom left under row #998's value.
 // NOT raised by issue #622 (`block` / `unblock`, ADR-0054): four skill files add 3,010 B, re-measured at
 // 1,267,353 B over the same 57 files (next full KB 1,268,000 < this value) — 8,647 B of headroom left.
+// NOT raised by issue #879 (the advisory `gitAutomation` reading): wave-setup's SKILL.md (+254 B) and
+// setup-mechanics.md (+825 B) add 1,079 B, re-measured at 1,268,432 B over the same 57 files (next full
+// KB 1,269,000 < this value) — 7,568 B of headroom left. Shared standing load untouched (159,720 B).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

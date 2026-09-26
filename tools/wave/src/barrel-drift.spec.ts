@@ -177,6 +177,13 @@ import type {
   DeferredBranch,
   DeferredBranchReason,
   ReviewRefPlanOptions,
+  // ─── the PR-automation rule (ADR-0020 amendment 2026-09-25) ───────────────
+  //
+  // Promoted in the diff that declares it: `linear-api.ts` exports it as the
+  // element type of the optional `LinearApi.listGitAutomationStates`, and the
+  // compiler-API check below fails any export of that module the barrel does
+  // not carry. Named here for the same load-time reason every type above is.
+  LinearGitAutomationState,
 } from './index';
 
 // ─── the module surface ──────────────────────────────────────────────────
@@ -1191,6 +1198,21 @@ describe('barrel-drift — AC4: newly-reconciled symbols resolve by name from th
     // which is a different fact from either of the two above.
     const unstated: LinearProject = { ...substituted, unreadStatusType: null };
     expect(unstated.unreadStatusType).toBeNull();
+  });
+
+  it('the PR-automation rule annotates from the root, with BOTH vendor nulls as real inhabitants', () => {
+    // Two nulls, two meanings, both spellable from the root alone: a null
+    // `stateName` is "take no action" and a null `targetBranch` is "the team
+    // default". A consumer that could not annotate either would be tempted to
+    // coalesce it — which is the mistake the type's docs exist to prevent.
+    const noActionDefault: LinearGitAutomationState = { event: 'start', stateName: null, targetBranch: null };
+    expect(noActionDefault.stateName).toBeNull();
+    const branchScoped: LinearGitAutomationState = {
+      event: 'review',
+      stateName: 'In Review',
+      targetBranch: { branchPattern: 'release/.*', isRegex: true },
+    };
+    expect(branchScoped.targetBranch?.isRegex).toBe(true);
   });
 
   it('the aliased extractIssueId pair resolves to two DIFFERENT, genuinely importable bindings — not one shadowing the other', () => {

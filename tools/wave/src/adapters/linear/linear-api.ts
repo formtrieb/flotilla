@@ -224,6 +224,50 @@ export interface LinearInitiative {
   description: string;
 }
 
+/**
+ * ONE Linear PR-automation rule, as `Team.gitAutomationStates` reports it — the
+ * substrate of the store-preflight's advisory `gitAutomation` reading.
+ *
+ * Read from Linear's published GraphQL schema (`linear/linear` →
+ * `packages/sdk/src/schema.graphql` @ commit
+ * `689ccc1e905d97df14272621b96a8614c5d3c2cb`, read 2026-09-26, this dispatch):
+ *
+ *     type GitAutomationState { event: GitAutomationStates!
+ *       state: WorkflowState  targetBranch: GitAutomationTargetBranch  … }
+ *     enum GitAutomationStates { draft merge mergeable review start }
+ *     type GitAutomationTargetBranch { branchPattern: String!  isRegex: Boolean!  … }
+ *
+ * and `Team.gitAutomationStates(first, after, …): GitAutomationStateConnection!`
+ * — the field the schema's own deprecation notes point at ("Use
+ * team.gitAutomationStates instead.") from the five older per-event
+ * `Team.{draft,start,review,mergeable,merge}WorkflowState` fields.
+ *
+ * Every field is TRANSPORT: the adapter reports what the vendor said and grades
+ * nothing. The two nulls are the vendor's own and mean different things, so
+ * neither is ever coalesced.
+ */
+export interface LinearGitAutomationState {
+  /**
+   * The Git event the rule fires on — a `GitAutomationStates` member (`draft`,
+   * `start`, `review`, `mergeable`, `merge` at the read above). A `string`, not a
+   * union, for the reason {@link LinearProject.health} is one: a sixth vendor
+   * member must travel through as data rather than fail a read.
+   */
+  event: string;
+  /**
+   * The workflow-state NAME the rule moves a linked issue to, or `null` — which
+   * the schema documents as "this rule is configured to take no action,
+   * overriding any default rule for the same event". Null is NOT "unknown".
+   */
+  stateName: string | null;
+  /**
+   * The branch the rule is scoped to, or `null` — which the schema documents as
+   * "a default rule that applies to all branches". A branch-scoped rule
+   * "override[s] any default rule for the same event" for PRs targeting it.
+   */
+  targetBranch: { branchPattern: string; isRegex: boolean } | null;
+}
+
 export interface LinearApi {
   /** Create an issue; return the server-assigned human identifier. */
   createIssue(input: LinearCreateIssueInput): Promise<{ identifier: string }>;
@@ -343,6 +387,22 @@ export interface LinearApi {
    * `setState` mid-wave (FOR-12). Real impl exposes the cached `team.states`.
    */
   listStates(): Promise<{ name: string; type: LinearStateType }[]>;
+  /**
+   * The team's own PR-automation rules — Linear's `Team.gitAutomationStates`
+   * (ADR-0020 amendment 2026-09-25). The store-preflight reads them into an
+   * ADVISORY reading on whether they move an issue to the configured claim
+   * states; nothing here writes or repairs a rule.
+   *
+   * OPTIONAL on the seam, and that is the contract a caller must honour: an
+   * implementation that does not provide it (a consumer's own transport, a
+   * recording double written before it existed) stays a valid `LinearApi`, and
+   * the preflight reads its absence as "cannot decide", never as a throw.
+   *
+   * Real impl: the cached team's `gitAutomationStates` connection, paged to
+   * exhaustion. Every rule is returned, team-default and branch-scoped alike;
+   * grading which of them matter is the caller's business.
+   */
+  listGitAutomationStates?(): Promise<LinearGitAutomationState[]>;
   // Document facet substrate (ADR-0017) — native Documents, categorically not issues:
   /**
    * Create a native Document under the ONE parent the api is bound to: the

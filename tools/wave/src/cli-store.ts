@@ -90,7 +90,7 @@ import { createLinearApiFromEnv } from './adapters/linear/linear-api-factory';
 import type { CheckStatus } from './host-pr';
 import type { GitHubApi } from './adapters/github/github-api';
 import type { GitHubIssuesStore } from './adapters/github/github-issues-store';
-import type { LinearApi } from './adapters/linear/linear-api';
+import type { LinearApi, LinearGitAutomationState } from './adapters/linear/linear-api';
 import type { LinearIssuesStore } from './adapters/linear/linear-issues-store';
 import { DEFAULT_LINEAR_STATES, type LinearStateMap } from './adapters/linear/linear-issues-store';
 import { RISK_VALUES, WORKER_VALUES, type Risk, type Worker } from './header-parser';
@@ -283,6 +283,45 @@ export interface StorePreflightReport {
     /** Human-legible one-liner naming what was exercised and what came back. */
     readonly detail: string;
   };
+  /**
+   * The Linear team's own PR-automation rules, read and graded against the
+   * configured claim states (ADR-0020 amendment 2026-09-25) — see
+   * {@link gitAutomationReading}. Present on a `linear` report only; the other
+   * store kinds have no such rules to read.
+   *
+   * **ADVISORY BY CONSTRUCTION, following `goalBinding`'s precedent** (Operator
+   * ruling 2026-09-25): `status` has no failing member, `ok` is computed from
+   * `checks` alone, so a misaligned team cannot move `ok` or the exit code. A
+   * FIELD rather than a check row for `goalBinding`'s reason too:
+   * `PreflightCheck['name']` is a closed, root-exported union.
+   *
+   * Three answers, not two (ADR-0052): `aligned` and `misaligned` are verdicts;
+   * `abstain` says the reading could not decide — a graded event has no
+   * team-default rule (Linear may apply an implicit default the API does not
+   * report), the adapter does not implement the optional read, or the read
+   * failed. `misaligned` wins over `abstain` when both apply: one definite
+   * mismatch is a verdict whatever the undecided events turn out to be.
+   */
+  gitAutomation?: {
+    readonly status: 'aligned' | 'misaligned' | 'abstain';
+    /** Each graded team-default rule that targets a different state than the config names. */
+    readonly mismatches?: readonly {
+      /** The Git event the rule fires on (`draft` / `start` / `review` / `mergeable`). */
+      readonly event: string;
+      /** The state Linear moves the issue to. */
+      readonly found: string;
+      /** The state this config names for that event's rung. */
+      readonly expected: string;
+    }[];
+    /** Graded events with NO team-default rule — why the reading abstained. */
+    readonly undecided?: readonly string[];
+    /** Graded events whose team-default rule takes no action (a null target state) — never a mismatch. */
+    readonly noAction?: readonly string[];
+    /** Every rule as read, team-default and branch-scoped alike — present whenever the read ran. */
+    readonly rules?: readonly LinearGitAutomationState[];
+    /** Human-legible account of what was read, what was graded, and what stays a human check. */
+    readonly detail: string;
+  };
 }
 
 // ── the Goal-container binding, exercised at preflight time (ADR-0044) ───────
@@ -384,6 +423,148 @@ function goalBindingReading(config: WaveConfig): NonNullable<StorePreflightRepor
     // a plain Error rather than a typed one — carried through unchanged.
     return { status: 'advisory', detail: `${(err as Error).message}.${advisory}` };
   }
+}
+
+// ── the team's PR-automation rules, read at preflight time (ADR-0020) ────────
+
+/**
+ * Which Git events are GRADED, and against which configured rung — the
+ * alignment rule of ADR-0020's 2026-09-21 amendment, keyed by Linear's own
+ * `GitAutomationStates` members: a PR opened as draft (`draft`) or opened
+ * (`start`) moves the row to `states.inFlight`; review requested (`review`) or
+ * ready to merge (`mergeable`) to `states.inReview`. `merge` is deliberately
+ * absent — Linear's own Done-on-merge stays on and the reading only reports it —
+ * and so is any event the vendor adds later: reported, never graded.
+ */
+const GRADED_GIT_AUTOMATION_EVENTS: readonly {
+  readonly event: string;
+  readonly rung: 'inFlight' | 'inReview';
+}[] = [
+  { event: 'draft', rung: 'inFlight' },
+  { event: 'start', rung: 'inFlight' },
+  { event: 'review', rung: 'inReview' },
+  { event: 'mergeable', rung: 'inReview' },
+];
+
+/** Where a human reads and fixes the rules — Linear's own per-team settings path. */
+const GIT_AUTOMATION_SETTINGS_PATH =
+  'Settings → Team → Workflows & automations → Pull request and commit automations';
+
+/** The sentence every detail ends on: what this reading can and cannot do to the report. */
+const GIT_AUTOMATION_ADVISORY =
+  'Advisory only — this reading never fails the preflight.';
+
+/**
+ * Read the Linear team's PR-automation rules and grade the TEAM-DEFAULT ones
+ * (no target branch) against the configured claim states — the probe that
+ * replaced wave-setup's human-only precondition item 6 wherever it can decide.
+ *
+ * Never throws: an adapter without the optional `listGitAutomationStates`, and
+ * a read that fails, both come back `abstain` with the reason in `detail`. The
+ * grading, per rule:
+ *   - a team-default rule on a graded event naming the configured state →
+ *     aligned; naming another state → a mismatch (event, found, expected);
+ *   - a team-default rule with a null state → "no action", never a mismatch:
+ *     the rule overrides Linear's default and moves nothing, so it cannot
+ *     rewrite the claim ledger;
+ *   - a graded event with NO team-default rule → undecided (ADR-0052): Linear
+ *     may apply an implicit default the API does not report;
+ *   - a branch-scoped rule → listed and counted, never graded (matching a
+ *     pattern, regex or not, against this repo's target branch is out of scope);
+ *   - `merge`, and any event outside the graded four → reported, never graded.
+ *
+ * Runs whether or not `states.doneState` is configured: the FOR-13 fallback
+ * decides how a row reaches `done`, not where a PR's opening moves it.
+ */
+async function gitAutomationReading(
+  api: LinearApi | undefined,
+  states: LinearStateMap,
+): Promise<NonNullable<StorePreflightReport['gitAutomation']>> {
+  const byHand = `Confirm the team's PR-automation by hand at ${GIT_AUTOMATION_SETTINGS_PATH}.`;
+  if (typeof api?.listGitAutomationStates !== 'function') {
+    return {
+      status: 'abstain',
+      detail: `Cannot decide: this LinearApi implementation does not provide listGitAutomationStates, so the team's PR-automation rules were not read. ${byHand} ${GIT_AUTOMATION_ADVISORY}`,
+    };
+  }
+  let rules: LinearGitAutomationState[];
+  try {
+    rules = await api.listGitAutomationStates();
+  } catch (err) {
+    return {
+      status: 'abstain',
+      detail: `Cannot decide: reading the team's PR-automation rules failed (${(err as Error).message ?? String(err)}). ${byHand} ${GIT_AUTOMATION_ADVISORY}`,
+    };
+  }
+
+  const defaults = rules.filter((r) => r.targetBranch === null);
+  const branchScoped = rules.filter((r) => r.targetBranch !== null);
+  const mismatches: { event: string; found: string; expected: string }[] = [];
+  const undecided: string[] = [];
+  const noAction: string[] = [];
+  for (const { event, rung } of GRADED_GIT_AUTOMATION_EVENTS) {
+    const expected = states[rung];
+    const onEvent = defaults.filter((r) => r.event === event);
+    if (onEvent.length === 0) {
+      undecided.push(event);
+      continue;
+    }
+    for (const rule of onEvent) {
+      if (rule.stateName === null) {
+        if (!noAction.includes(event)) noAction.push(event);
+      } else if (rule.stateName !== expected) {
+        mismatches.push({ event, found: rule.stateName, expected });
+      }
+    }
+  }
+
+  const quoted = (events: readonly string[]) => events.map((e) => `"${e}"`).join(', ');
+  const notes: string[] = [];
+  if (noAction.length > 0) {
+    notes.push(`Team-default rule(s) for ${quoted(noAction)} take no action (null target state) — not a mismatch, since they move nothing.`);
+  }
+  const merge = defaults.filter((r) => r.event === 'merge');
+  if (merge.length > 0) {
+    notes.push(`"merge" reported, not graded: ${merge.map((r) => (r.stateName === null ? 'no action' : `"${r.stateName}"`)).join(', ')}.`);
+  }
+  const graded = new Set(GRADED_GIT_AUTOMATION_EVENTS.map((g) => g.event));
+  const unknown = [...new Set(defaults.map((r) => r.event).filter((e) => e !== 'merge' && !graded.has(e)))];
+  if (unknown.length > 0) {
+    notes.push(`Event(s) ${quoted(unknown)} reported, not graded.`);
+  }
+  if (branchScoped.length > 0) {
+    const patterns = branchScoped.map((r) => `"${r.event}" on ${r.targetBranch!.isRegex ? 'pattern' : 'branch'} "${r.targetBranch!.branchPattern}"`);
+    notes.push(`${branchScoped.length} branch-scoped rule(s) present and NOT graded (${patterns.join('; ')}) — a branch-scoped rule overrides the team default for PRs targeting that branch; ${byHand}`);
+  }
+  const tail = [...notes, GIT_AUTOMATION_ADVISORY].join(' ');
+  const read = {
+    ...(mismatches.length > 0 ? { mismatches } : {}),
+    ...(undecided.length > 0 ? { undecided } : {}),
+    ...(noAction.length > 0 ? { noAction } : {}),
+    rules,
+  };
+
+  if (mismatches.length > 0) {
+    const each = mismatches.map((m) => `on "${m.event}" Linear moves the issue to "${m.found}", but this config expects "${m.expected}"`);
+    const also = undecided.length > 0 ? ` (and no team-default rule for ${quoted(undecided)}, which this reading cannot decide)` : '';
+    return {
+      status: 'misaligned',
+      ...read,
+      detail: `Team PR-automation is misaligned with the configured claim states: ${each.join('; ')}${also}. A misaligned rule rewrites the claim ledger out of band when a PR opens or advances. Align it at ${GIT_AUTOMATION_SETTINGS_PATH}. ${tail}`,
+    };
+  }
+  if (undecided.length > 0) {
+    return {
+      status: 'abstain',
+      ...read,
+      detail: `Cannot decide: no team-default rule for ${quoted(undecided)} — Linear may apply an implicit default for an event with no rule, and the API does not report what it is. ${byHand} ${tail}`,
+    };
+  }
+  return {
+    status: 'aligned',
+    ...read,
+    detail: `Every graded event has a team-default PR-automation rule, and none moves the issue anywhere but the configured claim state (draft/start → "${states.inFlight}", review/mergeable → "${states.inReview}"). ${tail}`,
+  };
 }
 
 // ── the plugin/engine lockstep version check (ADR-0032) ───────────────────────
@@ -697,6 +878,13 @@ export function engineVersionPreflightCheck(
  * a config reading, so it costs no tracker call and is computed even for an
  * injected store that implements nothing; and it is advisory by construction,
  * so it never moves `ok`.
+ *
+ * {@link StorePreflightReport.gitAutomation} rides beside it on a `linear`
+ * report only: the team's own PR-automation rules, graded against the
+ * configured claim states. Unlike `goalBinding` it DOES reach the tracker —
+ * through the optional `LinearApi.listGitAutomationStates` — and is still
+ * advisory by construction: a missing method or a failed read abstains, and no
+ * answer of it moves `ok`.
  */
 export async function preflightStore(
   config: WaveConfig,
@@ -727,6 +915,17 @@ export async function preflightStore(
     // answer), and advisory by construction, so `ok` above is computed from
     // `checks` alone exactly as it was before this field existed.
     goalBinding: goalBindingReading(config),
+    // ADR-0020 amendment 2026-09-25 — the Linear team's PR-automation rules,
+    // advisory by construction exactly like `goalBinding`: `ok` above never
+    // reads it.
+    ...(s.kind === 'linear'
+      ? {
+          gitAutomation: await gitAutomationReading(
+            (store as LinearIssuesStore).api,
+            { ...DEFAULT_LINEAR_STATES, ...s.states },
+          ),
+        }
+      : {}),
   };
 }
 
@@ -1175,6 +1374,8 @@ export const STORE_PREFLIGHT_CONTRACT: VerbContract = defineVerb({
   output: 'json',
   notes: [
     '  Probes TRACKER preconditions only (tracker↔host integration, workflow-state catalog).',
+    '  On a linear store it also reads the team\'s PR-automation rules into an ADVISORY',
+    '  `gitAutomation` reading (aligned / misaligned / abstain) — it never fails the preflight.',
     '  --expect <plugin-version> additionally reports the plugin/engine lockstep',
     '  comparison as an ADVISORY check — it never fails the preflight.',
     `  ${CREATE_MISSING_LABELS_FLAG} creates every label the state-catalog check reports`,
@@ -1190,11 +1391,13 @@ export const STORE_PREFLIGHT_CONTRACT: VerbContract = defineVerb({
   // declared OPTIONAL on the type and is always present in what
   // {@link preflightStore} returns — the shape below says `?` because that is
   // what a consumer's own hand-built report may omit, and the printed form of
-  // THIS verb always carries it.
+  // THIS verb always carries it. `gitAutomation` is `?` for a second reason: the
+  // verb prints it on a `linear` store only.
   json: {
     shape:
       '{ ok, storeKind, checks: [ { name, status, detail } ], ' +
-      'goalBinding?: { status, container?, failure?, configured?, detail } }',
+      'goalBinding?: { status, container?, failure?, configured?, detail }, ' +
+      'gitAutomation?: { status, mismatches?, undecided?, noAction?, rules?, detail } }',
     trail: '--create-missing-labels changes no key — it rewrites the state-catalog check\'s detail',
   },
 });

@@ -178,6 +178,33 @@ describe('InMemoryLinearApi store-preflight substrate (FOR-12)', () => {
     expect(names).not.toContain('In Review'); // the fresh workspace lacks it
     expect(names).toContain('In Progress');
   });
+
+  it('listGitAutomationStates is EMPTY by default — the fake guesses no Linear shipped default', async () => {
+    expect(await new InMemoryLinearApi().listGitAutomationStates()).toEqual([]);
+  });
+
+  it('holds an explicit rule list, both vendor nulls intact, and hands back copies', async () => {
+    const api = new InMemoryLinearApi();
+    const branch = { branchPattern: 'main', isRegex: false };
+    api.setGitAutomationStates([
+      { event: 'start', stateName: 'In Progress', targetBranch: null },
+      { event: 'draft', stateName: null, targetBranch: null },
+      { event: 'review', stateName: 'In Review', targetBranch: branch },
+    ]);
+    branch.branchPattern = 'mutated-by-caller'; // the fake must not share the caller's object
+
+    const rules = await api.listGitAutomationStates();
+    expect(rules).toEqual([
+      { event: 'start', stateName: 'In Progress', targetBranch: null },
+      { event: 'draft', stateName: null, targetBranch: null },
+      { event: 'review', stateName: 'In Review', targetBranch: { branchPattern: 'main', isRegex: false } },
+    ]);
+
+    rules[2].targetBranch!.branchPattern = 'mutated-after-read';
+    rules.pop();
+    expect(await api.listGitAutomationStates()).toHaveLength(3);
+    expect((await api.listGitAutomationStates())[2].targetBranch?.branchPattern).toBe('main');
+  });
 });
 
 describe('InMemoryLinearApi projects (the Goal container substrate, ADR-0044)', () => {

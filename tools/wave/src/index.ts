@@ -1115,6 +1115,12 @@ export {
   type LinearCreateIssueInput,
   type LinearPrAttachment,
   type LinearStateType,
+  // The team's PR-automation rule (ADR-0020 amendment 2026-09-25): the element
+  // type of the OPTIONAL `LinearApi.listGitAutomationStates` and of
+  // `StorePreflightReport.gitAutomation.rules`. TYPE-ONLY, so the runtime export
+  // count does not move; `LinearApi` gains an OPTIONAL method, so a consumer's
+  // own implementation of the seam stays valid without it (it reads `abstain`).
+  type LinearGitAutomationState,
   // The Goal facet's Linear substrate — the PROJECT realization (ADR-0044) plus
   // the INITIATIVE one (ADR-0045), which is where a project stops being only a
   // container and becomes a goal MEMBER too. `LinearProjectStatusType` is the

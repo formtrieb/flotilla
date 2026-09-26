@@ -36,6 +36,7 @@ import { RealGitHubApi, GitHubApiError } from './adapters/github/real-github-api
 import { FakeGitHubHttp } from './adapters/github/github-http-fake';
 import type { GitHubHttpRequest, GitHubHttpResponse } from './adapters/github/github-http';
 import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
+import type { LinearGitAutomationState } from './adapters/linear/linear-api';
 import {
   GOAL_CONTAINERS,
   GoalBindingError,
@@ -570,6 +571,209 @@ describe('preflightStore (FOR-12) — probes TRACKER preconditions through the A
   });
 });
 
+// ── the team's PR-automation rules — an ADVISORY reading (ADR-0020 amendment
+// 2026-09-25; Operator ruling: a misalignment never fails the preflight) ──────
+
+/** A team-default rule (no target branch). */
+function defaultRule(event: string, stateName: string | null): LinearGitAutomationState {
+  return { event, stateName, targetBranch: null };
+}
+
+/** The four graded team-default rules aligned to the DEFAULT claim states, plus Done-on-merge. */
+const ALIGNED_DEFAULT_RULES: LinearGitAutomationState[] = [
+  defaultRule('draft', 'In Progress'),
+  defaultRule('start', 'In Progress'),
+  defaultRule('review', 'In Review'),
+  defaultRule('mergeable', 'In Review'),
+  defaultRule('merge', 'Done'),
+];
+
+/** A linear store over a fake holding exactly `rules`. */
+function storeWithRules(rules: LinearGitAutomationState[]): LinearIssuesStore {
+  const api = new InMemoryLinearApi();
+  api.setGitAutomationStates(rules);
+  return new LinearIssuesStore({ api });
+}
+
+describe('preflightStore — the gitAutomation reading (advisory, never moves ok)', () => {
+  const LINEAR = { store: { kind: 'linear' as const, team: 'EX' } };
+
+  it('aligned: every graded team-default rule targets the configured state → aligned, merge reported not graded', async () => {
+    const report = await preflightStore(LINEAR, storeWithRules(ALIGNED_DEFAULT_RULES));
+
+    expect(report.gitAutomation?.status).toBe('aligned');
+    expect(report.gitAutomation?.mismatches).toBeUndefined();
+    expect(report.gitAutomation?.undecided).toBeUndefined();
+    expect(report.gitAutomation?.rules).toEqual(ALIGNED_DEFAULT_RULES);
+    expect(report.gitAutomation?.detail).toContain('"merge" reported, not graded: "Done"');
+    expect(report.ok).toBe(true);
+  });
+
+  it('aligned under OVERRIDDEN claim states: the rules must name the configured string, not the default', async () => {
+    const rules = [
+      defaultRule('draft', 'Doing'),
+      defaultRule('start', 'Doing'),
+      defaultRule('review', 'Checking'),
+      defaultRule('mergeable', 'Checking'),
+    ];
+    const api = new InMemoryLinearApi();
+    api.setStateCatalog([
+      { name: 'Backlog', type: 'backlog' },
+      { name: 'Todo', type: 'unstarted' },
+      { name: 'Doing', type: 'started' },
+      { name: 'Checking', type: 'started' },
+      { name: 'Done', type: 'completed' },
+      { name: 'Canceled', type: 'canceled' },
+    ]);
+    api.setGitAutomationStates(rules);
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', states: { inFlight: 'Doing', inReview: 'Checking' } } },
+      new LinearIssuesStore({ api }),
+    );
+    expect(report.gitAutomation?.status).toBe('aligned');
+
+    // Control: the SAME rules against the DEFAULT states are a mismatch on all four.
+    const control = await preflightStore(LINEAR, storeWithRules(rules));
+    expect(control.gitAutomation?.status).toBe('misaligned');
+    expect(control.gitAutomation?.mismatches).toHaveLength(4);
+  });
+
+  it('misaligned: names the event, the state Linear moves to, and the state the config expects', async () => {
+    const rules = ALIGNED_DEFAULT_RULES.map((r) =>
+      r.event === 'review' ? defaultRule('review', 'In Progress') : r,
+    );
+    const report = await preflightStore(LINEAR, storeWithRules(rules));
+
+    expect(report.gitAutomation?.status).toBe('misaligned');
+    expect(report.gitAutomation?.mismatches).toEqual([
+      { event: 'review', found: 'In Progress', expected: 'In Review' },
+    ]);
+    const detail = report.gitAutomation?.detail ?? '';
+    expect(detail).toContain('"review"');
+    expect(detail).toContain('"In Progress"');
+    expect(detail).toContain('"In Review"');
+    expect(detail).toContain('Advisory only');
+    // Advisory: the checks decide `ok`, and they all pass.
+    expect(report.ok).toBe(true);
+    expect(report.checks.every((c) => c.status === 'pass')).toBe(true);
+  });
+
+  it('a graded event with NO team-default rule → abstains and says it cannot decide (ADR-0052)', async () => {
+    const rules = ALIGNED_DEFAULT_RULES.filter((r) => r.event !== 'mergeable');
+    const report = await preflightStore(LINEAR, storeWithRules(rules));
+
+    expect(report.gitAutomation?.status).toBe('abstain');
+    expect(report.gitAutomation?.undecided).toEqual(['mergeable']);
+    expect(report.gitAutomation?.mismatches).toBeUndefined();
+    expect(report.gitAutomation?.detail).toMatch(/^Cannot decide: no team-default rule for "mergeable"/);
+    expect(report.gitAutomation?.detail).toContain('implicit default');
+    expect(report.ok).toBe(true);
+  });
+
+  it('an empty rule list abstains on all four graded events — never reads as aligned', async () => {
+    const report = await preflightStore(LINEAR, storeWithRules([]));
+    expect(report.gitAutomation?.status).toBe('abstain');
+    expect(report.gitAutomation?.undecided).toEqual(['draft', 'start', 'review', 'mergeable']);
+    expect(report.gitAutomation?.rules).toEqual([]);
+  });
+
+  it('a definite mismatch outranks an undecided event: misaligned, with both listed', async () => {
+    const rules = [defaultRule('start', 'Todo')];
+    const report = await preflightStore(LINEAR, storeWithRules(rules));
+    expect(report.gitAutomation?.status).toBe('misaligned');
+    expect(report.gitAutomation?.mismatches).toEqual([
+      { event: 'start', found: 'Todo', expected: 'In Progress' },
+    ]);
+    expect(report.gitAutomation?.undecided).toEqual(['draft', 'review', 'mergeable']);
+  });
+
+  it('a null-state rule is reported as "no action", never as a mismatch against a named state', async () => {
+    const rules = ALIGNED_DEFAULT_RULES.map((r) => (r.event === 'draft' ? defaultRule('draft', null) : r));
+    const report = await preflightStore(LINEAR, storeWithRules(rules));
+
+    expect(report.gitAutomation?.status).toBe('aligned');
+    expect(report.gitAutomation?.mismatches).toBeUndefined();
+    expect(report.gitAutomation?.noAction).toEqual(['draft']);
+    expect(report.gitAutomation?.detail).toContain('take no action');
+    expect(report.gitAutomation?.rules?.find((r) => r.event === 'draft')?.stateName).toBeNull();
+  });
+
+  it('a branch-scoped rule is listed as present and NOT graded — even one naming the wrong state', async () => {
+    const branchRule: LinearGitAutomationState = {
+      event: 'review',
+      stateName: 'Todo',
+      targetBranch: { branchPattern: 'release/.*', isRegex: true },
+    };
+    const report = await preflightStore(LINEAR, storeWithRules([...ALIGNED_DEFAULT_RULES, branchRule]));
+
+    expect(report.gitAutomation?.status).toBe('aligned');
+    expect(report.gitAutomation?.mismatches).toBeUndefined();
+    expect(report.gitAutomation?.rules).toContainEqual(branchRule);
+    expect(report.gitAutomation?.detail).toContain('1 branch-scoped rule(s) present and NOT graded');
+    expect(report.gitAutomation?.detail).toContain('"review" on pattern "release/.*"');
+  });
+
+  it('a branch-scoped rule alone does not stand in for a missing team default — still undecided', async () => {
+    const rules = [
+      ...ALIGNED_DEFAULT_RULES.filter((r) => r.event !== 'start'),
+      { event: 'start', stateName: 'In Progress', targetBranch: { branchPattern: 'main', isRegex: false } },
+    ];
+    const report = await preflightStore(LINEAR, storeWithRules(rules));
+    expect(report.gitAutomation?.status).toBe('abstain');
+    expect(report.gitAutomation?.undecided).toEqual(['start']);
+  });
+
+  it('a done-state override configured: the reading is still present (and still graded)', async () => {
+    const rules = ALIGNED_DEFAULT_RULES.map((r) => (r.event === 'start' ? defaultRule('start', 'Todo') : r));
+    const report = await preflightStore(
+      { store: { kind: 'linear', team: 'EX', states: { doneState: 'Done' } } },
+      storeWithRules(rules),
+    );
+
+    expect(report.checks.find((c) => c.name === 'tracker-host-integration')?.status).toBe('not-applicable');
+    expect(report.gitAutomation).toBeDefined();
+    expect(report.gitAutomation?.status).toBe('misaligned');
+    expect(report.ok).toBe(true);
+  });
+
+  it('an adapter WITHOUT the optional method yields an abstaining reading and never throws', async () => {
+    const api = new InMemoryLinearApi();
+    // Shadow the prototype method with `undefined` — the shape of a consumer's
+    // own LinearApi written before the optional read existed.
+    Object.defineProperty(api, 'listGitAutomationStates', { value: undefined });
+    const report = await preflightStore(LINEAR, new LinearIssuesStore({ api }));
+
+    expect(report.gitAutomation?.status).toBe('abstain');
+    expect(report.gitAutomation?.rules).toBeUndefined();
+    expect(report.gitAutomation?.detail).toContain('does not provide listGitAutomationStates');
+    expect(report.ok).toBe(true);
+  });
+
+  it('a read that FAILS abstains, naming the error — it never fails the preflight', async () => {
+    const api = new InMemoryLinearApi();
+    vi.spyOn(api, 'listGitAutomationStates').mockRejectedValue(new Error('GraphQL error: field not found'));
+    const report = await preflightStore(LINEAR, new LinearIssuesStore({ api }));
+
+    expect(report.gitAutomation?.status).toBe('abstain');
+    expect(report.gitAutomation?.detail).toContain('GraphQL error: field not found');
+    expect(report.ok).toBe(true);
+  });
+
+  it('github and markdown reports carry no gitAutomation reading at all', async () => {
+    const gh = await preflightStore(
+      { store: { kind: 'github' } },
+      new GitHubIssuesStore({ api: new InMemoryGitHubApi() }),
+    );
+    expect('gitAutomation' in gh).toBe(false);
+    const dir = mkdtempSync(join(tmpdir(), 'cli-store-md-ga-'));
+    const md = await preflightStore(
+      { store: { kind: 'markdown', repoRoot: dir, slug: '2026-09-26-x' } },
+      new MarkdownFsStore({ repoRoot: dir, slug: '2026-09-26-x' }),
+    );
+    expect('gitAutomation' in md).toBe(false);
+  });
+});
+
 describe('runStorePreflight (FOR-12) — the CLI verb wave-setup runs', () => {
   let stdout: string;
   let stderr: string;
@@ -605,6 +809,25 @@ describe('runStorePreflight (FOR-12) — the CLI verb wave-setup runs', () => {
     const report = JSON.parse(stdout);
     expect(report.ok).toBe(true);
     expect(report.storeKind).toBe('linear');
+  });
+
+  it('a MISALIGNED team still exits 0 when the other checks pass — the gitAutomation reading is advisory only', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-store-pf-'));
+    const path = writeConfig(dir, { store: { kind: 'linear', team: 'EX' } });
+    const store = storeWithRules([
+      defaultRule('draft', 'Todo'),
+      defaultRule('start', 'Todo'),
+      defaultRule('review', 'In Progress'),
+      defaultRule('mergeable', 'Done'),
+    ]);
+
+    const code = await runStorePreflight(['preflight', '--config', path], store);
+
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.ok).toBe(true);
+    expect(report.gitAutomation.status).toBe('misaligned');
+    expect(report.gitAutomation.mismatches).toHaveLength(4);
   });
 
   it('exits 1 (loud) when a configured state is missing from the team catalog (AC3 via the CLI)', async () => {

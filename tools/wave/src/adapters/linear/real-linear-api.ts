@@ -41,6 +41,7 @@ import type {
   LinearProjectStatusType,
   LinearStateType,
   LinearCreateIssueInput,
+  LinearGitAutomationState,
   LinearPrAttachment,
   LinearUpdateInput,
   LinearUpdateResult,
@@ -86,6 +87,38 @@ const PREFLIGHT_QUERY = `query Preflight { viewer { id } }`;
 const GITHUB_INTEGRATION_QUERY = `query GitHubIntegration { integrations(first: 250) { nodes { id service } } }`;
 /** The `service` enum value of the PR-attachment-creating GitHub integration (e2e-VERIFIED 2026-07-16 — see GITHUB_INTEGRATION_QUERY). */
 const GITHUB_INTEGRATION_SERVICE = 'github';
+
+/**
+ * Store-preflight's advisory `gitAutomation` reading: the cached team's
+ * PR-automation rules (`Team.gitAutomationStates`), paged to exhaustion.
+ *
+ * Documented form — Linear's published GraphQL schema (`linear/linear` →
+ * `packages/sdk/src/schema.graphql` @ commit
+ * `689ccc1e905d97df14272621b96a8614c5d3c2cb`, read 2026-09-26): `team(id:
+ * String!): Team!`; `Team.gitAutomationStates(after, first, …):
+ * GitAutomationStateConnection!` (default page 50, `includeArchived` defaults to
+ * false, so an archived rule is never read); `GitAutomationState.event:
+ * GitAutomationStates!`, `.state: WorkflowState` (nullable = "take no action"),
+ * `.targetBranch: GitAutomationTargetBranch` (nullable = the team default);
+ * `GitAutomationTargetBranch.branchPattern: String!`, `.isRegex: Boolean!`.
+ *
+ * UNPROVEN LIVE: the dispatch that wrote it had no Linear credential. The first
+ * `store-preflight` on a linear-store consumer is the live gate — and because the
+ * reading is advisory, a refusal of this query surfaces as an abstaining reading
+ * naming the error, never as a failed preflight.
+ */
+const TEAM_GIT_AUTOMATION_STATES_QUERY = `query TeamGitAutomationStates($teamId: String!, $first: Int!, $after: String) {
+  team(id: $teamId) {
+    gitAutomationStates(first: $first, after: $after) {
+      nodes {
+        event
+        state { name }
+        targetBranch { branchPattern isRegex }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
 
 /**
  * `team` may be a key ("EX") or a display name ("Example") per
@@ -936,6 +969,43 @@ export class RealLinearApi implements LinearApi {
     return [...this.stateCatalog!.entries()].map(([name, entry]) => ({ name, type: entry.type }));
   }
 
+  /**
+   * The team's PR-automation rules, through the CACHED team id
+   * ({@link ensureCatalog} — the same resolution `listStates` reads), paged to
+   * cursor exhaustion with {@link TEAM_GIT_AUTOMATION_STATES_QUERY}. No bound:
+   * the loop drains `pageInfo.hasNextPage`, so the page size decides only the
+   * round-trip count, the same deliberate 100 the adapter's other paged reads
+   * use (see `listOpenIssues`).
+   *
+   * Reports, never grades: a null `state` stays `null` ("no action", per the
+   * schema) and a null `targetBranch` stays `null` (the team default). A node
+   * whose `event` is not a string is dropped rather than invented.
+   */
+  async listGitAutomationStates(): Promise<LinearGitAutomationState[]> {
+    await this.ensureCatalog();
+    const out: LinearGitAutomationState[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const { data } = await this.gql('TeamGitAutomationStates', TEAM_GIT_AUTOMATION_STATES_QUERY, {
+        teamId: this.teamId,
+        first: 100,
+        after,
+      });
+      const team = data.team as Record<string, unknown> | null | undefined;
+      const connection = (team?.gitAutomationStates ?? {}) as Record<string, unknown>;
+      const nodes = (connection.nodes ?? []) as Record<string, unknown>[];
+      for (const raw of nodes) {
+        const rule = toGitAutomationState(raw);
+        if (rule) out.push(rule);
+      }
+      const pageInfo = (connection.pageInfo ?? {}) as Record<string, unknown>;
+      if (pageInfo.hasNextPage !== true) break;
+      after = typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : undefined;
+      if (!after) break; // defensive: hasNextPage=true but no cursor — stop rather than loop forever
+    }
+    return out;
+  }
+
   // ── Document facet (ADR-0017): a PRD is a NATIVE Linear Document — it lives
   // outside the issue-space entirely, so the ADR-0011 "never enters
   // listOpen('wave-ready')" constraint holds structurally, not by label
@@ -1469,6 +1539,30 @@ function parseIdentifier(identifier: string): { teamKey: string; number: number 
     throw new Error(`RealLinearApi: "${identifier}" is not a "<TEAM>-<number>" Linear identifier.`);
   }
   return { teamKey: m[1], number: Number(m[2]) };
+}
+
+/**
+ * One `GitAutomationState` node → the seam shape. `state.name` and
+ * `targetBranch` keep the vendor's nulls as nulls — each means something
+ * specific (see {@link LinearGitAutomationState}). `undefined` when `event` is
+ * not a string: a rule without its trigger cannot be reported honestly.
+ */
+function toGitAutomationState(raw: Record<string, unknown>): LinearGitAutomationState | undefined {
+  if (typeof raw.event !== 'string') return undefined;
+  const state = raw.state as Record<string, unknown> | null | undefined;
+  const branch = raw.targetBranch as Record<string, unknown> | null | undefined;
+  return {
+    event: raw.event,
+    stateName: typeof state?.name === 'string' ? state.name : null,
+    // A present-but-malformed branch object still marks the rule BRANCH-SCOPED:
+    // reading it as `null` would promote it to a team default and grade it.
+    targetBranch: branch
+      ? {
+          branchPattern: typeof branch.branchPattern === 'string' ? branch.branchPattern : '',
+          isRegex: branch.isRegex === true,
+        }
+      : null,
+  };
 }
 
 function toStateType(raw: unknown): LinearStateType {
