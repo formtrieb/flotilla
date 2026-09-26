@@ -84,7 +84,7 @@ flowchart LR
 | `wave-start` | Wave lifecycle | Dispatches a worktree-isolated Worker per row, then a universal Reviewer per Worker; routes each schema-validated verdict deterministically. Ends with every row in-review — it never merges. |
 | `wave-close` | Wave lifecycle | Computes the advisory merge order, cleans up agent worktrees, archives the spine. Opt-in `--auto` arms the order-free PRs for auto-merge. |
 | `wave-resume` | Wave lifecycle | Reconstructs a killed Coordinator's state from the spine, the live worktrees, and on-disk sidecars; re-dispatches only what actually needs it. |
-| `wave-reviewer` | Wave lifecycle | The read-only pre-PR quality gate `wave-start` dispatches for every row: re-runs verify against the wave anchor, checks each acceptance criterion with evidence, predicts sibling merge conflicts. |
+| `wave-reviewer` | Wave lifecycle | The read-only pre-PR quality gate `wave-start` dispatches for every row: re-runs verify against the round's anchor, checks each acceptance criterion with evidence, predicts sibling merge conflicts. |
 | `report` | Utility, consumer-side | Files a fully-analyzed finding *about flotilla itself* — found while running the installed plugin/engine in your repo — upstream at flotilla's repo in the house format. Consent-first: it never files without your explicit go. |
 | `grill-with-docs` | Utility | Stress-tests a design decision against the domain model and the ADRs before it's built, updating the docs inline as decisions settle. |
 | `wave-shared` | Library | The shared schemas and conventions the execution skills load; invoked by its siblings, never directly. |

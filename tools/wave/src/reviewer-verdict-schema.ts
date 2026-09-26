@@ -244,14 +244,14 @@ export function metAcIndexes(verdict: ReviewerVerdict): number[] {
 
 /**
  * The two facts a `ReviewerVerdict` sidecar does NOT itself carry, but that the
- * render needs: which routing iteration produced it, and the wave anchor SHA
- * (the diff base the Reviewer verified against) — both live on the routing
- * tuple / spine row, never on the typed verdict.
+ * render needs: which routing iteration produced it, and the round's anchor
+ * SHA (the diff base the Reviewer verified against) — both live on the
+ * routing tuple / spine row, never on the typed verdict.
  */
 export interface RenderVerdictOptions {
   /** The routing iteration this verdict was produced at (1 or 2, cap=1). */
   iteration: number;
-  /** Wave anchor SHA — the diff base the Reviewer verified against. */
+  /** The round's anchor SHA — the diff base the Reviewer verified against. */
   anchorSha: string;
   /**
    * The row's OWN tracker id (the close target). Every OTHER tracker-id-shaped

@@ -147,7 +147,7 @@
  * removes/purges, via the injectable `BranchHygieneOps` seam (same injection
  * pattern as `WorktreeRemover`/`RedispatchCleanupOps`):
  *   (a) `worktree-<dir-basename>`, when it is `wf_`-shaped, is ALWAYS
- *       force-deleted — by construction its tip sits on the wave anchor
+ *       force-deleted — by construction its tip sits on the round's anchor
  *       commit, so it can never carry unique work (live-verified: a fresh
  *       `wf_*` Workflow worktree's throwaway branch and `main` share a tip
  *       the instant the worktree is created).
@@ -2646,7 +2646,7 @@ function defaultRetryPause(): void {
  *   (a) the harness's own THROWAWAY branch, `worktree-<dir-basename>` — only
  *       relevant when that derived name is itself `wf_`-shaped (i.e. `wt`
  *       is a Workflow-driver worktree). ALWAYS force-deleted: by
- *       construction its tip sits on the wave anchor commit, so it can
+ *       construction its tip sits on the round's anchor commit, so it can
  *       never carry unique work.
  *   (b) the worktree's OWN checked-out branch (`wt.branch`), when it looks
  *       like a wave dispatch branch (`wave/...`) — force-deleted ONLY when
@@ -5121,7 +5121,7 @@ export function checkCommandLineSizeAdvisory(
 //     actually fires in this repo's no-`-u`-push / squash-merge close flow); and
 //   • a harness `worktree-wf_*` base branch whose worktree is no longer live —
 //     neither registered in `git worktree list` NOR present on disk under the
-//     worktrees root. By construction such a branch's tip sits on the wave
+//     worktrees root. By construction such a branch's tip sits on the round's
 //     anchor commit (it is the branch `isolation: 'worktree'` checks out FIRST,
 //     before the dispatched agent `git checkout -b`'s away), so it can never
 //     carry unique work — the exact rule-(a) guarantee, here additionally gated

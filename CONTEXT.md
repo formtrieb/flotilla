@@ -62,7 +62,7 @@ _Avoid_: health write-mirror (the retired working name — the mirror carries th
 One batch of independently-grabbable issues dispatched as parallel workers in isolated worktrees, reviewed, and landed via PRs.
 
 **Spine**:
-The durable, repo-local `WAVE.md` markdown that holds the wave's orchestration state (plan-table, conflict-map, dispatch-log, PR-log, disclosures, pulse-log). It is the source of truth for resume and lives on its own branch, `spine/<slug>` — born at `wave-create` from the wave anchor, carrying nothing but the spine and its **Sidecar**s, pushed so any authorized runner can drive the next **Pulse**. It lands on `main` exactly once, archived, at `wave-close` — a Coordinator-direct PR — and never before. Deliberately outside the `wave/*` namespace the row branches use, which `wave-close` sweeps after landing. *The branch is designed in ADR-0048 (2026-09-02), not yet built — until then the spine sits on whatever branch the Coordinator's checkout is on.*
+The durable, repo-local `WAVE.md` markdown that holds the wave's orchestration state (plan-table, conflict-map, dispatch-log, PR-log, disclosures, pulse-log). It is the source of truth for resume and lives on its own branch, `spine/<slug>` — born at `wave-create` from the commit `main` was at when the wave was cut, carrying nothing but the spine and its **Sidecar**s, pushed so any authorized runner can drive the next **Pulse**. It lands on `main` exactly once, archived, at `wave-close` — a Coordinator-direct PR — and never before. Deliberately outside the `wave/*` namespace the row branches use, which `wave-close` sweeps after landing. *The branch is designed in ADR-0048 (2026-09-02), not yet built — until then the spine sits on whatever branch the Coordinator's checkout is on.*
 _Avoid_: manifest, state file, ledger, wave branch (there is no such branch — rows have theirs, the spine has its own).
 
 **Coordinator**:
@@ -158,8 +158,8 @@ Delegating an approved wave PR's completion to the code host: flotilla enables t
 _Avoid_: auto-merge (the host feature is the mechanism; arming is flotilla's act), merging main (flotilla never does that).
 
 **Landing message**:
-The commit title and body a landed PR leaves on the default branch. flotilla authors it: the PR's own title, with the host's number suffix, and the PR's own body, as both stand when the landing verb runs — frozen at **Arming**, read fresh on a direct merge. A consumer whose history is machine-read may cede it to the host's own squash setting instead (ADR-0053).
-_Avoid_: squash message, merge commit message (the host's settings, which flotilla overrides by default); commit message (a Worker's branch commits, which by default never reach the default branch).
+The commit title and body a landed PR leaves on the default branch. flotilla authors it: the PR's own title, with the host's number suffix, and the PR's own body, as both stand when the landing verb runs — frozen at **Arming**, read fresh on a direct merge. Two exceptions, named rather than detected (ADR-0053, dated note 2026-09-25): a merge queue composes its own commit and ignores the frozen message, and a `rebase` landing replays the branch's own commits individually, so there is no single message for either to land. A consumer whose history is machine-read may cede it to the host's own squash setting instead (ADR-0053).
+_Avoid_: squash message, merge commit message (the host's settings, which flotilla overrides by default); commit message (a Worker's branch commits, which by default never reach the default branch — the `rebase` exception above aside, where each one lands on its own).
 
 **Partial-arm**:
 The `--auto` confirm's shape: exactly the rows in **no** Conflict-Map pair are armed; the overlapping tail keeps the recomputed advisory merge-order as the human playbook. One confirm per wave; a headless run requires explicit pre-authorization (ADR-0023).

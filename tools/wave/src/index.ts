@@ -575,7 +575,7 @@ export {
   // The PER-STRING term of the same E2BIG budget — the barrel-gap class above
   // recurring exactly ONE TERM LATER, and the reason it recurred is worth
   // writing down rather than fixing silently. The command-line row directly
-  // above was authored against a wave anchor at which the per-string sibling did
+  // above was authored against a commit at which the per-string sibling did
   // not yet exist, so it shipped the family "whole" as the family stood that
   // morning; the advisory-hardening row added `MAX_ARG_STRLEN_ADVISORY_THRESHOLD_BYTES`
   // to the module the same day and the barrel had already been written. A
@@ -652,7 +652,7 @@ export {
 
 // The rest of worktree-cleanup.ts's surface (issue #376 barrel-drift
 // reconciliation) — the largest single gap the drift spec measured (46
-// symbols on the wave anchor this reconciliation ran against). Four cohesive
+// symbols on the commit this reconciliation ran against). Four cohesive
 // sub-sweeps, each already exported "whole" above for its own family; these
 // four were simply never carried across when the module grew past its
 // original worktree/detached-scratchpad scope:

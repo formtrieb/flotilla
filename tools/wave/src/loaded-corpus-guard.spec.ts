@@ -276,6 +276,17 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
+ * **UNCHANGED by the row that renames "wave anchor" to the glossary's
+ * per-round Anchor wherever shipped prose still used the retired term**
+ * (issue #997), which spent 3 B of that headroom on
+ * `reference/convention-11-prove-the-check-can-fail.md` alone: its "is that
+ * check's failing condition new with this slice" question now reads "absent
+ * at the round's Anchor SHA" rather than "absent at the wave anchor SHA". At
+ * anchor `84fa1abc38b2c0e10cedc3f414a2ba89f184abc1` the class measured
+ * **167,178 B**; the edit lands it at **167,181 B** over the same 18 files,
+ * and that rounded UP to the next full KB is still **168,000 B** — this
+ * constant already. Headroom is 819 B, still a rounding fact and not a budget.
+ *
  * Why this number: **RAISED by the row that fills wave
  * `2026-09-25-review-signals-and-round-hygiene`'s close-time reference-doc
  * gaps** (issue #998), in the diff that causes the growth. Its one
@@ -478,6 +489,24 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
+ *
+ * **UNCHANGED by the row that renames "wave anchor" to the glossary's
+ * per-round Anchor wherever shipped prose still used the retired term, and
+ * closes the landing-message dated-note gap** (issue #997), which spent
+ * 456 B of that headroom across four files: wave-close's `SKILL.md`
+ * self-repair-hazard bullet, reworded to hold for both a land-at-close wave
+ * and one that re-anchors between rounds (+234 B), and its
+ * `phase-4a-self-repair-pull.md` twin, reworded the same way (+198 B);
+ * wave-shared's `reference/convention-11-prove-the-check-can-fail.md`
+ * (+3 B, the standing-load spend above); and wave-start's `SKILL.md`, whose
+ * W2-F1 retro rewords "the Coordinator defined the wave anchor as a
+ * constant" to "a single constant for the whole wave", keeping the historical
+ * fact (one constant, not per-round) without the retired term (+21 B). At
+ * anchor `84fa1abc38b2c0e10cedc3f414a2ba89f184abc1` the population measured
+ * **1,275,517 B**; the edit lands it at **1,275,973 B** over the same 57
+ * files, and that rounded UP to the next full KB is still **1,276,000 B** —
+ * this constant already. Headroom is 27 B, still a rounding fact and not a
+ * budget.
  *
  * Why this number: **RAISED by the row that fills wave
  * `2026-09-25-review-signals-and-round-hygiene`'s close-time reference-doc

@@ -2818,7 +2818,7 @@ describe('skill-schema-drift — the shipped driver compose-time human gate (iss
 // Worker runs while row A's Reviewer already runs — which means a sibling branch
 // may simply not be on `origin` when a Reviewer reaches for it. Observed four
 // times in ONE wave, each reported honestly and each partial. The fourth is the
-// class this pin exists for: the sibling branch was present but still AT THE WAVE
+// class this pin exists for: the sibling branch was present but still AT THE
 // ANCHOR, so its diff was empty and `git merge-tree` returned exit 0 plus one tree
 // hash — byte-identical to what a genuinely clean prediction returns. Partial
 // coverage that is indistinguishable from full coverage is the failure mode, and

@@ -1125,7 +1125,10 @@ export interface LandingHost {
   ): Promise<void>;
   /**
    * Merge the PR now. `message` (ADR-0053): when given, the landed commit's
-   * title and body are exactly these; when absent, the host composes them.
+   * title and body are exactly these — except under a merge queue, which
+   * composes its own commit and ignores it, or under `method: 'rebase'`,
+   * which replays the branch commits with no single message to shape (ADR-0053,
+   * dated note 2026-09-25); when absent, the host composes them.
    *
    * `expectedHead` (ADR-0055): same contract as on {@link enableAutoMerge} —
    * a host that pins the merge to a head hands it over (GitHub: the REST

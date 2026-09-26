@@ -1235,9 +1235,9 @@ describe('skill-descriptions-guard — negative controls: the guard is red on th
   });
 
   it('the description as it shipped INVALID is caught, and quoting it changes no text', () => {
-    // wave-plan's description exactly as it stood at the wave anchor: an
-    // unquoted plain scalar carrying `nothing: a person`. Historical evidence,
-    // like the fixtures above — do not "tidy" it.
+    // wave-plan's description exactly as it stood at the commit this fixture
+    // was captured from: an unquoted plain scalar carrying `nothing: a
+    // person`. Historical evidence, like the fixtures above — do not "tidy" it.
     //
     // One fixture, two claims. It goes red under tier 5's strict half, proving
     // the tier would have caught the corpus it was written for; and the SAME
