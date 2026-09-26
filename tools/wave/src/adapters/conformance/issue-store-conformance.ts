@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { CoarseState } from '../../contract';
-import { CreateInputError } from '../issue-store';
+import { AnnotatePatchError, CreateInputError } from '../issue-store';
 import type {
   IssueStore,
   IssueStoreConformanceHooks,
@@ -823,6 +823,83 @@ export function runIssueStoreConformance(
 
       await store.annotate(id, { acceptanceCriteria: [] });
       expect((await store.read(id)).acceptanceCriteria).toEqual([]);
+    });
+
+    // ── filesAdd (ADR-0054 decision 5): widen a row without rewriting its list ──
+    it('annotate() filesAdd appends new entries in order, skips duplicates, and leaves every other field untouched', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(
+        h.baseInput({
+          risk: 'mechanical',
+          worker: 'background',
+          files: ['src/a.ts', 'src/b/**'],
+          acceptanceCriteria: [
+            { text: 'criterion one', checked: false },
+            { text: 'criterion two', checked: false },
+          ],
+        }),
+      );
+      const parent = await store.publishDocument({
+        title: 'PRD: filesAdd',
+        filingHint: 'prd-files-add',
+        bodySections: [{ heading: 'Problem Statement', markdown: 'the brief' }],
+      });
+      await store.annotate(id, { parent });
+      await store.transition(id, 'queued');
+      const before = await store.read(id);
+
+      await store.annotate(id, {
+        // a new entry, an existing one, another new one, a repeat of the first new one
+        filesAdd: ['src/c.ts', 'src/a.ts', 'src/d/**', 'src/c.ts'],
+      });
+
+      const after = await store.read(id);
+      expect(after.files).toEqual(['src/a.ts', 'src/b/**', 'src/c.ts', 'src/d/**']);
+      // everything except the Files list (and the write's own timestamp) reads
+      // back exactly as before
+      expect({ ...after, files: before.files, trackerUpdatedAt: before.trackerUpdatedAt }).toEqual(
+        before,
+      );
+      expect(after.risk).toBe('mechanical');
+      expect(after.worker).toBe('background');
+      expect(after.parent).toBe(parent);
+      expect(after.blockedBy).toBe('none');
+      expect(after.status).toBe('queued');
+      expect(after.acceptanceCriteria.map((a) => a.text)).toEqual([
+        'criterion one',
+        'criterion two',
+      ]);
+    });
+
+    it('annotate() filesAdd that adds nothing (empty, or only duplicates) is a no-op that succeeds', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(h.baseInput({ files: ['src/a.ts', 'src/b.ts'] }));
+      const before = await store.read(id);
+
+      await expect(store.annotate(id, { filesAdd: [] })).resolves.toBeUndefined();
+      await expect(
+        store.annotate(id, { filesAdd: ['src/b.ts', 'src/a.ts', 'src/b.ts'] }),
+      ).resolves.toBeUndefined();
+
+      expect(await store.read(id)).toEqual(before);
+    });
+
+    it('annotate() refuses a patch carrying both files and filesAdd, writing NOTHING', async () => {
+      const { h, store } = await fresh();
+      const id = await store.create(
+        h.baseInput({ risk: 'mechanical', worker: 'background', files: ['keep/me.ts'] }),
+      );
+      const before = await store.read(id);
+
+      await expect(
+        store.annotate(id, {
+          risk: 'cross-feature-refactor',
+          files: ['replaced.ts'],
+          filesAdd: ['added.ts'],
+        }),
+      ).rejects.toThrow(AnnotatePatchError);
+
+      expect(await store.read(id)).toEqual(before);
     });
 
     // ── amend (ADR-0025 — the authored-content facet: title + free prose) ──

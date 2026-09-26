@@ -101,6 +101,8 @@ For an already-filed issue lacking the Header-Block — a triaged issue, **or a 
 {{wave-cli}} issue-store annotate <id> --patch <patch.json>
 ```
 
+**Widening a row's Files: `filesAdd`, not `files`.** `files` is the *replace* path — use it to decorate a row, or to narrow one deliberately. To add a path or glob to a row that already has a Files list, send `{ "filesAdd": ["src/b.ts"] }`: it appends each entry not already listed, keeps the existing order, and writes nothing else; one that adds nothing is a no-op. `files` and `filesAdd` in one patch is refused (exit 2) before any write (ADR-0054).
+
 `blockedBy` is deliberately **not** part of `AnnotatePatch` — dependency structure is out-of-band. What that means for a target's `Blocked by` depends on the store, and it is *not* a "must already carry it" requirement:
 
 - **GitHub / Linear** — `Blocked by` is a `##` body section; an **absent** one reads as `none` (no blockers) on read, the same as an explicit `none`. A bare issue decorated via `annotate` (risk/worker/files/acceptanceCriteria) becomes a fully readable, DoR-checkable `IssueView` with `blockedBy: 'none'` — no out-of-band step needed just to make it readable.

@@ -1173,6 +1173,8 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // by 358 B to match the new home, net −7,103 B. That row's own edit re-measures the population at
 // 1,263,887 B over the same 57 files — 12,113 B of headroom, up from row #817's 5,010 B — and leaves
 // this constant exactly where row #998 set it, for a later ratchet row to lower.
+// NOT raised by issue #1004 (annotate's `filesAdd`): its one filing-mechanics.md paragraph adds 456 B,
+// re-measured at 1,264,343 B over the same 57 files — 11,657 B of headroom left under row #998's value.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

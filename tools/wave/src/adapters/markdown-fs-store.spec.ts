@@ -152,6 +152,66 @@ describe('MarkdownFsStore — markdown parity specifics', () => {
     expect(after).toMatch(/^\*\*Wave-Status:\*\* queued$/m);
   });
 
+  it('annotate filesAdd inserts after the last Files item, every existing line byte-identical (annotation-aware dedup)', async () => {
+    const dir = join(root, '.scratch', SLUG, 'issues');
+    await mkdir(dir, { recursive: true });
+    const original = `# 07 — Legacy issue
+
+**Status:** ready-for-agent
+**Risk:** mechanical
+**Worker:** background
+**Files:**
+- src/keep.ts  ← only if the gate surfaces a deprecation
+- src/b/**
+**Blocked by:** none
+
+## Acceptance criteria
+
+- [ ] preserve me
+`;
+    await writeFile(join(dir, '07-legacy.md'), original, 'utf-8');
+
+    // `src/keep.ts` is already listed (behind an annotation) — not re-added.
+    await store.annotate('test-feature#07', { filesAdd: ['src/keep.ts', 'src/new.ts'] });
+    const after = await readFile(join(dir, '07-legacy.md'), 'utf-8');
+    expect(after).toBe(
+      original.replace('- src/b/**\n', '- src/b/**\n- src/new.ts\n'),
+    );
+    expect((await store.read('test-feature#07')).files).toEqual([
+      'src/keep.ts',
+      'src/b/**',
+      'src/new.ts',
+    ]);
+  });
+
+  it('annotate filesAdd extends an inline comma-separated Files value inline', async () => {
+    const dir = join(root, '.scratch', SLUG, 'issues');
+    await mkdir(dir, { recursive: true });
+    const original = `# 08 — Inline files
+
+**Status:** ready-for-agent
+**Risk:** mechanical
+**Worker:** background
+**Files:** src/a.ts, src/b.ts
+**Blocked by:** none
+
+## Acceptance criteria
+
+- [ ] ac
+`;
+    await writeFile(join(dir, '08-inline.md'), original, 'utf-8');
+
+    await store.annotate('test-feature#08', { filesAdd: ['src/b.ts', 'src/c.ts'] });
+    expect(await readFile(join(dir, '08-inline.md'), 'utf-8')).toBe(
+      original.replace('**Files:** src/a.ts, src/b.ts', '**Files:** src/a.ts, src/b.ts, src/c.ts'),
+    );
+    expect((await store.read('test-feature#08')).files).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+      'src/c.ts',
+    ]);
+  });
+
   it('listOpen() excludes a non-eligible (out-of-OR-set) Status, even with prose suffix', async () => {
     const dir = join(root, '.scratch', SLUG, 'issues');
     await mkdir(dir, { recursive: true });

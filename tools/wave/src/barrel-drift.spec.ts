@@ -435,6 +435,14 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
   './adapters/issue-store': {
     classifyCreateInput:
       "Pre-existing, documented barrel decision, unchanged by this reconciliation (issue #376) — see the comment directly above the CreateInputError export block in index.ts. Every adapter's create() already runs this classifier first, so a consumer calling it by hand would be asking a question create() answers on its behalf; the typed rejection it produces (CreateInputError/CreateInputFailure) is exported, the classifier stays the seam.",
+    validateAnnotatePatch:
+      "annotate's whole-patch Files check (ADR-0054 decision 5: `files` + `filesAdd` together is refused). Every adapter's annotate() already runs it as its first statement and the issue-store CLI runs it for its exit code; a consumer calling it by hand would be asking a question annotate() answers on its behalf. Kept module-local so the filesAdd row's public-surface change stays the one AnnotatePatch field; promoting it beside validateAmendPatch is a later barrel decision.",
+    AnnotatePatchError:
+      "The typed refusal validateAnnotatePatch throws, exported only so the issue-store CLI can map it to exit 2 without laundering other failures into a usage error. Module-local for the same reason as validateAnnotatePatch above.",
+    filesToAppend:
+      "filesAdd's dedup-and-order rule, shared by the three adapters' annotate() so none carries its own copy — adapter plumbing, not a consumer-facing API.",
+    appendToFilesSection:
+      "filesAdd's surgical write over the `## Files` body section GitHub and Linear share — adapter plumbing, not a consumer-facing API.",
   },
   './adapters/linear/linear-api-fake': {
     InMemoryLinearApi:

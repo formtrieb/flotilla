@@ -44,6 +44,8 @@ import {
   requireGoalMemberKind,
   renderGoalUpdateBody,
   validateAmendPatch,
+  validateAnnotatePatch,
+  appendToFilesSection,
   GoalMemberJoinError,
   type IssueStore,
   type CreateInput,
@@ -399,6 +401,7 @@ export class LinearIssuesStore implements IssueStore {
     // call still reported success. The rule lives in the codec so all three
     // shipped stores refuse the identical shape (conformance pins the parity).
     assertAcceptanceCriteriaShape(patch.acceptanceCriteria, 'annotate');
+    validateAnnotatePatch(patch); // files + filesAdd together — refused before any write
     const issue = await this.api.getIssue(id); // throws on unknown id
 
     // risk/worker → swap the sole risk/* | worker/* label (remove old, add new).
@@ -414,6 +417,9 @@ export class LinearIssuesStore implements IssueStore {
     let description = issue.description;
     if (patch.files !== undefined) {
       description = replaceSection(description, 'Files', patch.files.map((f) => `- ${f}`));
+    }
+    if (patch.filesAdd !== undefined) {
+      description = appendToFilesSection(description, patch.filesAdd);
     }
     if (patch.acceptanceCriteria !== undefined) {
       description = replaceSection(

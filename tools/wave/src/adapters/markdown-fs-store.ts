@@ -45,6 +45,8 @@ import {
   refuseGoalUpdateSurface,
   requireGoalContainer,
   validateAmendPatch,
+  validateAnnotatePatch,
+  filesToAppend,
   type IssueStore,
   type IssueStoreConformanceHooks,
   type CreateInput,
@@ -264,15 +266,19 @@ export class MarkdownFsStore implements IssueStore {
     // shape instead of this one carrying a second, more permissive copy of it
     // (the same stance the `appendBodySections` note a few lines down records).
     assertAcceptanceCriteriaShape(patch.acceptanceCriteria, 'annotate');
+    validateAnnotatePatch(patch); // files + filesAdd together — refused before any write
     const located = await this.locate(id);
     if (!located) throw new Error(`Issue not found: ${id}`);
-    let source = await readFile(located.path, 'utf-8');
+    const original = await readFile(located.path, 'utf-8');
+    let source = original;
 
     // risk/worker: surgical single-line upsert (same as create writes them).
     if (patch.risk !== undefined) source = upsertField(source, 'Risk', patch.risk);
     if (patch.worker !== undefined) source = upsertField(source, 'Worker', patch.worker);
     // files: replace the `**Files:**` list block in the header region.
     if (patch.files !== undefined) source = upsertFilesBlock(source, patch.files);
+    // filesAdd: append only the new entries after the existing ones (ADR-0054).
+    if (patch.filesAdd !== undefined) source = appendFilesBlock(source, patch.filesAdd);
     // parent: surgical single-line upsert of the PRD backlink (its opaque id
     // string, ADR-0013), placed after `**Blocked by:**` to mirror the serializer
     // order; the parser is order-free.
@@ -295,7 +301,9 @@ export class MarkdownFsStore implements IssueStore {
       source = appendBodySections(source, patch.bodySections);
     }
 
-    await writeFile(located.path, source, 'utf-8');
+    // An unchanged file is not rewritten (a `filesAdd` that adds nothing is a
+    // no-op, ADR-0054) — the same skip github/linear make before `setBody`.
+    if (source !== original) await writeFile(located.path, source, 'utf-8');
   }
 
   // ── amend (ADR-0025 — authored content: title + free-prose sections) ───────
@@ -1200,6 +1208,50 @@ function upsertFilesBlock(source: string, files: string[]): string {
   // the next `## ` heading). Normalize runs of blank lines for create-parity.
   lines.splice(headerEnd, 0, ...block, '');
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * Append `add` to the `**Files:**` field in the header region (ADR-0054's
+ * `filesAdd`): only the entries not already listed ({@link filesToAppend}), after
+ * the last existing one, leaving every existing line byte-identical. The list
+ * is read the way the header parser reads it — `- ` items under an empty
+ * `**Files:**` line (blank lines between items allowed), or a comma-separated
+ * inline value, which is extended inline. An absent field is written fresh via
+ * {@link upsertFilesBlock}. Returns `source` unchanged when nothing is new.
+ */
+function appendFilesBlock(source: string, add: readonly string[]): string {
+  const lines = source.split('\n');
+  const h2 = lines.findIndex((l) => /^##\s+/.test(l));
+  const headerEnd = h2 < 0 ? lines.length : h2;
+  const fieldIdx = lines.findIndex((l, i) => i < headerEnd && /^\*\*Files:\*\*/.test(l));
+  if (fieldIdx < 0) {
+    const additions = filesToAppend([], add);
+    return additions.length === 0 ? source : upsertFilesBlock(source, additions);
+  }
+
+  const inline = lines[fieldIdx].replace(/^\*\*Files:\*\*/, '').trim();
+  if (inline !== '') {
+    const additions = filesToAppend(inline.split(','), add);
+    if (additions.length === 0) return source;
+    lines[fieldIdx] = `${lines[fieldIdx].trimEnd()}, ${additions.join(', ')}`;
+    return lines.join('\n');
+  }
+
+  const existing: string[] = [];
+  let lastItem = fieldIdx;
+  for (let i = fieldIdx + 1; i < headerEnd; i++) {
+    const m = /^[-*]\s+(.+)$/.exec(lines[i]);
+    if (m) {
+      existing.push(m[1]);
+      lastItem = i;
+    } else if (lines[i].trim() !== '') {
+      break;
+    }
+  }
+  const additions = filesToAppend(existing, add);
+  if (additions.length === 0) return source;
+  lines.splice(lastItem + 1, 0, ...additions.map((f) => `- ${f}`));
+  return lines.join('\n');
 }
 
 /**

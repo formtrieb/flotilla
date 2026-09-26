@@ -691,6 +691,18 @@ describe('LinearIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
     expect(parsed.acceptanceCriteria).toEqual([{ text: 'does the thing', checked: false }]);
   });
 
+  it('annotate filesAdd inserts after the last `## Files` item — every other description byte unchanged, and a no-op writes nothing', async () => {
+    const id = await store.create(baseInput({ files: ['src/a.ts', 'src/b.ts'] }));
+    const before = (await api.getIssue(id)).description;
+
+    await store.annotate(id, { filesAdd: ['src/b.ts', 'src/c.ts'] });
+    const after = (await api.getIssue(id)).description;
+    expect(after).toBe(before.replace('- src/b.ts\n', '- src/b.ts\n- src/c.ts\n'));
+
+    await store.annotate(id, { filesAdd: ['src/c.ts', 'src/a.ts'] }); // all already listed
+    expect((await api.getIssue(id)).description).toBe(after);
+  });
+
   it('the blockedBy mirror reconciles from the UPDATED (post-patch) description, not the stale pre-patch read', async () => {
     const blocker = await store.create(baseInput({ title: 'blocker' }));
     const blockerRef = store.parseRef(blocker);

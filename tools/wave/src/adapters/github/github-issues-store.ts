@@ -35,6 +35,8 @@ import {
   refuseGoalUpdateSurface,
   requireGoalContainer,
   validateAmendPatch,
+  validateAnnotatePatch,
+  appendToFilesSection,
   type IssueStore,
   type CreateInput,
   type AnnotatePatch,
@@ -221,6 +223,7 @@ export class GitHubIssuesStore implements IssueStore {
     // rule lives in the codec, not here, so all three shipped stores refuse the
     // identical shape (conformance pins the parity).
     assertAcceptanceCriteriaShape(patch.acceptanceCriteria, 'annotate');
+    validateAnnotatePatch(patch); // files + filesAdd together — refused before any write
     const n = Number(id);
     const gh = await this.api.getIssue(n); // throws on unknown id
 
@@ -239,6 +242,7 @@ export class GitHubIssuesStore implements IssueStore {
     if (patch.files !== undefined) {
       body = replaceSection(body, 'Files', patch.files.map((f) => `- ${f}`));
     }
+    if (patch.filesAdd !== undefined) body = appendToFilesSection(body, patch.filesAdd);
     if (patch.acceptanceCriteria !== undefined) {
       body = replaceSection(
         body,

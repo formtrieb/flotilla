@@ -27,7 +27,7 @@ import { GOAL_MEMBER_STATES } from '../goal-frontier';
 // the same function body. The edge is one-way and acyclic — `body-codec` imports
 // nothing from this module — and it is read at CALL time, inside
 // `classifyCreateInput`, never at module evaluation.
-import { assertAcceptanceCriteriaShape } from './body-codec';
+import { assertAcceptanceCriteriaShape, replaceSection } from './body-codec';
 
 export type { ClaimRung };
 
@@ -600,8 +600,20 @@ export interface AnnotatePatch {
   risk?: string;
   /** config-governed vocab; written like {@link CreateInput.worker}. */
   worker?: string;
-  /** globs/paths, annotation-free; REPLACES the modeled Files list when supplied. */
+  /**
+   * globs/paths, annotation-free; REPLACES the modeled Files list when supplied —
+   * the path for decorating a row, or for deliberately narrowing one.
+   */
   files?: string[];
+  /**
+   * globs/paths APPENDED to the Files list (ADR-0054, decision 5): each entry
+   * not already listed is added after the existing ones, in the given order;
+   * duplicates are dropped and nothing else is written. An empty list, or one
+   * that adds nothing new, is a no-op. Mutually exclusive with {@link files} —
+   * a patch carrying both is refused before any write
+   * ({@link validateAnnotatePatch}).
+   */
+  filesAdd?: string[];
   /**
    * Backlink to the source **PRD** (ADR-0011/0012/0013). A decorate-mode slice
    * must be able to carry it too: a PRD is often realized through a mix of newly-
@@ -616,6 +628,95 @@ export interface AnnotatePatch {
   acceptanceCriteria?: { text: string; checked: boolean }[];
   /** Free-prose body sections (Parent, What to build, …) added verbatim. */
   bodySections?: { heading: string; markdown: string }[];
+}
+
+/**
+ * A caller-input refusal of an {@link AnnotatePatch} as a whole, raised by
+ * {@link validateAnnotatePatch} before any write. Typed so the CLI can map it
+ * to a usage error (exit 2) without laundering any other failure into one.
+ */
+export class AnnotatePatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AnnotatePatchError';
+  }
+}
+
+/**
+ * Validate the Files half of an {@link AnnotatePatch} before any write — every
+ * store calls it as the first statement of `annotate`, beside the codec's
+ * `assertAcceptanceCriteriaShape`. Refuses `files` and `filesAdd` together
+ * (replace and append in one patch have no single meaning, ADR-0054 decision 5)
+ * and a `filesAdd` that is not an array of non-blank strings.
+ */
+export function validateAnnotatePatch(patch: AnnotatePatch): void {
+  if (patch.filesAdd === undefined) return;
+  if (patch.files !== undefined) {
+    throw new AnnotatePatchError(
+      'annotate: a patch cannot carry both `files` (replaces the Files list) and ' +
+        '`filesAdd` (appends to it) — send one. Use `files` to decorate a row or to ' +
+        'narrow it deliberately, `filesAdd` to widen it.',
+    );
+  }
+  if (
+    !Array.isArray(patch.filesAdd) ||
+    patch.filesAdd.some((f) => typeof f !== 'string' || f.trim() === '')
+  ) {
+    throw new AnnotatePatchError(
+      'annotate: `filesAdd` must be an array of non-blank path or glob strings.',
+    );
+  }
+}
+
+/** A Files entry's comparison key: trimmed, with any `← annotation` tail dropped. */
+function filesEntryKey(entry: string): string {
+  return entry.replace(/\s+←.*$/, '').trim();
+}
+
+/**
+ * The entries of `add` a `filesAdd` actually appends to `existing`: each one
+ * not already listed (compared annotation-free and trimmed), duplicates within
+ * `add` dropped, in the given order. Empty when nothing is new — the no-op.
+ */
+export function filesToAppend(existing: readonly string[], add: readonly string[]): string[] {
+  const seen = new Set(existing.map(filesEntryKey));
+  const out: string[] = [];
+  for (const raw of add) {
+    const entry = raw.trim();
+    const key = filesEntryKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Apply a `filesAdd` to a tracker body's `## Files` section (the body-codec
+ * shape GitHub and Linear share): the new entries are inserted after the last
+ * existing list item, so every existing line stays byte-identical. An absent
+ * or empty section is written with just the new entries. Returns `body`
+ * unchanged when nothing is new.
+ */
+export function appendToFilesSection(body: string, add: readonly string[]): string {
+  const lines = body.split('\n');
+  const start = lines.findIndex((l) => /^##\s+Files\s*$/i.test(l));
+  const existing: string[] = [];
+  let lastItem = -1;
+  if (start >= 0) {
+    for (let i = start + 1; i < lines.length && !/^##\s+/.test(lines[i]); i++) {
+      const m = /^[-*]\s+(.+)$/.exec(lines[i].trim());
+      if (m) {
+        existing.push(m[1].trim());
+        lastItem = i;
+      }
+    }
+  }
+  const additions = filesToAppend(existing, add);
+  if (additions.length === 0) return body;
+  if (lastItem < 0) return replaceSection(body, 'Files', additions.map((f) => `- ${f}`));
+  lines.splice(lastItem + 1, 0, ...additions.map((f) => `- ${f}`));
+  return lines.join('\n');
 }
 
 /**
@@ -1647,7 +1748,10 @@ export interface IssueStore {
    * omitted field is left exactly as it was, and every unmodeled field/section
    * the issue already carries is preserved (the same surgical-write discipline
    * as {@link transition}/{@link close}). A supplied `files`/`acceptanceCriteria`
-   * REPLACES the modeled list (decorate writes the full set it computed).
+   * REPLACES the modeled list (decorate writes the full set it computed); a
+   * supplied `filesAdd` APPENDS only the entries not already listed (ADR-0054
+   * decision 5), and `files` + `filesAdd` together throws
+   * {@link AnnotatePatchError} before any write.
    *
    * `risk`/`worker` are written exactly as {@link create} writes them — same
    * vocabulary expectations, same (non-)validation. Touches ONLY the modeled
