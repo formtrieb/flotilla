@@ -32,6 +32,8 @@ import {
   mergeRequiredChecks,
   alignedPrRef,
   AutoMergeUnavailableError,
+  HeadMismatchError,
+  headsMatch,
   LandingNotImplementedError,
   DEFAULT_MERGE_METHOD,
   DEFAULT_COMMIT_MESSAGE_SOURCE,
@@ -1053,9 +1055,12 @@ function fakeLandingHost(opts: {
    * call-sequence assertion reads exactly as it always did.
    */
   messages: { call: string; message: LandingMessage | undefined }[];
+  /** Every landing write's `expectedHead` argument (ADR-0055), in call order — same keying as `messages`. */
+  heads: { call: string; expectedHead: string | undefined }[];
 } {
   const calls: string[] = [];
   const messages: { call: string; message: LandingMessage | undefined }[] = [];
+  const heads: { call: string; expectedHead: string | undefined }[] = [];
   let statusCall = 0;
   const host: LandingHost = {
     async getPrStatus(branch: string): Promise<PrLandingStatus> {
@@ -1067,16 +1072,28 @@ function fakeLandingHost(opts: {
       }
       return opts.status ?? { state: 'none' };
     },
-    async enableAutoMerge(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<void> {
+    async enableAutoMerge(
+      prNumber: number,
+      method?: MergeMethod,
+      message?: LandingMessage,
+      expectedHead?: string,
+    ): Promise<void> {
       const call = `enableAutoMerge:${prNumber}:${method ?? ''}`;
       calls.push(call);
       messages.push({ call, message });
+      heads.push({ call, expectedHead });
       opts.onEnableAutoMerge?.();
     },
-    async mergePullRequest(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<MergeResult> {
+    async mergePullRequest(
+      prNumber: number,
+      method?: MergeMethod,
+      message?: LandingMessage,
+      expectedHead?: string,
+    ): Promise<MergeResult> {
       const call = `mergePullRequest:${prNumber}:${method ?? ''}`;
       calls.push(call);
       messages.push({ call, message });
+      heads.push({ call, expectedHead });
       return opts.onMerge?.() ?? { merged: true, sha: 'deadbeef' };
     },
     async deleteBranch(branch: string): Promise<void> {
@@ -1084,7 +1101,7 @@ function fakeLandingHost(opts: {
       opts.onDeleteBranch?.();
     },
   };
-  return { host, calls, messages };
+  return { host, calls, messages, heads };
 }
 
 /** The open PR's own title and body — what the landing message is authored from (ADR-0053). */
@@ -1971,6 +1988,178 @@ function fakeAttachAwareHost(opts: {
 }
 
 const green = (name: string): ReportedCheck => ({ name, state: 'success' });
+
+// ─── The expected head (ADR-0055) ────────────────────────────────────────────
+
+describe('headsMatch (the one comparison rule for an expected head)', () => {
+  const FULL = '0123456789abcdef0123456789abcdef01234567';
+
+  it('matches an identical SHA, and ignores case', () => {
+    expect(headsMatch(FULL, FULL)).toBe(true);
+    expect(headsMatch(FULL, FULL.toUpperCase())).toBe(true);
+  });
+
+  it("matches a host's abbreviated head (Bitbucket's 7+ digit hash) as a prefix, in either direction", () => {
+    expect(headsMatch(FULL, FULL.slice(0, 12))).toBe(true);
+    expect(headsMatch(FULL.slice(0, 7), FULL)).toBe(true);
+  });
+
+  it('never matches a different SHA, a prefix under 7 digits, a non-prefix, or an empty side', () => {
+    expect(headsMatch(FULL, 'f'.repeat(40))).toBe(false);
+    expect(headsMatch(FULL, FULL.slice(0, 6))).toBe(false);
+    expect(headsMatch(FULL, FULL.slice(1, 13))).toBe(false);
+    expect(headsMatch(FULL, '')).toBe(false);
+    expect(headsMatch('', FULL)).toBe(false);
+  });
+});
+
+describe('the expected head on the landing verbs (ADR-0055)', () => {
+  const REVIEWED = 'a'.repeat(40);
+  const MOVED = 'b'.repeat(40);
+  const at = (mergeability: PrMergeability, headSha?: string): PrLandingStatus => ({
+    ...openPr(mergeability),
+    ...(headSha !== undefined ? { headSha } : {}),
+  });
+
+  // A host with NO native pin: the fake below ignores `expectedHead` entirely,
+  // exactly as the Bitbucket adapter does. The verb's own comparison is the
+  // whole check, so a mismatch must stop BEFORE any landing write.
+  it.each([
+    ['merge', (h: LandingHost) => mergePullRequestNow(h, 'b', 'squash', { expectHead: REVIEWED })],
+    ['arm (clean)', (h: LandingHost) => armPullRequest(h, 'b', 'squash', { expectHead: REVIEWED })],
+  ] as const)('%s: a host head that differs is refused before any write, naming both commits', async (_verb, land) => {
+    const { host, calls } = fakeLandingHost({ status: at('clean', MOVED) });
+    const out = await land(host);
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toContain(REVIEWED);
+    expect(out.reason).toContain(MOVED);
+    expect(out.reason).toMatch(/re-dispatch with its own review/);
+    expect(calls).toEqual(['getPrStatus:b']); // no merge, no arm, no attach read
+    expect('landingMessage' in out).toBe(false); // nothing was handed over
+  });
+
+  it('arm on a blocked PR with a moved head is refused too — never armed at the wrong commit', async () => {
+    const { host, calls } = fakeLandingHost({ status: at('blocked', MOVED) });
+    const out = await armPullRequest(host, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('refused');
+    expect(calls).toEqual(['getPrStatus:b']);
+  });
+
+  it('a matching head (the host reporting it abbreviated) lands, and every write carries the expected head', async () => {
+    const { host, heads } = fakeLandingHost({ status: at('clean', REVIEWED.slice(0, 12)) });
+    const out = await mergePullRequestNow(host, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('merged');
+    expect(heads).toEqual([{ call: 'mergePullRequest:42:squash', expectedHead: REVIEWED }]);
+  });
+
+  it('arm threads the expected head onto the arm write AND onto the direct merge a refusal degrades to', async () => {
+    const { host, heads } = fakeLandingHost({
+      status: at('unstable', REVIEWED),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('not-allowed', 'Auto merge is not allowed for this repository');
+      },
+    });
+    const out = await armPullRequest(host, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('merged');
+    expect(heads).toEqual([
+      { call: 'enableAutoMerge:42:squash', expectedHead: REVIEWED },
+      { call: 'mergePullRequest:42:squash', expectedHead: REVIEWED },
+    ]);
+  });
+
+  it('WITHOUT --expect-head nothing changes: no comparison, and every write gets `undefined`', async () => {
+    // A head that would NOT match anything is irrelevant when no pin was asked for.
+    const { host, calls, heads } = fakeLandingHost({ status: at('clean', MOVED) });
+    const out = await armPullRequest(host, 'b');
+    expect(out.outcome).toBe('merged');
+    expect(calls).toEqual(['getPrStatus:b', 'mergePullRequest:42:squash']);
+    expect(heads).toEqual([{ call: 'mergePullRequest:42:squash', expectedHead: undefined }]);
+  });
+
+  it('a host that reported NO head cannot be compared → refused (the check blocks when it cannot decide)', async () => {
+    const { host, calls } = fakeLandingHost({ status: at('clean') });
+    const out = await mergePullRequestNow(host, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toMatch(/reported no head commit/);
+    expect(calls).toEqual(['getPrStatus:b']);
+  });
+
+  it('a HeadMismatchError from the host on the merge write is `refused`, never thrown, and names both commits', async () => {
+    const { host } = fakeLandingHost({
+      status: at('clean', REVIEWED),
+      onMerge: () => {
+        throw new HeadMismatchError(REVIEWED, MOVED, 'HTTP 409');
+      },
+    });
+    const out = await mergePullRequestNow(host, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out).toMatchObject({ outcome: 'refused', prNumber: 42 });
+    expect(out.reason).toContain(REVIEWED);
+    expect(out.reason).toContain(MOVED);
+    expect(out.reason).toContain('[HTTP 409]');
+  });
+
+  it('a HeadMismatchError from the host on the arm write is `refused` too', async () => {
+    const { host, calls } = fakeLandingHost({
+      status: at('blocked', REVIEWED),
+      onEnableAutoMerge: () => {
+        throw new HeadMismatchError(REVIEWED, MOVED, 'expectedHeadOid mismatch');
+      },
+    });
+    const out = await armPullRequest(host, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toContain(MOVED);
+    expect(calls).not.toContain('mergePullRequest:42:squash');
+  });
+});
+
+// ─── A refusal that answered a refresh (ADR-0053, disclosure 995.1) ─────────
+
+describe('armPullRequest — a merge leg after a refresh never says the landed PR is unarmed', () => {
+  const HOST_SAYS = 'Pull request is in clean status';
+  const refreshRefusal = () =>
+    new AutoMergeUnavailableError(
+      'clean-status',
+      `PR #42 was already armed, and refreshing its frozen landing message (ADR-0053) disabled its auto-merge first — the PR is now unarmed. ${HOST_SAYS}`,
+      { hostMessage: HOST_SAYS },
+    );
+
+  it('merged: the reason quotes the host alone and names the disable, pinned whole', async () => {
+    const { host } = fakeLandingHost({ status: openPr('blocked'), onEnableAutoMerge: () => { throw refreshRefusal(); } });
+    const out = await armPullRequest(host, 'b');
+    expect(out.outcome).toBe('merged');
+    expect(out.reason).toBe(
+      `Host rejected the arm: the PR is already clean (nothing pending) — merged directly instead. [${HOST_SAYS}] ` +
+        "This arm had first disabled the PR's earlier auto-merge, to refresh its frozen landing message (ADR-0053).",
+    );
+    expect(out.reason).not.toMatch(/unarmed/i);
+  });
+
+  it('declined: a merge that did NOT land still says the PR is now unarmed — there it is true', async () => {
+    const { host } = fakeLandingHost({
+      status: openPr('blocked'),
+      onEnableAutoMerge: () => {
+        throw refreshRefusal();
+      },
+      onMerge: () => ({ merged: false }),
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toMatch(/The PR is now unarmed/);
+  });
+
+  it('CONTROL — a first-arm refusal (no refresh) quotes its message exactly as before', async () => {
+    const { host } = fakeLandingHost({
+      status: openPr('blocked'),
+      onEnableAutoMerge: () => {
+        throw new AutoMergeUnavailableError('clean-status', HOST_SAYS);
+      },
+    });
+    const out = await armPullRequest(host, 'b');
+    expect(out.reason).toBe(
+      `Host rejected the arm: the PR is already clean (nothing pending) — merged directly instead. [${HOST_SAYS}]`,
+    );
+  });
+});
 
 describe('compareRequiredToReported (the pure required-vs-reported comparison)', () => {
   it('ZERO reported against required checks → every one is unreported, NEVER attached', () => {

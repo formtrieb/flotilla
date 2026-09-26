@@ -31,10 +31,10 @@ Read two checks:
 
 **The probe is advisory — the arm outcome is the ground truth.** `host-pr preflight` informs the confirm; it never gates it. On any `unknown`, state "posture unknown — the arm outcome decides" and proceed: `host-pr arm`'s per-PR outcome (`merged` vs `armed` vs `refused`, below) is the authority a static probe cannot be (a behind/recomputing race is not probeable).
 
-**Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`), **requesting branch deletion** the same way phase 4's `host-pr merge --delete-branch` does (consumer KW-F6) — `arm` threads the identical `--delete-branch` flag, so a landing driven through this skill actually deletes the head branch on the paths that merge immediately. `--commit-message` carries `wave.config.json`'s `landing.commitMessage`, else `pr` ([close-mechanics.md](close-mechanics.md#--commit-message-resolution-adr-0053)):
+**Arm each order-free row through the engine host seam** (never raw `gh` — ADR-0023: every host write goes through `host-pr`), **requesting branch deletion** the same way phase 4's `host-pr merge --delete-branch` does (consumer KW-F6) — `arm` threads the identical `--delete-branch` flag, so a landing driven through this skill actually deletes the head branch on the paths that merge immediately. `--commit-message` carries `wave.config.json`'s `landing.commitMessage`, else `pr` ([close-mechanics.md](close-mechanics.md#--commit-message-resolution-adr-0053)). `--expect-head` carries the row's reviewed head, the commit `refs/review/<id>` pointed at when you read it before phase 3; with no ref, omit the flag and report that the head check abstained for that row ([close-mechanics.md](close-mechanics.md#--expect-head-resolution-adr-0055)):
 
 ```bash
-{{wave-cli}} host-pr arm --branch <wave-branch> --commit-message <pr|host> --delete-branch   # detect-host-routed; NO --config (landing talks to the code host, not the tracker)
+{{wave-cli}} host-pr arm --branch <wave-branch> --commit-message <pr|host> --expect-head <reviewed-sha> --delete-branch   # detect-host-routed; NO --config (landing talks to the code host, not the tracker)
 # → { ok, verb: "arm", host, branch, method: "squash", commitMessage, outcome, prNumber?, prUrl?, reason, branchDeletion?, landingMessage? }
 ```
 
@@ -52,6 +52,7 @@ Under `pr` the title and body are **frozen at arming**: `landingMessage` shows w
     --option rebase-and-retry --option merge-by-hand
   ```
   Rebase-train automation is M2 — `--auto` only arms; it does not rebase.
+  **A reason naming two heads is different:** the branch moved after its verdict. Nobody commits to a row's branch after its verdict — flag it with the option `re-dispatch`, never rebase or push by hand; a fix or a conflict-resolving update is a re-dispatch with its own review.
 - `no-pr` — no open PR for the branch (should not reach here — an open PR is an eligibility floor). Report it.
 
 **Arm-and-exit — no watch, no poll (ADR-0023).** After arming, do **not** wait for the armed PRs to merge. The host completes them server-side (this is exactly why arming was chosen — it survives a dead Coordinator). Proceed to phase 5 (done-reconcile) and phase 6 (archive) as on the default path, then exit. Whatever has not merged yet reconciles on the **next** `wave-close` / `wave-resume` touch (idempotent, archived spines included). **Accepted, documented latency:** an armed PR whose checks later *fail* is not watched — it surfaces only on that next touch, never live. State this; do not promise live monitoring.

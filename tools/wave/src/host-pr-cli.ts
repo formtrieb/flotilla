@@ -91,6 +91,11 @@
  *                  queue composes its own commit and ignores the message, and
  *                  `--method rebase` replays the commits, so there is no single
  *                  message to shape ({@link PR_MESSAGE_EXCEPTIONS}).
+ *   arm | merge  `--expect-head <sha>` (ADR-0055, a full commit SHA): the PR
+ *                  lands only at that head, else `refused` with both commits
+ *                  named. Threaded to `ArmOptions`/`MergeOptions.expectHead`;
+ *                  GitHub pins it natively, and on every host the verb first
+ *                  compares its own status read ({@link EXPECT_HEAD_NOTE}).
  *   status       → `LandingHost.getPrStatus`
  *   preflight    → `preflightHost` (host-pr.ts owns the posture grading): reports
  *                  the three code-host checks (pr-merge-token, allow-auto-merge,
@@ -256,6 +261,27 @@ const PR_MESSAGE_EXCEPTIONS = [
 ] as const;
 
 /**
+ * `--expect-head`'s value (ADR-0055): a FULL commit SHA — 40 hex digits
+ * (SHA-1) or 64 (SHA-256). An abbreviation is refused at the flag, because
+ * GitHub's pins (`sha`, `expectedHeadOid: GitObjectID`) take a full object id
+ * and the skills read one (`git rev-parse refs/review/<id>`). The comparison
+ * on the other side still tolerates a HOST that reports an abbreviated head
+ * (`headsMatch`, host-pr.ts).
+ */
+const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
+/**
+ * The two lines both landing verbs print about `--expect-head` (ADR-0055) —
+ * one copy, because the rule is the same on both. The second line is the
+ * stated check-then-act window the decision record requires: on a host without
+ * a native pin the verb's own status read is the whole check.
+ */
+const EXPECT_HEAD_NOTE = [
+  "  --expect-head <sha> refuses unless the PR's head is that full commit SHA (ADR-0055); the reason names both.",
+  '  GitHub pins it itself (merge sha, expectedHeadOid); elsewhere this verb compares its own status read — a check-then-act window.',
+] as const;
+
+/**
  * The FULL multi-verb usage dump — every verb's usage line, its prose, and the
  * shared credential-resolution + flag-default footer. Reserved for when the
  * caller hasn't named a verb we recognize yet (no verb at all, or an unknown
@@ -343,6 +369,10 @@ function fullUsageLines(): string[] {
     "    title and body. 'host' sends neither, so the repository's own merge setting composes the message —",
     '    for a consumer whose history is machine-read (ADR-0053).',
     ...PR_MESSAGE_EXCEPTIONS.map((line) => `    ${line}`),
+    '  --expect-head <sha> (arm | merge only, ADR-0055): the PR lands only while its head is that full commit SHA;',
+    '    otherwise the outcome is refused, and the reason names both commits. GitHub pins it itself (the merge\'s',
+    '    sha, expectedHeadOid when arming). On a host without such a pin the verb compares the head in its own status',
+    '    read first — a check-then-act window: a push between that read and the merge request is not seen.',
     '  --allow-close-phrase-loss (create only) permits a reuse rewrite that drops the live PR body\'s close',
     '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
     '  --body-file <path> (create only) is the alternative to --body: the file\'s bytes become the PR body,',
@@ -490,6 +520,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       { canonical: '--method', value: 'one', valueType: 'enum', placeholder: METHOD_PLACEHOLDER },
       { canonical: '--commit-message', value: 'one', valueType: 'enum', placeholder: COMMIT_MESSAGE_PLACEHOLDER },
       { canonical: '--delete-branch', value: 'none', valueType: 'none' },
+      { canonical: '--expect-head', value: 'one', valueType: 'sha', placeholder: '<sha>' },
       ...HOST_PR_COMMON_FLAGS,
     ],
     positionals: { kind: 'fixed', count: 0 },
@@ -500,6 +531,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       `  --commit-message '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (default) lands the PR's own title (+ number suffix) and body, FROZEN at arming —`,
       "  arm again after editing the PR to refresh them; 'host' sends neither: the repository's setting composes it.",
       ...PR_MESSAGE_EXCEPTIONS.map((line) => `  ${line}`),
+      ...EXPECT_HEAD_NOTE,
     ],
     outputNote: 'a single JSON object on stdout',
     json: {
@@ -520,6 +552,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       { canonical: '--method', value: 'one', valueType: 'enum', placeholder: METHOD_PLACEHOLDER },
       { canonical: '--commit-message', value: 'one', valueType: 'enum', placeholder: COMMIT_MESSAGE_PLACEHOLDER },
       { canonical: '--delete-branch', value: 'none', valueType: 'none' },
+      { canonical: '--expect-head', value: 'one', valueType: 'sha', placeholder: '<sha>' },
       ...HOST_PR_COMMON_FLAGS,
     ],
     positionals: { kind: 'fixed', count: 0 },
@@ -530,6 +563,7 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       `  --commit-message '${DEFAULT_COMMIT_MESSAGE_SOURCE}' (default) lands the PR's own title (+ number suffix) and body, read now;`,
       "  'host' sends neither: the repository's setting composes it (ADR-0053).",
       ...PR_MESSAGE_EXCEPTIONS.map((line) => `  ${line}`),
+      ...EXPECT_HEAD_NOTE,
     ],
     outputNote: 'a single JSON object on stdout',
     json: {
@@ -620,6 +654,7 @@ const HOST_PR_ANY_CONTRACT: VerbContract = {
     { canonical: '--method', value: 'one', valueType: 'enum' },
     { canonical: '--commit-message', value: 'one', valueType: 'enum' },
     { canonical: '--delete-branch', value: 'none', valueType: 'none' },
+    { canonical: '--expect-head', value: 'one', valueType: 'sha' },
     ...HOST_PR_COMMON_FLAGS,
   ],
   positionals: { kind: 'fixed', count: 0 },
@@ -768,7 +803,16 @@ export async function runHostPr(
     );
   }
 
-  // The ONE refusal path (ADR-0051 decision 4), run AFTER the three cross-verb
+  // `--expect-head` (ADR-0055) pins WHICH commit lands, so it belongs to the
+  // two verbs that land — the same cross-verb refusal `--commit-message` gets.
+  if (hasFlag(HOST_PR_ANY_CONTRACT, args, 'expect-head') && verb !== 'merge' && verb !== 'arm') {
+    return usage(
+      `--expect-head is only supported by 'arm' and 'merge' (it pins the commit that lands); '${verb}' lands nothing`,
+      verb,
+    );
+  }
+
+  // The ONE refusal path (ADR-0051 decision 4), run AFTER the cross-verb
   // refusals above (each of which teaches which verbs own the flag) and BEFORE
   // any required-flag read, host build, credential resolve or network call:
   // anything this verb's contract does not declare — an unknown flag, a stray
@@ -896,6 +940,20 @@ export async function runHostPr(
     commitMessage = (rawCommitMessage as CommitMessageSource) ?? DEFAULT_COMMIT_MESSAGE_SOURCE;
   }
 
+  // `--expect-head` (ADR-0055) is validated before any host build, like the
+  // two flags above: a value that is not a full commit SHA is a usage error
+  // (exit 2), never a pin quietly dropped or quietly compared as a prefix.
+  let expectHead: string | undefined;
+  if (verb === 'arm' || verb === 'merge') {
+    expectHead = flag(args, contract, 'expect-head');
+    if (expectHead !== undefined && !FULL_SHA_RE.test(expectHead)) {
+      return usage(
+        `invalid --expect-head "${expectHead}" — expected a full commit SHA (40 or 64 hex digits), e.g. the output of \`git rev-parse refs/review/<id>\``,
+        verb,
+      );
+    }
+  }
+
   let remoteUrl: string;
   try {
     remoteUrl = flag(args, contract, 'remote') ?? gitRemoteUrl();
@@ -935,7 +993,7 @@ export async function runHostPr(
   // ── arm | merge | status: build the LandingHost adapter + run the verb. ──
   try {
     const host: LandingHost = injected ?? (await landingHostFor(info, remoteUrl, deps));
-    return await dispatch(verb, host, branch as string, method, info.host, deleteBranch, commitMessage);
+    return await dispatch(verb, host, branch as string, method, info.host, deleteBranch, commitMessage, expectHead);
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
     printJson({
@@ -1242,6 +1300,7 @@ async function dispatch(
   hostName: Host,
   deleteBranch: boolean,
   commitMessage: CommitMessageSource,
+  expectHead?: string,
 ): Promise<number> {
   if (verb === 'status') {
     const status = await host.getPrStatus(branch);
@@ -1270,8 +1329,8 @@ async function dispatch(
         // "tick Allow auto-merge" remedy for a control Bitbucket has no
         // equivalent of, on this host's most common outcome, and a Bitbucket
         // landing would carry GitHub's ` (#N)` instead of its own suffix.
-        await armPullRequest(host, branch, method, { deleteBranch, host: hostName, commitMessage })
-      : await mergePullRequestNow(host, branch, method, { deleteBranch, host: hostName, commitMessage });
+        await armPullRequest(host, branch, method, { deleteBranch, host: hostName, commitMessage, expectHead })
+      : await mergePullRequestNow(host, branch, method, { deleteBranch, host: hostName, commitMessage, expectHead });
 
   const ok = outcome.outcome === 'merged' || outcome.outcome === 'armed' || outcome.outcome === 'already-merged';
   // Aligned url/number field names across every verb (FOR-54): the landing

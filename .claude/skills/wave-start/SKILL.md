@@ -269,7 +269,7 @@ Some waves land each round's PRs and re-anchor before dispatching the next, rath
 
 Run this sequence once a round's PRs are merged, **before** composing the next round:
 
-1. Land the round's PRs.
+1. Land the round's PRs — each `host-pr arm|merge` with `--expect-head <sha>`, the commit `refs/review/<id>` points at (`git rev-parse --verify --quiet refs/review/<id>`). A PR whose head moved is `refused`, naming both commits: re-dispatch the row. A row with no ref lands without the flag, and your report says its head check abstained. **What lands is the reviewed commit: nobody commits to a row's branch after its verdict** — a fix, or a branch update to resolve a landing conflict, is a re-dispatch with its own review. A Coordinator-direct PR that is not a wave row is unaffected.
 2. Bring the local default branch to the remote tip: `git -C "$REPO" fetch origin`, then `git -C "$REPO" merge --ff-only origin/<default-branch>` — never `git pull` alone. When the landed change touches sandbox-protected paths (`.claude/**`), run this step outside the sandbox: a merge that has to write such a path can HALF-APPLY under the harness write-deny and still exit 0. Either way, confirm HEAD actually moved — `git -C "$REPO" rev-parse HEAD` must equal `git -C "$REPO" rev-parse origin/<default-branch>` — rather than trusting the exit code alone. Full invocations: [reference/start-mechanics.md](reference/start-mechanics.md) §Between rounds.
 3. **`{{wave-cli}} close-row --spine <spine> --id <id>` for every row that landed this round — before the next round's compose.** This is the only step that writes `(landed)`.
 4. The probe sweep (step 7, item 4), if it has not already run after the round's last tuple.

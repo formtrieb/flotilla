@@ -12,6 +12,8 @@ import type {
 } from './github-api';
 import {
   AutoMergeUnavailableError,
+  HeadMismatchError,
+  headsMatch,
   mergeRequiredChecks,
   DEFAULT_MERGE_METHOD,
   type LandingMessage,
@@ -236,6 +238,23 @@ const ENABLE_AUTO_MERGE_MUTATION =
  */
 const ENABLE_AUTO_MERGE_WITH_MESSAGE_MUTATION =
   'mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!,$commitHeadline:String!,$commitBody:String!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod,commitHeadline:$commitHeadline,commitBody:$commitBody}){pullRequest{number autoMergeRequest{enabledAt}}}}';
+
+/**
+ * The two arm mutations above, each WITH the expected head (ADR-0055).
+ * `expectedHeadOid: GitObjectID` is an input field of
+ * `EnablePullRequestAutoMergeInput`, documented as "The expected head OID of
+ * the pull request." (docs.github.com/public/fpt/schema.docs.graphql, read
+ * 2026-09-26). The schema documents neither the error a mismatch returns nor
+ * its wording, so {@link RealGitHubApi.enableAutoMerge} does not match on one:
+ * it compares the head in the payload it already read BEFORE sending, and
+ * re-reads the head after any error the typed refusals do not claim. Sent only
+ * when an expected head is supplied — without one, the request is
+ * byte-identical to the constants above.
+ */
+const ENABLE_AUTO_MERGE_EXPECT_HEAD_MUTATION =
+  'mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!,$expectedHeadOid:GitObjectID!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod,expectedHeadOid:$expectedHeadOid}){pullRequest{number autoMergeRequest{enabledAt}}}}';
+const ENABLE_AUTO_MERGE_WITH_MESSAGE_EXPECT_HEAD_MUTATION =
+  'mutation($pullRequestId:ID!,$mergeMethod:PullRequestMergeMethod!,$commitHeadline:String!,$commitBody:String!,$expectedHeadOid:GitObjectID!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:$mergeMethod,commitHeadline:$commitHeadline,commitBody:$commitBody,expectedHeadOid:$expectedHeadOid}){pullRequest{number autoMergeRequest{enabledAt}}}}';
 
 /**
  * Take a PR's existing auto-merge request down — `disablePullRequestAutoMerge`,
@@ -861,11 +880,29 @@ export class RealGitHubApi implements GitHubApi {
     prNumber: number,
     method: MergeMethod = DEFAULT_MERGE_METHOD,
     message?: LandingMessage,
+    expectedHead?: string,
   ): Promise<MergeResult> {
+    // ADR-0055: the expected head rides as `sha` — "SHA that pull request head
+    // must match to allow merge", answered with "409 Conflict if sha was
+    // provided and pull request head did not match" (docs.github.com/en/rest/
+    // pulls/pulls "Merge a pull request", read 2026-09-26). The host pins it;
+    // no read of our own precedes the write. Without one, no `sha` key.
     const res = await this.send('PUT', `${this.base()}/pulls/${prNumber}/merge`, {
       merge_method: method,
       ...(message !== undefined ? { commit_title: message.title, commit_message: message.body } : {}),
+      ...(expectedHead !== undefined ? { sha: expectedHead } : {}),
     });
+    if (res.status === 409 && expectedHead !== undefined) {
+      // The documented head-mismatch answer. The 409 names no head, so the
+      // current one is read back to name it — best effort: a failed read
+      // still refuses, with the actual head reported as not readable.
+      const said = (res.json as Record<string, unknown> | null)?.message;
+      throw new HeadMismatchError(
+        expectedHead,
+        await this.headShaOf(prNumber),
+        `GitHub refused the merge with HTTP 409${typeof said === 'string' && said.length > 0 ? `: ${said}` : ''}`,
+      );
+    }
     if (res.status !== 200) {
       throw new GitHubApiError(res.status, 'mergePullRequest', ghMessage(res.json, 'mergePullRequest'));
     }
@@ -966,11 +1003,22 @@ export class RealGitHubApi implements GitHubApi {
    * ordinary first-arm path — see {@link unarmedByRefresh}. A disable that
    * fails is a loud {@link GitHubApiError} too — never routed as a landing
    * decision — after which a re-run reads `auto_merge` afresh.
+   *
+   * ## The expected head (ADR-0055)
+   *
+   * With an `expectedHead`, the head in the `GET …/pulls/{n}` payload is
+   * compared first — a moved head throws {@link HeadMismatchError} before any
+   * mutation, so a refresh never disarms a PR it is about to refuse — and the
+   * mutation then carries `expectedHeadOid`, GitHub's own pin, for a push that
+   * lands after that read. An error the two typed refusals do not claim is
+   * checked against a fresh head read (the schema documents no wording for the
+   * mismatch), and a moved head is thrown as {@link HeadMismatchError}.
    */
   async enableAutoMerge(
     prNumber: number,
     method: MergeMethod = DEFAULT_MERGE_METHOD,
     message?: LandingMessage,
+    expectedHead?: string,
   ): Promise<void> {
     const pr = await this.send('GET', `${this.base()}/pulls/${prNumber}`);
     if (pr.status !== 200) {
@@ -979,6 +1027,22 @@ export class RealGitHubApi implements GitHubApi {
     const nodeId = (pr.json as Record<string, unknown>)?.node_id;
     if (typeof nodeId !== 'string' || nodeId.length === 0) {
       throw new GitHubApiError(pr.status, 'enableAutoMerge', `PR #${prNumber} carries no node_id — cannot address the auto-merge mutation`);
+    }
+
+    // ADR-0055: the payload just read carries the head, so a head that moved
+    // is refused HERE — before any mutation, and in particular before a
+    // refresh's disable could leave the PR unarmed for nothing. The mutation
+    // below still carries `expectedHeadOid` for a push that lands after this
+    // read.
+    if (expectedHead !== undefined) {
+      const head = prRefs(pr.json).headSha;
+      if (head !== undefined && !headsMatch(expectedHead, head)) {
+        throw new HeadMismatchError(
+          expectedHead,
+          head,
+          `the head in GET …/pulls/${prNumber} differs, so no auto-merge mutation was sent`,
+        );
+      }
     }
 
     if (message !== undefined) {
@@ -994,8 +1058,18 @@ export class RealGitHubApi implements GitHubApi {
         await this.disableAutoMerge(nodeId, prNumber);
         // From here the PR is UNARMED until the re-enable below succeeds.
         try {
-          await this.requestAutoMerge(nodeId, prNumber, method, message);
+          await this.requestAutoMerge(nodeId, prNumber, method, message, expectedHead);
         } catch (err) {
+          // A head that moved inside the refresh keeps its class (the landing
+          // verb routes it to `refused`), and says the disable already ran.
+          if (err instanceof HeadMismatchError) {
+            throw new HeadMismatchError(
+              err.expected,
+              err.actual,
+              `${err.hostSaid}. PR #${prNumber} was already armed, and refreshing its frozen landing message ` +
+                `(ADR-0053) disabled its auto-merge first — the PR is now unarmed.`,
+            );
+          }
           // The two typed refusals keep their CLASS and their ROUTING KEY
           // (`.reason`) byte for byte — the arm intent's `err.reason ===
           // 'clean-status' | 'not-allowed'` switch (host-pr.ts) still fires
@@ -1010,7 +1084,21 @@ export class RealGitHubApi implements GitHubApi {
       }
     }
 
-    await this.requestAutoMerge(nodeId, prNumber, method, message);
+    await this.requestAutoMerge(nodeId, prNumber, method, message, expectedHead);
+  }
+
+  /**
+   * The PR's current head SHA, read to NAME the actual head in a
+   * {@link HeadMismatchError} — never to decide one. Best effort: any failure
+   * answers `undefined`, because the refusal it decorates stands either way.
+   */
+  private async headShaOf(prNumber: number): Promise<string | undefined> {
+    try {
+      const res = await this.send('GET', `${this.base()}/pulls/${prNumber}`);
+      return res.status === 200 ? prRefs(res.json).headSha : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1024,22 +1112,28 @@ export class RealGitHubApi implements GitHubApi {
     prNumber: number,
     method: MergeMethod,
     message: LandingMessage | undefined,
+    expectedHead?: string,
   ): Promise<void> {
+    const head = expectedHead !== undefined ? { expectedHeadOid: expectedHead } : {};
     const res = await this.send(
       'POST',
       '/graphql',
       message === undefined
         ? {
-            query: ENABLE_AUTO_MERGE_MUTATION,
-            variables: { pullRequestId: nodeId, mergeMethod: GQL_MERGE_METHOD[method] },
+            query: expectedHead === undefined ? ENABLE_AUTO_MERGE_MUTATION : ENABLE_AUTO_MERGE_EXPECT_HEAD_MUTATION,
+            variables: { pullRequestId: nodeId, mergeMethod: GQL_MERGE_METHOD[method], ...head },
           }
         : {
-            query: ENABLE_AUTO_MERGE_WITH_MESSAGE_MUTATION,
+            query:
+              expectedHead === undefined
+                ? ENABLE_AUTO_MERGE_WITH_MESSAGE_MUTATION
+                : ENABLE_AUTO_MERGE_WITH_MESSAGE_EXPECT_HEAD_MUTATION,
             variables: {
               pullRequestId: nodeId,
               mergeMethod: GQL_MERGE_METHOD[method],
               commitHeadline: message.title,
               commitBody: message.body,
+              ...head,
             },
           },
     );
@@ -1049,7 +1143,19 @@ export class RealGitHubApi implements GitHubApi {
 
     const errors = (res.json as Record<string, unknown>)?.errors;
     if (Array.isArray(errors) && errors.length > 0) {
-      throw mapArmError(errors as Record<string, unknown>[], res.status, prNumber);
+      const mapped = mapArmError(errors as Record<string, unknown>[], res.status, prNumber);
+      // The schema documents no wording for an `expectedHeadOid` mismatch, so
+      // it is never matched on text: any error the two typed refusals do not
+      // claim is checked against the head as it stands now, and a moved head
+      // is the refusal it names. A read that fails, or a head that still
+      // matches, leaves the mapped error as it was.
+      if (expectedHead !== undefined && !(mapped instanceof AutoMergeUnavailableError)) {
+        const actual = await this.headShaOf(prNumber);
+        if (actual !== undefined && !headsMatch(expectedHead, actual)) {
+          throw new HeadMismatchError(expectedHead, actual, `GitHub refused the arm: ${mapped.message}`);
+        }
+      }
+      throw mapped;
     }
   }
 
@@ -1281,6 +1387,10 @@ function disarmedRefusal(err: AutoMergeUnavailableError, prNumber: number): Auto
     err.reason,
     `PR #${prNumber} was already armed, and refreshing its frozen landing message (ADR-0053) disabled its ` +
       `auto-merge first — the PR is now unarmed. ${err.message}`,
+    // The host's own text, unextended: a leg that goes on to MERGE the PR
+    // quotes this, so its reason never says "now unarmed" about a PR it just
+    // landed (disclosure 995.1).
+    { hostMessage: err.message },
   );
 }
 

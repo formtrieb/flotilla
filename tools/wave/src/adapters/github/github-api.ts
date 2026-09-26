@@ -156,7 +156,9 @@ export interface CreateLabelInput {
  * than re-declared, and `RealGitHubApi` can be handed straight to
  * `armPullRequest` / `mergePullRequestNow` with no pass-through wrapper. A
  * Bitbucket adapter implements the same `LandingHost` and reuses the engine's
- * arm intent verbatim.
+ * arm intent verbatim. Both landing writes take the seam's optional
+ * `expectedHead` (ADR-0055), which this adapter hands to the host itself —
+ * the merge's `sha`, and `expectedHeadOid` on the arm mutation.
  *
  * It also `extends LandingPosture` (ADR-0023 amendment): the three code-host
  * posture reads — `canMergePullRequests`, `getAutoMergeSetting`,

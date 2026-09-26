@@ -642,6 +642,47 @@ describe('RealBitbucketApi.mergePullRequest', () => {
   });
 });
 
+// ─── ADR-0055: the expected head on a host with no native pin ────────────────
+//
+// Bitbucket's merge carries no field to pin a head to, so the landing verb's
+// own comparison of the head in its status read is the whole check — and it
+// must stop the landing BEFORE the merge request is sent. Bitbucket may report
+// the head abbreviated (`commit.hash` is documented as `[0-9a-f]{7,}?`), so the
+// fixtures carry a 12-digit hash against a full expected SHA.
+describe('the expected head over RealBitbucketApi — the verb compares, no merge request is sent (ADR-0055)', () => {
+  const REVIEWED = '1234567890ab'.padEnd(40, 'c');
+  const MOVED = 'fedcba987654'.padEnd(40, 'd');
+  const at = (hash: string) => openPr({ title: 'T', source: { branch: { name: 'wave/461-x' }, commit: { hash } } });
+  const isMerge = both(isMethod('POST'), urlHas('/pullrequests/7/merge'));
+
+  it.each([
+    ['merge', (h: RealBitbucketApi) => mergePullRequestNow(h, 'wave/461-x', 'squash', { host: 'bitbucket', expectHead: REVIEWED })],
+    ['arm', (h: RealBitbucketApi) => armPullRequest(h, 'wave/461-x', 'squash', { host: 'bitbucket', expectHead: REVIEWED })],
+  ] as const)('%s: a status head that differs refuses before any merge request is sent', async (_verb, land) => {
+    const { http, calls } = fakeHttp([
+      [urlHas('/pullrequests?'), page([at(MOVED.slice(0, 12))])],
+      NO_RESTRICTIONS,
+      [isMerge, { status: 200, json: { merge_commit: { hash: 'c1' } } }],
+    ]);
+    const out = await land(api(http));
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toContain(REVIEWED);
+    expect(out.reason).toContain(MOVED.slice(0, 12));
+    expect(calls.some(isMerge)).toBe(false);
+  });
+
+  it('a matching (abbreviated) status head lands — and the merge body carries no pin field, because none exists', async () => {
+    const { http, calls } = fakeHttp([
+      [urlHas('/pullrequests?'), page([at(REVIEWED.slice(0, 12))])],
+      NO_RESTRICTIONS,
+      [isMerge, { status: 200, json: { merge_commit: { hash: 'c1' } } }],
+    ]);
+    const out = await mergePullRequestNow(api(http), 'wave/461-x', 'squash', { host: 'bitbucket', expectHead: REVIEWED });
+    expect(out.outcome).toBe('merged');
+    expect(Object.keys(JSON.parse(calls.find(isMerge)!.body as string)).sort()).toEqual(['merge_strategy', 'message']);
+  });
+});
+
 // ─── ADR-0053 end to end: the PR's own title/description → the merge `message` ─
 
 describe('the landing message through the landing verbs, over RealBitbucketApi (ADR-0053)', () => {

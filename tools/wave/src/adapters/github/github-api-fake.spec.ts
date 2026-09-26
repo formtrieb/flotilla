@@ -1,5 +1,103 @@
 import { describe, it, expect } from 'vitest';
 import { InMemoryGitHubApi } from './github-api-fake';
+import { HeadMismatchError, armPullRequest, mergePullRequestNow, type PrLandingStatus } from '../../host-pr';
+
+// ─── ADR-0055: the expected head, against the GitHub fake ────────────────────
+//
+// What lands is the reviewed commit. Driven through the two landing verbs, so
+// each case is what `host-pr arm|merge --expect-head` answers on GitHub: the
+// verb's own comparison first, and — for a head that moves after that read —
+// the host's pin, which the fake models the way GitHub answers it.
+describe('InMemoryGitHubApi — the expected head through the landing verbs (ADR-0055)', () => {
+  const REVIEWED = 'a'.repeat(40);
+  const MOVED = 'b'.repeat(40);
+  const openPr = (mergeability: PrLandingStatus['mergeability'], headSha = REVIEWED): PrLandingStatus => ({
+    state: 'open',
+    number: 7,
+    url: 'https://example.test/pull/7',
+    mergeability,
+    headSha,
+    title: 'T',
+  });
+
+  /** A fake whose head moves to MOVED right after the verb's status read — a push inside the window. */
+  function racingFake(mergeability: PrLandingStatus['mergeability']): InMemoryGitHubApi {
+    const api = new InMemoryGitHubApi();
+    api.setPrForBranch('b', openPr(mergeability));
+    const read = api.getPrStatus.bind(api);
+    api.getPrStatus = async (branch: string) => {
+      const seen = await read(branch);
+      api.setPrForBranch(branch, { ...seen, headSha: MOVED });
+      return seen;
+    };
+    return api;
+  }
+
+  it('a direct merge with a matching expected head lands', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setPrForBranch('b', openPr('clean'));
+    const out = await mergePullRequestNow(api, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('merged');
+    expect(api.mergedPrs).toHaveLength(1);
+  });
+
+  it('a direct merge with a different head is refused, the reason naming both commits, and nothing merges', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setPrForBranch('b', openPr('clean', MOVED));
+    const out = await mergePullRequestNow(api, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toContain(REVIEWED);
+    expect(out.reason).toContain(MOVED);
+    expect(api.mergedPrs).toEqual([]);
+  });
+
+  it('arming with a matching expected head arms', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setPrForBranch('b', openPr('blocked'));
+    const out = await armPullRequest(api, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('armed');
+    expect(api.armedPrs).toHaveLength(1);
+  });
+
+  it('arming with a different head is refused, the reason naming both commits, and nothing is armed', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setPrForBranch('b', openPr('blocked', MOVED));
+    const out = await armPullRequest(api, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toContain(REVIEWED);
+    expect(out.reason).toContain(MOVED);
+    expect(api.armedPrs).toEqual([]);
+  });
+
+  // The verb's comparison passed on the head it read; the host's pin is what
+  // catches the push that landed after. Without the pin these two would land.
+  it('the HOST pin: a head that moves after the verb read it refuses the merge, naming both commits', async () => {
+    const api = racingFake('clean');
+    const out = await mergePullRequestNow(api, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toMatch(/host refused/i);
+    expect(out.reason).toContain(REVIEWED);
+    expect(out.reason).toContain(MOVED);
+    expect(api.mergedPrs).toEqual([]);
+  });
+
+  it('the HOST pin: a head that moves after the verb read it refuses the arm, naming both commits', async () => {
+    const api = racingFake('blocked');
+    const out = await armPullRequest(api, 'b', 'squash', { expectHead: REVIEWED });
+    expect(out.outcome).toBe('refused');
+    expect(out.reason).toMatch(/host refused/i);
+    expect(out.reason).toContain(MOVED);
+    expect(api.armedPrs).toEqual([]);
+  });
+
+  it('the fake pin itself: a mismatched expected head throws HeadMismatchError; none given merges whatever the head', async () => {
+    const api = new InMemoryGitHubApi();
+    api.setPrForBranch('b', openPr('clean', MOVED));
+    await expect(api.mergePullRequest(7, 'squash', undefined, REVIEWED)).rejects.toBeInstanceOf(HeadMismatchError);
+    await expect(api.enableAutoMerge(7, 'squash', undefined, REVIEWED)).rejects.toBeInstanceOf(HeadMismatchError);
+    expect(await api.mergePullRequest(7, 'squash')).toMatchObject({ merged: true });
+  });
+});
 
 describe('InMemoryGitHubApi comments (ADR-0015)', () => {
   it('addComment appends; getComments returns them oldest-first', async () => {

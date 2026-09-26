@@ -450,12 +450,35 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * rounded up the same way. Lowering a ceiling is still free: the next ratchet row
  * takes this back down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000;
+const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000; // UNCHANGED by issue #1006 (ADR-0055): its host-landing-seam `--expect-head` line spent 235 B, 165,469 → 165,704 B, which rounds UP to this 166,000 B already.
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that gives an Operator's answer to a
+ * Why this number: **RAISED by the row that makes every wave landing pass the
+ * reviewed head** (issue #1006, ADR-0055), in the diff that causes the growth.
+ * Each skill step that lands a wave row now passes `--expect-head` with the
+ * commit `refs/review/<id>` points at, states the abstention when the ref is
+ * missing, and states the no-commit-after-verdict rule: wave-start's
+ * `SKILL.md` between-rounds step 1 (+567 B) and its `start-mechanics.md`
+ * invocation (+323 B); wave-close's `SKILL.md` — the phase-3 read-before-sweep
+ * sentence, the phase-4/4b flag and the rule section (+1,006 B) — its
+ * `close-mechanics.md` resolution section and command rows (+814 B),
+ * `phase-4b-partial-arm.md` (+592 B) and `phase-4-advisory-merge-order.md`
+ * (+210 B); and the host-landing-seam convention (+235 B).
+ *
+ * At this row's anchor commit `710e8dcc204b274160af3ee564bd4c097e4c260a` the
+ * population measured **1,267,063 B** over 57 files — 937 B under the previous
+ * 1,268,000 B ceiling. This row's edit lands it at **1,270,810 B** over the
+ * same 57 files, +3,747 B, so the ceiling moves to that sum rounded UP to the
+ * next full KB (1 KB = 1000 B): **1,271,000 B**.
+ *
+ * Previously: 1,268,000 B — **RAISED by the row that gives an Operator's
+ * answer to a Reviewer's question a documented path back to a re-review**
+ * (issue #992), whose reasoning is kept below (in ITS voice, so "this row"
+ * there means that row).
+ *
+ * Why that number: **RAISED by the row that gives an Operator's answer to a
  * Reviewer's question a documented path back to a re-review** (issue #992), in
  * the diff that causes the growth. wave-start's `SKILL.md` step 8 gains the
  * four-step path for an answered `reviewer-questions-blocking` — the criterion
@@ -1052,7 +1075,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000;
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_268_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_271_000;
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
