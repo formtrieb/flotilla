@@ -7,7 +7,7 @@ import {
   ARM_FORBIDDEN_ERROR_TYPE,
   ARM_TOKEN_REQUIREMENTS,
 } from './real-github-api';
-import { AutoMergeUnavailableError, armPullRequest, mergePullRequestNow } from '../../host-pr';
+import { AutoMergeUnavailableError, HeadMismatchError, armPullRequest, mergePullRequestNow } from '../../host-pr';
 import { FakeGitHubHttp } from './github-http-fake';
 import type { GitHubHttpRequest, GitHubHttpResponse } from './github-http';
 
@@ -1473,6 +1473,35 @@ describe('RealGitHubApi', () => {
       expect(JSON.parse(put.body!)).toMatchObject({ commit_title: `${PR_TITLE} (#42)`, commit_message: 'New body.' });
     });
 
+    // Disclosure 995.1: the refusal's message says "the PR is now unarmed" —
+    // true when it is thrown — and the two legs that go on to MERGE used to
+    // quote it whole, so a successful outcome's reason claimed the PR it had
+    // just landed was unarmed. The `/UNARMED/` checks above are case-sensitive
+    // and never saw the lower-case phrase; these pin the whole reason instead.
+    it('clean-status → merged, and the reason (pinned whole) never claims the PR is unarmed', async () => {
+      const { api } = armedApi(ARM_CLEAN_STATUS_ERROR);
+      const out = await armPullRequest(api, 'b');
+      expect(out.outcome).toBe('merged');
+      expect(out.reason).toBe(
+        'Host rejected the arm: the PR is already clean (nothing pending) — merged directly instead. ' +
+          `[${ARM_CLEAN_STATUS_ERROR}] This arm had first disabled the PR's earlier auto-merge, to refresh its ` +
+          'frozen landing message (ADR-0053).',
+      );
+      expect(out.reason).not.toMatch(/unarmed/i);
+    });
+
+    it('not-allowed with nothing required pending (controlled degrade) → merged, and the reason never claims the PR is unarmed', async () => {
+      const { api } = armedApi(ARM_NOT_ALLOWED_ERROR, 'unstable');
+      const out = await armPullRequest(api, 'b');
+      expect(out.outcome).toBe('merged');
+      expect(out.reason).toBe(
+        'Host rejected the arm: this repository does not permit auto-merge, and no required check is pending — ' +
+          `merged directly instead (controlled degrade). [${ARM_NOT_ALLOWED_ERROR}] This arm had first disabled ` +
+          "the PR's earlier auto-merge, to refresh its frozen landing message (ADR-0053).",
+      );
+      expect(out.reason).not.toMatch(/unarmed/i);
+    });
+
     it('not-allowed with a required check pending → still refused, with the not-allowed reason', async () => {
       const { api, http } = armedApi(ARM_NOT_ALLOWED_ERROR, 'blocked');
       const out = await armPullRequest(api, 'b');
@@ -1918,5 +1947,221 @@ describe('RealGitHubApi — milestones (the Goal container, ADR-0044)', () => {
     );
     await expect(api.listMilestoneIssues(9)).rejects.toBeInstanceOf(GitHubApiError);
     expect(http.requests).toHaveLength(1); // it never got as far as listing
+  });
+});
+
+// ─── ADR-0055: the expected head, handed to the host itself ─────────────────
+//
+// On GitHub the pin is the host's: the REST merge's `sha` ("SHA that pull
+// request head must match to allow merge"; 409 when it does not) and the arm
+// mutation's `expectedHeadOid` ("The expected head OID of the pull request").
+// Each is sent ONLY when an expected head is supplied, so a landing without
+// one is byte-identical to before.
+describe('RealGitHubApi — the expected head (ADR-0055)', () => {
+  const REVIEWED = 'a'.repeat(40);
+  const MOVED = 'b'.repeat(40);
+  const MESSAGE = { title: 'Land the fix (#42)', body: 'Why.\n\nCloses #42' };
+  const isGraphql = (req: GitHubHttpRequest) => req.url === 'https://api.github.com/graphql';
+  const queryOf = (req: GitHubHttpRequest) => JSON.parse(req.body!).query as string;
+  const ARMED_OK = { status: 200, json: { data: { enablePullRequestAutoMerge: {} } } };
+
+  describe('mergePullRequest', () => {
+    it('sends the expected head as `sha` beside the method and the message', async () => {
+      const { api, http } = makeApi(() => ({ status: 200, json: { merged: true, sha: 'm' } }));
+      await api.mergePullRequest(42, 'squash', MESSAGE, REVIEWED);
+      expect(JSON.parse(http.requests[0].body!)).toEqual({
+        merge_method: 'squash',
+        commit_title: MESSAGE.title,
+        commit_message: MESSAGE.body,
+        sha: REVIEWED,
+      });
+      expect(http.requests).toHaveLength(1); // the host pins it — no read of our own first
+    });
+
+    it('without an expected head, no `sha` key is sent', async () => {
+      const { api, http } = makeApi(() => ({ status: 200, json: { merged: true, sha: 'm' } }));
+      await api.mergePullRequest(42, 'squash', MESSAGE);
+      expect('sha' in JSON.parse(http.requests[0].body!)).toBe(false);
+    });
+
+    it('a 409 on a pinned merge is a HeadMismatchError naming both heads — the actual one read back', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'PUT'
+          ? { status: 409, json: { message: 'Head branch was modified. Review and try the merge again.' } }
+          : { status: 200, json: { number: 42, head: { sha: MOVED } } },
+      );
+      const err = await api.mergePullRequest(42, 'squash', undefined, REVIEWED).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(HeadMismatchError);
+      expect(err).toMatchObject({ expected: REVIEWED, actual: MOVED });
+      expect((err as HeadMismatchError).hostSaid).toMatch(/HTTP 409: Head branch was modified/);
+      expect(http.requests.map((r) => r.method)).toEqual(['PUT', 'GET']);
+    });
+
+    it('a 409 whose read-back fails still refuses, naming the actual head as not readable', async () => {
+      const { api } = makeApi((req) =>
+        req.method === 'PUT' ? { status: 409, json: { message: 'Head branch was modified.' } } : { status: 500, json: null },
+      );
+      const err = await api.mergePullRequest(42, 'squash', undefined, REVIEWED).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(HeadMismatchError);
+      expect((err as HeadMismatchError).actual).toBeUndefined();
+      expect((err as Error).message).toContain('(not readable)');
+    });
+  });
+
+  describe('enableAutoMerge', () => {
+    it('a first arm carries `expectedHeadOid`, wired into the mutation input', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET' ? { status: 200, json: { node_id: 'PR_42', auto_merge: null, head: { sha: REVIEWED } } } : ARMED_OK,
+      );
+      await api.enableAutoMerge(42, 'squash', undefined, REVIEWED);
+      const sent = JSON.parse(http.requests[1].body!);
+      expect(sent.variables).toEqual({ pullRequestId: 'PR_42', mergeMethod: 'SQUASH', expectedHeadOid: REVIEWED });
+      expect(sent.query).toContain('$expectedHeadOid:GitObjectID!');
+      expect(sent.query).toContain('expectedHeadOid:$expectedHeadOid');
+    });
+
+    it('with a landing message too, the mutation carries the headline, the body AND the head', async () => {
+      const { api, http } = makeApi((req) =>
+        req.method === 'GET' ? { status: 200, json: { node_id: 'PR_42', auto_merge: null, head: { sha: REVIEWED } } } : ARMED_OK,
+      );
+      await api.enableAutoMerge(42, 'squash', MESSAGE, REVIEWED);
+      const sent = JSON.parse(http.requests[1].body!);
+      expect(sent.variables).toEqual({
+        pullRequestId: 'PR_42',
+        mergeMethod: 'SQUASH',
+        commitHeadline: MESSAGE.title,
+        commitBody: MESSAGE.body,
+        expectedHeadOid: REVIEWED,
+      });
+      expect(sent.query).toContain('commitBody:$commitBody,expectedHeadOid:$expectedHeadOid');
+    });
+
+    it('without an expected head, neither the variable nor the input field is sent', async () => {
+      for (const message of [undefined, MESSAGE]) {
+        const { api, http } = makeApi((req) =>
+          req.method === 'GET' ? { status: 200, json: { node_id: 'PR_42', auto_merge: null, head: { sha: REVIEWED } } } : ARMED_OK,
+        );
+        await api.enableAutoMerge(42, 'squash', message);
+        const sent = JSON.parse(http.requests[1].body!);
+        expect('expectedHeadOid' in sent.variables).toBe(false);
+        expect(sent.query).not.toContain('expectedHeadOid');
+      }
+    });
+
+    it('a head in the PR payload that differs refuses BEFORE any mutation — and before a refresh could disarm the PR', async () => {
+      const { api, http } = makeApi(() => ({
+        status: 200,
+        json: {
+          node_id: 'PR_42',
+          head: { sha: MOVED },
+          auto_merge: { merge_method: 'squash', commit_title: 'Old (#42)', commit_message: 'Old.' },
+        },
+      }));
+      const err = await api.enableAutoMerge(42, 'squash', MESSAGE, REVIEWED).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(HeadMismatchError);
+      expect(err).toMatchObject({ expected: REVIEWED, actual: MOVED });
+      expect(http.requests.filter(isGraphql)).toHaveLength(0); // no disable, no enable
+    });
+
+    it('an untyped GraphQL error on a pinned arm is re-checked against the head: a moved head is the refusal', async () => {
+      let reads = 0;
+      const { api } = makeApi((req) => {
+        if (req.method === 'GET') {
+          reads++;
+          // First read (node id): the reviewed head. Second read (after the error): moved.
+          return { status: 200, json: { node_id: 'PR_42', auto_merge: null, head: { sha: reads === 1 ? REVIEWED : MOVED } } };
+        }
+        return { status: 200, json: { errors: [{ type: 'UNPROCESSABLE', message: 'some wording the schema never documented' }] } };
+      });
+      const err = await api.enableAutoMerge(42, 'squash', undefined, REVIEWED).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(HeadMismatchError);
+      expect(err).toMatchObject({ expected: REVIEWED, actual: MOVED });
+      expect((err as HeadMismatchError).hostSaid).toMatch(/some wording the schema never documented/);
+    });
+
+    it('CONTROL — the same untyped error with the head unmoved stays the ordinary GitHubApiError', async () => {
+      const { api } = makeApi((req) =>
+        req.method === 'GET'
+          ? { status: 200, json: { node_id: 'PR_42', auto_merge: null, head: { sha: REVIEWED } } }
+          : { status: 200, json: { errors: [{ type: 'INTERNAL', message: 'boom' }] } },
+      );
+      const err = await api.enableAutoMerge(42, 'squash', undefined, REVIEWED).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GitHubApiError);
+      expect(err).not.toBeInstanceOf(HeadMismatchError);
+    });
+
+    it('a head that moves INSIDE a refresh keeps its class and says the disable already ran', async () => {
+      let reads = 0;
+      const { api, http } = makeApi((req) => {
+        if (req.method === 'GET') {
+          reads++;
+          return {
+            status: 200,
+            json: {
+              node_id: 'PR_42',
+              head: { sha: reads === 1 ? REVIEWED : MOVED },
+              auto_merge: { merge_method: 'squash', commit_title: 'Old (#42)', commit_message: 'Old.' },
+            },
+          };
+        }
+        return /disablePullRequestAutoMerge/.test(queryOf(req))
+          ? { status: 200, json: { data: {} } }
+          : { status: 200, json: { errors: [{ type: 'UNPROCESSABLE', message: 'head moved' }] } };
+      });
+      const err = await api.enableAutoMerge(42, 'squash', MESSAGE, REVIEWED).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(HeadMismatchError);
+      expect((err as HeadMismatchError).hostSaid).toMatch(/now unarmed/);
+      expect(http.requests.filter(isGraphql).map((r) => (/disable/.test(queryOf(r)) ? 'disable' : 'enable'))).toEqual([
+        'disable',
+        'enable',
+      ]);
+    });
+  });
+
+  // Through the landing verbs, so the host's refusal is seen as the verbs
+  // report it: outcome `refused`, both commits named.
+  describe('through the landing verbs', () => {
+    function hostApi(mergeable: string, onPut: () => GitHubHttpResponse) {
+      // The status read sees the reviewed head; a 409 means a push landed in
+      // between, so every read after it sees the moved one.
+      let moved = false;
+      return makeApi((req) => {
+        if (req.url.includes('/pulls?head=')) {
+          return { status: 200, json: [{ number: 42, state: 'open', html_url: 'https://github.com/example-org/example-repo/pull/42' }] };
+        }
+        if (req.method === 'GET' && req.url.endsWith('/pulls/42')) {
+          return {
+            status: 200,
+            json: { number: 42, node_id: 'PR_42', mergeable_state: mergeable, title: 'T', head: { sha: moved ? MOVED : REVIEWED } },
+          };
+        }
+        if (req.method === 'PUT') {
+          const res = onPut();
+          moved = res.status === 409;
+          return res;
+        }
+        if (req.url.includes('/protection/required_status_checks')) return { status: 404, json: {} };
+        if (req.url.includes('/rules/branches/')) return { status: 200, json: [] };
+        if (req.method === 'GET' && req.url.endsWith('/example-repo')) return { status: 200, json: { default_branch: 'main' } };
+        throw new Error(`unexpected request: ${req.method} ${req.url}`);
+      });
+    }
+
+    it('merge: the host 409s the pinned merge → refused, the reason naming both commits', async () => {
+      const { api, http } = hostApi('clean', () => ({ status: 409, json: { message: 'Head branch was modified.' } }));
+      const out = await mergePullRequestNow(api, 'b', 'squash', { expectHead: REVIEWED });
+      expect(out.outcome).toBe('refused');
+      expect(out.reason).toContain(REVIEWED);
+      expect(out.reason).toContain(MOVED);
+      expect(out.reason).toMatch(/host refused/i);
+      expect(JSON.parse(http.requests.find((r) => r.method === 'PUT')!.body!).sha).toBe(REVIEWED);
+    });
+
+    it('merge: a matching head lands, and the pin rode the request', async () => {
+      const { api, http } = hostApi('clean', () => ({ status: 200, json: { merged: true, sha: 'm' } }));
+      const out = await mergePullRequestNow(api, 'b', 'squash', { expectHead: REVIEWED });
+      expect(out.outcome).toBe('merged');
+      expect(JSON.parse(http.requests.find((r) => r.method === 'PUT')!.body!).sha).toBe(REVIEWED);
+    });
   });
 });

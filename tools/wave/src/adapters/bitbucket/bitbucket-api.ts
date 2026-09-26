@@ -430,6 +430,10 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
     // there is no frozen message either. The same message reaches the host
     // through {@link mergePullRequest} on every leg that lands this PR.
     _message?: LandingMessage,
+    // Nothing to pin either (ADR-0055): the refusal below arms nothing, and
+    // the leg that then merges carries the expected head to the verb's own
+    // comparison — see {@link mergePullRequest}.
+    _expectedHead?: string,
   ): Promise<void> {
     throw new AutoMergeUnavailableError(
       'not-allowed',
@@ -476,11 +480,22 @@ export class RealBitbucketApi implements LandingHost, LandingPosture {
    * as before this parameter. A body past the 128 KiB limit is Bitbucket's to
    * refuse, and its refusal surfaces verbatim through the throw below — the
    * adapter never truncates a reviewed text to fit.
+   *
+   * `_expectedHead` (ADR-0055) is accepted and deliberately NOT sent: the
+   * merge has no field to pin it to. `pullrequest_merge_parameters` carries
+   * exactly `type`, `message`, `close_source_branch` and `merge_strategy`, and
+   * the operation's one query parameter is `async` (Atlassian's OpenAPI
+   * document, dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json, read
+   * 2026-09-26). So on this host the pin is the landing verb's own comparison
+   * of the head in its status read (`armPullRequest` / `mergePullRequestNow`),
+   * made before this request is sent — a check-then-act window: a push
+   * between that read and this POST is not seen. The verbs' help states it.
    */
   async mergePullRequest(
     prNumber: number,
     method: MergeMethod = DEFAULT_MERGE_METHOD,
     message?: LandingMessage,
+    _expectedHead?: string,
   ): Promise<MergeResult> {
     const strategy = BB_MERGE_STRATEGY[method];
     if (strategy === undefined) {

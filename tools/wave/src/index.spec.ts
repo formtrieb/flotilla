@@ -185,8 +185,12 @@ import {
   type LandingOutcome as LandingOutcomeFromRoot,
   type ArmOptions as ArmOptionsFromRoot,
   type MergeOptions as MergeOptionsFromRoot,
+  // ADR-0055 — the expected head: the typed refusal an adapter throws and the
+  // one comparison rule.
+  HeadMismatchError as HeadMismatchErrorFromRoot,
+  headsMatch as headsMatchFromRoot,
 } from './index';
-import { DEFAULT_COMMIT_MESSAGE_SOURCE } from './host-pr';
+import { DEFAULT_COMMIT_MESSAGE_SOURCE, HeadMismatchError, headsMatch } from './host-pr';
 
 /** Write a package manifest to a fresh tmp dir and hand back its path. */
 function manifestAt(pkg: Record<string, unknown>): string {
@@ -892,6 +896,24 @@ const TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT = ['TERMINAL_ROW_STATES'];
 const LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT = ['DEFAULT_COMMIT_MESSAGE_SOURCE'];
 
 /**
+ * The expected-head family (ADR-0055) — TWO runtime names.
+ *
+ * `HeadMismatchError` is what a `LandingHost` adapter throws when the host
+ * refuses a landing write for a moved head — the seam's two landing writes
+ * gained an optional fourth `expectedHead` parameter, and an adapter written
+ * outside this package must be able to construct the refusal the verbs route
+ * to `refused`. `headsMatch` is the one comparison rule (case, and a host that
+ * reports an abbreviated head) the verbs and both GitHub adapters share, so a
+ * third adapter compares the same way instead of re-deriving it.
+ *
+ * Its type half is erased: `ArmOptions.expectHead`, `MergeOptions.expectHead`
+ * and `AutoMergeUnavailableError`'s optional `refresh` argument.
+ *
+ * Semver: additions and optional trailing parameters — minor (ADR-0035).
+ */
+const EXPECTED_HEAD_FAMILY_ADDED_AT_ROOT = ['HeadMismatchError', 'headsMatch'];
+
+/**
  * The VALUE half of the STAMPED-PROBE sweep (issue #961, ADR-0042 Amendment
  * 2026-09-23) — worktree-cleanup.ts's SEVENTH population, and the first one no
  * containment root admits: a Reviewer's probe checkout lives outside the
@@ -1374,7 +1396,8 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   GOAL_MIRROR_PASS_FAMILY_ADDED_AT_ROOT.length +
   TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT.length +
   LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT.length +
-  STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT.length;
+  STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT.length +
+  EXPECTED_HEAD_FAMILY_ADDED_AT_ROOT.length;
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1928,6 +1951,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
     expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(EXPECTED_HEAD_FAMILY_ADDED_AT_ROOT),
+    );
+    expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT),
     );
     expect(Object.keys(rootExports)).toEqual(
@@ -2213,6 +2239,34 @@ describe('the landing-message family is reachable from the PACKAGE ROOT (ADR-005
     await current.enableAutoMerge(1, 'squash', { title: 'Land it (#1)', body: '' });
     expect(seen).toEqual([{ title: 'Land it (#1)', body: '' }]);
     expect(typeof legacy.enableAutoMerge).toBe('function');
+  });
+});
+
+// ─── ADR-0055 — the expected-head family reaches the package root ────────────
+
+describe('the expected-head family is reachable from the PACKAGE ROOT (ADR-0055)', () => {
+  it('re-exports the same bindings, not lookalikes', () => {
+    expect(HeadMismatchErrorFromRoot).toBe(HeadMismatchError);
+    expect(headsMatchFromRoot).toBe(headsMatch);
+  });
+
+  it('an adapter written against the root can take the expected head and throw the typed refusal', async () => {
+    const opts: ArmOptionsFromRoot = { expectHead: 'a'.repeat(40) };
+    const mergeOpts: MergeOptionsFromRoot = { expectHead: 'b'.repeat(40) };
+    const host: LandingHostFromRoot = {
+      async getPrStatus() {
+        return { state: 'none' };
+      },
+      async enableAutoMerge() {},
+      async mergePullRequest(_n: number, _m?: 'squash' | 'merge' | 'rebase', _msg?: LandingMessageFromRoot, head?: string) {
+        throw new HeadMismatchErrorFromRoot(head ?? '', 'c'.repeat(40), 'moved');
+      },
+      async deleteBranch() {},
+    };
+    await expect(host.mergePullRequest(1, 'squash', undefined, mergeOpts.expectHead)).rejects.toBeInstanceOf(
+      HeadMismatchError,
+    );
+    expect(headsMatchFromRoot(opts.expectHead as string, 'A'.repeat(40))).toBe(true);
   });
 });
 

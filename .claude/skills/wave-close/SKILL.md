@@ -87,11 +87,11 @@ Each phase's full worked body — guards, worked command blocks, live-finding an
 
 ### 3. Worktree cleanup — BEFORE the merge
 
-[phase 3](reference/phase-3-worktree-cleanup.md). Clean up this wave's agent worktrees and any stamped Reviewer probe checkout routing missed, and sweep orphaned branches/directories — unconditionally, every time — so nothing still holds a wave branch locally by the time anyone reaches the merge step.
+[phase 3](reference/phase-3-worktree-cleanup.md). Clean up this wave's agent worktrees and any stamped Reviewer probe checkout routing missed, and sweep orphaned branches/directories — unconditionally, every time — so nothing still holds a wave branch locally by the time anyone reaches the merge step. **First**, read each PR-bearing row's reviewed head, `git rev-parse --verify --quiet refs/review/<id>`, and keep it for phases 4 and 4b: this phase's sweep removes a terminal wave's own review refs.
 
 ### 4. Advisory merge-order (print-only) — the merge happens here, verify branch deletion separately
 
-[phase 4](reference/phase-4-advisory-merge-order.md). Recompute and print the advisory merge order, merge each PR through the engine host seam (every merge and arm passes `--commit-message`: `landing.commitMessage` from `wave.config.json`, else `pr`), and verify branch deletion as its own checked step — the merge command's exit code alone is never evidence the branch is gone.
+[phase 4](reference/phase-4-advisory-merge-order.md). Recompute and print the advisory merge order, merge each PR through the engine host seam (every merge and arm passes `--commit-message`: `landing.commitMessage` from `wave.config.json`, else `pr`; and `--expect-head` with the row's reviewed head — [the rule below](#what-lands-is-the-reviewed-commit)), and verify branch deletion as its own checked step — the merge command's exit code alone is never evidence the branch is gone.
 
 ### 4a. Self-repair check + pull to completion before you reconcile (W4-F1 / W5-F3)
 
@@ -99,7 +99,7 @@ Each phase's full worked body — guards, worked command blocks, live-finding an
 
 ### 4b. `--auto` — partial-arm confirm + arm-and-exit (opt-in)
 
-[phase 4b](reference/phase-4b-partial-arm.md). Opt-in only: present one confirm for the wave, arm the order-free rows through `host-pr arm`, then exit without watching — the overlapping tail stays on the phase-4 advisory order.
+[phase 4b](reference/phase-4b-partial-arm.md). Opt-in only: present one confirm for the wave, arm the order-free rows through `host-pr arm` (each with `--expect-head`), then exit without watching — the overlapping tail stays on the phase-4 advisory order.
 
 ### 5. Done-reconcile + needs-attention for stuck rows
 
@@ -108,6 +108,10 @@ Each phase's full worked body — guards, worked command blocks, live-finding an
 ### 6. Archive (the last phase — terminal-only, idempotent, layout-aware)
 
 [phase 6](reference/phase-6-archive.md). **Two** fail-closed gates run first, in this order, each read by exit code alone. The disclosure gate: `spine check-disclosures` blocks on any `open` entry, and every open disclosure the wave surfaced must carry a disposition — one of exactly `resolved-in-slice | scope-extension | filed:<id> | dropped:<reason> | upstream:<ref>` — before the archive proceeds (ADR-0027). The gate checks existence only and never judges quality, so **which** disposition to reach for is your judgment, guided by the defaults in the phase file: a disclosure earns its own ticket only when it names a mechanism defect with an observed consequence, everything else bundles thematically via a shared `filed:<id>` (N:1, appends only while that bundle is still bare), and a `filed:` body carries the observation — symptom, evidence, provenance — never an unverified diagnosis (ADR-0027 Amendment 2026-07-31). Then the awaiting-human gate: `spine check-awaiting-human` blocks while any human-gated row still sits at `planned` holding the live `queued` claim nothing ever released, and it offers exactly two exits — the human acts and the row dispatches, or the row is parked and unclaimed ([reference/phase-6-archive.md](reference/phase-6-archive.md), park per ADR-0022). Both gates are fail-closed in both directions: an unreadable spine blocks exactly like a real finding. Once both are clear and every row is finalised, detect the consumer's actual git-tracked status and archive the spine plus its sidecar folder to `_archive/`, never to `done/`.
+
+## What lands is the reviewed commit
+
+Nobody commits to a row's branch after its verdict — not the Worker, not you, not an Operator. A fix, or a branch update to resolve a landing conflict, is a re-dispatch with its own review. Phases 4 and 4b (the `--auto` arm) enforce it: each landing passes `--expect-head` with the reviewed head, and a PR whose head moved is `refused` with both commits named. A row whose `refs/review/<id>` was missing lands without the flag, and the report says its head check abstained. A Coordinator-direct PR that is not a wave row is unaffected. Details: [close-mechanics.md](reference/close-mechanics.md#--expect-head-resolution-adr-0055).
 
 ## Common Mistakes
 

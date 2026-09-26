@@ -913,8 +913,12 @@ disclosures are open."
 `SKILL.md`'s between-rounds section states the order and the why; this is the same eight steps as engine calls. Step 3 is the one item that MUST run before step 8 — every other step is unchanged from its numbered-step twin above.
 
 ```bash
-# 1. land the round's PRs — however this wave lands (host-pr arm, a manual
-#    merge, --auto); no engine call of its own.
+# 1. land the round's PRs, each at its reviewed head (ADR-0055). The ref is
+#    read first; with no ref, drop the flag and report the abstention.
+git -C "$REPO" rev-parse --verify --quiet "refs/review/$ID"
+{{wave-cli}} host-pr arm --branch "wave/$ID-$ROW_SLUG" --commit-message <pr|host> --expect-head <that-sha> --delete-branch
+#    refused with two heads named → the branch moved after its verdict:
+#    re-dispatch the row; never push to it.
 # 2. bring the local default branch to the remote tip — fetch + ff-only
 #    merge, never `git pull` alone. When the landed change touches
 #    sandbox-protected paths (.claude/**), run this step outside the

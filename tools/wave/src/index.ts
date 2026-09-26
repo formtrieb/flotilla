@@ -355,6 +355,13 @@ export {
 //   - the host-adapter contract — `LandingHost`, `LandingPosture`,
 //     `AutoMergeUnavailableError`, `LandingNotImplementedError` (a Bitbucket
 //     or other host adapter implements these).
+//   - the expected head (ADR-0055) — `HeadMismatchError` (what an adapter
+//     throws when the host refuses a moved head, now that `LandingHost`'s two
+//     landing writes take an optional fourth `expectedHead`) and `headsMatch`
+//     (the one comparison rule, abbreviated host heads included, that the
+//     verbs and both GitHub adapters share). `ArmOptions`/`MergeOptions` gained
+//     `expectHead`, and `AutoMergeUnavailableError` an optional third
+//     `refresh` argument — additions only.
 //   - preflight — `preflightHost`, `mergeRequiredChecks`, `HostPreflightCheck`,
 //     `HostPreflightReport`, `HostCheckName`, `CheckStatus`,
 //     `RequiredChecksInfo`, `RulesetChecksInfo`, `AutoMergeSetting`,
@@ -403,6 +410,8 @@ export {
   mergeRequiredChecks,
   AutoMergeUnavailableError,
   LandingNotImplementedError,
+  HeadMismatchError,
+  headsMatch,
   type Host,
   type HostInfo,
   type Creds,

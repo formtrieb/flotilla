@@ -1108,13 +1108,36 @@ export interface LandingHost {
    *
    * Optional and trailing, so an implementation written before it existed
    * still satisfies this interface — it simply never freezes a message.
+   *
+   * `expectedHead` (ADR-0055): when given, the PR may be armed only while its
+   * head commit is this one. A host that can pin the arm to a head natively
+   * hands it over (GitHub: `expectedHeadOid`); a PR whose head differs MUST
+   * throw {@link HeadMismatchError}, never arm. A host with no such pin may
+   * ignore it: the landing verb has already compared it against its own
+   * status read before calling here (see {@link armPullRequest}). Optional and
+   * trailing for the same reason `message` is.
    */
-  enableAutoMerge(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<void>;
+  enableAutoMerge(
+    prNumber: number,
+    method?: MergeMethod,
+    message?: LandingMessage,
+    expectedHead?: string,
+  ): Promise<void>;
   /**
    * Merge the PR now. `message` (ADR-0053): when given, the landed commit's
    * title and body are exactly these; when absent, the host composes them.
+   *
+   * `expectedHead` (ADR-0055): same contract as on {@link enableAutoMerge} —
+   * a host that pins the merge to a head hands it over (GitHub: the REST
+   * merge's `sha`) and throws {@link HeadMismatchError} when the host refuses
+   * for a moved head; a host without a pin may ignore it.
    */
-  mergePullRequest(prNumber: number, method?: MergeMethod, message?: LandingMessage): Promise<MergeResult>;
+  mergePullRequest(
+    prNumber: number,
+    method?: MergeMethod,
+    message?: LandingMessage,
+    expectedHead?: string,
+  ): Promise<MergeResult>;
   /**
    * Delete the remote head branch `branch` through the host API (GitHub REST
    * `DELETE …/git/refs/heads/{branch}`) — the `host-pr merge --delete-branch`
@@ -1139,11 +1162,65 @@ export interface LandingHost {
  */
 export class AutoMergeUnavailableError extends Error {
   readonly name = 'AutoMergeUnavailableError';
+  /**
+   * @param refresh - Present only when the refusal answered the RE-ENABLE half
+   *   of a landing-message refresh whose disable had already run (ADR-0053):
+   *   the PR was armed a moment ago and is not any more, which `message`
+   *   states. `hostMessage` is the host's own refusal text without that
+   *   statement, so a caller that goes on to MERGE the PR can quote the host
+   *   without also quoting "the PR is now unarmed" about a PR it just landed.
+   */
   constructor(
     readonly reason: 'clean-status' | 'not-allowed',
     message: string,
+    readonly refresh?: { hostMessage: string },
   ) {
     super(message);
+  }
+}
+
+/**
+ * Whether a PR's head commit is the expected one (ADR-0055).
+ *
+ * Case-insensitive, and tolerant of ONE abbreviation: Bitbucket Cloud's
+ * `commit.hash` is documented with the pattern `[0-9a-f]{7,}?`
+ * (`base_commit.hash`, Atlassian's OpenAPI document, read 2026-09-26), so the
+ * head a status read reports there may be a prefix of the full SHA a caller
+ * passes. A shorter side matches only as a prefix of the longer one, and only
+ * when it is at least 7 hex digits — the floor that pattern states. Two
+ * different full SHAs never match, and an empty side never matches anything.
+ */
+export function headsMatch(expected: string, actual: string): boolean {
+  const e = expected.trim().toLowerCase();
+  const a = actual.trim().toLowerCase();
+  if (e.length === 0 || a.length === 0) return false;
+  if (e === a) return true;
+  const [shorter, longer] = e.length < a.length ? [e, a] : [a, e];
+  return shorter.length >= 7 && /^[0-9a-f]+$/.test(shorter) && longer.startsWith(shorter);
+}
+
+/**
+ * The host refused to land a PR because its head is not the expected one
+ * (ADR-0055: what lands is the reviewed commit). An adapter throws it from
+ * {@link LandingHost.mergePullRequest} or {@link LandingHost.enableAutoMerge}
+ * when it was handed an `expectedHead` and the host (or the adapter's own read
+ * of the host) says the head moved; the landing verbs route it to outcome
+ * `refused`, never propagate it.
+ *
+ * `actual` is the head the adapter could read at refusal time, and `undefined`
+ * when it could not read one — a refusal is still a refusal without it.
+ * `hostSaid` is the host's own text, verbatim.
+ */
+export class HeadMismatchError extends Error {
+  readonly name = 'HeadMismatchError';
+  constructor(
+    readonly expected: string,
+    readonly actual: string | undefined,
+    readonly hostSaid: string,
+  ) {
+    super(
+      `The PR's head is ${actual ?? '(not readable)'}, not the expected ${expected}: ${hostSaid}`,
+    );
   }
 }
 
@@ -1843,6 +1920,23 @@ export interface ArmOptions {
    * {@link CommitMessageSource}.
    */
   commitMessage?: CommitMessageSource;
+  /**
+   * The commit the PR may land at, and no other (ADR-0055) — `host-pr arm
+   * --expect-head <sha>`. The skills pass the commit `refs/review/<id>` points
+   * at: the one the Reviewer gave its verdict for.
+   *
+   * Two layers, both applied when it is set. (1) Before any landing write,
+   * the head in the status this call settled on is compared with it; a
+   * mismatch, or a host that reported no head at all, is `refused` with both
+   * commits named. On a host with no native pin that comparison IS the check,
+   * and it is a check-then-act window: a push between that read and the
+   * merge request is not seen. (2) Every landing write carries it through the
+   * seam, so a host that CAN pin natively (GitHub) refuses a head that moved
+   * inside that window too — reported as `refused` the same way.
+   *
+   * Absent → neither layer runs, and the arm is byte-identical to before.
+   */
+  expectHead?: string;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -2123,6 +2217,98 @@ function armedReason(reason: string, deleteBranchRequested: boolean): string {
   );
 }
 
+// ─── The expected head (ADR-0055) ────────────────────────────────────────────
+//
+// What lands is the reviewed commit. The skills pass the commit
+// `refs/review/<id>` points at as `--expect-head`; the verbs refuse a PR whose
+// head is anything else. The comparison below runs on every host, against the
+// status the verb itself just read and before any landing write — on a host
+// with no native pin it is the whole check (a check-then-act window, stated in
+// the verbs' help), and on GitHub it is the fast, request-free first layer in
+// front of the host's own pin.
+
+/** The rule every head refusal restates, so the reader knows what to do next. */
+const NO_COMMIT_AFTER_VERDICT =
+  "Nobody commits to a row's branch after its verdict: a change after it — a fix, or a branch update to " +
+  'resolve a landing conflict — is a re-dispatch with its own review (ADR-0055).';
+
+/**
+ * The verb-side comparison: `null` to carry on, or the `refused` outcome.
+ *
+ * Declared resolution bias (ADR-0052): **block**. A host that reported no
+ * head gives this check nothing to compare, and the caller asked for a pin —
+ * landing a head nobody compared is the exact outcome the flag exists to stop,
+ * and standing still costs one re-run. Both shipped adapters report the head.
+ */
+function expectHeadRefusal(
+  status: PrLandingStatus,
+  prNumber: number,
+  expected: string | undefined,
+): LandingOutcome | null {
+  if (expected === undefined) return null;
+  const actual = status.headSha;
+  if (actual === undefined || actual.length === 0) {
+    return {
+      outcome: 'refused',
+      prNumber,
+      prUrl: status.url,
+      reason:
+        `--expect-head ${expected} was given, but the host reported no head commit for this PR, so the head ` +
+        'cannot be compared. Refusing rather than landing a head nobody checked (ADR-0055; the check blocks ' +
+        'when it cannot decide, ADR-0052). Nothing was landed.',
+    };
+  }
+  if (headsMatch(expected, actual)) return null;
+  return {
+    outcome: 'refused',
+    prNumber,
+    prUrl: status.url,
+    reason:
+      `The PR's head moved after its review: expected ${expected} (--expect-head), but the PR's head is ` +
+      `${actual}. Nothing was landed — compared against this call's own status read, before any landing ` +
+      `write. ${NO_COMMIT_AFTER_VERDICT}`,
+  };
+}
+
+/** The `refused` reason for a head the HOST refused, after the verb's own comparison passed. */
+function hostHeadRefusalReason(err: HeadMismatchError): string {
+  return (
+    `The host refused to land the PR at the expected head: expected ${err.expected} (--expect-head), but ` +
+    `the PR's head is ${err.actual ?? '(not readable)'} — it moved between this call's status read and its ` +
+    `landing write. Nothing was landed. ${NO_COMMIT_AFTER_VERDICT} [${err.hostSaid}]`
+  );
+}
+
+// ─── A refusal that answered a refresh (ADR-0053, disclosure 995.1) ──────────
+//
+// When an arm refreshes an already-armed PR, the adapter disables the PR's
+// auto-merge before re-enabling it with the new message. A typed refusal of
+// that re-enable carries "the PR is now unarmed" in its message — true, and
+// exactly what a REFUSED outcome must say. But both typed refusals can go on
+// to a direct merge, and a merged outcome quoting "now unarmed" contradicts
+// itself. So the merge legs quote the host's own text, name the disable in a
+// clause that holds whether or not the merge then lands, and keep "now
+// unarmed" for the outcomes that did not land.
+
+/** The host's own refusal text — without an adapter's refresh statement. */
+function hostRefusalQuote(err: AutoMergeUnavailableError): string {
+  return err.refresh?.hostMessage ?? err.message;
+}
+
+/** Appended to a merge leg's reason when the refusal answered a refresh; empty otherwise. */
+function refreshMergedNote(err: AutoMergeUnavailableError): string {
+  return err.refresh === undefined
+    ? ''
+    : " This arm had first disabled the PR's earlier auto-merge, to refresh its frozen landing message (ADR-0053).";
+}
+
+/** What a merge leg that did NOT land must add when the refusal answered a refresh. */
+function refreshNotLandedNote(err: AutoMergeUnavailableError): string | undefined {
+  return err.refresh === undefined
+    ? undefined
+    : 'The PR is now unarmed: that disable already ran, and nothing re-armed it. Re-run `host-pr arm` to arm it again.';
+}
+
 /**
  * The remedy a `not-allowed` arm refusal teaches on Bitbucket Cloud.
  *
@@ -2207,6 +2393,10 @@ function notAllowedPendingReason(host: Host | undefined, errMessage: string): st
  * arm a refresh. Every outcome that follows such a write reports it
  * ({@link LandingMessageReport}) — under a merge queue or `rebase`, as what
  * was handed over rather than what lands (see {@link CommitMessageSource}).
+ *
+ * Expected head (ADR-0055): with {@link ArmOptions.expectHead}, a PR whose
+ * head is not that commit is `refused` before any write, and every write
+ * carries it so a host that pins natively refuses a head that moves after.
  */
 export async function armPullRequest(
   host: LandingHost,
@@ -2226,6 +2416,11 @@ export async function armPullRequest(
   if (terminal !== null) return terminal;
 
   const prNumber = status.number as number;
+  // ADR-0055: the head is compared against the SETTLED status, before any
+  // landing write and before any attach read — a moved head is refused
+  // whatever its mergeability says, and costs no extra request.
+  const headRefusal = expectHeadRefusal(status, prNumber, opts.expectHead);
+  if (headRefusal !== null) return headRefusal;
   // The message is read off the SETTLED status — the last read this call took,
   // after the recompute retry — so it is the PR as it stands when the verb acts.
   const plan = planLandingMessage(
@@ -2313,12 +2508,18 @@ async function landDecided(
   // this function shares (FOR-66-class fix, now on the arm route too).
   const deleteBranchOf = opts.deleteBranch === true ? branch : undefined;
 
+  // ADR-0055: every landing write below carries the expected head, so a host
+  // that pins natively refuses a head that moved after this call's own
+  // comparison (see `expectHeadRefusal`).
+  const expectedHead = opts.expectHead;
+  const landing = { host, prNumber, prUrl: status.url, method, deleteBranchOf, message, expectedHead };
+
   if (action === 'merge') {
-    return merge(host, prNumber, status.url, method, decisionReason, deleteBranchOf, message);
+    return merge({ ...landing, reason: decisionReason });
   }
 
   try {
-    await host.enableAutoMerge(prNumber, method, message);
+    await host.enableAutoMerge(prNumber, method, message, expectedHead);
     // `armed` DEFERS the actual merge to the host — there is no synchronous
     // moment here to delete the branch from, so a requested deletion is
     // recorded as deferred (never silently dropped) rather than attempted.
@@ -2329,6 +2530,12 @@ async function landDecided(
       reason: armedReason(decisionReason, opts.deleteBranch === true),
     };
   } catch (err) {
+    if (err instanceof HeadMismatchError) {
+      // The host (or the adapter's own read of it) refused to arm a head that
+      // moved after this call's comparison — the reviewed commit is not the
+      // PR's head any more, so nothing may land (ADR-0055).
+      return { outcome: 'refused', prNumber, prUrl: status.url, reason: hostHeadRefusalReason(err) };
+    }
     if (err instanceof AutoMergeUnavailableError && err.reason === 'clean-status') {
       // SPIKE 2 (ADR-0023): the host says the PR is already clean — the arm was
       // the safe guess, the merge is the correct action. The host is the authority
@@ -2349,15 +2556,13 @@ async function landDecided(
           ),
         };
       }
-      return merge(
-        host,
-        prNumber,
-        status.url,
-        method,
-        `Host rejected the arm: the PR is already clean (nothing pending) — merged directly instead. [${err.message}]`,
-        deleteBranchOf,
-        message,
-      );
+      return merge({
+        ...landing,
+        reason:
+          `Host rejected the arm: the PR is already clean (nothing pending) — merged directly instead. ` +
+          `[${hostRefusalQuote(err)}]${refreshMergedNote(err)}`,
+        notLandedNote: refreshNotLandedNote(err),
+      });
     }
     if (err instanceof AutoMergeUnavailableError && err.reason === 'not-allowed') {
       // The controlled degrade merges immediately too, on the strength of the same
@@ -2377,15 +2582,13 @@ async function landDecided(
         // nothing to actually wait for — merge directly instead of stopping at
         // `refused`. The host stays the final gate: a genuine block still
         // declines/throws here, never silently bypassed.
-        return merge(
-          host,
-          prNumber,
-          status.url,
-          method,
-          `Host rejected the arm: this repository does not permit auto-merge, and no required check is pending — merged directly instead (controlled degrade). [${err.message}]`,
-          deleteBranchOf,
-          message,
-        );
+        return merge({
+          ...landing,
+          reason:
+            `Host rejected the arm: this repository does not permit auto-merge, and no required check is ` +
+            `pending — merged directly instead (controlled degrade). [${hostRefusalQuote(err)}]${refreshMergedNote(err)}`,
+          notLandedNote: refreshNotLandedNote(err),
+        });
       }
       // Deliberately NOT a merge fallback: a required check IS reported
       // pending, and merging here would bypass exactly the gate the human
@@ -2432,6 +2635,12 @@ export interface MergeOptions {
    * when omitted, as {@link ArmOptions.host}.
    */
   host?: Host;
+  /**
+   * The commit the PR may land at (ADR-0055) — `host-pr merge --expect-head
+   * <sha>`. Same two layers, and the same stated check-then-act window on a
+   * host without a native pin, as {@link ArmOptions.expectHead}.
+   */
+  expectHead?: string;
 }
 
 /**
@@ -2455,6 +2664,9 @@ export async function mergePullRequestNow(
   const terminal = terminalStatus(status, branch);
   if (terminal !== null) return terminal;
   const prNumber = status.number as number;
+  // ADR-0055: compared against the status this call just read, before the write.
+  const headRefusal = expectHeadRefusal(status, prNumber, opts.expectHead);
+  if (headRefusal !== null) return headRefusal;
   const plan = planLandingMessage(
     status,
     prNumber,
@@ -2462,17 +2674,18 @@ export async function mergePullRequestNow(
     opts.host,
   );
   return withLandingMessage(
-    await merge(
+    await merge({
       host,
       prNumber,
-      status.url,
+      prUrl: status.url,
       method,
-      'Direct merge requested — no arm intent evaluated.',
+      reason: 'Direct merge requested — no arm intent evaluated.',
       // Delete the just-merged head branch only when the flag was passed (KW-F6);
       // the branch is the PR's own source branch (`--branch`), which IS the head.
-      opts.deleteBranch ? branch : undefined,
-      plan.message,
-    ),
+      deleteBranchOf: opts.deleteBranch ? branch : undefined,
+      message: plan.message,
+      expectedHead: opts.expectHead,
+    }),
     plan,
   );
 }
@@ -2533,23 +2746,50 @@ function terminalStatus(status: PrLandingStatus, branch: string): LandingOutcome
  * `message` (ADR-0053) is the landing message the merge carries — the same one
  * for every merge call-site, composed by the caller from its own status read;
  * absent, the host composes the commit message from its own settings.
+ *
+ * `expectedHead` (ADR-0055) rides the write to the host; a host refusal for a
+ * moved head ({@link HeadMismatchError}) becomes `refused`, never a throw.
+ * `notLandedNote` is appended to the reason of every outcome that did NOT
+ * land — the one place a fact that only holds when nothing merged (a
+ * refresh's "the PR is now unarmed") may be said.
  */
-async function merge(
-  host: LandingHost,
-  prNumber: number,
-  prUrl: string | undefined,
-  method: MergeMethod,
-  reason: string,
-  deleteBranchOf?: string,
-  message?: LandingMessage,
-): Promise<LandingOutcome> {
-  const res = await host.mergePullRequest(prNumber, method, message);
+async function merge({
+  host,
+  prNumber,
+  prUrl,
+  method,
+  reason,
+  deleteBranchOf,
+  message,
+  expectedHead,
+  notLandedNote,
+}: {
+  host: LandingHost;
+  prNumber: number;
+  prUrl: string | undefined;
+  method: MergeMethod;
+  reason: string;
+  deleteBranchOf?: string;
+  message?: LandingMessage;
+  expectedHead?: string;
+  notLandedNote?: string;
+}): Promise<LandingOutcome> {
+  const notLanded = notLandedNote !== undefined ? ` ${notLandedNote}` : '';
+  let res: MergeResult;
+  try {
+    res = await host.mergePullRequest(prNumber, method, message, expectedHead);
+  } catch (err) {
+    if (err instanceof HeadMismatchError) {
+      return { outcome: 'refused', prNumber, prUrl, reason: `${hostHeadRefusalReason(err)}${notLanded}` };
+    }
+    throw err;
+  }
   if (!res.merged) {
     return {
       outcome: 'refused',
       prNumber,
       prUrl,
-      reason: `The host declined the merge (no error, but merged=false). ${reason}`,
+      reason: `The host declined the merge (no error, but merged=false). ${reason}${notLanded}`,
     };
   }
   // The merge landed. Only when a deletion was requested do we touch the branch

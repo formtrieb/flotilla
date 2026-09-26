@@ -21,6 +21,8 @@ import type {
 } from './github-api';
 import {
   AutoMergeUnavailableError,
+  HeadMismatchError,
+  headsMatch,
   DEFAULT_MERGE_METHOD,
   type LandingMessage,
   type MergeMethod,
@@ -421,11 +423,30 @@ export class InMemoryGitHubApi implements GitHubApi {
     return this.prsByBranch.get(branch) ?? { state: 'none' };
   }
 
+  /**
+   * The host's head pin (ADR-0055), modelled as GitHub answers it: with an
+   * expected head, the write is refused unless the PR's CURRENT head — the
+   * `headSha` of the status held for its branch at the moment of the write,
+   * not the one a caller read earlier — is that commit. A PR held with no
+   * head refuses too: the real host always knows its head, so "unknown" here
+   * can only mean the spec did not set one, and a pin that passed on nothing
+   * would hide that.
+   */
+  private assertExpectedHead(prNumber: number, expectedHead: string | undefined, write: string): void {
+    if (expectedHead === undefined) return;
+    const head =[...this.prsByBranch.values()].find((s) => s.number === prNumber)?.headSha;
+    if (head === undefined || !headsMatch(expectedHead, head)) {
+      throw new HeadMismatchError(expectedHead, head, `fake: the host refused the ${write} — the head did not match`);
+    }
+  }
+
   async enableAutoMerge(
     prNumber: number,
     method: MergeMethod = DEFAULT_MERGE_METHOD,
     message?: LandingMessage,
+    expectedHead?: string,
   ): Promise<void> {
+    this.assertExpectedHead(prNumber, expectedHead, 'arm');
     // Mirrors the real host's two typed refusals so a CLI-level spec can drive
     // the arm-vs-merge routing against the fake exactly as against GitHub. Only a
     // VISIBLE off refuses; `unknown` (the token cannot see the setting) does not.
@@ -441,7 +462,9 @@ export class InMemoryGitHubApi implements GitHubApi {
     prNumber: number,
     method: MergeMethod = DEFAULT_MERGE_METHOD,
     message?: LandingMessage,
+    expectedHead?: string,
   ): Promise<MergeResult> {
+    this.assertExpectedHead(prNumber, expectedHead, 'merge');
     this.merges.push({ prNumber, method, ...(message !== undefined ? { message: { ...message } } : {}) });
     return { merged: true, sha: `sha-${prNumber}` };
   }

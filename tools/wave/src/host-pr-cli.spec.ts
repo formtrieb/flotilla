@@ -541,6 +541,81 @@ describe('host-pr arm', () => {
   });
 });
 
+// ─── ADR-0055 — `--expect-head <sha>` at the CLI edge ────────────────────────
+//
+// The comparison and the host pin are the engine's and the adapters' (host-pr
+// .spec.ts, the two GitHub adapter specs, bitbucket-api.spec.ts); what is under
+// test HERE is the flag — declared on the two landing verbs only, validated as
+// a full SHA before any host call, and threaded to the engine.
+
+describe('host-pr arm | merge --expect-head (ADR-0055)', () => {
+  const REVIEWED = 'a'.repeat(40);
+  const MOVED = 'b'.repeat(40);
+  const headed = (mergeability: PrLandingStatus['mergeability'], headSha: string): PrLandingStatus => ({
+    ...openPr(mergeability),
+    headSha,
+  });
+
+  it('a matching head lands on either verb (exit 0)', async () => {
+    for (const verb of ['arm', 'merge'] as const) {
+      stdout = '';
+      const { host } = fakeHost({ status: headed('clean', REVIEWED) });
+      const code = await runHostPr([verb, '--branch', 'b', '--remote', GITHUB_REMOTE, '--expect-head', REVIEWED], host);
+      expect(code).toBe(0);
+      expect(out()).toMatchObject({ ok: true, outcome: 'merged' });
+    }
+  });
+
+  it('a moved head is refused on either verb (exit 1), the reason naming both commits, and nothing is written', async () => {
+    for (const verb of ['arm', 'merge'] as const) {
+      stdout = '';
+      const { host, calls } = fakeHost({ status: headed('clean', MOVED) });
+      const code = await runHostPr([verb, '--branch', 'b', '--remote', GITHUB_REMOTE, '--expect-head', REVIEWED], host);
+      expect(code).toBe(1);
+      expect(out()).toMatchObject({ ok: false, outcome: 'refused' });
+      expect(String(out().reason)).toContain(REVIEWED);
+      expect(String(out().reason)).toContain(MOVED);
+      expect(calls).toEqual(['getPrStatus:b']);
+    }
+  });
+
+  it('a value that is not a full commit SHA is a usage error (exit 2), decided before any host call', async () => {
+    for (const bad of ['abc1234', 'z'.repeat(40), 'refs/review/42']) {
+      stderr = '';
+      const { host, calls } = fakeHost({ status: headed('clean', REVIEWED) });
+      const code = await runHostPr(['merge', '--branch', 'b', '--remote', GITHUB_REMOTE, '--expect-head', bad], host);
+      expect(code).toBe(2);
+      expect(stderr).toContain(`invalid --expect-head "${bad}"`);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('is declared on arm and merge ONLY — status, create and preflight refuse it (exit 2)', async () => {
+    for (const args of [
+      ['status', '--branch', 'b'],
+      ['create', '--branch', 'b', '--title', 'T', '--body', 'x'],
+      ['preflight'],
+    ]) {
+      stderr = '';
+      const { host, calls } = fakeHost({ status: headed('clean', REVIEWED) });
+      const code = await runHostPr([...args, '--remote', GITHUB_REMOTE, '--expect-head', REVIEWED], host);
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/--expect-head is only supported by 'arm' and 'merge'/);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("both verbs' contracts name the flag, and their help states the check-then-act window", () => {
+    for (const verb of ['arm', 'merge'] as const) {
+      expect(HOST_PR_CONTRACTS[verb].usage[0]).toContain('[--expect-head <sha>]');
+      expect(HOST_PR_CONTRACTS[verb].usage.join('\n')).toMatch(/check-then-act window/);
+    }
+    for (const verb of ['status', 'create', 'preflight'] as const) {
+      expect(HOST_PR_CONTRACTS[verb].usage[0]).not.toContain('--expect-head');
+    }
+  });
+});
+
 // ─── ADR-0053 — `--commit-message pr|host` and the landing message at the CLI edge ─
 //
 // The engine composes the message (host-pr.spec.ts) and each adapter puts it on
@@ -1054,13 +1129,16 @@ describe('host-pr usage errors — per-verb contract vs the full dump (issue #50
     // grew (ADR-0053's `--commit-message` and `landingMessage`, 9 → 13 lines)
     // while the misfire it guards against — the ~70-line dump — stayed as
     // distinguishable as ever. The absolute ceiling stays, so the per-verb
-    // section cannot quietly bloat toward the dump either.
+    // section cannot quietly bloat toward the dump either. Raised 16 → 18 by
+    // ADR-0055's `--expect-head`, whose two help lines (the pin, and the
+    // check-then-act window the decision record requires the help to state)
+    // took arm's section from 15 lines to 17.
     const armOnlyLines = stderr.trim().split('\n').length;
     stderr = '';
     await runHostPr([]);
     const fullDumpLines = stderr.trim().split('\n').length;
     expect(armOnlyLines).toBeLessThan(fullDumpLines / 3);
-    expect(armOnlyLines).toBeLessThan(16);
+    expect(armOnlyLines).toBeLessThan(18);
   });
 
   it("a wrong --method on a KNOWN verb (merge) names merge's own contract, not create's or preflight's", async () => {
