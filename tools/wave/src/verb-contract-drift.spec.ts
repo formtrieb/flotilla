@@ -393,7 +393,7 @@ describe('verb-contract drift — the aggregate covers the whole engine surface'
     expect(missing.join(', ')).toBe('');
   });
 
-  it('states the surface this row measured — 28 top-level verbs, 45 group ops', () => {
+  it('states the surface this row measured — 28 top-level verbs, 47 group ops', () => {
     // ADR-0051's own table measured 27 top-level verbs and 39 group ops at
     // `53261e0`. Both halves are re-measured here rather than trusted: the
     // top-level count has grown to 28 because `catalog` — decision 2's fourth
@@ -402,15 +402,16 @@ describe('verb-contract drift — the aggregate covers the whole engine surface'
     // `config validate` is counted as the group op it structurally is. The duty
     // was never the number — it is that EVERY verb and EVERY op declares a
     // contract, which the roster test above holds — but the number is stated so
-    // a later reader can see which way it moved.
+    // a later reader can see which way it moved. It moved again with ADR-0054:
+    // `issue-store block` and `issue-store unblock` took the op count to 47.
     const keys = Object.keys(AGGREGATE);
     const groups = ['host-pr', 'issue-store', 'spine', 'config'];
     const groupOps = keys.filter((k) => groups.some((g) => k.startsWith(`${g} `)));
     const topLevel = keys.filter((k) => !groupOps.includes(k));
     expect(topLevel.length + groups.length).toBe(28);
-    expect(groupOps.length).toBe(45);
+    expect(groupOps.length).toBe(47);
     expect(opsOf('host-pr').length).toBe(5);
-    expect(opsOf('issue-store').length).toBe(26);
+    expect(opsOf('issue-store').length).toBe(28);
     expect(opsOf('spine').length).toBe(13);
     expect(opsOf('config').length).toBe(1);
   });

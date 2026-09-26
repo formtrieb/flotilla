@@ -457,6 +457,30 @@ const CREATE_ISSUE_RELATION_MUTATION = `mutation CreateIssueRelation($input: Iss
 }`;
 
 /**
+ * The blocked issue's inverse relations WITH their ids — the lookup behind
+ * `removeBlockedBy` (ADR-0054). Its own query rather than an `id` added to
+ * {@link ISSUE_BY_IDENTIFIER_QUERY}, which every read pays for. Same filter
+ * shape and the same `first: 250` window as that query.
+ */
+const BLOCKED_BY_RELATIONS_QUERY = `query IssueBlockedByRelations($teamKey: String!, $number: Float!) {
+  issues(filter: { team: { key: { eq: $teamKey } }, number: { eq: $number } }, first: 1) {
+    nodes {
+      inverseRelations(first: 250) { nodes { id type issue { identifier } } }
+    }
+  }
+}`;
+
+/**
+ * Delete one issue relation by id — `issueRelationDelete(id: String!):
+ * DeletePayload!` (Linear's published schema, read 2026-09-26). UNPROVEN LIVE.
+ */
+const DELETE_ISSUE_RELATION_MUTATION = `mutation DeleteIssueRelation($id: String!) {
+  issueRelationDelete(id: $id) {
+    success
+  }
+}`;
+
+/**
  * The `IssueRelationType` enum value for a blocking relation.
  *
  * e2e-verify — STILL UNPROVEN (this wave has no live probe). Pinned from
@@ -828,6 +852,56 @@ export class RealLinearApi implements LinearApi {
     const payload = data.issueRelationCreate as Record<string, unknown> | undefined;
     if (payload?.success !== true) {
       throw new LinearApiError('CreateIssueRelation', 200, 'issueRelationCreate did not report success');
+    }
+  }
+
+  /**
+   * Delete the native `blocks` relation(s) from `blockerIdentifier` to
+   * `blockedIdentifier` (ADR-0054 decision 3 — the unblock path; the mirror
+   * above still never deletes). Three steps:
+   *
+   *   1. resolve the BLOCKER, so an unknown one throws before anything else;
+   *   2. read the BLOCKED issue's `inverseRelations` WITH their ids
+   *      ({@link BLOCKED_BY_RELATIONS_QUERY} — the shared issue query carries no
+   *      relation id, and widening it would cost every read);
+   *   3. `issueRelationDelete(id)` for each node whose `type` is
+   *      {@link BLOCKS_RELATION_TYPE} and whose source `issue` is the blocker —
+   *      the same filter the read half applies, on the same constant.
+   *
+   * No matching relation → nothing is sent, and the call succeeds.
+   *
+   * Documented form: Linear's published GraphQL schema (`linear/linear` →
+   * `packages/sdk/src/schema.graphql`, `master`, read 2026-09-26):
+   * `issueRelationDelete(id: String!): DeletePayload!`, `DeletePayload
+   * { entityId, lastSyncId, success }`, and `IssueRelation.id: ID!`. UNPROVEN
+   * LIVE: needs a credential and a live relation this slice does not have. The
+   * first `issue-store unblock` against a linear-store consumer is the live gate.
+   */
+  async removeBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void> {
+    const blocker = await this.resolveIssue(blockerIdentifier);
+    const { teamKey, number } = parseIdentifier(blockedIdentifier);
+    const { data } = await this.gql('IssueBlockedByRelations', BLOCKED_BY_RELATIONS_QUERY, {
+      teamKey,
+      number,
+    });
+    const nodes = ((data.issues as Record<string, unknown>)?.nodes ?? []) as Record<string, unknown>[];
+    const raw = nodes[0];
+    if (!raw) throw new Error(`Linear issue not found: ${blockedIdentifier}`);
+    const relations = ((raw.inverseRelations as Record<string, unknown>)?.nodes ?? []) as Record<
+      string,
+      unknown
+    >[];
+    for (const rel of relations) {
+      if (rel.type !== BLOCKS_RELATION_TYPE) continue;
+      const source = rel.issue as Record<string, unknown> | undefined;
+      if (source?.identifier !== blocker.identifier) continue;
+      const { data: del } = await this.gql('DeleteIssueRelation', DELETE_ISSUE_RELATION_MUTATION, {
+        id: String(rel.id),
+      });
+      const payload = del.issueRelationDelete as Record<string, unknown> | undefined;
+      if (payload?.success !== true) {
+        throw new LinearApiError('DeleteIssueRelation', 200, 'issueRelationDelete did not report success');
+      }
     }
   }
 

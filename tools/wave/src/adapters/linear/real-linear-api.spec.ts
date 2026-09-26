@@ -595,6 +595,77 @@ describe('RealLinearApi', () => {
     });
   });
 
+  // ── native blocked-by DELETE (ADR-0054's unblock path). Shaped against
+  // Linear's published schema, read 2026-09-26: `issueRelationDelete(id:
+  // String!): DeletePayload!` with `DeletePayload.success`, and `IssueRelation.id`.
+  describe('removeBlockedBy', () => {
+    const resolveByNumber: LinearHttpFakeHandler = (req) => {
+      const n = (req.variables as { number: number }).number;
+      return issueByIdentifierResponse({ id: `issue-uuid-${n}`, identifier: `EX-${n}` });
+    };
+    const relations = (nodes: Record<string, unknown>[]): LinearHttpResponse => ({
+      status: 200,
+      json: { data: { issues: { nodes: [{ inverseRelations: { nodes } }] } } },
+    });
+
+    it('deletes, by id, exactly the `blocks` relations whose SOURCE is the blocker', async () => {
+      const deleted: unknown[] = [];
+      const { api } = makeApi({
+        IssueByIdentifier: resolveByNumber,
+        IssueBlockedByRelations: (req) => {
+          // the BLOCKED issue's relations are read, keyed like every identifier read
+          expect(req.variables).toEqual({ teamKey: 'EX', number: 16 });
+          expect(req.query).toContain('inverseRelations');
+          return relations([
+            { id: 'rel-a', type: 'blocks', issue: { identifier: 'EX-1' } },
+            { id: 'rel-b', type: 'related', issue: { identifier: 'EX-1' } }, // not a blocker
+            { id: 'rel-c', type: 'blocks', issue: { identifier: 'EX-2' } }, // another blocker
+            { id: 'rel-d', type: 'blocks', issue: { identifier: 'EX-1' } }, // duplicate edge
+          ]);
+        },
+        DeleteIssueRelation: (req) => {
+          deleted.push(req.variables);
+          return { status: 200, json: { data: { issueRelationDelete: { success: true } } } };
+        },
+      });
+      // removeBlockedBy(blocked = EX-16, blocker = EX-1)
+      await expect(api.removeBlockedBy('EX-16', 'EX-1')).resolves.toBeUndefined();
+      expect(deleted).toEqual([{ id: 'rel-a' }, { id: 'rel-d' }]);
+    });
+
+    it('sends no delete when no matching relation exists, and succeeds', async () => {
+      const { api, http } = makeApi({
+        IssueByIdentifier: resolveByNumber,
+        IssueBlockedByRelations: () => relations([]),
+      });
+      await expect(api.removeBlockedBy('EX-16', 'EX-1')).resolves.toBeUndefined();
+      expect(http.requests.some((r) => r.query.includes('issueRelationDelete'))).toBe(false);
+    });
+
+    it('throws LinearApiError when issueRelationDelete does not report success', async () => {
+      const { api } = makeApi({
+        IssueByIdentifier: resolveByNumber,
+        IssueBlockedByRelations: () =>
+          relations([{ id: 'rel-a', type: 'blocks', issue: { identifier: 'EX-1' } }]),
+        DeleteIssueRelation: () => ({
+          status: 200,
+          json: { data: { issueRelationDelete: { success: false } } },
+        }),
+      });
+      await expect(api.removeBlockedBy('EX-16', 'EX-1')).rejects.toSatisfy(
+        (e: unknown) => e instanceof LinearApiError && e.op === 'DeleteIssueRelation',
+      );
+    });
+
+    it('throws a plain (non-wire) error when the BLOCKER cannot be resolved — before any delete', async () => {
+      const { api, http } = makeApi({
+        IssueByIdentifier: () => ({ status: 200, json: { data: { issues: { nodes: [] } } } }),
+      });
+      await expect(api.removeBlockedBy('EX-16', 'EX-999')).rejects.toThrow(/EX-999/);
+      expect(http.requests).toHaveLength(1);
+    });
+  });
+
   // ── attachment upsert (issue #511, mechanics proven consumer-side) ────────
   describe('upsertAttachment', () => {
     it('resolves the issue uuid and POSTs attachmentCreate with issueId/url/title/subtitle', async () => {

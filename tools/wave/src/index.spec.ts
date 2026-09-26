@@ -63,7 +63,12 @@ import {
 // classifier is imported deliberately: it is NOT public API, so this spec throws
 // through the module-internal thrower and catches with the ROOT-imported class,
 // which is the contract a consumer actually depends on.
-import { classifyCreateInput, CreateInputError } from './adapters/issue-store';
+import {
+  classifyCreateInput,
+  CreateInputError,
+  BlockCycleError,
+  UnblockResidueError,
+} from './adapters/issue-store';
 
 // The E2BIG advisory pair as the MODULE FILE defines it (issue #338). Both
 // terms are imported, not just the new one: the defect this slice closes is an
@@ -915,6 +920,22 @@ const LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT = ['DEFAULT_COMMIT_MESSAGE_SOURCE'];
 const EXPECTED_HEAD_FAMILY_ADDED_AT_ROOT = ['HeadMismatchError', 'headsMatch'];
 
 /**
+ * The dependency-edge family (ADR-0054) — TWO runtime names, the typed failures
+ * of `IssueStore.block` / `unblock`: `BlockCycleError` (the refused edge's
+ * cycle, on `.cycle`) and `UnblockResidueError` (where a still-reported blocker
+ * comes from, on `.sources`). A root-only consumer receives them, so it must be
+ * able to `instanceof` them.
+ *
+ * Its type half is erased: `BlockResult`, `UnblockResult`, `BlockedBySource`,
+ * `BlockerChainGap`. The cycle walk (`checkBlockerChain`) stays module-local.
+ *
+ * Semver: two methods added to the `IssueStore` interface — a third-party
+ * adapter must implement them, which is the implementer-break class (minor +
+ * heads-up); every shipped caller only gains verbs.
+ */
+const DEPENDENCY_EDGE_FAMILY_ADDED_AT_ROOT = ['BlockCycleError', 'UnblockResidueError'];
+
+/**
  * The VALUE half of the STAMPED-PROBE sweep (issue #961, ADR-0042 Amendment
  * 2026-09-23) — worktree-cleanup.ts's SEVENTH population, and the first one no
  * containment root admits: a Reviewer's probe checkout lives outside the
@@ -1398,7 +1419,18 @@ const ROOT_RUNTIME_EXPORT_COUNT_NOW =
   TERMINAL_ROW_STATES_PROMOTION_ADDED_AT_ROOT.length +
   LANDING_MESSAGE_FAMILY_ADDED_AT_ROOT.length +
   STAMPED_PROBE_SWEEP_FAMILY_ADDED_AT_ROOT.length +
-  EXPECTED_HEAD_FAMILY_ADDED_AT_ROOT.length;
+  EXPECTED_HEAD_FAMILY_ADDED_AT_ROOT.length +
+  DEPENDENCY_EDGE_FAMILY_ADDED_AT_ROOT.length;
+
+describe('the dependency-edge family is reachable from the PACKAGE ROOT (ADR-0054)', () => {
+  it('re-exports the same two error classes, not lookalikes', () => {
+    expect(rootExports.BlockCycleError).toBe(BlockCycleError);
+    expect(rootExports.UnblockResidueError).toBe(UnblockResidueError);
+    const err = new BlockCycleError('a', 'b', ['a', 'b', 'a']);
+    expect(err).toBeInstanceOf(rootExports.BlockCycleError as typeof BlockCycleError);
+    expect(err.cycle).toEqual(['a', 'b', 'a']);
+  });
+});
 
 describe('the command-line advisory family is reachable from the PACKAGE ROOT (issue #338)', () => {
   it('re-exports the same bindings, not lookalikes', () => {
@@ -1951,6 +1983,9 @@ describe('the WHOLE root surface grows only by recorded decisions', () => {
     // The count alone is necessary but not sufficient: a stowaway arriving in
     // the same edit that drops an intended export sums to the identical total.
     // So the newest family is also asserted PRESENT by name, not just counted.
+    expect(Object.keys(rootExports)).toEqual(
+      expect.arrayContaining(DEPENDENCY_EDGE_FAMILY_ADDED_AT_ROOT),
+    );
     expect(Object.keys(rootExports)).toEqual(
       expect.arrayContaining(EXPECTED_HEAD_FAMILY_ADDED_AT_ROOT),
     );

@@ -383,3 +383,71 @@ describe('crossWaveCheck — FOR-38: no repoRoot supplied (fail loud / warn, nev
     expect(r.crossWaveConflicts[0].files).toEqual(['src/shared.ts']);
   });
 });
+
+// ── ADR-0054 decision 4's second net: a cycle drawn past `block`, by hand in
+// the tracker, is reported where rows are drawn — naming every issue in it —
+// instead of leaving each row held with no reason given.
+describe('crossWaveCheck — blockedByCycles (ADR-0054)', () => {
+  it('is empty when the blocked-by graph has no cycle', () => {
+    const r = crossWaveCheck({
+      candidates: [
+        { id: '5', files: ['src/a.ts'], blockedBy: 'none' },
+        { id: '6', files: ['src/b.ts'], blockedBy: [{ issue: 5 }] },
+      ],
+      claimed: [],
+      repoRoot: ROOT,
+    });
+    expect(r.blockedByCycles).toEqual([]);
+  });
+
+  it('reports a direct cycle, naming both issues', () => {
+    const r = crossWaveCheck({
+      candidates: [
+        { id: '5', files: ['src/a.ts'], blockedBy: [{ issue: 6 }] },
+        { id: '6', files: ['src/b.ts'], blockedBy: [{ issue: 5 }] },
+      ],
+      claimed: [],
+      repoRoot: ROOT,
+    });
+    expect(r.blockedByCycles).toEqual([['5', '6']]);
+  });
+
+  it('reports a transitive cycle across three issues, in blocked-by order from the lowest id', () => {
+    const r = crossWaveCheck({
+      candidates: [
+        { id: 'EX-3', files: ['src/c.ts'], blockedBy: [{ slug: 'EX', issue: 1 }] },
+        { id: 'EX-1', files: ['src/a.ts'], blockedBy: [{ slug: 'EX', issue: 2 }] },
+        { id: 'EX-2', files: ['src/b.ts'], blockedBy: [{ slug: 'EX', issue: 3 }] },
+      ],
+      claimed: [],
+      repoRoot: ROOT,
+    });
+    // EX-1 blocked by EX-2, blocked by EX-3, blocked by EX-1
+    expect(r.blockedByCycles).toEqual([['EX-1', 'EX-2', 'EX-3']]);
+  });
+
+  it('sees a cycle that spans the candidates AND the claimed set', () => {
+    const r = crossWaveCheck({
+      candidates: [{ id: 'f#01', files: ['src/a.ts'], blockedBy: [{ slug: 'f', issue: 2 }] }],
+      claimed: [{ id: 'f#02', files: ['src/b.ts'], blockedBy: [{ issue: 1 }] }],
+      repoRoot: ROOT,
+    });
+    expect(r.blockedByCycles).toEqual([['f#01', 'f#02']]);
+  });
+
+  it('reports a self-block, and keeps unrelated rows and a hanging tail out of the cycle', () => {
+    const r = crossWaveCheck({
+      candidates: [
+        { id: '1', files: ['a'], blockedBy: [{ issue: 1 }] },
+        { id: '2', files: ['b'], blockedBy: [{ issue: 3 }] },
+        { id: '3', files: ['c'], blockedBy: [{ issue: 4 }] },
+        { id: '4', files: ['d'], blockedBy: [{ issue: 3 }] },
+        { id: '9', files: ['e'], blockedBy: [{ issue: 42 }] }, // blocker outside every roster
+      ],
+      claimed: [],
+      repoRoot: ROOT,
+    });
+    // 2 waits on the 3↔4 cycle but is not on it; 9's blocker was never read
+    expect(r.blockedByCycles).toEqual([['1'], ['3', '4']]);
+  });
+});

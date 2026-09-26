@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { CoarseState } from '../../contract';
-import { AnnotatePatchError, CreateInputError } from '../issue-store';
+import { AnnotatePatchError, BlockCycleError, CreateInputError } from '../issue-store';
 import type {
   IssueStore,
   IssueStoreConformanceHooks,
@@ -902,6 +902,126 @@ export function runIssueStoreConformance(
       expect(await store.read(id)).toEqual(before);
     });
 
+    // ── block / unblock (ADR-0054 — one dependency edge at a time) ─────────
+    const refKeyOf = (store: IssueStore, id: string): string => {
+      const r = store.parseRef(id);
+      return `${r.slug ?? ''}#${r.issue}`;
+    };
+    const blockersOf = async (store: IssueStore, id: string): Promise<string[]> => {
+      const own = store.parseRef(id).slug;
+      const b = (await store.read(id)).blockedBy;
+      return b === 'none' ? [] : b.map((r) => `${r.slug ?? own ?? ''}#${r.issue}`);
+    };
+
+    it('block() adds a ref that read() then reports, touching nothing else', async () => {
+      const { h, store } = await fresh();
+      const blocker = await store.create(h.baseInput({ title: 'blocker' }));
+      const id = await store.create(h.baseInput({ title: 'found to depend on it' }));
+      const before = await store.read(id);
+      expect(before.blockedBy).toBe('none');
+
+      const result = await store.block(id, blocker);
+
+      expect(result).toEqual({ added: true });
+      const after = await store.read(id);
+      expect(await blockersOf(store, id)).toEqual([refKeyOf(store, blocker)]);
+      expect({ ...after, blockedBy: 'none', trackerUpdatedAt: before.trackerUpdatedAt }).toEqual(
+        before,
+      );
+    });
+
+    it('block() adds to an existing list, keeping the refs already there', async () => {
+      const { h, store } = await fresh();
+      const first = await store.create(h.baseInput({ title: 'first blocker' }));
+      const second = await store.create(h.baseInput({ title: 'second blocker' }));
+      const id = await store.create(h.baseInput({ blockedBy: [store.parseRef(first)] }));
+
+      await store.block(id, second);
+
+      expect((await blockersOf(store, id)).sort()).toEqual(
+        [refKeyOf(store, first), refKeyOf(store, second)].sort(),
+      );
+    });
+
+    it('block() of a ref already present is a no-op that succeeds and writes nothing', async () => {
+      const { h, store } = await fresh();
+      const blocker = await store.create(h.baseInput({ title: 'blocker' }));
+      const id = await store.create(h.baseInput({ blockedBy: [store.parseRef(blocker)] }));
+      const before = await store.read(id);
+
+      await expect(store.block(id, blocker)).resolves.toEqual({ added: false });
+
+      expect(await store.read(id)).toEqual(before); // trackerUpdatedAt included
+    });
+
+    it('unblock() removes a ref that read() then no longer reports, keeping the others', async () => {
+      const { h, store } = await fresh();
+      const keep = await store.create(h.baseInput({ title: 'stays' }));
+      const drop = await store.create(h.baseInput({ title: 'goes' }));
+      const id = await store.create(
+        h.baseInput({ blockedBy: [store.parseRef(keep), store.parseRef(drop)] }),
+      );
+
+      await expect(store.unblock(id, drop)).resolves.toEqual({ removed: true });
+      expect(await blockersOf(store, id)).toEqual([refKeyOf(store, keep)]);
+
+      await expect(store.unblock(id, keep)).resolves.toEqual({ removed: true });
+      expect((await store.read(id)).blockedBy).toBe('none');
+    });
+
+    it('unblock() of a ref never present is a no-op that succeeds and writes nothing', async () => {
+      const { h, store } = await fresh();
+      const other = await store.create(h.baseInput({ title: 'unrelated' }));
+      const id = await store.create(h.baseInput());
+      const before = await store.read(id);
+
+      await expect(store.unblock(id, other)).resolves.toEqual({ removed: false });
+
+      expect(await store.read(id)).toEqual(before); // trackerUpdatedAt included
+    });
+
+    it('block() refuses a DIRECT cycle (A by B while B is blocked by A), writing nothing', async () => {
+      const { h, store } = await fresh();
+      const a = await store.create(h.baseInput({ title: 'A' }));
+      const b = await store.create(h.baseInput({ title: 'B', blockedBy: [store.parseRef(a)] }));
+      const before = await store.read(a);
+
+      const refusal = await store.block(a, b).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(refusal).toBeInstanceOf(BlockCycleError);
+      const cycle = (refusal as BlockCycleError).cycle;
+      expect(cycle.map((x) => refKeyOf(store, x))).toEqual(
+        [a, b, a].map((x) => refKeyOf(store, x)),
+      );
+      expect(await store.read(a)).toEqual(before);
+    });
+
+    it('block() refuses a TRANSITIVE cycle across three issues, naming all three', async () => {
+      const { h, store } = await fresh();
+      const a = await store.create(h.baseInput({ title: 'A' }));
+      const c = await store.create(h.baseInput({ title: 'C', blockedBy: [store.parseRef(a)] }));
+      const b = await store.create(h.baseInput({ title: 'B', blockedBy: [store.parseRef(c)] }));
+      const before = await store.read(a);
+
+      // A by B would close A → B → C → A.
+      await expect(store.block(a, b)).rejects.toThrow(BlockCycleError);
+      const refusal = (await store.block(a, b).catch((err: unknown) => err)) as BlockCycleError;
+      expect(refusal.cycle.map((x) => refKeyOf(store, x))).toEqual(
+        [a, b, c, a].map((x) => refKeyOf(store, x)),
+      );
+      expect(await store.read(a)).toEqual(before);
+    });
+
+    it('block() refuses an issue blocking itself', async () => {
+      const { h, store } = await fresh();
+      const a = await store.create(h.baseInput());
+      await expect(store.block(a, a)).rejects.toThrow(BlockCycleError);
+      expect((await store.read(a)).blockedBy).toBe('none');
+    });
+
     // ── amend (ADR-0025 — the authored-content facet: title + free prose) ──
     //
     // The tracker-agnostic half of FOR-33. Read-back rides `readTriage()`'s
@@ -995,14 +1115,19 @@ export function runIssueStoreConformance(
       expect(view.acceptanceCriteria.map((a) => a.text)).toEqual(['ac survives']);
     });
 
-    it('amend() throws on a reserved-heading section (naming annotate)', async () => {
+    it('amend() throws on a reserved-heading section (naming annotate; Blocked by names block)', async () => {
       const { h, store } = await fresh();
       const id = await store.create(h.baseInput());
-      for (const reserved of ['Files', 'Blocked by', 'Unblocks', 'Acceptance criteria']) {
+      for (const reserved of ['Files', 'Unblocks', 'Acceptance criteria']) {
         await expect(
           store.amend(id, { sections: [{ heading: reserved, markdown: 'x' }] }),
         ).rejects.toThrow(/annotate/i);
       }
+      // ADR-0054 decision 1: `annotate` does not write Blocked by, so the
+      // refusal points at the verb pair that does.
+      await expect(
+        store.amend(id, { sections: [{ heading: 'Blocked by', markdown: 'x' }] }),
+      ).rejects.toThrow(/`issue-store block <id> --by <blocker-id>`/);
     });
 
     it('amend() throws on an empty patch and an unknown id', async () => {

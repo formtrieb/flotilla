@@ -1885,10 +1885,15 @@ describe('issue-store-cli — goal ops', () => {
 // not a store fact — which is exactly why the conformance suite gains no cell
 // for it and this file carries the whole pin.
 
-/** The nine `silent-write` ops, in the order the contract table declares them. */
+/**
+ * The eleven `silent-write` ops, in the order the contract table declares them
+ * — the original nine plus ADR-0054's `block` / `unblock`.
+ */
 const SILENT_WRITE_OPS = [
   'annotate',
   'amend',
+  'block',
+  'unblock',
   'transition',
   'unclaim',
   'triage-apply',
@@ -1982,6 +1987,8 @@ const RECEIPT_TRIAGE_INPUT = {
 interface ReceiptIds {
   readonly issueId: string;
   readonly goalId: string;
+  /** A second issue, for `block` / `unblock` to name as the blocker. */
+  readonly blockerId: string;
 }
 
 interface ReceiptCase {
@@ -2016,6 +2023,18 @@ const RECEIPT_CASES: readonly ReceiptCase[] = [
       writeJsonFile('rcpt-amd-', RECEIPT_AMEND_PATCH),
     ],
     receipt: (ids) => ({ op: 'amend', id: ids.issueId, sent: RECEIPT_AMEND_PATCH }),
+  },
+  {
+    op: 'block',
+    argv: (ids) => ['block', ids.issueId, '--by', ids.blockerId],
+    // the blocker id as HANDED OVER — not the ref it inverts to, and not
+    // whether the write was a no-op (that would be a reading)
+    receipt: (ids) => ({ op: 'block', id: ids.issueId, sent: { by: ids.blockerId } }),
+  },
+  {
+    op: 'unblock',
+    argv: (ids) => ['unblock', ids.issueId, '--by', ids.blockerId],
+    receipt: (ids) => ({ op: 'unblock', id: ids.issueId, sent: { by: ids.blockerId } }),
   },
   {
     op: 'transition',
@@ -2133,7 +2152,8 @@ function runReceiptPin(label: string, makeStore: () => IssueStore): void {
     async function seed(store: IssueStore): Promise<ReceiptIds> {
       const issueId = await store.create(INPUT);
       const goalId = await store.createGoal({ title: 'Ship it', filingHint: 'ship-it' });
-      return { issueId, goalId };
+      const blockerId = await store.create({ ...INPUT, title: 'the blocker' });
+      return { issueId, goalId, blockerId };
     }
 
     for (const c of RECEIPT_CASES) {
@@ -2374,7 +2394,7 @@ describe('issue-store-cli — a receipt says what was SENT, never what the track
     expect(out).toBe('');
   });
 
-  it('the nine ops ARE the `silent-write` class row V1 declared — no tenth, no omission', () => {
+  it('the eleven ops ARE the `silent-write` class — no twelfth, no omission', () => {
     const contracts = ISSUE_STORE_CONTRACTS as unknown as Record<string, VerbContract>;
     for (const op of SILENT_WRITE_OPS) {
       expect(contracts[op].output, `${op} is not silent-write`).toBe('silent-write');
@@ -2390,6 +2410,8 @@ describe('issue-store-cli — a receipt says what was SENT, never what the track
   const USAGE_FRAGMENTS: Readonly<Record<string, readonly string[]>> = {
     annotate: ['sent names the header fields written', 'acceptanceCriteria?, bodySections?'],
     amend: ['sent: { title?, sections? }'],
+    block: ['sent: { by } }', '--by <blocker-id>'],
+    unblock: ['sent: { by } }', '--by <blocker-id>'],
     transition: ['sent: { rung } }'],
     unclaim: ['sent: {} }'],
     'triage-apply': ['sent: { state?, category?, commentPosted } }'],
@@ -2412,4 +2434,191 @@ describe('issue-store-cli — a receipt says what was SENT, never what the track
       expect(out).toContain('output: nothing on success (exit 0, empty stdout)');
     },
   );
+});
+
+// ─── ADR-0054 — `issue-store block` / `unblock`, one dependency edge per call ──
+describe('issue-store-cli — block / unblock (ADR-0054)', () => {
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let out: string;
+  let err: string;
+
+  beforeEach(() => {
+    out = '';
+    err = '';
+    outSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        out += chunk.toString();
+        return true;
+      });
+    errSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        err += chunk.toString();
+        return true;
+      });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  /** Issues filed through the store, each optionally blocked by earlier ones. */
+  async function file(store: IssueStore, title: string, blockedBy: string[] = []): Promise<string> {
+    return store.create({
+      ...INPUT,
+      title,
+      blockedBy: blockedBy.length === 0 ? 'none' : blockedBy.map((b) => store.parseRef(b)),
+    });
+  }
+
+  it('block records the edge: exit 0, nothing on stdout, and read() reports it', async () => {
+    const store = tmpStore();
+    const blocker = await file(store, 'blocker');
+    const id = await file(store, 'found to depend on it');
+
+    expect(await runIssueStore(['block', id, '--by', blocker], store)).toBe(0);
+
+    expect(out).toBe('');
+    expect(err).toBe('');
+    expect((await store.read(id)).blockedBy).toEqual([store.parseRef(blocker)]);
+  });
+
+  it('block REFUSES a direct cycle — exit 1, the cycle printed, nothing written', async () => {
+    const store = tmpStore();
+    const a = await file(store, 'A');
+    const b = await file(store, 'B', [a]);
+    const before = await store.read(a);
+
+    expect(await runIssueStore(['block', a, '--by', b], store)).toBe(1);
+
+    expect(err).toContain(`${a} → ${b} → ${a}`);
+    expect(out).toBe('');
+    expect(await store.read(a)).toEqual(before);
+  });
+
+  // Negative control recorded in the PR: with the cycle walk removed from the
+  // store's block(), this spec fails (exit 0, and A gains the edge).
+  it('block REFUSES a transitive cycle across three issues — exit 1, every issue printed in order', async () => {
+    const store = tmpStore();
+    const a = await file(store, 'A');
+    const c = await file(store, 'C', [a]);
+    const b = await file(store, 'B', [c]);
+    const before = await store.read(a);
+
+    expect(await runIssueStore(['block', a, '--by', b], store)).toBe(1);
+
+    expect(err).toContain(`${a} → ${b} → ${c} → ${a}`);
+    expect(err).toMatch(/^error: block: refused/m);
+    expect(await store.read(a)).toEqual(before);
+  });
+
+  it('block ABSTAINS when a chain read fails: a stderr warning naming it, and the edge is written', async () => {
+    const store = tmpStore();
+    const a = await file(store, 'A');
+    const c = await file(store, 'C');
+    const b = await file(store, 'B', [c]);
+    const realRead = store.read.bind(store);
+    vi.spyOn(store, 'read').mockImplementation(async (id: string) => {
+      if (id === c) throw new Error('the tracker timed out');
+      return realRead(id);
+    });
+
+    expect(await runIssueStore(['block', a, '--by', b], store)).toBe(0);
+
+    expect(err).toMatch(/^warning: block .*the cycle check could not decide/m);
+    expect(err).toContain(`${c} (reading it failed: the tracker timed out)`);
+    expect(err).toContain('The edge was written anyway');
+    expect((await realRead(a)).blockedBy).toEqual([store.parseRef(b)]);
+  });
+
+  it('block of a ref already present, and unblock of one never present, are silent no-ops (exit 0)', async () => {
+    const store = tmpStore();
+    const blocker = await file(store, 'blocker');
+    const other = await file(store, 'other');
+    const id = await file(store, 'dependent', [blocker]);
+    const before = await store.read(id);
+
+    expect(await runIssueStore(['block', id, '--by', blocker], store)).toBe(0);
+    expect(await runIssueStore(['unblock', id, '--by', other], store)).toBe(0);
+
+    expect(out).toBe('');
+    expect(err).toBe('');
+    expect(await store.read(id)).toEqual(before);
+  });
+
+  it('unblock removes the edge: exit 0, and read() no longer reports it', async () => {
+    const store = tmpStore();
+    const blocker = await file(store, 'blocker');
+    const id = await file(store, 'dependent', [blocker]);
+
+    expect(await runIssueStore(['unblock', id, '--by', blocker], store)).toBe(0);
+
+    expect((await store.read(id)).blockedBy).toBe('none');
+  });
+
+  for (const [label, make, refuse] of [
+    [
+      'github',
+      () => new GitHubIssuesStore({ api: new InMemoryGitHubApi() }),
+      (s: IssueStore) =>
+        ((s as GitHubIssuesStore).api as InMemoryGitHubApi).failDependencyDeletes(
+          new Error('DELETE …/blocked_by refused (403)'),
+        ),
+    ],
+    [
+      'linear',
+      () => new LinearIssuesStore({ api: new InMemoryLinearApi() }),
+      (s: IssueStore) =>
+        ((s as LinearIssuesStore).api as InMemoryLinearApi).failRelationDeletes(
+          new Error('issueRelationDelete refused'),
+        ),
+    ],
+  ] as const) {
+    it(`unblock EXITS 1 naming the native edge when the host refuses the delete (${label})`, async () => {
+      const store = make();
+      const blocker = await file(store, 'blocker');
+      const id = await file(store, 'dependent', [blocker]); // body ref + mirrored native edge
+      refuse(store);
+
+      expect(await runIssueStore(['unblock', id, '--by', blocker, '--json'], store)).toBe(1);
+
+      expect(err).toMatch(/^error: unblock: .*still comes from the native edge/m);
+      expect(err).toContain('refused');
+      expect(out).toBe(''); // no receipt for a write that did not take
+      // the gates still see it — exactly what the exit code said
+      expect((await store.read(id)).blockedBy).toEqual([store.parseRef(blocker)]);
+    });
+  }
+
+  it('an id the store cannot invert is a usage error (exit 2) naming --by, before any write', async () => {
+    const store = tmpStore();
+    const id = await file(store, 'dependent');
+    const blockSpy = vi.spyOn(store, 'block');
+
+    expect(await runIssueStore(['block', id, '--by', 'not-an-id'], store)).toBe(2);
+    expect(await runIssueStore(['block', id], store)).toBe(2);
+
+    expect(err).toMatch(/^error: block --by: /m);
+    expect(err).toMatch(/^error: block requires --by <blocker-id>/m);
+    expect(blockSpy).not.toHaveBeenCalled();
+  });
+
+  it('amend of a `Blocked by` section is refused (exit 1) pointing at `issue-store block`', async () => {
+    const store = tmpStore();
+    const id = await file(store, 'dependent');
+    const patch = join(mkdtempSync(join(tmpdir(), 'is-amend-bb-')), 'patch.json');
+    writeFileSync(
+      patch,
+      JSON.stringify({ sections: [{ heading: 'Blocked by', markdown: '#1' }] }),
+      'utf-8',
+    );
+
+    expect(await runIssueStore(['amend', id, '--patch', patch], store)).toBe(1);
+
+    expect(err).toContain('`issue-store block <id> --by <blocker-id>`');
+    expect(err).not.toMatch(/annotate/);
+  });
 });

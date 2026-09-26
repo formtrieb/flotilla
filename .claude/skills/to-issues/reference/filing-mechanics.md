@@ -16,6 +16,7 @@ Every command needs the store config: run from a dir containing `wave.config.jso
 |---|---|
 | `issue-store create --input <f.json>` | mint an issue → prints opaque id |
 | `issue-store annotate <id> --patch <f.json>` | decorate an existing issue |
+| `issue-store block <id> --by <blocker-id>` / `issue-store unblock <id> --by <blocker-id>` | add / remove ONE dependency found after filing (ADR-0054, below) |
 | `issue-store read <id>` | dump the `IssueView` (verify round-trip) |
 | `issue-store parse-ref <id>` | invert an opaque id → `IssueRef` JSON (for `blockedBy`/`parent`) |
 | `dor <path>... --config <path>` / `dor --id <id> --config <path>` | Definition-of-Ready gate; self-content gates run on a path *or* a github id (ADR-0014); `--config` is what lets Gate 8 (`verify-profile-coverage`) resolve against the consumer's `verify` profiles instead of deferring |
@@ -103,10 +104,10 @@ For an already-filed issue lacking the Header-Block — a triaged issue, **or a 
 
 **Widening a row's Files: `filesAdd`, not `files`.** `files` is the *replace* path — use it to decorate a row, or to narrow one deliberately. To add a path or glob to a row that already has a Files list, send `{ "filesAdd": ["src/b.ts"] }`: it appends each entry not already listed, keeps the existing order, and writes nothing else; one that adds nothing is a no-op. `files` and `filesAdd` in one patch is refused (exit 2) before any write (ADR-0054).
 
-`blockedBy` is deliberately **not** part of `AnnotatePatch` — dependency structure is out-of-band. What that means for a target's `Blocked by` depends on the store, and it is *not* a "must already carry it" requirement:
+`blockedBy` is deliberately **not** part of `AnnotatePatch` — a dependency is written one edge at a time by `issue-store block` (below). What that means for a target's `Blocked by` depends on the store, and it is *not* a "must already carry it" requirement:
 
-- **GitHub / Linear** — `Blocked by` is a `##` body section; an **absent** one reads as `none` (no blockers) on read, the same as an explicit `none`. A bare issue decorated via `annotate` (risk/worker/files/acceptanceCriteria) becomes a fully readable, DoR-checkable `IssueView` with `blockedBy: 'none'` — no out-of-band step needed just to make it readable.
-- **MarkdownFs** — `Blocked by` is a required `**Blocked by:**` header line, not a section with an absence-means-none default; the header parser rejects a read while it is missing. Since `annotate` cannot write it, a bare MarkdownFs issue stays unreadable after decorate until that line is added out-of-band (or the issue is filed decorated via `create` in the first place).
+- **GitHub / Linear** — `Blocked by` is a `##` body section; an **absent** one reads as `none` (no blockers) on read, the same as an explicit `none`. A bare issue decorated via `annotate` (risk/worker/files/acceptanceCriteria) becomes a fully readable, DoR-checkable `IssueView` with `blockedBy: 'none'` — no extra step needed just to make it readable.
+- **MarkdownFs** — `Blocked by` is a required `**Blocked by:**` header line, not a section with an absence-means-none default; the header parser rejects a read while it is missing. `annotate` cannot write it: a decorated MarkdownFs issue stays unreadable until the line exists — `block` writes it with the first blocker, and a row with none needs `**Blocked by:** none` in the file (or file it decorated via `create` in the first place).
 
 Either way, decorating an issue does not by itself grant wave-eligibility (the eligibility marker/label is a separate, consumer-owned step, ordinarily `triage`'s `ready-for-agent`, applied before this one ever runs) — decorate makes the issue *readable and DoR-checkable*, eligibility is the other half.
 
@@ -114,7 +115,7 @@ The two halves are independent writes and neither implies the other, which is th
 
 ### Verify the write
 
-`annotate` is one of the nine mutating `issue-store` ops that answer success with **empty stdout** by design (#648) — the exit code is the whole signal at the call site, and on its own it says only "the write did not throw," never "the header now reads the way you meant it to." Read the header back before trusting it landed:
+`annotate` is one of the eleven mutating `issue-store` ops that answer success with **empty stdout** by design (#648) — the exit code is the whole signal at the call site, and on its own it says only "the write did not throw," never "the header now reads the way you meant it to." Read the header back before trusting it landed:
 
 ```bash
 {{wave-cli}} issue-store read <id>                                             # IssueView
@@ -122,6 +123,17 @@ The two halves are independent writes and neither implies the other, which is th
 ```
 
 `read`'s `IssueView` is what proves the patched fields actually landed on the tracker — `risk`/`worker`/`files`/`acceptanceCriteria` reading back exactly as supplied (and, on GitHub/Linear, `blockedBy` reading `'none'` rather than throwing, per the store note above). `dor --id` is what proves the header is now *usable*, not merely present — a header-parseable, AC-complete row the self-content gates pass, rather than a write that landed syntactically but still leaves a gate failing. Never pipe the `annotate` call through another command before checking its exit code — a pipeline reports only the last command's status, so a non-zero `annotate` can hide behind a zero downstream command.
+
+## A dependency found after filing: `block` / `unblock` (ADR-0054)
+
+A dependency is often discovered while a second row is sharpened — after both exist. Record it with the engine, never only in prose: a dependency stated only in the body or the Agent Brief reads as `blockedBy: none`, so no gate holds the row.
+
+```bash
+{{wave-cli}} issue-store block <id> --by <blocker-id>     # <id> is blocked by <blocker-id>
+{{wave-cli}} issue-store unblock <id> --by <blocker-id>   # withdraw a wrongly drawn edge
+```
+
+`--by` takes the blocker's **id** as the store mints it; the engine inverts it through `parse-ref`. `block` adds one ref to the body's `Blocked by` record (and mirrors a native edge best-effort, as `create` does); an already-present ref is a no-op. It **refuses a cycle**: if the chain from the blocker already leads back to `<id>`, it exits 1, prints the cycle (`A → B → C → A`) and writes nothing. If it cannot read a link of the chain it writes anyway and says so on a stderr `warning:` line — the cycle report at `wave-plan` / `wave-create` is the second net. `unblock` removes the body ref and the native edge, reads back, and exits 1 naming the source (the body, or the native edge) if the ref is still reported. Both refuse a bare issue: decorate it first. Both are silent writes — read the issue back.
 
 ## GitHub blockedBy-mirror operating envelope (github consumers only)
 

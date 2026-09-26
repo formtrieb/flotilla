@@ -105,6 +105,18 @@ export interface CrossWaveResult {
    */
   intraWaveBlockedByPairs: IntraWaveBlockedByPair[];
   /**
+   * Dependency CYCLES among every issue this check read — candidates AND
+   * claimed (ADR-0054 decision 4's second net: `issue-store block` refuses to
+   * close a cycle, but one drawn past it, by hand in the tracker, is caught
+   * here). Each entry names every issue on one cycle: a group of issues each
+   * reachable from every other along `blockedBy` edges. The entry is listed
+   * from its lowest id along the edges — each issue blocked by the next, the
+   * last blocked by the first — and a self-block is a one-issue entry. Without
+   * this, both rows of a cycle simply stay held with no reason given. Empty
+   * when there is none.
+   */
+  blockedByCycles: string[][];
+  /**
    * Present (non-empty) only when `repoRoot` was omitted and at least one
    * candidate or claimed issue declared a glob-pattern `Files` entry that
    * could therefore not be expanded (FOR-38) — see
@@ -170,6 +182,9 @@ export function crossWaveCheck(input: CrossWaveInput): CrossWaveResult {
     // above) — "intra-wave" means both ends are roster members of THIS wave;
     // a ref resolving only inside `claimed` is someone else's dependency.
     intraWaveBlockedByPairs: findIntraWaveBlockedByPairs(input.candidates),
+    // Over the WHOLE union: a cycle half in this wave and half claimed by
+    // another holds rows on both sides just the same.
+    blockedByCycles: findBlockedByCycles([...byId.values()]),
     ...(map.warnings && map.warnings.length > 0 ? { warnings: map.warnings } : {}),
   };
 }
@@ -217,6 +232,88 @@ function findIntraWaveBlockedByPairs(candidates: ScopedIssue[]): IntraWaveBlocke
     }
   }
   return pairs;
+}
+
+/**
+ * Every dependency cycle among `issues` (ADR-0054 decision 4) — see
+ * {@link CrossWaveResult.blockedByCycles} for the shape. Refs resolve to
+ * members exactly as {@link findIntraWaveBlockedByPairs} resolves them (the
+ * normalized `(slug, number)` key); a ref naming no member is not an edge.
+ * The groups are Tarjan's strongly connected components of size two or more,
+ * plus any self-block: that is precisely "a set of issues each of which waits,
+ * directly or transitively, on every other".
+ */
+function findBlockedByCycles(issues: ScopedIssue[]): string[][] {
+  const idByKey = new Map<string, string>();
+  for (const c of issues) {
+    const split = splitId(c.id);
+    if (split) idByKey.set(idKey(split.slug, split.num), c.id);
+  }
+  const edges = new Map<string, string[]>();
+  for (const c of issues) {
+    const out: string[] = [];
+    if (c.blockedBy && c.blockedBy !== 'none') {
+      const ownSlug = splitId(c.id)?.slug;
+      for (const ref of c.blockedBy) {
+        const to = idByKey.get(idKey(ref.slug ?? ownSlug, ref.issue));
+        if (to !== undefined && !out.includes(to)) out.push(to);
+      }
+    }
+    edges.set(c.id, out.sort());
+  }
+
+  // Tarjan's SCC — recursive; a roster is tens of rows, not thousands.
+  let counter = 0;
+  const index = new Map<string, number>();
+  const low = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const groups: string[][] = [];
+  const visit = (v: string): void => {
+    index.set(v, counter);
+    low.set(v, counter);
+    counter++;
+    stack.push(v);
+    onStack.add(v);
+    for (const w of edges.get(v) ?? []) {
+      if (!index.has(w)) {
+        visit(w);
+        low.set(v, Math.min(low.get(v) as number, low.get(w) as number));
+      } else if (onStack.has(w)) {
+        low.set(v, Math.min(low.get(v) as number, index.get(w) as number));
+      }
+    }
+    if (low.get(v) === index.get(v)) {
+      const group: string[] = [];
+      let w: string;
+      do {
+        w = stack.pop() as string;
+        onStack.delete(w);
+        group.push(w);
+      } while (w !== v);
+      const selfBlocked = (edges.get(v) ?? []).includes(v);
+      if (group.length > 1 || selfBlocked) groups.push(group);
+    }
+  };
+  for (const id of [...edges.keys()].sort()) if (!index.has(id)) visit(id);
+
+  // Order each group along its edges from its lowest id, so a simple cycle
+  // reads as the chain it is; any member the walk does not reach (a group that
+  // is more than one simple cycle) follows in id order.
+  return groups
+    .map((group) => {
+      const members = new Set(group);
+      const sorted = [...group].sort();
+      const ordered: string[] = [];
+      let cur: string | undefined = sorted[0];
+      while (cur !== undefined && !ordered.includes(cur)) {
+        ordered.push(cur);
+        cur = (edges.get(cur) ?? []).find((w) => members.has(w) && !ordered.includes(w));
+      }
+      for (const m of sorted) if (!ordered.includes(m)) ordered.push(m);
+      return ordered;
+    })
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 }
 
 /**

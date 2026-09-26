@@ -212,6 +212,121 @@ describe('MarkdownFsStore — markdown parity specifics', () => {
     ]);
   });
 
+  it('block / unblock edit the `**Blocked by:**` line entry by entry, keeping annotations on the rest (ADR-0054)', async () => {
+    const dir = join(root, '.scratch', SLUG, 'issues');
+    await mkdir(dir, { recursive: true });
+    const header = (blocked: string) => `# 09 — Depends on things
+
+**Status:** ready-for-agent
+**Risk:** mechanical
+**Worker:** background
+**Files:** src/a.ts
+**Blocked by:** ${blocked}
+
+## Acceptance criteria
+
+- [ ] ac
+`;
+    const blocker = await store.create({
+      title: 'blocker',
+      filingHint: 'blocker',
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/b.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+    });
+    const second = await store.create({
+      title: 'second',
+      filingHint: 'second',
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/c.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+    });
+    const blockerRef = store.parseRef(blocker);
+    const secondRef = store.parseRef(second);
+    const kept = `#${blockerRef.issue}  ← the engine slice lands first`;
+    await writeFile(join(dir, '09-depends.md'), header(kept), 'utf-8');
+
+    await store.block('test-feature#09', second);
+    expect(await readFile(join(dir, '09-depends.md'), 'utf-8')).toBe(
+      header(`${kept}, ${SLUG}#${secondRef.issue}`),
+    );
+
+    await store.unblock('test-feature#09', second);
+    expect(await readFile(join(dir, '09-depends.md'), 'utf-8')).toBe(header(kept));
+
+    await store.unblock('test-feature#09', blocker);
+    expect(await readFile(join(dir, '09-depends.md'), 'utf-8')).toBe(header('none'));
+  });
+
+  it('block WRITES a missing `**Blocked by:**` line on an issue decorated without one (annotate cannot)', async () => {
+    const dir = join(root, '.scratch', SLUG, 'issues');
+    await mkdir(dir, { recursive: true });
+    const blocker = await store.create({
+      title: 'blocker',
+      filingHint: 'blocker',
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/b.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+    });
+    const original = `# 09 — Decorated without Blocked by
+
+**Status:** ready-for-agent
+**Risk:** mechanical
+**Worker:** background
+**Files:**
+- src/a.ts
+- src/b/**
+
+## Acceptance criteria
+
+- [ ] ac
+`;
+    await writeFile(join(dir, '09-decorated.md'), original, 'utf-8');
+    await expect(store.read('test-feature#09')).rejects.toThrow(/Blocked by/);
+    // nothing to remove is a no-op, not a refusal
+    await expect(store.unblock('test-feature#09', blocker)).resolves.toEqual({ removed: false });
+
+    await store.block('test-feature#09', blocker);
+
+    const ref = store.parseRef(blocker);
+    expect(await readFile(join(dir, '09-decorated.md'), 'utf-8')).toBe(
+      original.replace(
+        '**Worker:** background\n',
+        `**Worker:** background\n**Blocked by:** ${SLUG}#${ref.issue}\n`,
+      ),
+    );
+    expect((await store.read('test-feature#09')).blockedBy).toEqual([ref]);
+  });
+
+  it('block and unblock refuse a BARE issue — its only blocker line would be a half-written Header-Block', async () => {
+    const blocker = await store.create({
+      title: 'blocker',
+      filingHint: 'blocker',
+      risk: 'mechanical',
+      worker: 'background',
+      files: ['src/b.ts'],
+      blockedBy: 'none',
+      acceptanceCriteria: [{ text: 'x', checked: false }],
+    });
+    const bare = await store.create({
+      title: 'bare',
+      filingHint: 'bare',
+      bodySections: [{ heading: 'Gap', markdown: 'prose' }],
+    });
+    const dir = join(root, '.scratch', SLUG, 'issues');
+    const file = (await readdir(dir)).find((n) => n.endsWith('-bare.md')) as string;
+    const before = await readFile(join(dir, file), 'utf-8');
+    await expect(store.block(bare, blocker)).rejects.toThrow(/no readable Header-Block/);
+    await expect(store.unblock(bare, blocker)).rejects.toThrow(/no readable Header-Block/);
+    expect(await readFile(join(dir, file), 'utf-8')).toBe(before);
+  });
+
   it('listOpen() excludes a non-eligible (out-of-OR-set) Status, even with prose suffix', async () => {
     const dir = join(root, '.scratch', SLUG, 'issues');
     await mkdir(dir, { recursive: true });

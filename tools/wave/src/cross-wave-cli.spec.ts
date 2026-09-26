@@ -55,6 +55,29 @@ describe('runCrossWave', () => {
     expect(result.crossWaveConflicts[0].files).toEqual([sharedFile]);
   });
 
+  it('reports a dependency cycle in the JSON AND on stderr, naming every issue on it (ADR-0054)', () => {
+    const candidatesPath = writeScopedIssues(tmpDir, 'candidates-cycle.json', [
+      { id: '5', files: ['src/a.ts'], blockedBy: [{ issue: 6 }] },
+      { id: '6', files: ['src/b.ts'], blockedBy: [{ issue: 7 }] },
+    ]);
+    // the third issue of the cycle is claimed by another wave
+    const claimedPath = writeScopedIssues(tmpDir, 'claimed-cycle.json', [
+      { id: '7', files: ['src/c.ts'], blockedBy: [{ issue: 5 }] },
+    ]);
+
+    const code = runCrossWave([
+      '--candidates', candidatesPath,
+      '--claimed', claimedPath,
+      '--repo-root', REPO_ROOT,
+    ]);
+
+    expect(code).toBe(0); // reported, not a failure — the Operator decides
+    const result = JSON.parse(stdoutSpy.mock.calls[0][0] as string);
+    expect(result.blockedByCycles).toEqual([['5', '6', '7']]);
+    const stderrText = stderrSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(stderrText).toContain('cycle: 5 → 6 → 7 → 5 (each blocked by the next)');
+  });
+
   it('returns 0 and emits JSON with parallelSafe=true when candidate and claimed are disjoint', () => {
     const candidatesPath = writeScopedIssues(tmpDir, 'candidates-disjoint.json', [
       { id: 'issue-a', files: ['src/alpha.ts'] },

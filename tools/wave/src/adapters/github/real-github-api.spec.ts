@@ -304,6 +304,48 @@ describe('RealGitHubApi', () => {
       expect(http.requests[0].method).toBe('GET');
     });
 
+    // ── the delete (ADR-0054's unblock path). Shaped against the same doc page,
+    // "Remove dependency an issue is blocked by", read 2026-09-26: DELETE
+    // …/dependencies/blocked_by/{issue_id} with the BLOCKER's database id in the
+    // path, answering 200.
+    it('removeBlockedBy resolves the BLOCKER\'s database id first, then DELETEs …/blocked_by/{issue_id} and requires 200', async () => {
+      const { api, http } = makeApi((req) => {
+        if (req.method === 'GET') return { status: 200, json: { number: 11, id: 3_000_001 } };
+        return { status: 200, json: { number: 11 } };
+      });
+      await expect(api.removeBlockedBy(7, 11)).resolves.toBeUndefined();
+      expect(http.requests).toHaveLength(2);
+      expect(http.requests[0].url).toBe('https://api.github.com/repos/example-org/example-repo/issues/11');
+      expect(http.requests[1].method).toBe('DELETE');
+      expect(http.requests[1].url).toBe(
+        'https://api.github.com/repos/example-org/example-repo/issues/7/dependencies/blocked_by/3000001',
+      );
+      expect(http.requests[1].body).toBeUndefined();
+    });
+
+    it('removeBlockedBy throws on any non-200 — a refused delete must never read as success', async () => {
+      for (const status of [204, 403, 404, 410]) {
+        const { api } = makeApi((req) =>
+          req.method === 'GET'
+            ? { status: 200, json: { number: 11, id: 3_000_001 } }
+            : { status, json: { message: `refused ${status}` } },
+        );
+        await expect(api.removeBlockedBy(7, 11)).rejects.toSatisfy(
+          (e: unknown) =>
+            e instanceof GitHubApiError && e.op === 'removeBlockedBy' && e.status === status,
+        );
+      }
+    });
+
+    it('removeBlockedBy fails BEFORE the DELETE when the blocker does not resolve', async () => {
+      const { api, http } = makeApi(() => ({ status: 404, json: { message: 'Not Found' } }));
+      await expect(api.removeBlockedBy(7, 999)).rejects.toSatisfy(
+        (e: unknown) => e instanceof GitHubApiError && e.op === 'removeBlockedBy',
+      );
+      expect(http.requests).toHaveLength(1);
+      expect(http.requests[0].method).toBe('GET');
+    });
+
     it('addBlockedBy throws when the resolved issue carries no database id', async () => {
       const { api } = makeApi(() => ({ status: 200, json: { number: 11 } })); // no `id`
       await expect(api.addBlockedBy(7, 11)).rejects.toSatisfy(

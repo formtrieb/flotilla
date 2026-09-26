@@ -288,10 +288,9 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    * human-drawn dependency survives any re-scope and a stale mirror is harmless
    * (the read-union's dedup tolerates double representation). The body codec
    * stays the canonical, store-agnostic home of blockedBy — this is a redundant
-   * visibility mirror, never the source of truth. GitHub *does* publish a
-   * removal endpoint (`DELETE …/dependencies/blocked_by/{issue_id}`, same doc
-   * page) and it is deliberately NOT declared here: ADR-0020 settled that the
-   * mirror has no delete path, so a delete verb would be unreachable surface.
+   * visibility mirror, never the source of truth. The mirror itself still never
+   * deletes; the one delete path is {@link removeBlockedBy}, reached only by
+   * `issue-store unblock` (ADR-0054 decision 3).
    *
    * Real impl: resolve `blockerNumber` to its DATABASE id (readable as `id` off
    * the issue object), then `POST /repos/{owner}/{repo}/issues/{blockedNumber}/
@@ -304,6 +303,23 @@ export interface GitHubApi extends LandingHost, LandingPosture {
    * native mirror is skipped, never fatal.
    */
   addBlockedBy(blockedNumber: number, blockerNumber: number): Promise<void>;
+  /**
+   * Delete ONE native dependency — `blockedNumber` is no longer blocked by
+   * `blockerNumber`. The native edge's first delete path (ADR-0054 decision 3),
+   * reached only by `issue-store unblock`, which then reads the issue back and
+   * names the native edge as the remaining source if this did not take.
+   *
+   * Real impl: resolve `blockerNumber` to its DATABASE id (the same key
+   * {@link addBlockedBy} writes with), then `DELETE /repos/{owner}/{repo}/issues/
+   * {blockedNumber}/dependencies/blocked_by/{issue_id}` → 200
+   * (docs.github.com/en/rest/issues/issue-dependencies, "Remove dependency an
+   * issue is blocked by", read 2026-09-26).
+   *
+   * Throws on an unresolvable number or a refused delete. The store does NOT
+   * swallow that throw the way the add mirror is swallowed: it records it and
+   * lets the read-back decide whether the edge survived.
+   */
+  removeBlockedBy(blockedNumber: number, blockerNumber: number): Promise<void>;
   /**
    * Required status checks a branch's ACTIVE RULESETS put in force, read from the
    * effective-rules endpoint (GitHub `GET /repos/{o}/{r}/rules/branches/{branch}`;
@@ -351,10 +367,9 @@ export interface GitHubApi extends LandingHost, LandingPosture {
   //
   // Four reads and one write, mirroring the facet's own read-heavy shape. No
   // milestone CLOSE verb is declared, and the omission is the point: the facet
-  // has no `closeGoal`, so a close verb here would be unreachable surface —
-  // the same reasoning that keeps GitHub's documented
-  // `DELETE …/dependencies/blocked_by` off {@link addBlockedBy}'s side of this
-  // seam.
+  // has no `closeGoal`, so a close verb here would be unreachable surface. (The
+  // dependency delete, {@link removeBlockedBy}, was kept off this seam for the
+  // same reason until `issue-store unblock` gave it a caller — ADR-0054.)
 
   /**
    * Mint a milestone; return its server-assigned `number` (the store's opaque

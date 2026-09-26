@@ -8,7 +8,65 @@ import {
   upsertSection,
   assertAcceptanceCriteriaShape,
   AcceptanceCriteriaShapeError,
+  writeBlockedBy,
+  decoratedBlockedBy,
 } from './body-codec';
+
+// ── writeBlockedBy / decoratedBlockedBy (ADR-0054 — block / unblock's body half)
+describe('writeBlockedBy — the `## Blocked by` ref list, and nothing else', () => {
+  const body = serializeBody({
+    files: ['a.ts'],
+    blockedBy: 'none',
+    acceptanceCriteria: [{ text: 'ac', checked: false }],
+    bodySections: [{ heading: 'What to build', markdown: 'the brief' }],
+  });
+
+  it('replaces `none` with the refs, and writes `none` back for an empty list', () => {
+    const added = writeBlockedBy(body, [{ issue: 7 }, { slug: 'FOR', issue: 3 }]);
+    expect(added).toBe(body.replace('## Blocked by\n\nnone\n', '## Blocked by\n\n#7, FOR#3\n'));
+    expect(parseBody(added).blockedBy).toEqual([{ issue: 7 }, { slug: 'FOR', issue: 3 }]);
+    expect(writeBlockedBy(added, [])).toBe(body);
+    expect(writeBlockedBy(added, 'none')).toBe(body);
+  });
+
+  it('keeps a legacy-ordered `**Parent:**` line that sits INSIDE the section', () => {
+    const legacy = '## Files\n\n- a.ts\n\n## Blocked by\n\nnone\n\n**Parent:** #9\n';
+    const out = writeBlockedBy(legacy, [{ issue: 4 }]);
+    expect(out).toBe('## Files\n\n- a.ts\n\n## Blocked by\n\n#4\n\n**Parent:** #9\n');
+    expect(parseBody(`${out}\n## Acceptance criteria\n\n- [ ] x\n`).parent).toBe('9');
+  });
+
+  it('appends a fresh section when the body has none', () => {
+    expect(writeBlockedBy('## Files\n\n- a.ts\n', [{ issue: 2 }])).toBe(
+      '## Files\n\n- a.ts\n\n## Blocked by\n\n#2\n',
+    );
+  });
+});
+
+describe('decoratedBlockedBy — refuses a body with no Header-Block', () => {
+  it('reads the refs of a decorated body ([] for none)', () => {
+    const body = serializeBody({
+      files: ['a.ts'],
+      blockedBy: [{ issue: 5 }],
+      acceptanceCriteria: [{ text: 'ac', checked: false }],
+    });
+    expect(decoratedBlockedBy('1', body, 'block')).toEqual([{ issue: 5 }]);
+    expect(
+      decoratedBlockedBy(
+        '1',
+        serializeBody({ files: [], blockedBy: 'none', acceptanceCriteria: [] }),
+        'unblock',
+      ),
+    ).toEqual([]);
+  });
+
+  it('throws on a bare body, naming the verb and decoration', () => {
+    const bare = serializeBareBody([{ heading: 'Gap', markdown: 'prose' }]);
+    expect(() => decoratedBlockedBy('12', bare, 'block')).toThrow(
+      /block: issue 12 has no readable Header-Block.*decorated first/,
+    );
+  });
+});
 
 describe('body-codec round-trip', () => {
   it('serializes + parses files / blockedBy / unblocks / AC / wallclock', () => {
@@ -335,12 +393,26 @@ describe('upsertSection', () => {
     expect(out).not.toContain('the ORIGINAL brief');
   });
 
-  it('THROWS on each reserved heading, naming annotate', () => {
-    for (const reserved of ['Files', 'Blocked by', 'Unblocks', 'Acceptance criteria']) {
+  it('THROWS on each reserved heading, naming annotate — except Blocked by', () => {
+    for (const reserved of ['Files', 'Unblocks', 'Acceptance criteria']) {
       expect(() => upsertSection(withSection, reserved, 'x')).toThrow(/annotate/i);
     }
     // case-insensitively too
     expect(() => upsertSection(withSection, 'acceptance criteria', 'x')).toThrow(/annotate/i);
+  });
+
+  it('THROWS on Blocked by naming `issue-store block` — never annotate, whose patch has no blockedBy (ADR-0054)', () => {
+    for (const heading of ['Blocked by', 'blocked BY', '  Blocked by ']) {
+      let message = '';
+      try {
+        upsertSection(withSection, heading, 'x');
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toMatch(/`issue-store block <id> --by <blocker-id>`/);
+      expect(message).toMatch(/`issue-store unblock <id> --by <blocker-id>`/);
+      expect(message).not.toMatch(/annotate/i);
+    }
   });
 
   it('preserves multi-line markdown content verbatim', () => {

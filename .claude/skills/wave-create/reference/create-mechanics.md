@@ -92,7 +92,7 @@ Scoping by slug keeps two waves created in the same session off each other's scr
 
 ## Building `conflict` from `CrossWaveResult.intraWaveConflicts`
 
-`cross-wave` returns `CrossWaveResult { parallelSafe, crossWaveConflicts, intraWaveConflicts, intraWaveBlockedByPairs, warnings? }`. `warnings` (FOR-38) is present only when a glob `Files` pattern could not be expanded — it should never appear as long as `--repo-root` is passed (required in this sequence, step 4 above); a non-empty `warnings` means the check is incomplete, not that it came back clean. The spine's `## Conflict-Map` records **in-wave file overlaps only**:
+`cross-wave` returns `CrossWaveResult { parallelSafe, crossWaveConflicts, intraWaveConflicts, intraWaveBlockedByPairs, blockedByCycles, warnings? }`. `warnings` (FOR-38) is present only when a glob `Files` pattern could not be expanded — it should never appear as long as `--repo-root` is passed (required in this sequence, step 4 above); a non-empty `warnings` means the check is incomplete, not that it came back clean. The spine's `## Conflict-Map` records **in-wave file overlaps only**:
 
 ```
 conflict = {
@@ -108,6 +108,8 @@ The spine's `## Conflict-Map` is built from `cross-wave`'s `intraWaveConflicts` 
 `intraWaveBlockedByPairs` (FOR-8) is a **second, independent launch-gate**, also handled in step 4 — surface + ask, default abort on any non-empty array. It is **not** written into the spine payload either; a `Blocked by` sequencing hint is a launch-time confirmation, not durable spine state (the spine's own `## Resume-Metadata`/Plan-Table already carries each row's declared `Blocked by` implicitly via its `IssueView`, re-read fresh by `wave-start` at dispatch time).
 
 Each entry has the shape `{ blocked: string; blocker: string; resolved: boolean }` — `blocked`/`blocker` are both chosen-roster ids; `resolved` reflects the blocker's `IssueView.status` at the time of this `cross-wave` call (`true` only for `in-review`/`done`). Surface every pair regardless of `resolved`.
+
+`blockedByCycles` (ADR-0054) is the **cycle report**, handled in step 4 as well: each entry names every issue on one dependency cycle among the roster and the claimed set (each blocked by the next, the last by the first). Every row on a cycle is held forever, so a non-empty array is surface + ask, default abort — name the cycle, and the fix: `issue-store unblock <id> --by <blocker-id>` on the edge that is wrong. It is never written into the spine.
 
 ## The human-gate surface (step 2a) — what it costs and what it buys
 
