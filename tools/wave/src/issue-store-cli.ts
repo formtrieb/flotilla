@@ -152,7 +152,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { classifyCreateInput, CreateInputError } from './adapters/issue-store';
+import {
+  classifyCreateInput,
+  CreateInputError,
+  validateAnnotatePatch,
+  AnnotatePatchError,
+} from './adapters/issue-store';
 import {
   assertAcceptanceCriteriaShape,
   AcceptanceCriteriaShapeError,
@@ -378,6 +383,8 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
       '  input shape (every key optional — supply at least one): { "risk": "...", "worker": "...",',
       '    "files": ["..."], "acceptanceCriteria": [{ "text": "...", "checked": false }],',
       '    "bodySections": [{ "heading": "...", "markdown": "..." }] }',
+      '  "filesAdd": ["..."] APPENDS only entries not already in Files, keeping their order;',
+      '    files + filesAdd in one patch is REFUSED (exit 2) before any write',
       '  files/acceptanceCriteria REPLACE the modeled section when supplied; bodySections',
       '    APPENDS instead — annotating the same heading twice duplicates it, and the read',
       '    path returns the FIRST match, silently shadowing the newer one',
@@ -390,7 +397,9 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
       label: '--json receipt',
       shape: '{ op, id, sent }',
       trail: 'sent names the header fields written:',
-      continuation: ['    risk?, worker?, parent?, files?, acceptanceCriteria?, bodySections?'],
+      continuation: [
+        '    risk?, worker?, parent?, files?, filesAdd?, acceptanceCriteria?, bodySections?',
+      ],
     },
   }),
   amend: issueStoreOp(['<id>'], 'silent-write', [patchRequired('<AmendPatch.json>')], {
@@ -943,6 +952,16 @@ export async function runIssueStore(
           if (err instanceof AcceptanceCriteriaShapeError) return usage(err.message, 'annotate');
           throw err;
         }
+        // `files` + `filesAdd` together (ADR-0054 decision 5), or a malformed
+        // `filesAdd`: a usage error before the write. The rule lives in the
+        // store module and every store calls it first too; this layer only
+        // picks the exit code, narrowing on the typed error as above.
+        try {
+          validateAnnotatePatch(patch);
+        } catch (err) {
+          if (err instanceof AnnotatePatchError) return usage(err.message, 'annotate');
+          throw err;
+        }
         await store.annotate(id, patch);
         writeReceipt(
           wantJson,
@@ -953,6 +972,7 @@ export async function runIssueStore(
             worker: patch.worker,
             parent: patch.parent,
             files: patch.files,
+            filesAdd: patch.filesAdd,
             acceptanceCriteria: patch.acceptanceCriteria,
             bodySections: patch.bodySections,
           }),

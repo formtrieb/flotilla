@@ -240,6 +240,65 @@ describe('issue-store-cli', () => {
     expect(view.acceptanceCriteria.map((a) => a.text)).toEqual(['snippet renders']);
   });
 
+  // ── filesAdd (ADR-0054 decision 5) ────────────────────────────────────────
+  function writePatch(patch: Record<string, unknown>): string {
+    const p = join(mkdtempSync(join(tmpdir(), 'is-files-patch-')), 'patch.json');
+    writeFileSync(p, JSON.stringify(patch), 'utf-8');
+    return p;
+  }
+
+  it('annotate filesAdd appends to the Files list; the --json receipt names filesAdd', async () => {
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeInput()], store);
+    const id = captured.trim();
+    captured = '';
+    await runIssueStore(['read', id], store);
+    const before = (JSON.parse(captured) as IssueView).files;
+
+    captured = '';
+    const code = await runIssueStore(
+      ['annotate', id, '--patch', writePatch({ filesAdd: [before[0], 'added/one.ts'] }), '--json'],
+      store,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(captured).sent).toEqual({ filesAdd: [before[0], 'added/one.ts'] });
+
+    captured = '';
+    await runIssueStore(['read', id], store);
+    expect((JSON.parse(captured) as IssueView).files).toEqual([...before, 'added/one.ts']);
+  });
+
+  it('annotate REFUSES a patch carrying both files and filesAdd: exit 2, before any write', async () => {
+    const store = tmpStore();
+    await runIssueStore(['create', '--input', writeInput()], store);
+    const id = captured.trim();
+    captured = '';
+    await runIssueStore(['read', id], store);
+    const before = captured;
+    const annotateSpy = vi.spyOn(store, 'annotate');
+
+    captured = '';
+    stderr = '';
+    const code = await runIssueStore(
+      [
+        'annotate',
+        id,
+        '--patch',
+        writePatch({ risk: 'isolated-refactor', files: ['x.ts'], filesAdd: ['y.ts'] }),
+      ],
+      store,
+    );
+
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/^error: .*`files`.*`filesAdd`/m);
+    expect(captured).toBe('');
+    expect(annotateSpy).not.toHaveBeenCalled(); // refused before the store is reached
+
+    captured = '';
+    await runIssueStore(['read', id], store);
+    expect(captured).toBe(before); // the issue reads back byte-for-byte as it was
+  });
+
   it('annotate with missing id returns 2', async () => {
     const store = tmpStore();
     const code = await runIssueStore(['annotate'], store);

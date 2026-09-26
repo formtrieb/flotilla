@@ -478,6 +478,32 @@ describe('GitHubIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
     expect(parsed.acceptanceCriteria).toEqual([{ text: 'does the thing', checked: false }]);
   });
 
+  it('annotate filesAdd inserts after the last `## Files` item — every other body byte unchanged, and a no-op writes nothing', async () => {
+    const id = await store.create(baseInput({ files: ['src/a.ts', 'src/b.ts'] }));
+    const n = Number(id);
+    const before = (await api.getIssue(n)).body;
+
+    await store.annotate(id, { filesAdd: ['src/b.ts', 'src/c.ts'] });
+    const after = (await api.getIssue(n)).body;
+    expect(after).toBe(before.replace('- src/b.ts\n', '- src/b.ts\n- src/c.ts\n'));
+
+    await store.annotate(id, { filesAdd: ['src/c.ts', 'src/a.ts'] }); // all already listed
+    expect((await api.getIssue(n)).body).toBe(after);
+  });
+
+  it('annotate filesAdd on a decorate-target with no `## Files` section writes one', async () => {
+    const { number } = await api.createIssue({
+      title: 'not yet decorated',
+      body: 'Some free-form prose with no managed sections yet.',
+      labels: [],
+    });
+    await store.annotate(String(number), { filesAdd: ['src/x.ts', 'src/x.ts'] });
+    const body = (await api.getIssue(number)).body;
+    expect(body).toContain('Some free-form prose with no managed sections yet.');
+    expect(body).toMatch(/## Files\n\n- src\/x\.ts\n/);
+    expect(body.match(/- src\/x\.ts/g)).toHaveLength(1);
+  });
+
   it('the mirror reconciles from the UPDATED (post-patch) body, not the stale pre-patch read', async () => {
     const blocker = await store.create(baseInput({ title: 'blocker' }));
     // a genuine decorate-target: the raw pre-patch body already carries a
