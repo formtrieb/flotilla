@@ -276,7 +276,31 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * The shared standing load — `wave-shared/SKILL.md` + `wave-shared/reference/*.md`,
  * loaded whole before any back-half skill acts.
  *
- * Why this number: **RAISED by the row that documents a `.claude/**` restore
+ * Why this number: **RAISED by the row that fills wave
+ * `2026-09-25-review-signals-and-round-hygiene`'s close-time reference-doc
+ * gaps** (issue #998), in the diff that causes the growth. Its one
+ * standing-load edit is entirely inside
+ * `reference/convention-05-sidecar-write-path.md`: a new bullet describing
+ * `route-tuple`'s routing-time repair of a sidecar that disagrees with the
+ * payload it is handed (issue #977's own shipped behaviour, undocumented
+ * until now) — the divergence compare, the passed-payload-wins rule, the
+ * `warning:` line, and the `repaired` result key beside `recovered`.
+ *
+ * At this row's anchor commit `07a32f9ca2099c71465bc2ebaa5e94427a062c5a` the
+ * class measured **165,704 B** over 18 files — 296 B under the previous
+ * 166,000 B ceiling (issue #1006 had already spent 235 B of that headroom on
+ * the host-landing-seam convention's `--expect-head` line without needing a
+ * raise). This row's edit adds **1,474 B**, landing the class at
+ * **167,178 B** over the same 18 files, so the ceiling moves to that sum
+ * rounded UP to the next full KB (1 KB = 1000 B): **168,000 B**. The 822 B of
+ * headroom that leaves is a fact about the rounding rule, not a budget.
+ *
+ * Previously: 166,000 B — **RAISED by the row that documents a `.claude/**`
+ * restore half-applying under the sandbox write-deny and adds the null-result
+ * classifier-refusal measurement that follows from it** (issue #994), whose
+ * reasoning is kept below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that documents a `.claude/**` restore
  * half-applying under the sandbox write-deny and adds the null-result
  * classifier-refusal measurement that follows from it** (issue #994), in the
  * diff that causes the growth. Its one standing-load edit is entirely inside
@@ -290,14 +314,14 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * refusals) and the reproduction record went to the `evidence/` sibling, the
  * class no run reads and neither pinned measure counts.
  *
- * At this row's anchor commit `de2e1c3536cb641e04f5863c7a1952a657240ec5` the
+ * At that row's anchor commit `de2e1c3536cb641e04f5863c7a1952a657240ec5` the
  * class measured **163,078 B** over 18 files — 922 B under the previous
- * 164,000 B ceiling. This row's edit adds **2,391 B**, landing the class at
- * **165,469 B** over the same 18 files, so the ceiling moves to that sum
+ * 164,000 B ceiling. That row's edit added **2,391 B**, landing the class at
+ * **165,469 B** over the same 18 files, so the ceiling moved to that sum
  * rounded UP to the next full KB (1 KB = 1000 B): **166,000 B**. The 531 B of
- * headroom that leaves is a fact about the rounding rule, not a budget.
+ * headroom that left was a fact about the rounding rule, not a budget.
  *
- * Previously: 164,000 B — **RAISED by the row that names the landing
+ * Before that: 164,000 B — **RAISED by the row that names the landing
  * message's two exceptions wherever the shipped prose says what lands under
  * `pr`** (issue #980, ADR-0053 dated note 2026-09-25), whose reasoning is
  * kept below (in ITS voice, so "this row" there means that row).
@@ -450,12 +474,40 @@ const LOADED_CORPUS_BYTES = sumBytes(LOADED_CORPUS_FILES);
  * rounded up the same way. Lowering a ceiling is still free: the next ratchet row
  * takes this back down to its own landed measure.
  */
-const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000; // UNCHANGED by issue #1006 (ADR-0055): its host-landing-seam `--expect-head` line spent 235 B, 165,469 → 165,704 B, which rounds UP to this 166,000 B already.
+const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — see the docblock above.
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
  *
- * Why this number: **RAISED by the row that makes every wave landing pass the
+ * Why this number: **RAISED by the row that fills wave
+ * `2026-09-25-review-signals-and-round-hygiene`'s close-time reference-doc
+ * gaps** (issue #998), in the diff that causes the growth. Five shipped
+ * reference copies had gone stale or stayed silent about behaviour that
+ * already shipped: wave-close's `close-mechanics.md` names `probes`,
+ * `detached` and `unaccounted` in the `worktree-cleanup` result shape
+ * (+290 B); its `phase-3-worktree-cleanup.md` gains the read-each-reviewed-
+ * head-before-the-sweep paragraph and the consequence of skipping it (ADR-0055,
+ * +1,307 B); wave-shared's `reference/convention-05-sidecar-write-path.md`
+ * gains the routing-time sidecar-divergence-repair bullet (issue #977's own
+ * shipped behaviour, +1,474 B, the standing-load raise above); wave-start's
+ * `SKILL.md` between-rounds item 5 names the exit-code read, the
+ * `erroredStillListed` shape and the follow-up branch-deletion call (+571 B),
+ * and its `start-mechanics.md` twin carries the same in invocation form
+ * (+1,065 B).
+ *
+ * At this row's anchor commit `07a32f9ca2099c71465bc2ebaa5e94427a062c5a` the
+ * population measured **1,270,810 B** over 57 files — 190 B under the
+ * previous 1,271,000 B ceiling. This row's edit lands it at **1,275,517 B**
+ * over the same 57 files, +4,707 B, so the ceiling moves to that sum rounded
+ * UP to the next full KB (1 KB = 1000 B): **1,276,000 B**. The shared standing
+ * load is touched by one of the five files (`convention-05-sidecar-write-path.md`);
+ * its own ceiling raise is documented above.
+ *
+ * Previously: 1,271,000 B — **RAISED by the row that makes every wave landing
+ * pass the reviewed head** (issue #1006, ADR-0055), whose reasoning is kept
+ * below (in ITS voice, so "this row" there means that row).
+ *
+ * Why that number: **RAISED by the row that makes every wave landing pass the
  * reviewed head** (issue #1006, ADR-0055), in the diff that causes the growth.
  * Each skill step that lands a wave row now passes `--expect-head` with the
  * commit `refs/review/<id>` points at, states the abstention when the ref is
@@ -467,13 +519,13 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000; // UNCHANGED by issue #1006 
  * `phase-4b-partial-arm.md` (+592 B) and `phase-4-advisory-merge-order.md`
  * (+210 B); and the host-landing-seam convention (+235 B).
  *
- * At this row's anchor commit `710e8dcc204b274160af3ee564bd4c097e4c260a` the
+ * At that row's anchor commit `710e8dcc204b274160af3ee564bd4c097e4c260a` the
  * population measured **1,267,063 B** over 57 files — 937 B under the previous
- * 1,268,000 B ceiling. This row's edit lands it at **1,270,810 B** over the
- * same 57 files, +3,747 B, so the ceiling moves to that sum rounded UP to the
+ * 1,268,000 B ceiling. That row's edit landed it at **1,270,810 B** over the
+ * same 57 files, +3,747 B, so the ceiling moved to that sum rounded UP to the
  * next full KB (1 KB = 1000 B): **1,271,000 B**.
  *
- * Previously: 1,268,000 B — **RAISED by the row that gives an Operator's
+ * Before that: 1,268,000 B — **RAISED by the row that gives an Operator's
  * answer to a Reviewer's question a documented path back to a re-review**
  * (issue #992), whose reasoning is kept below (in ITS voice, so "this row"
  * there means that row).
@@ -1075,7 +1127,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 166_000; // UNCHANGED by issue #1006 
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_271_000;
+const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see the docblock above.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

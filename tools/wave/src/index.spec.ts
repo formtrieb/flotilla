@@ -740,9 +740,9 @@ const WORKTREE_CLEANUP_ORPHAN_SCRATCH_HYGIENE_FAMILY_ADDED_AT_ROOT = [
 /**
  * The VALUE half of the REVIEW-REF sweep (issue #732) — worktree-cleanup.ts's
  * fifth population, and the first that is not a path: the `refs/review/<id>`,
- * `refs/review/sib/<id>` and `refs/sib/<id>` refs a Reviewer fetches a branch
- * tip into, which no pass in the module previously reached at all. Sorted, as
- * the probe sorts.
+ * `refs/review/sib/<id>`, `refs/review/base/<id>` and `refs/sib/<id>` refs a
+ * Reviewer fetches a branch tip into, which no pass in the module previously
+ * reached at all. Sorted, as the probe sorts.
  *
  * Its own family rather than an append to the reconciliation list above, for the
  * reason that list's own doc comment gives: that constant records what issue

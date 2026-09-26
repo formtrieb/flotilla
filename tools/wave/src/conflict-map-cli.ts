@@ -115,9 +115,19 @@ export const CONFLICT_MAP_CONTRACT: VerbContract = defineVerb({
   // a third key the advertised shape denied. Stated here, in full, in the one
   // place the renderer reads — and read off the printer (`printJson(result)`,
   // the whole `ConflictMap`), then confirmed by running the verb.
+  //
+  // That "omits `--repo-root`" condition can only ever be true on the STORE
+  // form (`--id`) — the only form the flag is even declared for (see `forms`
+  // below). The PATH form takes no `--repo-root` at all and never needs one:
+  // `runConflictMap` always derives one itself, via `findScratchRoot` off the
+  // first issue path, which falls back to `process.cwd()` rather than ever
+  // returning nothing (find-repo-root.ts). So `warnings` can appear on a
+  // store-form run with no `--repo-root`; a path-form run always has one and
+  // never carries this key.
   json: {
     shape: '{ issues: [ <issue-id> ], cells: [ { a, b, files: [ <path> ] } ], warnings?: [ <text> ] }',
-    trail: 'warnings appears ONLY when an unexpanded glob made the map incomplete — read it',
+    trail:
+      'warnings appears ONLY on the store form (--id) run WITHOUT --repo-root — the path form always derives one, so it never carries this key',
   },
 });
 
